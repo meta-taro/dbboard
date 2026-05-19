@@ -19,19 +19,22 @@ same conceptual layering in TypeScript.
 ```
 dbboard/
 ├── apps/
-│   └── dbboard/            # binary; wires concrete adapters into the UI
+│   └── dbboard/            # binary; boots local server + UI in one process
 └── crates/
     ├── dbboard-core/       # domain: traits, types, errors (no I/O)
     ├── dbboard-turso/      # adapter: Turso / libSQL
     ├── dbboard-neon/       # adapter: Neon (later)
     ├── dbboard-supabase/   # adapter: Supabase (later)
+    ├── dbboard-server/     # local axum HTTP backend (ADR-0006)
     ├── dbboard-ai/         # optional AI provider trait + adapters
-    └── dbboard-ui/         # egui views and view models
+    └── dbboard-ui/         # egui views; HTTP client of dbboard-server
 ```
 
-Phase 1 ships only `dbboard-core`, `dbboard-turso`, `dbboard-ui`, and
-`apps/dbboard`. The other crates land in later phases (see
-[`roadmap.md`](roadmap.md)).
+Phase 1 ships `dbboard-core`, `dbboard-turso`, `dbboard-ui`, and
+`apps/dbboard` calling the adapter directly. `dbboard-server` lands
+in Phase 1.5 once the direct slice works (see
+[`roadmap.md`](roadmap.md)). Adapter crates beyond Turso land in
+Phase 3.
 
 ## Dependency Rules
 
@@ -39,21 +42,28 @@ Strictly enforced via cargo workspace edges:
 
 ```
 apps/dbboard
-   ├──> dbboard-ui ──┐
-   ├──> dbboard-turso│
-   ├──> dbboard-neon │──> dbboard-core
-   ├──> dbboard-supabase
-   └──> dbboard-ai ──┘   (dbboard-ai also depends on core)
+   ├──> dbboard-ui ───────┐                  (HTTP client of dbboard-server)
+   ├──> dbboard-server ───┤
+   ├──> dbboard-turso ────┤──> dbboard-core
+   ├──> dbboard-neon ─────┤
+   ├──> dbboard-supabase ─┤
+   └──> dbboard-ai ───────┘                  (dbboard-ai also depends on core)
 ```
 
 - `dbboard-core` depends on nothing in this workspace.
 - Adapter crates depend on `dbboard-core` only.
-- `dbboard-ui` depends on `dbboard-core` only — never on a concrete
-  adapter.
-- `apps/dbboard` is the only place where concrete adapters meet the UI.
+- `dbboard-server` depends on `dbboard-core` and concrete adapter
+  crates (it is the only place that knows the full adapter set besides
+  `apps/dbboard`).
+- `dbboard-ui` depends on `dbboard-core` only. It talks to the local
+  server **over HTTP**, not via direct function calls.
+- `apps/dbboard` boots `dbboard-server` (binding to `127.0.0.1:0`,
+  reading back the assigned port) and starts `dbboard-ui` with that
+  port. On exit it shuts the server down cleanly.
 
 This means new DB support is added by writing one crate that implements
-the trait, then wiring it in the app. No UI or core changes required.
+the trait, then wiring it into `dbboard-server`. No UI or core changes
+required.
 
 ## Core Trait (sketch)
 

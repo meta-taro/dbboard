@@ -14,9 +14,14 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Exception**: contract changes (adapter shape, error categories) are
-  drafted in one repo, mirrored in the other immediately, and only then
-  built against.
+- **Right now (2026-05-19)**: `desktop` Phase 1 runs first. `web` Phase
+  1 (monorepo scaffold) is staged behind it so that the HTTP API
+  contract (ADR-0004, ADR-0006) is shaped against a real, working
+  desktop slice before web spends effort on a NestJS skeleton that
+  would have to be revised.
+- **Exception**: contract changes (endpoint shapes, error categories,
+  schema metadata) are drafted in one repo, mirrored in the other
+  immediately, and only then built against.
 - New DB adapter feature parity is not required at every step. The
   desktop repo ships an adapter first, then the web repo follows when
   it makes sense.
@@ -35,6 +40,25 @@ to end against a single database before generalising.
 
 Exit criteria: a developer can run `cargo run -p dbboard`, point at a
 local libSQL file, browse tables, run queries, and see results.
+
+## Phase 1.5 — Local HTTP backend (ADR-0006)
+
+Goal: introduce the `dbboard-server` crate behind the UI without
+changing what the user can do.
+
+- [ ] Draft initial API contract (endpoint paths, request and response
+  shapes, error categories) — record at `docs/api-contract.md`
+- [ ] Mirror the draft contract to `dbboard-web`
+- [ ] Add `crates/dbboard-server` (axum) implementing the contract
+  against the Turso adapter
+- [ ] Auto-port loopback bind in `apps/dbboard`; pass port to the UI
+- [ ] Convert `dbboard-ui` from direct adapter calls to HTTP client
+- [ ] Integration tests against the local server (no real DB needed
+  for some, libSQL embedded for query tests)
+
+Exit criteria: `cargo run -p dbboard` still does what Phase 1 did,
+but every action now traverses HTTP and the same endpoints are
+documented in both repos.
 
 ## Phase 2 — Extract the adapter trait
 

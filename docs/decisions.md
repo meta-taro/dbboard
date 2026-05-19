@@ -93,34 +93,43 @@ real working implementation to base it on.
 
 ---
 
-## ADR-0004 — Two repos, shared concepts not shared code
+## ADR-0004 — Two repos, shared API contract, separate implementations
 
 - **Date**: 2026-05-19
-- **Status**: accepted
+- **Status**: accepted (revised from initial "shared concepts only")
 
 ### Context
 
 dbboard has a desktop (this repo) and a web
 ([`dbboard-web`](https://github.com/meta-taro/dbboard-web)) implementation.
-Sharing implementation across Rust and TypeScript would require a
-heavyweight code-gen pipeline that we do not want at this scale.
+The maintainer wants the **same backend design** available in both,
+without making the desktop client a thin remote client to the web
+deployment.
 
 ### Decision
 
-Treat the two repos as **independent codebases that share concepts**:
+Treat the two repos as **independent codebases that share an HTTP API
+contract**:
 
-- Adapter identifiers, error categories, and schema snapshot shapes are
-  informally aligned.
-- Breaking contract changes are recorded as ADRs in **both** repos
-  before either implements them.
-- Development pace alternates between repos by default rather than
-  splitting focus on the same layer in both at once.
+- The HTTP API (endpoint paths, request and response shapes, error
+  categories, status codes) is identical across implementations.
+- Web's NestJS implementation is the canonical reference for the
+  contract; the desktop ships its own Rust re-implementation (axum) of
+  the same surface. See ADR-0006.
+- Breaking contract changes are drafted in one repo and mirrored to
+  the other before either ships against the change.
+- Development pace alternates between repos rather than splitting
+  focus on the same layer in both at once.
 
 ### Consequences
 
-- Feature parity is intentional, not enforced by tooling.
-- Drift is possible. We accept the cost in exchange for keeping each
-  stack idiomatic.
+- Each repo stays idiomatic in its own stack (no Node runtime shipped
+  with the desktop binary, no Rust required to run the web).
+- Feature parity at the HTTP contract level is enforced by the
+  contract itself; below the contract each side is free.
+- Two implementations of the same API means duplicated work — accepted
+  trade-off in exchange for the desktop staying native and
+  offline-capable.
 
 ---
 
@@ -147,3 +156,50 @@ agents know where to commit.
 
 - Slight overhead for solo work compared to trunk-based development.
 - Easier to keep `main` always shippable for OSS users who pin to it.
+
+---
+
+## ADR-0006 — Local HTTP backend in the desktop binary
+
+- **Date**: 2026-05-19
+- **Status**: accepted
+
+### Context
+
+ADR-0004 commits both repos to the same HTTP API contract. The desktop
+must implement that contract locally rather than reaching out to the
+web deployment, so that the application:
+
+- Works offline.
+- Has no dependency on a hosted service.
+- Does not require Node.js to be installed on the user's machine.
+
+### Decision
+
+Ship a local HTTP backend inside the desktop binary, implemented in
+Rust:
+
+- New crate **`crates/dbboard-server`** built on `axum` (tokio-native,
+  matches the rest of the async stack).
+- Bound to **loopback only** (`127.0.0.1`) — never listens on a
+  public interface.
+- **Port is auto-selected** at startup (`bind 127.0.0.1:0`, read the
+  assigned port back from the listener) so multiple instances do not
+  clash.
+- The egui UI in `crates/dbboard-ui` is an **HTTP client** of this
+  local server. It does not call adapters directly.
+- Server endpoints, payload shapes, and error categories mirror the
+  web NestJS API one-to-one.
+
+### Consequences
+
+- The egui UI is the same shape as a future browser UI would be —
+  switching presentations later costs less.
+- An HTTP layer sits on the hot path; we accept loopback overhead in
+  exchange for contract parity.
+- `apps/dbboard` boots both the local server and the egui UI in the
+  same process, and tears the server down on UI exit.
+- The API contract becomes a load-bearing document. We will pin a
+  canonical location for it once Phase 2 begins (likely
+  `docs/api-contract.md` in this repo, with `dbboard-web` linking to
+  it or vice versa — to be decided in a follow-up ADR).
