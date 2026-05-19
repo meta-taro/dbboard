@@ -1,0 +1,21 @@
+[package]
+name = "dbboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "dbboard desktop binary: wires adapters and UI together."
+
+[[bin]]
+name = "dbboard"
+path = "src/main.rs"
+
+[dependencies]
+dbboard-core = { path = "../../crates/dbboard-core" }
+
+[dev-dependencies]
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+
+[lints]
+workspace = true

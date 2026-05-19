@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+#
+# dbboard pre-commit hook
+#
+# Installed automatically by cargo-husky on first `cargo test`.
+# See CLAUDE.md "Mandatory Verification Commands".
+
+set -e
+
+echo "[pre-commit] cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "[pre-commit] cargo clippy --all-targets --all-features -- -D warnings"
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "[pre-commit] cargo check --all-targets --all-features"
+cargo check --all-targets --all-features
+
+echo "[pre-commit] cargo test --all-features"
+cargo test --all-features
+
+echo "[pre-commit] ok"
