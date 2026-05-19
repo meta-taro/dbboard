@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+#
+# dbboard pre-push hook
+#
+# Installed automatically by cargo-husky on first `cargo test`.
+# See CLAUDE.md "Mandatory Verification Commands".
+
+set -e
+
+echo "[pre-push] cargo build --release"
+cargo build --release
+
+echo "[pre-push] cargo test --all-features --release"
+cargo test --all-features --release
+
+echo "[pre-push] ok"
