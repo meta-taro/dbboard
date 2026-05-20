@@ -439,6 +439,11 @@ version = "0.0.0"
 dependencies = [
  "cargo-husky",
  "dbboard-core",
+ "dbboard-turso",
+ "dbboard-ui",
+ "eframe",
+ "egui",
+ "tokio",
 ]
 
 [[package]]

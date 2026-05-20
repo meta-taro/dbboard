@@ -12,7 +12,12 @@ name = "dbboard"
 path = "src/main.rs"
 
 [dependencies]
-dbboard-core = { path = "../../crates/dbboard-core" }
+dbboard-core = { workspace = true }
+dbboard-turso = { path = "../../crates/dbboard-turso" }
+dbboard-ui = { path = "../../crates/dbboard-ui" }
+eframe = { workspace = true }
+egui = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
