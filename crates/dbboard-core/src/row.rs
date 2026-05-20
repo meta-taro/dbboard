@@ -46,6 +46,11 @@ impl Row {
 pub struct QueryResult {
     pub columns: Vec<Column>,
     pub rows: Vec<Row>,
+    /// Number of rows the statement affected. Populated for DML/DDL
+    /// (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, ...). For row-returning
+    /// statements (`SELECT`, `WITH`, ...) the adapter leaves this at 0
+    /// and exposes the rows via [`Self::rows`] instead.
+    pub rows_affected: u64,
 }
 
 impl QueryResult {
@@ -54,6 +59,7 @@ impl QueryResult {
         Self {
             columns: Vec::new(),
             rows: Vec::new(),
+            rows_affected: 0,
         }
     }
 }
@@ -79,10 +85,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_result_has_no_columns_or_rows() {
+    fn empty_query_result_has_no_columns_rows_or_affected_count() {
         let result = QueryResult::empty();
         assert!(result.columns.is_empty());
         assert!(result.rows.is_empty());
+        assert_eq!(result.rows_affected, 0);
     }
 
     #[test]
@@ -93,8 +100,19 @@ mod tests {
                 declared_type: Some("INTEGER".into()),
             }],
             rows: vec![Row::new(vec![Value::Integer(1)])],
+            rows_affected: 0,
         };
         assert_eq!(result.columns[0].name, "id");
         assert_eq!(result.rows[0].get(0), Some(&Value::Integer(1)));
+    }
+
+    #[test]
+    fn query_result_records_affected_count_for_dml() {
+        let result = QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            rows_affected: 3,
+        };
+        assert_eq!(result.rows_affected, 3);
     }
 }

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "apps/dbboard",
     "crates/dbboard-core",
+    "crates/dbboard-turso",
 ]
 
 [workspace.package]
@@ -11,6 +12,14 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
 rust-version = "1.75"
+
+[workspace.dependencies]
+dbboard-core = { path = "crates/dbboard-core" }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# libsql core only — no remote/sync/replication/tls. Phase 1.5 will
+# widen this when the local HTTP backend introduces remote Turso.
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
