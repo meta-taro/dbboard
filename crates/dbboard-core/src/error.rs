@@ -4,7 +4,7 @@
 //! one of these variants so the UI can render a stable taxonomy of
 //! error categories regardless of which database is connected.
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum DbError {
     #[error("connection failed: {0}")]
     Connection(String),
