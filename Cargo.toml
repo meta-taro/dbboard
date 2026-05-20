@@ -4,6 +4,7 @@ members = [
     "apps/dbboard",
     "crates/dbboard-core",
     "crates/dbboard-turso",
+    "crates/dbboard-ui",
 ]
 
 [workspace.package]
@@ -20,6 +21,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # libsql core only — no remote/sync/replication/tls. Phase 1.5 will
 # widen this when the local HTTP backend introduces remote Turso.
 libsql = { version = "0.9", default-features = false, features = ["core"] }
+egui = "0.34"
+# eframe with the default glow renderer; wgpu lands later if needed.
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
