@@ -261,3 +261,87 @@ extraction to Phase 2.
   for D1 the way `:memory:` exists for Turso. This is inherent to D1.
 - Having a second concrete adapter gives Phase 2 a real second shape to
   base the `DatabaseAdapter` trait on (per ADR-0003).
+
+---
+
+## ADR-0008 — Shared `dbboard-postgres` adapter (sqlx + rustls) for PostgreSQL-wire databases; CockroachDB first
+
+- **Date**: 2026-05-21
+- **Status**: accepted (revises the per-database crate rule of ADR-0002)
+
+### Context
+
+We want dbboard to connect to **CockroachDB**. CockroachDB is a
+distributed SQL (NewSQL) database that speaks the **PostgreSQL wire
+protocol**: ordinary Postgres drivers connect to it with a
+`postgresql://…` connection string. The same is true of the Neon and
+Supabase adapters already on the roadmap (Phase 3) — all three are
+Postgres-wire under the hood.
+
+ADR-0002 says "one crate per database". Taken literally that would mean
+near-duplicate `dbboard-cockroach`, `dbboard-neon`, and (partly)
+`dbboard-supabase` crates that all wrap the same `sqlx-postgres` driver.
+
+A second tension is the domain model: `dbboard-core`'s `Value` has only
+the five SQLite storage classes (`Null`/`Integer`/`Real`/`Text`/`Blob`),
+while PostgreSQL has a rich type system (`numeric`, `uuid`,
+`timestamptz`, `jsonb`, arrays, user-defined types). Decoding arbitrary
+user-SQL results with `sqlx`'s type-checked `try_get` would require
+enumerating types and enabling several decode features
+(`bigdecimal`/`uuid`/`chrono`/`json`).
+
+### Decision
+
+- Add a single **`crates/dbboard-postgres`** crate that targets the
+  PostgreSQL wire protocol generically. CockroachDB is its first
+  connection target; Neon (and Supabase's SQL path) reuse the same crate
+  later. This **revises ADR-0002**: PostgreSQL-wire-compatible databases
+  share one adapter crate rather than getting one crate each.
+- The adapter is a concrete `PostgresAdapter` mirroring the existing
+  surface (`connect` / `ping` / `list_tables` / `query`). The
+  `DatabaseAdapter` trait stays deferred to Phase 2 (ADR-0003).
+- Use **`sqlx` 0.8** with **`tls-rustls-ring`** (not native TLS), so the
+  build carries no system OpenSSL dependency and stays self-contained on
+  Windows — matching the `reqwest`/`rustls` choice in ADR-0007.
+- **Dynamic decoding via the simple query protocol.** Run statements
+  through `sqlx::raw_sql`, which returns every value in its **text**
+  representation. Read each cell as a string (`Value::Text`), NULL as
+  `Value::Null`. This keeps `dbboard-core` unchanged, is lossless for
+  `int8`/`numeric`, and covers every Postgres type without per-type
+  decode features. `Column.declared_type` carries the reported Postgres
+  type name (e.g. `INT8`, `TIMESTAMPTZ`).
+- Connection parameters come from a single **`DBBOARD_PG_URL`**
+  connection string (covers CockroachDB Cloud, self-hosted, and Neon
+  uniformly, including `sslmode`). It takes precedence over the D1 and
+  Turso selection in `apps/dbboard`. The URL embeds a password and is a
+  secret: it is never logged, never stored on the adapter, and never
+  echoed in a `DbError` (in particular `sqlx::Error::Configuration`,
+  which can wrap the URL, is reduced to a fixed message).
+- **TLS is hardened on connect.** sqlx defaults an unspecified `sslmode`
+  to `Prefer`, which silently falls back to a plaintext connection (and
+  sends the password in the clear) when the server does not offer TLS.
+  `connect` parses the URL, and upgrades a `Prefer` mode to `Require`
+  before connecting. An explicit choice — including `sslmode=disable` for
+  a deliberately insecure local node — is honoured unchanged.
+- Schema introspection queries `information_schema.tables`, excluding the
+  `pg_catalog`, `information_schema`, and CockroachDB-specific
+  `crdb_internal` schemas, and reports tables as `schema.table`
+  (`TableInfo::qualified`).
+
+### Consequences
+
+- `sqlx` and `futures-util` enter the dependency tree (a heavier set than
+  D1's `reqwest`). Pure mapping/error-classification functions are
+  unit-tested without a database; a live round-trip test is gated behind
+  `DBBOARD_PG_URL`.
+- Values are surfaced as text rather than typed scalars (e.g. `SELECT 1`
+  yields `Value::Text("1")`). Acceptable for a read-only viewer and
+  lossless; native scalar refinement can come later behind the same
+  public surface if needed.
+- Neon arrives cheaply: pointing `DBBOARD_PG_URL` at a Neon database
+  should work through the same adapter, accelerating Phase 3. Supabase
+  still needs its REST/auth hybrid layer on top.
+- This is the **third** concrete adapter (Turso, D1, Postgres) and the
+  first non-SQLite one, giving Phase 2's `DatabaseAdapter` trait a
+  genuinely different shape (schemas, typed columns, connection pool) to
+  design against.

@@ -27,14 +27,17 @@ independent codebases.
 
 ## Supported Databases (initial scope)
 
-- Neon (PostgreSQL)
-- Supabase (PostgreSQL + API)
 - Turso / libSQL (SQLite-based distributed DB)
 - Cloudflare D1 (SQLite-based, REST API)
+- CockroachDB (distributed SQL, PostgreSQL-wire)
+- Neon (PostgreSQL)
+- Supabase (PostgreSQL + API)
 
 The Turso adapter ships first, followed by Cloudflare D1 (over its REST
-API). Neon and Supabase follow once the adapter trait is extracted (see
-roadmap).
+API) and CockroachDB (over the PostgreSQL wire protocol, via a generic
+`dbboard-postgres` adapter). Neon reuses the same Postgres adapter and
+Supabase follows with its REST/auth layer once the adapter trait is
+extracted (see [`docs/roadmap.md`](docs/roadmap.md)).
 
 ## Architecture
 
@@ -104,6 +107,32 @@ falls back to the local Turso default.
 
 ```sh
 DBBOARD_D1_ACCOUNT_ID=... DBBOARD_D1_DATABASE_ID=... DBBOARD_D1_TOKEN=... \
+  cargo run -p dbboard
+```
+
+### CockroachDB / PostgreSQL
+
+Set a single connection string to connect to CockroachDB (or any
+PostgreSQL-wire database, e.g. Neon) via the generic `dbboard-postgres`
+adapter:
+
+| Variable | Purpose |
+|---|---|
+| `DBBOARD_PG_URL` | Full connection string, e.g. `postgresql://user:pass@host:26257/db?sslmode=verify-full` |
+
+For **CockroachDB Cloud**, copy the connection string from the cluster's
+**Connect** dialog in the CockroachDB Cloud Console (Basic free tier
+works). For a **self-hosted** node started with
+`cockroach start-single-node`, use its `postgresql://…` string; the
+default SQL port is `26257`. CockroachDB requires TLS, so keep
+`sslmode=verify-full` (or the mode your deployment expects).
+
+`DBBOARD_PG_URL` takes precedence over the D1 and Turso variables. The
+connection string contains your password — keep it out of version
+control (use `.env`, which is gitignored). The app never logs it.
+
+```sh
+DBBOARD_PG_URL='postgresql://user:pass@host:26257/db?sslmode=verify-full' \
   cargo run -p dbboard
 ```
 

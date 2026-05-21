@@ -8,9 +8,11 @@
 //! the UI sees the worker as opaque `Command`/`Reply` traffic.
 //!
 //! Which backend the worker drives is chosen from the environment at
-//! startup:
+//! startup, in priority order:
 //!
-//! - If `DBBOARD_D1_ACCOUNT_ID`, `DBBOARD_D1_DATABASE_ID`, and
+//! - If `DBBOARD_PG_URL` is set, it connects to a **PostgreSQL-wire**
+//!   database (`CockroachDB`, Neon, ...) using that connection string.
+//! - Else if `DBBOARD_D1_ACCOUNT_ID`, `DBBOARD_D1_DATABASE_ID`, and
 //!   `DBBOARD_D1_TOKEN` are all set, it connects to **Cloudflare D1**
 //!   over the REST API (optionally overriding the API root with
 //!   `DBBOARD_D1_BASE_URL`).
@@ -23,6 +25,7 @@ use std::thread;
 
 use dbboard_core::{DbError, DbResult, QueryResult, TableInfo};
 use dbboard_d1::{D1Adapter, D1Config};
+use dbboard_postgres::{PostgresAdapter, PostgresConfig};
 use dbboard_turso::TursoAdapter;
 use dbboard_ui::{Command, DbboardApp, Reply};
 
@@ -34,12 +37,15 @@ const D1_DATABASE_ID_ENV: &str = "DBBOARD_D1_DATABASE_ID";
 const D1_TOKEN_ENV: &str = "DBBOARD_D1_TOKEN";
 const D1_BASE_URL_ENV: &str = "DBBOARD_D1_BASE_URL";
 
+const PG_URL_ENV: &str = "DBBOARD_PG_URL";
+
 /// What the worker should connect to. Resolved from the environment on
 /// the UI thread (cheap, no I/O) and handed to the worker, which does
 /// the actual connecting inside its tokio runtime.
 enum BackendConfig {
     Turso { path: String },
     D1(D1Config),
+    Postgres { url: String },
 }
 
 /// A connected adapter. The variants share the small command surface
@@ -47,6 +53,7 @@ enum BackendConfig {
 enum Backend {
     Turso(TursoAdapter),
     D1(D1Adapter),
+    Postgres(PostgresAdapter),
 }
 
 impl Backend {
@@ -63,6 +70,13 @@ impl Backend {
                 adapter.ping().await?;
                 Ok(Self::D1(adapter))
             }
+            BackendConfig::Postgres { url } => {
+                let adapter = PostgresAdapter::connect(PostgresConfig { url }).await?;
+                // Same fail-fast contract: surface a bad URL or rejected
+                // credentials as a startup connection error.
+                adapter.ping().await?;
+                Ok(Self::Postgres(adapter))
+            }
         }
     }
 
@@ -70,6 +84,7 @@ impl Backend {
         match self {
             Self::Turso(a) => a.list_tables().await,
             Self::D1(a) => a.list_tables().await,
+            Self::Postgres(a) => a.list_tables().await,
         }
     }
 
@@ -77,11 +92,20 @@ impl Backend {
         match self {
             Self::Turso(a) => a.query(sql).await,
             Self::D1(a) => a.query(sql).await,
+            Self::Postgres(a) => a.query(sql).await,
         }
     }
 }
 
 fn backend_config_from_env() -> BackendConfig {
+    // An explicit Postgres URL is the most specific intent, so it wins
+    // over everything else.
+    if let Ok(url) = std::env::var(PG_URL_ENV) {
+        if !url.trim().is_empty() {
+            return BackendConfig::Postgres { url };
+        }
+    }
+
     // D1 wins only when fully configured; a partial D1 setup falls back
     // to Turso rather than failing, so a stray env var can't lock the
     // app out of its default local mode.
