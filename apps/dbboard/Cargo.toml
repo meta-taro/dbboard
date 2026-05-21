@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 dbboard-core = { workspace = true }
+dbboard-d1 = { path = "../../crates/dbboard-d1" }
 dbboard-turso = { path = "../../crates/dbboard-turso" }
 dbboard-ui = { path = "../../crates/dbboard-ui" }
 eframe = { workspace = true }

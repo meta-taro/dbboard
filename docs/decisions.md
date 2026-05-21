@@ -203,3 +203,61 @@ Rust:
   canonical location for it once Phase 2 begins (likely
   `docs/api-contract.md` in this repo, with `dbboard-web` linking to
   it or vice versa — to be decided in a follow-up ADR).
+
+---
+
+## ADR-0007 — Cloudflare D1 adapter via the REST `/raw` endpoint
+
+- **Date**: 2026-05-21
+- **Status**: accepted
+
+### Context
+
+We want dbboard to connect to Cloudflare D1. Unlike Turso/libSQL, D1
+has no native driver that a desktop process can use: Cloudflare exposes
+D1 to outside callers only through its HTTP REST API (the Workers
+binding is Worker-only). So a D1 adapter is fundamentally an HTTP client
+rather than a database driver.
+
+D1 offers two query endpoints. `/query` returns rows as JSON objects
+(column name → value), which loses column ordering and drops columns
+that are `NULL` for every row. `/raw` returns `results.columns` (ordered
+names) and `results.rows` (positional arrays), and uses the same shape
+for SELECT and DML.
+
+This is the second concrete adapter. ADR-0003 defers extracting the
+`DatabaseAdapter` trait until a second adapter exists; D1 is that second
+shape, but we keep it a concrete struct here and leave the trait
+extraction to Phase 2.
+
+### Decision
+
+- Add `crates/dbboard-d1` implementing a `D1Adapter` whose method
+  surface mirrors `TursoAdapter` (`connect` / `ping` / `list_tables` /
+  `query`), with no shared trait yet.
+- Talk to the **`/raw`** endpoint so column order is preserved and one
+  code path serves SELECT and DML (rows from `results.rows`, affected
+  count from `meta.changes`). No statement-kind routing is needed.
+- Use **`reqwest`** with **`rustls-tls`** (not native TLS) so the build
+  carries no system OpenSSL dependency and stays self-contained on
+  Windows. Add `serde`/`serde_json` for the request and response shapes.
+- Connection parameters (account id, database id, API token, optional
+  base URL) come from `DBBOARD_D1_*` environment variables, resolved in
+  `apps/dbboard`. A fully configured D1 environment selects the D1
+  backend; otherwise the app falls back to the local Turso default.
+- The API token is a secret: it is never logged, never placed in the
+  request URL, and never embedded in a `DbError` message.
+
+### Consequences
+
+- `reqwest`, `serde`, and `serde_json` enter the dependency tree. Pure
+  mapping functions (envelope → `QueryResult`, JSON cell → `Value`) are
+  unit-tested without network; a live round-trip test is gated behind
+  `DBBOARD_D1_*`.
+- D1 column results carry no declared type (the `/raw` payload omits
+  it), so `Column.declared_type` is always `None` for D1 — the same
+  convention SQLite expressions already use.
+- Every D1 call crosses the network; there is no offline/in-memory mode
+  for D1 the way `:memory:` exists for Turso. This is inherent to D1.
+- Having a second concrete adapter gives Phase 2 a real second shape to
+  base the `DatabaseAdapter` trait on (per ADR-0003).

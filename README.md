@@ -30,9 +30,11 @@ independent codebases.
 - Neon (PostgreSQL)
 - Supabase (PostgreSQL + API)
 - Turso / libSQL (SQLite-based distributed DB)
+- Cloudflare D1 (SQLite-based, REST API)
 
-The Turso adapter ships first. Neon and Supabase follow once the adapter
-trait is extracted (see roadmap).
+The Turso adapter ships first, followed by Cloudflare D1 (over its REST
+API). Neon and Supabase follow once the adapter trait is extracted (see
+roadmap).
 
 ## Architecture
 
@@ -71,6 +73,38 @@ Running `cargo test` once installs the `cargo-husky` git hooks
 
 ```sh
 cargo run -p dbboard
+```
+
+By default the app opens an in-memory Turso/libSQL database, so it runs
+with no configuration. The backend is chosen from the environment (see
+[`.env.example`](.env.example)):
+
+### Local Turso/libSQL (default)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `DBBOARD_TURSO_PATH` | libSQL file path, or `:memory:` | `:memory:` |
+
+### Cloudflare D1
+
+Set all three of the following to connect to D1 instead of Turso:
+
+| Variable | Purpose |
+|---|---|
+| `DBBOARD_D1_ACCOUNT_ID` | Cloudflare account ID |
+| `DBBOARD_D1_DATABASE_ID` | D1 database ID (`wrangler d1 info <name>`) |
+| `DBBOARD_D1_TOKEN` | API token with the **D1 Edit** permission |
+| `DBBOARD_D1_BASE_URL` | _(optional)_ API root override; defaults to `https://api.cloudflare.com/client/v4` |
+
+The account and database IDs are shown in the Cloudflare dashboard
+(Workers & Pages → D1) or via `wrangler d1 info <database-name>`. Create
+the API token under **My Profile → API Tokens** with a D1 read/write
+permission. If any of the three required variables is missing, the app
+falls back to the local Turso default.
+
+```sh
+DBBOARD_D1_ACCOUNT_ID=... DBBOARD_D1_DATABASE_ID=... DBBOARD_D1_TOKEN=... \
+  cargo run -p dbboard
 ```
 
 ## Development
