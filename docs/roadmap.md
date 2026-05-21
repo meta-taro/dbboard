@@ -80,6 +80,33 @@ Exit criteria: with the `DBBOARD_D1_*` env vars set, `cargo run -p
 dbboard` browses tables and runs queries against a real D1 database;
 with them unset it still defaults to local Turso.
 
+## Phase 1.7 — CockroachDB via shared `dbboard-postgres` adapter
+
+Goal: add a third concrete adapter for PostgreSQL-wire databases, with
+CockroachDB as the first target, ahead of the trait extraction. This is
+the first non-SQLite adapter (schemas, typed columns, connection pool),
+giving Phase 2 a genuinely different shape (ADR-0008). UI and core are
+unchanged.
+
+- [x] Add generic `crates/dbboard-postgres` (`sqlx` + `tls-rustls-ring`)
+- [x] `connect` / `ping` / `list_tables` / `query` mirroring the existing
+  adapter surface
+- [x] Dynamic decoding via the simple query protocol (`sqlx::raw_sql`):
+  every value read as text → `Value::Text`, NULL → `Value::Null`; no
+  `dbboard-core` change
+- [x] Schema-qualified introspection via `information_schema.tables`
+  (excludes `pg_catalog` / `information_schema` / `crdb_internal`)
+- [x] Single-connection-string backend selection in `apps/dbboard`
+  (`DBBOARD_PG_URL`, highest precedence); falls back to D1 then local
+  Turso when unset
+- [x] Unit tests for error classification / introspection mapping; live
+  round-trip test gated behind `DBBOARD_PG_URL`
+
+Exit criteria: with `DBBOARD_PG_URL` set to a CockroachDB connection
+string, `cargo run -p dbboard` browses `schema.table` listings and runs
+queries against a real CockroachDB database; with it unset the app still
+defaults to D1 (if configured) or local Turso.
+
 ## Phase 2 — Extract the adapter trait
 
 Goal: turn the Turso-shaped types into a real abstraction without
@@ -98,7 +125,9 @@ Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
 Goal: prove the trait by adding two more adapters without changing the
 UI or the core.
 
-- [ ] `dbboard-neon` (sqlx-postgres under the hood)
+- [ ] Neon via the shared `dbboard-postgres` adapter (it is Postgres-wire;
+  Phase 1.7 already covers the SQL path — this step is mostly the
+  connection picker and any Neon-specific quirks)
 - [ ] `dbboard-supabase` (REST + sqlx hybrid)
 - [ ] Connection picker recognises adapter kind
 - [ ] Adapter-specific quirks documented in each crate's README

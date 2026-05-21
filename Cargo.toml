@@ -4,6 +4,7 @@ members = [
     "apps/dbboard",
     "crates/dbboard-core",
     "crates/dbboard-d1",
+    "crates/dbboard-postgres",
     "crates/dbboard-turso",
     "crates/dbboard-ui",
 ]
@@ -30,6 +31,11 @@ eframe = { version = "0.34", default-features = false, features = ["default_font
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# CockroachDB / Neon talk the PostgreSQL wire protocol. rustls (ring)
+# keeps TLS pure-Rust, matching reqwest above and avoiding system OpenSSL.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres"] }
+# Consumes the `raw_sql(...).fetch_many(...)` result stream.
+futures-util = "0.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
