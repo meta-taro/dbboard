@@ -60,6 +60,26 @@ Exit criteria: `cargo run -p dbboard` still does what Phase 1 did,
 but every action now traverses HTTP and the same endpoints are
 documented in both repos.
 
+## Phase 1.6 — Cloudflare D1 adapter (REST)
+
+Goal: add a second concrete adapter against Cloudflare D1 over its REST
+API, ahead of the trait extraction, to give Phase 2 a real second shape
+(ADR-0007). UI and core are unchanged.
+
+- [x] Add `crates/dbboard-d1` (`reqwest` + `rustls`, `/raw` endpoint)
+- [x] `connect` / `ping` / `list_tables` / `query` mirroring the Turso
+  adapter's surface
+- [x] Env-driven backend selection in `apps/dbboard`
+  (`DBBOARD_D1_ACCOUNT_ID` / `DBBOARD_D1_DATABASE_ID` /
+  `DBBOARD_D1_TOKEN`, optional `DBBOARD_D1_BASE_URL`); falls back to
+  local Turso when unset
+- [x] Unit tests for envelope/value mapping; live round-trip test gated
+  behind `DBBOARD_D1_*`
+
+Exit criteria: with the `DBBOARD_D1_*` env vars set, `cargo run -p
+dbboard` browses tables and runs queries against a real D1 database;
+with them unset it still defaults to local Turso.
+
 ## Phase 2 — Extract the adapter trait
 
 Goal: turn the Turso-shaped types into a real abstraction without

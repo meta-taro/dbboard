@@ -5,17 +5,28 @@
 
 ## 最終更新
 
-- 日付: 2026-05-19
-- ブランチ: `develop` (リモートデフォルト・追跡中)
-- 現在の Phase: Phase 1 (Turso 縦割り) を開始する前段階
+- 日付: 2026-05-21
+- ブランチ: `feature/turso-vertical-slice`
+- 現在の Phase: Phase 1.6 (Cloudflare D1 アダプター) 実装完了。未コミット。
 
 ## 直近の作業
 
-- ルール・規約・ドキュメント整備の初期セットアップを実施
-  - `CLAUDE.md` (英語、OSS 向け統合ルール)
-  - `README.md` `DESIGN.md` `docs/architecture.md` `docs/roadmap.md` `docs/decisions.md` を作成
-  - `.gitignore` (日本語コメント)
-  - `.claude/issues/` のテンプレ整備
+- **Cloudflare D1 アダプターを追加 (Phase 1.6 / ADR-0007)**
+  - 新クレート `crates/dbboard-d1`: D1 は外部からは REST API 経由でしか触れない
+    ため、`reqwest` (rustls, https-only) で `/raw` エンドポイントを叩く HTTP
+    クライアント実装。`connect`/`ping`/`list_tables`/`query` で `TursoAdapter`
+    のメソッド面をミラー (トレイト抽出は ADR-0003 に従い Phase 2 へ繰り延べ)。
+  - `apps/dbboard/src/main.rs`: `Backend { Turso, D1 }` enum を導入し env 駆動で
+    バックエンド選択 (`DBBOARD_D1_ACCOUNT_ID`/`_DATABASE_ID`/`_TOKEN` が揃えば D1、
+    無ければ従来どおりローカル Turso `:memory:`)。UI は無変更。
+  - 純粋関数 (envelope→QueryResult, JSON→Value, エラー分類) を 19 件のユニット
+    テストでカバー。実 D1 への疎通テストは `DBBOARD_D1_*` 未設定時スキップ。
+  - security-reviewer / rust-reviewer を実行し指摘を反映: https-only + rustls 明示、
+    空トークン即エラー、429/5xx は Connection 分類、エラー文字列の上限長切り詰め、
+    未使用 `thiserror` 依存削除、未テスト分岐の追加。
+  - `docs/decisions.md` (ADR-0007)、`docs/roadmap.md` (Phase 1.6)、`README.md`、
+    `.env.example` を更新。
+  - 検証: `cargo fmt --check` / `clippy -D warnings` / `check` / `test` 全て緑。
 - WEB 版 (`dbboard-web`) との関係性を整理し、独立コードベース + 概念共有という方針を ADR-0004 に記録
 
 ## 次のステップ
