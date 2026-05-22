@@ -345,3 +345,78 @@ enumerating types and enabling several decode features
   first non-SQLite one, giving Phase 2's `DatabaseAdapter` trait a
   genuinely different shape (schemas, typed columns, connection pool) to
   design against.
+
+---
+
+## ADR-0009 — Canonical API contract location; UI owns the HTTP client; serde in `dbboard-core`
+
+- **Date**: 2026-05-22
+- **Status**: accepted (resolves the deferred contract-location question
+  at the end of ADR-0006)
+
+### Context
+
+ADR-0006 committed the desktop to a loopback `dbboard-server` (axum) that
+the egui UI talks to over HTTP, but left three things open:
+
+1. **Where the API contract lives.** ADR-0006 named `docs/api-contract.md`
+   as the likely home "to be decided in a follow-up ADR".
+2. **Which crate owns the HTTP client.** The UI had to stop calling
+   adapters directly, but egui is synchronous and cannot `await`.
+3. **How domain types cross the wire.** `dbboard-core`'s types
+   (`Value`, `Row`, `QueryResult`, `TableInfo`, `DbError`) had no
+   serialization, and the architecture rule says core does "no I/O".
+
+Phase 1.5 forced all three. This ADR records the decisions taken while
+implementing it.
+
+### Decision
+
+- **The canonical contract is [`docs/api-contract.md`](api-contract.md)
+  in this (desktop) repo.** It is the source of truth for endpoint
+  paths, request/response JSON, the `Value` wire encoding, and the error
+  envelope. `dbboard-web` mirrors it; breaking changes are drafted here
+  and reflected there before either ships (per ADR-0004).
+- **`dbboard-ui` owns the HTTP client.** A background worker thread runs
+  a `reqwest` client on its own single-threaded `tokio` runtime and
+  bridges to the synchronous egui thread through the existing
+  `Command`/`Reply` `mpsc` channels — the channels are kept, only their
+  far end changed from a direct adapter call to an HTTP call. `reqwest`,
+  `tokio`, `serde`, and `serde_json` become `dbboard-ui` dependencies.
+  This does **not** break the layering rule of ADR-0002: that rule
+  governs *workspace* edges (`dbboard-ui` still depends on no workspace
+  crate but `dbboard-core`); external crates were always allowed.
+- **`dbboard-core` gains always-on `serde` derives** (not feature-gated).
+  Serialization is pure in-memory data transformation, not I/O, so the
+  "no I/O" rule is preserved. `Value` uses a hand-written
+  `Serialize`/`Deserialize` mapping to native JSON scalars; since JSON
+  has no byte type, `Value::Blob` is encoded as a tagged object
+  `{"$blob":"<base64>"}` (base64 standard alphabet). `Row` is
+  `#[serde(transparent)]` so it serializes as a bare array. `DbError`
+  carries `category()` / `message()` / `from_parts()` helpers so it
+  round-trips through the `{category, message}` envelope without doubling
+  the `Display` prefix.
+- **Two tokio runtimes coexist.** `apps/dbboard`'s `main` owns a
+  multi-thread runtime that drives the server; the UI worker owns a
+  separate current-thread runtime on its own thread. They never nest, so
+  there is no `block_on`-within-`block_on` hazard.
+- **The server is unauthenticated by design**, relying on the loopback
+  bind and an OS-assigned ephemeral port known only to the spawning
+  process. If the bind is ever widened beyond `127.0.0.1` or the port is
+  persisted across runs, a per-launch secret (e.g. an `X-DBBoard-Token`
+  header) must be added first.
+
+### Consequences
+
+- The contract document is load-bearing: any endpoint or shape change is
+  a documented change in `docs/api-contract.md` mirrored to `dbboard-web`.
+- `dbboard-core` is now serializable everywhere it is used, at the cost
+  of a `serde`/`base64` dependency in the domain crate. The blob
+  encoding is a fixed part of the contract.
+- The UI keeps working synchronously; a transport failure (server
+  unreachable) surfaces as a `Connection` error in the UI rather than a
+  hang.
+- `apps/dbboard` no longer reads any `DBBOARD_*` database variable or
+  links an adapter directly — backend selection moved entirely into
+  `dbboard-server` (`backend_config_from_env`), so the desktop and any
+  future headless deployment share one source of truth.

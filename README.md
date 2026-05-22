@@ -78,6 +78,13 @@ Running `cargo test` once installs the `cargo-husky` git hooks
 cargo run -p dbboard
 ```
 
+On startup the binary boots a small HTTP server bound to loopback
+(`127.0.0.1`) on an OS-assigned port, and the UI talks to it over that
+local connection — the same API contract the web sibling implements (see
+[`docs/api-contract.md`](docs/api-contract.md)). The server is local-only
+and shuts down when you close the window; nothing listens on a public
+interface.
+
 By default the app opens an in-memory Turso/libSQL database, so it runs
 with no configuration. The backend is chosen from the environment (see
 [`.env.example`](.env.example)):
