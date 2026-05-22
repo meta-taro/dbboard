@@ -203,3 +203,220 @@ Rust:
   canonical location for it once Phase 2 begins (likely
   `docs/api-contract.md` in this repo, with `dbboard-web` linking to
   it or vice versa — to be decided in a follow-up ADR).
+
+---
+
+## ADR-0007 — Cloudflare D1 adapter via the REST `/raw` endpoint
+
+- **Date**: 2026-05-21
+- **Status**: accepted
+
+### Context
+
+We want dbboard to connect to Cloudflare D1. Unlike Turso/libSQL, D1
+has no native driver that a desktop process can use: Cloudflare exposes
+D1 to outside callers only through its HTTP REST API (the Workers
+binding is Worker-only). So a D1 adapter is fundamentally an HTTP client
+rather than a database driver.
+
+D1 offers two query endpoints. `/query` returns rows as JSON objects
+(column name → value), which loses column ordering and drops columns
+that are `NULL` for every row. `/raw` returns `results.columns` (ordered
+names) and `results.rows` (positional arrays), and uses the same shape
+for SELECT and DML.
+
+This is the second concrete adapter. ADR-0003 defers extracting the
+`DatabaseAdapter` trait until a second adapter exists; D1 is that second
+shape, but we keep it a concrete struct here and leave the trait
+extraction to Phase 2.
+
+### Decision
+
+- Add `crates/dbboard-d1` implementing a `D1Adapter` whose method
+  surface mirrors `TursoAdapter` (`connect` / `ping` / `list_tables` /
+  `query`), with no shared trait yet.
+- Talk to the **`/raw`** endpoint so column order is preserved and one
+  code path serves SELECT and DML (rows from `results.rows`, affected
+  count from `meta.changes`). No statement-kind routing is needed.
+- Use **`reqwest`** with **`rustls-tls`** (not native TLS) so the build
+  carries no system OpenSSL dependency and stays self-contained on
+  Windows. Add `serde`/`serde_json` for the request and response shapes.
+- Connection parameters (account id, database id, API token, optional
+  base URL) come from `DBBOARD_D1_*` environment variables, resolved in
+  `apps/dbboard`. A fully configured D1 environment selects the D1
+  backend; otherwise the app falls back to the local Turso default.
+- The API token is a secret: it is never logged, never placed in the
+  request URL, and never embedded in a `DbError` message.
+
+### Consequences
+
+- `reqwest`, `serde`, and `serde_json` enter the dependency tree. Pure
+  mapping functions (envelope → `QueryResult`, JSON cell → `Value`) are
+  unit-tested without network; a live round-trip test is gated behind
+  `DBBOARD_D1_*`.
+- D1 column results carry no declared type (the `/raw` payload omits
+  it), so `Column.declared_type` is always `None` for D1 — the same
+  convention SQLite expressions already use.
+- Every D1 call crosses the network; there is no offline/in-memory mode
+  for D1 the way `:memory:` exists for Turso. This is inherent to D1.
+- Having a second concrete adapter gives Phase 2 a real second shape to
+  base the `DatabaseAdapter` trait on (per ADR-0003).
+
+---
+
+## ADR-0008 — Shared `dbboard-postgres` adapter (sqlx + rustls) for PostgreSQL-wire databases; CockroachDB first
+
+- **Date**: 2026-05-21
+- **Status**: accepted (revises the per-database crate rule of ADR-0002)
+
+### Context
+
+We want dbboard to connect to **CockroachDB**. CockroachDB is a
+distributed SQL (NewSQL) database that speaks the **PostgreSQL wire
+protocol**: ordinary Postgres drivers connect to it with a
+`postgresql://…` connection string. The same is true of the Neon and
+Supabase adapters already on the roadmap (Phase 3) — all three are
+Postgres-wire under the hood.
+
+ADR-0002 says "one crate per database". Taken literally that would mean
+near-duplicate `dbboard-cockroach`, `dbboard-neon`, and (partly)
+`dbboard-supabase` crates that all wrap the same `sqlx-postgres` driver.
+
+A second tension is the domain model: `dbboard-core`'s `Value` has only
+the five SQLite storage classes (`Null`/`Integer`/`Real`/`Text`/`Blob`),
+while PostgreSQL has a rich type system (`numeric`, `uuid`,
+`timestamptz`, `jsonb`, arrays, user-defined types). Decoding arbitrary
+user-SQL results with `sqlx`'s type-checked `try_get` would require
+enumerating types and enabling several decode features
+(`bigdecimal`/`uuid`/`chrono`/`json`).
+
+### Decision
+
+- Add a single **`crates/dbboard-postgres`** crate that targets the
+  PostgreSQL wire protocol generically. CockroachDB is its first
+  connection target; Neon (and Supabase's SQL path) reuse the same crate
+  later. This **revises ADR-0002**: PostgreSQL-wire-compatible databases
+  share one adapter crate rather than getting one crate each.
+- The adapter is a concrete `PostgresAdapter` mirroring the existing
+  surface (`connect` / `ping` / `list_tables` / `query`). The
+  `DatabaseAdapter` trait stays deferred to Phase 2 (ADR-0003).
+- Use **`sqlx` 0.8** with **`tls-rustls-ring`** (not native TLS), so the
+  build carries no system OpenSSL dependency and stays self-contained on
+  Windows — matching the `reqwest`/`rustls` choice in ADR-0007.
+- **Dynamic decoding via the simple query protocol.** Run statements
+  through `sqlx::raw_sql`, which returns every value in its **text**
+  representation. Read each cell as a string (`Value::Text`), NULL as
+  `Value::Null`. This keeps `dbboard-core` unchanged, is lossless for
+  `int8`/`numeric`, and covers every Postgres type without per-type
+  decode features. `Column.declared_type` carries the reported Postgres
+  type name (e.g. `INT8`, `TIMESTAMPTZ`).
+- Connection parameters come from a single **`DBBOARD_PG_URL`**
+  connection string (covers CockroachDB Cloud, self-hosted, and Neon
+  uniformly, including `sslmode`). It takes precedence over the D1 and
+  Turso selection in `apps/dbboard`. The URL embeds a password and is a
+  secret: it is never logged, never stored on the adapter, and never
+  echoed in a `DbError` (in particular `sqlx::Error::Configuration`,
+  which can wrap the URL, is reduced to a fixed message).
+- **TLS is hardened on connect.** sqlx defaults an unspecified `sslmode`
+  to `Prefer`, which silently falls back to a plaintext connection (and
+  sends the password in the clear) when the server does not offer TLS.
+  `connect` parses the URL, and upgrades a `Prefer` mode to `Require`
+  before connecting. An explicit choice — including `sslmode=disable` for
+  a deliberately insecure local node — is honoured unchanged.
+- Schema introspection queries `information_schema.tables`, excluding the
+  `pg_catalog`, `information_schema`, and CockroachDB-specific
+  `crdb_internal` schemas, and reports tables as `schema.table`
+  (`TableInfo::qualified`).
+
+### Consequences
+
+- `sqlx` and `futures-util` enter the dependency tree (a heavier set than
+  D1's `reqwest`). Pure mapping/error-classification functions are
+  unit-tested without a database; a live round-trip test is gated behind
+  `DBBOARD_PG_URL`.
+- Values are surfaced as text rather than typed scalars (e.g. `SELECT 1`
+  yields `Value::Text("1")`). Acceptable for a read-only viewer and
+  lossless; native scalar refinement can come later behind the same
+  public surface if needed.
+- Neon arrives cheaply: pointing `DBBOARD_PG_URL` at a Neon database
+  should work through the same adapter, accelerating Phase 3. Supabase
+  still needs its REST/auth hybrid layer on top.
+- This is the **third** concrete adapter (Turso, D1, Postgres) and the
+  first non-SQLite one, giving Phase 2's `DatabaseAdapter` trait a
+  genuinely different shape (schemas, typed columns, connection pool) to
+  design against.
+
+---
+
+## ADR-0009 — Canonical API contract location; UI owns the HTTP client; serde in `dbboard-core`
+
+- **Date**: 2026-05-22
+- **Status**: accepted (resolves the deferred contract-location question
+  at the end of ADR-0006)
+
+### Context
+
+ADR-0006 committed the desktop to a loopback `dbboard-server` (axum) that
+the egui UI talks to over HTTP, but left three things open:
+
+1. **Where the API contract lives.** ADR-0006 named `docs/api-contract.md`
+   as the likely home "to be decided in a follow-up ADR".
+2. **Which crate owns the HTTP client.** The UI had to stop calling
+   adapters directly, but egui is synchronous and cannot `await`.
+3. **How domain types cross the wire.** `dbboard-core`'s types
+   (`Value`, `Row`, `QueryResult`, `TableInfo`, `DbError`) had no
+   serialization, and the architecture rule says core does "no I/O".
+
+Phase 1.5 forced all three. This ADR records the decisions taken while
+implementing it.
+
+### Decision
+
+- **The canonical contract is [`docs/api-contract.md`](api-contract.md)
+  in this (desktop) repo.** It is the source of truth for endpoint
+  paths, request/response JSON, the `Value` wire encoding, and the error
+  envelope. `dbboard-web` mirrors it; breaking changes are drafted here
+  and reflected there before either ships (per ADR-0004).
+- **`dbboard-ui` owns the HTTP client.** A background worker thread runs
+  a `reqwest` client on its own single-threaded `tokio` runtime and
+  bridges to the synchronous egui thread through the existing
+  `Command`/`Reply` `mpsc` channels — the channels are kept, only their
+  far end changed from a direct adapter call to an HTTP call. `reqwest`,
+  `tokio`, `serde`, and `serde_json` become `dbboard-ui` dependencies.
+  This does **not** break the layering rule of ADR-0002: that rule
+  governs *workspace* edges (`dbboard-ui` still depends on no workspace
+  crate but `dbboard-core`); external crates were always allowed.
+- **`dbboard-core` gains always-on `serde` derives** (not feature-gated).
+  Serialization is pure in-memory data transformation, not I/O, so the
+  "no I/O" rule is preserved. `Value` uses a hand-written
+  `Serialize`/`Deserialize` mapping to native JSON scalars; since JSON
+  has no byte type, `Value::Blob` is encoded as a tagged object
+  `{"$blob":"<base64>"}` (base64 standard alphabet). `Row` is
+  `#[serde(transparent)]` so it serializes as a bare array. `DbError`
+  carries `category()` / `message()` / `from_parts()` helpers so it
+  round-trips through the `{category, message}` envelope without doubling
+  the `Display` prefix.
+- **Two tokio runtimes coexist.** `apps/dbboard`'s `main` owns a
+  multi-thread runtime that drives the server; the UI worker owns a
+  separate current-thread runtime on its own thread. They never nest, so
+  there is no `block_on`-within-`block_on` hazard.
+- **The server is unauthenticated by design**, relying on the loopback
+  bind and an OS-assigned ephemeral port known only to the spawning
+  process. If the bind is ever widened beyond `127.0.0.1` or the port is
+  persisted across runs, a per-launch secret (e.g. an `X-DBBoard-Token`
+  header) must be added first.
+
+### Consequences
+
+- The contract document is load-bearing: any endpoint or shape change is
+  a documented change in `docs/api-contract.md` mirrored to `dbboard-web`.
+- `dbboard-core` is now serializable everywhere it is used, at the cost
+  of a `serde`/`base64` dependency in the domain crate. The blob
+  encoding is a fixed part of the contract.
+- The UI keeps working synchronously; a transport failure (server
+  unreachable) surfaces as a `Connection` error in the UI rather than a
+  hang.
+- `apps/dbboard` no longer reads any `DBBOARD_*` database variable or
+  links an adapter directly — backend selection moved entirely into
+  `dbboard-server` (`backend_config_from_env`), so the desktop and any
+  future headless deployment share one source of truth.

@@ -41,24 +41,75 @@ to end against a single database before generalising.
 Exit criteria: a developer can run `cargo run -p dbboard`, point at a
 local libSQL file, browse tables, run queries, and see results.
 
-## Phase 1.5 — Local HTTP backend (ADR-0006)
+## Phase 1.5 — Local HTTP backend (ADR-0006, ADR-0009)
 
 Goal: introduce the `dbboard-server` crate behind the UI without
 changing what the user can do.
 
-- [ ] Draft initial API contract (endpoint paths, request and response
-  shapes, error categories) — record at `docs/api-contract.md`
-- [ ] Mirror the draft contract to `dbboard-web`
-- [ ] Add `crates/dbboard-server` (axum) implementing the contract
-  against the Turso adapter
-- [ ] Auto-port loopback bind in `apps/dbboard`; pass port to the UI
-- [ ] Convert `dbboard-ui` from direct adapter calls to HTTP client
-- [ ] Integration tests against the local server (no real DB needed
-  for some, libSQL embedded for query tests)
+- [x] Draft initial API contract (endpoint paths, request and response
+  shapes, error categories) — recorded at
+  [`docs/api-contract.md`](api-contract.md) as the canonical source
+  (ADR-0009)
+- [ ] Mirror the draft contract to `dbboard-web` *(human-owned;
+  alternating-repo step per the Pacing Note)*
+- [x] Add `crates/dbboard-server` (axum) implementing the contract
+  against all three adapters (Turso / D1 / Postgres)
+- [x] Auto-port loopback bind in `apps/dbboard`; pass port to the UI
+- [x] Convert `dbboard-ui` from direct adapter calls to HTTP client
+  (worker now drives `reqwest`; `Command`/`Reply` channels retained)
+- [x] Integration tests against the local server (`tower::oneshot`
+  in-process plus one real loopback round-trip; Turso `:memory:`)
 
 Exit criteria: `cargo run -p dbboard` still does what Phase 1 did,
 but every action now traverses HTTP and the same endpoints are
 documented in both repos.
+
+## Phase 1.6 — Cloudflare D1 adapter (REST)
+
+Goal: add a second concrete adapter against Cloudflare D1 over its REST
+API, ahead of the trait extraction, to give Phase 2 a real second shape
+(ADR-0007). UI and core are unchanged.
+
+- [x] Add `crates/dbboard-d1` (`reqwest` + `rustls`, `/raw` endpoint)
+- [x] `connect` / `ping` / `list_tables` / `query` mirroring the Turso
+  adapter's surface
+- [x] Env-driven backend selection in `apps/dbboard`
+  (`DBBOARD_D1_ACCOUNT_ID` / `DBBOARD_D1_DATABASE_ID` /
+  `DBBOARD_D1_TOKEN`, optional `DBBOARD_D1_BASE_URL`); falls back to
+  local Turso when unset
+- [x] Unit tests for envelope/value mapping; live round-trip test gated
+  behind `DBBOARD_D1_*`
+
+Exit criteria: with the `DBBOARD_D1_*` env vars set, `cargo run -p
+dbboard` browses tables and runs queries against a real D1 database;
+with them unset it still defaults to local Turso.
+
+## Phase 1.7 — CockroachDB via shared `dbboard-postgres` adapter
+
+Goal: add a third concrete adapter for PostgreSQL-wire databases, with
+CockroachDB as the first target, ahead of the trait extraction. This is
+the first non-SQLite adapter (schemas, typed columns, connection pool),
+giving Phase 2 a genuinely different shape (ADR-0008). UI and core are
+unchanged.
+
+- [x] Add generic `crates/dbboard-postgres` (`sqlx` + `tls-rustls-ring`)
+- [x] `connect` / `ping` / `list_tables` / `query` mirroring the existing
+  adapter surface
+- [x] Dynamic decoding via the simple query protocol (`sqlx::raw_sql`):
+  every value read as text → `Value::Text`, NULL → `Value::Null`; no
+  `dbboard-core` change
+- [x] Schema-qualified introspection via `information_schema.tables`
+  (excludes `pg_catalog` / `information_schema` / `crdb_internal`)
+- [x] Single-connection-string backend selection in `apps/dbboard`
+  (`DBBOARD_PG_URL`, highest precedence); falls back to D1 then local
+  Turso when unset
+- [x] Unit tests for error classification / introspection mapping; live
+  round-trip test gated behind `DBBOARD_PG_URL`
+
+Exit criteria: with `DBBOARD_PG_URL` set to a CockroachDB connection
+string, `cargo run -p dbboard` browses `schema.table` listings and runs
+queries against a real CockroachDB database; with it unset the app still
+defaults to D1 (if configured) or local Turso.
 
 ## Phase 2 — Extract the adapter trait
 
@@ -78,7 +129,9 @@ Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
 Goal: prove the trait by adding two more adapters without changing the
 UI or the core.
 
-- [ ] `dbboard-neon` (sqlx-postgres under the hood)
+- [ ] Neon via the shared `dbboard-postgres` adapter (it is Postgres-wire;
+  Phase 1.7 already covers the SQL path — this step is mostly the
+  connection picker and any Neon-specific quirks)
 - [ ] `dbboard-supabase` (REST + sqlx hybrid)
 - [ ] Connection picker recognises adapter kind
 - [ ] Adapter-specific quirks documented in each crate's README
