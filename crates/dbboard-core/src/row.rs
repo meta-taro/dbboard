@@ -1,8 +1,10 @@
 //! Row and column types returned by adapters from a SELECT query.
 
+use serde::{Deserialize, Serialize};
+
 use crate::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
     /// The type the driver reported for this column. `None` when the
@@ -10,7 +12,10 @@ pub struct Column {
     pub declared_type: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Serialized as a bare JSON array of values (`[v1, v2, ...]`) via
+/// `#[serde(transparent)]`, matching the API contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Row {
     values: Vec<Value>,
 }
@@ -42,7 +47,7 @@ impl Row {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryResult {
     pub columns: Vec<Column>,
     pub rows: Vec<Row>,
@@ -114,5 +119,36 @@ mod tests {
             rows_affected: 3,
         };
         assert_eq!(result.rows_affected, 3);
+    }
+
+    #[test]
+    fn row_serializes_as_a_bare_array() {
+        let row = Row::new(vec![
+            Value::Integer(1),
+            Value::Text("a".into()),
+            Value::Null,
+        ]);
+        assert_eq!(serde_json::to_string(&row).unwrap(), r#"[1,"a",null]"#);
+    }
+
+    #[test]
+    fn query_result_round_trips_through_json() {
+        let result = QueryResult {
+            columns: vec![
+                Column {
+                    name: "id".into(),
+                    declared_type: Some("INTEGER".into()),
+                },
+                Column {
+                    name: "expr".into(),
+                    declared_type: None,
+                },
+            ],
+            rows: vec![Row::new(vec![Value::Integer(1), Value::Null])],
+            rows_affected: 0,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: QueryResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, result);
     }
 }

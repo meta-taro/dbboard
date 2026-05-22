@@ -5,7 +5,9 @@
 //! (constraints, indexes, foreign keys) land alongside the adapter
 //! trait in Phase 2.
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TableInfo {
     /// Schema namespace (e.g. `"public"` in PostgreSQL). `None` for
     /// SQLite/libSQL where there is no schema concept.
@@ -31,7 +33,7 @@ impl TableInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnInfo {
     pub name: String,
     pub declared_type: Option<String>,
@@ -55,6 +57,23 @@ mod tests {
         let t = TableInfo::qualified("public", "users");
         assert_eq!(t.schema.as_deref(), Some("public"));
         assert_eq!(t.name, "users");
+    }
+
+    #[test]
+    fn unqualified_table_serializes_schema_as_null() {
+        let json = serde_json::to_string(&TableInfo::unqualified("users")).unwrap();
+        assert_eq!(json, r#"{"schema":null,"name":"users"}"#);
+    }
+
+    #[test]
+    fn table_info_round_trips_both_forms() {
+        for t in [
+            TableInfo::unqualified("users"),
+            TableInfo::qualified("public", "users"),
+        ] {
+            let json = serde_json::to_string(&t).unwrap();
+            assert_eq!(serde_json::from_str::<TableInfo>(&json).unwrap(), t);
+        }
     }
 
     #[test]
