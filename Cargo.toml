@@ -5,6 +5,7 @@ members = [
     "crates/dbboard-core",
     "crates/dbboard-d1",
     "crates/dbboard-postgres",
+    "crates/dbboard-server",
     "crates/dbboard-turso",
     "crates/dbboard-ui",
 ]

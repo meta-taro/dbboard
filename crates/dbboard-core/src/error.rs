@@ -34,6 +34,17 @@ impl DbError {
         }
     }
 
+    /// The inner detail string, without the category prefix that
+    /// [`Display`](std::fmt::Display) prepends. This is what travels in
+    /// the wire envelope's `message` field so a round-trip through
+    /// [`Self::from_parts`] does not double up the prefix.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Connection(m) | Self::Query(m) | Self::Schema(m) | Self::TypeConversion(m) => m,
+        }
+    }
+
     /// Reconstruct a `DbError` from the wire envelope's `category` and
     /// `message`. An unknown category degrades to [`DbError::Query`] so
     /// a contract drift surfaces as a visible error rather than a panic.
@@ -93,16 +104,24 @@ mod tests {
     }
 
     #[test]
-    fn from_parts_round_trips_every_known_category() {
+    fn from_parts_round_trips_category_and_message() {
         for e in [
             DbError::Connection("c".into()),
             DbError::Query("q".into()),
             DbError::Schema("s".into()),
             DbError::TypeConversion("t".into()),
         ] {
-            let back = DbError::from_parts(e.category(), e.to_string());
+            let back = DbError::from_parts(e.category(), e.message().to_owned());
             assert_eq!(back.category(), e.category());
+            assert_eq!(back.message(), e.message());
         }
+    }
+
+    #[test]
+    fn message_strips_the_category_prefix() {
+        let e = DbError::Query("syntax near SELEC".into());
+        assert_eq!(e.message(), "syntax near SELEC");
+        assert_eq!(e.to_string(), "query failed: syntax near SELEC");
     }
 
     #[test]
