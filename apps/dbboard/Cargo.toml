@@ -12,10 +12,10 @@ name = "dbboard"
 path = "src/main.rs"
 
 [dependencies]
-dbboard-core = { workspace = true }
-dbboard-d1 = { path = "../../crates/dbboard-d1" }
-dbboard-postgres = { path = "../../crates/dbboard-postgres" }
-dbboard-turso = { path = "../../crates/dbboard-turso" }
+# The binary wires the in-process server to the UI and links neither
+# adapters nor dbboard-core directly: the server owns backend selection
+# (the adapters reach the binary transitively through dbboard-server).
+dbboard-server = { path = "../../crates/dbboard-server" }
 dbboard-ui = { path = "../../crates/dbboard-ui" }
 eframe = { workspace = true }
 egui = { workspace = true }

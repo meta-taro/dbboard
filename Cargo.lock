@@ -563,10 +563,7 @@ name = "dbboard"
 version = "0.0.0"
 dependencies = [
  "cargo-husky",
- "dbboard-core",
- "dbboard-d1",
- "dbboard-postgres",
- "dbboard-turso",
+ "dbboard-server",
  "dbboard-ui",
  "eframe",
  "egui",
