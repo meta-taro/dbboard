@@ -25,6 +25,8 @@ desktop.ini
 # AI セッション関連の一時ファイル
 /.claude/cache/
 /.claude/*.bak
+# 個人環境用のローカル設定 (共有しない)
+/.claude/settings.local.json
 
 # ログ
 *.log

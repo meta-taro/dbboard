@@ -27,12 +27,17 @@ independent codebases.
 
 ## Supported Databases (initial scope)
 
+- Turso / libSQL (SQLite-based distributed DB)
+- Cloudflare D1 (SQLite-based, REST API)
+- CockroachDB (distributed SQL, PostgreSQL-wire)
 - Neon (PostgreSQL)
 - Supabase (PostgreSQL + API)
-- Turso / libSQL (SQLite-based distributed DB)
 
-The Turso adapter ships first. Neon and Supabase follow once the adapter
-trait is extracted (see roadmap).
+The Turso adapter ships first, followed by Cloudflare D1 (over its REST
+API) and CockroachDB (over the PostgreSQL wire protocol, via a generic
+`dbboard-postgres` adapter). Neon reuses the same Postgres adapter and
+Supabase follows with its REST/auth layer once the adapter trait is
+extracted (see [`docs/roadmap.md`](docs/roadmap.md)).
 
 ## Architecture
 
@@ -71,6 +76,71 @@ Running `cargo test` once installs the `cargo-husky` git hooks
 
 ```sh
 cargo run -p dbboard
+```
+
+On startup the binary boots a small HTTP server bound to loopback
+(`127.0.0.1`) on an OS-assigned port, and the UI talks to it over that
+local connection — the same API contract the web sibling implements (see
+[`docs/api-contract.md`](docs/api-contract.md)). The server is local-only
+and shuts down when you close the window; nothing listens on a public
+interface.
+
+By default the app opens an in-memory Turso/libSQL database, so it runs
+with no configuration. The backend is chosen from the environment (see
+[`.env.example`](.env.example)):
+
+### Local Turso/libSQL (default)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `DBBOARD_TURSO_PATH` | libSQL file path, or `:memory:` | `:memory:` |
+
+### Cloudflare D1
+
+Set all three of the following to connect to D1 instead of Turso:
+
+| Variable | Purpose |
+|---|---|
+| `DBBOARD_D1_ACCOUNT_ID` | Cloudflare account ID |
+| `DBBOARD_D1_DATABASE_ID` | D1 database ID (`wrangler d1 info <name>`) |
+| `DBBOARD_D1_TOKEN` | API token with the **D1 Edit** permission |
+| `DBBOARD_D1_BASE_URL` | _(optional)_ API root override; defaults to `https://api.cloudflare.com/client/v4` |
+
+The account and database IDs are shown in the Cloudflare dashboard
+(Workers & Pages → D1) or via `wrangler d1 info <database-name>`. Create
+the API token under **My Profile → API Tokens** with a D1 read/write
+permission. If any of the three required variables is missing, the app
+falls back to the local Turso default.
+
+```sh
+DBBOARD_D1_ACCOUNT_ID=... DBBOARD_D1_DATABASE_ID=... DBBOARD_D1_TOKEN=... \
+  cargo run -p dbboard
+```
+
+### CockroachDB / PostgreSQL
+
+Set a single connection string to connect to CockroachDB (or any
+PostgreSQL-wire database, e.g. Neon) via the generic `dbboard-postgres`
+adapter:
+
+| Variable | Purpose |
+|---|---|
+| `DBBOARD_PG_URL` | Full connection string, e.g. `postgresql://user:pass@host:26257/db?sslmode=verify-full` |
+
+For **CockroachDB Cloud**, copy the connection string from the cluster's
+**Connect** dialog in the CockroachDB Cloud Console (Basic free tier
+works). For a **self-hosted** node started with
+`cockroach start-single-node`, use its `postgresql://…` string; the
+default SQL port is `26257`. CockroachDB requires TLS, so keep
+`sslmode=verify-full` (or the mode your deployment expects).
+
+`DBBOARD_PG_URL` takes precedence over the D1 and Turso variables. The
+connection string contains your password — keep it out of version
+control (use `.env`, which is gitignored). The app never logs it.
+
+```sh
+DBBOARD_PG_URL='postgresql://user:pass@host:26257/db?sslmode=verify-full' \
+  cargo run -p dbboard
 ```
 
 ## Development

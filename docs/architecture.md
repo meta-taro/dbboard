@@ -21,9 +21,10 @@ dbboard/
 ├── apps/
 │   └── dbboard/            # binary; boots local server + UI in one process
 └── crates/
-    ├── dbboard-core/       # domain: traits, types, errors (no I/O)
+    ├── dbboard-core/       # domain: traits, types, errors (no I/O; serde only)
     ├── dbboard-turso/      # adapter: Turso / libSQL
-    ├── dbboard-neon/       # adapter: Neon (later)
+    ├── dbboard-d1/         # adapter: Cloudflare D1 (REST)
+    ├── dbboard-postgres/   # adapter: PostgreSQL-wire (CockroachDB / Neon)
     ├── dbboard-supabase/   # adapter: Supabase (later)
     ├── dbboard-server/     # local axum HTTP backend (ADR-0006)
     ├── dbboard-ai/         # optional AI provider trait + adapters
@@ -43,20 +44,23 @@ Strictly enforced via cargo workspace edges:
 ```
 apps/dbboard
    ├──> dbboard-ui ───────┐                  (HTTP client of dbboard-server)
-   ├──> dbboard-server ───┤
-   ├──> dbboard-turso ────┤──> dbboard-core
-   ├──> dbboard-neon ─────┤
-   ├──> dbboard-supabase ─┤
-   └──> dbboard-ai ───────┘                  (dbboard-ai also depends on core)
+   └──> dbboard-server ───┤
+            ├──> dbboard-turso ────┤──> dbboard-core
+            ├──> dbboard-d1 ───────┤
+            ├──> dbboard-postgres ─┤
+            └──> (dbboard-ai) ─────┘          (dbboard-ai also depends on core)
 ```
 
-- `dbboard-core` depends on nothing in this workspace.
+- `dbboard-core` depends on nothing in this workspace (it derives
+  `serde` for the wire format, which is pure data transformation, not
+  I/O).
 - Adapter crates depend on `dbboard-core` only.
-- `dbboard-server` depends on `dbboard-core` and concrete adapter
-  crates (it is the only place that knows the full adapter set besides
-  `apps/dbboard`).
-- `dbboard-ui` depends on `dbboard-core` only. It talks to the local
-  server **over HTTP**, not via direct function calls.
+- `dbboard-server` depends on `dbboard-core` and the concrete adapter
+  crates (it is the only place that knows the full adapter set; since
+  Phase 1.5 `apps/dbboard` reaches them only transitively through it).
+- `dbboard-ui` depends on `dbboard-core` among workspace crates only. It
+  talks to the local server **over HTTP** (via external crates `reqwest`
+  / `tokio`), not via direct function calls.
 - `apps/dbboard` boots `dbboard-server` (binding to `127.0.0.1:0`,
   reading back the assigned port) and starts `dbboard-ui` with that
   port. On exit it shuts the server down cleanly.
@@ -109,17 +113,40 @@ controls are hidden or disabled.
 
 ## Async Runtime
 
-- `tokio` (multi-thread). egui runs on the main thread; adapter calls
-  are spawned onto tokio and bridged back via channels.
+Two `tokio` runtimes coexist without nesting (ADR-0009):
+
+- **Server runtime** — a multi-thread runtime owned by `apps/dbboard`'s
+  `main`. It drives `dbboard-server` for the whole process lifetime and
+  is shut down after the UI exits.
+- **UI worker runtime** — a current-thread runtime owned by
+  `dbboard-ui`'s background worker thread. It runs the `reqwest` HTTP
+  client. egui itself runs synchronously on the main thread and never
+  blocks on I/O; the worker bridges back via `Command`/`Reply` channels
+  and wakes the UI with `egui::Context::request_repaint`.
+
+Because the two runtimes live on different threads, there is no
+`block_on`-within-`block_on` hazard.
 
 ## Error Handling
 
-- `dbboard-core` defines `DbError` with stable variants (`Connection`,
-  `Query`, `Schema`, `Timeout`, `Other`).
+- `dbboard-core` defines `DbError` with stable variants: `Connection`,
+  `Query`, `Schema`, `TypeConversion`.
+- These map onto HTTP statuses and the `{category, message}` error
+  envelope as defined in [`api-contract.md`](api-contract.md);
+  `DbError::category` / `from_parts` keep that mapping reversible.
 - Adapter-specific errors are mapped at the adapter boundary; the rest
   of the system never sees driver types.
 - `thiserror` for definitions, `anyhow` only at the binary boundary if
   needed.
+
+## HTTP Contract
+
+The egui UI and the loopback server communicate over the JSON HTTP API
+defined in [`api-contract.md`](api-contract.md) — the canonical contract
+shared with `dbboard-web` (ADR-0009). The server is unauthenticated by
+design, relying on the loopback bind and an OS-assigned ephemeral port;
+widening the bind or persisting the port requires adding a per-launch
+secret first.
 
 ## Configuration
 
