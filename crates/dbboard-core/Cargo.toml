@@ -9,6 +9,15 @@ description = "Domain layer for dbboard: adapter trait, value types, and errors.
 
 [dependencies]
 thiserror = { workspace = true }
+# Serde is always on: these domain types cross the loopback HTTP wire
+# (ADR-0009). Serialization is pure data transformation, so the
+# crate's "no I/O" rule still holds.
+serde = { workspace = true }
+# JSON has no byte type; Value::Blob is encoded as base64.
+base64 = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
