@@ -5,11 +5,47 @@
 
 ## 最終更新
 
-- 日付: 2026-05-21
-- ブランチ: `feature/turso-vertical-slice`
-- 現在の Phase: Phase 1.7 (CockroachDB / 汎用 dbboard-postgres アダプター) 実装完了。未コミット。
+- 日付: 2026-05-22
+- ブランチ: `feature/local-http-backend` (`feature/turso-vertical-slice` から分岐)
+- 現在の Phase: Phase 1.5 (ローカル HTTP バックエンド / ADR-0006・0009) 実装完了。
+  6 コミット済 (push は人間)。
 
 ## 直近の作業
+
+- **ローカル HTTP バックエンドを導入 (Phase 1.5 / ADR-0006・ADR-0009)**
+  - 設計判断 3 点 (ユーザー確認済): ① dbboard-ui が HTTP クライアントを所有
+    (worker + reqwest を ui へ移設、egui は同期なので Command/Reply チャンネルは存続)、
+    ② dbboard-core に serde derive を常時付与 (serde は I/O ではないので core の no-I/O 維持)、
+    ③ ブランチ `feature/local-http-backend`。
+  - 6 コミット (各コミットで緑を維持):
+    1. `chore`: `axum`+`base64` を workspace deps に追加。
+    2. `feat(core)`: serde derive。`Value` 手書き Serialize/Deserialize (native スカラ、
+       Blob は `{"$blob":"<base64>"}` タグ付き)。`Row` は `#[serde(transparent)]` で素の配列。
+       `DbError` に `category()`/`message()`/`from_parts()`。33 テスト。
+    3. `feat(server)`: 新クレート `crates/dbboard-server` (axum 0.8)。`apps` から
+       Backend/BackendConfig/env 選択ロジックを移設。`/health`・`/tables`・`/query`、
+       `ApiError` newtype (orphan rule 回避)、DefaultBodyLimit 64KiB、graceful shutdown。
+       libSQL `:memory:` は単一 `Arc<Backend>` 共有 (リクエスト毎再接続しない)。
+       tower oneshot で 9 + dto 3 テスト。
+    4. `feat(ui)`: worker を dbboard-ui へ移設し HTTP 化。`client.rs` (純粋マッパ、
+       ネットワーク不要・8 テスト)、`worker.rs` (reqwest + 専用 current-thread rt、
+       transport エラーは Connection に降格、report_fatal は rt/client 構築失敗のみ)、
+       `DbboardApp::connect(base_url, egui_ctx)`。チャンネルコンストラクタ `new` は公開維持。
+    5. `refactor(app)`: main.rs を `serve()` + `connect()` に書換え。main は multi-thread
+       rt を所有しサーバーを起動、UI 終了後に shutdown。アダプター 3 path dep と dbboard-core
+       を削除し dbboard-server を追加。`cargo run -p dbboard` で smoke (Turso :memory: 起動確認)。
+    6. `docs`: ADR-0009、新規 `docs/api-contract.md` (正準契約)、roadmap Phase 1.5、
+       architecture (2 ランタイム・DbError 変種修正・loopback セキュリティ注記・crate map)、
+       README (loopback 行)。
+  - ランタイム 2 つ: サーバー=multi-thread (main 所有)、UI worker=current-thread (専用スレッド)。
+    別スレッドなので nested block_on にならない。
+  - 検証: `cargo fmt --check` / `clippy -D warnings` / `check` / `test` 全て緑
+    (全クレート合計: core 33, d1 19+2, postgres 9+2, server 3+9, turso 8+5, ui 15)。
+  - 先送り (本 PR スコープ外、人間/別タスク): ① 「契約を dbboard-web へミラー」(交互リポ運用)、
+    ② security HIGH: 全 3 アダプターの結果セット行数上限 (unbounded)、③ MEDIUM: Turso パス /
+    D1 reqwest URL のエラー漏洩、④ LOW: ブロックコメントによる is_row_returning バイパス。
+
+### 過去の作業 (参考)
 
 - **CockroachDB 対応を追加 (Phase 1.7 / ADR-0008)**
   - 新クレート `crates/dbboard-postgres`: PostgreSQL ワイヤープロトコル汎用アダプター。
@@ -59,11 +95,13 @@
 
 ## 次のステップ
 
-1. Phase 1.7 の作業を commit する (英語のコンベンショナルコミット。push は人間)。
-2. Phase 1.5 (ローカル HTTP バックエンド / ADR-0006) または Phase 2 (アダプタトレイト
-   抽出) のどちらを先に進めるか判断する。具象アダプターが 3 つ (Turso/D1/Postgres)
-   揃ったので Phase 2 のトレイト設計の入力は十分。
-3. 実 CockroachDB での手動 E2E (`cargo run -p dbboard` でサイドバー/SELECT/DML 表示)。
+1. `feature/local-http-backend` を push し `develop` へ PR (push は人間)。
+2. push 前フック相当の検証: `cargo build --release` / `cargo test --all-features --release`
+   をローカルで確認 (pre-push フックが自動実行)。
+3. `docs/api-contract.md` を `dbboard-web` へミラー (交互リポ運用。人間が web 側で実施)。
+4. Phase 2 (アダプタトレイト抽出) へ。具象アダプター 3 つ + HTTP 契約が揃ったので
+   `DatabaseAdapter` トレイト設計の入力は十分。
+5. 先送りした security/品質指摘 (結果セット行数上限など) を別タスクで対応。
 
 ## 注意点・既知の問題
 

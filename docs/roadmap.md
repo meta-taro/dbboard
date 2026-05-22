@@ -41,20 +41,24 @@ to end against a single database before generalising.
 Exit criteria: a developer can run `cargo run -p dbboard`, point at a
 local libSQL file, browse tables, run queries, and see results.
 
-## Phase 1.5 — Local HTTP backend (ADR-0006)
+## Phase 1.5 — Local HTTP backend (ADR-0006, ADR-0009)
 
 Goal: introduce the `dbboard-server` crate behind the UI without
 changing what the user can do.
 
-- [ ] Draft initial API contract (endpoint paths, request and response
-  shapes, error categories) — record at `docs/api-contract.md`
-- [ ] Mirror the draft contract to `dbboard-web`
-- [ ] Add `crates/dbboard-server` (axum) implementing the contract
-  against the Turso adapter
-- [ ] Auto-port loopback bind in `apps/dbboard`; pass port to the UI
-- [ ] Convert `dbboard-ui` from direct adapter calls to HTTP client
-- [ ] Integration tests against the local server (no real DB needed
-  for some, libSQL embedded for query tests)
+- [x] Draft initial API contract (endpoint paths, request and response
+  shapes, error categories) — recorded at
+  [`docs/api-contract.md`](api-contract.md) as the canonical source
+  (ADR-0009)
+- [ ] Mirror the draft contract to `dbboard-web` *(human-owned;
+  alternating-repo step per the Pacing Note)*
+- [x] Add `crates/dbboard-server` (axum) implementing the contract
+  against all three adapters (Turso / D1 / Postgres)
+- [x] Auto-port loopback bind in `apps/dbboard`; pass port to the UI
+- [x] Convert `dbboard-ui` from direct adapter calls to HTTP client
+  (worker now drives `reqwest`; `Command`/`Reply` channels retained)
+- [x] Integration tests against the local server (`tower::oneshot`
+  in-process plus one real loopback round-trip; Turso `:memory:`)
 
 Exit criteria: `cargo run -p dbboard` still does what Phase 1 did,
 but every action now traverses HTTP and the same endpoints are
