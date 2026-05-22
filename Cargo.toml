@@ -36,6 +36,11 @@ serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres"] }
 # Consumes the `raw_sql(...).fetch_many(...)` result stream.
 futures-util = "0.3"
+# Local in-process HTTP backend (Phase 1.5 / ADR-0009). The desktop UI
+# talks to this loopback server over the same contract as dbboard-web.
+axum = "0.8"
+# JSON has no byte type, so Value::Blob is encoded as base64 on the wire.
+base64 = "0.22"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
