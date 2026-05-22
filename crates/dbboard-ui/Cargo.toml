@@ -11,6 +11,14 @@ description = "egui-based presentation layer for dbboard. Depends only on dbboar
 dbboard-core = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+# The UI is an HTTP client of the in-process loopback server (ADR-0009);
+# it never links a database adapter directly. reqwest drives the calls,
+# tokio gives the worker thread its own single-threaded runtime, and
+# serde_json shapes request bodies / parses the contract envelopes.
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

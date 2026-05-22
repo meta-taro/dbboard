@@ -1,17 +1,22 @@
 //! Presentation layer for dbboard.
 //!
-//! The UI talks to whichever adapter is bound at runtime through a
-//! pair of `std::sync::mpsc` channels — it sends [`Command`]s and
-//! receives [`Reply`]s. This keeps the crate dependency-free of any
-//! particular adapter (libSQL today, Neon / Supabase later) and
-//! preserves the architectural rule that `dbboard-ui` only depends
-//! on `dbboard-core`.
+//! The UI is an HTTP client of the in-process loopback server
+//! (ADR-0009). It never links a database adapter; instead it sends
+//! [`Command`]s and receives [`Reply`]s over a pair of
+//! `std::sync::mpsc` channels. A background [`worker`] thread owns a
+//! `reqwest` client and translates that channel traffic into HTTP
+//! calls against the server, keeping the synchronous egui thread free
+//! of blocking I/O. The crate still depends only on `dbboard-core`
+//! among workspace crates.
 //!
-//! The application binary (`apps/dbboard`) is responsible for
-//! spawning a worker that owns the adapter, draining the command
-//! channel, and posting replies back.
+//! Use [`DbboardApp::connect`] to wire the app to a running server;
+//! [`DbboardApp::new`] is the lower-level constructor over raw channels
+//! (used by [`connect`](DbboardApp::connect) and by tests).
 
-use std::sync::mpsc::{Receiver, Sender};
+mod client;
+mod worker;
+
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use dbboard_core::{DbResult, QueryResult, TableInfo};
 use eframe::egui;
@@ -42,6 +47,21 @@ pub struct DbboardApp {
 }
 
 impl DbboardApp {
+    /// Connect the UI to a running loopback server at `base_url`
+    /// (e.g. `http://127.0.0.1:54123`).
+    ///
+    /// Creates the command/reply channels, spawns the HTTP [`worker`]
+    /// thread bound to that URL, and returns an app primed with the
+    /// bootstrap `ListTables` request. `egui_ctx` lets the worker wake
+    /// the UI thread when a reply lands.
+    #[must_use]
+    pub fn connect(base_url: String, egui_ctx: egui::Context) -> Self {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
+        let (reply_tx, reply_rx) = mpsc::channel::<Reply>();
+        worker::spawn_worker(base_url, cmd_rx, reply_tx, egui_ctx);
+        Self::new(cmd_tx, reply_rx)
+    }
+
     /// Build a fresh app and immediately request the table list so
     /// the sidebar is populated by the time the first frame renders.
     ///
