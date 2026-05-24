@@ -84,3 +84,68 @@ async fn query_surfaces_sql_errors_as_query_category() {
         "expected DbError::Query, got {err:?}",
     );
 }
+
+/// Exactly at the row cap: a recursive CTE that produces
+/// `MAX_RESULT_ROWS` rows must succeed and return them all.
+#[tokio::test]
+async fn query_at_the_row_cap_returns_all_rows() {
+    use dbboard_core::MAX_RESULT_ROWS;
+    let adapter = fresh_db().await;
+
+    // `WHERE n < N` with the base case `SELECT 1` produces 1..=N rows.
+    let sql = format!(
+        "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < {MAX_RESULT_ROWS}) SELECT n FROM seq",
+    );
+    let result = adapter
+        .query(&sql)
+        .await
+        .expect("query at cap should succeed");
+    assert_eq!(result.rows.len(), MAX_RESULT_ROWS);
+}
+
+/// One row past the cap must surface as `DbError::Query` (HTTP 400),
+/// not a truncated result that the UI would silently render.
+#[tokio::test]
+async fn query_over_the_row_cap_is_a_query_error() {
+    use dbboard_core::MAX_RESULT_ROWS;
+    let adapter = fresh_db().await;
+
+    let over = MAX_RESULT_ROWS + 1;
+    let sql = format!(
+        "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < {over}) SELECT n FROM seq",
+    );
+    let err = adapter
+        .query(&sql)
+        .await
+        .expect_err("query over cap should fail");
+    let dbboard_core::DbError::Query(msg) = err else {
+        panic!("expected DbError::Query, got {err:?}");
+    };
+    assert!(
+        msg.contains(&MAX_RESULT_ROWS.to_string()),
+        "error should mention the cap, got: {msg}"
+    );
+}
+
+/// Opening a path that does not exist must not echo the path back in
+/// the error message (it would otherwise leak directory layout into the
+/// HTTP error envelope).
+#[tokio::test]
+async fn connect_failure_does_not_leak_the_supplied_path() {
+    // A nested non-existent directory is the simplest way to force
+    // libsql's "unable to open" path on every platform.
+    let secret = "claude-test-marker-DO-NOT-LOG";
+    let path = format!("./nonexistent-dir/{secret}/dbboard.sqlite");
+    // `TursoAdapter` is not `Debug`, so unwrap_err / expect_err are off
+    // the table — pattern-match via let-else.
+    let Err(err) = TursoAdapter::connect_local(&path).await else {
+        panic!("opening a path under a missing directory should fail");
+    };
+    let dbboard_core::DbError::Connection(msg) = err else {
+        panic!("expected DbError::Connection, got {err:?}");
+    };
+    assert!(
+        !msg.contains(secret),
+        "supplied path leaked into error message: {msg}"
+    );
+}

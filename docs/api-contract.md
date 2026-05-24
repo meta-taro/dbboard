@@ -25,6 +25,11 @@ before either side ships against them (ADR-0004).
   bind address or persisting the port.
 - `POST /query` bodies are capped at **64 KiB**; a larger body is
   rejected with `413 Payload Too Large` before any handler runs.
+- Each adapter caps a single query at **10,000 rows**. A statement that
+  would return more is rejected with a `query` error (status `400`) so
+  the UI never silently shows a truncated grid. The cap is uniform
+  across Turso, D1, and Postgres-wire backends. Phase 2 may relax it
+  with real streaming or pagination — see `docs/roadmap.md`.
 
 ## Endpoints
 
