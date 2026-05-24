@@ -14,7 +14,10 @@
 //! result table needs. It also returns the same shape for SELECT and
 //! DML, so no statement routing is required.
 
-use dbboard_core::{Column, DbError, DbResult, QueryResult, Row, TableInfo, Value};
+use dbboard_core::{
+    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
+    MAX_RESULT_ROWS,
+};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
@@ -123,6 +126,9 @@ impl D1Adapter {
     /// POST a single statement to the `/raw` endpoint and return the
     /// parsed, success-checked envelope.
     async fn post_raw(&self, sql: &str) -> DbResult<D1Envelope> {
+        // reqwest's `Error::Display` echoes the full request URL — which
+        // for D1 carries the account and database IDs — back into the
+        // message. `without_url` strips it before we surface anything.
         let response = self
             .client
             .post(&self.raw_url)
@@ -130,13 +136,10 @@ impl D1Adapter {
             .json(&serde_json::json!({ "sql": sql, "params": [] }))
             .send()
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(transport_error)?;
 
         let status = response.status().as_u16();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+        let body = response.text().await.map_err(transport_error)?;
 
         let envelope: D1Envelope = serde_json::from_str(&body).map_err(|e| {
             // A non-JSON body (e.g. a Cloudflare HTML 5xx page) would
@@ -159,6 +162,13 @@ impl D1Adapter {
 fn build_raw_url(base: &str, account_id: &str, database_id: &str) -> String {
     let base = base.trim_end_matches('/');
     format!("{base}/accounts/{account_id}/d1/database/{database_id}/raw")
+}
+
+/// Turn a reqwest transport failure into a [`DbError::Connection`] with
+/// the request URL stripped (so the account/database IDs do not leak
+/// into the HTTP error envelope or any log line).
+fn transport_error(err: reqwest::Error) -> DbError {
+    DbError::Connection(truncate(&err.without_url().to_string()))
 }
 
 /// Cloudflare's standard API envelope, narrowed to the fields we use.
@@ -211,6 +221,12 @@ fn envelope_to_query_result(envelope: D1Envelope) -> DbResult<QueryResult> {
         .into_iter()
         .next()
         .ok_or_else(|| DbError::Query("D1 returned no statement result".to_string()))?;
+
+    // Refuse to expand a result set past the workspace-wide cap. D1's
+    // envelope hands us the row array in full, so the check is upfront.
+    if first.results.rows.len() > MAX_RESULT_ROWS {
+        return Err(too_many_rows_error());
+    }
 
     let columns = first
         .results
@@ -567,5 +583,49 @@ mod tests {
     fn blob_array_rejects_null_item() {
         let err = convert_json_value(json!([1, null, 2])).unwrap_err();
         assert!(matches!(err, DbError::TypeConversion(_)));
+    }
+
+    /// Exactly at the cap — `MAX_RESULT_ROWS` rows in the envelope must
+    /// round-trip successfully.
+    #[test]
+    fn envelope_at_the_row_cap_succeeds() {
+        use dbboard_core::MAX_RESULT_ROWS;
+        let rows: Vec<serde_json::Value> = (0..MAX_RESULT_ROWS).map(|i| json!([i])).collect();
+        let envelope = parse(json!({
+            "success": true,
+            "result": [{
+                "results": { "columns": ["n"], "rows": rows },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }));
+        let result = envelope_to_query_result(envelope).expect("at cap should succeed");
+        assert_eq!(result.rows.len(), MAX_RESULT_ROWS);
+    }
+
+    /// One past the cap must short-circuit before any cell is converted.
+    /// The error message must reference the cap so the UI can guide the
+    /// user to add a `LIMIT` clause.
+    #[test]
+    fn envelope_over_the_row_cap_is_a_query_error() {
+        use dbboard_core::MAX_RESULT_ROWS;
+        let rows: Vec<serde_json::Value> = (0..=MAX_RESULT_ROWS).map(|i| json!([i])).collect();
+        let envelope = parse(json!({
+            "success": true,
+            "result": [{
+                "results": { "columns": ["n"], "rows": rows },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }));
+        match envelope_to_query_result(envelope) {
+            Err(DbError::Query(msg)) => assert!(
+                msg.contains(&MAX_RESULT_ROWS.to_string()),
+                "error should mention the cap, got: {msg}"
+            ),
+            other => panic!("expected Query error, got {other:?}"),
+        }
     }
 }
