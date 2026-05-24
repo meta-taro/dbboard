@@ -16,6 +16,9 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
 rust-version = "1.75"
+# This is a binary project; the supporting crates are internal and never
+# published to crates.io. Each member opts in with `publish.workspace = true`.
+publish = false
 
 [workspace.dependencies]
 dbboard-core = { path = "crates/dbboard-core" }
