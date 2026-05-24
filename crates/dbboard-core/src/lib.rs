@@ -10,11 +10,13 @@
 //! premature abstraction.
 
 mod error;
+mod limits;
 mod row;
 mod schema;
 mod value;
 
 pub use error::{DbError, DbResult};
+pub use limits::{too_many_rows_error, MAX_RESULT_ROWS};
 pub use row::{Column, QueryResult, Row};
 pub use schema::{ColumnInfo, TableInfo};
 pub use value::Value;
