@@ -46,3 +46,42 @@ async fn list_tables_round_trips() {
     // present); we only assert it does not error.
     adapter.list_tables().await.expect("list tables");
 }
+
+/// `https_only(true)` rejects an `http://` base URL at request time. The
+/// reqwest error embeds the URL — which would expose the account and
+/// database IDs — so this verifies `transport_error` scrubs it.
+#[tokio::test]
+async fn http_base_url_failure_does_not_leak_the_url() {
+    let secret_account = "claude-d1-acc-leak-marker";
+    let secret_database = "claude-d1-db-leak-marker";
+    let config = D1Config {
+        account_id: secret_account.to_string(),
+        database_id: secret_database.to_string(),
+        api_token: "irrelevant-but-non-empty".to_string(),
+        // Plain http:// is rejected by `https_only(true)` set in
+        // `D1Adapter::connect`, so this fires the transport error path.
+        base_url: Some("http://leak-marker.invalid".to_string()),
+    };
+    // `D1Adapter` is not `Debug`, so unwrap_err / expect_err are off
+    // the table — drive the match by hand.
+    let adapter = D1Adapter::connect(config).expect("build adapter");
+    let err = match adapter.ping().await {
+        Ok(()) => panic!("http:// base URL must be rejected"),
+        Err(e) => e,
+    };
+    let dbboard_core::DbError::Connection(msg) = err else {
+        panic!("expected DbError::Connection, got {err:?}");
+    };
+    assert!(
+        !msg.contains("leak-marker.invalid"),
+        "URL host leaked into error: {msg}"
+    );
+    assert!(
+        !msg.contains(secret_account),
+        "account id leaked into error: {msg}"
+    );
+    assert!(
+        !msg.contains(secret_database),
+        "database id leaked into error: {msg}"
+    );
+}
