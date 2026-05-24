@@ -87,3 +87,45 @@ async fn dml_and_select_round_trip() {
 
     adapter.query(&drop_sql).await.expect("cleanup drop");
 }
+
+/// Exactly at the row cap: `generate_series(1, MAX_RESULT_ROWS)` returns
+/// `MAX_RESULT_ROWS` rows and must succeed.
+#[tokio::test]
+async fn query_at_the_row_cap_returns_all_rows() {
+    use dbboard_core::MAX_RESULT_ROWS;
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+    let sql = format!("SELECT n FROM generate_series(1, {MAX_RESULT_ROWS}) AS s(n)");
+    let result = adapter.query(&sql).await.expect("query at cap");
+    assert_eq!(result.rows.len(), MAX_RESULT_ROWS);
+}
+
+/// One row past the cap must surface as `DbError::Query` rather than a
+/// truncated result. The Postgres adapter streams rows, so the check
+/// fires mid-stream once `MAX_RESULT_ROWS` rows have been buffered.
+#[tokio::test]
+async fn query_over_the_row_cap_is_a_query_error() {
+    use dbboard_core::MAX_RESULT_ROWS;
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+    let over = MAX_RESULT_ROWS + 1;
+    let sql = format!("SELECT n FROM generate_series(1, {over}) AS s(n)");
+    let Err(err) = adapter.query(&sql).await else {
+        panic!("query over cap should fail");
+    };
+    let dbboard_core::DbError::Query(msg) = err else {
+        panic!("expected DbError::Query, got {err:?}");
+    };
+    assert!(
+        msg.contains(&MAX_RESULT_ROWS.to_string()),
+        "error should mention the cap, got: {msg}"
+    );
+}
