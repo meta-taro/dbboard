@@ -161,7 +161,25 @@ cargo build --release
 cargo test --all-features --release
 ```
 
+Pure deletion pushes (`git push --delete <branch>`) skip the
+build/test cycle — there is no working tree to validate.
+
 You can run these manually at any time.
+
+### Security checks
+
+`cargo-deny` gates the dependency graph on advisories, licenses,
+duplicate versions, and unknown sources. Configuration lives in
+[`deny.toml`](deny.toml).
+
+```sh
+cargo install --locked cargo-deny    # one-time, ~5 min build
+cargo deny check                     # advisories + licenses + bans + sources
+```
+
+CI does not run this yet; run it locally when adding or upgrading a
+dependency. New license expressions surfaced by the check go into
+`deny.toml`'s `licenses.allow` list with a one-line rationale.
 
 ## Contributing
 

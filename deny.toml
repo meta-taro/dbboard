@@ -1,0 +1,54 @@
+# cargo-deny configuration for dbboard.
+#
+# Runs four checks: advisories, licenses, bans, sources.
+# Invoke via `cargo deny check` (see README "Security checks").
+# Schema: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Add entries here to silence a specific RustSec advisory. Each entry
+# must include `reason` so future readers know why.
+ignore = []
+
+[licenses]
+version = 2
+# SPDX expressions allowed across the entire dependency graph. Every
+# entry is required by at least one crate in the current lock file; the
+# `license-not-encountered` warning surfaces dead allowances on the next
+# check, so trim this list whenever a dep is removed.
+allow = [
+    "MIT",                  # the workspace default; ubiquitous
+    "Apache-2.0",           # ubiquitous (sqlx, tokio, axum, …)
+    "Apache-2.0 WITH LLVM-exception", # rustls / wasi
+    "BSD-2-Clause",         # arrayref, etc.
+    "BSD-3-Clause",         # subtle, encoding_rs, …
+    "ISC",                  # libloading, untrusted, …
+    "Zlib",                 # tinyvec
+    "Unicode-3.0",          # unicode-ident (newer crates)
+    "Unlicense",            # byteorder
+    "BSL-1.0",              # clipboard-win / error-code (Boost SL, permissive)
+    "OFL-1.1",              # epaint_default_fonts bundles SIL Open Font License fonts
+    "Ubuntu-font-1.0",      # epaint_default_fonts bundles the Ubuntu font
+    "CDLA-Permissive-2.0",  # webpki-roots (Mozilla CA bundle, permissive redistribution)
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside this workspace use `version = "*"` by
+# convention; only deny wildcards on third-party crates.
+allow-wildcard-paths = true
+# Crates that should never end up in the dep tree. Empty for now; add
+# entries with `reason` when a known-bad crate is identified.
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
