@@ -6,7 +6,10 @@
 //! that trait once the second adapter (Neon) gives it a real second
 //! shape to honour.
 
-use dbboard_core::{Column, DbError, DbResult, QueryResult, Row, TableInfo, Value};
+use dbboard_core::{
+    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
+    MAX_RESULT_ROWS,
+};
 
 pub struct TursoAdapter {
     // Field drop order matters: `conn` is dropped before `_db` so the
@@ -29,13 +32,18 @@ impl TursoAdapter {
     /// cannot open or initialise the database, or when establishing
     /// the initial connection fails.
     pub async fn connect_local(path: &str) -> DbResult<Self> {
+        // libsql errors echo the supplied path back in their Display
+        // output (sqlite's "unable to open database file: …"). The path
+        // is the user's input, but it can carry directory layout or
+        // credentials they would not expect to see in an HTTP error
+        // envelope, so scrub it before surfacing the message.
         let db = libsql::Builder::new_local(path)
             .build()
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(|e| DbError::Connection(redact_path(e.to_string(), path)))?;
         let conn = db
             .connect()
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(|e| DbError::Connection(redact_path(e.to_string(), path)))?;
         Ok(Self { conn, _db: db })
     }
 
@@ -139,6 +147,11 @@ async fn run_select(conn: &libsql::Connection, sql: &str) -> DbResult<QueryResul
         .await
         .map_err(|e| DbError::Query(e.to_string()))?
     {
+        // Refuse to load past the workspace-wide cap rather than
+        // returning a silently truncated grid (see dbboard-core::limits).
+        if result_rows.len() >= MAX_RESULT_ROWS {
+            return Err(too_many_rows_error());
+        }
         #[allow(clippy::cast_sign_loss)]
         let mut values = Vec::with_capacity(column_count as usize);
         for i in 0..column_count {
@@ -170,20 +183,53 @@ async fn run_execute(conn: &libsql::Connection, sql: &str) -> DbResult<QueryResu
 }
 
 /// Return `true` when the SQL starts with a row-returning verb. The
-/// check is intentionally shallow (first non-empty, non-comment word
+/// check is intentionally shallow (first non-empty, non-comment token
 /// only) — enough to route Phase 1 traffic through the right libSQL
 /// entry point without dragging in a SQL parser.
 fn is_row_returning(sql: &str) -> bool {
-    let first_word = sql
-        .lines()
-        .map(str::trim_start)
-        .find(|line| !line.is_empty() && !line.starts_with("--"))
-        .and_then(|line| line.split_whitespace().next())
-        .unwrap_or("");
+    let first_word = first_token(sql);
     matches!(
         first_word.to_ascii_uppercase().as_str(),
         "SELECT" | "WITH" | "VALUES" | "PRAGMA" | "EXPLAIN"
     )
+}
+
+/// Skip leading whitespace and SQL comments (`-- line` and `/* block */`)
+/// and return the first whitespace-delimited token. An unterminated block
+/// comment is treated as empty (defensive — no first-word match).
+fn first_token(sql: &str) -> &str {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("--") {
+            // Line comment: skip to the next newline, or end of input.
+            rest = match after.find('\n') {
+                Some(i) => &after[i + 1..],
+                None => "",
+            };
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            // Block comment: skip to the closing `*/`. SQLite does not
+            // support nested block comments, so a single-pass `find` is
+            // sufficient. An unterminated comment short-circuits to "".
+            rest = match after.find("*/") {
+                Some(i) => &after[i + 2..],
+                None => "",
+            };
+        } else {
+            break;
+        }
+    }
+    rest.split_whitespace().next().unwrap_or("")
+}
+
+/// Remove every occurrence of `path` from `message`, replacing it with a
+/// fixed `<path>` placeholder. Used to scrub the user-supplied database
+/// path out of libsql's error strings (see [`TursoAdapter::connect_local`]).
+fn redact_path(message: String, path: &str) -> String {
+    if path.is_empty() {
+        return message;
+    }
+    message.replace(path, "<path>")
 }
 
 fn convert_value(v: libsql::Value) -> Value {
@@ -208,7 +254,7 @@ fn format_column_type(t: libsql::ValueType) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_value, is_row_returning, Value};
+    use super::{convert_value, is_row_returning, redact_path, Value};
 
     #[test]
     fn convert_value_maps_null() {
@@ -267,5 +313,42 @@ mod tests {
     fn empty_input_is_not_row_returning() {
         assert!(!is_row_returning(""));
         assert!(!is_row_returning("   \n  -- just a comment"));
+    }
+
+    #[test]
+    fn leading_block_comment_is_skipped() {
+        assert!(is_row_returning("/* pick the first user */ SELECT 1"));
+        assert!(is_row_returning("/* multi\n   line */\nSELECT 1"));
+        assert!(is_row_returning("/* a */ /* b */ SELECT 1"));
+    }
+
+    #[test]
+    fn mixed_line_and_block_comments_are_skipped() {
+        let sql = "-- header\n/* block */\n  -- footer\nSELECT 1";
+        assert!(is_row_returning(sql));
+    }
+
+    #[test]
+    fn unterminated_block_comment_short_circuits_to_no_match() {
+        // No `*/`: defensive — fall through to an empty token rather than
+        // pretending the SQL is row-returning.
+        assert!(!is_row_returning("/* never closes  SELECT 1"));
+    }
+
+    #[test]
+    fn redact_path_replaces_each_occurrence() {
+        let msg = "open failed: /home/alice/db.sqlite [path: /home/alice/db.sqlite]";
+        let out = redact_path(msg.to_string(), "/home/alice/db.sqlite");
+        assert!(!out.contains("/home/alice"), "leaked path in: {out}");
+        assert_eq!(out.matches("<path>").count(), 2);
+    }
+
+    #[test]
+    fn redact_path_with_empty_path_is_a_noop() {
+        // `:memory:` paths are non-empty; an empty path argument would be
+        // a programming bug, but the helper must still degrade safely
+        // rather than replacing every empty-string match.
+        let msg = "boom".to_string();
+        assert_eq!(redact_path(msg.clone(), ""), msg);
     }
 }

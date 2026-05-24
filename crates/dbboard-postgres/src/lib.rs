@@ -23,7 +23,10 @@
 //! `timestamptz`, `jsonb`, arrays, and user-defined types — without
 //! pulling in per-type decode features.
 
-use dbboard_core::{Column, DbError, DbResult, QueryResult, Row, TableInfo, Value};
+use dbboard_core::{
+    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
+    MAX_RESULT_ROWS,
+};
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
 use sqlx::{Column as _, Either, Row as _, TypeInfo as _, ValueRef as _};
@@ -157,6 +160,12 @@ impl PostgresAdapter {
                 Either::Right(row) => {
                     if columns.is_none() {
                         columns = Some(columns_of(&row));
+                    }
+                    // Refuse to load past the workspace-wide cap before
+                    // decoding the next row's cells (see
+                    // dbboard-core::limits).
+                    if rows.len() >= MAX_RESULT_ROWS {
+                        return Err(too_many_rows_error());
                     }
                     rows.push(Row::new(row_to_values(&row)?));
                 }
