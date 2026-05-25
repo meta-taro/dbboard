@@ -8,16 +8,40 @@
 - 日付: 2026-05-25
 - ブランチ: `feature/dev-hardening-husky-deny` (`develop` から分岐)
 - 現在の Phase: **Phase 1 / 1.5 / 1.6 / 1.7 完了。workspace を `0.1.0` に bump し、
-  Phase 2 (アダプタトレイト + Capability) のドラフトに入る直前。**
+  ADR-0012 (Capability パターン) を確定。次は `dbboard-web` への contract ミラー (人間担当)
+  → Phase 2 着手の順。**
 
 ## 直近の作業 (このセッション)
+
+- **ADR-0012: Capability パターンによる per-DB 拡張性のドラフト**
+  - 論点: Phase 2 のトレイト抽出に入る前に「PostgreSQL ビュー / Supabase auth /
+    Storage / Realtime のような DB 固有機能を後付け追加できる設計」を確定する必要があった。
+  - 決定 (3 点):
+    1. **必須コア + 任意 Capability** の二層トレイト構造。`DatabaseAdapter` には id /
+       capabilities / ping / introspect / query のみ必須。`ViewIntrospection` /
+       `FunctionIntrospection` / `AuthAdmin` / `StorageAdmin` / `RealtimeChannels` は
+       `Option<&dyn ...>` を返すアクセサ経由で公開し、デフォルト実装は `None`。
+       未対応 DB のコードは一切変更不要。
+    2. **HTTP も同じ層構造に揃える**。能力ごとに URL プレフィックス
+       (`/views/...` `/functions/...` `/auth/...` `/storage/...` `/realtime/...`) を割り当て、
+       未対応エンドポイントは新カテゴリ `capability` (HTTP 404) で拒否。
+       新エンドポイント `GET /capabilities` でクライアントが事前に能力フラグを取得できる。
+    3. **`Backend` enum を `Arc<dyn DatabaseAdapter>` に縮退**。アダプタ追加は
+       `BackendConfig::connect` の一箇所だけ触ればよくなる。`async-trait` クレートを
+       採用 (AFIT は dyn 互換性が未成熟なため)。
+  - 命名: 「Capability」はオブジェクト指向領域の業界共通語で、Spring Data / DataFusion /
+    PostgreSQL FDW でも同名で用いられている。DDD の「能力」訳語より誤解が少ない。
+  - **commit** (`46d1d16`): `docs(adapter): adopt capability pattern for per-DB extensibility`
+    (`docs/decisions.md` に ADR-0012 を append + `docs/roadmap.md` Phase 2 参照を ADR-0012 へ更新)。
+  - 既存の `ADR-0010 予定` 等の参照は ADR-0012 にリネーム済 (append-only ルール尊重)。
+  - 検証: pre-commit フック (fmt/clippy/check/test) 緑、130 テスト緑。
 
 - **バージョニング & DB サポート方針の確立 (ADR-0011) + Phase 1 クローズアウト**
   - 論点 2 つを ADR-0011 にまとめた:
     1. dbboard 本体のバージョニング: **SemVer**。公開 API は HTTP contract のみ
        (`docs/api-contract.md`)。内部クレートは `publish = false` のままで SemVer 対象外。
        `0.1.0` を Phase 1 クローズと同じ commit で切る。`1.0.0` は HTTP contract が
-       `dbboard-web` と相互運用検証済み + Capability モデル (ADR-0010 予定) 完成が条件。
+       `dbboard-web` と相互運用検証済み + Capability モデル (ADR-0012) 完成が条件。
     2. DB サポート: **Tier 制**。Tier 1 (CI/ローカル live test 緑) / Tier 2 (互換だが未自動化) /
        Best effort。サーバ系 DB はメジャー N と N-1。マネージド系はベンダ最新 API + 固定 client crate。
   - 新規ファイル `docs/compatibility.md` をサポート行列の正本に。README からリンク。
@@ -131,17 +155,30 @@
 
 ## 次のステップ
 
-1. 本セッションの 2 コミット (`docs(policy)` と本コミット) を push (人間)。
-2. **ADR-0010 (Capability パターン) のドラフト** — Phase 2 のトレイト抽出と一体で設計する
-   ため、コードに触る前に決め切る。前回会話で骨子は提示済 (`DatabaseAdapter` 必須メソッド
-   + `views()`/`auth()`/`storage()` 等の能力アップキャスト + `/capabilities` エンドポイント)。
-3. `docs/api-contract.md` の 10,000 行上限ルール (Phase 1.7 で追記) を `dbboard-web` に
-   ミラー (人間)。
-4. Phase 2 着手: `dbboard-core` に `DatabaseAdapter` + Capability トレイト群を定義し、
-   `dbboard-server::Backend` enum を `Arc<dyn DatabaseAdapter>` に置換。UI から `Turso`
-   ワードを完全に消す (Phase 2 exit criteria)。
-5. 上限を緩める検討は Phase 2 後半 (ストリーミング / ページネーション API)。UI 側の
-   「LIMIT 自動付与」「ページめくり」UX は別 ADR 候補。
+1. 未 push の 3 コミット (`chore(release)` / `chore(lockfile)` / `docs(adapter)`) を push (人間)。
+2. **`docs/api-contract.md` を `dbboard-web` にミラー (人間担当)** — Pacing Note の
+   交互スプリント順序に従い、デスクトップ側の Phase 2 着手前に web 側で同契約を反映する。
+   今回ミラーすべき差分は ① 10,000 行上限ルール (Phase 1.7 追記)、② エラー envelope の
+   `message` が category prefix を含まない仕様、③ Request-level rejection の HTTP code 表、
+   の 3 点。ADR-0012 で新設予定の `/capabilities` および `capability` エラーカテゴリは
+   **まだコードに無いのでミラー対象外**。Phase 2 が contract を実装した段階で改めて
+   contract 改訂 → web ミラーの流れで進める。
+3. Phase 2 着手 (上記 2 完了後):
+   - `dbboard-core` に `DatabaseAdapter` トレイトと `Capabilities` 構造体、5 つの
+     Capability トレイト (`ViewIntrospection` / `FunctionIntrospection` / `AuthAdmin` /
+     `StorageAdmin` / `RealtimeChannels`) を ADR-0012 に従って定義。
+   - `dbboard-server::Backend` enum を `Arc<dyn DatabaseAdapter>` に置換し、
+     `BackendConfig::connect` に分岐を集約。
+   - 既存 3 アダプタ (Turso/D1/Postgres) を新トレイトの impl 形に書き換える。
+     既存メソッド面はそのまま流用できる設計なので、機能変更ではなく差し替え。
+   - UI から `Turso` ワードを完全に消す (Phase 2 exit criteria)。
+   - `GET /capabilities` 実装と `capability` エラー (404) を追加 → contract ドキュメント改訂 →
+     web 側にミラー依頼。
+4. Phase 2 以降の余地:
+   - Connection management UI (add / edit / delete)、TOML config + OS keychain、
+     Query history (Phase 2 完了基準ではないが Phase 2 に含めるか別 Phase に切るか要判断)。
+   - 10,000 行上限の緩和 (ストリーミング / ページネーション) は Phase 2 後半 or 別 Phase。
+     UI 側の「LIMIT 自動付与」「ページめくり」UX は別 ADR 候補。
 
 ## 注意点・既知の問題
 
