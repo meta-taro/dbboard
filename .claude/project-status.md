@@ -5,13 +5,36 @@
 
 ## 最終更新
 
-- 日付: 2026-05-24
-- ブランチ: `feature/result-row-limits` (`develop` から分岐)
-- 現在の Phase: Phase 1.5 後の品質固め。前回 PR #1 (`feature/local-http-backend`)
-  は `develop` にマージ済。今回は前 PR で先送りした security HIGH / MEDIUM / LOW を
-  まとめて潰した。5 コミット済 (push は人間)。
+- 日付: 2026-05-25
+- ブランチ: `feature/dev-hardening-husky-deny` (`develop` から分岐)
+- 現在の Phase: **Phase 1 / 1.5 / 1.6 / 1.7 完了。workspace を `0.1.0` に bump し、
+  Phase 2 (アダプタトレイト + Capability) のドラフトに入る直前。**
 
-## 直近の作業
+## 直近の作業 (このセッション)
+
+- **バージョニング & DB サポート方針の確立 (ADR-0011) + Phase 1 クローズアウト**
+  - 論点 2 つを ADR-0011 にまとめた:
+    1. dbboard 本体のバージョニング: **SemVer**。公開 API は HTTP contract のみ
+       (`docs/api-contract.md`)。内部クレートは `publish = false` のままで SemVer 対象外。
+       `0.1.0` を Phase 1 クローズと同じ commit で切る。`1.0.0` は HTTP contract が
+       `dbboard-web` と相互運用検証済み + Capability モデル (ADR-0010 予定) 完成が条件。
+    2. DB サポート: **Tier 制**。Tier 1 (CI/ローカル live test 緑) / Tier 2 (互換だが未自動化) /
+       Best effort。サーバ系 DB はメジャー N と N-1。マネージド系はベンダ最新 API + 固定 client crate。
+  - 新規ファイル `docs/compatibility.md` をサポート行列の正本に。README からリンク。
+  - **commit 1** (`bad80e0`): `docs(policy): adopt SemVer and tiered DB version support`
+    (ADR-0011 追記 + compatibility.md 新設 + README リンク追加)。push 済 (人間)。
+  - **ロードマップ実態同期 + 0.1.0 bump + CHANGELOG 新設** (本セッション 2 つ目の commit):
+    - `docs/roadmap.md`: Phase 1 の 6 項目を `[x]`、Phase 1 / 1.5 / 1.6 / 1.7 に ✅ done と
+      日付を付与、`*(current)*` マーカーを Phase 2 へ移動。Pacing Note の "Right now" を
+      2026-05-25 に更新。
+    - `Cargo.toml`: `version = "0.0.0"` → `"0.1.0"` (ADR-0011 の約束どおり Phase 1 クローズ
+      commit で bump)。
+    - `CHANGELOG.md` 新設: Keep a Changelog 形式。`[0.1.0]` セクションに Added / Security /
+      Documentation で 0.1.0 スコープを retrospective に記録。
+    - `.claude/project-status.md` を本セッション内容で更新 (このファイル)。
+  - 検証: 全テスト緑 (130 件)。pre-commit フックは fmt / clippy / check / test を緑で通過。
+
+## 過去の作業 (参考)
 
 - **結果セット行数上限を全アダプター共通で導入 (security HIGH の解消) + 関連 MEDIUM/LOW**
   - 設計判断 3 点 (ユーザー確認済): ① 超過時は `DbError::Query` でエラー (切り捨てない)、
@@ -45,8 +68,6 @@
     `DBBOARD_PG_URL` 設定で実行・合格。
   - 残課題: 前 PR から繰り延べた「dbboard-web へ api-contract ミラー」は引き続き
     人間担当 (今回追記した上限ルールを web 側にも反映する)。
-
-### 過去の作業 (参考)
 
 - **ローカル HTTP バックエンドを導入 (Phase 1.5 / ADR-0006・ADR-0009)** — PR #1 にて
   `develop` にマージ済 (2026-05-23)。設計判断 3 点 (ユーザー確認済): ① dbboard-ui
@@ -110,16 +131,17 @@
 
 ## 次のステップ
 
-1. `feature/result-row-limits` を push し `develop` へ PR (push は人間)。
-2. push 前フック相当の検証: `cargo build --release` / `cargo test --all-features --release`
-   をローカルで確認 (pre-push フックが自動実行)。
-3. `docs/api-contract.md` を `dbboard-web` へミラー (交互リポ運用。人間が web 側で実施)。
-   今回は 10,000 行上限ルールが追記されたので web 側も同期する。
-4. Phase 2 (アダプタトレイト抽出) へ。具象アダプター 3 つ + HTTP 契約 + 共通ポリシー
-   (`MAX_RESULT_ROWS`) が揃ったので `DatabaseAdapter` トレイト設計の入力は十分。
-5. 上限を緩める Phase 2 検討 (本物のストリーミング or ページネーション API)。
-   今は HTTP 400 を返すだけだが、UI 側の「LIMIT 自動付与」「ページめくり」UX を
-   どう設計するかは ADR 候補。
+1. 本セッションの 2 コミット (`docs(policy)` と本コミット) を push (人間)。
+2. **ADR-0010 (Capability パターン) のドラフト** — Phase 2 のトレイト抽出と一体で設計する
+   ため、コードに触る前に決め切る。前回会話で骨子は提示済 (`DatabaseAdapter` 必須メソッド
+   + `views()`/`auth()`/`storage()` 等の能力アップキャスト + `/capabilities` エンドポイント)。
+3. `docs/api-contract.md` の 10,000 行上限ルール (Phase 1.7 で追記) を `dbboard-web` に
+   ミラー (人間)。
+4. Phase 2 着手: `dbboard-core` に `DatabaseAdapter` + Capability トレイト群を定義し、
+   `dbboard-server::Backend` enum を `Arc<dyn DatabaseAdapter>` に置換。UI から `Turso`
+   ワードを完全に消す (Phase 2 exit criteria)。
+5. 上限を緩める検討は Phase 2 後半 (ストリーミング / ページネーション API)。UI 側の
+   「LIMIT 自動付与」「ページめくり」UX は別 ADR 候補。
 
 ## 注意点・既知の問題
 
