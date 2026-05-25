@@ -560,7 +560,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dbboard"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "cargo-husky",
  "dbboard-server",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64",
  "serde",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-d1"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "dbboard-core",
  "reqwest",
@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-postgres"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "dbboard-core",
  "futures-util",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-server"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
  "dbboard-core",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-turso"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "dbboard-core",
  "libsql",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-ui"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "dbboard-core",
  "eframe",
