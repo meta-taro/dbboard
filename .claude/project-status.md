@@ -8,10 +8,29 @@
 - 日付: 2026-05-25
 - ブランチ: `feature/dev-hardening-husky-deny` (`develop` から分岐)
 - 現在の Phase: **Phase 1 / 1.5 / 1.6 / 1.7 完了。workspace を `0.1.0` に bump し、
-  ADR-0012 (Capability パターン) を確定。次は `dbboard-web` への contract ミラー (人間担当)
-  → Phase 2 着手の順。**
+  ADR-0012 (Capability パターン) を確定。本セッション分は全て origin に push 済。
+  次は `dbboard-web` への contract ミラー (人間担当・別リポジトリ)
+  → 完了後に desktop へ戻り Phase 2 (トレイト抽出 + Capability) 着手の順。**
 
 ## 直近の作業 (このセッション)
+
+- **dbboard-web ハンドオフ準備 (`.claude/issues/0001-web-contract-mirror.md`)**
+  - 方針判断: 当初は「web は desktop API を真似るから待ち」だったが、contract が
+    `0.1.0` で安定し ADR-0011 が 1.0.0 リリース条件として web 相互運用検証を要求している
+    ため、もう web を稼働させるべきタイミングと判断。ADR-0012 (`/capabilities`) は
+    既存 3 エンドポイントを壊さない追加なので、今 web が現行 contract を実装しても
+    Phase 2 完了後に追加実装するだけで作り直しは発生しない (forward-compatible)。
+  - 起草物 `.claude/issues/0001-web-contract-mirror.md` (140 行): scope (現行 3 エンドポイント
+    + Value/QueryResult/Column/TableInfo + エラー envelope + request-level rejection
+    + 10,000 行 cap) / out of scope の明示 (`/capabilities` と `capability` カテゴリ
+    は desktop 未実装ゆえ除外) / Acceptance (NestJS + Postgres 1 アダプタ +
+    contract-conformance test) / Tech 推奨 (class-validator で 422/400 切り分け、
+    body limit 64 KiB、TLS ハードニング)。
+  - `.claude/issues/` の慣行 (NNNN-kebab-slug.md, status header, テンプレート遵守) に従う。
+  - **commit** (`939fe22`): `chore(handoff): seed the dbboard-web Phase 1 contract-mirror brief`。
+  - 本ファイル `.claude/project-status.md` も「次のステップ」を「push → web ミラー → Phase 2」に
+    書き直し、commit `075a879` (`chore(status): record ADR-0012 and queue the contract mirror`)
+    で記録。
 
 - **ADR-0012: Capability パターンによる per-DB 拡張性のドラフト**
   - 論点: Phase 2 のトレイト抽出に入る前に「PostgreSQL ビュー / Supabase auth /
@@ -155,14 +174,20 @@
 
 ## 次のステップ
 
-1. 未 push の 3 コミット (`chore(release)` / `chore(lockfile)` / `docs(adapter)`) を push (人間)。
-2. **`docs/api-contract.md` を `dbboard-web` にミラー (人間担当)** — Pacing Note の
+1. ~~未 push のコミットを push (人間)~~ **完了** (2026-05-25): `bad80e0..939fe22` の
+   6 コミット全て origin に到達済。`git push -v` で通った (GitHub Desktop の通常 push は
+   `commit_refs` エラーで失敗していたが、CLI verbose 経由でリトライしたら成功。
+   詳細は「注意点・既知の問題」参照)。
+2. **`docs/api-contract.md` を `dbboard-web` にミラー (人間担当・別リポジトリ)** — Pacing Note の
    交互スプリント順序に従い、デスクトップ側の Phase 2 着手前に web 側で同契約を反映する。
    今回ミラーすべき差分は ① 10,000 行上限ルール (Phase 1.7 追記)、② エラー envelope の
    `message` が category prefix を含まない仕様、③ Request-level rejection の HTTP code 表、
    の 3 点。ADR-0012 で新設予定の `/capabilities` および `capability` エラーカテゴリは
    **まだコードに無いのでミラー対象外**。Phase 2 が contract を実装した段階で改めて
-   contract 改訂 → web ミラーの流れで進める。
+   contract 改訂 → web ミラーの流れで進める。詳細ブリーフは
+   `.claude/issues/0001-web-contract-mirror.md` (commit `939fe22` で push 済)。
+   `dbboard-web` 側のセッションを起こす際は `dbboard/.claude/issues/0001-web-contract-mirror.md`
+   と `dbboard/docs/api-contract.md` (snapshot at `939fe22` 以降) をコンテキストに渡す。
 3. Phase 2 着手 (上記 2 完了後):
    - `dbboard-core` に `DatabaseAdapter` トレイトと `Capabilities` 構造体、5 つの
      Capability トレイト (`ViewIntrospection` / `FunctionIntrospection` / `AuthAdmin` /
@@ -187,6 +212,12 @@
 - WEB 版 (`meta-taro/dbboard-web`) と同時並行で進めない。スプリント単位で交互に進める。
 - Push は人間が実行する。エージェントは commit までで止めること。
 - Rust toolchain はインストール済 (cargo 1.95.0)。cargo-husky の git hooks も導入済。
+- **GitHub Desktop の push が `remote: fatal error in commit_refs` で失敗するケース**
+  (2026-05-25 セッションで発生): GitHub status は all green、他リポジトリの push は通る、
+  pre-push フックも `[pre-push] ok` で抜けるが、最後の ref 更新だけ落ちる。secret pattern や
+  サイズ問題は無し。**回避策: PowerShell から `git push -v origin <branch>` でリトライ**で
+  通った。原因は GitHub Desktop と git CLI の細かい挙動差 or タイミング起因と推測。
+  再現したら CLI で `-v` 付き push が最短手段。
 
 ## 開発ペースに関するメモ
 
