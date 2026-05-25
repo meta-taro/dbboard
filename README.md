@@ -39,6 +39,11 @@ API) and CockroachDB (over the PostgreSQL wire protocol, via a generic
 Supabase follows with its REST/auth layer once the adapter trait is
 extracted (see [`docs/roadmap.md`](docs/roadmap.md)).
 
+The authoritative per-version support matrix (Tier 1 / Tier 2 / best
+effort) lives in [`docs/compatibility.md`](docs/compatibility.md);
+versioning and DB-support policy are defined in
+[ADR-0011](docs/decisions.md).
+
 ## Architecture
 
 Three main layers, organised as a cargo workspace:
