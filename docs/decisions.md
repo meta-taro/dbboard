@@ -420,3 +420,97 @@ implementing it.
   links an adapter directly — backend selection moved entirely into
   `dbboard-server` (`backend_config_from_env`), so the desktop and any
   future headless deployment share one source of truth.
+
+---
+
+## ADR-0011 — SemVer for dbboard; tiered DB version support; `compatibility.md` as the runbook
+
+- **Date**: 2026-05-25
+- **Status**: accepted
+
+### Context
+
+Two version-related questions were left implicit so far:
+
+1. **How dbboard itself is versioned.** `Cargo.toml` sat at `0.0.0`,
+   `main` was reserved for "tagged releases" (`CLAUDE.md`) without
+   defining what a tag means, and there is no CHANGELOG. With three
+   adapters now in tree and Phase 2 about to extract a trait, we need
+   a public-API contract before users can rely on anything.
+2. **Which versions of each backing database we support.** The
+   `dbboard-turso` / `dbboard-d1` / `dbboard-postgres` crates pin client
+   library versions in `Cargo.toml`, but no document says which
+   *server-side* versions (CockroachDB v24, Postgres 16/17, etc.) the
+   project will keep working. Without a policy, "it broke against my
+   Postgres" becomes an open-ended bug class.
+
+### Decision
+
+**Versioning of dbboard itself**
+
+- Adopt **SemVer** (`MAJOR.MINOR.PATCH`).
+- The **public API for SemVer purposes is the HTTP contract** in
+  [`docs/api-contract.md`](api-contract.md) — nothing else. Internal
+  crates stay `publish = false` (ADR-0002 still holds) and their Rust
+  surfaces are not covered.
+- **`0.x` phase**: cut `0.1.0` when Phase 1 (Turso vertical slice) ships
+  end-to-end. Subsequent phase completions and capability additions are
+  MINOR bumps; bug fixes are PATCH. Breaking contract changes during
+  `0.x` bump MINOR (per SemVer's `0.y.z` carve-out) and are also recorded
+  as an ADR.
+- **`1.0.0`** is gated on: the HTTP contract being interop-verified
+  against `dbboard-web`, the three current adapters being
+  production-usable, and the capability model (ADR — to be written
+  alongside Phase 2) being in place so per-DB features can be added
+  without breaking the contract.
+- **Distribution**: GitHub Releases for binaries. No crates.io publish
+  for the workspace members.
+- **CHANGELOG**: Keep a Changelog format at the repo root, updated in
+  the same PR that adds the user-visible change. ADRs remain the
+  decision log; CHANGELOG is the user-visible delta.
+
+**Per-database version support**
+
+Each backend is classified into one of three tiers:
+
+- **Tier 1** — covered by a live integration test in CI (or runnable
+  locally behind a documented env var until CI gains the credential).
+  Regression here blocks release.
+- **Tier 2** — expected to work because the wire/REST protocol matches
+  Tier 1, but not pinned by an automated test. Issues are fixed on a
+  best-effort basis.
+- **Best effort** — undeclared versions. No promise; PRs welcome.
+
+For server-side databases with a public version number (Postgres,
+CockroachDB), the policy is **current major and previous major as Tier 1
+or Tier 2** (e.g. Postgres 16 + 17). Older majors are best effort.
+Managed services without a user-visible version (Turso, D1, Supabase)
+track the vendor's current API surface and the pinned client crate.
+
+The authoritative matrix lives in [`docs/compatibility.md`](compatibility.md);
+README links to it and never duplicates the table.
+
+**Process for moving a version between tiers**
+
+- Promoting / dropping a tier requires a `docs/compatibility.md` edit
+  and a CHANGELOG entry.
+- Dropping a Tier 1 version is a deprecation: announced in one release,
+  removed in the next MINOR (or MAJOR after `1.0`).
+- Upgrading a client crate across a breaking change (e.g. `sqlx` 0.8 →
+  0.9) requires its own ADR per the "non-trivial crate" rule in
+  `CLAUDE.md`.
+
+### Consequences
+
+- A user reading the README can answer "is my Postgres version
+  supported?" without grepping `Cargo.toml`.
+- The "public API" being only the HTTP contract keeps internal
+  refactors (e.g. the Phase 2 trait extraction, the capability model)
+  out of SemVer's way — they touch no published surface.
+- We accept the cost of maintaining `compatibility.md` and CHANGELOG.md
+  by hand until tooling justifies automation.
+- `Cargo.toml`'s `version = "0.0.0"` stays until Phase 1 ships; the
+  first real bump is `0.1.0` and lands in the same commit that closes
+  the Phase 1 checklist.
+- `main` continues to mean "tagged releases only" (ADR-0005); the tag
+  scheme is now `v<MAJOR>.<MINOR>.<PATCH>`.
