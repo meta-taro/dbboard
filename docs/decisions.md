@@ -514,3 +514,150 @@ README links to it and never duplicates the table.
   the Phase 1 checklist.
 - `main` continues to mean "tagged releases only" (ADR-0005); the tag
   scheme is now `v<MAJOR>.<MINOR>.<PATCH>`.
+
+---
+
+## ADR-0012 — Capability-based extensibility for the adapter trait
+
+- **Date**: 2026-05-25
+- **Status**: accepted
+
+### Context
+
+Phase 2 extracts the `DatabaseAdapter` trait the previous phases
+deliberately deferred (ADR-0003). At the same time, the roadmap calls
+for surfacing **per-DB features** that have no counterpart on other
+backends — PostgreSQL views and functions, Supabase auth and storage,
+D1 bindings, etc.
+
+Three structural problems block that today:
+
+1. `dbboard-server::Backend` is a **closed enum**
+   (`crates/dbboard-server/src/backend.rs`). Each new adapter forces
+   edits to the enum and every `match` over it; per-DB features would
+   multiply the match space.
+2. `dbboard-core` has **no adapter trait** yet
+   (`crates/dbboard-core/src/lib.rs`). Phase 2 is the chance to shape
+   it once.
+3. The HTTP contract is a **fixed three-endpoint surface**
+   (`docs/api-contract.md`). Per-DB endpoints would either bloat the
+   shared contract or splinter it.
+
+Adding per-DB features ad hoc would either re-create the enum
+explosion inside the trait or push DB-specific concepts up into
+`dbboard-core`, where they don't belong (the core is the shared
+kernel; DB-specifics are bounded contexts that depend on it, not the
+other way round).
+
+### Decision
+
+Adopt a **capability pattern** (Role / Specification in DDD terms).
+The Phase 2 trait extraction lands together with the capability model
+so the two are designed as one piece.
+
+**Core trait — small, required, stable**
+
+```rust
+// dbboard-core/src/adapter.rs (new in Phase 2)
+#[async_trait]
+pub trait DatabaseAdapter: Send + Sync {
+    fn id(&self) -> &str;
+    fn capabilities(&self) -> Capabilities;
+    async fn ping(&self) -> DbResult<()>;
+    async fn introspect(&self) -> DbResult<SchemaSnapshot>;
+    async fn query(&self, sql: &str) -> DbResult<QueryResult>;
+
+    fn views(&self) -> Option<&dyn ViewIntrospection> { None }
+    fn functions(&self) -> Option<&dyn FunctionIntrospection> { None }
+    fn auth(&self) -> Option<&dyn AuthAdmin> { None }
+    fn storage(&self) -> Option<&dyn StorageAdmin> { None }
+    fn realtime(&self) -> Option<&dyn RealtimeChannels> { None }
+    // New capabilities are added as new methods with `None` defaults.
+}
+```
+
+Each capability is its own trait in
+`dbboard-core/src/capabilities/{views, functions, auth, storage, realtime}.rs`.
+Adapters implement whatever subset they natively support; the default
+`None` means callers never see "not supported" as a construction-time
+special case.
+
+`Capabilities` is a plain `Copy` flag struct, cheap to serialise over
+HTTP for discovery. Invariant:
+`caps.has_views == adapter.views().is_some()`, enforced by the adapter
+author and unit-tested per adapter.
+
+**`async-trait` for the foreseeable future**
+
+AFIT (async fn in trait, stable in 1.75) is not object-safe; the server
+needs `Arc<dyn DatabaseAdapter>`. Use the `async-trait` crate until
+object-safe async fns land.
+
+**Server — `Backend` enum becomes a trait object**
+
+`crates/dbboard-server/src/backend.rs` collapses to:
+
+```rust
+pub(crate) struct Backend {
+    adapter: Arc<dyn DatabaseAdapter>,
+}
+```
+
+`BackendConfig::connect` is the only place that knows the concrete
+adapter set; adding an adapter touches one match arm there and zero
+match arms anywhere else.
+
+**HTTP contract — additive chapters with capability discovery**
+
+The core stays the three current endpoints. New endpoints are nested
+per capability under stable prefixes:
+
+| Capability | Endpoint prefix |
+|---|---|
+| (core) | `/health`, `/tables`, `/query` |
+| views | `/views/...` |
+| functions | `/functions/...` |
+| auth | `/auth/...` |
+| storage | `/storage/...` |
+| realtime | `/realtime/...` |
+
+A new `GET /capabilities` returns the `Capabilities` struct so the UI
+and `dbboard-web` can render affordances without trial calls. Hitting a
+capability endpoint on a backend that doesn't support it returns `404`
+with the standard error envelope and a new `capability` category in
+`docs/api-contract.md`.
+
+**UI — capability-guarded panels**
+
+```rust
+if caps.has_views { show_views_panel(...); }
+```
+
+Panels never `unwrap` on a capability. The UI's HTTP client treats
+`404 capability` as "this backend does not support X", surfaced as a
+greyed control or hidden panel — never as a red error.
+
+### Consequences
+
+- Adding a new capability across the stack = **three places**: a new
+  trait in `dbboard-core/src/capabilities/`, an `impl` in the adapters
+  that have it, and a UI panel guarded by the flag. Other adapters and
+  unrelated UI panels are untouched.
+- The `Backend` enum disappears; the adapter set grows with one arm in
+  `BackendConfig::connect`.
+- `dbboard-core` gains an `async_trait` dependency. The "no I/O"
+  property holds (defining an async trait is not I/O).
+- SemVer impact (ADR-0011): **adding** a capability is additive on the
+  HTTP contract — MINOR. **Removing or reshaping** a capability is
+  breaking — MAJOR after `1.0`.
+- Trait-object indirection is added on every adapter call. Acceptable
+  for I/O-bound code (network dominates vtable dispatch by orders of
+  magnitude).
+- Phase 2's exit criterion ("nothing in `dbboard-ui` knows the word
+  'Turso'") tightens to: nothing in `dbboard-ui` or the HTTP contract
+  knows any concrete adapter's name; only capability flags.
+- This ADR fixes the design but **defers most implementation** to
+  Phase 2 and Phase 3. Only the core trait, the `Capabilities` struct,
+  and the `Backend` → `Arc<dyn>` swap are in Phase 2. Concrete
+  capability traits land when the adapters that need them do (e.g.
+  `auth` arrives with `dbboard-supabase` in Phase 3).

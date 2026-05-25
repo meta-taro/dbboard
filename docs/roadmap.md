@@ -116,9 +116,9 @@ defaults to D1 (if configured) or local Turso.
 ## Phase 2 — Extract the adapter trait *(current)*
 
 Goal: turn the Turso-shaped types into a real abstraction without
-breaking Phase 1. Designed jointly with the capability model (ADR-0010
-pending) so per-DB features can be added later without breaking the
-HTTP contract (ADR-0011).
+breaking Phase 1. Designed jointly with the capability model (ADR-0012)
+so per-DB features can be added later without breaking the HTTP
+contract (ADR-0011).
 
 - [ ] Define `DatabaseAdapter` trait in `dbboard-core`
 - [ ] Move Turso-specific types behind the trait
