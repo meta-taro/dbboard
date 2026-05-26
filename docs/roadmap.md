@@ -14,11 +14,17 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-05-19)**: `desktop` Phase 1 runs first. `web` Phase
-  1 (monorepo scaffold) is staged behind it so that the HTTP API
-  contract (ADR-0004, ADR-0006) is shaped against a real, working
-  desktop slice before web spends effort on a NestJS skeleton that
-  would have to be revised.
+- **Right now (2026-05-26)**: `desktop` Phases 1 / 1.5 / 1.6 / 1.7 have
+  shipped and the workspace is at `0.1.0` (per ADR-0011). `web` has
+  closed its Phase 1: the pnpm + Nuxt 4 + NestJS 11 monorepo scaffold
+  with a `GET /health` smoke is on `develop`, and the contract is
+  byte-content-mirrored at `dbboard@89b7c70`. The baton is back on
+  `desktop` for Phase 2 (adapter trait + capability model +
+  `GET /capabilities`). When `/capabilities` lands, the desktop side
+  amends `docs/api-contract.md` and emits a handoff brief in the
+  format of `939fe22` so the web side can re-sync and pick up its
+  queued issues `0003` (NestJS HTTP surface), `0004` (Postgres
+  adapter), `0005` (row cap + body limit + conformance tests).
 - **Exception**: contract changes (endpoint shapes, error categories,
   schema metadata) are drafted in one repo, mirrored in the other
   immediately, and only then built against.
@@ -26,22 +32,23 @@ focus:
   desktop repo ships an adapter first, then the web repo follows when
   it makes sense.
 
-## Phase 1 — Turso vertical slice  *(current)*
+## Phase 1 — Turso vertical slice ✅ done (2026-05-25)
 
 Goal: prove the full path "connect → introspect → query → render" end
 to end against a single database before generalising.
 
-- [ ] Workspace skeleton (`dbboard-core`, `apps/dbboard`)
-- [ ] Add `dbboard-turso` crate
-- [ ] Hard-coded Turso connection from env or local file
-- [ ] Run `SELECT` and render a result table in egui
-- [ ] List tables in a sidebar
-- [ ] Error surface (connection failure, query failure)
+- [x] Workspace skeleton (`dbboard-core`, `apps/dbboard`)
+- [x] Add `dbboard-turso` crate
+- [x] Hard-coded Turso connection from env or local file
+- [x] Run `SELECT` and render a result table in egui
+- [x] List tables in a sidebar
+- [x] Error surface (connection failure, query failure)
 
-Exit criteria: a developer can run `cargo run -p dbboard`, point at a
-local libSQL file, browse tables, run queries, and see results.
+Exit criteria met: `cargo run -p dbboard` against a local libSQL file
+browses tables, runs queries, and renders results with errors surfaced
+inline. Tagged at workspace `0.1.0` (per ADR-0011).
 
-## Phase 1.5 — Local HTTP backend (ADR-0006, ADR-0009)
+## Phase 1.5 — Local HTTP backend (ADR-0006, ADR-0009) ✅ done (2026-05-23)
 
 Goal: introduce the `dbboard-server` crate behind the UI without
 changing what the user can do.
@@ -64,7 +71,7 @@ Exit criteria: `cargo run -p dbboard` still does what Phase 1 did,
 but every action now traverses HTTP and the same endpoints are
 documented in both repos.
 
-## Phase 1.6 — Cloudflare D1 adapter (REST)
+## Phase 1.6 — Cloudflare D1 adapter (REST) ✅ done
 
 Goal: add a second concrete adapter against Cloudflare D1 over its REST
 API, ahead of the trait extraction, to give Phase 2 a real second shape
@@ -84,7 +91,7 @@ Exit criteria: with the `DBBOARD_D1_*` env vars set, `cargo run -p
 dbboard` browses tables and runs queries against a real D1 database;
 with them unset it still defaults to local Turso.
 
-## Phase 1.7 — CockroachDB via shared `dbboard-postgres` adapter
+## Phase 1.7 — CockroachDB via shared `dbboard-postgres` adapter ✅ done
 
 Goal: add a third concrete adapter for PostgreSQL-wire databases, with
 CockroachDB as the first target, ahead of the trait extraction. This is
@@ -111,10 +118,12 @@ string, `cargo run -p dbboard` browses `schema.table` listings and runs
 queries against a real CockroachDB database; with it unset the app still
 defaults to D1 (if configured) or local Turso.
 
-## Phase 2 — Extract the adapter trait
+## Phase 2 — Extract the adapter trait *(current)*
 
 Goal: turn the Turso-shaped types into a real abstraction without
-breaking Phase 1.
+breaking Phase 1. Designed jointly with the capability model (ADR-0012)
+so per-DB features can be added later without breaking the HTTP
+contract (ADR-0011).
 
 - [ ] Define `DatabaseAdapter` trait in `dbboard-core`
 - [ ] Move Turso-specific types behind the trait

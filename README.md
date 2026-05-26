@@ -10,8 +10,10 @@ adapter-based architecture that makes adding new databases straightforward.
 
 ## Status
 
-Early development. See [`docs/roadmap.md`](docs/roadmap.md) for the current
-phase.
+Pre-1.0; workspace at `0.1.0` with Phase 1 closed (Turso, Cloudflare D1,
+and CockroachDB adapters all shipping over the local HTTP backend). See
+[`CHANGELOG.md`](CHANGELOG.md) for what landed and
+[`docs/roadmap.md`](docs/roadmap.md) for the next phase.
 
 This is the **desktop** implementation. The web counterpart lives at
 [meta-taro/dbboard-web](https://github.com/meta-taro/dbboard-web) (Nuxt +
@@ -33,11 +35,18 @@ independent codebases.
 - Neon (PostgreSQL)
 - Supabase (PostgreSQL + API)
 
-The Turso adapter ships first, followed by Cloudflare D1 (over its REST
-API) and CockroachDB (over the PostgreSQL wire protocol, via a generic
-`dbboard-postgres` adapter). Neon reuses the same Postgres adapter and
-Supabase follows with its REST/auth layer once the adapter trait is
-extracted (see [`docs/roadmap.md`](docs/roadmap.md)).
+As of `0.1.0`, the Turso, Cloudflare D1, and CockroachDB adapters all
+ship — D1 over its REST API, CockroachDB over the PostgreSQL wire
+protocol via a generic `dbboard-postgres` adapter. Neon also works
+through that same Postgres adapter today; a Neon-specific connection
+picker and the Supabase REST/auth layer arrive after the adapter trait
+and capability model land in Phase 2 — see [`docs/roadmap.md`](docs/roadmap.md)
+and [ADR-0012](docs/decisions.md).
+
+The authoritative per-version support matrix (Tier 1 / Tier 2 / best
+effort) lives in [`docs/compatibility.md`](docs/compatibility.md);
+versioning and DB-support policy are defined in
+[ADR-0011](docs/decisions.md).
 
 ## Architecture
 
@@ -161,7 +170,25 @@ cargo build --release
 cargo test --all-features --release
 ```
 
+Pure deletion pushes (`git push --delete <branch>`) skip the
+build/test cycle — there is no working tree to validate.
+
 You can run these manually at any time.
+
+### Security checks
+
+`cargo-deny` gates the dependency graph on advisories, licenses,
+duplicate versions, and unknown sources. Configuration lives in
+[`deny.toml`](deny.toml).
+
+```sh
+cargo install --locked cargo-deny    # one-time, ~5 min build
+cargo deny check                     # advisories + licenses + bans + sources
+```
+
+CI does not run this yet; run it locally when adding or upgrading a
+dependency. New license expressions surfaced by the check go into
+`deny.toml`'s `licenses.allow` list with a one-line rationale.
 
 ## Contributing
 

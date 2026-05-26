@@ -11,11 +11,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
 rust-version = "1.75"
+# This is a binary project; the supporting crates are internal and never
+# published to crates.io. Each member opts in with `publish.workspace = true`.
+publish = false
 
 [workspace.dependencies]
 dbboard-core = { path = "crates/dbboard-core" }

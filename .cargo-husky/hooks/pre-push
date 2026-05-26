@@ -12,6 +12,23 @@ set -e
 # rustup location so the hook works regardless of the launching shell.
 export PATH="$HOME/.cargo/bin:$PATH"
 
+# Git passes "<local-ref> <local-sha> <remote-ref> <remote-sha>" lines on
+# stdin for every ref being pushed. A branch-deletion push sets
+# <local-sha> to all zeros; if every line is a deletion there is no code
+# to validate, so skip the build/test cycle.
+zero_sha="0000000000000000000000000000000000000000"
+has_update=0
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+    if [ "$local_sha" != "$zero_sha" ]; then
+        has_update=1
+    fi
+done
+
+if [ "$has_update" = 0 ]; then
+    echo "[pre-push] only deletions to push, skipping build/test"
+    exit 0
+fi
+
 echo "[pre-push] cargo build --release"
 cargo build --release
 

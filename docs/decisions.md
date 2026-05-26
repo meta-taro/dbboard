@@ -420,3 +420,244 @@ implementing it.
   links an adapter directly — backend selection moved entirely into
   `dbboard-server` (`backend_config_from_env`), so the desktop and any
   future headless deployment share one source of truth.
+
+---
+
+## ADR-0011 — SemVer for dbboard; tiered DB version support; `compatibility.md` as the runbook
+
+- **Date**: 2026-05-25
+- **Status**: accepted
+
+### Context
+
+Two version-related questions were left implicit so far:
+
+1. **How dbboard itself is versioned.** `Cargo.toml` sat at `0.0.0`,
+   `main` was reserved for "tagged releases" (`CLAUDE.md`) without
+   defining what a tag means, and there is no CHANGELOG. With three
+   adapters now in tree and Phase 2 about to extract a trait, we need
+   a public-API contract before users can rely on anything.
+2. **Which versions of each backing database we support.** The
+   `dbboard-turso` / `dbboard-d1` / `dbboard-postgres` crates pin client
+   library versions in `Cargo.toml`, but no document says which
+   *server-side* versions (CockroachDB v24, Postgres 16/17, etc.) the
+   project will keep working. Without a policy, "it broke against my
+   Postgres" becomes an open-ended bug class.
+
+### Decision
+
+**Versioning of dbboard itself**
+
+- Adopt **SemVer** (`MAJOR.MINOR.PATCH`).
+- The **public API for SemVer purposes is the HTTP contract** in
+  [`docs/api-contract.md`](api-contract.md) — nothing else. Internal
+  crates stay `publish = false` (ADR-0002 still holds) and their Rust
+  surfaces are not covered.
+- **`0.x` phase**: cut `0.1.0` when Phase 1 (Turso vertical slice) ships
+  end-to-end. Subsequent phase completions and capability additions are
+  MINOR bumps; bug fixes are PATCH. Breaking contract changes during
+  `0.x` bump MINOR (per SemVer's `0.y.z` carve-out) and are also recorded
+  as an ADR.
+- **`1.0.0`** is gated on: the HTTP contract being interop-verified
+  against `dbboard-web`, the three current adapters being
+  production-usable, and the capability model (ADR — to be written
+  alongside Phase 2) being in place so per-DB features can be added
+  without breaking the contract.
+- **Distribution**: GitHub Releases for binaries. No crates.io publish
+  for the workspace members.
+- **CHANGELOG**: Keep a Changelog format at the repo root, updated in
+  the same PR that adds the user-visible change. ADRs remain the
+  decision log; CHANGELOG is the user-visible delta.
+
+**Per-database version support**
+
+Each backend is classified into one of three tiers:
+
+- **Tier 1** — covered by a live integration test in CI (or runnable
+  locally behind a documented env var until CI gains the credential).
+  Regression here blocks release.
+- **Tier 2** — expected to work because the wire/REST protocol matches
+  Tier 1, but not pinned by an automated test. Issues are fixed on a
+  best-effort basis.
+- **Best effort** — undeclared versions. No promise; PRs welcome.
+
+For server-side databases with a public version number (Postgres,
+CockroachDB), the policy is **current major and previous major as Tier 1
+or Tier 2** (e.g. Postgres 16 + 17). Older majors are best effort.
+Managed services without a user-visible version (Turso, D1, Supabase)
+track the vendor's current API surface and the pinned client crate.
+
+The authoritative matrix lives in [`docs/compatibility.md`](compatibility.md);
+README links to it and never duplicates the table.
+
+**Process for moving a version between tiers**
+
+- Promoting / dropping a tier requires a `docs/compatibility.md` edit
+  and a CHANGELOG entry.
+- Dropping a Tier 1 version is a deprecation: announced in one release,
+  removed in the next MINOR (or MAJOR after `1.0`).
+- Upgrading a client crate across a breaking change (e.g. `sqlx` 0.8 →
+  0.9) requires its own ADR per the "non-trivial crate" rule in
+  `CLAUDE.md`.
+
+### Consequences
+
+- A user reading the README can answer "is my Postgres version
+  supported?" without grepping `Cargo.toml`.
+- The "public API" being only the HTTP contract keeps internal
+  refactors (e.g. the Phase 2 trait extraction, the capability model)
+  out of SemVer's way — they touch no published surface.
+- We accept the cost of maintaining `compatibility.md` and CHANGELOG.md
+  by hand until tooling justifies automation.
+- `Cargo.toml`'s `version = "0.0.0"` stays until Phase 1 ships; the
+  first real bump is `0.1.0` and lands in the same commit that closes
+  the Phase 1 checklist.
+- `main` continues to mean "tagged releases only" (ADR-0005); the tag
+  scheme is now `v<MAJOR>.<MINOR>.<PATCH>`.
+
+---
+
+## ADR-0012 — Capability-based extensibility for the adapter trait
+
+- **Date**: 2026-05-25
+- **Status**: accepted
+
+### Context
+
+Phase 2 extracts the `DatabaseAdapter` trait the previous phases
+deliberately deferred (ADR-0003). At the same time, the roadmap calls
+for surfacing **per-DB features** that have no counterpart on other
+backends — PostgreSQL views and functions, Supabase auth and storage,
+D1 bindings, etc.
+
+Three structural problems block that today:
+
+1. `dbboard-server::Backend` is a **closed enum**
+   (`crates/dbboard-server/src/backend.rs`). Each new adapter forces
+   edits to the enum and every `match` over it; per-DB features would
+   multiply the match space.
+2. `dbboard-core` has **no adapter trait** yet
+   (`crates/dbboard-core/src/lib.rs`). Phase 2 is the chance to shape
+   it once.
+3. The HTTP contract is a **fixed three-endpoint surface**
+   (`docs/api-contract.md`). Per-DB endpoints would either bloat the
+   shared contract or splinter it.
+
+Adding per-DB features ad hoc would either re-create the enum
+explosion inside the trait or push DB-specific concepts up into
+`dbboard-core`, where they don't belong (the core is the shared
+kernel; DB-specifics are bounded contexts that depend on it, not the
+other way round).
+
+### Decision
+
+Adopt a **capability pattern** (Role / Specification in DDD terms).
+The Phase 2 trait extraction lands together with the capability model
+so the two are designed as one piece.
+
+**Core trait — small, required, stable**
+
+```rust
+// dbboard-core/src/adapter.rs (new in Phase 2)
+#[async_trait]
+pub trait DatabaseAdapter: Send + Sync {
+    fn id(&self) -> &str;
+    fn capabilities(&self) -> Capabilities;
+    async fn ping(&self) -> DbResult<()>;
+    async fn introspect(&self) -> DbResult<SchemaSnapshot>;
+    async fn query(&self, sql: &str) -> DbResult<QueryResult>;
+
+    fn views(&self) -> Option<&dyn ViewIntrospection> { None }
+    fn functions(&self) -> Option<&dyn FunctionIntrospection> { None }
+    fn auth(&self) -> Option<&dyn AuthAdmin> { None }
+    fn storage(&self) -> Option<&dyn StorageAdmin> { None }
+    fn realtime(&self) -> Option<&dyn RealtimeChannels> { None }
+    // New capabilities are added as new methods with `None` defaults.
+}
+```
+
+Each capability is its own trait in
+`dbboard-core/src/capabilities/{views, functions, auth, storage, realtime}.rs`.
+Adapters implement whatever subset they natively support; the default
+`None` means callers never see "not supported" as a construction-time
+special case.
+
+`Capabilities` is a plain `Copy` flag struct, cheap to serialise over
+HTTP for discovery. Invariant:
+`caps.has_views == adapter.views().is_some()`, enforced by the adapter
+author and unit-tested per adapter.
+
+**`async-trait` for the foreseeable future**
+
+AFIT (async fn in trait, stable in 1.75) is not object-safe; the server
+needs `Arc<dyn DatabaseAdapter>`. Use the `async-trait` crate until
+object-safe async fns land.
+
+**Server — `Backend` enum becomes a trait object**
+
+`crates/dbboard-server/src/backend.rs` collapses to:
+
+```rust
+pub(crate) struct Backend {
+    adapter: Arc<dyn DatabaseAdapter>,
+}
+```
+
+`BackendConfig::connect` is the only place that knows the concrete
+adapter set; adding an adapter touches one match arm there and zero
+match arms anywhere else.
+
+**HTTP contract — additive chapters with capability discovery**
+
+The core stays the three current endpoints. New endpoints are nested
+per capability under stable prefixes:
+
+| Capability | Endpoint prefix |
+|---|---|
+| (core) | `/health`, `/tables`, `/query` |
+| views | `/views/...` |
+| functions | `/functions/...` |
+| auth | `/auth/...` |
+| storage | `/storage/...` |
+| realtime | `/realtime/...` |
+
+A new `GET /capabilities` returns the `Capabilities` struct so the UI
+and `dbboard-web` can render affordances without trial calls. Hitting a
+capability endpoint on a backend that doesn't support it returns `404`
+with the standard error envelope and a new `capability` category in
+`docs/api-contract.md`.
+
+**UI — capability-guarded panels**
+
+```rust
+if caps.has_views { show_views_panel(...); }
+```
+
+Panels never `unwrap` on a capability. The UI's HTTP client treats
+`404 capability` as "this backend does not support X", surfaced as a
+greyed control or hidden panel — never as a red error.
+
+### Consequences
+
+- Adding a new capability across the stack = **three places**: a new
+  trait in `dbboard-core/src/capabilities/`, an `impl` in the adapters
+  that have it, and a UI panel guarded by the flag. Other adapters and
+  unrelated UI panels are untouched.
+- The `Backend` enum disappears; the adapter set grows with one arm in
+  `BackendConfig::connect`.
+- `dbboard-core` gains an `async_trait` dependency. The "no I/O"
+  property holds (defining an async trait is not I/O).
+- SemVer impact (ADR-0011): **adding** a capability is additive on the
+  HTTP contract — MINOR. **Removing or reshaping** a capability is
+  breaking — MAJOR after `1.0`.
+- Trait-object indirection is added on every adapter call. Acceptable
+  for I/O-bound code (network dominates vtable dispatch by orders of
+  magnitude).
+- Phase 2's exit criterion ("nothing in `dbboard-ui` knows the word
+  'Turso'") tightens to: nothing in `dbboard-ui` or the HTTP contract
+  knows any concrete adapter's name; only capability flags.
+- This ADR fixes the design but **defers most implementation** to
+  Phase 2 and Phase 3. Only the core trait, the `Capabilities` struct,
+  and the `Backend` → `Arc<dyn>` swap are in Phase 2. Concrete
+  capability traits land when the adapters that need them do (e.g.
+  `auth` arrives with `dbboard-supabase` in Phase 3).
