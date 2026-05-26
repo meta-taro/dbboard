@@ -1,0 +1,29 @@
+[package]
+name = "dbboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "dbboard desktop binary: wires adapters and UI together."
+
+[[bin]]
+name = "dbboard"
+path = "src/main.rs"
+
+[dependencies]
+# The binary wires the in-process server to the UI and links neither
+# adapters nor dbboard-core directly: the server owns backend selection
+# (the adapters reach the binary transitively through dbboard-server).
+dbboard-server = { path = "../../crates/dbboard-server" }
+dbboard-ui = { path = "../../crates/dbboard-ui" }
+eframe = { workspace = true }
+egui = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+
+[lints]
+workspace = true

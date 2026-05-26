@@ -1,0 +1,30 @@
+[package]
+name = "dbboard-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Local in-process HTTP backend for dbboard: serves the adapter API over loopback."
+
+[dependencies]
+dbboard-core = { workspace = true }
+dbboard-d1 = { path = "../dbboard-d1" }
+dbboard-postgres = { path = "../dbboard-postgres" }
+dbboard-turso = { path = "../dbboard-turso" }
+axum = { workspace = true }
+# `net` for the loopback TcpListener, `sync` for the shutdown channel.
+tokio = { workspace = true, features = ["net", "sync"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# `tower::ServiceExt::oneshot` drives the router in-process without
+# binding a socket; pulled in transitively by axum already.
+tower = { version = "0.5", features = ["util"] }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
