@@ -10,10 +10,55 @@
   コミット先行、main の 22 コミット先行 = `main` は initial commit のみで release 未受領)
 - 現在の Phase: **Phase 1 / 1.5 / 1.6 / 1.7 完了 + 0.1.0 workspace bump 済。
   `dbboard-web` 側も Phase 1 (pnpm + Nuxt 4 + NestJS 11 + `/health` smoke) 完了し
-  baton が desktop に戻った。次は Phase 2 (アダプタトレイト抽出 + Capability +
-  `GET /capabilities` 実装) に着手する直前。ただし長期化した
-  `feature/dev-hardening-husky-deny` をどう着地させてから Phase 2 を切るかの
-  branch 戦略決定が先。**
+  baton が desktop に戻った。branch 戦略は Option 1 を確定 — 現ブランチを develop に PR、
+  続けて develop → main の release PR を切り、main で `v0.1.0` をタグ付けして
+  CHANGELOG リンクを resolve したうえで、`feature/adapter-trait-capability` を
+  develop から新規に切って Phase 2 に着手する。本ファイル下「次のステップ
+  (Option 1 シーケンス)」参照。**
+
+## 次のステップ (Option 1 シーケンス)
+
+ユーザの選択は「develop と main を両方進めて v0.1.0 を切る」。Phase 2 着手前に
+長期化した `feature/dev-hardening-husky-deny` を完全に着地させる。
+
+1. **未 push の 4 コミット (`264d68e` `0b68aad` `1ac67e9` + 本ステータス更新) を push**
+   *(人間担当 — GitHub Desktop 経由が落ちる場合は PowerShell から
+   `git push -v origin feature/dev-hardening-husky-deny`)*。
+2. **PR #3: `feature/dev-hardening-husky-deny` → `develop`** を作成。本文ドラフトは
+   下記「PR ドラフト #3」を参照。push 後、エージェントが `gh pr create` で開く想定。
+   レビュー → マージは人間。
+3. **PR #4: `develop` → `main` (release PR for v0.1.0)** を作成。PR タイトルは
+   `release: v0.1.0`。本文は CHANGELOG `[0.1.0]` セクションの転記 + 0.1.0 で出荷した
+   3 アダプタ + ADR-0011 (SemVer) + ADR-0012 (Capability) の参照。マージは人間。
+4. **main で `git tag -a v0.1.0 -m "v0.1.0" <merge-sha>` + `git push origin v0.1.0`**
+   *(人間担当)*。`CHANGELOG.md` の `[0.1.0]: .../releases/tag/v0.1.0` リンクがこれで resolve。
+   必要なら `gh release create v0.1.0 --notes-from-tag` で GitHub Release も発行。
+5. **`develop` 最新で `feature/adapter-trait-capability` を新規に切る** → Phase 2 着手。
+   最初のチケットは `crates/dbboard-core` への `DatabaseAdapter` トレイト + `Capabilities` 型定義。
+   `/capabilities` 実装が完了したら `docs/api-contract.md` を改訂し、`939fe22` 形式の
+   handoff brief を `.claude/issues/0002-*.md` に起こして dbboard-web に baton を渡す。
+
+### PR ドラフト #3 (`feature/dev-hardening-husky-deny` → `develop`)
+
+- **Title**: `chore: dev hardening, 0.1.0 release, and ADR-0012 capability pattern`
+- **Summary 要点** (本文 HEREDOC 化):
+  - `chore(security)`: `cargo-deny` を `deny.toml` で設定し pre-push に組み込み (`6ae8652`)。
+  - `chore(husky)`: 削除のみの push では release build/test をスキップ (`8b4ebe7`)。
+  - `docs(policy)`: ADR-0011 で SemVer + tiered DB support を採択、
+    `docs/compatibility.md` を新設 (`bad80e0`)。
+  - `chore(release)`: ワークスペース版を `0.1.0` に bump、`CHANGELOG.md` 新設、
+    roadmap.md Phase 1/1.5/1.6/1.7 に ✅ done (`456045f` `99ff580`)。
+  - `docs(adapter)`: ADR-0012 で Capability パターンを採択 — `DatabaseAdapter` 必須
+    最小面 + `Option<&dyn ...>` でぶら下げる任意 capability。HTTP は `/views` `/auth`
+    などで階層化、新エラーカテゴリ `capability` (`46d1d16`)。
+  - `docs`: README / architecture.md を 0.1.0 実態に同期 (`264d68e`)。
+  - `chore(status)` / `chore(handoff)`: dbboard-web Phase 1 contract-mirror brief
+    (`939fe22`)、セッション status 更新 (`075a879` `89b7c70` `0b68aad` `1ac67e9`)。
+- **Test plan**:
+  - [x] pre-commit (`cargo fmt --check` / `clippy -D warnings` / `check` / `test`) green per commit。
+  - [x] pre-push (`cargo build --release` / `cargo test --release`) green at push time。
+  - [x] `cargo deny check` green (license + advisory).
+  - [ ] CI on PR for develop branch green (待ち)。
 
 ## 直近の作業 (このセッション)
 
