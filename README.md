@@ -10,8 +10,10 @@ adapter-based architecture that makes adding new databases straightforward.
 
 ## Status
 
-Early development. See [`docs/roadmap.md`](docs/roadmap.md) for the current
-phase.
+Pre-1.0; workspace at `0.1.0` with Phase 1 closed (Turso, Cloudflare D1,
+and CockroachDB adapters all shipping over the local HTTP backend). See
+[`CHANGELOG.md`](CHANGELOG.md) for what landed and
+[`docs/roadmap.md`](docs/roadmap.md) for the next phase.
 
 This is the **desktop** implementation. The web counterpart lives at
 [meta-taro/dbboard-web](https://github.com/meta-taro/dbboard-web) (Nuxt +
@@ -33,11 +35,13 @@ independent codebases.
 - Neon (PostgreSQL)
 - Supabase (PostgreSQL + API)
 
-The Turso adapter ships first, followed by Cloudflare D1 (over its REST
-API) and CockroachDB (over the PostgreSQL wire protocol, via a generic
-`dbboard-postgres` adapter). Neon reuses the same Postgres adapter and
-Supabase follows with its REST/auth layer once the adapter trait is
-extracted (see [`docs/roadmap.md`](docs/roadmap.md)).
+As of `0.1.0`, the Turso, Cloudflare D1, and CockroachDB adapters all
+ship — D1 over its REST API, CockroachDB over the PostgreSQL wire
+protocol via a generic `dbboard-postgres` adapter. Neon also works
+through that same Postgres adapter today; a Neon-specific connection
+picker and the Supabase REST/auth layer arrive after the adapter trait
+and capability model land in Phase 2 — see [`docs/roadmap.md`](docs/roadmap.md)
+and [ADR-0012](docs/decisions.md).
 
 The authoritative per-version support matrix (Tier 1 / Tier 2 / best
 effort) lives in [`docs/compatibility.md`](docs/compatibility.md);
