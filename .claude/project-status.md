@@ -5,14 +5,41 @@
 
 ## 最終更新
 
-- 日付: 2026-05-25
+- 日付: 2026-05-26
 - ブランチ: `feature/dev-hardening-husky-deny` (`develop` から分岐)
 - 現在の Phase: **Phase 1 / 1.5 / 1.6 / 1.7 完了。workspace を `0.1.0` に bump し、
-  ADR-0012 (Capability パターン) を確定。本セッション分は全て origin に push 済。
+  ADR-0012 (Capability パターン) を確定。README / architecture.md も 0.1.0 実態に同期。
   次は `dbboard-web` への contract ミラー (人間担当・別リポジトリ)
   → 完了後に desktop へ戻り Phase 2 (トレイト抽出 + Capability) 着手の順。**
 
 ## 直近の作業 (このセッション)
+
+- **進捗監査とドキュメント実態同期 (2026-05-26)**
+  - 監査結果: `README.md` と `docs/architecture.md` が 0.1.0 実態より遅れていた。
+    - README L36-40: 「Turso adapter ships first, followed by Cloudflare D1...」と
+      逐次出荷の未来形のまま。実態は Turso/D1/Postgres 全て 0.1.0 で shipped。
+    - architecture.md L34-38: 「Phase 1 ships dbboard-core/turso/ui」「dbboard-server
+      lands in Phase 1.5」「Adapter crates beyond Turso land in Phase 3」と shipped 済
+      を未来形で記述。
+    - architecture.md L72-93: 「The exact signature evolves as Phase 1 progresses」の
+      トレイト sketch が ADR-0012 (Capability 拡張) を反映していなかった。
+  - 修正: README Status 節は「Pre-1.0; workspace at 0.1.0 with Phase 1 closed」に書換え、
+    CHANGELOG リンクを追加。Supported Databases 節は実態 (Turso/D1/Postgres shipped、
+    Neon は同 Postgres adapter で動作、Supabase/Neon picker は Phase 2 以降) に書換え。
+    architecture.md は phase 状況パラグラフを書換え、core trait sketch を ADR-0012 の
+    `Capabilities` + Optional accessor 形に更新。
+  - **commit** (`264d68e`): `docs: sync README and architecture.md to the 0.1.0 reality`。
+  - その他確認: `.env.example` は最新で OK。`docs/decisions.md` の ADR 番号は
+    0001-0009, 0011, 0012 (0010 はスキップ済、append-only 尊重)。orphan ADR-0010 参照は
+    本ファイルの meta-note 1 件のみで、これは「リネームしたこと」を記録する
+    意図的な記述。`docs/compatibility.md` の `Phase 3` 言及は Neon picker 残作業の
+    正しい future 記述。
+  - **既知のギャップ (未対応)**: `git tag --list` 空。`CHANGELOG.md` の
+    `[0.1.0]: ...releases/tag/v0.1.0` は GitHub release tag を前提だが、CLAUDE.md の
+    GitFlow (develop → PR → main → tag) では release PR が main にマージされてから
+    タグを切る運用なので、現時点で tag を作るのは早い。`feature/dev-hardening-husky-deny`
+    → `develop` → `main` 経由で 0.1.0 を切る段で `git tag v0.1.0` + tag push する想定。
+    詳細は「注意点・既知の問題」参照。
 
 - **dbboard-web ハンドオフ準備 (`.claude/issues/0001-web-contract-mirror.md`)**
   - 方針判断: 当初は「web は desktop API を真似るから待ち」だったが、contract が
@@ -218,6 +245,14 @@
   サイズ問題は無し。**回避策: PowerShell から `git push -v origin <branch>` でリトライ**で
   通った。原因は GitHub Desktop と git CLI の細かい挙動差 or タイミング起因と推測。
   再現したら CLI で `-v` 付き push が最短手段。
+- **`v0.1.0` git tag は未作成 (意図的)**: CHANGELOG.md は GitHub release URL
+  (`...releases/tag/v0.1.0`) を前提に link を張っているが、CLAUDE.md の GitFlow
+  (`develop` → release PR → `main` → tag) に従うと release commit を `main` に乗せて
+  から tag するのが正しい順序。現在 `feature/dev-hardening-husky-deny` ブランチ上に
+  release commit (`456045f`) があり、まだ `develop` にも `main` にもマージされていない。
+  CHANGELOG link は `develop` → `main` 経由で 0.1.0 を切る段で `git tag v0.1.0 <sha>` +
+  `git push origin v0.1.0` を実行した時点で resolve される予定。それまで link は壊れた
+  状態だが GitFlow 上は正常。
 
 ## 開発ペースに関するメモ
 
