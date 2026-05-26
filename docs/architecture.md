@@ -31,11 +31,12 @@ dbboard/
     └── dbboard-ui/         # egui views; HTTP client of dbboard-server
 ```
 
-Phase 1 ships `dbboard-core`, `dbboard-turso`, `dbboard-ui`, and
-`apps/dbboard` calling the adapter directly. `dbboard-server` lands
-in Phase 1.5 once the direct slice works (see
-[`roadmap.md`](roadmap.md)). Adapter crates beyond Turso land in
-Phase 3.
+As of `0.1.0`, `dbboard-core`, `dbboard-turso`, `dbboard-d1`,
+`dbboard-postgres`, `dbboard-server`, `dbboard-ui`, and `apps/dbboard`
+all ship (Phase 1 / 1.5 / 1.6 / 1.7 closed). The UI talks to the
+server over HTTP rather than calling adapters directly; `apps/dbboard`
+boots both in one process. `dbboard-supabase` and `dbboard-ai` are
+later phases — see [`roadmap.md`](roadmap.md).
 
 ## Dependency Rules
 
@@ -71,15 +72,20 @@ required.
 
 ## Core Trait (sketch)
 
-The exact signature evolves as Phase 1 progresses. Initial intent:
+The trait is extracted in Phase 2. The required surface is small;
+per-DB features (views, auth, storage, realtime, …) hang off it as
+optional capability traits per [ADR-0012](decisions.md).
 
 ```rust
-// crates/dbboard-core/src/lib.rs
+// crates/dbboard-core/src/lib.rs (Phase 2)
 
 #[async_trait::async_trait]
 pub trait DatabaseAdapter: Send + Sync {
     /// Identifier used in connection lists and logs.
     fn id(&self) -> &str;
+
+    /// Coarse feature flags for HTTP `/capabilities` discovery.
+    fn capabilities(&self) -> Capabilities;
 
     /// Verify connectivity without running a user query.
     async fn ping(&self) -> Result<(), DbError>;
@@ -89,11 +95,20 @@ pub trait DatabaseAdapter: Send + Sync {
 
     /// Execute a SQL query and return a typed result.
     async fn query(&self, sql: &str) -> Result<QueryResult, DbError>;
+
+    // Optional capabilities — each defaults to `None`.
+    fn views(&self)     -> Option<&dyn ViewIntrospection>     { None }
+    fn functions(&self) -> Option<&dyn FunctionIntrospection> { None }
+    fn auth(&self)      -> Option<&dyn AuthAdmin>             { None }
+    fn storage(&self)   -> Option<&dyn StorageAdmin>          { None }
+    fn realtime(&self)  -> Option<&dyn RealtimeChannels>      { None }
 }
 ```
 
 `SchemaSnapshot`, `QueryResult`, `DbError` are concrete types in
-`dbboard-core` so the UI never sees adapter-specific types.
+`dbboard-core` so the UI never sees adapter-specific types. Adapters
+that do not implement a given capability simply leave the accessor at
+its `None` default — no code changes elsewhere.
 
 ## AI Layer (optional, later)
 
