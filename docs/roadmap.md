@@ -14,12 +14,17 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-05-25)**: `desktop` Phases 1 / 1.5 / 1.6 / 1.7 have
-  shipped and the workspace is tagged `0.1.0` (per ADR-0011). `web` is
-  next up — the HTTP contract in `docs/api-contract.md` (including the
-  10,000-row cap added during Phase 1.7 closeout) is the input. Once
-  `web` mirrors the contract, the desktop side begins Phase 2 (adapter
-  trait + capability model).
+- **Right now (2026-05-26)**: `desktop` Phases 1 / 1.5 / 1.6 / 1.7 have
+  shipped and the workspace is at `0.1.0` (per ADR-0011). `web` has
+  closed its Phase 1: the pnpm + Nuxt 4 + NestJS 11 monorepo scaffold
+  with a `GET /health` smoke is on `develop`, and the contract is
+  byte-content-mirrored at `dbboard@89b7c70`. The baton is back on
+  `desktop` for Phase 2 (adapter trait + capability model +
+  `GET /capabilities`). When `/capabilities` lands, the desktop side
+  amends `docs/api-contract.md` and emits a handoff brief in the
+  format of `939fe22` so the web side can re-sync and pick up its
+  queued issues `0003` (NestJS HTTP surface), `0004` (Postgres
+  adapter), `0005` (row cap + body limit + conformance tests).
 - **Exception**: contract changes (endpoint shapes, error categories,
   schema metadata) are drafted in one repo, mirrored in the other
   immediately, and only then built against.
