@@ -6,13 +6,38 @@
 ## 最終更新
 
 - 日付: 2026-05-26
-- ブランチ: `feature/dev-hardening-husky-deny` (`develop` から分岐)
-- 現在の Phase: **Phase 1 / 1.5 / 1.6 / 1.7 完了。workspace を `0.1.0` に bump し、
-  ADR-0012 (Capability パターン) を確定。README / architecture.md も 0.1.0 実態に同期。
-  次は `dbboard-web` への contract ミラー (人間担当・別リポジトリ)
-  → 完了後に desktop へ戻り Phase 2 (トレイト抽出 + Capability) 着手の順。**
+- ブランチ: `feature/dev-hardening-husky-deny` (`develop` から分岐、現在 develop の 11
+  コミット先行、main の 22 コミット先行 = `main` は initial commit のみで release 未受領)
+- 現在の Phase: **Phase 1 / 1.5 / 1.6 / 1.7 完了 + 0.1.0 workspace bump 済。
+  `dbboard-web` 側も Phase 1 (pnpm + Nuxt 4 + NestJS 11 + `/health` smoke) 完了し
+  baton が desktop に戻った。次は Phase 2 (アダプタトレイト抽出 + Capability +
+  `GET /capabilities` 実装) に着手する直前。ただし長期化した
+  `feature/dev-hardening-husky-deny` をどう着地させてから Phase 2 を切るかの
+  branch 戦略決定が先。**
 
 ## 直近の作業 (このセッション)
+
+- **dbboard-web Phase 1 完了報告を受領 (2026-05-26)**
+  - web 側で実施された内容 (ユーザ報告):
+    1. **Phase 1 close**: pnpm workspace + Nuxt 4 + NestJS 11 monorepo scaffold +
+       smoke `GET /health`、PR #1 で `develop` にマージ済 (merge commit `1c204ed`)、
+       feature branch は local/remote 両方削除。
+    2. **Contract mirror complete**: `dbboard-web/docs/api-contract.md` が
+       `dbboard@89b7c70` (= 本リポジトリの最新時点) と byte-content-identical。
+       最終 contract 変更は `3f114e4` (10,000 行 cap)。web 側 `.prettierignore` で
+       再フォーマットから保護。
+    3. **3 つの policy ADR が web 側に着地**: ① desktop HTTP API contract を Phase 1 入力として
+       採用、② branch 方針 `feature/<slug>` → PR → `develop` (desktop ADR-0005 と一致)、
+       ③ self-host-only OSS 配布 (Docker Compose + ghcr.io、メンテナ自身がホストする SaaS は
+       提供しない)。
+    4. **Web は待機状態**: 残 issue `0003` (NestJS HTTP surface)、`0004` (Postgres adapter)、
+       `0005` (row cap + body limit + conformance tests) はすべて open のままで、desktop が
+       次の contract 変更を publish するまで未着手。
+  - desktop 側で必要な action: ① roadmap.md の Pacing Note を「web Phase 1 完了、baton 復帰」に
+    更新 (済: 本コミットで反映)、② branch 戦略の決定 (`feature/dev-hardening-husky-deny` は
+    main 比 49 ファイル/+10,778 行に膨らんでおり、Phase 2 をここに乗せると更に長期化する)、
+    ③ Phase 2 着手 (`/capabilities` 実装後は `docs/api-contract.md` を改訂 + web 側へ
+    `939fe22` 形式の handoff brief を出す)。
 
 - **進捗監査とドキュメント実態同期 (2026-05-26)**
   - 監査結果: `README.md` と `docs/architecture.md` が 0.1.0 実態より遅れていた。
