@@ -1,0 +1,38 @@
+# Rust ビルド成果物
+/target/
+**/*.rs.bk
+**/target/
+
+# Cargo のローカル設定 (個人環境用、共有しない)
+/.cargo/config.local.toml
+
+# IDE / エディタ
+/.idea/
+/.vscode/
+*.swp
+*.swo
+
+# OS 固有ファイル
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 環境変数ファイル (秘密情報を含む可能性があるため除外)
+.env
+.env.local
+.env.*.local
+
+# AI セッション関連の一時ファイル
+/.claude/cache/
+/.claude/*.bak
+# 個人環境用のローカル設定 (共有しない)
+/.claude/settings.local.json
+
+# ログ
+*.log
+
+# テスト用の一時 DB ファイル
+*.sqlite
+*.sqlite-journal
+*.db-shm
+*.db-wal

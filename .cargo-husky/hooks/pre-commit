@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+#
+# dbboard pre-commit hook
+#
+# Installed automatically by cargo-husky on first `cargo test`.
+# See CLAUDE.md "Mandatory Verification Commands".
+
+set -e
+
+# GUI git clients (GitHub Desktop, GitKraken, …) launch hooks with a
+# minimal PATH that omits the user's cargo install. Add the standard
+# rustup location so the hook works regardless of the launching shell.
+export PATH="$HOME/.cargo/bin:$PATH"
+
+echo "[pre-commit] cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "[pre-commit] cargo clippy --all-targets --all-features -- -D warnings"
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "[pre-commit] cargo check --all-targets --all-features"
+cargo check --all-targets --all-features
+
+echo "[pre-commit] cargo test --all-features"
+cargo test --all-features
+
+echo "[pre-commit] ok"

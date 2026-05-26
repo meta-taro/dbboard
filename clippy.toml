@@ -1,0 +1,19 @@
+# Extend clippy's known-identifier list so doc-markdown does not flag
+# product and protocol names that legitimately appear in prose.
+#
+# The leading ".." preserves clippy's built-in list (which already
+# covers names like MySQL, MongoDB, JavaScript).
+doc-valid-idents = [
+    "..",
+    "SQLite",
+    "PostgreSQL",
+    "libSQL",
+    "Turso",
+    "Neon",
+    "Supabase",
+    "axum",
+    "egui",
+    "eframe",
+    "Nuxt",
+    "NestJS",
+]
