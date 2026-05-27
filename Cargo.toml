@@ -45,6 +45,10 @@ futures-util = "0.3"
 axum = "0.8"
 # JSON has no byte type, so Value::Blob is encoded as base64 on the wire.
 base64 = "0.22"
+# AFIT (async fn in trait) is not object-safe; the server holds adapters
+# as Arc<dyn DatabaseAdapter>. async-trait macros around that until
+# object-safe async fns stabilise (ADR-0012).
+async-trait = "0.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

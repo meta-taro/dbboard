@@ -4,7 +4,7 @@
 //! promises in the roadmap, without requiring any remote Turso
 //! credentials or temp files on disk.
 
-use dbboard_core::Value;
+use dbboard_core::{DatabaseAdapter, Value};
 use dbboard_turso::TursoAdapter;
 
 async fn fresh_db() -> TursoAdapter {

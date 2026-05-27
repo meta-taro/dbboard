@@ -9,6 +9,7 @@ publish.workspace = true
 description = "PostgreSQL-wire adapter for dbboard (CockroachDB, Neon, ...) over sqlx."
 
 [dependencies]
+async-trait = { workspace = true }
 dbboard-core = { workspace = true }
 sqlx = { workspace = true }
 futures-util = { workspace = true }

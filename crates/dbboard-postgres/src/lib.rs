@@ -2,10 +2,9 @@
 //!
 //! `CockroachDB` speaks the PostgreSQL wire protocol, so a desktop client
 //! reaches it with an ordinary `postgresql://…` connection string and a
-//! Postgres driver. This adapter uses `sqlx` over a `PgPool` and mirrors
-//! the method surface of the other adapters
-//! (`connect` / `ping` / `list_tables` / `query`); the workspace-wide
-//! adapter trait is still deferred to Phase 2 (see `docs/roadmap.md`).
+//! Postgres driver. This adapter uses `sqlx` over a `PgPool` and
+//! implements the workspace-wide [`DatabaseAdapter`] contract
+//! (ADR-0012); Phase 2 advertises no optional capabilities.
 //!
 //! The crate is deliberately generic: `CockroachDB` is the first target,
 //! but Neon and any other PostgreSQL-wire database connect the same way
@@ -23,9 +22,10 @@
 //! `timestamptz`, `jsonb`, arrays, and user-defined types — without
 //! pulling in per-type decode features.
 
+use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
-    MAX_RESULT_ROWS,
+    too_many_rows_error, Capabilities, Column, DatabaseAdapter, DbError, DbResult, QueryResult,
+    Row, TableInfo, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
@@ -87,14 +87,19 @@ impl PostgresAdapter {
             .map_err(|e| classify_error(&e))?;
         Ok(Self { pool })
     }
+}
 
-    /// Cheap liveness probe: runs `SELECT 1` and discards the result.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Connection`] on transport failure or
-    /// [`DbError::Query`] if the probe statement is rejected.
-    pub async fn ping(&self) -> DbResult<()> {
+#[async_trait]
+impl DatabaseAdapter for PostgresAdapter {
+    fn id(&self) -> &'static str {
+        "postgres"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    async fn ping(&self) -> DbResult<()> {
         sqlx::raw_sql("SELECT 1")
             .execute(&self.pool)
             .await
@@ -102,13 +107,7 @@ impl PostgresAdapter {
             .map(|_| ())
     }
 
-    /// List user tables as `schema.table`, ordered by schema then name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Schema`] when the introspection query fails or
-    /// returns an unexpected row shape.
-    pub async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+    async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
         // A failed introspection query is a schema error to the rest of
         // the system, not a user query error.
         let result = self
@@ -129,24 +128,14 @@ impl PostgresAdapter {
             .collect()
     }
 
-    /// Execute a SQL statement and collect the result.
-    ///
-    /// Uses the simple query protocol via [`sqlx::raw_sql`], which
-    /// streams back row data and command-completion counts in one pass —
-    /// so SELECT and DML need no separate routing. Row-returning
-    /// statements expose their rows and leave `rows_affected` at 0; DML
-    /// leaves `rows` empty and reports the affected count.
-    ///
-    /// This is shaped for a single statement. Given a multi-statement
-    /// string, `columns` reflect the first row-returning statement and
-    /// `rows_affected` is only meaningful for a pure DML/DDL batch; mixing
-    /// row-returning and DML statements in one call is not supported.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Connection`], [`DbError::Query`], or
-    /// [`DbError::TypeConversion`] depending on the failure mode.
-    pub async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+    async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+        // sqlx::raw_sql uses the simple query protocol, which streams
+        // row data and command-completion counts in one pass — so SELECT
+        // and DML need no separate routing. Row-returning statements
+        // expose rows and leave `rows_affected` at 0; pure DML leaves
+        // `rows` empty and reports the affected count. Mixing both in
+        // one call is not supported (`columns` would reflect the first
+        // row-returning statement only).
         let mut stream = sqlx::raw_sql(sql).fetch_many(&self.pool);
 
         let mut columns: Option<Vec<Column>> = None;

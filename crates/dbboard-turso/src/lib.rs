@@ -1,14 +1,14 @@
 //! Turso / libSQL adapter for dbboard.
 //!
 //! Wraps the official `libsql` crate so the rest of dbboard sees only
-//! the domain types from `dbboard-core`. The adapter does not yet
-//! implement a workspace-wide trait — Phase 2 of the roadmap extracts
-//! that trait once the second adapter (Neon) gives it a real second
-//! shape to honour.
+//! the domain types from `dbboard-core`. Implements the workspace-wide
+//! [`DatabaseAdapter`] contract (ADR-0012); Phase 2 advertises no
+//! optional capabilities — Turso ships base catalog access only.
 
+use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
-    MAX_RESULT_ROWS,
+    too_many_rows_error, Capabilities, Column, DatabaseAdapter, DbError, DbResult, QueryResult,
+    Row, TableInfo, Value, MAX_RESULT_ROWS,
 };
 
 pub struct TursoAdapter {
@@ -46,14 +46,21 @@ impl TursoAdapter {
             .map_err(|e| DbError::Connection(redact_path(e.to_string(), path)))?;
         Ok(Self { conn, _db: db })
     }
+}
 
-    /// Cheap liveness probe: runs `SELECT 1` and discards the row.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Query`] when the probe statement fails to
-    /// execute on the live connection.
-    pub async fn ping(&self) -> DbResult<()> {
+#[async_trait]
+impl DatabaseAdapter for TursoAdapter {
+    fn id(&self) -> &'static str {
+        "turso"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        // Phase 2 ships base catalog access only; per-DB features land
+        // alongside the adapters that need them.
+        Capabilities::default()
+    }
+
+    async fn ping(&self) -> DbResult<()> {
         // `Connection::execute` is DML-only — passing a SELECT trips
         // libSQL's "Execute returned rows" guard, so the probe goes
         // through the row-returning path and discards the row.
@@ -69,15 +76,7 @@ impl TursoAdapter {
         Ok(())
     }
 
-    /// List user tables (i.e. anything in `sqlite_master` that is not
-    /// a `sqlite_*` internal table). Names are returned in ascending
-    /// lexicographic order.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Schema`] when the underlying introspection
-    /// query fails.
-    pub async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+    async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
         let mut rows = self
             .conn
             .query(
@@ -101,22 +100,12 @@ impl TursoAdapter {
         Ok(tables)
     }
 
-    /// Execute a SQL statement and collect every row into memory.
-    ///
-    /// Internally dispatches to libSQL's row-returning path for
-    /// `SELECT`-shaped statements and to the affected-rows path for
-    /// `INSERT`/`UPDATE`/`DELETE`/DDL, since libSQL exposes those as
-    /// distinct entry points and rejects a statement sent through
-    /// the wrong one.
-    ///
-    /// Phase 1 only targets the small result sets a developer pastes
-    /// into the SQL editor; streaming and pagination land later.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Query`] or [`DbError::TypeConversion`]
-    /// depending on the failure mode.
-    pub async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+    async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+        // libSQL splits row-returning and DML/DDL across two driver
+        // entry points and rejects a statement sent through the wrong
+        // one, so route by the first SQL keyword. Phase 1 targets the
+        // small result sets a developer pastes into the SQL editor;
+        // streaming and pagination land later.
         if is_row_returning(sql) {
             run_select(&self.conn, sql).await
         } else {
