@@ -5,7 +5,7 @@
 //! `DBBOARD_D1_DATABASE_ID`, and `DBBOARD_D1_TOKEN` are all set. With
 //! them set it exercises the full `connect → ping → query` path.
 
-use dbboard_core::Value;
+use dbboard_core::{DatabaseAdapter, Value};
 use dbboard_d1::{D1Adapter, D1Config};
 
 fn config_from_env() -> Option<D1Config> {

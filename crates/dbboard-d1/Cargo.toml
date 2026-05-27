@@ -9,6 +9,7 @@ publish.workspace = true
 description = "Cloudflare D1 adapter for dbboard (REST API)."
 
 [dependencies]
+async-trait = { workspace = true }
 dbboard-core = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

@@ -28,12 +28,12 @@ use std::sync::Arc;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
-use dbboard_core::DbError;
+use dbboard_core::{DatabaseAdapter, DbError};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use backend::Backend;
+use backend::connect_adapter;
 
 pub use config::{backend_config_from_env, BackendConfig};
 
@@ -42,8 +42,8 @@ pub use config::{backend_config_from_env, BackendConfig};
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 
 /// Shared application state handed to every request: the single
-/// connected backend behind an `Arc` (see [`backend`] for why it must
-/// not be reconnected per request).
+/// connected adapter behind an `Arc<dyn DatabaseAdapter>` (see
+/// [`backend`] for why it must not be reconnected per request).
 ///
 /// `#[non_exhaustive]` so it can only be obtained from [`connect`] —
 /// callers receive it and hand it back to [`build_router`] but cannot
@@ -51,7 +51,7 @@ const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct AppState {
-    backend: Arc<Backend>,
+    pub(crate) adapter: Arc<dyn DatabaseAdapter>,
 }
 
 /// Failure modes when standing up the server.
@@ -105,10 +105,8 @@ impl RunningServer {
 /// This is the only variant `connect` can produce — socket binding
 /// (and hence [`ServerError::Io`]) happens later, in [`serve`].
 pub async fn connect(config: BackendConfig) -> Result<AppState, ServerError> {
-    let backend = Backend::connect(config).await?;
-    Ok(AppState {
-        backend: Arc::new(backend),
-    })
+    let adapter = connect_adapter(config).await?;
+    Ok(AppState { adapter })
 }
 
 /// Build the axum router for a connected backend. Exposed so tests can

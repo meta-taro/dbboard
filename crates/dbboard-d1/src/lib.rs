@@ -5,18 +5,18 @@
 //! the REST API (the Workers binding is Worker-only). So this adapter
 //! is an HTTP client of `POST /accounts/{account}/d1/database/{db}/raw`
 //! that maps Cloudflare's JSON envelope onto the `dbboard-core` domain
-//! types. It mirrors `TursoAdapter`'s method surface
-//! (`connect` / `ping` / `list_tables` / `query`); the workspace-wide
-//! adapter trait is still deferred to Phase 2 (see `docs/roadmap.md`).
+//! types. Implements the workspace-wide [`DatabaseAdapter`] contract
+//! (ADR-0012); Phase 2 advertises no optional capabilities.
 //!
 //! The `/raw` endpoint is used over `/query` because it preserves
 //! column order and returns rows as positional arrays, which is what a
 //! result table needs. It also returns the same shape for SELECT and
 //! DML, so no statement routing is required.
 
+use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
-    MAX_RESULT_ROWS,
+    too_many_rows_error, Capabilities, Column, DatabaseAdapter, DbError, DbResult, QueryResult,
+    Row, TableInfo, Value, MAX_RESULT_ROWS,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -82,47 +82,6 @@ impl D1Adapter {
         })
     }
 
-    /// Cheap liveness probe: runs `SELECT 1` and discards the result.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Connection`] on transport/auth failure or
-    /// [`DbError::Query`] when the probe statement is rejected.
-    pub async fn ping(&self) -> DbResult<()> {
-        self.post_raw("SELECT 1").await.map(|_| ())
-    }
-
-    /// List user tables (everything in `sqlite_master` that is not a
-    /// `sqlite_*` internal table), ascending by name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Schema`] when the introspection query fails.
-    pub async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
-        // Re-tag the failure category: a failed introspection query is
-        // a schema error to the rest of the system, not a user query.
-        let envelope = self
-            .post_raw(LIST_TABLES_SQL)
-            .await
-            .map_err(reclassify_schema)?;
-        envelope_to_tables(envelope)
-    }
-
-    /// Execute a SQL statement against D1 and collect the result.
-    ///
-    /// `/raw` returns the same envelope for SELECT and DML, so there is
-    /// no need to route by statement kind: rows come from
-    /// `results.rows` and the affected count from `meta.changes`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Connection`], [`DbError::Query`], or
-    /// [`DbError::TypeConversion`] depending on the failure mode.
-    pub async fn query(&self, sql: &str) -> DbResult<QueryResult> {
-        let envelope = self.post_raw(sql).await?;
-        envelope_to_query_result(envelope)
-    }
-
     /// POST a single statement to the `/raw` endpoint and return the
     /// parsed, success-checked envelope.
     async fn post_raw(&self, sql: &str) -> DbResult<D1Envelope> {
@@ -156,6 +115,39 @@ impl D1Adapter {
         } else {
             Err(error_from_response(status, &envelope.errors))
         }
+    }
+}
+
+#[async_trait]
+impl DatabaseAdapter for D1Adapter {
+    fn id(&self) -> &'static str {
+        "d1"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    async fn ping(&self) -> DbResult<()> {
+        self.post_raw("SELECT 1").await.map(|_| ())
+    }
+
+    async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+        // Re-tag the failure category: a failed introspection query is
+        // a schema error to the rest of the system, not a user query.
+        let envelope = self
+            .post_raw(LIST_TABLES_SQL)
+            .await
+            .map_err(reclassify_schema)?;
+        envelope_to_tables(envelope)
+    }
+
+    async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+        // `/raw` returns the same envelope for SELECT and DML, so the
+        // statement kind doesn't need to be routed: rows come from
+        // `results.rows` and the affected count from `meta.changes`.
+        let envelope = self.post_raw(sql).await?;
+        envelope_to_query_result(envelope)
     }
 }
 
