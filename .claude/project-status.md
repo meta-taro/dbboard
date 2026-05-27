@@ -6,9 +6,55 @@
 ## 最終更新
 
 - 日付: 2026-05-27 (前日からセッション継続)
-- ブランチ: `feature/adapter-trait-capability` (`develop` から分岐、Phase 2 着手用)
-- 現在の Phase: **v0.1.0 出荷済。Phase 2 (DatabaseAdapter trait 抽出 + Capability
-  パターン + `/capabilities` エンドポイント) 着手。**
+- ブランチ: `feature/adapter-trait-capability` (`develop` から分岐、Phase 2)
+- 現在の Phase: **v0.1.0 出荷済。Phase 2 (ADR-0012) ブランチ上で実装完了、
+  human review + push 待ち。**
+
+### Phase 2 ブランチ実装完了 (本セッション後半 / 2026-05-27)
+
+`develop` から分岐した `feature/adapter-trait-capability` 上に 5 commit
+ぶんの Phase 2 を積み終え、132 tests green。Push は人間担当。
+
+積んだ commit (古い順):
+
+- `0dc9e17` `feat(core): introduce Capabilities discovery struct (ADR-0012)`
+- `17e8a84` `feat(core): define DatabaseAdapter trait and capability markers`
+- `5e46e99` `refactor(adapters): implement DatabaseAdapter trait and dispatch via Arc<dyn>`
+- `1c350f6` `feat(server): add GET /capabilities and the capability error category`
+- `f59107b` `docs: document GET /capabilities and queue web mirror brief`
+
+Phase 2 実装の要点:
+
+- `Capabilities` は flat snake_case (`has_views` / `has_functions` / `has_auth` /
+  `has_storage` / `has_realtime`) で `Copy + serde`。
+- `DatabaseAdapter` trait は `async-trait` で `Arc<dyn ...>` 共有可能。必須面は
+  `id() -> &'static str` / `capabilities()` / `ping()` / `list_tables()` /
+  `query()`。capability 用 `Option<&dyn ...>` accessor は **未配線** (Phase 2
+  では capability 実装ゼロ、shape のみ定義の方針)。
+- `dbboard-server::AppState` は `Arc<dyn DatabaseAdapter>` を 1 本だけ持つ。
+  `Backend` enum 完全廃止、`backend.rs` は `connect_adapter` 1 関数のみ。
+- `GET /capabilities` → `{ "id": "<adapter>", "capabilities": Capabilities }`。
+  全アダプタ Phase 2 では全 flag `false`。
+- `DbError::Capability(String)` を新設、HTTP 404 にマップ。`category()` /
+  `message()` / `from_parts()` を更新済。
+- UI scrub (#7) は **no-op で完了**: `dbboard-ui` / `apps/dbboard` を
+  `Turso|D1|Postgres|Neon|Supabase|libsql` で grep → 0 件。Phase 1.5 の
+  HTTP indirection で既に達成済だった。
+- `docs/api-contract.md` に `GET /capabilities` セクション、`Capabilities`
+  データ形状、`capability` エラーカテゴリ行を追記。
+- `.claude/issues/0002-web-capabilities-mirror.md` を 0001 と同形式で作成
+  (Phase 2 contract 追加分を dbboard-web に mirror する handoff)。
+
+## 次の Phase 2 PR (human action)
+
+- ローカル commit を push: `git push -u origin feature/adapter-trait-capability`
+  (Norton で release build が遅くなる可能性あり、`env-windows-norton.md` 参照)。
+- `develop` 向けに PR を出す。タイトル例: `feat: Phase 2 — DatabaseAdapter trait
+  + Capability discovery (ADR-0012)`。
+- PR body には上記 5 commit の役割と「**Phase 1 surface はゼロ変更、Phase 2
+  は純粋に additive**」点を明記。Conformance test 範囲は変えていない。
+- マージ後の sibling 作業は `.claude/issues/0002-web-capabilities-mirror.md`
+  を起点に web リポへ持ち込む。
 
 ### v0.1.0 出荷完了 (本セッション前半)
 
@@ -18,35 +64,21 @@
 - 旧 feature branch (`feature/dev-hardening-husky-deny`) は local 削除済。
   remote の削除は人間にお任せ (GitHub 上で stale branch クリーンアップ)。
 
-## Phase 2 タスク (本ブランチで一括 PR 予定)
+## Phase 2 タスク (本ブランチで一括 PR — 実装完了)
 
-ADR-0012 に従い、以下を 1 PR にまとめる。1〜8 はそのまま session task ID と対応。
+ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち。
 
-1. **status / memory 同期**: 本ファイル + memory `dbboard-web-state.md` を v0.1.0
-   実態に更新 → `chore(status)` で 1 commit (本作業)。
-2. **`Capabilities` struct 定義**: `crates/dbboard-core/src/capabilities.rs` に
-   `Copy` flag struct (`has_views` / `has_functions` / `has_auth` / `has_storage` /
-   `has_realtime`)。serde derive 付き。失敗テスト先行。
-3. **`DatabaseAdapter` trait + capability マーカー trait 定義**: `async-trait`
-   依存を追加。必須面 (`id` / `capabilities` / `ping` / `introspect` / `query`) と
-   5 つの `Option<&dyn ...>` accessor。各 capability trait は空のマーカーとして
-   `crates/dbboard-core/src/capabilities/{views,functions,auth,storage,realtime}.rs`
-   に配置。「`caps.has_views == adapter.views().is_some()`」不変条件を unit test。
-4. **`Backend` を `Arc<dyn DatabaseAdapter>` に縮退**: `crates/dbboard-server/src/backend.rs`
-   の enum を解体、`BackendConfig::connect` に分岐を集約。
-5. **3 アダプタ migration**: `dbboard-turso` / `dbboard-d1` / `dbboard-postgres` を
-   `DatabaseAdapter` impl に書き換え。`capabilities()` は全 false を返す
-   (Phase 2 では capability 実装ゼロ)。既存テストは shape 不変で通る想定。
-6. **`GET /capabilities` + `capability` エラーカテゴリ (404) 追加**: `DbError`
-   に `Capability` 変種を新設。`/views` `/functions` `/auth` `/storage` `/realtime`
-   プレフィックスは予約のみ (Phase 2 では body 配線不要)。
-7. **UI から `Turso` の単語を全消し** (Phase 2 exit criterion): `dbboard-ui`
-   に Turso/D1/Postgres どれの固有名も残さない。capability flag ベースに揃える。
-8. **`docs/api-contract.md` 改訂 + dbboard-web 向け handoff brief**: `/capabilities`
-   と `capability` カテゴリを `docs/api-contract.md` に追記。`.claude/issues/0002-*.md`
-   に `939fe22` 形式の handoff を起こす。
+1. ✅ status / memory 同期 (`v0.1.0` 出荷反映)。
+2. ✅ `Capabilities` struct 定義 (`0dc9e17`)。
+3. ✅ `DatabaseAdapter` trait 定義 (`17e8a84`)。
+4. ✅ 3 アダプタを trait に migration + `Backend` enum 解体 (`5e46e99`)。
+   元の task 4/5 は compile-time に分離不能 (循環) と判明し 1 commit に統合。
+6. ✅ `GET /capabilities` + `DbError::Capability(404)` (`1c350f6`)。
+7. ✅ UI scrub (no-op で完了; Phase 1.5 ですでに達成済)。
+8. ✅ `docs/api-contract.md` 改訂 + `.claude/issues/0002-web-capabilities-mirror.md`
+   起票 (`f59107b`)。
 
-## 直近の作業 (本セッション後半)
+## 直近の作業 (前セッション後半 / 2026-05-26)
 
 - **環境復旧**: Norton と推測される AV が `C:\Users\syste\AppData\Roaming\npm\
   node_modules\@anthropic-ai\claude-code\bin\claude.exe` を `.old.<timestamp>` に
