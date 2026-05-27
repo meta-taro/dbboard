@@ -114,6 +114,7 @@ pub async fn connect(config: BackendConfig) -> Result<AppState, ServerError> {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/capabilities", get(handlers::capabilities))
         .route("/tables", get(handlers::list_tables))
         .route("/query", post(handlers::run_query))
         // A SQL editor sends short statements; cap the body well below
