@@ -1,63 +1,51 @@
-//! The connected adapter behind the HTTP handlers.
+//! Wire a [`BackendConfig`] up to a concrete [`DatabaseAdapter`].
 //!
-//! Moved here from `apps/dbboard` in Phase 1.5. The server holds a
-//! single connected [`Backend`] in an `Arc` and shares it across every
-//! request — never reconnecting per request. This is load-bearing for
-//! Turso `:memory:`, where each fresh connection is its *own* empty
+//! The HTTP handlers never see the adapter kind: they hold an
+//! `Arc<dyn DatabaseAdapter>` produced here and dispatch through the
+//! trait surface only. Adding a new adapter means a new match arm
+//! below and no changes to the handlers (ADR-0012).
+//!
+//! The server owns the single connected adapter for the lifetime of
+//! the process — never reconnecting per request. That is load-bearing
+//! for Turso `:memory:`, where each fresh connection is its *own* empty
 //! database; reconnecting would silently lose any `CREATE TABLE`.
 
-use dbboard_core::{DbResult, QueryResult, TableInfo};
+use std::sync::Arc;
+
+use dbboard_core::{DatabaseAdapter, DbResult};
 use dbboard_d1::D1Adapter;
 use dbboard_postgres::{PostgresAdapter, PostgresConfig};
 use dbboard_turso::TursoAdapter;
 
 use crate::config::BackendConfig;
 
-/// A connected adapter. The variants share the small command surface
-/// the handlers need; statement dispatch is a plain `match`.
-pub(crate) enum Backend {
-    Turso(TursoAdapter),
-    D1(D1Adapter),
-    Postgres(PostgresAdapter),
-}
-
-impl Backend {
-    pub(crate) async fn connect(config: BackendConfig) -> DbResult<Self> {
-        match config {
-            BackendConfig::Turso { path } => {
-                Ok(Self::Turso(TursoAdapter::connect_local(&path).await?))
-            }
-            BackendConfig::D1(cfg) => {
-                let adapter = D1Adapter::connect(cfg)?;
-                // Verify connectivity up front so a bad token or id
-                // surfaces as a connection error at startup, matching
-                // how the Turso path fails fast on a bad file.
-                adapter.ping().await?;
-                Ok(Self::D1(adapter))
-            }
-            BackendConfig::Postgres { url } => {
-                let adapter = PostgresAdapter::connect(PostgresConfig { url }).await?;
-                // Same fail-fast contract: surface a bad URL or rejected
-                // credentials as a startup connection error.
-                adapter.ping().await?;
-                Ok(Self::Postgres(adapter))
-            }
+/// Resolve a [`BackendConfig`] into a connected, trait-object adapter.
+///
+/// Connection failures surface here so a bad token, URL, or file path
+/// is reported at startup rather than on the first request. For
+/// non-self-validating drivers (D1, sqlx) this also runs `ping()` so
+/// the fail-fast contract holds uniformly across adapters.
+pub(crate) async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn DatabaseAdapter>> {
+    match config {
+        BackendConfig::Turso { path } => {
+            let adapter = TursoAdapter::connect_local(&path).await?;
+            Ok(Arc::new(adapter))
         }
-    }
-
-    pub(crate) async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
-        match self {
-            Self::Turso(a) => a.list_tables().await,
-            Self::D1(a) => a.list_tables().await,
-            Self::Postgres(a) => a.list_tables().await,
+        BackendConfig::D1(cfg) => {
+            let adapter = D1Adapter::connect(cfg)?;
+            // D1Adapter::connect builds the HTTP client without touching
+            // the network, so verify reachability up front to match how
+            // the Turso path fails fast on a bad file.
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
         }
-    }
-
-    pub(crate) async fn query(&self, sql: &str) -> DbResult<QueryResult> {
-        match self {
-            Self::Turso(a) => a.query(sql).await,
-            Self::D1(a) => a.query(sql).await,
-            Self::Postgres(a) => a.query(sql).await,
+        BackendConfig::Postgres { url } => {
+            let adapter = PostgresAdapter::connect(PostgresConfig { url }).await?;
+            // sqlx lazily verifies the pool; force the first round-trip
+            // here so a bad URL or rejected credentials surface as a
+            // startup connection error.
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
         }
     }
 }

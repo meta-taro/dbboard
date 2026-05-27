@@ -8,7 +8,7 @@
 //! the text-format value mapping (every value comes back as `Value::Text`,
 //! NULL as `Value::Null`).
 
-use dbboard_core::Value;
+use dbboard_core::{DatabaseAdapter, Value};
 use dbboard_postgres::{PostgresAdapter, PostgresConfig};
 
 fn config_from_env() -> Option<PostgresConfig> {
