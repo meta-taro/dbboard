@@ -8,6 +8,7 @@
 //! discovery struct per ADR-0012. Optional per-DB features attach as
 //! marker traits in [`capabilities`].
 
+mod adapter;
 mod capabilities;
 mod error;
 mod limits;
@@ -15,7 +16,11 @@ mod row;
 mod schema;
 mod value;
 
-pub use capabilities::Capabilities;
+pub use adapter::DatabaseAdapter;
+pub use capabilities::{
+    AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
+    ViewIntrospection,
+};
 pub use error::{DbError, DbResult};
 pub use limits::{too_many_rows_error, MAX_RESULT_ROWS};
 pub use row::{Column, QueryResult, Row};

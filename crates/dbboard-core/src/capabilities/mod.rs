@@ -10,8 +10,17 @@
 //! field names. The `Default` instance is "all false" — used by
 //! adapters that ship no capabilities.
 
-// Capability marker traits (views, functions, auth, storage, realtime)
-// arrive alongside `DatabaseAdapter`.
+mod auth;
+mod functions;
+mod realtime;
+mod storage;
+mod views;
+
+pub use auth::AuthAdmin;
+pub use functions::FunctionIntrospection;
+pub use realtime::RealtimeChannels;
+pub use storage::StorageAdmin;
+pub use views::ViewIntrospection;
 
 use serde::{Deserialize, Serialize};
 
