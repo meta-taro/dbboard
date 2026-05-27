@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::Json;
 use dbboard_core::QueryResult;
 
-use crate::dto::{ApiError, HealthResponse, QueryRequest, TablesResponse};
+use crate::dto::{ApiError, CapabilitiesResponse, HealthResponse, QueryRequest, TablesResponse};
 use crate::AppState;
 
 /// Liveness probe. Does not touch the database — answering means the
@@ -28,4 +28,14 @@ pub(crate) async fn run_query(
 ) -> Result<Json<QueryResult>, ApiError> {
     let result = state.adapter.query(&req.sql).await?;
     Ok(Json(result))
+}
+
+/// Discovery endpoint (ADR-0012). Returns the adapter's stable id plus
+/// the boolean capability flags so the UI can decide which optional
+/// features to surface without probing each one individually.
+pub(crate) async fn capabilities(State(state): State<AppState>) -> Json<CapabilitiesResponse> {
+    Json(CapabilitiesResponse {
+        id: state.adapter.id(),
+        capabilities: state.adapter.capabilities(),
+    })
 }
