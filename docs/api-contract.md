@@ -55,6 +55,36 @@ List user tables for the sidebar.
 - `tables` is an array of [`TableInfo`](#tableinfo) objects, in the order
   the adapter returns them.
 
+### `GET /capabilities`
+
+Adapter discovery (ADR-0012). Returns the connected adapter's stable id
+plus a flat set of boolean capability flags so the UI can decide which
+optional features to surface without probing each one individually.
+
+```
+200 OK
+{
+  "id": "turso",
+  "capabilities": {
+    "has_views": false,
+    "has_functions": false,
+    "has_auth": false,
+    "has_storage": false,
+    "has_realtime": false
+  }
+}
+```
+
+- `id` is a lowercase, adapter-stable identifier. Current values:
+  `"turso"`, `"d1"`, `"postgres"`.
+- `capabilities` is a [`Capabilities`](#capabilities) object. Phase 2
+  ships every adapter with all flags `false`; later phases set flags
+  alongside the endpoints that implement them.
+- Forward-compatibility: a client must tolerate **additional** flags in
+  the `capabilities` object (treat unknown flags as the safest default,
+  typically `false`). Renaming or removing an existing flag is a
+  breaking change.
+
 ### `POST /query`
 
 Run a single SQL statement.
@@ -130,6 +160,25 @@ other variant maps to a native JSON scalar.
 
 - `schema` is `null` for engines without a schema namespace.
 
+### `Capabilities`
+
+```jsonc
+{
+  "has_views": false,
+  "has_functions": false,
+  "has_auth": false,
+  "has_storage": false,
+  "has_realtime": false
+}
+```
+
+- A flat object of `snake_case` boolean flags, one per optional
+  capability defined in ADR-0012. The set may grow over time; clients
+  must tolerate unknown flags (see `GET /capabilities`).
+- Each `true` flag promises a corresponding capability surface (e.g.
+  `has_views` → view introspection endpoints). Phase 2 ships every
+  flag as `false`; per-feature endpoints land in later phases.
+
 ## Errors
 
 Any non-2xx response carries an error envelope:
@@ -149,6 +198,7 @@ Any non-2xx response carries an error envelope:
 | `type_conversion` | `422 Unprocessable Entity` | A value cannot be represented in the domain `Value` set. |
 | `connection` | `502 Bad Gateway` | The upstream database is unreachable / failed. |
 | `schema` | `502 Bad Gateway` | Schema introspection failed upstream. |
+| `capability` | `404 Not Found` | The adapter does not implement the requested capability (ADR-0012). Distinct from `query` so the UI can hide or grey out the feature instead of surfacing it as a SQL error. |
 
 An unknown `category` received by a client degrades to `query` so a
 contract drift surfaces as a visible error rather than a crash.
