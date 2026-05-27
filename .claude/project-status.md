@@ -5,10 +5,25 @@
 
 ## 最終更新
 
-- 日付: 2026-05-27 (前日からセッション継続)
-- ブランチ: `feature/adapter-trait-capability` (`develop` から分岐、Phase 2)
-- 現在の Phase: **v0.1.0 出荷済。Phase 2 (ADR-0012) ブランチ上で実装完了、
-  human review + push 待ち。**
+- 日付: 2026-05-27 (本セッション、Phase 2 PR マージ + ブランチ削除まで完了)
+- ブランチ: `develop` (Phase 2 マージ済 = `7f463ef`、Phase 3 着手前)
+- 現在の Phase: **v0.1.0 出荷済。Phase 2 ADR-0012 部分 (trait + capability
+  discovery) は `develop` にマージ済。Phase 2 残タスク (connection 管理 UI /
+  config 永続化 / query history) は未着手。次の baton は web 側の delta
+  mirror (`.claude/issues/0002-web-capabilities-mirror.md`)。**
+
+### Phase 2 PR #5 マージクローズ (本セッション末 / 2026-05-27)
+
+- PR #5 (`feature/adapter-trait-capability` → `develop`) マージ済 = `7f463ef`。
+  GitHub 上で squash ではなく merge commit (CHANGELOG への影響なし、Phase 2
+  は未 release)。
+- ローカル + リモート `feature/adapter-trait-capability` 削除済。pre-push
+  hook が release build + 132 tests を実行してから削除を通した。
+- memory 更新済:
+  - `dbboard-web-state.md` → desktop@7f463ef snapshot、delta-mirror waiting
+    on web の状態を反映。
+  - `MEMORY.md` index の dbboard-web エントリ description 更新。
+- ローカル `develop` は `origin/develop` (= `7f463ef`) と sync 済。
 
 ### Phase 2 ブランチ実装完了 (本セッション後半 / 2026-05-27)
 
