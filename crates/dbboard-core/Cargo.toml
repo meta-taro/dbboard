@@ -16,6 +16,10 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 # JSON has no byte type; Value::Blob is encoded as base64.
 base64 = { workspace = true }
+# Object-safe async trait until AFIT supports dyn (ADR-0012). The macro
+# is compile-time only — defining an async trait is not I/O, so the
+# crate's "no I/O" rule still holds.
+async-trait = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

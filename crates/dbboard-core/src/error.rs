@@ -19,6 +19,12 @@ pub enum DbError {
 
     #[error("type conversion failed: {0}")]
     TypeConversion(String),
+
+    /// The adapter does not expose the requested capability (ADR-0012).
+    /// Distinguished from `Query` so the UI can hide or grey out the
+    /// affected feature instead of presenting it as a user SQL error.
+    #[error("capability unavailable: {0}")]
+    Capability(String),
 }
 
 impl DbError {
@@ -31,6 +37,7 @@ impl DbError {
             Self::Query(_) => "query",
             Self::Schema(_) => "schema",
             Self::TypeConversion(_) => "type_conversion",
+            Self::Capability(_) => "capability",
         }
     }
 
@@ -41,7 +48,11 @@ impl DbError {
     #[must_use]
     pub fn message(&self) -> &str {
         match self {
-            Self::Connection(m) | Self::Query(m) | Self::Schema(m) | Self::TypeConversion(m) => m,
+            Self::Connection(m)
+            | Self::Query(m)
+            | Self::Schema(m)
+            | Self::TypeConversion(m)
+            | Self::Capability(m) => m,
         }
     }
 
@@ -54,6 +65,7 @@ impl DbError {
             "connection" => Self::Connection(message),
             "schema" => Self::Schema(message),
             "type_conversion" => Self::TypeConversion(message),
+            "capability" => Self::Capability(message),
             _ => Self::Query(message),
         }
     }
@@ -93,6 +105,15 @@ mod tests {
     }
 
     #[test]
+    fn capability_error_renders_category_and_message() {
+        let e = DbError::Capability("views not supported on turso".into());
+        assert_eq!(
+            e.to_string(),
+            "capability unavailable: views not supported on turso"
+        );
+    }
+
+    #[test]
     fn category_strings_match_the_contract() {
         assert_eq!(DbError::Connection(String::new()).category(), "connection");
         assert_eq!(DbError::Query(String::new()).category(), "query");
@@ -101,6 +122,7 @@ mod tests {
             DbError::TypeConversion(String::new()).category(),
             "type_conversion"
         );
+        assert_eq!(DbError::Capability(String::new()).category(), "capability");
     }
 
     #[test]
@@ -110,6 +132,7 @@ mod tests {
             DbError::Query("q".into()),
             DbError::Schema("s".into()),
             DbError::TypeConversion("t".into()),
+            DbError::Capability("cap".into()),
         ] {
             let back = DbError::from_parts(e.category(), e.message().to_owned());
             assert_eq!(back.category(), e.category());
