@@ -53,6 +53,10 @@ async-trait = "0.1"
 # Connection store file format (ADR-0013). String round-trip only at the
 # schema layer; filesystem reads live in the same crate's store module.
 toml = "0.8"
+# Cross-platform config-dir resolution for connections.toml (ADR-0013).
+directories = "5"
+# tempfile-based integration tests for dbboard-config's filesystem layer.
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
