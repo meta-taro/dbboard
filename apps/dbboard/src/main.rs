@@ -17,6 +17,12 @@
 //! id > single-entry auto-select > Turso `:memory:`. Failures (a missing
 //! id, a missing keyring entry) abort startup loudly rather than
 //! silently swapping in a different backend.
+//!
+//! Locale resolution (ADR-0015) runs here too: `DBBOARD_LANG` > OS
+//! locale > `en`. The binary also registers an OS CJK font into the
+//! egui font stack so `ja` / `ko` / `zh-CN` / `zh-TW` users do not see
+//! tofu — egui's bundled Ubuntu-Light covers Latin + Cyrillic but no
+//! CJK ranges.
 
 use dbboard_config::store::{default_path, load_or_empty};
 use dbboard_config::{ConnectionFile, KeyringStore};
@@ -24,6 +30,13 @@ use dbboard_server::{backend_config_from_env_and_store, serve};
 use dbboard_ui::DbboardApp;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Resolve and apply the user's locale before any UI string is read.
+    // A failure here is non-fatal: we keep going with the en fallback so
+    // a malformed .ftl in a future locale can never brick startup.
+    if let Err(e) = dbboard_i18n::init(None) {
+        eprintln!("dbboard: locale init failed, falling back to en: {e}");
+    }
+
     // Best-effort config-dir resolution: if the OS reports no per-user
     // config dir at all, treat the store as empty rather than aborting.
     // The env-var path still works in that case (CI, headless tests).
@@ -49,10 +62,100 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = eframe::run_native(
         "dbboard",
         native_options,
-        Box::new(move |cc| Ok(Box::new(DbboardApp::connect(base_url, cc.egui_ctx.clone())))),
+        Box::new(move |cc| {
+            install_cjk_font(&cc.egui_ctx);
+            Ok(Box::new(DbboardApp::connect(base_url, cc.egui_ctx.clone())))
+        }),
     );
 
     // The UI has exited; stop the server before reporting how it went.
     rt.block_on(server.shutdown())?;
     result.map_err(Into::into)
+}
+
+/// Look up an OS-installed CJK font and append it to egui's font stack
+/// (ADR-0015). egui's bundled `Ubuntu-Light` covers Latin + Cyrillic
+/// but renders CJK as tofu; appending a CJK font as a *fallback* (not a
+/// replacement) keeps the existing look for Latin while resolving the
+/// CJK ranges from the system.
+///
+/// We probe one path per family and stop at the first hit. A miss is
+/// logged but non-fatal — bundling Noto CJK ourselves is a deferred
+/// Stage 2 decision (~20 MB per script).
+fn install_cjk_font(ctx: &egui::Context) {
+    let Some((name, bytes)) = load_first_cjk_font() else {
+        eprintln!(
+            "dbboard: no CJK system font found; ja/ko/zh users may see \
+             tofu. Install Noto Sans CJK (Linux) or Yu Gothic / PingFang \
+             / Hiragino (Windows/macOS) to fix."
+        );
+        return;
+    };
+
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .font_data
+        .insert(name.to_owned(), egui::FontData::from_owned(bytes).into());
+    // Append, do not replace. Egui walks the family in order; Latin
+    // glyphs keep coming from Ubuntu-Light, CJK glyphs fall through.
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push(name.to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
+/// Probe a small per-OS candidate list. The first readable file wins —
+/// we do not try to pick "the best" CJK font, only "any CJK font" so
+/// the user does not see tofu.
+fn load_first_cjk_font() -> Option<(&'static str, Vec<u8>)> {
+    #[cfg(target_os = "windows")]
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("YuGothic", r"C:\Windows\Fonts\YuGothM.ttc"),
+        ("YuGothicUI", r"C:\Windows\Fonts\YuGothR.ttc"),
+        ("Meiryo", r"C:\Windows\Fonts\meiryo.ttc"),
+        ("MSGothic", r"C:\Windows\Fonts\msgothic.ttc"),
+        ("MalgunGothic", r"C:\Windows\Fonts\malgun.ttf"),
+        ("MicrosoftYaHei", r"C:\Windows\Fonts\msyh.ttc"),
+    ];
+    #[cfg(target_os = "macos")]
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("HiraginoSans", "/System/Library/Fonts/Hiragino Sans GB.ttc"),
+        ("PingFang", "/System/Library/Fonts/PingFang.ttc"),
+        (
+            "AppleSDGothicNeo",
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        ),
+    ];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const CANDIDATES: &[(&str, &str)] = &[
+        (
+            "NotoSansCJK",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ),
+        (
+            "NotoSansCJK",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        ),
+        (
+            "NotoSansCJKJP",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        ),
+        (
+            "NotoSansCJKKR",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf",
+        ),
+    ];
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    const CANDIDATES: &[(&str, &str)] = &[];
+
+    for (name, path) in CANDIDATES {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Some((*name, bytes));
+        }
+    }
+    None
 }

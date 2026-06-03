@@ -10,6 +10,10 @@ description = "egui-based presentation layer for dbboard. Depends only on dbboar
 
 [dependencies]
 dbboard-core = { workspace = true }
+# Translation loader (ADR-0015). Provides t!() / t_args!() macros and
+# the global Fluent loader. Initialised once at startup from
+# `apps/dbboard`; views call the macros directly.
+dbboard-i18n = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 # The UI is an HTTP client of the in-process loopback server (ADR-0009);
