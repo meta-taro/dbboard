@@ -10,6 +10,7 @@ description = "Local in-process HTTP backend for dbboard: serves the adapter API
 
 [dependencies]
 dbboard-core = { workspace = true }
+dbboard-config = { workspace = true }
 dbboard-d1 = { path = "../dbboard-d1" }
 dbboard-postgres = { path = "../dbboard-postgres" }
 dbboard-turso = { path = "../dbboard-turso" }

@@ -23,6 +23,10 @@ publish = false
 
 [workspace.dependencies]
 dbboard-core = { path = "crates/dbboard-core" }
+# Local user configuration: connections.toml + OS keychain (ADR-0013).
+# The server depends on this to wire env-vars with the file-backed store
+# into a single BackendConfig resolution.
+dbboard-config = { path = "crates/dbboard-config" }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # libsql core only — no remote/sync/replication/tls. Phase 1.5 will

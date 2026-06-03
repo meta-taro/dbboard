@@ -5,12 +5,55 @@
 
 ## 最終更新
 
-- 日付: 2026-05-27 (本セッション、Phase 2 PR マージ + ブランチ削除まで完了)
-- ブランチ: `develop` (Phase 2 マージ済 = `7f463ef`、Phase 3 着手前)
+- 日付: 2026-06-03 (本セッション、Phase 2 config 層実装完了)
+- ブランチ: `feature/config-store` (5 commit 積み済み、push 待ち)
 - 現在の Phase: **v0.1.0 出荷済。Phase 2 ADR-0012 部分 (trait + capability
-  discovery) は `develop` にマージ済。Phase 2 残タスク (connection 管理 UI /
-  config 永続化 / query history) は未着手。次の baton は web 側の delta
-  mirror (`.claude/issues/0002-web-capabilities-mirror.md`)。**
+  discovery) は `develop` 済 = `7f463ef`。本セッションで Phase 2 ADR-0013
+  部分 (local TOML connection store + OS keychain で secrets) を実装、
+  `apps/dbboard` まで配線完了。残タスクは connection 管理 UI と
+  query history。次の baton は web 側 delta mirror
+  (`.claude/issues/0002-web-capabilities-mirror.md`) のまま。**
+
+### Phase 2 config 層 (本セッション / 2026-06-03)
+
+`develop` から `feature/config-store` を切って 5 commit 積み終え、156
+tests green (1 ignored = live keyring)。Push は人間担当。
+
+積んだ commit (古い順):
+
+- `<adr>` ADR-0013 起票 (`docs/decisions.md` 末尾追記)。
+- `<skel>` `crates/dbboard-config` skeleton + schema (serde-only, `kind`
+  discriminator で Turso/D1/Postgres、CONFIG_VERSION=1)。
+- `d7bc17c` `feat(config): load and persist connections.toml via the directories crate`。
+- `76f22f9` `feat(config): keyring-backed SecretStore with in-memory fallback`。
+- `<wire>` `apps/dbboard` 配線 + `docs/connections.md` 新設 + roadmap
+  Phase 2 checkbox 更新。
+
+実装の要点:
+
+- `dbboard-core` の「no I/O」は保持。新クレート `dbboard-config` が
+  TOML + keyring を抱え込む。
+- `connections.toml` schema: `version=1`、`[[connections]]` per entry。
+  D1/Postgres entry は **secret material を持たない** — `keyring_*_ref`
+  でキーチェーン参照のみ。`tests/secrets.rs` で TOML 内に raw token /
+  postgres URL が含まれないことを回帰テスト化。
+- 保存は `*.tmp` → `fs::rename` で atomic、Unix のみ mode 0o600。
+- `KeyringStore` = `keyring` crate v3.6.3 ラッパー、service 名は
+  定数 `"dbboard"`。`InMemorySecretStore` を test/CI fallback として
+  併設。live keyring test は `#[ignore]` (CLAUDE.md 必須 `cargo test
+  --all-features` を緑保つため)。
+- `dbboard-server::config` に `resolve_backend(env, file, secrets)`
+  純粋関数 + `backend_config_from_env_and_store()` ラッパーを追加。
+  既存 `backend_config_from_env()` は env-only として温存。
+- 解決順: PG_URL > D1 trio > TURSO_PATH > `DBBOARD_CONNECTION=<id>`
+  > 単一 entry 自動選択 > Turso `:memory:`。missing id は **silent
+  fallback せず** ConfigError で startup 中断。
+- `apps/dbboard/main.rs` を `load_or_empty + KeyringStore +
+  backend_config_from_env_and_store` フローに刷新。`default_path()`
+  失敗時は `ConnectionFile::empty()` で best-effort 続行 (CI/headless
+  対応)。
+- README に解決順サマリ追加、新規 `docs/connections.md` に schema /
+  ファイル位置 / OS 別 secret seed 手順を記載。
 
 ### Phase 2 PR #5 マージクローズ (本セッション末 / 2026-05-27)
 
