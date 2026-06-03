@@ -24,3 +24,27 @@ error-prefix-query = Query error
 error-prefix-schema = Schema error
 error-prefix-type-conversion = Type conversion error
 error-prefix-capability = Capability unavailable
+
+# Connection management window (ADR-0016). HeidiSQL mental model: this
+# window manages stored entries; the running process keeps talking to
+# whichever entry it was launched with.
+connections-window-title = Connections
+connections-restart-hint = Changes apply on next launch of dbboard.
+connections-list-empty = (no connections configured)
+connections-add-button = Add
+connections-edit-button = Edit
+connections-delete-button = Delete
+connections-save-button = Save
+connections-cancel-button = Cancel
+connections-confirm-delete = Delete this connection?
+connections-field-id = Id
+connections-field-name = Name
+connections-field-kind = Kind
+connections-field-turso-path = Database path
+connections-field-d1-account = Account id
+connections-field-d1-database = Database id
+connections-field-d1-base-url = Base URL (optional)
+connections-field-d1-token = API token
+connections-field-pg-url = Connection URL
+connections-replace-token = Replace token
+connections-replace-url = Replace URL
