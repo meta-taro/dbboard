@@ -21,7 +21,8 @@ pub use history::{HistoryEntry, HistoryStore, DEFAULT_CAPACITY};
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use dbboard_core::{DbResult, QueryResult, TableInfo};
+use dbboard_core::{DbError, DbResult, QueryResult, TableInfo};
+use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
 /// Request flowing UI → worker.
@@ -129,28 +130,28 @@ impl eframe::App for DbboardApp {
         self.drain_replies();
 
         egui::Panel::left("tables").show_inside(ui, |ui| {
-            ui.heading("Tables");
+            ui.heading(t!("tables-heading"));
             ui.separator();
             match &self.tables {
                 Ok(tables) if tables.is_empty() => {
-                    ui.label("(no tables)");
+                    ui.label(t!("tables-empty"));
                 }
                 Ok(tables) => {
-                    for t in tables {
-                        ui.label(&t.name);
+                    for table in tables {
+                        ui.label(&table.name);
                     }
                 }
                 Err(e) => {
-                    ui.colored_label(egui::Color32::LIGHT_RED, e.to_string());
+                    ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
                 }
             }
         });
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("SQL");
+                ui.heading(t!("sql-heading"));
                 if ui
-                    .add_enabled(!self.busy, egui::Button::new("Run"))
+                    .add_enabled(!self.busy, egui::Button::new(t!("sql-run-button")))
                     .clicked()
                 {
                     self.run_sql();
@@ -171,11 +172,11 @@ impl eframe::App for DbboardApp {
             // immutable iter() borrow ends, sidestepping the borrow
             // checker without cloning the whole store.
             let mut restore: Option<String> = None;
-            egui::CollapsingHeader::new(format!("History ({})", self.history.len()))
+            egui::CollapsingHeader::new(t_args!("history-title", count = self.history.len()))
                 .default_open(false)
                 .show(ui, |ui| {
                     if self.history.is_empty() {
-                        ui.label("(no recent queries)");
+                        ui.label(t!("history-empty"));
                     } else {
                         egui::ScrollArea::vertical()
                             .max_height(160.0)
@@ -193,14 +194,14 @@ impl eframe::App for DbboardApp {
             }
 
             ui.separator();
-            ui.heading("Result");
+            ui.heading(t!("result-heading"));
             match &self.last_result {
                 None => {
-                    ui.label("(run a query)");
+                    ui.label(t!("result-empty"));
                 }
                 Some(Ok(result)) => render_result(ui, result),
                 Some(Err(e)) => {
-                    ui.colored_label(egui::Color32::LIGHT_RED, e.to_string());
+                    ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
                 }
             }
         });
@@ -228,9 +229,27 @@ fn history_button_label(sql: &str) -> String {
     }
 }
 
+/// Render a `DbError` as `<translated prefix>: <wire message>`. The
+/// prefix comes from the active locale's `error-prefix-*` keys; the
+/// message body is the server-returned English string and stays as-is
+/// to preserve the ADR-0009 HTTP contract (see ADR-0015).
+fn error_display(e: &DbError) -> String {
+    let prefix = match e.category() {
+        "connection" => t!("error-prefix-connection"),
+        "schema" => t!("error-prefix-schema"),
+        "type_conversion" => t!("error-prefix-type-conversion"),
+        "capability" => t!("error-prefix-capability"),
+        // Includes "query" and any future category that landed on the
+        // server before the UI was updated — degrade visibly rather
+        // than silently swallowing the prefix.
+        _ => t!("error-prefix-query"),
+    };
+    format!("{prefix}: {}", e.message())
+}
+
 fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
     if result.rows.is_empty() {
-        ui.label(format!("OK ({} rows affected)", result.rows_affected));
+        ui.label(t_args!("result-affected", rows = result.rows_affected));
         return;
     }
 
@@ -252,8 +271,8 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, DbboardApp, Reply};
-    use dbboard_core::{Column, QueryResult, Row, TableInfo, Value};
+    use super::{error_display, Command, DbboardApp, Reply};
+    use dbboard_core::{Column, DbError, QueryResult, Row, TableInfo, Value};
     use std::sync::mpsc;
 
     fn build() -> (DbboardApp, mpsc::Receiver<Command>, mpsc::Sender<Reply>) {
@@ -393,6 +412,45 @@ mod tests {
 
         app.run_sql();
         assert_eq!(app.history().len(), 1);
+    }
+
+    #[test]
+    fn error_display_prefixes_translated_category_to_raw_message() {
+        // No init() call in this binary -> the loader stays on its
+        // en-fallback initial state. The wire message stays English
+        // (ADR-0009 / ADR-0015) and shows up verbatim after the
+        // translated prefix.
+        let e = DbError::Connection("host unreachable".into());
+        let rendered = error_display(&e);
+        assert!(
+            rendered.starts_with("Connection error"),
+            "translated prefix missing: {rendered}"
+        );
+        assert!(
+            rendered.ends_with("host unreachable"),
+            "raw message missing: {rendered}"
+        );
+    }
+
+    #[test]
+    fn error_display_covers_every_db_error_category() {
+        for e in [
+            DbError::Connection("c".into()),
+            DbError::Query("q".into()),
+            DbError::Schema("s".into()),
+            DbError::TypeConversion("t".into()),
+            DbError::Capability("cap".into()),
+        ] {
+            let rendered = error_display(&e);
+            // Each rendered string contains the category prefix word
+            // ("error" / "unavailable") and the wire message body.
+            assert!(
+                rendered.to_ascii_lowercase().contains("error")
+                    || rendered.to_ascii_lowercase().contains("unavailable"),
+                "no recognisable category in: {rendered}"
+            );
+            assert!(rendered.ends_with(e.message()));
+        }
     }
 
     #[test]
