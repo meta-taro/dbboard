@@ -125,10 +125,13 @@ breaking Phase 1. Designed jointly with the capability model (ADR-0012)
 so per-DB features can be added later without breaking the HTTP
 contract (ADR-0011).
 
-- [ ] Define `DatabaseAdapter` trait in `dbboard-core`
-- [ ] Move Turso-specific types behind the trait
+- [x] Define `DatabaseAdapter` trait in `dbboard-core` *(ADR-0012)*
+- [x] Move Turso-specific types behind the trait
 - [ ] Connection management UI (add / edit / delete)
-- [ ] Local config file (TOML) + OS keychain for secrets
+- [x] Local config file (TOML) + OS keychain for secrets *(ADR-0013;
+  `connections.toml` resolved via `directories`, secrets via the
+  `keyring` crate behind a `SecretStore` trait; see
+  [`docs/connections.md`](connections.md))*
 - [ ] Query history (in-memory, then persisted)
 
 Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
