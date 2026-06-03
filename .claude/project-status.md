@@ -5,15 +5,77 @@
 
 ## 最終更新
 
-- 日付: 2026-06-03 (本セッション、Phase 2 config 層 PR #6 マージ完了)
-- ブランチ: `develop` (`00756d7` まで sync 済、`feature/config-store` は
-  local 削除済、リモート削除は人間担当)
-- 現在の Phase: **v0.1.0 出荷済。Phase 2 ADR-0012 部分 (trait + capability
-  discovery) は `develop` 済 = `7f463ef`。Phase 2 ADR-0013 部分 (local
-  TOML connection store + OS keychain で secrets) は本セッションで PR #6
-  経由マージ済 = `00756d7`。残タスクは connection 管理 UI と
-  query history。次の baton は web 側 delta mirror
-  (`.claude/issues/0002-web-capabilities-mirror.md`) のまま。**
+- 日付: 2026-06-03 (本セッション、Phase 2 query history Stage 1 実装、
+  push 待ち)
+- ブランチ: `feature/query-history-in-memory` (`develop` = `0b3f133` から
+  4 commit、push は人間担当)
+- 現在の Phase: **Phase 2 残タスクのうち query history (in-memory, Stage 1)
+  実装完了 (ADR-0014)。残るは connection 管理 UI と query history Stage 2
+  (永続化、後続 ADR で設計)。web 側は contract に追いつき済 (PR #3 で
+  /capabilities をミラー、PR #4 で PWA Phase 1.5 shell シップ)、次の
+  contract change がない限り desktop は非 contract 領域を進められる。**
+
+### Phase 2 query history (in-memory, Stage 1) — 本セッション / 2026-06-03
+
+`develop` から `feature/query-history-in-memory` を切って 4 commit、
+156 → 168 tests green (dbboard-ui 28、history 8 + lib 13 + client 7)。
+Push は人間担当。
+
+積んだ commit (古い順):
+
+- `992f7a5` `docs: add ADR-0014 for in-memory query history`
+- `1356c6e` `feat(ui): in-memory query history store (ADR-0014)`
+- `8b2eefb` `feat(ui): wire query history into editor with click-to-restore`
+- `fbb1fa7` `docs(roadmap): tick Phase 2 in-memory query history (Stage 1)`
+
+実装の要点:
+
+- ADR-0014 起票: in-memory を Stage 1、永続化は connection 管理 UI 後に
+  Stage 2 ADR で扱う。理由は history の storage shape が connection-
+  management 設計を引っ張らないようにするため。HTTP contract は touch
+  しない (history は純粋 UI 関心事)。
+- `crates/dbboard-ui/src/history.rs` 新設。`HistoryStore` = bounded
+  `VecDeque<HistoryEntry>` (cap 100, `DEFAULT_CAPACITY`)、`push` は
+  trim 後 empty を ignore + 隣接 dedup + cap 超過で oldest drop。
+  `iter` は newest-first (`push_front` で蓄積)。zero capacity は 1 に
+  clamp (footgun 防止)。
+- `DbboardApp` に `history: HistoryStore` フィールド追加、`run_sql` の
+  guard 通過後 / busy=true 前で `push` (busy ガード時は呼ばれないので
+  履歴汚染なし)。public accessor `history(&self) -> &HistoryStore` で
+  test 容易性を確保。
+- UI: SQL TextEdit 直下、Result の上に `CollapsingHeader("History (N)")`。
+  default_open=false で初期は折りたたみ。`ScrollArea::vertical()
+  .max_height(160.0)` 内に `small_button` で各 entry。クリックで
+  `restore: Option<String>` に拾い、iter() borrow を抜けてから
+  `self.sql = sql` 代入。ボタンラベルは `history_button_label` で
+  first line + 80 chars truncation + ellipsis。
+- 新規 test 5 件:
+  `new_app_has_empty_history` / `run_sql_pushes_to_history` /
+  `run_sql_empty_input_does_not_push_to_history` /
+  `run_sql_consecutive_duplicates_collapse_in_history` /
+  `run_sql_while_busy_does_not_push_to_history`。
+- `docs/roadmap.md` Phase 2 の query history bullet を `[x]
+  Query history — in-memory (ADR-0014, Stage 1). Persistence is
+  deferred to a Stage 2 ADR landing after connection-management UI.`
+  に更新。
+- HTTP contract / dbboard-server / dbboard-core / adapter 各種に変更
+  ゼロ → web 側 mirror 不要 (memory `dbboard-web-state.md` も別途
+  反映済み — PR #3 で /capabilities ミラー完了、PR #4 で PWA Phase
+  1.5 shell シップ済みを記録)。
+
+## 次の Phase 2 PR (human action)
+
+- ローカル commit を push: `git push -u origin
+  feature/query-history-in-memory` (Norton で release build が遅く
+  なる可能性あり、`env-windows-norton.md` 参照)。
+- `develop` 向けに PR を出す。タイトル例: `feat(ui): Phase 2 — in-memory
+  query history (ADR-0014, Stage 1)`。
+- PR body には上記 4 commit の役割と「**HTTP contract は touch せず、
+  dbboard-ui 内のみで完結**」点を明記。
+- マージ後の残 Phase 2 タスクは connection 管理 UI のみ
+  (history 永続化は別 ADR で後続化を ADR-0014 で明示済)。
+
+### Phase 2 config 層 PR #6 マージクローズ (本セッション末 / 2026-06-03)
 
 ### Phase 2 config 層 PR #6 マージクローズ (本セッション末 / 2026-06-03)
 
