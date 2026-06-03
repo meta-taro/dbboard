@@ -14,7 +14,10 @@
 //! (used by [`connect`](DbboardApp::connect) and by tests).
 
 mod client;
+mod history;
 mod worker;
+
+pub use history::{HistoryEntry, HistoryStore, DEFAULT_CAPACITY};
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -41,6 +44,7 @@ pub struct DbboardApp {
     sql: String,
     tables: DbResult<Vec<TableInfo>>,
     last_result: Option<DbResult<QueryResult>>,
+    history: HistoryStore,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -77,6 +81,7 @@ impl DbboardApp {
             sql: String::new(),
             tables: Ok(Vec::new()),
             last_result: None,
+            history: HistoryStore::default(),
             busy: false,
             cmd_tx,
             reply_rx,
@@ -99,6 +104,7 @@ impl DbboardApp {
         if self.busy || self.sql.trim().is_empty() {
             return;
         }
+        self.history.push(self.sql.clone());
         self.busy = true;
         let _ = self.cmd_tx.send(Command::Query(self.sql.clone()));
         // Tables may have changed as a side effect (CREATE/DROP), so
@@ -109,6 +115,12 @@ impl DbboardApp {
     #[must_use]
     pub fn is_busy(&self) -> bool {
         self.busy
+    }
+
+    /// Read-only view of the recently-run SQL statements (ADR-0014).
+    #[must_use]
+    pub fn history(&self) -> &HistoryStore {
+        &self.history
     }
 }
 
@@ -154,6 +166,32 @@ impl eframe::App for DbboardApp {
                     .font(egui::TextStyle::Monospace),
             );
 
+            // Recently-run statements; click one to refill the editor
+            // (ADR-0014). Restore is captured here and applied after the
+            // immutable iter() borrow ends, sidestepping the borrow
+            // checker without cloning the whole store.
+            let mut restore: Option<String> = None;
+            egui::CollapsingHeader::new(format!("History ({})", self.history.len()))
+                .default_open(false)
+                .show(ui, |ui| {
+                    if self.history.is_empty() {
+                        ui.label("(no recent queries)");
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(160.0)
+                            .show(ui, |ui| {
+                                for entry in self.history.iter() {
+                                    if ui.small_button(history_button_label(&entry.sql)).clicked() {
+                                        restore = Some(entry.sql.clone());
+                                    }
+                                }
+                            });
+                    }
+                });
+            if let Some(sql) = restore {
+                self.sql = sql;
+            }
+
             ui.separator();
             ui.heading("Result");
             match &self.last_result {
@@ -172,6 +210,21 @@ impl eframe::App for DbboardApp {
         if self.busy {
             ui.ctx().request_repaint();
         }
+    }
+}
+
+/// Label for a history-entry button: first line of the SQL, truncated
+/// to a one-row width with an ellipsis so a multi-statement entry does
+/// not stretch the panel.
+fn history_button_label(sql: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    let line = sql.lines().next().unwrap_or("").trim();
+    let char_count = line.chars().count();
+    if char_count > MAX_CHARS {
+        let head: String = line.chars().take(MAX_CHARS.saturating_sub(3)).collect();
+        format!("{head}...")
+    } else {
+        line.to_string()
     }
 }
 
@@ -292,5 +345,68 @@ mod tests {
             Ok(tables) => assert_eq!(tables[0].name, "users"),
             other => panic!("expected Ok with users table, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn new_app_has_empty_history() {
+        let (app, _cmd_rx, _reply_tx) = build();
+        assert!(app.history().is_empty());
+    }
+
+    #[test]
+    fn run_sql_pushes_to_history() {
+        let (mut app, _cmd_rx, _reply_tx) = build();
+        app.sql = "SELECT 1".into();
+        app.run_sql();
+
+        assert_eq!(app.history().len(), 1);
+        assert_eq!(app.history().iter().next().unwrap().sql, "SELECT 1");
+    }
+
+    #[test]
+    fn run_sql_empty_input_does_not_push_to_history() {
+        let (mut app, _cmd_rx, _reply_tx) = build();
+        app.run_sql();
+        assert!(app.history().is_empty());
+    }
+
+    #[test]
+    fn run_sql_consecutive_duplicates_collapse_in_history() {
+        // Two Run clicks on identical SQL: the second push happens after
+        // the reply clears `busy`, but adjacent-dedup in HistoryStore
+        // keeps the list at one entry.
+        let (mut app, _cmd_rx, reply_tx) = build();
+        app.sql = "SELECT 1".into();
+        app.run_sql();
+
+        reply_tx
+            .send(Reply::QueryResult(Ok(QueryResult {
+                columns: vec![Column {
+                    name: "x".into(),
+                    declared_type: None,
+                }],
+                rows: vec![Row::new(vec![Value::Integer(1)])],
+                rows_affected: 0,
+            })))
+            .unwrap();
+        app.drain_replies();
+
+        app.run_sql();
+        assert_eq!(app.history().len(), 1);
+    }
+
+    #[test]
+    fn run_sql_while_busy_does_not_push_to_history() {
+        let (mut app, _cmd_rx, _reply_tx) = build();
+        app.sql = "SELECT 1".into();
+        app.run_sql();
+        assert_eq!(app.history().len(), 1);
+
+        // Still busy (no reply drained); a second Run with a different
+        // statement should not pollute history.
+        app.sql = "SELECT 2".into();
+        app.run_sql();
+        assert_eq!(app.history().len(), 1);
+        assert_eq!(app.history().iter().next().unwrap().sql, "SELECT 1");
     }
 }

@@ -132,7 +132,8 @@ contract (ADR-0011).
   `connections.toml` resolved via `directories`, secrets via the
   `keyring` crate behind a `SecretStore` trait; see
   [`docs/connections.md`](connections.md))*
-- [ ] Query history (in-memory, then persisted)
+- [x] Query history — in-memory (ADR-0014, Stage 1). Persistence is
+  deferred to a Stage 2 ADR landing after connection-management UI.
 
 Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
 
