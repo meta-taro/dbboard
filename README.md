@@ -95,8 +95,17 @@ and shuts down when you close the window; nothing listens on a public
 interface.
 
 By default the app opens an in-memory Turso/libSQL database, so it runs
-with no configuration. The backend is chosen from the environment (see
-[`.env.example`](.env.example)):
+with no configuration. The backend is chosen by, in priority order:
+
+1. The environment variables documented below (`DBBOARD_PG_URL` >
+   `DBBOARD_D1_*` > `DBBOARD_TURSO_PATH`).
+2. `DBBOARD_CONNECTION=<id>` resolved against `connections.toml` — the
+   local connection store backed by your OS keychain (ADR-0013).
+3. If `connections.toml` has exactly one entry, that one is auto-selected.
+4. Otherwise an in-memory Turso/libSQL database.
+
+See [`docs/connections.md`](docs/connections.md) for the connection-store
+schema and where the file lives per OS.
 
 ### Local Turso/libSQL (default)
 

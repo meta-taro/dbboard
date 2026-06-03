@@ -16,6 +16,9 @@ path = "src/main.rs"
 # The binary wires the in-process server to the UI and links neither
 # adapters nor dbboard-core directly: the server owns backend selection
 # (the adapters reach the binary transitively through dbboard-server).
+# dbboard-config is only needed here for the load-or-empty entry point
+# and the keyring secret backend; resolution itself lives in the server.
+dbboard-config = { workspace = true }
 dbboard-server = { path = "../../crates/dbboard-server" }
 dbboard-ui = { path = "../../crates/dbboard-ui" }
 eframe = { workspace = true }

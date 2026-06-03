@@ -1,13 +1,16 @@
 //! Which database the server connects to, and how that choice is
-//! resolved from the environment.
+//! resolved from the environment and the local connection store.
 //!
 //! This logic moved here from `apps/dbboard` in Phase 1.5 (ADR-0009):
 //! the binary no longer reads database environment variables — the
 //! server owns backend selection so the desktop and (future) headless
-//! deployments share one source of truth.
+//! deployments share one source of truth. Phase 2 / ADR-0013 widens the
+//! resolver to consult `connections.toml` after the environment has had
+//! its say.
 
 use std::fmt;
 
+use dbboard_config::{ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind, SecretStore};
 use dbboard_d1::D1Config;
 
 const TURSO_PATH_ENV: &str = "DBBOARD_TURSO_PATH";
@@ -19,6 +22,8 @@ const D1_TOKEN_ENV: &str = "DBBOARD_D1_TOKEN";
 const D1_BASE_URL_ENV: &str = "DBBOARD_D1_BASE_URL";
 
 const PG_URL_ENV: &str = "DBBOARD_PG_URL";
+
+const CONNECTION_SELECTOR_ENV: &str = "DBBOARD_CONNECTION";
 
 /// What the server should connect to. Resolved cheaply (no I/O) and
 /// handed to [`crate::serve`], which does the actual connecting inside
@@ -57,33 +62,401 @@ impl fmt::Debug for BackendConfig {
 /// 2. The `DBBOARD_D1_*` trio — Cloudflare D1 over REST.
 /// 3. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
 ///    `":memory:"`), so a fresh checkout runs without configuration.
+///
+/// This entry point does not consult `connections.toml`; for the
+/// merged resolver used by `apps/dbboard` see
+/// [`backend_config_from_env_and_store`].
 #[must_use]
 pub fn backend_config_from_env() -> BackendConfig {
-    // An explicit Postgres URL is the most specific intent, so it wins
-    // over everything else.
-    if let Ok(url) = std::env::var(PG_URL_ENV) {
-        if !url.trim().is_empty() {
-            return BackendConfig::Postgres { url };
+    let env = EnvSnapshot::from_process();
+    resolve_from_env_only(&env)
+}
+
+/// Resolve the backend from the environment first, then fall back to
+/// `connections.toml` resolved through `store`. Priority order:
+///
+/// 1. `DBBOARD_PG_URL` — wins outright.
+/// 2. The `DBBOARD_D1_*` trio — wins outright.
+/// 3. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
+/// 4. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
+/// 5. If `file` has exactly one entry — auto-select it.
+/// 6. Otherwise Turso `:memory:` (the unchanged default).
+///
+/// Secret-bearing entries (D1, Postgres) resolve their credentials
+/// through `secrets`, propagating [`ConfigError::Secret`] on miss so
+/// the binary aborts before the loopback server binds.
+///
+/// # Errors
+///
+/// - [`ConfigError::DuplicateId`] never reaches here (caught at load
+///   time) but is listed for completeness of the error surface.
+/// - [`ConfigError::NoConfigDir`] when `DBBOARD_CONNECTION` names an id
+///   the file does not contain — the resolver refuses to silently fall
+///   back to a different backend than the user asked for.
+/// - [`ConfigError::Secret`] when the secret store cannot resolve a
+///   `keyring_*_ref`.
+pub fn backend_config_from_env_and_store(
+    file: &ConnectionFile,
+    secrets: &dyn SecretStore,
+) -> Result<BackendConfig, ConfigError> {
+    let env = EnvSnapshot::from_process();
+    resolve_backend(&env, file, secrets)
+}
+
+/// Captured view of every env var the resolver reads. Sourced once at
+/// resolution time so the rest of the logic is pure and testable
+/// without touching the process environment.
+#[derive(Debug, Default, Clone)]
+struct EnvSnapshot {
+    pg_url: Option<String>,
+    d1_account_id: Option<String>,
+    d1_database_id: Option<String>,
+    d1_token: Option<String>,
+    d1_base_url: Option<String>,
+    turso_path: Option<String>,
+    connection_selector: Option<String>,
+}
+
+impl EnvSnapshot {
+    fn from_process() -> Self {
+        Self {
+            pg_url: non_empty(std::env::var(PG_URL_ENV).ok()),
+            d1_account_id: non_empty(std::env::var(D1_ACCOUNT_ID_ENV).ok()),
+            d1_database_id: non_empty(std::env::var(D1_DATABASE_ID_ENV).ok()),
+            d1_token: non_empty(std::env::var(D1_TOKEN_ENV).ok()),
+            d1_base_url: non_empty(std::env::var(D1_BASE_URL_ENV).ok()),
+            turso_path: non_empty(std::env::var(TURSO_PATH_ENV).ok()),
+            connection_selector: non_empty(std::env::var(CONNECTION_SELECTOR_ENV).ok()),
         }
     }
+}
 
-    // D1 wins only when its three required vars are all set; the fourth
-    // (DBBOARD_D1_BASE_URL) is optional. A partial D1 setup falls back
-    // to Turso rather than failing, so a stray env var can't lock the
-    // app out of its default local mode.
-    if let (Ok(account_id), Ok(database_id), Ok(api_token)) = (
-        std::env::var(D1_ACCOUNT_ID_ENV),
-        std::env::var(D1_DATABASE_ID_ENV),
-        std::env::var(D1_TOKEN_ENV),
+fn non_empty(s: Option<String>) -> Option<String> {
+    s.filter(|v| !v.trim().is_empty())
+}
+
+fn resolve_from_env_only(env: &EnvSnapshot) -> BackendConfig {
+    if let Some(url) = env.pg_url.clone() {
+        return BackendConfig::Postgres { url };
+    }
+    if let (Some(account_id), Some(database_id), Some(api_token)) = (
+        env.d1_account_id.clone(),
+        env.d1_database_id.clone(),
+        env.d1_token.clone(),
     ) {
         return BackendConfig::D1(D1Config {
             account_id,
             database_id,
             api_token,
-            base_url: std::env::var(D1_BASE_URL_ENV).ok(),
+            base_url: env.d1_base_url.clone(),
         });
     }
+    BackendConfig::Turso {
+        path: env
+            .turso_path
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TURSO_PATH.to_owned()),
+    }
+}
 
-    let path = std::env::var(TURSO_PATH_ENV).unwrap_or_else(|_| DEFAULT_TURSO_PATH.to_owned());
-    BackendConfig::Turso { path }
+fn resolve_backend(
+    env: &EnvSnapshot,
+    file: &ConnectionFile,
+    secrets: &dyn SecretStore,
+) -> Result<BackendConfig, ConfigError> {
+    // Rule 1-3: env-only wins. Postgres URL, then the D1 trio, then an
+    // explicit TURSO_PATH all short-circuit the file-backed store.
+    if env.pg_url.is_some() {
+        return Ok(resolve_from_env_only(env));
+    }
+    if env.d1_account_id.is_some() && env.d1_database_id.is_some() && env.d1_token.is_some() {
+        return Ok(resolve_from_env_only(env));
+    }
+    if env.turso_path.is_some() {
+        return Ok(resolve_from_env_only(env));
+    }
+
+    // Rule 4: explicit selector by id. Missing id is a hard error so we
+    // do not silently swap to `:memory:` when the user asked for a
+    // specific named entry.
+    if let Some(id) = env.connection_selector.as_deref() {
+        let entry = file
+            .connections
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| ConfigError::DuplicateId(format!("no connection with id={id}")))?;
+        return entry_to_backend(entry, secrets);
+    }
+
+    // Rule 5: a single entry is unambiguous, so auto-select it.
+    if file.connections.len() == 1 {
+        return entry_to_backend(&file.connections[0], secrets);
+    }
+
+    // Rule 6: no env, no selector, no single entry — fall back to the
+    // memory database so a fresh checkout always boots.
+    Ok(BackendConfig::Turso {
+        path: DEFAULT_TURSO_PATH.to_owned(),
+    })
+}
+
+fn entry_to_backend(
+    entry: &ConnectionEntry,
+    secrets: &dyn SecretStore,
+) -> Result<BackendConfig, ConfigError> {
+    match &entry.kind {
+        ConnectionKind::Turso { path } => Ok(BackendConfig::Turso { path: path.clone() }),
+        ConnectionKind::D1 {
+            account_id,
+            database_id,
+            base_url,
+            keyring_token_ref,
+        } => {
+            let api_token = secrets.get(keyring_token_ref)?;
+            Ok(BackendConfig::D1(D1Config {
+                account_id: account_id.clone(),
+                database_id: database_id.clone(),
+                api_token,
+                base_url: base_url.clone(),
+            }))
+        }
+        ConnectionKind::Postgres { keyring_url_ref } => {
+            let url = secrets.get(keyring_url_ref)?;
+            Ok(BackendConfig::Postgres { url })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbboard_config::{ConnectionEntry, ConnectionFile, InMemorySecretStore, CONFIG_VERSION};
+
+    fn empty_env() -> EnvSnapshot {
+        EnvSnapshot::default()
+    }
+
+    fn empty_file() -> ConnectionFile {
+        ConnectionFile::empty()
+    }
+
+    fn file_with(entries: Vec<ConnectionEntry>) -> ConnectionFile {
+        ConnectionFile {
+            version: CONFIG_VERSION,
+            connections: entries,
+        }
+    }
+
+    fn turso_entry(id: &str, path: &str) -> ConnectionEntry {
+        ConnectionEntry {
+            id: id.to_string(),
+            name: format!("turso {id}"),
+            kind: ConnectionKind::Turso {
+                path: path.to_string(),
+            },
+        }
+    }
+
+    fn d1_entry(id: &str, token_ref: &str) -> ConnectionEntry {
+        ConnectionEntry {
+            id: id.to_string(),
+            name: format!("d1 {id}"),
+            kind: ConnectionKind::D1 {
+                account_id: "acct".to_string(),
+                database_id: "db".to_string(),
+                base_url: None,
+                keyring_token_ref: token_ref.to_string(),
+            },
+        }
+    }
+
+    fn pg_entry(id: &str, url_ref: &str) -> ConnectionEntry {
+        ConnectionEntry {
+            id: id.to_string(),
+            name: format!("pg {id}"),
+            kind: ConnectionKind::Postgres {
+                keyring_url_ref: url_ref.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn empty_env_and_empty_file_yields_in_memory_turso() {
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&empty_env(), &empty_file(), &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Turso { path } if path == ":memory:"),
+            "expected default in-memory turso"
+        );
+    }
+
+    #[test]
+    fn pg_env_var_wins_over_the_file_store() {
+        let mut env = empty_env();
+        env.pg_url = Some("postgres://from-env".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Postgres { url } if url == "postgres://from-env"),
+            "PG_URL must short-circuit the store"
+        );
+    }
+
+    #[test]
+    fn d1_trio_env_var_wins_over_the_file_store() {
+        let mut env = empty_env();
+        env.d1_account_id = Some("acct-env".to_string());
+        env.d1_database_id = Some("db-env".to_string());
+        env.d1_token = Some("tok-env".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::D1(d1) => {
+                assert_eq!(d1.account_id, "acct-env");
+                assert_eq!(d1.api_token, "tok-env");
+            }
+            other => panic!("expected D1 from env, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn partial_d1_env_falls_through_to_the_file_store() {
+        let mut env = empty_env();
+        env.d1_account_id = Some("acct-env".to_string());
+        // database_id and token deliberately absent
+        let file = file_with(vec![turso_entry("local", "/tmp/single.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Turso { path } if path == "/tmp/single.db"),
+            "partial D1 env must not block the file-backed entry"
+        );
+    }
+
+    #[test]
+    fn turso_path_env_var_wins_over_the_file_store() {
+        let mut env = empty_env();
+        env.turso_path = Some("/tmp/from-env.db".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/from-file.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Turso { path } if path == "/tmp/from-env.db"),
+            "explicit TURSO_PATH must short-circuit the store"
+        );
+    }
+
+    #[test]
+    fn connection_selector_picks_the_matching_id() {
+        let mut env = empty_env();
+        env.connection_selector = Some("prod".to_string());
+        let file = file_with(vec![
+            turso_entry("dev", "/tmp/dev.db"),
+            turso_entry("prod", "/tmp/prod.db"),
+        ]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Turso { path } if path == "/tmp/prod.db"),
+            "DBBOARD_CONNECTION must select by id"
+        );
+    }
+
+    #[test]
+    fn connection_selector_for_unknown_id_is_an_error() {
+        let mut env = empty_env();
+        env.connection_selector = Some("nope".to_string());
+        let file = file_with(vec![turso_entry("dev", "/tmp/dev.db")]);
+        let secrets = InMemorySecretStore::new();
+        let err = resolve_backend(&env, &file, &secrets)
+            .expect_err("missing id must not silently fall back");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nope"),
+            "error must name the missing id: {msg}"
+        );
+    }
+
+    #[test]
+    fn single_entry_file_is_auto_selected() {
+        let file = file_with(vec![turso_entry("only", "/tmp/only.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Turso { path } if path == "/tmp/only.db"),
+            "single entry must be auto-selected"
+        );
+    }
+
+    #[test]
+    fn multi_entry_file_without_selector_falls_back_to_in_memory() {
+        let file = file_with(vec![
+            turso_entry("dev", "/tmp/dev.db"),
+            turso_entry("prod", "/tmp/prod.db"),
+        ]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Turso { path } if path == ":memory:"),
+            "ambiguous file with no selector must not silently pick one"
+        );
+    }
+
+    #[test]
+    fn d1_entry_resolves_token_through_the_secret_store() {
+        let file = file_with(vec![d1_entry("cf", "dbboard.cf.token")]);
+        let secrets = InMemorySecretStore::new();
+        secrets.set("dbboard.cf.token", "live-token").expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::D1(d1) => assert_eq!(d1.api_token, "live-token"),
+            other => panic!("expected D1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn d1_entry_with_missing_secret_propagates_secret_error() {
+        let file = file_with(vec![d1_entry("cf", "dbboard.cf.token")]);
+        let secrets = InMemorySecretStore::new();
+        let err = resolve_backend(&empty_env(), &file, &secrets)
+            .expect_err("missing secret must surface");
+        assert!(
+            matches!(err, ConfigError::Secret(_)),
+            "expected ConfigError::Secret, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn postgres_entry_resolves_url_through_the_secret_store() {
+        let file = file_with(vec![pg_entry("neon", "dbboard.neon.url")]);
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set("dbboard.neon.url", "postgres://from-store")
+            .expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Postgres { url } if url == "postgres://from-store"),
+            "Postgres URL must be loaded from the secret store"
+        );
+    }
+
+    #[test]
+    fn debug_redacts_d1_and_postgres_secrets() {
+        let d1 = BackendConfig::D1(D1Config {
+            account_id: "acct".to_string(),
+            database_id: "db".to_string(),
+            api_token: "should-never-appear".to_string(),
+            base_url: None,
+        });
+        let rendered = format!("{d1:?}");
+        assert!(!rendered.contains("should-never-appear"), "{rendered}");
+
+        let pg = BackendConfig::Postgres {
+            url: "postgres://user:pw@host/db".to_string(),
+        };
+        let rendered_pg = format!("{pg:?}");
+        assert!(!rendered_pg.contains("pw@host"), "{rendered_pg}");
+    }
 }
