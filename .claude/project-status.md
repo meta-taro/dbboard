@@ -5,15 +5,61 @@
 
 ## 最終更新
 
-- 日付: 2026-06-03 (本セッション、Phase 2 query history Stage 1 実装、
+- 日付: 2026-06-03 (本セッション、Phase 2.5 多言語化 ADR-0015 実装完了、
   push 待ち)
-- ブランチ: `feature/query-history-in-memory` (`develop` = `0b3f133` から
-  4 commit、push は人間担当)
-- 現在の Phase: **Phase 2 残タスクのうち query history (in-memory, Stage 1)
-  実装完了 (ADR-0014)。残るは connection 管理 UI と query history Stage 2
-  (永続化、後続 ADR で設計)。web 側は contract に追いつき済 (PR #3 で
-  /capabilities をミラー、PR #4 で PWA Phase 1.5 shell シップ)、次の
-  contract change がない限り desktop は非 contract 領域を進められる。**
+- ブランチ: `feature/i18n-locales` (`develop` から複数 commit、push は人間担当)
+- 現在の Phase: **Phase 2.5 (多言語化、ADR-0015) 実装完了。Tier 1 + Tier 2
+  の 11 locale (en/ja/ko/zh-CN/zh-TW/de/fr/es/pt-BR/ru/it) を `dbboard-ui`
+  に配線、`apps/dbboard` 起動時に `DBBOARD_LANG` → OS locale → en で解決し、
+  CJK 利用者には OS インストール済の Yu Gothic / PingFang / Noto Sans CJK
+  を `FontDefinitions` に append。`DbError` 本文は English を維持 (ADR-0009
+  HTTP contract 不変)。Phase 2 残タスクは connection 管理 UI と query
+  history 永続化 (Stage 2 ADR 待ち) のみ。**
+
+### Phase 2.5 多言語化 (本セッション / 2026-06-03)
+
+`develop` から `feature/i18n-locales` を切って ADR + skeleton + wiring を
+分割 commit、全 workspace 175 unit tests + 2 doctests green (dbboard-i18n
+8 + dbboard-ui 30、他 137)。Push は人間担当。
+
+積んだ commit の構成 (古い順):
+
+- `6a804fe` `feat(i18n): add dbboard-i18n crate with 11-locale Fluent loader (ADR-0015)`
+- (本セッション後半) `feat(i18n): wire dbboard-ui labels and apps/dbboard startup`
+- (本セッション後半) `docs: tick Phase 2.5 multilingual UI roadmap entry`
+
+実装の要点:
+
+- ADR-0015 起票: locale 11 件 (Tier 1 + Tier 2)。ar/hi は RTL / shaping
+  考慮で Stage 2 送り。framework は fluent-rs (gettext より plural rule
+  柔軟)。font 戦略は Latin/Cyrillic を egui の Ubuntu-Light に任せ、
+  CJK は `apps/dbboard` 起動時に OS フォント探索。
+- `crates/dbboard-i18n` 新設: `rust-embed` で `.ftl` を build-time
+  embed、`fluent_language_loader!()` を `OnceLock` で global 化 (MSRV 1.75
+  に合わせ `LazyLock` 1.80 は不可)。`t!()` / `t_args!()` は最終的に
+  `i18n-embed-fl` proc-macro を **drop**。fl!() は caller crate の
+  `CARGO_MANIFEST_DIR` に対し `<crate-name>.ftl` を探すため、consumer
+  crate 毎に `i18n.toml` 複製が必要になる。代わりに runtime で直接
+  `loader().get(id)` / `loader().get_args_concrete(id, HashMap)` を呼ぶ
+  簡潔な macro に差し替え。
+- `crates/dbboard-i18n/i18n/<tag>/dbboard-i18n.ftl` を 11 言語ぶん作成。
+  ファイル名は crate 名と一致させる (i18n-embed の規約)。
+- `dbboard-ui`: literal UI 文字列を全て `t!()` 化。`DbError` 本文は
+  ADR-0009 (HTTP contract) の都合で English のまま、UI 側で
+  `category()` をスイッチして翻訳した prefix を付与する
+  `error_display(&DbError) -> String` を導入。test 2 件追加
+  (`error_display_prefixes_translated_category_to_raw_message` /
+  `error_display_covers_every_db_error_category`)。
+- `apps/dbboard`: `main()` 先頭で `dbboard_i18n::init(None)` を呼ぶ。
+  失敗は non-fatal (eprintln + en fallback) — 将来 locale 追加で .ftl
+  に typo が出ても起動を壊さないため。`install_cjk_font(&ctx)` を
+  eframe creator で実行、Windows / macOS / Linux 別に候補パスを順に
+  `std::fs::read` し、最初に読めた font を `FontFamily::{Proportional,
+  Monospace}` に **append** (replace ではない、Latin glyph は Ubuntu-
+  Light のまま)。
+- HTTP contract / dbboard-server / dbboard-core / adapter 各種に変更
+  ゼロ → web 側 mirror 不要 (memory `dbboard-web-state.md` も触らない、
+  Phase 2.5 は presentation-only)。
 
 ### Phase 2 query history (in-memory, Stage 1) — 本セッション / 2026-06-03
 
