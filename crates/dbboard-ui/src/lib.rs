@@ -14,9 +14,13 @@
 //! (used by [`connect`](DbboardApp::connect) and by tests).
 
 mod client;
+mod connections;
 mod history;
 mod worker;
 
+pub use connections::{
+    AddFormState, ConnectionsView, EditFormState, EditKindState, KindSelector, Mode,
+};
 pub use history::{HistoryEntry, HistoryStore, DEFAULT_CAPACITY};
 
 use std::sync::mpsc::{self, Receiver, Sender};
