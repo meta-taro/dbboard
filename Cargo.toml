@@ -5,6 +5,7 @@ members = [
     "crates/dbboard-config",
     "crates/dbboard-core",
     "crates/dbboard-d1",
+    "crates/dbboard-i18n",
     "crates/dbboard-postgres",
     "crates/dbboard-server",
     "crates/dbboard-turso",
@@ -27,6 +28,9 @@ dbboard-core = { path = "crates/dbboard-core" }
 # The server depends on this to wire env-vars with the file-backed store
 # into a single BackendConfig resolution.
 dbboard-config = { path = "crates/dbboard-config" }
+# UI-only translation loader (ADR-0015). Consumed by `dbboard-ui` and
+# initialised once at startup from `apps/dbboard`.
+dbboard-i18n = { path = "crates/dbboard-i18n" }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # libsql core only — no remote/sync/replication/tls. Phase 1.5 will

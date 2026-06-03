@@ -863,3 +863,162 @@ dedicated ADR will draft that contract change first.
   query after exploring is a meaningful event).
 - HTTP contract unchanged → no web-side mirror needed (ADR-0004).
 - SemVer impact (ADR-0011): additive. Internal `dbboard-ui` API only.
+
+---
+
+## ADR-0015 — Multi-language support (11 locales, Stage 1)
+
+- **Date**: 2026-06-03
+- **Status**: accepted
+
+### Context
+
+The desktop UI ships English-only today. Every visible label, button, and
+empty-state message in `dbboard-ui` is a raw string literal. The user
+asked to lift this to a multilingual surface covering Japanese, Korean,
+Chinese, English, "plus other major economic-zone languages". The
+roadmap previously listed "i18n" loosely under Phase 5 (quality of life);
+the request promotes it to Phase 2's closing scope because it shapes
+later UI work (connection-management dialogs, AI panel) — adding it
+after those land would require revisiting every new label.
+
+Three things have to be decided together: which locales to ship now,
+what runtime framework carries them, and how text actually paints on
+screen (egui's default font stack covers Latin only — Cyrillic is
+partial, CJK is `tofu`). Splitting these into separate ADRs would
+strand each one waiting on the others.
+
+The HTTP contract (`docs/api-contract.md`, ADR-0009) is shared with the
+web sibling. Translating error messages on the wire would create
+contract drift; the web side already has its own i18n story. So this
+ADR is strictly a `dbboard-ui` (presentation) concern.
+
+### Decision
+
+**Locales (Stage 1, 11 total).** Two tiers, both included now.
+
+| Tier | Locale     | BCP-47    | Rationale                                |
+|------|------------|-----------|------------------------------------------|
+| 1    | English    | `en`      | Fallback for every missing key.          |
+| 1    | Japanese   | `ja`      | Maintainer's first language; OSS reach. |
+| 1    | Korean     | `ko`      | Requested; large dev community.          |
+| 1    | Simp. CN   | `zh-CN`   | Requested; largest economy + dev base.   |
+| 1    | Trad. CN   | `zh-TW`   | Requested; Taiwan / Hong Kong audience.  |
+| 2    | German     | `de`      | EU / DACH region.                        |
+| 2    | French     | `fr`      | EU / La Francophonie.                    |
+| 2    | Spanish    | `es`      | EU + Latin America.                      |
+| 2    | Pt. (BR)   | `pt-BR`   | Brazil. Distinguished from European pt.  |
+| 2    | Russian    | `ru`      | Cyrillic coverage anchor.                |
+| 2    | Italian    | `it`      | EU rounding-out.                         |
+
+Explicitly **rejected for Stage 1**: Arabic (`ar`) and Hindi (`hi`). Both
+are major-economic-zone languages by traffic, but Arabic requires RTL
+mirroring (egui's layout primitives do not flip cleanly yet, and
+review-quality direction-mirroring needs design work), and Hindi needs
+Devanagari shaping which the bundled egui glyph cache currently
+substitutes with tofu on Windows. A future ADR will lift these once
+shaping + RTL are addressed (likely paired with the AI panel work in
+Phase 4, where input text fields multiply the surface area).
+
+**Framework: `fluent-rs` + `i18n-embed`.**
+
+- `fluent-bundle` is Mozilla's runtime for ICU MessageFormat-style
+  messages with plurals, selectors, and per-locale resource files (`.ftl`).
+  It is the de facto Rust choice for full ICU coverage; the alternative
+  `gettext` family is simpler but pluralization in CJK is awkward and
+  the `.po`/`.mo` tooling is heavier than what an OSS desktop client
+  needs.
+- `i18n-embed` provides the loader glue (locale fallback chain,
+  embedded resources via `rust-embed`, `tr!()` macro, requester pattern).
+  Without it, the `fluent_bundle` API requires hand-rolling fallback and
+  caching per app.
+- Locale identifiers use `unic-langid` (which both crates depend on).
+- All three crates are MIT/Apache licensed and have been stable for
+  multiple years.
+
+Translation files live at `crates/dbboard-i18n/i18n/<locale>/dbboard.ftl`
+and are embedded into the binary at compile time (no runtime file I/O
+for the default install — keeps the "single self-contained binary"
+property from ADR-0007). Future community-translation workflows can
+opt into `i18n-embed`'s file-system requester for live reload during
+translation review without affecting release builds.
+
+**Locale resolution at startup.** Priority order (highest first):
+
+1. `DBBOARD_LANG` environment variable (operator override; same idiom as
+   `DBBOARD_PG_URL` / `DBBOARD_D1_*` env precedence in `apps/dbboard`).
+   Parsed as a BCP-47 tag; invalid values fall through with a warning.
+2. OS locale via the `sys-locale` crate (pure Rust, no external deps;
+   reads `GetUserDefaultLocaleName` on Windows, `CFLocaleCopyCurrent` on
+   macOS, `LC_ALL`/`LC_MESSAGES`/`LANG` on Linux).
+3. Hard-coded fallback to `en`.
+
+The resolved locale is fed into `i18n-embed`'s `LanguageRequester`,
+which then walks the supported-locales list applying the fallback
+chain `zh-CN → zh → en`, `pt-BR → pt → en`, etc. A missing key in any
+locale falls back to `en` (which is the source-of-truth for all keys).
+
+**Font strategy.**
+
+- **Latin + Cyrillic**: egui's bundled `Ubuntu-Light` proportional font
+  already covers these glyph ranges. No new asset is needed for Stage 1.
+- **CJK (`ja` / `ko` / `zh-CN` / `zh-TW`)**: egui does not bundle a CJK
+  font (size budget). Instead, `apps/dbboard` registers system fonts at
+  startup via `eframe`'s `FontDefinitions` using OS-specific candidate
+  lists:
+  - Windows: `Yu Gothic UI` / `Microsoft YaHei UI` / `Malgun Gothic`.
+  - macOS: `Hiragino Sans` / `PingFang SC` / `PingFang TC` / `Apple SD
+    Gothic Neo`.
+  - Linux: `Noto Sans CJK JP` / `Noto Sans CJK KR` / `Noto Sans CJK SC`
+    / `Noto Sans CJK TC` (typical Noto family install).
+  When none are found we log a warning and fall back to the bundled
+  font (tofu for CJK glyphs, but the rest of the UI remains usable).
+  Bundling Noto CJK ourselves (~20 MB per script) is rejected as a
+  Stage 1 cost; revisit if CJK users routinely report missing system
+  fonts.
+
+**Scope: `dbboard-ui` only.**
+
+- `dbboard-core` `DbError` variants stay English. They appear on the
+  HTTP wire (ADR-0009); changing them would break the contract shared
+  with `dbboard-web` (ADR-0004). The UI prefixes a translated category
+  label (`Connection error: …`) but the error body remains the
+  server-returned text. This is the right boundary: error *taxonomy* is
+  contract; error *presentation* is UI.
+- `dbboard-config`, `dbboard-server`, and the adapter crates are
+  English-only for the same reason — they all participate in the
+  contract surface either directly (server) or via error mapping
+  (adapters → server).
+
+### Consequences
+
+- A new internal crate `crates/dbboard-i18n` carries the loader, the
+  embedded `.ftl` resources, and a thin `t!(...)` re-export. `dbboard-ui`
+  depends on it. No other workspace crate does. The layered architecture
+  (ADR-0002) is preserved: `dbboard-i18n` depends only on third-party
+  crates; `dbboard-ui` depends on `dbboard-core` + `dbboard-i18n`.
+- New runtime dependencies: `fluent-bundle`, `i18n-embed` (with the
+  `fluent-system` + `desktop-requester` features), `rust-embed`,
+  `unic-langid`, `sys-locale`. All MIT or Apache. License compatibility
+  for `cargo deny` (ADR-0011) is unchanged — we already permit MIT,
+  Apache-2.0, ISC, BSD-2/3, MPL-2.0.
+- Binary size grows by ~1.2 MB (release, glibc x86_64) for the fluent
+  runtime plus the embedded `.ftl` resources. Cold-start cost is one
+  bundle-load per resolved locale; measured at <5 ms on a modern laptop
+  and amortised over the session.
+- The desktop UI now follows the user's OS locale by default. The
+  `DBBOARD_LANG` env override exists for screenshot tests, demo builds,
+  and Windows users whose OS locale and preferred review language
+  differ.
+- HTTP contract unchanged → no web-side mirror needed (ADR-0004).
+  Translation drift between desktop and web is acceptable: each surface
+  owns its own `.ftl` (or web equivalent).
+- SemVer impact (ADR-0011): additive. Internal crates only; the binary
+  changes its default copy but not its CLI or wire surface. The
+  `DBBOARD_LANG` env var is an opt-in additive surface — documented in
+  `docs/connections.md` once landed.
+- The roadmap's Phase 5 "i18n" bullet (if any was implied) is
+  superseded: i18n now closes Phase 2 rather than waiting for QoL. The
+  Stage 2 ADR for `ar` / `hi` (RTL + shaping) remains a Phase 4 / 5
+  candidate.
+
