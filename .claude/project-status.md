@@ -5,18 +5,27 @@
 
 ## 最終更新
 
-- 日付: 2026-06-03 (本セッション、Phase 2 接続管理 UI ADR-0016 Stage 1
-  実装完了、push 待ち)
-- ブランチ: `feature/connection-admin-ui` (`develop` から 6 commit、push
-  は人間担当)
-- 現在の Phase: **Phase 2 接続管理 UI (ADR-0016 Stage 1) 実装完了。
-  HeidiSQL 風の multi-process モデル — 起動中のプロセスは launch 時の
-  接続先で動き続け、Connections ウィンドウは `connections.toml` を
-  add / edit / delete するだけ。`dbboard-config::ConnectionAdmin`
-  use-case を新設し、`dbboard-ui::ConnectionsView` で egui 表示。
-  全 11 locale 翻訳済 (`connections-*` キー 21 件)。Phase 2 残タスクは
-  history 永続化 (Stage 2 ADR 待ち) のみで、Phase 2 本体はこの PR が
-  マージされれば完了予定。**
+- 日付: 2026-06-03 (本セッション末、Phase 2 接続管理 UI ADR-0016 Stage 1
+  PR #9 マージ済)
+- ブランチ: `develop` (`origin/develop` = `88d0f45` と sync 済)
+- 現在の Phase: **Phase 2 接続管理 UI (ADR-0016 Stage 1) シップ完了。
+  Phase 2 本体の残タスクは history 永続化のみで、これは Stage 2 ADR
+  待ち。Phase 2 を closing にする前に history Stage 2 ADR を起票するか、
+  Phase 3 (Neon / Supabase アダプタ) に進むかを次セッションで判断。
+  HTTP contract は不変、web 側ミラー不要。**
+
+### Phase 2 PR #9 マージクローズ (本セッション末 / 2026-06-03)
+
+- PR #9 (`feature/connection-admin-ui` → `develop`) マージ済 = `88d0f45`
+  (GitHub 上で merge commit、squash ではない)。
+- ローカル `feature/connection-admin-ui` 削除済 (`git branch -d`、
+  `263d9b1` was)。リモート側 branch は人間が削除済 (確認:
+  `git fetch --prune` で `[deleted] (none) -> origin/feature/
+  connection-admin-ui`)。
+- ローカル `develop` は `origin/develop` (= `88d0f45`) と sync 済。
+- memory 更新済: `dbboard-web-state.md` で desktop@88d0f45 snapshot
+  反映 + ADR-0016 を「contract change ではない (UI / config のみ)
+  ので mirror 不要」リストに追加、`MEMORY.md` index も対応更新。
 
 ### Phase 2 接続管理 UI (本セッション / 2026-06-03)
 
