@@ -55,6 +55,10 @@ async-trait = "0.1"
 toml = "0.8"
 # Cross-platform config-dir resolution for connections.toml (ADR-0013).
 directories = "5"
+# OS keychain backed secret storage for connection tokens (ADR-0013).
+# Maps to Windows Credential Manager / macOS Keychain / Linux Secret
+# Service uniformly; no system OpenSSL dependency.
+keyring = "3"
 # tempfile-based integration tests for dbboard-config's filesystem layer.
 tempfile = "3"
 

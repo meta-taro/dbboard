@@ -10,6 +10,7 @@ description = "Local TOML connection store and OS keychain backed secrets for db
 
 [dependencies]
 directories = { workspace = true }
+keyring = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }

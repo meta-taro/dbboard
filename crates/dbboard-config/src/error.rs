@@ -1,11 +1,13 @@
 //! Crate-local error type.
 //!
-//! Filesystem and keychain variants will be added in the commits that
-//! introduce those modules. For the schema-only layer the error surface
-//! covers parsing, schema-version mismatch, and duplicate ids — drift we
-//! surface loudly rather than dropping silently.
+//! Covers schema parsing, schema-version mismatch, duplicate ids,
+//! filesystem I/O around `connections.toml`, and secret-store failures
+//! surfaced from [`crate::secrets`]. Drift we surface loudly rather
+//! than dropping silently.
 
 use thiserror::Error;
+
+use crate::secrets::SecretError;
 
 /// Errors that can occur while loading or validating a connection store.
 ///
@@ -49,4 +51,9 @@ pub enum ConfigError {
     /// process working directory.
     #[error("could not resolve a per-user config directory")]
     NoConfigDir,
+
+    /// The keyring / in-memory secret store reported a failure while
+    /// resolving a `keyring_*_ref` referenced from the TOML.
+    #[error("config secret failed: {0}")]
+    Secret(#[from] SecretError),
 }
