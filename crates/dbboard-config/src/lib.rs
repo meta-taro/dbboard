@@ -15,10 +15,15 @@
 //! ADR-0009) and `apps/dbboard` is wiring only — neither is the right
 //! home for filesystem + OS-keychain persistence.
 
+pub mod admin;
 pub mod error;
 pub mod secrets;
 pub mod store;
 
+pub use admin::{
+    ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,
+    ConnectionKindEditDraft, SecretField,
+};
 pub use error::ConfigError;
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{ConnectionEntry, ConnectionFile, ConnectionKind, CONFIG_VERSION};

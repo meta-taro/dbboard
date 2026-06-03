@@ -56,4 +56,19 @@ pub enum ConfigError {
     /// resolving a `keyring_*_ref` referenced from the TOML.
     #[error("config secret failed: {0}")]
     Secret(#[from] SecretError),
+
+    /// `ConnectionAdmin::{update, delete}` was called with an id that
+    /// no entry in the store matches. Surfaced loudly because the
+    /// caller is almost certainly using a stale view of the entries
+    /// vector (ADR-0016).
+    #[error("no connection entry with id: {0}")]
+    NotFound(String),
+
+    /// `ConnectionAdmin::update` was called with a draft whose
+    /// `ConnectionKind` variant differs from the existing entry's. Kind
+    /// changes are intentionally not supported on edit (ADR-0016): they
+    /// would require migrating keyring references mid-flight. Callers
+    /// must delete + re-add to switch adapter kind.
+    #[error("connection {id} kind cannot change on update")]
+    KindMismatch { id: String },
 }
