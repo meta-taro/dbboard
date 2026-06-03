@@ -3,24 +3,42 @@
 //! The binary boots an in-process loopback HTTP server (`dbboard-server`)
 //! and points the egui UI (`dbboard-ui`) at it. The server owns the
 //! database adapter and resolves which backend to connect from the
-//! environment (see [`dbboard_server::backend_config_from_env`]); the UI
-//! is a pure HTTP client. This keeps the desktop app on the same API
-//! contract as the dbboard-web sibling (ADR-0009).
+//! environment plus the user's local connection store (see
+//! [`dbboard_server::backend_config_from_env_and_store`] and ADR-0013).
+//! The UI is a pure HTTP client. This keeps the desktop app on the same
+//! API contract as the dbboard-web sibling (ADR-0009).
 //!
 //! Two runtimes coexist without nesting: this `main` owns a multi-thread
 //! tokio runtime that drives the server, while the UI's HTTP worker runs
 //! a separate current-thread runtime on its own thread. The UI thread
 //! itself never blocks on I/O.
+//!
+//! Startup resolves config in this order: env vars > `DBBOARD_CONNECTION`
+//! id > single-entry auto-select > Turso `:memory:`. Failures (a missing
+//! id, a missing keyring entry) abort startup loudly rather than
+//! silently swapping in a different backend.
 
-use dbboard_server::{backend_config_from_env, serve};
+use dbboard_config::store::{default_path, load_or_empty};
+use dbboard_config::{ConnectionFile, KeyringStore};
+use dbboard_server::{backend_config_from_env_and_store, serve};
 use dbboard_ui::DbboardApp;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Best-effort config-dir resolution: if the OS reports no per-user
+    // config dir at all, treat the store as empty rather than aborting.
+    // The env-var path still works in that case (CI, headless tests).
+    let file = match default_path() {
+        Ok(path) => load_or_empty(&path)?,
+        Err(_) => ConnectionFile::empty(),
+    };
+    let secrets = KeyringStore::new();
+    let backend = backend_config_from_env_and_store(&file, &secrets)?;
+
     // The server runtime lives for the whole process. Connecting here
     // (before the window opens) preserves the fail-fast contract: a bad
     // connection string aborts startup instead of failing on first use.
     let rt = tokio::runtime::Runtime::new()?;
-    let server = rt.block_on(serve(backend_config_from_env()))?;
+    let server = rt.block_on(serve(backend))?;
     let base_url = format!("http://127.0.0.1:{}", server.port);
 
     let native_options = eframe::NativeOptions {

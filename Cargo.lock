@@ -563,6 +563,7 @@ name = "dbboard"
 version = "0.1.0"
 dependencies = [
  "cargo-husky",
+ "dbboard-config",
  "dbboard-server",
  "dbboard-ui",
  "eframe",
@@ -622,6 +623,7 @@ name = "dbboard-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "dbboard-config",
  "dbboard-core",
  "dbboard-d1",
  "dbboard-postgres",
