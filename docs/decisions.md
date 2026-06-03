@@ -800,3 +800,66 @@ startup, before the server binds, and never reach the HTTP envelope.
   internal crates remain `publish = false`. The TOML schema is itself
   versioned (`version = 1`), so future schema changes will be migrated
   in-place rather than guessed at.
+
+---
+
+## ADR-0014 — Query history (in-memory first, persisted later)
+
+- **Date**: 2026-06-03
+- **Status**: accepted
+
+### Context
+
+Phase 2 calls for "query history (in-memory, then persisted)" alongside
+the connection store from ADR-0013. The UI today has no recall: every
+time the user wants to re-run a recent statement they retype it. A first
+pass should make the recent statements visible and clickable to refill
+the editor, without committing to a persistence shape that might
+constrain the connection-management UI still to come.
+
+The UI lives in `dbboard-ui` and depends only on `dbboard-core` among
+workspace crates (ADR-0002). Whatever we add must respect that — and the
+HTTP contract must not change, because history is purely a UI concern
+(the server has no concept of "previous queries").
+
+### Decision
+
+Land query history in two stages:
+
+1. **Stage 1 — In-memory, this ADR.** A new `HistoryStore` lives entirely
+   inside `dbboard-ui`. It is a bounded ring buffer (capacity 100) of
+   `HistoryEntry { sql: String }`. `push(sql)` is called whenever the
+   editor's Run button fires; consecutive duplicates collapse so a
+   double-click on Run does not pollute the list. Iteration is
+   newest-first to match how the panel renders. Nothing is written to
+   disk. No new dependency.
+
+2. **Stage 2 — Persisted, a later ADR.** When the connection-management
+   UI has shipped (and the keyring + TOML pattern from ADR-0013 is
+   exercised), revisit persistence with the full picture. The likely
+   target is a small SQLite file alongside `connections.toml` (so a
+   single per-OS config dir owns both), but the choice is deferred — we
+   do not want history's storage shape to leak into connection-
+   management decisions.
+
+The HTTP contract (`docs/api-contract.md`) is **not** touched. There is
+no `/history` endpoint and no new server state. Should a future feature
+(e.g. cross-connection history surfacing) require server involvement, a
+dedicated ADR will draft that contract change first.
+
+### Consequences
+
+- `dbboard-ui` gains a `history` module. No new workspace crate, no new
+  external dependency. The layered architecture (ADR-0002) is preserved.
+- Phase 2's "query history (in-memory)" exit is met by Stage 1; the
+  "then persisted" piece is explicitly deferred to a Stage 2 ADR.
+- The bound (100) is a UI ergonomics choice, not a correctness one: an
+  in-memory list of 100 short SQL strings is well under any meaningful
+  resource budget. The cap exists so the panel does not grow unbounded
+  during a long session.
+- Adjacent dedup (consecutive identical Run clicks collapse) is a
+  deliberate ergonomics call: history should reflect distinct attempts,
+  not button mash. Non-adjacent repeats are kept (re-running an earlier
+  query after exploring is a meaningful event).
+- HTTP contract unchanged → no web-side mirror needed (ADR-0004).
+- SemVer impact (ADR-0011): additive. Internal `dbboard-ui` API only.
