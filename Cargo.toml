@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "apps/dbboard",
+    "crates/dbboard-config",
     "crates/dbboard-core",
     "crates/dbboard-d1",
     "crates/dbboard-postgres",
@@ -49,6 +50,9 @@ base64 = "0.22"
 # as Arc<dyn DatabaseAdapter>. async-trait macros around that until
 # object-safe async fns stabilise (ADR-0012).
 async-trait = "0.1"
+# Connection store file format (ADR-0013). String round-trip only at the
+# schema layer; filesystem reads live in the same crate's store module.
+toml = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
