@@ -16,6 +16,18 @@
   HTTP contract 不変)。Phase 2 残タスクは connection 管理 UI と query
   history 永続化 (Stage 2 ADR 待ち) のみ。**
 
+### Phase 2.5 PR #8 マージクローズ (本セッション末 / 2026-06-03)
+
+- PR #8 (`feature/i18n-locales` → `develop`) マージ済 = `c36d1b4`
+  (GitHub 上で merge commit、squash ではない)。
+- ローカル `feature/i18n-locales` 削除済 (`git branch -d`、`f6f5107` was)。
+  リモート側 branch は人間が削除済 (確認: `git fetch --prune` で
+  `[deleted] (none) -> origin/feature/i18n-locales`)。
+- ローカル `develop` は `origin/develop` (= `c36d1b4`) と sync 済。
+- memory 更新済: `dbboard-web-state.md` で desktop@c36d1b4 snapshot 反映
+  + ADR-0015 を「contract change ではない (DbError 本文は English 維持)
+  ので mirror 不要」リストに追加、`MEMORY.md` index も対応更新。
+
 ### Phase 2.5 多言語化 (本セッション / 2026-06-03)
 
 `develop` から `feature/i18n-locales` を切って ADR + skeleton + wiring を
