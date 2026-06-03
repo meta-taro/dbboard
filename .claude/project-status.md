@@ -5,16 +5,92 @@
 
 ## 最終更新
 
-- 日付: 2026-06-03 (本セッション、Phase 2.5 多言語化 ADR-0015 実装完了、
-  push 待ち)
-- ブランチ: `feature/i18n-locales` (`develop` から複数 commit、push は人間担当)
-- 現在の Phase: **Phase 2.5 (多言語化、ADR-0015) 実装完了。Tier 1 + Tier 2
-  の 11 locale (en/ja/ko/zh-CN/zh-TW/de/fr/es/pt-BR/ru/it) を `dbboard-ui`
-  に配線、`apps/dbboard` 起動時に `DBBOARD_LANG` → OS locale → en で解決し、
-  CJK 利用者には OS インストール済の Yu Gothic / PingFang / Noto Sans CJK
-  を `FontDefinitions` に append。`DbError` 本文は English を維持 (ADR-0009
-  HTTP contract 不変)。Phase 2 残タスクは connection 管理 UI と query
-  history 永続化 (Stage 2 ADR 待ち) のみ。**
+- 日付: 2026-06-03 (本セッション、Phase 2 接続管理 UI ADR-0016 Stage 1
+  実装完了、push 待ち)
+- ブランチ: `feature/connection-admin-ui` (`develop` から 6 commit、push
+  は人間担当)
+- 現在の Phase: **Phase 2 接続管理 UI (ADR-0016 Stage 1) 実装完了。
+  HeidiSQL 風の multi-process モデル — 起動中のプロセスは launch 時の
+  接続先で動き続け、Connections ウィンドウは `connections.toml` を
+  add / edit / delete するだけ。`dbboard-config::ConnectionAdmin`
+  use-case を新設し、`dbboard-ui::ConnectionsView` で egui 表示。
+  全 11 locale 翻訳済 (`connections-*` キー 21 件)。Phase 2 残タスクは
+  history 永続化 (Stage 2 ADR 待ち) のみで、Phase 2 本体はこの PR が
+  マージされれば完了予定。**
+
+### Phase 2 接続管理 UI (本セッション / 2026-06-03)
+
+`develop` から `feature/connection-admin-ui` を切って 6 commit、全
+workspace tests green (dbboard-config 12 → 17、dbboard-ui 30 → 46、
+他は据え置き)。Push は人間担当。
+
+積んだ commit (古い順):
+
+- `720516a` `docs: ADR-0016 connection management UI (HeidiSQL model, Stage 1)`
+- `5a07728` `feat(config): add ConnectionAdmin use-case (ADR-0016)`
+- `c8e4099` `feat(ui): add ConnectionsView for connection management (ADR-0016)`
+- `2541ef7` `feat(app): wire ConnectionAdmin and the Connections window (ADR-0016)`
+- `05aaf93` `i18n(connections): translate connections window for tiers 1+2 locales`
+- (本 commit) `docs: tick Phase 2 connection management UI in roadmap and status`
+
+実装の要点:
+
+- ADR-0016 起票: Stage 1 は add / edit / delete + 「次回起動時に有効」
+  リスタートヒントのみ。ホット切替 / active selector / kind 変更は
+  Stage 2 以降。HeidiSQL のように **複数の dbboard プロセスを上げて
+  別接続を扱う** ユーザ動線を一次サポート (ユーザ確認済)。
+- `dbboard-config::ConnectionAdmin` 新設: `ConnectionFile`
+  + `Arc<dyn SecretStore>` を抱え、`add(draft) / update(draft) /
+  delete(id)` の 3 メソッドを公開。`ConnectionDraft` は kind 別
+  enum で、Edit 側は token / pg URL の差し替え意志を `Option`
+  で表現 (write-only secret)。失敗時 `ConfigError` を返し、TOML と
+  keyring の両方を確実に rollback (path 単位の atomic rename + 失敗
+  時 secret 削除)。新規 unit test 5 + integration test 0 (file-IO は
+  既存 `tests/secrets.rs` でカバー済)。
+- `dbboard-ui::ConnectionsView` 新設: `Mode { List, Add(form),
+  Edit { id, form }, ConfirmDelete { id, name } }` の小さな state
+  machine。`render_*` を method 分割し、submit ロジックは
+  `InMemorySecretStore` + `tempfile` で純粋関数として 16 件
+  ユニットテスト化 (form→draft / submit 成否 / 空白 base_url の
+  None 化 / kind 切替の per-field buffer 保持)。`#[derive(Default)]`
+  + clippy `-D warnings` クリア。
+- Add form は kind dropdown で `Turso | D1 | Postgres` を切替。
+  各 kind 専用フィールドを独立 buffer で抱えるので、kind を flip
+  しても入力が失われない。Edit form は kind を locked 表示 (Stage 2
+  で再考)、secret は `Replace token` / `Replace URL` チェック ON で
+  のみ新 buffer を送信。default OFF なので名前だけ直す編集が安全。
+- `apps/dbboard/main.rs` を `DesktopApp` ラッパに刷新:
+  `Arc<dyn SecretStore>` を server 解決と runtime admin で共有 →
+  UI から追加した token がそのまま再読み取り可能。Top menu bar に
+  `Connections` ボタンを追加 (admin が None = headless / CI fallback
+  時のみ非表示)。`egui::Panel::top` + `egui::MenuBar::new().ui(...)` +
+  `Window::open(&mut bool).show(ctx, ...)` の 0.34 API を使用。
+- i18n: `connections-*` キーを 21 件追加 (window-title / restart-hint
+  / list-empty / add/edit/delete/save/cancel / confirm-delete /
+  field-{id,name,kind,turso-path,d1-account,d1-database,d1-base-url,
+  d1-token,pg-url} / replace-token / replace-url)。en を source of
+  truth として 11 locale すべて翻訳済 (ja/ko/zh-CN/zh-TW/de/fr/es/
+  pt-BR/ru/it)。pt-BR 「Conexões」 / fr 「Connexions」 / de
+  「Verbindungen」 / ru 「Подключения」 等、ダイアクリティカル
+  正しく記述。
+- HTTP contract (`docs/api-contract.md`) / `dbboard-server` /
+  `dbboard-core` / adapter 各種に変更ゼロ → web 側 mirror 不要
+  (Phase 2 admin UI は presentation + config-layer only、contract に
+  touch しないため `dbboard-web-state.md` は更新不要)。
+
+## 次の Phase 2 PR (human action)
+
+- ローカル commit を push: `git push -u origin
+  feature/connection-admin-ui` (Norton で release build が遅く
+  なる可能性あり、`env-windows-norton.md` 参照)。
+- `develop` 向けに PR を出す。タイトル例: `feat: Phase 2 — connection
+  management UI (ADR-0016, Stage 1)`。
+- PR body には上記 6 commit の役割と「**HTTP contract は touch せず、
+  config + UI レイヤのみで完結。HeidiSQL multi-process モデル**」
+  点を明記。
+- マージ後の残 Phase 2 タスクは history 永続化 (Stage 2 ADR 待ち) のみ。
+  Phase 2 を closing にする前に、(1) history Stage 2 ADR、(2) Stage 2
+  ADR 実装、いずれかを次セッションで判断。
 
 ### Phase 2.5 PR #8 マージクローズ (本セッション末 / 2026-06-03)
 

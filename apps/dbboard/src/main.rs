@@ -24,10 +24,13 @@
 //! tofu — egui's bundled Ubuntu-Light covers Latin + Cyrillic but no
 //! CJK ranges.
 
+use std::sync::Arc;
+
 use dbboard_config::store::{default_path, load_or_empty};
-use dbboard_config::{ConnectionFile, KeyringStore};
+use dbboard_config::{ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore};
+use dbboard_i18n::t;
 use dbboard_server::{backend_config_from_env_and_store, serve};
-use dbboard_ui::DbboardApp;
+use dbboard_ui::{ConnectionsView, DbboardApp};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve and apply the user's locale before any UI string is read.
@@ -37,15 +40,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("dbboard: locale init failed, falling back to en: {e}");
     }
 
+    // Share a single secret-store handle between startup (server backend
+    // resolution) and runtime (connection management UI) so a token
+    // added through the UI is immediately visible to subsequent reads.
+    let secrets: Arc<dyn SecretStore> = Arc::new(KeyringStore::new());
+
     // Best-effort config-dir resolution: if the OS reports no per-user
     // config dir at all, treat the store as empty rather than aborting.
     // The env-var path still works in that case (CI, headless tests).
-    let file = match default_path() {
-        Ok(path) => load_or_empty(&path)?,
-        Err(_) => ConnectionFile::empty(),
+    // When the dir does resolve, we build a ConnectionAdmin so the UI
+    // can mutate the same file the server resolved its backend from.
+    let (file, admin) = match default_path() {
+        Ok(path) => {
+            let file = load_or_empty(&path)?;
+            let admin = ConnectionAdmin::new_with_file(path, Arc::clone(&secrets), file.clone());
+            (file, Some(admin))
+        }
+        Err(_) => (ConnectionFile::empty(), None),
     };
-    let secrets = KeyringStore::new();
-    let backend = backend_config_from_env_and_store(&file, &secrets)?;
+    let backend = backend_config_from_env_and_store(&file, &*secrets)?;
 
     // The server runtime lives for the whole process. Connecting here
     // (before the window opens) preserves the fail-fast contract: a bad
@@ -64,13 +77,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         native_options,
         Box::new(move |cc| {
             install_cjk_font(&cc.egui_ctx);
-            Ok(Box::new(DbboardApp::connect(base_url, cc.egui_ctx.clone())))
+            let inner = DbboardApp::connect(base_url, cc.egui_ctx.clone());
+            Ok(Box::new(DesktopApp::new(inner, admin)))
         }),
     );
 
     // The UI has exited; stop the server before reporting how it went.
     rt.block_on(server.shutdown())?;
     result.map_err(Into::into)
+}
+
+/// Top-level eframe app that owns the inner `DbboardApp` plus the
+/// connection management window (ADR-0016). The wrapper exists because
+/// `DbboardApp` is intentionally connection-agnostic — it talks to the
+/// loopback server, not to the user's connection store — while the
+/// Connections window mutates that store directly through a
+/// `ConnectionAdmin`.
+struct DesktopApp {
+    inner: DbboardApp,
+    connections: ConnectionsView,
+    /// `None` when the OS reported no per-user config dir. The menu
+    /// button is suppressed in that case rather than showing a window
+    /// that would always fail to save.
+    admin: Option<ConnectionAdmin>,
+}
+
+impl DesktopApp {
+    fn new(inner: DbboardApp, admin: Option<ConnectionAdmin>) -> Self {
+        Self {
+            inner,
+            connections: ConnectionsView::new(),
+            admin,
+        }
+    }
+}
+
+impl eframe::App for DesktopApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        egui::Panel::top("dbboard-menu").show_inside(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                if self.admin.is_some() && ui.button(t!("connections-window-title")).clicked() {
+                    self.connections.open();
+                }
+            });
+        });
+        if let Some(admin) = self.admin.as_mut() {
+            self.connections.ui(ui.ctx(), admin);
+        }
+        self.inner.ui(ui, frame);
+    }
 }
 
 /// Look up an OS-installed CJK font and append it to egui's font stack

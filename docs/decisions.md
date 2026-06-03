@@ -1022,3 +1022,138 @@ locale falls back to `en` (which is the source-of-truth for all keys).
   Stage 2 ADR for `ar` / `hi` (RTL + shaping) remains a Phase 4 / 5
   candidate.
 
+## ADR-0016 — Connection management UI (HeidiSQL model: process-per-connection, Stage 1)
+
+**Status:** Accepted (2026-06-03).
+
+**Context.** ADR-0013 introduced `connections.toml` + OS keychain
+through `crates/dbboard-config`, but exposed no UI: the only ways for
+a user to add or change a connection were editing the TOML by hand and
+seeding secrets through `keyring` CLI. Phase 2's open exit-criteria
+item is "Connection management UI (add / edit / delete)" and this ADR
+fixes its shape.
+
+**Decision.**
+
+1. **Mental model: process-per-connection (HeidiSQL-style).** Each
+   running `dbboard` process owns exactly one active connection,
+   resolved at startup by the precedence chain already shipped (env
+   vars > `DBBOARD_CONNECTION=<id>` > single-entry auto-select > Turso
+   `:memory:`). Working against multiple databases at once is done by
+   launching multiple processes, not by swapping inside one. This
+   matches the desktop affordance the maintainer actually uses (per the
+   2026-06-03 product call) and removes a whole class of contract
+   questions ("what happens to a query mid-swap?", "does the cache
+   warmup carry over?").
+
+2. **In-app switching is explicitly out of scope for Stage 1.** No
+   "active connection" selector, no `POST /admin/switch` endpoint, no
+   tabbed multi-connection UI. A future Stage 2 ADR may introduce
+   tab-style multi-connection if usage warrants — leaving it out now
+   keeps `dbboard-server` adapter-immutable post-startup (it owns one
+   `Arc<dyn DatabaseAdapter>` per process lifetime — see ADR-0012) and
+   keeps the HTTP contract untouched.
+
+3. **Stage 1 surface: Add, Edit, Delete only.** The UI manages the
+   *saved set* of connections, not the *active* one. A passive label
+   showing the current process's resolved connection id is acceptable
+   for orientation; no button changes which connection the running
+   process talks to.
+
+4. **`ConnectionAdmin` use-case lives in `dbboard-config`, not the UI.**
+   `dbboard-config` already owns the TOML + keyring surface; we add a
+   `ConnectionAdmin` struct that holds a `PathBuf` and an
+   `Arc<dyn SecretStore>` and exposes `entries()` / `add()` / `update()`
+   / `delete()`. Each mutating call performs the keyring write first,
+   then atomically rewrites `connections.toml` (`*.tmp` → `fs::rename`,
+   already implemented in `store::save_atomic`); on TOML-write failure
+   the keyring write is rolled back so the two stores cannot diverge.
+   `dbboard-ui` depends on `dbboard-config` and calls these methods —
+   the UI does no direct filesystem or keychain I/O. This matches the
+   existing pattern where `apps/dbboard` is the only wirer of
+   concrete persistence into `dbboard-server`; `dbboard-ui` stays
+   presentation-shaped (`egui` widgets + view-model state).
+
+5. **Secrets handling.**
+   - **Add (D1 / Postgres)**: the form captures secret material in a
+     `String` field that is never written to disk except via the
+     `SecretStore`. On submit, `ConnectionAdmin::add` first calls
+     `secrets.set(keyring_ref, value)`, then writes the TOML; on the
+     reverse, `delete` writes the TOML first (the file is the source of
+     truth) and then best-effort purges the keyring entry. The latter
+     ordering means a crashed delete leaves an orphan keyring entry,
+     not an orphan TOML entry; orphan keyring entries are harmless
+     (the resolver only ever reads what the TOML references).
+   - **Edit**: the form prefills everything *except* secret values.
+     Leaving the secret field blank keeps the existing keyring entry;
+     entering a new value rewrites it. The UI shows "(unchanged)"
+     placeholder text so an editor does not assume the field is empty.
+   - **Read-back of existing secrets is not provided.** The keychain
+     is write-only from the UI — preventing a "Show password" affordance
+     keeps shoulder-surfing attacks out of scope and matches how every
+     keychain-aware client (1Password, Sequel Ace, HeidiSQL) handles
+     stored credentials.
+
+6. **Validation: hard-fail before persistence, not after.** The Save
+   button is disabled until every required field for the selected
+   `ConnectionKind` is non-empty:
+   - `Turso`: `path` non-empty.
+   - `D1`: `account_id`, `database_id`, `token` non-empty
+     (`base_url` optional, defaults to Cloudflare's REST endpoint).
+   - `Postgres`: `url` non-empty.
+   `id` must be a unique non-empty slug across the file; duplicates
+   are caught client-side and via the existing `ConfigError::Duplicate`
+   check in `ConnectionFile::add`. We do *not* attempt to ping the
+   database at save time — the resolver already fails loudly at next
+   startup if the credentials are wrong, and a synchronous ping in the
+   UI thread would block the event loop. A future Stage 2 ADR may add
+   an async "Test connection" affordance.
+
+7. **No HTTP contract change.** Every byte the UI writes lands in
+   `connections.toml` or the OS keychain; nothing flows to the
+   loopback server. The web sibling has its own connection-management
+   story and does not consume any of this.
+
+**Alternatives considered.**
+
+- **In-app hot-swap (`POST /admin/switch`).** Rejected for Stage 1:
+  introduces an admin surface that conflicts with the
+  one-adapter-per-process invariant in ADR-0012, requires a web
+  mirror, and the maintainer's HeidiSQL-style workflow does not need
+  it. Revisitable as ADR-0017+ if usage data argues otherwise.
+- **Tabbed multi-connection in one process.** Rejected for Stage 1:
+  needs N adapters in the server (ADR-0012's `Arc<dyn>` would have to
+  become a slot map keyed by tab) and changes the UI from
+  one-result-table to a tab strip + N panes. Reasonable Stage 2
+  feature; not blocking for "manage the saved list".
+- **UI talks to `dbboard-config` through a trait.** Rejected as
+  premature: there is exactly one production impl
+  (`KeyringStore` + filesystem), and `dbboard-config` is already an
+  internal crate. Adding a `ConnectionAdminApi` trait now would be
+  abstraction-for-its-own-sake; the seam exists at `SecretStore`,
+  which is what tests already use.
+- **Read-back of stored secrets.** Rejected on security grounds (see
+  point 5). Storing credentials write-only is the same model every
+  serious DB client uses.
+
+**Consequences.**
+
+- Adds `ConnectionAdmin` to `dbboard-config` with tests covering
+  add / update / delete, rollback on TOML-write failure, and the
+  "delete orphans keyring, never TOML" guarantee.
+- `dbboard-ui` grows a `connections::ConnectionsWindow` module that
+  renders an `egui::Window` with the list + an inline form per Add /
+  Edit operation. The window is opened from a top-bar "Connections"
+  button. Closing the window does not affect the running session.
+- `apps/dbboard` constructs the `ConnectionAdmin` in `main` (alongside
+  the existing `KeyringStore` + `load_or_empty` flow) and hands it to
+  `DbboardApp::connect_with_admin`. Existing `connect` constructor
+  stays for tests that do not need the admin surface.
+- The `dbboard-web` sibling sees no contract or wire change.
+  `dbboard-web-state.md` memory records ADR-0016 in the "non-contract
+  desktop changes" list, same shape as ADR-0013 / ADR-0015.
+- Roadmap Phase 2 ticks the last `[ ]` item; Phase 2 exit criteria
+  ("nothing in `dbboard-ui` knows the word 'Turso'") is preserved —
+  the form's `ConnectionKind` dropdown is a presentation detail keyed
+  by the existing enum, not adapter-specific logic.
+

@@ -9,6 +9,10 @@ publish.workspace = true
 description = "egui-based presentation layer for dbboard. Depends only on dbboard-core."
 
 [dependencies]
+# Connection management UI (ADR-0016) routes every TOML + keychain
+# mutation through dbboard-config so the UI layer never reaches for the
+# filesystem or the OS keychain directly.
+dbboard-config = { workspace = true }
 dbboard-core = { workspace = true }
 # Translation loader (ADR-0015). Provides t!() / t_args!() macros and
 # the global Fluent loader. Initialised once at startup from
@@ -24,6 +28,11 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# `ConnectionsView` tests need a real on-disk path for
+# `ConnectionAdmin::new_with_file` to round-trip the TOML through.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

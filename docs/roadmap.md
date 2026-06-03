@@ -127,7 +127,11 @@ contract (ADR-0011).
 
 - [x] Define `DatabaseAdapter` trait in `dbboard-core` *(ADR-0012)*
 - [x] Move Turso-specific types behind the trait
-- [ ] Connection management UI (add / edit / delete)
+- [x] Connection management UI (add / edit / delete) *(ADR-0016, Stage 1;
+  HeidiSQL multi-process model — the running process keeps talking to
+  its launch-time connection and the window mutates the persisted
+  store. `ConnectionAdmin` use case in `dbboard-config`,
+  `ConnectionsView` egui surface, all 11 locales translated.)*
 - [x] Local config file (TOML) + OS keychain for secrets *(ADR-0013;
   `connections.toml` resolved via `directories`, secrets via the
   `keyring` crate behind a `SecretStore` trait; see
