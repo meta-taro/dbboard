@@ -6,13 +6,96 @@
 ## 最終更新
 
 - 日付: 2026-06-03 (本セッション末、Phase 2 接続管理 UI ADR-0016 Stage 1
-  PR #9 マージ済)
-- ブランチ: `develop` (`origin/develop` = `88d0f45` と sync 済)
+  PR #9 マージ済 + 次セッション ADR-0017 方針合意済)
+- ブランチ: `develop` (ローカル 1 ahead = `d9a7ba2`、push は人間担当)
 - 現在の Phase: **Phase 2 接続管理 UI (ADR-0016 Stage 1) シップ完了。
-  Phase 2 本体の残タスクは history 永続化のみで、これは Stage 2 ADR
-  待ち。Phase 2 を closing にする前に history Stage 2 ADR を起票するか、
-  Phase 3 (Neon / Supabase アダプタ) に進むかを次セッションで判断。
-  HTTP contract は不変、web 側ミラー不要。**
+  次セッションは ADR-0017 (query history persistence, Stage 2) の起票
+  から開始。形式は JSON Lines (ndjson) で、record schema を desktop と
+  web で共有 (HTTP contract には触れない、on-disk schema のみ揃える)
+  方針までユーザと合意済。**
+
+## 次セッション開始タスク: ADR-0017 起票
+
+ユーザと合意済の前提:
+
+- **形式**: JSON Lines (`.jsonl`、1 行 1 JSON、改行 LF)。動機は
+  `jq` / `tail -F` / grep がそのまま使えること。HeidiSQL (registry) /
+  DBeaver (SQLite) / DataGrip (text) / TablePlus (SQLite) のどれも
+  jq-friendly ではないため、これが差別化点になる。
+- **共有のスコープ**: **record の schema (field 名・型・semantics)
+  だけ** を desktop と web で揃える。保存場所・ローテーション戦略・
+  書き込み実装は各 repo 裁量。
+- **HTTP contract には触らない**: `GET /history` は追加しない (ユーザ
+  確認済)。理由は (1) endpoint 化すると web の access control 設計が
+  contract に染み出す、(2) jq でファイル直読みできることが UX の核、
+  (3) Stage 3 で necessary になれば additive に追加可能。
+- **共有の置き場所**: ADR-0017 本文内に schema を single source of
+  truth として置く。`docs/api-contract.md` ミラーは作らない (これは
+  HTTP layer 専用)。web 側 sibling ADR は「desktop ADR-0017 と同一
+  schema」とだけ書く形。
+
+### 合意済 record schema (両 repo 共通)
+
+```jsonc
+{
+  "v": 1,                              // schema version (forward-compat)
+  "ts": "2026-06-03T14:22:01.123Z",   // RFC 3339 UTC、ローカル変換は jq 側
+  "conn": "prod-pg",                   // connection id (TOML primary key)
+  "actor": null,                       // desktop null 固定、web は session/user id
+  "sql": "SELECT * FROM users LIMIT 10",
+  "status": "ok" | "error",
+  "duration_ms": 42,
+  "rows": 10,                          // SELECT のとき、それ以外 null
+  "rows_affected": null,               // DML のとき、SELECT は null
+  "error": null                        // status=error のとき {category, message}
+}
+```
+
+- `"v":1` で forward-compat 確保 (ADR で「field rename は breaking
+  change」と明記する)。
+- `"actor"` は desktop 側 day-1 から null 固定で書き込む (後付けすると
+  過去ログとの不整合が出る)。
+- `"error"` は ADR-0009 / `DbError` の 5 カテゴリ
+  (`connection` / `query` / `schema` / `type_conversion` /
+  `capability`) を category として持つ。
+
+### ADR-0017 で詰める論点
+
+- **保存場所 (desktop)**: `directories` crate で
+  `$XDG_DATA_HOME/dbboard/history.jsonl` (Linux) /
+  `~/Library/Application Support/dbboard/history.jsonl` (macOS) /
+  `%APPDATA%\dbboard\history.jsonl` (Windows)。`dbboard-config` の
+  `default_path` と同居させるか、別 module に切るか要検討。
+- **ローテーション**: 50MB or 100k 行で `history.jsonl.1` に rotate
+  (`tracing-appender` 等の既存実装に乗せる)。
+- **書き込みタイミング**: クエリ実行直後の async append (UI を
+  block しない、最悪 1 件失っても致命的ではない)。
+- **secret を含むクエリの扱い**: 完全保存 (ローカルファイル、暗号化
+  なし)。README に「ローカル DB ファイルと同等の扱い」と明記。web 側
+  は team 利用文脈で別判断 (web ADR 裁量)。
+- **読み込みポリシー**: 起動時に末尾 N 行 (`DEFAULT_CAPACITY=100`) を
+  tail して in-memory `HistoryStore` に注入 → UI からは Stage 1 と
+  同じ API で見える (= UI コード変更ゼロ)。
+- **migration**: `"v"` を見て古い行を捨てずに済むよう、reader 側で
+  unknown field を ignore する Stage 1 から書いておく。
+
+### 次セッションでの段取り
+
+1. `feature/query-history-persistence` を `develop` から切る。
+2. ADR-0017 を `docs/decisions.md` に append (上記 schema + 残論点の
+   決着)。1 commit。
+3. `crates/dbboard-ui::history::HistoryStore` に persistence layer を
+   追加 (新規 module、Stage 1 の API は不変)。1〜2 commit。
+4. `apps/dbboard` 配線 (起動時に load、`run_sql` 後に append)。
+   1 commit。
+5. `.claude/issues/0003-web-history-schema-mirror.md` を `0001`/`0002`
+   と同形式で起票 → web 側へ。1 commit。
+6. roadmap.md Phase 2 の history 行を「Stage 2 = persisted via
+   ADR-0017」に更新、project-status.md を closeout。1 commit。
+7. PR を `develop` へ。タイトル案: `feat: Phase 2 — query history
+   persistence (ADR-0017, Stage 2)`。
+
+
 
 ### Phase 2 PR #9 マージクローズ (本セッション末 / 2026-06-03)
 
