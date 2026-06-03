@@ -137,6 +137,28 @@ contract (ADR-0011).
 
 Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
 
+## Phase 2.5 — Multilingual UI (ADR-0015) ✅ done
+
+Goal: ship the desktop UI in 11 locales (en, ja, ko, zh-CN, zh-TW, de,
+fr, es, pt-BR, ru, it) without changing the HTTP contract or any
+server-emitted text.
+
+- [x] ADR-0015 — locale set, framework choice (fluent-rs over gettext),
+  resolution chain (`DBBOARD_LANG` → OS → `en`), font strategy, scope rule
+- [x] `crates/dbboard-i18n` — embedded Fluent resources, runtime
+  `t!()` / `t_args!()` macros, OS locale detection via `sys-locale`
+- [x] 11 `.ftl` resource files covering every UI string
+- [x] `dbboard-ui` translates labels through the macros; `DbError`
+  variants stay English on the wire but the UI prefixes a translated
+  category label
+- [x] `apps/dbboard` resolves the locale at startup and registers an
+  OS-installed CJK font so `ja` / `ko` / `zh` users do not render tofu
+
+Exit criteria: `DBBOARD_LANG=<tag>` switches every UI label to that
+locale at startup; `DbError` body text stays English (ADR-0009 HTTP
+contract); a malformed override falls back to the OS locale; an unknown
+locale falls back to `en` without aborting.
+
 ## Phase 3 — Neon and Supabase adapters
 
 Goal: prove the trait by adding two more adapters without changing the
