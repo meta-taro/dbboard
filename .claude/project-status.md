@@ -5,14 +5,25 @@
 
 ## 最終更新
 
-- 日付: 2026-06-03 (本セッション、Phase 2 config 層実装完了)
-- ブランチ: `feature/config-store` (5 commit 積み済み、push 待ち)
+- 日付: 2026-06-03 (本セッション、Phase 2 config 層 PR #6 マージ完了)
+- ブランチ: `develop` (`00756d7` まで sync 済、`feature/config-store` は
+  local 削除済、リモート削除は人間担当)
 - 現在の Phase: **v0.1.0 出荷済。Phase 2 ADR-0012 部分 (trait + capability
-  discovery) は `develop` 済 = `7f463ef`。本セッションで Phase 2 ADR-0013
-  部分 (local TOML connection store + OS keychain で secrets) を実装、
-  `apps/dbboard` まで配線完了。残タスクは connection 管理 UI と
+  discovery) は `develop` 済 = `7f463ef`。Phase 2 ADR-0013 部分 (local
+  TOML connection store + OS keychain で secrets) は本セッションで PR #6
+  経由マージ済 = `00756d7`。残タスクは connection 管理 UI と
   query history。次の baton は web 側 delta mirror
   (`.claude/issues/0002-web-capabilities-mirror.md`) のまま。**
+
+### Phase 2 config 層 PR #6 マージクローズ (本セッション末 / 2026-06-03)
+
+- PR #6 (`feature/config-store` → `develop`) マージ済 = `00756d7`
+  (GitHub 上で merge commit、squash ではない)。
+- ローカル `feature/config-store` 削除済 (`git branch -d`、`42871db` was)。
+  リモート側 branch 削除は人間担当。
+- ローカル `develop` は `origin/develop` (= `00756d7`) と sync 済。
+- memory 更新済: `dbboard-web-state.md` で desktop@00756d7 snapshot
+  反映 (ADR-0012 + ADR-0013 の双方が contract 層に追加された旨)。
 
 ### Phase 2 config 層 (本セッション / 2026-06-03)
 
