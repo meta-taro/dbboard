@@ -30,4 +30,23 @@ pub enum ConfigError {
     /// connection picker, so collisions are a hard error.
     #[error("duplicate connection id: {0}")]
     DuplicateId(String),
+
+    /// Filesystem read or write failed. The path is *not* embedded so
+    /// the message can be surfaced in logs without leaking a home
+    /// directory; callers attach the path when they have it.
+    #[error("config io failed: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Re-serializing the in-memory store back to TOML failed. With our
+    /// schema this should only happen if a future variant carries data
+    /// that the `toml` crate cannot represent.
+    #[error("config serialize failed: {0}")]
+    Serialize(#[from] toml::ser::Error),
+
+    /// The OS reported no usable per-user config directory. This is
+    /// extremely rare on a real desktop (no `$HOME`, no
+    /// `%APPDATA%`); we surface it rather than silently choosing the
+    /// process working directory.
+    #[error("could not resolve a per-user config directory")]
+    NoConfigDir,
 }

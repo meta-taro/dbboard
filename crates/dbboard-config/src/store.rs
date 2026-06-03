@@ -1,8 +1,8 @@
 //! On-disk shape of the connection store.
 //!
-//! Schema-layer only. [`ConnectionFile::parse`] is a string -> struct
-//! validator; filesystem reads and atomic writes live in a later commit
-//! (the `load_or_empty` / `save_atomic` pair).
+//! [`ConnectionFile::parse`] is the schema-layer validator;
+//! [`default_path`], [`load_or_empty`], and [`save_atomic`] are the
+//! filesystem layer on top of it.
 //!
 //! Secrets are *referenced* here (`keyring_*_ref`) but never *stored*
 //! here; the actual token / URL is round-tripped through an OS keychain.
@@ -10,7 +10,11 @@
 //! paste into a bug report.
 
 use std::collections::HashSet;
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::ConfigError;
@@ -98,8 +102,7 @@ impl ConnectionFile {
     }
 
     /// Convenience constructor for an empty store at the current
-    /// schema version. Used by `load_or_empty` (next commit) and by
-    /// tests.
+    /// schema version. Used by [`load_or_empty`] and by tests.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -107,6 +110,108 @@ impl ConnectionFile {
             connections: Vec::new(),
         }
     }
+}
+
+/// The default per-user path for `connections.toml`, resolved via the
+/// `directories` crate so it matches each platform's convention:
+///
+/// - Windows: `%APPDATA%\dbboard\dbboard\config\connections.toml`
+/// - macOS:   `~/Library/Application Support/dev.dbboard.dbboard/connections.toml`
+/// - Linux:   `$XDG_CONFIG_HOME/dbboard/connections.toml`
+///   (default `~/.config/dbboard/connections.toml`)
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoConfigDir`] when the OS reports no usable
+/// per-user config directory (no `$HOME`, no `%APPDATA%`).
+pub fn default_path() -> Result<PathBuf, ConfigError> {
+    let dirs = ProjectDirs::from("dev", "dbboard", "dbboard").ok_or(ConfigError::NoConfigDir)?;
+    Ok(dirs.config_dir().join("connections.toml"))
+}
+
+/// Read and parse `connections.toml` at `path`.
+///
+/// A missing file is **not** an error: it yields an empty store at the
+/// current schema version. The file is created lazily by
+/// [`save_atomic`] when the user adds the first entry. Any other I/O
+/// error is propagated.
+///
+/// # Errors
+///
+/// - [`ConfigError::Io`] for non-`NotFound` I/O failures.
+/// - [`ConfigError::Parse`], [`ConfigError::UnsupportedVersion`], or
+///   [`ConfigError::DuplicateId`] from the underlying
+///   [`ConnectionFile::parse`].
+pub fn load_or_empty(path: &Path) -> Result<ConnectionFile, ConfigError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => ConnectionFile::parse(&contents),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(ConnectionFile::empty()),
+        Err(err) => Err(ConfigError::Io(err)),
+    }
+}
+
+/// Write `file` to `path` atomically: serialize to a sibling `*.tmp`
+/// file (created with mode `0o600` on Unix) and then `rename` it into
+/// place. Parent directories are created if necessary.
+///
+/// On Windows `fs::rename` maps to `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`,
+/// which is the closest practical equivalent — atomic with respect to
+/// concurrent readers on the same volume.
+///
+/// # Errors
+///
+/// - [`ConfigError::Serialize`] if re-serializing the in-memory store
+///   to TOML fails.
+/// - [`ConfigError::Io`] for any filesystem failure (creating parent
+///   dirs, opening the temp file, writing, syncing, renaming).
+pub fn save_atomic(path: &Path, file: &ConnectionFile) -> Result<(), ConfigError> {
+    let serialized = toml::to_string(file)?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let tmp = tmp_path_for(path);
+    write_new_file(&tmp, serialized.as_bytes())?;
+    if let Err(err) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(ConfigError::Io(err));
+    }
+    Ok(())
+}
+
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let mut name = path.file_name().map_or_else(
+        || std::ffi::OsString::from(".connections.toml"),
+        std::ffi::OsStr::to_os_string,
+    );
+    name.push(".tmp");
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    parent.join(name)
+}
+
+#[cfg(unix)]
+fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // `create_new(true)` rejects a stale temp left behind by an
+    // interrupted save — better to fail loudly than to clobber.
+    let mut handle = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    handle.write_all(contents)?;
+    handle.sync_all()
+}
+
+#[cfg(not(unix))]
+fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut handle = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    handle.write_all(contents)?;
+    handle.sync_all()
 }
 
 #[cfg(test)]
