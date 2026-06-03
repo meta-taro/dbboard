@@ -165,9 +165,27 @@ secret first.
 
 ## Configuration
 
-- Connections are stored in a local file (TBD: `~/.config/dbboard/config.toml`
-  or platform equivalent via the `directories` crate).
-- Secrets are stored via the OS keychain (TBD: `keyring` crate).
+User-facing configuration lives in a dedicated crate
+**`crates/dbboard-config`** (added in Phase 2; see
+[ADR-0013](decisions.md)). It owns both halves:
+
+- **Connection metadata** in a per-user TOML file
+  (`connections.toml`) under the platform's standard config dir,
+  resolved through the `directories` crate. The file is `version = 1`
+  with a list of `[[connections]]` entries (`kind = "turso" | "d1" |
+  "postgres"`). A missing file yields an empty store; the file is
+  created lazily when the UI saves the first entry, with mode `0o600`
+  on Unix.
+- **Secrets** in the OS keychain via the `keyring` crate (Windows
+  Credential Manager, macOS Keychain, Linux Secret Service). The TOML
+  stores only opaque `keyring_*_ref` keys; tokens and connection
+  strings never appear on disk.
+
+`apps/dbboard::main` resolves a backend in this order:
+`DBBOARD_PG_URL` → `DBBOARD_D1_*` → `DBBOARD_TURSO_PATH` →
+`DBBOARD_CONNECTION=<id>` from `connections.toml` → single-entry
+auto-select → default Turso `:memory:`. The config layer is purely
+additive; existing env-driven flows are unchanged.
 
 ## Testing Strategy
 

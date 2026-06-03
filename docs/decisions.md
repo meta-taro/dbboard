@@ -661,3 +661,142 @@ greyed control or hidden panel — never as a red error.
   and the `Backend` → `Arc<dyn>` swap are in Phase 2. Concrete
   capability traits land when the adapters that need them do (e.g.
   `auth` arrives with `dbboard-supabase` in Phase 3).
+
+---
+
+## ADR-0013 — Local TOML connection store with OS keychain for secrets
+
+- **Date**: 2026-06-03
+- **Status**: accepted
+
+### Context
+
+Phase 2's remaining tasks (connection management UI, persisted query
+history) need a durable home for user-defined connections. So far the
+desktop has only ever resolved a backend from `DBBOARD_*` environment
+variables (`apps/dbboard::main` → `dbboard-server::backend_config_from_env`),
+which is fine for single-DB CI runs but cannot hold a list of named
+connections a user adds in the UI.
+
+Three constraints shape the design:
+
+1. **`dbboard-core` is "no I/O"** (ADR-0002, reaffirmed by ADR-0009 as
+   "serde only"). Filesystem reads and OS keychain calls cannot live
+   there.
+2. **`apps/dbboard` is "wiring only"** — it must not host reusable
+   persistence logic that the future connection-management UI (and any
+   headless deployment) would also need.
+3. **Secrets must never appear in a file** the user might back up, sync,
+   or paste into an issue. Connection metadata (kind, host, ids) is fine
+   in a flat file; tokens and connection strings are not.
+
+We also must not regress the Phase 1.6 / 1.7 exit criteria, both of
+which guarantee env-driven adapter selection. Whatever we add has to be
+additive and inert until populated.
+
+### Decision
+
+Introduce a new crate **`crates/dbboard-config`** that owns both halves
+of user-facing configuration:
+
+- A per-user **TOML file** at `directories::ProjectDirs::from("dev",
+  "dbboard", "dbboard").config_dir().join("connections.toml")`
+  (`%APPDATA%\dbboard\dbboard\config\connections.toml` on Windows,
+  `~/Library/Application Support/dev.dbboard.dbboard/connections.toml`
+  on macOS, `$XDG_CONFIG_HOME/dbboard/connections.toml` on Linux). The
+  file starts with `version = 1` and a list of `[[connections]]`
+  entries. A missing file is **not** an error — `load_or_empty` returns
+  an empty store and no file is created until the user saves an entry.
+  On Unix the file is written with mode `0o600`.
+- A **`SecretStore` trait** with two implementations: `KeyringStore`
+  (backed by the `keyring` crate, service string `"dbboard"`, account
+  string from the TOML's `keyring_*_ref`) and `InMemorySecretStore`
+  for tests, CI, and Linux runners without a Secret Service. The
+  TOML stores only opaque keychain key references, never secret
+  material.
+
+TOML schema (versioned; unknown version is a hard error):
+
+```toml
+version = 1
+
+[[connections]]
+id = "local-turso"
+name = "Local libSQL"
+kind = "turso"
+path = ":memory:"
+
+[[connections]]
+id = "prod-d1"
+name = "Prod D1"
+kind = "d1"
+account_id = "..."
+database_id = "..."
+base_url = "..."                       # optional
+keyring_token_ref = "dbboard.prod-d1.token"
+
+[[connections]]
+id = "neon-staging"
+name = "Neon Staging"
+kind = "postgres"
+keyring_url_ref = "dbboard.neon-staging.url"
+```
+
+Duplicate `id`, unknown `kind`, and unknown `version` are all hard
+parse errors. We surface drift loudly rather than silently dropping
+entries.
+
+**Resolution order in `apps/dbboard::main`** becomes:
+
+1. `DBBOARD_PG_URL` → Postgres (existing).
+2. `DBBOARD_D1_*` trio → D1 (existing).
+3. `DBBOARD_TURSO_PATH` (when set) → Turso (existing).
+4. **New**: `DBBOARD_CONNECTION=<id>` selects an entry from
+   `connections.toml` by id; its `keyring_*_ref` values are resolved
+   through the `SecretStore` and converted into `BackendConfig`.
+5. **New**: with `DBBOARD_CONNECTION` unset and exactly one entry in the
+   file, that entry is auto-selected (single-user convenience).
+6. Default Turso `:memory:` (existing).
+
+The config file therefore stays inert for existing CI and Phase 1.6/1.7
+exit criteria; nothing changes until the file is populated or
+`DBBOARD_CONNECTION` is set.
+
+`keyring` is chosen over alternatives because it maps uniformly to
+Windows Credential Manager, macOS Keychain, and Linux Secret Service,
+is `Send + Sync`, and does not drag system OpenSSL into the build
+(consistent with the `rustls` discipline in ADR-0007 and ADR-0008).
+Alternatives considered: `secret-service` (Linux-only — fails the
+cross-platform requirement) and hand-rolled DPAPI / Security.framework
+wrappers (re-implementing `keyring` poorly).
+
+Config errors are crate-local (`ConfigError`); they happen at process
+startup, before the server binds, and never reach the HTTP envelope.
+**No change** to `docs/api-contract.md`, `DbError`, or any wire surface.
+
+### Consequences
+
+- The workspace gains one crate (`dbboard-config`) and two external
+  dependencies: `directories` (config-dir resolution) and `keyring`
+  (OS secret storage). `serde` / `toml` are already pulled in
+  transitively.
+- The `dbboard-core` "no I/O" rule (ADR-0002, ADR-0009) is preserved:
+  `dbboard-config` owns both filesystem and keychain calls; `core`
+  stays serializable-only.
+- Connection metadata becomes safely shareable (backup, copy between
+  machines, paste into a bug report); secrets stay in the per-machine
+  OS keychain.
+- A user without a Secret Service available (headless Linux runner,
+  some CI configurations) can still boot the app: `KeyringStore`
+  reports unavailability at construction, the app falls back to
+  `InMemorySecretStore`, and any connection requiring a secret simply
+  fails at resolve time with a clear `ConfigError::Secret(...)`.
+  The default Turso `:memory:` path (step 6 above) keeps working.
+- The next two Phase 2 tasks (connection management UI, persisted query
+  history) now have a shared persistence layer to bind against:
+  `save_atomic` exists for the UI to call, and the directories crate
+  helpers can be reused for the query-history file.
+- SemVer impact (ADR-0011): additive. The HTTP contract is unchanged;
+  internal crates remain `publish = false`. The TOML schema is itself
+  versioned (`version = 1`), so future schema changes will be migrated
+  in-place rather than guessed at.
