@@ -681,6 +681,7 @@ dependencies = [
 name = "dbboard-ui"
 version = "0.1.0"
 dependencies = [
+ "dbboard-config",
  "dbboard-core",
  "dbboard-i18n",
  "eframe",
@@ -688,6 +689,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
