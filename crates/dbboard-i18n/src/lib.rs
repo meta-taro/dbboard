@@ -9,9 +9,13 @@
 //! 2. A global [`FluentLanguageLoader`] (`LOADER`) seeded with the
 //!    fallback language (`en`) at first access and re-selected against
 //!    the user's preferred locales by [`init`].
-//! 3. The [`t!`] / [`t_args!`] macros that wrap `i18n_embed_fl::fl!`,
-//!    so callers in `dbboard-ui` do not need to thread the loader
-//!    through every call site.
+//! 3. The [`t!`] / [`t_args!`] macros that call
+//!    [`FluentLanguageLoader::get`] / [`FluentLanguageLoader::get_args`]
+//!    at runtime, so callers in `dbboard-ui` do not need to thread the
+//!    loader through every call site. We deliberately do *not* use
+//!    `i18n_embed_fl::fl!`: that proc-macro resolves `i18n.toml` and
+//!    `<crate>.ftl` against the *calling* crate's `CARGO_MANIFEST_DIR`,
+//!    which would force every consumer to duplicate the embed config.
 //!
 //! Locale resolution priority (highest first):
 //!
@@ -134,14 +138,20 @@ pub fn init(
     Ok(loader)
 }
 
-/// Re-export the proc-macro under a stable path so [`t!`] / [`t_args!`]
-/// users only need to depend on `dbboard-i18n`.
+/// Re-exports used by the [`t!`] / [`t_args!`] macros. Kept under
+/// `__private` so callers do not depend on `fluent-bundle` types
+/// transitively.
 #[doc(hidden)]
 pub mod __private {
-    pub use i18n_embed_fl::fl;
+    pub use fluent_bundle::FluentValue;
+    pub use std::collections::HashMap;
 }
 
 /// Lookup a translation key with no arguments.
+///
+/// Resolves at runtime against the global loader; missing keys return
+/// the key string verbatim (Fluent's default), which surfaces typos in
+/// developer builds without crashing the UI.
 ///
 /// ```ignore
 /// use dbboard_i18n::t;
@@ -150,7 +160,7 @@ pub mod __private {
 #[macro_export]
 macro_rules! t {
     ($id:literal) => {
-        $crate::__private::fl!($crate::loader(), $id)
+        $crate::loader().get($id)
     };
 }
 
@@ -162,9 +172,16 @@ macro_rules! t {
 /// ```
 #[macro_export]
 macro_rules! t_args {
-    ($id:literal, $($arg_name:ident = $arg_val:expr),+ $(,)?) => {
-        $crate::__private::fl!($crate::loader(), $id, $($arg_name = $arg_val),+)
-    };
+    ($id:literal, $($arg_name:ident = $arg_val:expr),+ $(,)?) => {{
+        let mut args: $crate::__private::HashMap<
+            &'static str,
+            $crate::__private::FluentValue<'static>,
+        > = $crate::__private::HashMap::new();
+        $(
+            args.insert(stringify!($arg_name), $crate::__private::FluentValue::from($arg_val));
+        )+
+        $crate::loader().get_args_concrete($id, args)
+    }};
 }
 
 #[cfg(test)]
