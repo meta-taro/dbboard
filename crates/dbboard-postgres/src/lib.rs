@@ -77,6 +77,17 @@ pub const FLAVOR_NEON: &str = "neon";
 /// future ADR.
 pub const FLAVOR_SUPABASE: &str = "supabase";
 
+/// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
+/// connection the user declared as AWS Aurora DSQL (ADR-0021). Wire and
+/// SQL path are identical to [`FLAVOR_POSTGRES`]; the difference is the
+/// label the rest of the system sees in capability output and
+/// connection picker UI. The connection URL's password field is
+/// expected to carry a short-lived IAM authentication token (~15 min
+/// TTL) generated via `aws dsql generate-db-connect-admin-auth-token`
+/// or an equivalent SDK call; automatic token refresh via the AWS SDK
+/// is out of scope for this flavor and will land via a future ADR.
+pub const FLAVOR_AURORA_DSQL: &str = "aurora-dsql";
+
 pub struct PostgresAdapter {
     // Only the pool is retained; the connection URL (with its password)
     // is intentionally not stored, so it cannot leak through Debug.
@@ -130,6 +141,28 @@ impl PostgresAdapter {
     /// Same as [`connect`](Self::connect).
     pub async fn connect_supabase(config: PostgresConfig) -> DbResult<Self> {
         Self::connect_with_flavor(config, FLAVOR_SUPABASE).await
+    }
+
+    /// Connect to an AWS Aurora DSQL database (ADR-0021). The wire
+    /// protocol and SQL path are identical to [`connect`](Self::connect);
+    /// the only difference is that the adapter reports
+    /// [`FLAVOR_AURORA_DSQL`] as its id, so capabilities output and the
+    /// connection picker can label the connection as Aurora DSQL rather
+    /// than generic Postgres.
+    ///
+    /// Aurora DSQL only accepts short-lived IAM authentication tokens
+    /// (typical TTL ~15 minutes) in place of a static password. The
+    /// caller is expected to embed a freshly minted token in
+    /// [`PostgresConfig::url`]; this constructor does not refresh
+    /// tokens. Refresh integration via the AWS SDK is a future ADR.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`connect`](Self::connect). An expired IAM token surfaces
+    /// as [`DbError::Connection`] (auth rejection) from the underlying
+    /// pool.
+    pub async fn connect_aurora_dsql(config: PostgresConfig) -> DbResult<Self> {
+        Self::connect_with_flavor(config, FLAVOR_AURORA_DSQL).await
     }
 
     async fn connect_with_flavor(config: PostgresConfig, flavor: &'static str) -> DbResult<Self> {
@@ -364,25 +397,35 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_error, harden_ssl_mode, reclassify_schema, truncate, tuple_to_table, FLAVOR_NEON,
-        FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        classify_error, harden_ssl_mode, reclassify_schema, truncate, tuple_to_table,
+        FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
     use dbboard_core::DbError;
     use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
     /// `id()` is part of the public contract documented in
     /// `docs/architecture.md` (adapter identifiers `turso`, `neon`,
-    /// `supabase` are stable strings). Every flavor constant must keep
-    /// its byte-content stable across releases — capability consumers
-    /// match on them — and must be different from each other.
+    /// `supabase`, `aurora-dsql` are stable strings). Every flavor
+    /// constant must keep its byte-content stable across releases —
+    /// capability consumers match on them — and must be different from
+    /// each other.
     #[test]
     fn flavor_constants_are_stable_and_distinct() {
         assert_eq!(FLAVOR_POSTGRES, "postgres");
         assert_eq!(FLAVOR_NEON, "neon");
         assert_eq!(FLAVOR_SUPABASE, "supabase");
-        assert_ne!(FLAVOR_POSTGRES, FLAVOR_NEON);
-        assert_ne!(FLAVOR_POSTGRES, FLAVOR_SUPABASE);
-        assert_ne!(FLAVOR_NEON, FLAVOR_SUPABASE);
+        assert_eq!(FLAVOR_AURORA_DSQL, "aurora-dsql");
+        let all = [
+            FLAVOR_POSTGRES,
+            FLAVOR_NEON,
+            FLAVOR_SUPABASE,
+            FLAVOR_AURORA_DSQL,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "flavors {a} and {b} must be distinct");
+            }
+        }
     }
 
     #[test]
