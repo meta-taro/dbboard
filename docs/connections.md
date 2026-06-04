@@ -21,15 +21,22 @@ creates the file on first save with mode `0o600` on Unix.
 
 At startup the binary picks a backend in this order:
 
-1. `DBBOARD_PG_URL` (PostgreSQL-wire, takes everything else as override).
-2. The `DBBOARD_D1_*` trio (account id + database id + token).
-3. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
-4. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
+1. `DBBOARD_NEON_URL` (Neon-flavored Postgres-wire — see [ADR-0018](decisions.md);
+   the adapter is labelled `neon` at runtime).
+2. `DBBOARD_PG_URL` (generic PostgreSQL-wire — CockroachDB, self-hosted
+   Postgres; the adapter is labelled `postgres`).
+3. The `DBBOARD_D1_*` trio (account id + database id + token).
+4. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
+5. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
    missing id aborts startup — dbboard refuses to silently fall back to
    a different backend than the user asked for.
-5. If `connections.toml` contains exactly one entry, that one is
+6. If `connections.toml` contains exactly one entry, that one is
    auto-selected.
-6. Otherwise an in-memory Turso/libSQL database (`:memory:`).
+7. Otherwise an in-memory Turso/libSQL database (`:memory:`).
+
+`DBBOARD_NEON_URL` outranks `DBBOARD_PG_URL` because Neon is the more
+specific labelling; setting both is unusual but the precedence is
+defined.
 
 ## TOML schema
 
@@ -55,11 +62,20 @@ database_id        = "uuid-of-the-database"
 keyring_token_ref  = "dbboard.cf-d1-prod.token"
 
 [[connections]]
-id              = "neon-prod"
-name            = "Neon (prod)"
+id              = "cockroach-prod"
+name            = "CockroachDB (prod)"
 kind            = "postgres"
 # The full connection URL (with password) lives in your OS keychain
 # under (service="dbboard", account=keyring_url_ref).
+keyring_url_ref = "dbboard.cockroach-prod.url"
+
+[[connections]]
+id              = "neon-prod"
+name            = "Neon (prod)"
+kind            = "neon"
+# Wire shape is identical to "postgres"; the discriminator only affects
+# the runtime adapter id ("neon" vs "postgres") so the connection picker
+# and history records can label the connection precisely. See ADR-0018.
 keyring_url_ref = "dbboard.neon-prod.url"
 ```
 
@@ -70,7 +86,10 @@ keyring_url_ref = "dbboard.neon-prod.url"
 - `id` — primary key referenced by `DBBOARD_CONNECTION`. Duplicate ids
   are a hard error at load time.
 - `name` — display label for the (future) connection picker.
-- `kind` — `"turso"`, `"d1"`, or `"postgres"`.
+- `kind` — `"turso"`, `"d1"`, `"postgres"`, or `"neon"`. `"neon"` and
+  `"postgres"` use the same wire shape (the keyring carries a
+  `postgres://…` URL either way); the only difference is the runtime
+  adapter label, which the connection picker and history records read.
 - `keyring_*_ref` — opaque account string used to look up the secret
   in the OS keychain. Pick something stable and recognisable; the
   string is what shows in the OS UI alongside the constant service

@@ -5,14 +5,116 @@
 
 ## 最終更新
 
-- 日付: 2026-06-04 (本セッション末、Phase 2 query history persistence
-  ADR-0017 Stage 2 — PR #10 マージ完了)
-- ブランチ: `develop` (= `origin/develop` = `ca6ca93`、sync 済)
-- 現在の Phase: **Phase 2 query history persistence (ADR-0017 Stage 2)
-  シップ完了。PR #10 マージ済 (`ca6ca93`)、ローカル feature ブランチ
-  削除済。次セッションは Phase 3 (Neon / Supabase アダプタ) 着手、
-  あるいは web 側 Claude が `0003-web-history-schema-mirror` を着手
-  した場合の cross-repo フォローアップ対応。**
+- 日付: 2026-06-04 (本セッション末、Phase 3 Neon adapter as flavored
+  kind — ADR-0018 起票 + 実装完了、push & PR は人間担当)
+- ブランチ: `feature/neon-adapter-kind` (= `0385aaf`、未 push)。
+  `develop` は `origin/develop` = `7555c58` のまま (本セッションは
+  まだ merge 前)。
+- 現在の Phase: **Phase 3 Neon adapter (flavored kind over
+  `dbboard-postgres`) 実装完了、ローカルテスト全 green。次のステップ
+  は人間による `git push -u origin feature/neon-adapter-kind`
+  → PR open → merge。次セッションは Supabase アダプタ着手か、
+  web 側 Claude が `0003-web-history-schema-mirror` を pickup した
+  場合のフォローアップ対応。**
+
+### Phase 3 Neon adapter (本セッション / 2026-06-04)
+
+`develop` (= `7555c58`) から `feature/neon-adapter-kind` を切って
+4 commit、workspace tests 全 green。ユーザ確認済の scope は
+**「Neon を first-class kind に (推奨)」** — docs-only でも別
+クレートでもない、`dbboard-postgres` への flavor 注入。
+
+積んだ commit (古い順):
+
+- `8b0a72a` `docs: ADR-0018 Neon as a flavored kind over dbboard-postgres`
+- `45ffe2b` `feat(postgres): add flavor field, connect_neon constructor (ADR-0018)`
+- `6936902` `feat(neon): wire ConnectionKind::Neon through config, resolver, and UI (ADR-0018)`
+- `0385aaf` `docs: document Neon flavor + add DBBOARD_NEON_URL live test gate (ADR-0018)`
+
+実装の要点:
+
+- **ADR-0018 起票**: `docs/decisions.md` に Accepted で append。ADR-0008
+  (汎用 pg-wire 採用) を refine、Phase 3 「Connection picker recognises
+  adapter kind」と `architecture.md` の stable-id 不変条件を discharge。
+  rejected alternatives は URL inference / v=2 bump / `dbboard-neon`
+  クレート / `NEON_URL` を `PG_URL` の下に置く案、の 4 件。
+- **`dbboard-postgres` flavor 化**: `FLAVOR_POSTGRES = "postgres"` /
+  `FLAVOR_NEON = "neon"` を pub const として公開。`PostgresAdapter`
+  に `flavor: &'static str` フィールドを追加し `id()` から返却。
+  既存の `connect(config)` は `FLAVOR_POSTGRES`、新規 `connect_neon
+  (config)` は `FLAVOR_NEON` で内部 `connect_with_flavor` に委譲。
+  wire / SQL / TLS hardening (Prefer → Require) は完全に同一。新規
+  unit test 1 (`flavor_constants_are_stable_and_distinct`)。
+- **`dbboard-config` 追加変種**: `ConnectionKind::Neon { keyring_url_ref
+  }` を additive v=1 として追加 (schema bump なし)。`ConnectionAdmin`
+  add / update / delete は Postgres のミラー実装、kind 変更
+  (Postgres ↔ Neon) は引き続き `KindMismatch` で拒否 (ADR-0016 §3
+  の rollback story を保つため)。`store.rs` に Neon parse / serialize
+  ラウンドトリップテスト、`admin.rs` に Neon add / update (set + keep) /
+  delete / cross-kind-rejection の 5 新規テスト。
+- **`dbboard-server` リゾルバ**: `BackendConfig::Neon { url: String }`
+  variant を追加 (`Debug` で redacted)、`DBBOARD_NEON_URL` env var を
+  `DBBOARD_PG_URL` の **上** に配置 (より具体的なラベルを優先)。
+  `entry_to_backend` は `ConnectionKind::Neon` を `BackendConfig::Neon`
+  へ、`backend.rs::connect_adapter` は `BackendConfig::Neon` を
+  `PostgresAdapter::connect_neon` でディスパッチ。`label_for` は
+  env path で `"env:neon"`、file-store path はエントリ id を返却。
+  新規テスト: env precedence (neon vs pg)、entry → Neon backend、
+  label_for env:neon、Debug 漏洩防止。
+- **`dbboard-ui` Connections フォーム**: `KindSelector` /
+  `AddFormState` / `EditKindState` に Neon 行を追加、Add フォームの
+  kind dropdown に "Neon" を追加、Edit フォームは Postgres と同じ
+  `replace_url` / `new_url` UI を再利用 (Fluent key を共有して
+  11 locale の同期コストゼロ)。新規 UI テスト 3 (Neon add 経路 /
+  Neon edit prefill / replace_url=true 上書き)。
+- **docs**: `connections.md` の Resolution order に `DBBOARD_NEON_URL`
+  を最上位として追記、TOML schema 例に `kind = "neon"` のエントリを
+  追加し `kind` の説明に Neon を追加。`compatibility.md` の
+  PostgreSQL-wire テーブルで Neon 行に「ADR-0018: id() == "neon"、
+  live test gated on `DBBOARD_NEON_URL`、TLS required」を明記。
+  `roadmap.md` Phase 3 の Neon と Connection picker recognises adapter
+  kind の 2 行を done に。新規 `crates/dbboard-postgres/README.md`
+  で flavor pattern / TLS hardening / dynamic decoding / row cap /
+  live test の走らせ方を解説。
+- **live test gate**: `tests/pg_roundtrip.rs` に
+  `neon_round_trip_reports_neon_flavor` を追加、`DBBOARD_NEON_URL`
+  set 時のみ実行 (未 set なら skip)。`adapter.id() == "neon"` を
+  end-to-end でアサート。既存の `DBBOARD_PG_URL` gated test は
+  不変なので、1 マシンで CockroachDB / 生 Postgres と Neon を別
+  endpoint に向けて並行実行可能。
+
+検証状況 (本セッション末):
+
+- `cargo fmt --all -- --check`: pass
+- `cargo clippy --all-targets --all-features -- -D warnings`: pass
+- `cargo test --all-features`: **全クレート green** (dbboard-config
+  43 + 4 + 8 / dbboard-server 45 / dbboard-postgres 21 / dbboard-ui
+  76 (前回 74 から Neon UI 3 件追加) / 他はそのまま)
+- pre-commit hook (cargo-husky) は 4 commit すべて fmt/clippy/check
+  /test green でブロック通過。
+
+次のステップ (人間担当):
+
+1. `git push -u origin feature/neon-adapter-kind`
+2. GitHub で PR open: base = `develop`, head = `feature/neon-adapter
+   -kind`, title 例 `feat: Neon as flavored kind over dbboard-postgres
+   (ADR-0018)`。本文は 4 commit と ADR-0018 をリンク、scope 確定
+   経緯 (AskUserQuestion で「first-class kind」採択) も書く。
+3. merge 後にローカルの feature ブランチを `git branch -d`、`develop`
+   を fast-forward sync、次のセッション開始時に本ファイルを更新。
+
+web 側への影響:
+
+- **HTTP contract: 変更なし**。`/capabilities` レスポンス shape も
+  error category も触れていないので web 側 mirror は不要。
+- **history per-record JSON schema: 変更なし**。ADR-0017 の `conn`
+  field は接続 id (例 `"neon-prod"`) なのでアダプタ id とは独立、
+  既存テストにも影響なし。
+- 次セッションで `dbboard-web-state.md` memory を更新する際に
+  「ADR-0018 は web 側 mirror 不要」を ADR-0013 / 0015 / 0016 と
+  同じカテゴリに追記する。
+
+### Phase 2 PR #10 マージクローズ (前セッション末 / 2026-06-04)
 
 ### Phase 2 PR #10 マージクローズ (本セッション末 / 2026-06-04)
 

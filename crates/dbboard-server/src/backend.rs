@@ -47,5 +47,12 @@ pub(crate) async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn D
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }
+        BackendConfig::Neon { url } => {
+            // Same wire protocol as Postgres; the only difference is the
+            // flavor label exposed by `id()` (ADR-0018).
+            let adapter = PostgresAdapter::connect_neon(PostgresConfig { url }).await?;
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
+        }
     }
 }
