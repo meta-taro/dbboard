@@ -1523,4 +1523,160 @@ the same adapter differently when the user said "this is Neon".
   connection's `id`, not the adapter id, so flavor labeling never
   bleeds into history records.
 
+---
+
+## ADR-0019 — Supabase as a flavored kind over `dbboard-postgres`
+
+**Status:** Accepted (2026-06-04). Second Phase 3 ADR. Mechanically
+applies the ADR-0018 recipe to Supabase and closes out the Phase 3
+roadmap row "`dbboard-supabase` (REST + sqlx hybrid)" by **splitting
+its scope in two**: the pg-wire SQL path lands now as a flavored
+kind; the REST integration (auth / storage / realtime / edge
+functions) is deferred to a separate future ADR.
+
+**Context.** Supabase is a managed Postgres service that exposes
+two surfaces: a normal pg-wire endpoint (direct or via PgBouncer
+session/transaction pooler) and a REST API (PostgREST + GoTrue +
+Realtime + Storage + Edge Functions). The pg-wire surface is
+indistinguishable from vanilla Postgres at the SQL/protocol layer.
+The roadmap row "`dbboard-supabase` (REST + sqlx hybrid)" predates
+ADR-0018, when the assumption was that each new adapter would get
+its own crate. After ADR-0018, the flavored-kind recipe is the
+cheaper and more consistent landing pad for the pg-wire half.
+
+The REST half is a different shape entirely:
+
+1. It would require new `DatabaseAdapter` trait surface (or a sibling
+   trait) for non-SQL operations (auth listing, bucket browsing,
+   realtime subscriptions, function invocation).
+2. The HTTP contract (`docs/api-contract.md`) would have to grow new
+   endpoint families — `/auth/users`, `/storage/buckets`,
+   `/realtime/channels`, `/functions` — which is exactly the
+   per-capability extension ADR-0012 reserved for later.
+3. It needs `dbboard-core::Capabilities` flags (`has_auth`,
+   `has_storage`, `has_realtime`) to flip true, with matching UI
+   surfaces (new panes / tabs) to drive those endpoints.
+4. It mandates a cross-repo coordination window: the web mirror
+   would need a matching contract delta plus a per-feature web
+   implementation, because today's contract pretends those areas
+   do not exist on either side.
+
+Bundling all of that into Phase 3 would creep into Phase 4
+territory and stall the roadmap closeout the user actually wants
+("the trait is proven by three live adapters"). The pg-wire half
+alone clears every Phase 3 exit criterion.
+
+**Decision.**
+
+- Add `FLAVOR_SUPABASE = "supabase"` to `crates/dbboard-postgres`
+  alongside `FLAVOR_POSTGRES` and `FLAVOR_NEON`. Expose a
+  `PostgresAdapter::connect_supabase` constructor that delegates to
+  the same internal `connect_with_flavor` path. Wire protocol, SQL
+  surface, TLS hardening (`Prefer → Require`), pool config, dynamic
+  text decoding, and row cap are byte-identical to the Postgres /
+  Neon paths.
+- Add `ConnectionKind::Supabase { keyring_url_ref }` to the
+  `connections.toml` schema. Byte-identical shape to `Postgres` /
+  `Neon`; only the `kind` discriminator differs. Schema version
+  stays `v = 1` — additive per the ADR-0018 / ADR-0013 rule. Cross-
+  kind edits (Postgres ↔ Neon ↔ Supabase) remain rejected with
+  `KindMismatch` to preserve ADR-0016 § 3 rollback story.
+- Add `DBBOARD_SUPABASE_URL` to the resolver's env precedence
+  ladder, ranked alongside `DBBOARD_NEON_URL` (both above
+  `DBBOARD_PG_URL`). Within the two, Supabase sits **below** Neon:
+  alphabetical stability is the only tiebreaker that does not
+  require ad-hoc justification, and a developer who set **both**
+  has either misconfigured or is debugging — either way the noisier
+  failure (the env-precedence error path already exists for
+  contradictory settings) is better than silent demotion.
+  Resolution order becomes:
+  1. `DBBOARD_NEON_URL` (PostgreSQL-wire, flavor = `"neon"`).
+  2. `DBBOARD_SUPABASE_URL` (PostgreSQL-wire, flavor = `"supabase"`).
+  3. `DBBOARD_PG_URL` (PostgreSQL-wire, flavor = `"postgres"`).
+  4. The `DBBOARD_D1_*` trio, then `DBBOARD_TURSO_PATH`, then
+     `DBBOARD_CONNECTION=<id>`, then single-entry auto-select, then
+     the in-memory libSQL fallback.
+- `BackendConfig::Supabase { url: String }` variant in
+  `dbboard-server`, `Debug`-redacted as `Supabase(<redacted>)`. The
+  `connect_adapter` dispatch routes through
+  `PostgresAdapter::connect_supabase`. `label_for` returns
+  `"env:supabase"` for env-resolved Supabase backends.
+- The Connections UI gains a Supabase row in the kind dropdown.
+  Reuses the existing `connections-field-pg-url` Fluent key for the
+  URL field — no new tier-1 i18n string, all 11 locales stay in
+  sync without an i18n bump. A new `connections-add-kind-supabase`
+  key returns `"Supabase"` verbatim in every locale (proper noun,
+  same shape as the Neon key).
+- Capability flags stay at default `false`. `has_auth`, `has_storage`,
+  `has_realtime` reporting `true` is a future ADR's job and pairs
+  with the REST surface, not the flavor label.
+- `docs/compatibility.md` promotes the Supabase row from "Phase 3"
+  callout to **Tier 1**: live test gated on `DBBOARD_SUPABASE_URL`,
+  same wire/SQL/TLS profile as Neon. Postgres major support
+  inherits from the shared Postgres-wire row (`17`, `16` Tier 1;
+  `15` Tier 2).
+- `docs/connections.md` gains a Supabase example entry and lists
+  `DBBOARD_SUPABASE_URL` in the resolution-order section.
+- `crates/dbboard-postgres/README.md` flavor table grows a third
+  row. Supabase notes: TLS required (Supabase enforces it server-
+  side); both **direct** (`db.<ref>.supabase.co:5432`) and **pooler**
+  (`aws-0-<region>.pooler.supabase.com:6543`, transaction mode) URLs
+  work — pick the same one the project's other tooling uses to
+  avoid prepared-statement surprises in transaction-pool mode.
+- `docs/roadmap.md` Phase 3 row "`dbboard-supabase` (REST + sqlx
+  hybrid)" is split: the pg-wire half is checked off here; the REST
+  half is recorded as deferred under a TBD ADR (no Phase change —
+  Phase 3 closes on three live adapters per the original exit
+  criterion).
+
+**Alternatives considered.**
+
+- *Ship the REST + sqlx hybrid in this ADR.* Rejected (see Context):
+  scope-creeps into Phase 4 (trait extension, contract delta, web
+  mirror, new UI surfaces). The user's stated Phase 3 goal is to
+  prove the trait by three live adapters; the pg-wire half clears
+  that on its own.
+- *Docs-only ("Supabase pg-wire works through `DBBOARD_PG_URL`").*
+  Rejected: asymmetric with ADR-0018's reasoning. The same arguments
+  that made Neon a first-class kind (`id()` stability, capability
+  surface labelling, Connection picker label) apply verbatim to
+  Supabase. Docs-only would require re-flavoring later when the
+  REST half lands.
+- *Separate `dbboard-supabase` crate.* Rejected (per ADR-0018
+  generalisation note line 1507): no Supabase-specific pg-wire
+  code to host. The REST surface, if and when it lands, is a
+  separate concern that may or may not warrant a new crate
+  (depending on whether it shares Postgres metadata calls).
+- *Force PgBouncer transaction-pool semantics.* Rejected: the URL
+  already encodes the choice (`:6543` vs `:5432`); the adapter must
+  not second-guess the operator. Documented in the README instead.
+
+**Consequences.**
+
+- Phase 3 roadmap closes: three live adapters proven (Turso, D1,
+  PostgreSQL-wire shared by Postgres / Neon / Supabase), Connection
+  picker recognises adapter kind (delivered by ADR-0018 generalised
+  by this ADR).
+- The REST integration becomes a **future ADR slot**. Likely sequence:
+  (a) capability flag extension ADR (specifies which flags flip and
+  what they enable in the UI), (b) HTTP contract delta ADR for the
+  new endpoint families (with a cross-repo handoff brief in the
+  `0001`/`0002` format), (c) per-feature implementation. Realistic
+  earliest landing is post-Phase 4, since AI integration (Phase 4)
+  is already the next named milestone.
+- `docs/compatibility.md` Supabase row gains an explicit
+  Postgres-major matrix inherited from the shared row, with the
+  service-level commitment that "we follow Supabase's own supported
+  Postgres majors."
+- No new external crate enters the dependency tree.
+- SemVer impact (ADR-0011): additive at every surface (HTTP, TOML,
+  trait id strings, env vars). Same minor bump that ADR-0018 already
+  earmarked.
+- Web mirror: none required. HTTP contract unchanged; ADR-0012
+  flat capabilities flags unaffected (all still default-false at
+  the server); shared per-record history schema (ADR-0017)
+  unaffected — `conn` is the connection's `id`, not the adapter id.
+  When the REST integration eventually lands, **that** ADR will
+  emit a fresh handoff brief; this one does not.
+
 
