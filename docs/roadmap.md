@@ -136,8 +136,11 @@ contract (ADR-0011).
   `connections.toml` resolved via `directories`, secrets via the
   `keyring` crate behind a `SecretStore` trait; see
   [`docs/connections.md`](connections.md))*
-- [x] Query history — in-memory (ADR-0014, Stage 1). Persistence is
-  deferred to a Stage 2 ADR landing after connection-management UI.
+- [x] Query history — in-memory (ADR-0014, Stage 1)
+- [x] Query history — persistent JSON Lines (ADR-0017, Stage 2;
+  `history.jsonl` next to `connections.toml`, shared record schema
+  with `dbboard-web` per the cross-repo brief in
+  `.claude/issues/0003-web-history-schema-mirror.md`)
 
 Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
 
