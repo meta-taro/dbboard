@@ -158,6 +158,35 @@ async fn supabase_round_trip_reports_supabase_flavor() {
     assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
 }
 
+/// Aurora DSQL round-trip: same wire protocol as Postgres, but
+/// `connect_aurora_dsql` flips the runtime adapter id to `"aurora-dsql"`
+/// (ADR-0021). Gated on its own env var so the other pg-wire round-trips
+/// keep pointing at their respective backends. Aurora DSQL enforces TLS
+/// and IAM auth — the URL must include `sslmode=require` and a fresh
+/// short-lived IAM authentication token in the password segment
+/// (~15 min TTL). An expired token surfaces as `DbError::Connection`
+/// at `connect`/`ping` time.
+#[tokio::test]
+async fn aurora_dsql_round_trip_reports_aurora_dsql_flavor() {
+    let Some(url) = std::env::var("DBBOARD_AURORA_DSQL_URL").ok() else {
+        eprintln!("skipping: DBBOARD_AURORA_DSQL_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url })
+        .await
+        .expect("connect_aurora_dsql");
+    adapter.ping().await.expect("ping");
+    assert_eq!(
+        adapter.id(),
+        "aurora-dsql",
+        "connect_aurora_dsql must surface the aurora-dsql flavor at runtime"
+    );
+
+    let result = adapter.query("SELECT 1 AS one").await.expect("query");
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
+}
+
 /// One row past the cap must surface as `DbError::Query` rather than a
 /// truncated result. The Postgres adapter streams rows, so the check
 /// fires mid-stream once `MAX_RESULT_ROWS` rows have been buffered.

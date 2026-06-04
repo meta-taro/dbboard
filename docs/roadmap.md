@@ -166,10 +166,10 @@ locale at startup; `DbError` body text stays English (ADR-0009 HTTP
 contract); a malformed override falls back to the OS locale; an unknown
 locale falls back to `en` without aborting.
 
-## Phase 3 — Neon and Supabase adapters ✅ done (2026-06-04)
+## Phase 3 — Neon, Supabase, and Aurora DSQL adapters ✅ done (2026-06-04)
 
-Goal: prove the trait by adding two more adapters without changing the
-UI or the core.
+Goal: prove the trait by adding three more adapters without changing
+the UI or the core.
 
 - [x] Neon via the shared `dbboard-postgres` adapter (ADR-0018: flavored
   first-class kind. `PostgresAdapter::connect_neon` returns the same
@@ -178,8 +178,8 @@ UI or the core.
   v=1 variant in `connections.toml`; UI Add form lists "Neon" alongside
   the three existing kinds. Live test gated on `DBBOARD_NEON_URL`.)
 - [x] Connection picker recognises adapter kind (delivered by ADR-0018
-  alongside the Neon flavor; ADR-0019 extends the same machinery to
-  Supabase)
+  alongside the Neon flavor; ADR-0019 / ADR-0021 extend the same
+  machinery to Supabase and Aurora DSQL)
 - [x] Supabase via the shared `dbboard-postgres` adapter (ADR-0019:
   second flavored first-class kind. `PostgresAdapter::connect_supabase`
   returns the same adapter with `id() == "supabase"`; new
@@ -188,12 +188,22 @@ UI or the core.
   direct `:5432` and pooler `:6543` endpoints fit the same kind — the
   URL itself picks. Live test gated on `DBBOARD_SUPABASE_URL`. REST
   hybrid deliberately deferred to a future ADR.)
+- [x] AWS Aurora DSQL via the shared `dbboard-postgres` adapter
+  (ADR-0021: third flavored first-class kind.
+  `PostgresAdapter::connect_aurora_dsql` returns the same adapter with
+  `id() == "aurora-dsql"`; new `DBBOARD_AURORA_DSQL_URL` env var ranks
+  alphabetically first among the pg-wire flavors (above Neon, Supabase,
+  and PG); `ConnectionKind::AuroraDsql` is an additive v=1 variant
+  serialized as the kebab-case `kind = "aurora-dsql"`. The URL's
+  password segment must carry a short-lived IAM authentication token
+  (~15 min TTL); SDK-driven auto-refresh is deliberately deferred to a
+  future ADR. Live test gated on `DBBOARD_AURORA_DSQL_URL`.)
 - [x] Adapter-specific quirks documented in each crate's README
 
-Exit criteria met: a user can switch between Neon, Supabase, and a
-generic Postgres / Cockroach connection in one session without
-restarting the app, with each labelled distinctly in the connection
-picker and history.
+Exit criteria met: a user can switch between Neon, Supabase, Aurora
+DSQL, and a generic Postgres / Cockroach connection in one session
+without restarting the app, with each labelled distinctly in the
+connection picker and history.
 
 ## Phase 4 — AI integration (optional layer)
 

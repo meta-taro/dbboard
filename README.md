@@ -5,15 +5,17 @@ distributed databases.
 
 dbboard is a learning and reference project that explores multi-database
 integration, local-first tooling, and pluggable AI-assisted workflows. It
-exposes a unified, native UI for Neon, Supabase, and Turso/libSQL, with an
-adapter-based architecture that makes adding new databases straightforward.
+exposes a unified, native UI for Neon, Supabase, Aurora DSQL, and
+Turso/libSQL, with an adapter-based architecture that makes adding new
+databases straightforward.
 
 ## Status
 
-Pre-1.0; workspace at `0.1.0` with Phase 1 closed (Turso, Cloudflare D1,
-and CockroachDB adapters all shipping over the local HTTP backend). See
-[`CHANGELOG.md`](CHANGELOG.md) for what landed and
-[`docs/roadmap.md`](docs/roadmap.md) for the next phase.
+Pre-1.0; workspace at `0.1.0` with Phases 1 and 3 closed. The Turso,
+Cloudflare D1, CockroachDB, Neon, Supabase, and AWS Aurora DSQL adapters
+all ship over the local HTTP backend. See [`CHANGELOG.md`](CHANGELOG.md)
+for what landed and [`docs/roadmap.md`](docs/roadmap.md) for the next
+phase.
 
 This is the **desktop** implementation. The web counterpart lives at
 [meta-taro/dbboard-web](https://github.com/meta-taro/dbboard-web) (Nuxt +
@@ -32,16 +34,22 @@ independent codebases.
 - Turso / libSQL (SQLite-based distributed DB)
 - Cloudflare D1 (SQLite-based, REST API)
 - CockroachDB (distributed SQL, PostgreSQL-wire)
-- Neon (PostgreSQL)
-- Supabase (PostgreSQL + API)
+- Neon (managed PostgreSQL)
+- Supabase (managed PostgreSQL)
+- AWS Aurora DSQL (managed PostgreSQL-wire)
 
-As of `0.1.0`, the Turso, Cloudflare D1, and CockroachDB adapters all
-ship — D1 over its REST API, CockroachDB over the PostgreSQL wire
-protocol via a generic `dbboard-postgres` adapter. Neon also works
-through that same Postgres adapter today; a Neon-specific connection
-picker and the Supabase REST/auth layer arrive after the adapter trait
-and capability model land in Phase 2 — see [`docs/roadmap.md`](docs/roadmap.md)
-and [ADR-0012](docs/decisions.md).
+All six adapters ship today. The four pg-wire flavors share the
+generic `dbboard-postgres` adapter (`sqlx` + `tls-rustls-ring`),
+differing only in the runtime label exposed by `DatabaseAdapter::id()`
+(`"postgres"`, `"neon"`, `"supabase"`, `"aurora-dsql"`) so the
+connection picker and history records can label each connection
+precisely. See [ADR-0018](docs/decisions.md) (Neon),
+[ADR-0019](docs/decisions.md) (Supabase), and
+[ADR-0021](docs/decisions.md) (Aurora DSQL).
+
+The Supabase REST/auth layer and Aurora DSQL's SDK-driven IAM token
+auto-refresh are deliberately deferred to a future ADR — at this
+stage all pg-wire flavors use the same `postgres://…` URL contract.
 
 The authoritative per-version support matrix (Tier 1 / Tier 2 / best
 effort) lives in [`docs/compatibility.md`](docs/compatibility.md);
@@ -97,8 +105,12 @@ interface.
 By default the app opens an in-memory Turso/libSQL database, so it runs
 with no configuration. The backend is chosen by, in priority order:
 
-1. The environment variables documented below (`DBBOARD_PG_URL` >
-   `DBBOARD_D1_*` > `DBBOARD_TURSO_PATH`).
+1. The environment variables documented below
+   (`DBBOARD_AURORA_DSQL_URL` > `DBBOARD_NEON_URL` >
+   `DBBOARD_SUPABASE_URL` > `DBBOARD_PG_URL` > `DBBOARD_D1_*` >
+   `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors the order is
+   alphabetical — setting two flavored vars at once is unusual but
+   the precedence is fully defined.
 2. `DBBOARD_CONNECTION=<id>` resolved against `connections.toml` — the
    local connection store backed by your OS keychain (ADR-0013).
 3. If `connections.toml` has exactly one entry, that one is auto-selected.
@@ -137,9 +149,9 @@ DBBOARD_D1_ACCOUNT_ID=... DBBOARD_D1_DATABASE_ID=... DBBOARD_D1_TOKEN=... \
 
 ### CockroachDB / PostgreSQL
 
-Set a single connection string to connect to CockroachDB (or any
-PostgreSQL-wire database, e.g. Neon) via the generic `dbboard-postgres`
-adapter:
+Set a single connection string to connect to CockroachDB or any generic
+PostgreSQL-wire database (vanilla Postgres, self-hosted) via the
+`dbboard-postgres` adapter:
 
 | Variable | Purpose |
 |---|---|
@@ -152,12 +164,35 @@ works). For a **self-hosted** node started with
 default SQL port is `26257`. CockroachDB requires TLS, so keep
 `sslmode=verify-full` (or the mode your deployment expects).
 
-`DBBOARD_PG_URL` takes precedence over the D1 and Turso variables. The
-connection string contains your password — keep it out of version
-control (use `.env`, which is gitignored). The app never logs it.
-
 ```sh
 DBBOARD_PG_URL='postgresql://user:pass@host:26257/db?sslmode=verify-full' \
+  cargo run -p dbboard
+```
+
+For **Neon**, **Supabase**, and **AWS Aurora DSQL** the same adapter is
+used but the connection is labelled distinctly at runtime
+(`"neon"`, `"supabase"`, `"aurora-dsql"` vs `"postgres"`) so the
+picker and history records can tell them apart. Each flavor has its
+own env var, all of which outrank `DBBOARD_PG_URL`:
+
+| Variable | Purpose |
+|---|---|
+| `DBBOARD_NEON_URL` | Neon connection string. TLS required — `sslmode=require` (or stronger). See [ADR-0018](docs/decisions.md). |
+| `DBBOARD_SUPABASE_URL` | Supabase connection string. TLS required. Both the direct `:5432` endpoint and the transaction-pooler `:6543` endpoint work — the URL itself picks. See [ADR-0019](docs/decisions.md). |
+| `DBBOARD_AURORA_DSQL_URL` | Aurora DSQL connection string. TLS required. The password segment must be a fresh short-lived IAM authentication token (~15 min TTL); an expired token surfaces as a connection error at startup. See [ADR-0021](docs/decisions.md). |
+
+All four pg-wire vars contain credentials — keep them out of version
+control (use `.env`, which is gitignored). The app never logs them.
+
+```sh
+DBBOARD_NEON_URL='postgres://user:pass@ep-…neon.tech/db?sslmode=require' \
+  cargo run -p dbboard
+
+DBBOARD_SUPABASE_URL='postgres://user:pass@db.<ref>.supabase.co:5432/postgres?sslmode=require' \
+  cargo run -p dbboard
+
+# Aurora DSQL: the password segment is a short-lived IAM token.
+DBBOARD_AURORA_DSQL_URL='postgres://admin:<IAM-token>@<cluster>.dsql.<region>.on.aws:5432/postgres?sslmode=require' \
   cargo run -p dbboard
 ```
 
