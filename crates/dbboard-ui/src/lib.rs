@@ -21,9 +21,13 @@ mod worker;
 pub use connections::{
     AddFormState, ConnectionsView, EditFormState, EditKindState, KindSelector, Mode,
 };
-pub use history::{HistoryEntry, HistoryStore, DEFAULT_CAPACITY};
+pub use history::{
+    HistoryEntry, HistoryError, HistoryStatus, HistoryStore, PersistentHistoryStore,
+    CURRENT_VERSION, DEFAULT_CAPACITY, ROTATION_BYTES, ROTATION_LINES,
+};
 
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Instant;
 
 use dbboard_core::{DbError, DbResult, QueryResult, TableInfo};
 use dbboard_i18n::{t, t_args};
@@ -45,11 +49,34 @@ pub enum Reply {
     QueryResult(DbResult<QueryResult>),
 }
 
+/// Captures everything we know at submit time about a query whose reply
+/// has not yet arrived. The completion-time path consumes this on
+/// [`Reply::QueryResult`] to build the rich ADR-0017 record (`duration_ms`
+/// from `started.elapsed()`, `sql` carried through verbatim).
+struct PendingSubmit {
+    started: Instant,
+    sql: String,
+}
+
+/// Wall-clock function used to stamp `ts` on every completion record.
+/// Injected (rather than calling `SystemTime::now()` directly) so
+/// `dbboard-ui` stays free of any date-formatting crate dependency and
+/// so tests can pass a deterministic stub.
+pub type RfcClock = fn() -> String;
+
 pub struct DbboardApp {
     sql: String,
     tables: DbResult<Vec<TableInfo>>,
     last_result: Option<DbResult<QueryResult>>,
-    history: HistoryStore,
+    history: PersistentHistoryStore,
+    /// `Some` between submitting a query and consuming its reply; the
+    /// `drain_replies` path uses this to compute `duration_ms`.
+    pending: Option<PendingSubmit>,
+    /// Connection id stamped on every completion record (ADR-0017
+    /// `conn` field). Empty string for tests / in-memory-only flows.
+    conn_label: String,
+    /// Wall-clock RFC 3339 source, injected.
+    now_rfc3339: RfcClock,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -63,12 +90,25 @@ impl DbboardApp {
     /// thread bound to that URL, and returns an app primed with the
     /// bootstrap `ListTables` request. `egui_ctx` lets the worker wake
     /// the UI thread when a reply lands.
+    ///
+    /// `history` is the persistent query-history store (ADR-0017). For
+    /// in-memory-only flows pass [`PersistentHistoryStore::in_memory_only`].
+    /// `conn_label` is the connection id stamped on every completion
+    /// record. `now_rfc3339` is the wall-clock RFC 3339 timestamp source;
+    /// the desktop binary supplies a real implementation, tests pass a
+    /// fixed-string stub.
     #[must_use]
-    pub fn connect(base_url: String, egui_ctx: egui::Context) -> Self {
+    pub fn connect(
+        base_url: String,
+        egui_ctx: egui::Context,
+        history: PersistentHistoryStore,
+        conn_label: String,
+        now_rfc3339: RfcClock,
+    ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
         let (reply_tx, reply_rx) = mpsc::channel::<Reply>();
         worker::spawn_worker(base_url, cmd_rx, reply_tx, egui_ctx);
-        Self::new(cmd_tx, reply_rx)
+        Self::new(cmd_tx, reply_rx, history, conn_label, now_rfc3339)
     }
 
     /// Build a fresh app and immediately request the table list so
@@ -80,13 +120,22 @@ impl DbboardApp {
     /// practice — it is only ignored if the worker has already shut
     /// down, which the binary keeps alive for the process lifetime.
     #[must_use]
-    pub fn new(cmd_tx: Sender<Command>, reply_rx: Receiver<Reply>) -> Self {
+    pub fn new(
+        cmd_tx: Sender<Command>,
+        reply_rx: Receiver<Reply>,
+        history: PersistentHistoryStore,
+        conn_label: String,
+        now_rfc3339: RfcClock,
+    ) -> Self {
         let _ = cmd_tx.send(Command::ListTables);
         Self {
             sql: String::new(),
             tables: Ok(Vec::new()),
             last_result: None,
-            history: HistoryStore::default(),
+            history,
+            pending: None,
+            conn_label,
+            now_rfc3339,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -98,6 +147,21 @@ impl DbboardApp {
             match reply {
                 Reply::Tables(r) => self.tables = r,
                 Reply::QueryResult(r) => {
+                    if let Some(pending) = self.pending.take() {
+                        // Best-effort completion record. A disk write
+                        // failure must not block the UI's view of the
+                        // result, so we log to stderr and otherwise
+                        // swallow (ADR-0017 §6).
+                        let entry = build_completion_entry(
+                            &r,
+                            &pending,
+                            &self.conn_label,
+                            (self.now_rfc3339)(),
+                        );
+                        if let Err(e) = self.history.record_completion(&entry) {
+                            eprintln!("dbboard: history append failed: {e}");
+                        }
+                    }
                     self.last_result = Some(r);
                     self.busy = false;
                 }
@@ -109,7 +173,14 @@ impl DbboardApp {
         if self.busy || self.sql.trim().is_empty() {
             return;
         }
-        self.history.push(self.sql.clone());
+        // Submit-time: push the bare SQL into the in-memory ring so the
+        // history panel updates instantly; disk append happens at reply
+        // time, once we know duration / rows / status (ADR-0017).
+        self.history.record_submit(self.sql.clone());
+        self.pending = Some(PendingSubmit {
+            started: Instant::now(),
+            sql: self.sql.clone(),
+        });
         self.busy = true;
         let _ = self.cmd_tx.send(Command::Query(self.sql.clone()));
         // Tables may have changed as a side effect (CREATE/DROP), so
@@ -122,10 +193,63 @@ impl DbboardApp {
         self.busy
     }
 
-    /// Read-only view of the recently-run SQL statements (ADR-0014).
+    /// Read-only view of the recently-run SQL statements (ADR-0014 /
+    /// ADR-0017). The returned `HistoryStore` is the in-memory ring
+    /// the UI panel reads from; the persistent backing file is owned
+    /// internally and not exposed.
     #[must_use]
     pub fn history(&self) -> &HistoryStore {
-        &self.history
+        self.history.store()
+    }
+}
+
+/// Build the completion record stamped on disk at reply time
+/// (ADR-0017). Carries the connection label, RFC 3339 timestamp, and
+/// the result envelope's row / affected / error split.
+fn build_completion_entry(
+    reply: &DbResult<QueryResult>,
+    pending: &PendingSubmit,
+    conn: &str,
+    ts: String,
+) -> HistoryEntry {
+    let duration_ms = u64::try_from(pending.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    match reply {
+        Ok(q) => {
+            // The wire shape conflates "row-returning with 0 rows" and
+            // "DML/DDL with affected count" through a single rows_affected
+            // u64 (defaulting to 0). The empty-columns heuristic is the
+            // closest split available from the contract today: a SELECT
+            // always declares columns, DML/DDL never does (Phase 1
+            // adapters agree on this).
+            let (rows, rows_affected) = if q.columns.is_empty() {
+                (None, Some(q.rows_affected))
+            } else {
+                (Some(q.rows.len() as u64), None)
+            };
+            HistoryEntry {
+                sql: pending.sql.clone(),
+                ts,
+                conn: conn.to_string(),
+                status: HistoryStatus::Ok,
+                duration_ms,
+                rows,
+                rows_affected,
+                error: None,
+            }
+        }
+        Err(e) => HistoryEntry {
+            sql: pending.sql.clone(),
+            ts,
+            conn: conn.to_string(),
+            status: HistoryStatus::Error,
+            duration_ms,
+            rows: None,
+            rows_affected: None,
+            error: Some(HistoryError {
+                category: e.category().to_string(),
+                message: e.message().to_string(),
+            }),
+        },
     }
 }
 
@@ -176,23 +300,29 @@ impl eframe::App for DbboardApp {
             // immutable iter() borrow ends, sidestepping the borrow
             // checker without cloning the whole store.
             let mut restore: Option<String> = None;
-            egui::CollapsingHeader::new(t_args!("history-title", count = self.history.len()))
-                .default_open(false)
-                .show(ui, |ui| {
-                    if self.history.is_empty() {
-                        ui.label(t!("history-empty"));
-                    } else {
-                        egui::ScrollArea::vertical()
-                            .max_height(160.0)
-                            .show(ui, |ui| {
-                                for entry in self.history.iter() {
-                                    if ui.small_button(history_button_label(&entry.sql)).clicked() {
-                                        restore = Some(entry.sql.clone());
+            {
+                let history = self.history.store();
+                egui::CollapsingHeader::new(t_args!("history-title", count = history.len()))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        if history.is_empty() {
+                            ui.label(t!("history-empty"));
+                        } else {
+                            egui::ScrollArea::vertical()
+                                .max_height(160.0)
+                                .show(ui, |ui| {
+                                    for entry in history.iter() {
+                                        if ui
+                                            .small_button(history_button_label(&entry.sql))
+                                            .clicked()
+                                        {
+                                            restore = Some(entry.sql.clone());
+                                        }
                                     }
-                                }
-                            });
-                    }
-                });
+                                });
+                        }
+                    });
+            }
             if let Some(sql) = restore {
                 self.sql = sql;
             }
@@ -275,14 +405,47 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
 
 #[cfg(test)]
 mod tests {
-    use super::{error_display, Command, DbboardApp, Reply};
+    use super::{
+        error_display, Command, DbboardApp, HistoryStatus, PersistentHistoryStore, Reply,
+        DEFAULT_CAPACITY,
+    };
     use dbboard_core::{Column, DbError, QueryResult, Row, TableInfo, Value};
     use std::sync::mpsc;
+
+    const FIXED_TS: &str = "2026-06-04T00:00:00.000Z";
+
+    fn stub_clock() -> String {
+        FIXED_TS.to_string()
+    }
 
     fn build() -> (DbboardApp, mpsc::Receiver<Command>, mpsc::Sender<Reply>) {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (reply_tx, reply_rx) = mpsc::channel();
-        (DbboardApp::new(cmd_tx, reply_rx), cmd_rx, reply_tx)
+        let history = PersistentHistoryStore::in_memory_only(DEFAULT_CAPACITY);
+        let app = DbboardApp::new(
+            cmd_tx,
+            reply_rx,
+            history,
+            String::new(),
+            stub_clock as super::RfcClock,
+        );
+        (app, cmd_rx, reply_tx)
+    }
+
+    fn build_with_persistent(
+        history: PersistentHistoryStore,
+        conn_label: &str,
+    ) -> (DbboardApp, mpsc::Receiver<Command>, mpsc::Sender<Reply>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let app = DbboardApp::new(
+            cmd_tx,
+            reply_rx,
+            history,
+            conn_label.to_string(),
+            stub_clock as super::RfcClock,
+        );
+        (app, cmd_rx, reply_tx)
     }
 
     #[test]
@@ -470,5 +633,189 @@ mod tests {
         app.run_sql();
         assert_eq!(app.history().len(), 1);
         assert_eq!(app.history().iter().next().unwrap().sql, "SELECT 1");
+    }
+
+    // --- ADR-0017 reply-time disk-append path ---
+
+    fn ok_select_one() -> QueryResult {
+        QueryResult {
+            columns: vec![Column {
+                name: "x".into(),
+                declared_type: None,
+            }],
+            rows: vec![Row::new(vec![Value::Integer(1)])],
+            rows_affected: 0,
+        }
+    }
+
+    fn ok_insert_one() -> QueryResult {
+        QueryResult {
+            columns: vec![],
+            rows: vec![],
+            rows_affected: 1,
+        }
+    }
+
+    fn read_history_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
+        let contents = std::fs::read_to_string(path).expect("history.jsonl readable");
+        contents
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("valid JSON line"))
+            .collect()
+    }
+
+    #[test]
+    fn ok_reply_appends_a_row_returning_completion_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let history = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        let (mut app, _cmd_rx, reply_tx) = build_with_persistent(history, "prod-pg");
+
+        app.sql = "SELECT 1".into();
+        app.run_sql();
+        reply_tx
+            .send(Reply::QueryResult(Ok(ok_select_one())))
+            .unwrap();
+        app.drain_replies();
+
+        let lines = read_history_jsonl(&path);
+        assert_eq!(lines.len(), 1);
+        let r = &lines[0];
+        assert_eq!(r["v"], 1);
+        assert_eq!(r["actor"], serde_json::Value::Null);
+        assert_eq!(r["conn"], "prod-pg");
+        assert_eq!(r["ts"], FIXED_TS);
+        assert_eq!(r["sql"], "SELECT 1");
+        assert_eq!(r["status"], "ok");
+        assert_eq!(r["rows"], 1, "row-returning record carries rows count");
+        assert_eq!(
+            r["rows_affected"],
+            serde_json::Value::Null,
+            "row-returning record's rows_affected must be null"
+        );
+        assert_eq!(r["error"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn ok_reply_for_dml_appends_rows_affected_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let history = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        let (mut app, _cmd_rx, reply_tx) = build_with_persistent(history, "prod-pg");
+
+        app.sql = "INSERT INTO users VALUES (1)".into();
+        app.run_sql();
+        reply_tx
+            .send(Reply::QueryResult(Ok(ok_insert_one())))
+            .unwrap();
+        app.drain_replies();
+
+        let lines = read_history_jsonl(&path);
+        assert_eq!(lines.len(), 1);
+        let r = &lines[0];
+        assert_eq!(r["status"], "ok");
+        assert_eq!(r["rows"], serde_json::Value::Null);
+        assert_eq!(r["rows_affected"], 1);
+    }
+
+    #[test]
+    fn error_reply_appends_error_record_with_category() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let history = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        let (mut app, _cmd_rx, reply_tx) = build_with_persistent(history, "prod-pg");
+
+        app.sql = "SELCT 1".into();
+        app.run_sql();
+        reply_tx
+            .send(Reply::QueryResult(Err(DbError::Query(
+                "syntax error at or near 'SELCT'".into(),
+            ))))
+            .unwrap();
+        app.drain_replies();
+
+        let lines = read_history_jsonl(&path);
+        assert_eq!(lines.len(), 1);
+        let r = &lines[0];
+        assert_eq!(r["status"], "error");
+        assert_eq!(r["rows"], serde_json::Value::Null);
+        assert_eq!(r["rows_affected"], serde_json::Value::Null);
+        assert_eq!(r["error"]["category"], "query");
+        assert_eq!(r["error"]["message"], "syntax error at or near 'SELCT'");
+    }
+
+    #[test]
+    fn tables_reply_does_not_append_to_history() {
+        // Only QueryResult replies are user-initiated queries; the
+        // bootstrap ListTables (and any post-query refresh) must not
+        // pollute the on-disk log with synthetic records.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let history = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        let (mut app, _cmd_rx, reply_tx) = build_with_persistent(history, "prod-pg");
+
+        reply_tx
+            .send(Reply::Tables(Ok(vec![TableInfo::unqualified("users")])))
+            .unwrap();
+        app.drain_replies();
+
+        assert!(
+            !path.exists() || std::fs::read_to_string(&path).unwrap().is_empty(),
+            "ListTables reply must not produce a history record"
+        );
+    }
+
+    #[test]
+    fn reply_with_no_in_flight_query_does_not_append_to_history() {
+        // Defensive: a stray QueryResult reply with no pending submit
+        // (e.g. a duplicated reply, a worker bug) must be a no-op for
+        // the disk log rather than producing a record with a synthetic
+        // duration.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let history = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        let (mut app, _cmd_rx, reply_tx) = build_with_persistent(history, "prod-pg");
+
+        reply_tx
+            .send(Reply::QueryResult(Ok(ok_select_one())))
+            .unwrap();
+        app.drain_replies();
+
+        assert!(!path.exists() || std::fs::read_to_string(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn completion_entry_factory_classifies_status_and_rows() {
+        use super::build_completion_entry;
+        use super::PendingSubmit;
+        use std::time::Instant;
+
+        let pending = PendingSubmit {
+            started: Instant::now(),
+            sql: "SELECT 1".into(),
+        };
+
+        let ok = build_completion_entry(
+            &Ok(ok_select_one()),
+            &pending,
+            "prod-pg",
+            FIXED_TS.to_string(),
+        );
+        assert_eq!(ok.status, HistoryStatus::Ok);
+        assert_eq!(ok.rows, Some(1));
+        assert_eq!(ok.rows_affected, None);
+        assert_eq!(ok.conn, "prod-pg");
+        assert_eq!(ok.ts, FIXED_TS);
+        assert!(ok.error.is_none());
+
+        let err = build_completion_entry(
+            &Err(DbError::Connection("nope".into())),
+            &pending,
+            "prod-pg",
+            FIXED_TS.to_string(),
+        );
+        assert_eq!(err.status, HistoryStatus::Error);
+        assert_eq!(err.error.as_ref().unwrap().category, "connection");
     }
 }

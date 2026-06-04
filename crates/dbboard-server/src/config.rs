@@ -200,6 +200,59 @@ fn resolve_backend(
     })
 }
 
+/// Label naming the connection the server is about to resolve, derived
+/// by the same precedence rules as [`backend_config_from_env_and_store`].
+///
+/// Used by the desktop binary to populate the `conn` field on ADR-0017
+/// history records: it identifies *which* connection produced each
+/// recorded query so a multi-connection user can grep their `history.jsonl`
+/// for one target.
+///
+/// The label is intentionally lightweight (no I/O, no secret resolution)
+/// because it is computed at boot before the loopback server binds. The
+/// shape:
+///
+/// - Env-only wins (env var path of [`backend_config_from_env_and_store`]):
+///   `"env:postgres"`, `"env:d1"`, `"env:turso"` so the user can see at
+///   a glance that the connection came from an environment variable.
+/// - Explicit `DBBOARD_CONNECTION=<id>` returns `<id>` when the id
+///   exists in the file; an unknown id falls through to the in-memory
+///   default (matching how the resolver errors at a deeper layer).
+/// - Single-entry auto-select returns that entry's id.
+/// - Otherwise `"in-memory"` for the `:memory:` Turso fallback.
+#[must_use]
+pub fn resolved_connection_label(file: &ConnectionFile) -> String {
+    let env = EnvSnapshot::from_process();
+    label_for(&env, file)
+}
+
+fn label_for(env: &EnvSnapshot, file: &ConnectionFile) -> String {
+    if env.pg_url.is_some() {
+        return "env:postgres".to_string();
+    }
+    if env.d1_account_id.is_some() && env.d1_database_id.is_some() && env.d1_token.is_some() {
+        return "env:d1".to_string();
+    }
+    if env.turso_path.is_some() {
+        return "env:turso".to_string();
+    }
+    if let Some(id) = env.connection_selector.as_deref() {
+        // A selector that names an existing entry resolves to that id;
+        // a selector that names a missing entry must NOT silently fall
+        // through to single-entry auto-select — the deeper resolver
+        // errors on that case, and the label is a display mirror of it.
+        return if file.connections.iter().any(|e| e.id == id) {
+            id.to_string()
+        } else {
+            "in-memory".to_string()
+        };
+    }
+    if file.connections.len() == 1 {
+        return file.connections[0].id.clone();
+    }
+    "in-memory".to_string()
+}
+
 fn entry_to_backend(
     entry: &ConnectionEntry,
     secrets: &dyn SecretStore,
@@ -440,6 +493,75 @@ mod tests {
             matches!(cfg, BackendConfig::Postgres { url } if url == "postgres://from-store"),
             "Postgres URL must be loaded from the secret store"
         );
+    }
+
+    #[test]
+    fn resolved_label_pg_env_wins() {
+        let mut env = empty_env();
+        env.pg_url = Some("postgres://x".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        assert_eq!(label_for(&env, &file), "env:postgres");
+    }
+
+    #[test]
+    fn resolved_label_d1_env_wins() {
+        let mut env = empty_env();
+        env.d1_account_id = Some("a".to_string());
+        env.d1_database_id = Some("b".to_string());
+        env.d1_token = Some("c".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        assert_eq!(label_for(&env, &file), "env:d1");
+    }
+
+    #[test]
+    fn resolved_label_turso_env_wins() {
+        let mut env = empty_env();
+        env.turso_path = Some("/tmp/x.db".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/y.db")]);
+        assert_eq!(label_for(&env, &file), "env:turso");
+    }
+
+    #[test]
+    fn resolved_label_selector_picks_the_matching_id() {
+        let mut env = empty_env();
+        env.connection_selector = Some("prod".to_string());
+        let file = file_with(vec![
+            turso_entry("dev", "/tmp/dev.db"),
+            turso_entry("prod", "/tmp/prod.db"),
+        ]);
+        assert_eq!(label_for(&env, &file), "prod");
+    }
+
+    #[test]
+    fn resolved_label_selector_for_unknown_id_falls_back_to_in_memory() {
+        // The deeper resolver errors on this case; the label resolver is
+        // just a display helper and must not paper over the mismatch by
+        // silently picking some other entry, so it falls through to the
+        // in-memory default just like rule 6 in the backend resolver.
+        let mut env = empty_env();
+        env.connection_selector = Some("nope".to_string());
+        let file = file_with(vec![turso_entry("dev", "/tmp/dev.db")]);
+        assert_eq!(label_for(&env, &file), "in-memory");
+    }
+
+    #[test]
+    fn resolved_label_single_entry_uses_its_id() {
+        let file = file_with(vec![turso_entry("only", "/tmp/only.db")]);
+        assert_eq!(label_for(&empty_env(), &file), "only");
+    }
+
+    #[test]
+    fn resolved_label_empty_env_and_empty_file_yields_in_memory() {
+        assert_eq!(label_for(&empty_env(), &empty_file()), "in-memory");
+    }
+
+    #[test]
+    fn resolved_label_multi_entry_no_selector_yields_in_memory() {
+        let file = file_with(vec![
+            turso_entry("dev", "/tmp/dev.db"),
+            turso_entry("prod", "/tmp/prod.db"),
+        ]);
+        assert_eq!(label_for(&empty_env(), &file), "in-memory");
     }
 
     #[test]

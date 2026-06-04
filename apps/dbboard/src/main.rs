@@ -26,11 +26,13 @@
 
 use std::sync::Arc;
 
-use dbboard_config::store::{default_path, load_or_empty};
+use dbboard_config::store::{default_history_path, default_path, load_or_empty};
 use dbboard_config::{ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore};
 use dbboard_i18n::t;
-use dbboard_server::{backend_config_from_env_and_store, serve};
-use dbboard_ui::{ConnectionsView, DbboardApp};
+use dbboard_server::{backend_config_from_env_and_store, resolved_connection_label, serve};
+use dbboard_ui::{ConnectionsView, DbboardApp, PersistentHistoryStore, DEFAULT_CAPACITY};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve and apply the user's locale before any UI string is read.
@@ -59,6 +61,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => (ConnectionFile::empty(), None),
     };
     let backend = backend_config_from_env_and_store(&file, &*secrets)?;
+    // Display label for the resolved connection (ADR-0017): stamped on
+    // every `history.jsonl` completion record so a multi-connection
+    // user can grep their log by target. Derived from the same env
+    // snapshot + file pair `backend_config_from_env_and_store` used.
+    let conn_label = resolved_connection_label(&file);
+
+    // Open the query-history backing file (ADR-0017). Mirror of the
+    // connection-store fallback above: a missing per-user config dir
+    // degrades to an in-memory ring rather than aborting startup, and
+    // a corrupt/unreadable file degrades to in-memory after logging.
+    let history = match default_history_path() {
+        Ok(path) => match PersistentHistoryStore::load_tail(path, DEFAULT_CAPACITY) {
+            Ok(store) => {
+                let skipped = store.skipped_on_load();
+                if skipped > 0 {
+                    eprintln!(
+                        "dbboard: skipped {skipped} malformed history.jsonl line(s) at startup"
+                    );
+                }
+                store
+            }
+            Err(e) => {
+                eprintln!("dbboard: history.jsonl unreadable, falling back to in-memory only: {e}");
+                PersistentHistoryStore::in_memory_only(DEFAULT_CAPACITY)
+            }
+        },
+        Err(_) => PersistentHistoryStore::in_memory_only(DEFAULT_CAPACITY),
+    };
 
     // The server runtime lives for the whole process. Connecting here
     // (before the window opens) preserves the fail-fast contract: a bad
@@ -77,7 +107,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         native_options,
         Box::new(move |cc| {
             install_cjk_font(&cc.egui_ctx);
-            let inner = DbboardApp::connect(base_url, cc.egui_ctx.clone());
+            let inner = DbboardApp::connect(
+                base_url,
+                cc.egui_ctx.clone(),
+                history,
+                conn_label,
+                now_rfc3339,
+            );
             Ok(Box::new(DesktopApp::new(inner, admin)))
         }),
     );
@@ -126,6 +162,18 @@ impl eframe::App for DesktopApp {
         }
         self.inner.ui(ui, frame);
     }
+}
+
+/// Wall-clock RFC 3339 formatter for ADR-0017 `history.jsonl` records.
+/// Injected into `DbboardApp` so `dbboard-ui` itself stays free of any
+/// date-formatting crate. A formatting failure (effectively impossible
+/// with the RFC 3339 description) degrades to the empty string rather
+/// than panicking the UI thread — the record is still appended, just
+/// without a parseable `ts`.
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default()
 }
 
 /// Look up an OS-installed CJK font and append it to egui's font stack

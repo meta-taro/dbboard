@@ -5,99 +5,69 @@
 
 ## 最終更新
 
-- 日付: 2026-06-03 (本セッション末、Phase 2 接続管理 UI ADR-0016 Stage 1
-  PR #9 マージ済 + 次セッション ADR-0017 方針合意済)
-- ブランチ: `develop` (ローカル 1 ahead = `d9a7ba2`、push は人間担当)
-- 現在の Phase: **Phase 2 接続管理 UI (ADR-0016 Stage 1) シップ完了。
-  次セッションは ADR-0017 (query history persistence, Stage 2) の起票
-  から開始。形式は JSON Lines (ndjson) で、record schema を desktop と
-  web で共有 (HTTP contract には触れない、on-disk schema のみ揃える)
-  方針までユーザと合意済。**
+- 日付: 2026-06-04 (本セッション末、Phase 2 query history persistence
+  ADR-0017 Stage 2 実装完了、PR 起票待ち)
+- ブランチ: `feature/query-history-persistence` (`develop` から 7 commits
+  ahead = `7180407..c7aac22`、push は人間担当)
+- 現在の Phase: **Phase 2 query history persistence (ADR-0017 Stage 2)
+  実装完了。残作業は `develop` への PR 起票のみ (commit `c7aac22` まで
+  agent 完了済、push と PR 作成は人間)。次セッションは PR レビュー
+  対応もしくは Phase 3 (Neon / Supabase アダプタ) 着手。**
 
-## 次セッション開始タスク: ADR-0017 起票
+### 本セッション (2026-06-04) で landed したもの
 
-ユーザと合意済の前提:
+- `feature/query-history-persistence` ブランチを `develop` から切り出し
+  (commit `7180407` 起点)。
+- **ADR-0017 起票** (`62ed834`): `docs/decisions.md` に append。JSON
+  Lines / record schema / storage / rotation / secret handling / 8 項目
+  + cross-repo coordination policy を採択。Stage 1 ADR-0014 の「Stage 2
+  ADR」プレースホルダを realise。
+- **`default_history_path()` 追加** (`c023eba`): `dbboard-config::store`
+  に `history.jsonl` 解決 helper を追加 (`default_path()` と対称)。
+- **persistence layer 実装** (`c3bfcb5`): `crates/dbboard-ui/src/history.rs`
+  に `PersistentHistoryStore`、JSON envelope (v/ts/conn/actor/sql/status/
+  duration_ms/rows/rows_affected/error)、`load_tail` (起動時末尾 N 行
+  hydrate、malformed line / unknown v / unknown status は count して skip)、
+  startup-only rotation (50 MiB or 100k 行で `.jsonl.1` overwrite)、
+  `O_APPEND` 1 record 1 line atomic write。Stage 1 の `HistoryStore`
+  公開 API は不変。
+- **app wiring + server label helper** (`72cb165`): `record_submit`
+  (in-memory、submit-time、即時 UX) と `record_completion` (disk、
+  reply-time、rich record) を分離 (Option D)。`dbboard-server` に
+  `resolved_connection_label()` を追加し ADR-0017 `conn` field をスタンプ。
+  `apps/dbboard` で `time` crate (`formatting` + `std` only) 経由の
+  RFC 3339 clock を `RfcClock = fn() -> String` として inject (UI 本体は
+  date crate non-dependent)。
+- **handoff brief 起票** (`c7aac22`): `.claude/issues/0003-web-history
+  -schema-mirror.md`。`0001`/`0002` と異なり HTTP wire contract mirror
+  ではなく **per-record JSON schema mirror**。web 側 ADR は「desktop
+  ADR-0017 と同一 schema」だけ書けば済む。secret handling delta
+  (verbatim logging は共有サーバ上で意味が変わる) を flag。
+- **roadmap.md 更新**: Phase 2 Query history 行を「in-memory (Stage 1)」
+  + 「persistent JSON Lines (Stage 2, ADR-0017)」の 2 行に分割。
 
-- **形式**: JSON Lines (`.jsonl`、1 行 1 JSON、改行 LF)。動機は
-  `jq` / `tail -F` / grep がそのまま使えること。HeidiSQL (registry) /
-  DBeaver (SQLite) / DataGrip (text) / TablePlus (SQLite) のどれも
-  jq-friendly ではないため、これが差別化点になる。
-- **共有のスコープ**: **record の schema (field 名・型・semantics)
-  だけ** を desktop と web で揃える。保存場所・ローテーション戦略・
-  書き込み実装は各 repo 裁量。
-- **HTTP contract には触らない**: `GET /history` は追加しない (ユーザ
-  確認済)。理由は (1) endpoint 化すると web の access control 設計が
-  contract に染み出す、(2) jq でファイル直読みできることが UX の核、
-  (3) Stage 3 で necessary になれば additive に追加可能。
-- **共有の置き場所**: ADR-0017 本文内に schema を single source of
-  truth として置く。`docs/api-contract.md` ミラーは作らない (これは
-  HTTP layer 専用)。web 側 sibling ADR は「desktop ADR-0017 と同一
-  schema」とだけ書く形。
+### 検証状況 (本セッション最終)
 
-### 合意済 record schema (両 repo 共通)
+- `cargo fmt --all -- --check`: pass
+- `cargo clippy --all-targets --all-features -- -D warnings`: pass
+- `cargo test --all-features`: **266 tests passed**
+  (history persistence layer + UI completion path + server label helper
+  の新規テストを合算)
+- pre-commit hook (cargo-husky) は各 commit で fmt/clippy/check/test
+  をすべて green でブロック通過。
 
-```jsonc
-{
-  "v": 1,                              // schema version (forward-compat)
-  "ts": "2026-06-03T14:22:01.123Z",   // RFC 3339 UTC、ローカル変換は jq 側
-  "conn": "prod-pg",                   // connection id (TOML primary key)
-  "actor": null,                       // desktop null 固定、web は session/user id
-  "sql": "SELECT * FROM users LIMIT 10",
-  "status": "ok" | "error",
-  "duration_ms": 42,
-  "rows": 10,                          // SELECT のとき、それ以外 null
-  "rows_affected": null,               // DML のとき、SELECT は null
-  "error": null                        // status=error のとき {category, message}
-}
-```
+### 次セッション開始タスク: PR レビュー対応 or Phase 3 着手
 
-- `"v":1` で forward-compat 確保 (ADR で「field rename は breaking
-  change」と明記する)。
-- `"actor"` は desktop 側 day-1 から null 固定で書き込む (後付けすると
-  過去ログとの不整合が出る)。
-- `"error"` は ADR-0009 / `DbError` の 5 カテゴリ
-  (`connection` / `query` / `schema` / `type_conversion` /
-  `capability`) を category として持つ。
+- PR 起票は人間担当 (`gh pr create --base develop --head
+  feature/query-history-persistence`)。タイトル案:
+  `feat: Phase 2 — query history persistence (ADR-0017, Stage 2)`。
+- PR コミットレンジ: `7180407..c7aac22` (5 commits、ADR + helper +
+  persistence layer + app wiring + handoff brief)。
+- web 側への handoff は `.claude/issues/0003-web-history-schema-mirror.md`
+  を read-only ポインタとして web 側 Claude session が pickup。HTTP
+  contract に触らないので desktop PR とは並行可。
 
-### ADR-0017 で詰める論点
-
-- **保存場所 (desktop)**: `directories` crate で
-  `$XDG_DATA_HOME/dbboard/history.jsonl` (Linux) /
-  `~/Library/Application Support/dbboard/history.jsonl` (macOS) /
-  `%APPDATA%\dbboard\history.jsonl` (Windows)。`dbboard-config` の
-  `default_path` と同居させるか、別 module に切るか要検討。
-- **ローテーション**: 50MB or 100k 行で `history.jsonl.1` に rotate
-  (`tracing-appender` 等の既存実装に乗せる)。
-- **書き込みタイミング**: クエリ実行直後の async append (UI を
-  block しない、最悪 1 件失っても致命的ではない)。
-- **secret を含むクエリの扱い**: 完全保存 (ローカルファイル、暗号化
-  なし)。README に「ローカル DB ファイルと同等の扱い」と明記。web 側
-  は team 利用文脈で別判断 (web ADR 裁量)。
-- **読み込みポリシー**: 起動時に末尾 N 行 (`DEFAULT_CAPACITY=100`) を
-  tail して in-memory `HistoryStore` に注入 → UI からは Stage 1 と
-  同じ API で見える (= UI コード変更ゼロ)。
-- **migration**: `"v"` を見て古い行を捨てずに済むよう、reader 側で
-  unknown field を ignore する Stage 1 から書いておく。
-
-### 次セッションでの段取り
-
-1. `feature/query-history-persistence` を `develop` から切る。
-2. ADR-0017 を `docs/decisions.md` に append (上記 schema + 残論点の
-   決着)。1 commit。
-3. `crates/dbboard-ui::history::HistoryStore` に persistence layer を
-   追加 (新規 module、Stage 1 の API は不変)。1〜2 commit。
-4. `apps/dbboard` 配線 (起動時に load、`run_sql` 後に append)。
-   1 commit。
-5. `.claude/issues/0003-web-history-schema-mirror.md` を `0001`/`0002`
-   と同形式で起票 → web 側へ。1 commit。
-6. roadmap.md Phase 2 の history 行を「Stage 2 = persisted via
-   ADR-0017」に更新、project-status.md を closeout。1 commit。
-7. PR を `develop` へ。タイトル案: `feat: Phase 2 — query history
-   persistence (ADR-0017, Stage 2)`。
-
-
-
-### Phase 2 PR #9 マージクローズ (本セッション末 / 2026-06-03)
+### Phase 2 PR #9 マージクローズ (前セッション末 / 2026-06-03)
 
 - PR #9 (`feature/connection-admin-ui` → `develop`) マージ済 = `88d0f45`
   (GitHub 上で merge commit、squash ではない)。
