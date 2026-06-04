@@ -131,6 +131,33 @@ async fn neon_round_trip_reports_neon_flavor() {
     assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
 }
 
+/// Supabase round-trip: same wire protocol as Postgres, but
+/// `connect_supabase` flips the runtime adapter id to `"supabase"`
+/// (ADR-0019). Gated on its own env var; both the direct `:5432` host
+/// and the transaction-pooler `:6543` host satisfy this test — the URL
+/// itself picks. Supabase enforces TLS, so the URL must include
+/// `sslmode=require`.
+#[tokio::test]
+async fn supabase_round_trip_reports_supabase_flavor() {
+    let Some(url) = std::env::var("DBBOARD_SUPABASE_URL").ok() else {
+        eprintln!("skipping: DBBOARD_SUPABASE_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_supabase(PostgresConfig { url })
+        .await
+        .expect("connect_supabase");
+    adapter.ping().await.expect("ping");
+    assert_eq!(
+        adapter.id(),
+        "supabase",
+        "connect_supabase must surface the supabase flavor at runtime"
+    );
+
+    let result = adapter.query("SELECT 1 AS one").await.expect("query");
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
+}
+
 /// One row past the cap must surface as `DbError::Query` rather than a
 /// truncated result. The Postgres adapter streams rows, so the check
 /// fires mid-stream once `MAX_RESULT_ROWS` rows have been buffered.

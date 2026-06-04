@@ -54,5 +54,14 @@ pub(crate) async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn D
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }
+        BackendConfig::Supabase { url } => {
+            // Same wire protocol as Postgres; the only difference is the
+            // flavor label exposed by `id()` (ADR-0019). Both the direct
+            // (:5432) and transaction-pooler (:6543) endpoints route
+            // through here — the URL itself encodes the choice.
+            let adapter = PostgresAdapter::connect_supabase(PostgresConfig { url }).await?;
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
+        }
     }
 }
