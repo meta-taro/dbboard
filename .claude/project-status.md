@@ -5,17 +5,140 @@
 
 ## 最終更新
 
-- 日付: 2026-06-04 (本セッション末、Phase 3 Supabase ADR-0019 実装
-  完了 + close-out commit 済、push 待ち)
-- ブランチ: `feature/supabase-adapter-kind` (= `develop` (`87c4eb6`)
-  から分岐、5 commit、workspace tests 全 green、未 push)
-- 現在の Phase: **Phase 3 Supabase adapter (second flavored kind
-  over `dbboard-postgres`) 実装完了。ADR-0019 起票 → flavor 定数 +
+- 日付: 2026-06-04 (本セッション末、Phase 3 Aurora DSQL ADR-0021
+  実装完了 + docs catch up 済、push 待ち)
+- ブランチ: `feature/aurora-dsql-adapter-kind` (= `develop` (`d7c58ad`)
+  から分岐、5 commit + 後続 ADR-0020 / issue 0004 含む、workspace
+  tests 全 green、`cargo build --release` + `cargo test --all-features
+  --release` も green、未 push)
+- 現在の Phase: **Phase 3 Aurora DSQL adapter (third flavored kind
+  over `dbboard-postgres`) 実装完了。ADR-0021 起票 → flavor 定数 +
   constructor → config/admin/store + server/resolver + UI 配線 →
-  docs + live test gate の 4 機能 commit + close-out commit。
-  Phase 3 は本 PR を持って完了 (Neon + Supabase 双方シップで
-  「trait の証明」exit criteria 達成)。次は `git push -u origin
-  feature/supabase-adapter-kind` → PR open against `develop`。**
+  live test gate + 各 README/docs catch up の 3 機能 commit
+  (cdca5fa / 82f8de7 / 95fe2d4)。Phase 3 の roadmap は Neon
+  (ADR-0018) + Supabase (ADR-0019) + Aurora DSQL (ADR-0021) の
+  3 flavored kind で完了。次は `git push -u origin
+  feature/aurora-dsql-adapter-kind` → PR open against `develop`。**
+
+### Phase 3 Aurora DSQL adapter (本セッション / 2026-06-04)
+
+`develop` (= `d7c58ad`) から `feature/aurora-dsql-adapter-kind`
+(ADR-0020 + issue 0004 と同居) で 3 機能 commit を積み、workspace
+tests 全 green + release build/test も green。scope は **「pg-wire
+flavored kind のみ、SDK-driven IAM token auto-refresh は future
+ADR」** (ユーザ「すすめてください」で先行プラン承認済)。
+
+積んだ commit (古い順、本セッション分):
+
+- `36bba1c` `docs: ADR-0021 Aurora DSQL as a flavored kind over dbboard-postgres`
+- `cdca5fa` `feat(postgres): add FLAVOR_AURORA_DSQL and connect_aurora_dsql (ADR-0021)`
+- `82f8de7` `feat(aurora-dsql): wire ConnectionKind::AuroraDsql through config, resolver, and UI (ADR-0021)`
+- `95fe2d4` `docs(aurora-dsql): add live test gate and catch up READMEs (ADR-0021)`
+
+実装の要点:
+
+- **ADR-0021 起票**: ADR-0018 (Neon) + ADR-0019 (Supabase) と
+  同じ recipe を Aurora DSQL に機械的適用。違いは **password
+  segment が短命 IAM token (~15 min TTL)** であること。SDK-driven
+  auto-refresh は本 ADR の scope 外、future ADR 送り。
+  rejected alternatives は (1) `dbboard-aurora-dsql` 別クレート /
+  (2) `kind = "postgres"` のラベル維持 / (3) SDK refresh を同梱、の 3 件。
+- **`dbboard-postgres` 4 つ目の flavor**: `FLAVOR_AURORA_DSQL =
+  "aurora-dsql"` を pub const として追加 (kebab-case で TOML
+  `kind` フィールドと同一文字列)。`connect_aurora_dsql(config)`
+  constructor が `connect_with_flavor(config, FLAVOR_AURORA_DSQL)`
+  に委譲。wire / SQL / TLS hardening (Prefer → Require) は完全同一。
+  `flavor_constants_are_stable_and_distinct` を 4-way distinctness
+  に拡張。
+- **`dbboard-config` 第 4 variant**: `ConnectionKind::AuroraDsql {
+  keyring_url_ref }` を additive v=1 として追加、`#[serde(rename =
+  "aurora-dsql")]` で TOML 上の kebab-case と Rust 上の `AuroraDsql`
+  を橋渡し。`ConnectionAdmin` add / update (set + keep) / delete /
+  cross-kind-rejection の 5 新規テスト、`store.rs` に
+  `parses_an_aurora_dsql_entry` 追加、`serialize_then_parse_is_
+  identity_for_every_kind` を Aurora DSQL 込みに拡張。
+- **`dbboard-server` リゾルバ**: `BackendConfig::AuroraDsql { url:
+  String }` variant 追加 (`Debug` で `AuroraDsql(<redacted>)`)、
+  `DBBOARD_AURORA_DSQL_URL` env var を **アルファベット tiebreaker で
+  Neon / Supabase / PG の上**に配置 (`aurora-dsql` < `neon` <
+  `supabase` < `postgres`)。`entry_to_backend` は AuroraDsql →
+  BackendConfig::AuroraDsql、`backend.rs::connect_adapter` は
+  `PostgresAdapter::connect_aurora_dsql` でディスパッチ。`label_for`
+  env path で `"env:aurora-dsql"`、expired IAM token は ping() の
+  `DbError::Connection` で表面化。新規テスト 5: env precedence
+  (Aurora DSQL vs Neon vs Supabase vs PG)、entry → AuroraDsql
+  backend、label_for env:aurora-dsql、Debug 漏洩防止。
+- **`dbboard-ui` Connections フォーム**: `KindSelector::AuroraDsql`
+  / `AddFormState::aurora_dsql_url` / `EditKindState::AuroraDsql {
+  replace_url, new_url }` を追加、Add フォーム kind dropdown に
+  "Aurora DSQL"、Edit フォームは Postgres/Neon/Supabase と同じ
+  `replace_url` UI を再利用 (Fluent key `connections-field-pg-url`
+  を共有、11 locale の同期コストゼロ — ADR-0015 tier stability)。
+  新規 UI テスト 3 (Aurora DSQL add 経路 / edit prefill /
+  replace_url=true 上書き)。
+- **docs catch up** (`95fe2d4`): `crates/dbboard-postgres/README.md`
+  flavor table に Aurora DSQL 行 + `DBBOARD_AURORA_DSQL_URL` の
+  Tests セクション + ADR-0021 リンク、TLS hardening note 拡張。
+  `docs/connections.md` Resolution order を 4 flavored kind に拡張
+  (Aurora DSQL 最上位)、TOML schema 例に `kind = "aurora-dsql"`
+  追加、`kind` 説明更新。`docs/compatibility.md` の pg-wire テーブル
+  に Aurora DSQL Tier 1 行追加 (Postgres major version は user-
+  invisible なので moving target 扱い)、SDK auto-refresh deferral
+  を REST 系 deferral と並べて明記。`docs/roadmap.md` Phase 3 を
+  「Neon, Supabase, and Aurora DSQL adapters ✅ done (2026-06-04)」
+  に rename、3 つ目の bullet と exit criteria 更新。**top-level
+  `README.md`** を catch up: 説明文 / Status / Supported Databases
+  / Resolution order / pg-wire env var テーブルを 4 flavored kind
+  全件に対応 (ユーザ「READMEの更新も忘れずにお願いします。」を
+  最終 commit で satisfy)。
+- **live test gate**: `tests/pg_roundtrip.rs` に
+  `aurora_dsql_round_trip_reports_aurora_dsql_flavor` を追加、
+  `DBBOARD_AURORA_DSQL_URL` set 時のみ実行 (未 set なら skip)、
+  `adapter.id() == "aurora-dsql"` を end-to-end assertion。
+  既存の `DBBOARD_PG_URL` / `DBBOARD_NEON_URL` /
+  `DBBOARD_SUPABASE_URL` gated test は不変、1 マシンで 4
+  endpoint 並行実行可能。
+
+検証状況 (本セッション末):
+
+- `cargo fmt --all -- --check`: pass
+- `cargo clippy --all-targets --all-features -- -D warnings`: pass
+- `cargo check --all-targets --all-features`: pass
+- `cargo test --all-features`: **全クレート green** (dbboard-config
+  55 + 4 + 8 / dbboard-server 40 / dbboard-postgres 10 +
+  pg_roundtrip 7 (Aurora DSQL 1 件追加) / dbboard-ui 80 (Aurora
+  DSQL UI 3 件追加))
+- `cargo build --release`: pass
+- `cargo test --all-features --release`: 全クレート green
+- pre-commit hook (cargo-husky) は 3 機能 commit すべて
+  fmt/clippy/check/test green でブロック通過。
+
+次のステップ (人間担当):
+
+1. `git push -u origin feature/aurora-dsql-adapter-kind` (Norton
+   の release build スキャン挙動については `env-windows-norton.md`
+   参照)。
+2. GitHub で PR open: base = `develop`, head =
+   `feature/aurora-dsql-adapter-kind`, title 例
+   `feat: Aurora DSQL as flavored kind over dbboard-postgres
+   (ADR-0021)`。本文に 3 commit (cdca5fa / 82f8de7 / 95fe2d4)
+   と ADR-0021 を引用、scope (pg-wire flavored kind only、SDK
+   auto-refresh deferred to future ADR) も明記。
+3. merge 後にローカル feature ブランチを `git branch -d`、
+   `develop` を fast-forward sync、次セッション開始時に本ファイル
+   を更新。
+
+web 側への影響:
+
+- **HTTP contract: 変更なし**。`/capabilities` レスポンス shape も
+  error category も触れていない (Aurora DSQL capability flags は
+  すべて default-false のまま) ので web 側 mirror は不要。
+- **history per-record JSON schema: 変更なし**。ADR-0017 の `conn`
+  field は接続 id (例 `"aurora-dsql-prod"`) なのでアダプタ id とは
+  独立、既存テストにも影響なし。
+- 次セッションで `dbboard-web-state.md` memory を更新する際に
+  「ADR-0021 は web 側 mirror 不要」を ADR-0013 / 0015 / 0016 /
+  0018 / 0019 と同じカテゴリに追記する。
 
 ### Phase 3 Supabase adapter (本セッション / 2026-06-04)
 

@@ -87,6 +87,20 @@ pub enum ConnectionKind {
     Supabase {
         keyring_url_ref: String,
     },
+    /// An AWS Aurora DSQL connection (ADR-0021). Shape is byte-identical
+    /// to [`ConnectionKind::Postgres`]; the discriminator is the only
+    /// distinction so the connection picker, capability output, and
+    /// `id()` surface label the connection as Aurora DSQL rather than
+    /// generic Postgres. The URL stored under `keyring_url_ref` is
+    /// expected to embed a short-lived IAM authentication token (~15 min
+    /// TTL) in its password field; automatic refresh via the AWS SDK is
+    /// out of scope for v=1 and will land via a future ADR. The TOML
+    /// discriminator is `kind = "aurora-dsql"` (kebab-case), matching
+    /// `dbboard_postgres::FLAVOR_AURORA_DSQL`.
+    #[serde(rename = "aurora-dsql")]
+    AuroraDsql {
+        keyring_url_ref: String,
+    },
 }
 
 impl ConnectionFile {
@@ -379,6 +393,29 @@ keyring_url_ref = "dbboard.supabase-prod.url"
     }
 
     #[test]
+    fn parses_an_aurora_dsql_entry() {
+        // The TOML discriminator is the kebab-case literal "aurora-dsql"
+        // (matches `dbboard_postgres::FLAVOR_AURORA_DSQL`); a snake_case
+        // "aurora_dsql" would *not* parse.
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id              = "dsql-prod"
+name            = "Aurora DSQL (prod)"
+kind            = "aurora-dsql"
+keyring_url_ref = "dbboard.dsql-prod.url"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("aurora-dsql entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::AuroraDsql {
+                keyring_url_ref: "dbboard.dsql-prod.url".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn parses_a_postgres_entry() {
         let toml_src = r#"
 version = 1
@@ -508,6 +545,13 @@ path = ":memory:"
                     name: "Supabase (prod)".to_string(),
                     kind: ConnectionKind::Supabase {
                         keyring_url_ref: "dbboard.supabase-prod.url".to_string(),
+                    },
+                },
+                ConnectionEntry {
+                    id: "dsql-prod".to_string(),
+                    name: "Aurora DSQL (prod)".to_string(),
+                    kind: ConnectionKind::AuroraDsql {
+                        keyring_url_ref: "dbboard.dsql-prod.url".to_string(),
                     },
                 },
             ],

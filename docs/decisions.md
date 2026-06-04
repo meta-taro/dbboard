@@ -1679,4 +1679,160 @@ alone clears every Phase 3 exit criterion.
   When the REST integration eventually lands, **that** ADR will
   emit a fresh handoff brief; this one does not.
 
+---
+
+## ADR-0021 — Aurora DSQL as a flavored kind over `dbboard-postgres`
+
+**Status:** Accepted (2026-06-04). Third Phase 3 ADR. Mechanically
+applies the ADR-0018 / ADR-0019 recipe to AWS **Aurora DSQL** — a
+managed, serverless, distributed Postgres-wire database (AWS GA
+2025-05-22). Like ADR-0019, this ADR delivers only the pg-wire SQL
+path; the AWS SDK auto-token-refresh integration is explicitly
+deferred to a future ADR.
+
+**Context.** Aurora DSQL is AWS's serverless Postgres-wire offering,
+positioned alongside Neon and Supabase as a managed-Postgres option
+worth surfacing as a first-class connection kind. The SQL/protocol
+layer is indistinguishable from vanilla Postgres — sqlx talks to it
+through the same wire path, and the existing TLS hardening (`Prefer
+→ Require`) covers its TLS-mandatory posture.
+
+Aurora DSQL's *only* notable departure from Neon / Supabase is the
+auth mechanism: it does not accept static passwords. The "password"
+field in the connection URL must carry a short-lived **IAM
+authentication token** (~15 minute lifetime), generated either by
+the AWS CLI (`aws dsql generate-db-connect-admin-auth-token` /
+`generate-db-connect-auth-token`) or by an AWS SDK call. Two paths
+exist for handling this in dbboard:
+
+1. **Static-URL flavor** (this ADR). The user pre-generates a token
+   via the AWS CLI and pastes the resulting `postgres://…` URL into
+   dbboard, exactly like Neon / Supabase. The token expires after
+   ~15 minutes; the user re-pastes a refreshed URL when it does.
+   Mechanical, zero new dependencies, ships in one PR.
+2. **SDK-integrated adapter** (deferred). dbboard depends on
+   `aws-config` + `aws-sdk-dsql`, generates tokens on demand, and
+   refreshes them automatically. Better UX but adds a multi-crate
+   AWS SDK dependency (with its own TLS / async-runtime fingerprint)
+   and is materially more work — exactly the kind of scope creep
+   that ADR-0019 dodged by deferring the Supabase REST surface.
+
+For Phase 3 we ship path 1. Path 2 becomes a future ADR slot
+analogous to "Supabase REST" — a real ADR with its own deps,
+contract impact (capabilities flag for IAM-auth?), and UI affordance
+(refresh hint? expiry timer?).
+
+**Decision.**
+
+- Add `FLAVOR_AURORA_DSQL = "aurora-dsql"` to `crates/dbboard-postgres`
+  alongside `FLAVOR_POSTGRES`, `FLAVOR_NEON`, and `FLAVOR_SUPABASE`.
+  Expose a `PostgresAdapter::connect_aurora_dsql` constructor that
+  delegates to the same internal `connect_with_flavor` path. Wire
+  protocol, SQL surface, TLS hardening, pool config, dynamic text
+  decoding, and row cap are byte-identical to the other flavors.
+- Add `ConnectionKind::AuroraDsql { keyring_url_ref }` to the
+  `connections.toml` schema. Byte-identical shape to `Postgres` /
+  `Neon` / `Supabase`; only the `kind` discriminator differs (TOML
+  literal: `kind = "aurora-dsql"`). Schema version stays `v = 1`.
+  Cross-kind edits (Postgres ↔ Neon ↔ Supabase ↔ Aurora DSQL) remain
+  rejected with `KindMismatch`.
+- Add `DBBOARD_AURORA_DSQL_URL` to the resolver's env precedence
+  ladder. Among the four pg-wire env vars the order is **alphabetical
+  by flavor name** — the same tiebreaker ADR-0019 established. So
+  the resolution order becomes:
+  1. `DBBOARD_AURORA_DSQL_URL` (flavor = `"aurora-dsql"`).
+  2. `DBBOARD_NEON_URL` (flavor = `"neon"`).
+  3. `DBBOARD_SUPABASE_URL` (flavor = `"supabase"`).
+  4. `DBBOARD_PG_URL` (flavor = `"postgres"`).
+  5. The `DBBOARD_D1_*` trio, then `DBBOARD_TURSO_PATH`, then
+     `DBBOARD_CONNECTION=<id>`, then single-entry auto-select, then
+     the in-memory libSQL fallback.
+- `BackendConfig::AuroraDsql { url: String }` variant in
+  `dbboard-server`, `Debug`-redacted as `AuroraDsql(<redacted>)`.
+  The `connect_adapter` dispatch routes through
+  `PostgresAdapter::connect_aurora_dsql`. `label_for` returns
+  `"env:aurora-dsql"` for env-resolved Aurora DSQL backends.
+- The Connections UI gains an Aurora DSQL row in the kind dropdown.
+  Reuses the existing `connections-field-pg-url` Fluent key for the
+  URL field — no new tier-1 i18n string. A new
+  `connections-add-kind-aurora-dsql` key returns `"Aurora DSQL"`
+  verbatim in every locale (proper noun, same shape as the Neon /
+  Supabase keys).
+- Capability flags stay at default `false`. IAM-token-aware
+  capability flags (`has_iam_auth`, etc.) are a future ADR's job and
+  pair with path 2, not the flavor label.
+- `docs/compatibility.md` adds an Aurora DSQL row: live test gated
+  on `DBBOARD_AURORA_DSQL_URL`. Aurora DSQL does not publish a
+  user-visible Postgres major like vanilla Postgres does; AWS
+  documents it as Postgres-protocol-compatible without committing
+  to a specific server version, so the row tracks "AWS GA" as a
+  single moving target (the same posture `docs/compatibility.md`
+  already uses for Cloudflare D1 and Turso platform).
+- `docs/connections.md` gains an Aurora DSQL example entry and
+  lists `DBBOARD_AURORA_DSQL_URL` in the resolution-order section.
+- `crates/dbboard-postgres/README.md` flavor table grows a fourth
+  row. Aurora DSQL notes: TLS required (AWS enforces it
+  server-side); the URL's password field carries a short-lived IAM
+  auth token; regenerate it with `aws dsql
+  generate-db-connect-admin-auth-token --hostname <cluster>.dsql.<region>.on.aws
+  --region <region>` (or `generate-db-connect-auth-token` for
+  non-admin roles); typical token TTL is ~15 minutes, so the URL
+  in `connections.toml` will need periodic refresh until path 2
+  lands.
+- `docs/roadmap.md` Phase 3 row gains an explicit Aurora DSQL
+  bullet alongside Neon (ADR-0018) and Supabase (ADR-0019), making
+  Phase 3 close on **four** pg-wire flavors (Postgres / Cockroach,
+  Neon, Supabase, Aurora DSQL) plus Turso and D1.
+- **Project `README.md` env-vars section gains Aurora DSQL, plus
+  the Neon and Supabase entries the previous two ADRs neglected to
+  mirror up to the project README.** "Supported Databases" list
+  gains Aurora DSQL alongside the existing entries.
+
+**Alternatives considered.**
+
+- *Ship the SDK-integrated adapter in this ADR.* Rejected (see
+  Context, path 2): pulls `aws-config` + `aws-sdk-dsql` (and the
+  full AWS SDK TLS / runtime stack) into the dependency graph for
+  what is structurally a one-line difference at the SQL layer. Best
+  handled as its own ADR after `cargo deny` / `cargo audit` review
+  of the SDK's transitive deps.
+- *Docs-only ("Aurora DSQL works through `DBBOARD_PG_URL`").*
+  Rejected, same reasoning ADR-0019 used: `id()` stability,
+  capability surface labelling, connection picker label, and history
+  attribution all benefit from the flavor being a first-class
+  string. Docs-only would force a re-flavoring when path 2 lands.
+- *Separate `dbboard-aurora-dsql` crate.* Rejected: no Aurora-DSQL-
+  specific pg-wire code to host. If and when path 2 lands, the
+  SDK-integration code might warrant its own crate — but that's a
+  decision for that ADR, not this one.
+- *Rank `DBBOARD_AURORA_DSQL_URL` by recency-of-ADR rather than
+  alphabetically.* Rejected: recency is unstable as a tiebreaker
+  (every new flavor would shuffle the order), and surprise from a
+  changed precedence is worse than from a stable alphabetical rule.
+
+**Consequences.**
+
+- Phase 3 closes on **four pg-wire flavors** plus Turso and D1.
+  Exit criterion ("the trait is proven by N live adapters") is
+  strictly stronger than the original wording.
+- The SDK-integrated path becomes a **future ADR slot**, analogous
+  to the deferred Supabase REST ADR. When it lands, its likely
+  shape: (a) declare AWS SDK dep + record license / advisory check
+  in `deny.toml`, (b) add an `auth_token_provider` trait /
+  capability flag so the UI can render an "auto-refresh on" badge,
+  (c) optional `dbboard-aurora-dsql` crate if the SDK glue grows
+  beyond a single module.
+- `docs/compatibility.md` Aurora DSQL row tracks "AWS GA" as a
+  moving target, with the service-level commitment that "we follow
+  Aurora DSQL's documented Postgres-protocol compatibility" — same
+  posture as the D1 row.
+- No new external crate enters the dependency tree.
+- SemVer impact (ADR-0011): additive at every surface (HTTP, TOML,
+  trait id strings, env vars). Same minor bump category as
+  ADR-0018 / ADR-0019.
+- Web mirror: none required. HTTP contract unchanged; ADR-0012 flat
+  capabilities flags unaffected; shared per-record history schema
+  (ADR-0017) unaffected — `conn` is the connection's `id`, not the
+  adapter id. When the SDK-integrated path eventually lands, **that**
+  ADR will emit a fresh handoff brief; this one does not.
 

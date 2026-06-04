@@ -21,26 +21,29 @@ creates the file on first save with mode `0o600` on Unix.
 
 At startup the binary picks a backend in this order:
 
-1. `DBBOARD_NEON_URL` (Neon-flavored Postgres-wire — see [ADR-0018](decisions.md);
-   the adapter is labelled `neon` at runtime).
-2. `DBBOARD_SUPABASE_URL` (Supabase-flavored Postgres-wire — see
+1. `DBBOARD_AURORA_DSQL_URL` (Aurora DSQL-flavored Postgres-wire — see
+   [ADR-0021](decisions.md); the adapter is labelled `aurora-dsql` at
+   runtime).
+2. `DBBOARD_NEON_URL` (Neon-flavored Postgres-wire — see [ADR-0018](decisions.md);
+   the adapter is labelled `neon`).
+3. `DBBOARD_SUPABASE_URL` (Supabase-flavored Postgres-wire — see
    [ADR-0019](decisions.md); the adapter is labelled `supabase`).
-3. `DBBOARD_PG_URL` (generic PostgreSQL-wire — CockroachDB, self-hosted
+4. `DBBOARD_PG_URL` (generic PostgreSQL-wire — CockroachDB, self-hosted
    Postgres; the adapter is labelled `postgres`).
-4. The `DBBOARD_D1_*` trio (account id + database id + token).
-5. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
-6. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
+5. The `DBBOARD_D1_*` trio (account id + database id + token).
+6. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
+7. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
    missing id aborts startup — dbboard refuses to silently fall back to
    a different backend than the user asked for.
-7. If `connections.toml` contains exactly one entry, that one is
+8. If `connections.toml` contains exactly one entry, that one is
    auto-selected.
-8. Otherwise an in-memory Turso/libSQL database (`:memory:`).
+9. Otherwise an in-memory Turso/libSQL database (`:memory:`).
 
-`DBBOARD_NEON_URL` and `DBBOARD_SUPABASE_URL` both outrank
-`DBBOARD_PG_URL` because they carry more specific labelling. Neon
-outranks Supabase only as an alphabetical tie-break (both are
-pg-wire); setting two flavored vars at once is unusual but the
-precedence is fully defined.
+`DBBOARD_AURORA_DSQL_URL`, `DBBOARD_NEON_URL`, and
+`DBBOARD_SUPABASE_URL` all outrank `DBBOARD_PG_URL` because they carry
+more specific labelling. Among the pg-wire flavors the order is
+alphabetical: `aurora-dsql` > `neon` > `supabase`; setting two
+flavored vars at once is unusual but the precedence is fully defined.
 
 ## TOML schema
 
@@ -91,6 +94,17 @@ kind            = "supabase"
 # transaction-pooler (:6543) endpoints fit here — the URL itself picks
 # the path. See ADR-0019.
 keyring_url_ref = "dbboard.supabase-prod.url"
+
+[[connections]]
+id              = "aurora-dsql-prod"
+name            = "Aurora DSQL (prod)"
+kind            = "aurora-dsql"
+# Same pg-wire shape as the other Postgres flavors; the discriminator
+# labels the adapter "aurora-dsql" at runtime. The keyring URL's
+# password segment must carry a short-lived IAM authentication token
+# (~15 min TTL); an expired token surfaces as a connection error at
+# startup. See ADR-0021.
+keyring_url_ref = "dbboard.aurora-dsql-prod.url"
 ```
 
 ### Fields
@@ -100,11 +114,11 @@ keyring_url_ref = "dbboard.supabase-prod.url"
 - `id` — primary key referenced by `DBBOARD_CONNECTION`. Duplicate ids
   are a hard error at load time.
 - `name` — display label for the (future) connection picker.
-- `kind` — `"turso"`, `"d1"`, `"postgres"`, `"neon"`, or `"supabase"`.
-  `"neon"`, `"supabase"`, and `"postgres"` share the same wire shape
-  (the keyring carries a `postgres://…` URL either way); the only
-  difference is the runtime adapter label, which the connection picker
-  and history records read.
+- `kind` — `"turso"`, `"d1"`, `"postgres"`, `"neon"`, `"supabase"`,
+  or `"aurora-dsql"`. `"neon"`, `"supabase"`, `"aurora-dsql"`, and
+  `"postgres"` share the same wire shape (the keyring carries a
+  `postgres://…` URL either way); the only difference is the runtime
+  adapter label, which the connection picker and history records read.
 - `keyring_*_ref` — opaque account string used to look up the secret
   in the OS keychain. Pick something stable and recognisable; the
   string is what shows in the OS UI alongside the constant service
