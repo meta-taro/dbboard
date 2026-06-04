@@ -1258,10 +1258,10 @@ differentiator for `dbboard`, not an accident.
    `directories::ProjectDirs` lookup that `connections.toml` uses,
    so a single OS config dir owns both:
 
-   - Linux: `$XDG_DATA_HOME/dbboard/history.jsonl`
-     (fallback `~/.local/share/dbboard/history.jsonl`)
-   - macOS: `~/Library/Application Support/dbboard/history.jsonl`
-   - Windows: `%APPDATA%\dbboard\history.jsonl`
+   - Linux: `$XDG_CONFIG_HOME/dbboard/history.jsonl`
+     (fallback `~/.config/dbboard/history.jsonl`)
+   - macOS: `~/Library/Application Support/dev.dbboard.dbboard/history.jsonl`
+   - Windows: `%APPDATA%\dbboard\dbboard\config\history.jsonl`
 
    A helper `dbboard_config::default_history_path()` returns the
    resolved path so the path policy stays in the same crate that
