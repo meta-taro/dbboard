@@ -1416,4 +1416,111 @@ differentiator for `dbboard`, not an accident.
   semver-tracked surface — a future `v=2` is a minor bump if reader
   forward-compat holds, major if a `v=1` reader would mis-parse.
 
+---
+
+## ADR-0018 — Neon as a flavored kind over `dbboard-postgres`
+
+**Status:** Accepted (2026-06-04). First Phase 3 ADR. Refines ADR-0008
+(one crate for PostgreSQL-wire databases) and discharges the Phase 3
+roadmap promise "Connection picker recognises adapter kind" plus the
+`docs/architecture.md` invariant that adapter identifiers (`turso`,
+`neon`, `supabase`) are stable strings.
+
+**Context.** ADR-0008 collapsed every PostgreSQL-wire database into a
+single `dbboard-postgres` crate. CockroachDB shipped first; Neon was
+called out as "arriving cheaply" because it accepts the same
+`postgresql://…` URL. After Phase 2 closed (PR #10), two unresolved
+threads point at the same gap:
+
+1. `docs/architecture.md` § *Parity with `dbboard-web`* promises stable
+   adapter id strings — explicitly listing `"neon"` and `"supabase"`
+   alongside `"turso"`. The current `PostgresAdapter::id()` always
+   returns `"postgres"`, so a Neon connection surfaces as `postgres`
+   in `GET /capabilities` and in any future capability-aware label.
+2. `docs/roadmap.md` Phase 3 has a checkbox "Connection picker
+   recognises adapter kind"; `docs/compatibility.md` defers Neon's
+   "connection picker quirks" to Phase 3 explicitly.
+
+A separate `dbboard-neon` crate was considered and rejected: ADR-0008
+already justified the consolidation, and there is no Neon-specific
+SQL/protocol code to host. What we actually need is a way to label
+the same adapter differently when the user said "this is Neon".
+
+**Decision.**
+
+- Add a `flavor: &'static str` field to `PostgresAdapter`, returned
+  verbatim from `DatabaseAdapter::id()`. The default constructor
+  `PostgresAdapter::connect` keeps `flavor = "postgres"`; a sibling
+  constructor `PostgresAdapter::connect_neon` sets `flavor = "neon"`.
+  Both go through identical TLS-hardening, pooling, and query paths —
+  the flavor is metadata, not behaviour.
+- Add `ConnectionKind::Neon { keyring_url_ref }` to the
+  `connections.toml` schema. Its shape is byte-identical to
+  `ConnectionKind::Postgres`; the only difference is the `kind`
+  discriminator. The TOML schema version stays at `v = 1`: this is
+  additive — old files with `kind = "postgres"` keep parsing, and a
+  `v = 1` reader that does not know about `kind = "neon"` already
+  rejects unknown kinds loudly per ADR-0013, which is the correct
+  behaviour (a Neon entry should not silently fall through).
+- Add a `DBBOARD_NEON_URL` environment variable. Resolution order in
+  `dbboard-server::config`:
+  1. `DBBOARD_NEON_URL` (PostgreSQL-wire, flavor = `"neon"`).
+  2. `DBBOARD_PG_URL` (PostgreSQL-wire, flavor = `"postgres"`).
+  3. The `DBBOARD_D1_*` trio, then `DBBOARD_TURSO_PATH`, then
+     `DBBOARD_CONNECTION=<id>`, then single-entry auto-select,
+     then the in-memory libSQL fallback (unchanged from ADR-0013).
+  `DBBOARD_NEON_URL` sits **above** `DBBOARD_PG_URL` because it is the
+  *more specific* declaration: a developer who set both clearly meant
+  "this Neon instance," and silent demotion to `postgres` would
+  contradict ADR-0008's principle that the user's stated intent
+  drives labeling.
+- `ConnectionAdmin` treats Neon as a peer of Postgres: same secret
+  field (`url` → `keyring.<id>.url`), same rollback semantics, same
+  `KindMismatch` rule on update (kind cannot change in-place).
+- The Connections UI gains a Neon row in the kind dropdown and a
+  Fluent key `connections-add-kind-neon` returning `"Neon"`. The
+  string is the same in every locale (proper noun); the key still
+  goes through `t!()` for layout discipline.
+
+**Alternatives considered.**
+
+- *Reuse `kind = "postgres"` and infer Neon from the URL.* Rejected:
+  silent inference would hide misconfiguration (e.g. a self-hosted
+  Postgres reached through a Neon-shaped proxy URL), and the user's
+  explicit intent is the contract.
+- *Bump `connections.toml` to `v = 2`.* Rejected: nothing in the file
+  shape changes — only the enum gains a discriminator. ADR-0013's
+  strict-unknown-kinds rule already handles forward-compat.
+- *New `dbboard-neon` crate.* Rejected (see Context): no Neon-specific
+  SQL/protocol code to host; would reintroduce the duplication
+  ADR-0008 collapsed.
+- *Demote `DBBOARD_NEON_URL` below `DBBOARD_PG_URL`.* Rejected:
+  ordering by specificity is the only rule that does not surprise a
+  reader of `connections.md`.
+
+**Consequences.**
+
+- `PostgresAdapter::id()` no longer trivially returns `"postgres"`. A
+  capabilities consumer that pattern-matches on `"postgres"` will miss
+  Neon; web mirror is unaffected because the HTTP contract does not
+  enumerate ids — it surfaces whatever string the adapter reports.
+- The flavor pattern generalises: when Supabase's pg-wire path lands
+  in Phase 3, a `connect_supabase` constructor + `kind = "supabase"`
+  follows the same recipe with no further ADR.
+- `docs/compatibility.md` drops the Phase 3 callout on the Neon row
+  and gains a "live test gated on `DBBOARD_NEON_URL`" note.
+- `docs/connections.md` gains a Neon example entry and lists
+  `DBBOARD_NEON_URL` in the resolution-order section.
+- `crates/dbboard-postgres/README.md` is created with a Neon section
+  noting that the connection string must include `sslmode=require` (or
+  the wider `verify-full`) — Neon's proxy refuses plaintext.
+- No new external crate enters the dependency tree.
+- SemVer impact (ADR-0011): additive at every surface (HTTP, TOML,
+  trait id strings, env vars). Minor bump on the next release.
+- Web mirror: none required. The HTTP contract is unchanged; ADR-0012
+  flat capabilities flags are unaffected. The shared per-record
+  history schema (ADR-0017) is unaffected — `conn` is the
+  connection's `id`, not the adapter id, so flavor labeling never
+  bleeds into history records.
+
 

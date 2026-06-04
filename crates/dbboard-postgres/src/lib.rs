@@ -55,14 +55,35 @@ pub struct PostgresConfig {
     pub url: String,
 }
 
+/// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
+/// generic PostgreSQL-wire connection (`CockroachDB`, self-hosted
+/// Postgres, or any other Postgres-flavoured server the user did not
+/// specifically label).
+pub const FLAVOR_POSTGRES: &str = "postgres";
+
+/// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
+/// connection the user declared as Neon (ADR-0018). Wire and SQL path
+/// are identical to [`FLAVOR_POSTGRES`]; the difference is the label
+/// the rest of the system sees in capability output and connection
+/// picker UI.
+pub const FLAVOR_NEON: &str = "neon";
+
 pub struct PostgresAdapter {
     // Only the pool is retained; the connection URL (with its password)
     // is intentionally not stored, so it cannot leak through Debug.
     pool: sqlx::PgPool,
+    // Stable label reported by `id()`. See [`FLAVOR_POSTGRES`] /
+    // [`FLAVOR_NEON`]. A `'static str` because the only flavors are
+    // compile-time constants in this crate.
+    flavor: &'static str,
 }
 
 impl PostgresAdapter {
     /// Connect to a PostgreSQL-wire database and build a connection pool.
+    ///
+    /// The adapter reports [`FLAVOR_POSTGRES`] as its id. Use
+    /// [`connect_neon`](Self::connect_neon) when the user has explicitly
+    /// declared a Neon connection (ADR-0018).
     ///
     /// # Errors
     ///
@@ -70,6 +91,23 @@ impl PostgresAdapter {
     /// cannot establish a connection (bad host, TLS failure, auth
     /// rejection, timeout, ...).
     pub async fn connect(config: PostgresConfig) -> DbResult<Self> {
+        Self::connect_with_flavor(config, FLAVOR_POSTGRES).await
+    }
+
+    /// Connect to a Neon database (ADR-0018). The wire protocol and SQL
+    /// path are identical to [`connect`](Self::connect); the only
+    /// difference is that the adapter reports [`FLAVOR_NEON`] as its id,
+    /// so capabilities output and the connection picker can label the
+    /// connection as Neon rather than generic Postgres.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`connect`](Self::connect).
+    pub async fn connect_neon(config: PostgresConfig) -> DbResult<Self> {
+        Self::connect_with_flavor(config, FLAVOR_NEON).await
+    }
+
+    async fn connect_with_flavor(config: PostgresConfig, flavor: &'static str) -> DbResult<Self> {
         if config.url.trim().is_empty() {
             return Err(DbError::Connection(
                 "PostgreSQL connection URL is empty".to_string(),
@@ -85,14 +123,14 @@ impl PostgresAdapter {
             .connect_with(harden_ssl_mode(options))
             .await
             .map_err(|e| classify_error(&e))?;
-        Ok(Self { pool })
+        Ok(Self { pool, flavor })
     }
 }
 
 #[async_trait]
 impl DatabaseAdapter for PostgresAdapter {
     fn id(&self) -> &'static str {
-        "postgres"
+        self.flavor
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -300,9 +338,24 @@ fn truncate(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_error, harden_ssl_mode, reclassify_schema, truncate, tuple_to_table};
+    use super::{
+        classify_error, harden_ssl_mode, reclassify_schema, truncate, tuple_to_table, FLAVOR_NEON,
+        FLAVOR_POSTGRES,
+    };
     use dbboard_core::DbError;
     use sqlx::postgres::{PgConnectOptions, PgSslMode};
+
+    /// `id()` is part of the public contract documented in
+    /// `docs/architecture.md` (adapter identifiers `turso`, `neon`,
+    /// `supabase` are stable strings). Both flavor constants must keep
+    /// their byte-content stable across releases — capability consumers
+    /// match on them — and must be different from each other.
+    #[test]
+    fn flavor_constants_are_stable_and_distinct() {
+        assert_eq!(FLAVOR_POSTGRES, "postgres");
+        assert_eq!(FLAVOR_NEON, "neon");
+        assert_ne!(FLAVOR_POSTGRES, FLAVOR_NEON);
+    }
 
     #[test]
     fn unspecified_ssl_mode_is_upgraded_to_require() {
