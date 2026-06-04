@@ -54,16 +54,16 @@ Shared `dbboard-postgres` adapter on `sqlx 0.8 + tls-rustls-ring`.
 |---|---|---|---|
 | CockroachDB | `v24.x` | `v23.2` LTS | Postgres wire 3.0; live test gated on `DBBOARD_PG_URL`; `id()` returns `"postgres"`. |
 | Neon (managed Postgres) | Postgres `17`, `16` | Postgres `15` | Same adapter; flavored as a first-class kind (ADR-0018) so the runtime adapter id is `"neon"`. Live test gated on `DBBOARD_NEON_URL` (TLS required — Neon enforces `sslmode=require`). |
+| Supabase (managed Postgres) | Postgres `17`, `16`, `15` | — | Same adapter; flavored as a first-class kind (ADR-0019) so the runtime adapter id is `"supabase"`. Live test gated on `DBBOARD_SUPABASE_URL` (TLS required; both the direct `:5432` endpoint and the transaction-pooler `:6543` endpoint are covered — pick via the URL). |
 | Vanilla PostgreSQL | Postgres `17`, `16` | Postgres `15` | Same adapter; no special handling. |
 
 Older Postgres majors (≤ 14) are best effort — the wire protocol
 matches, but no commitment.
 
-### Supabase
-
-Phase 3. Will be filled in when the adapter lands; expected baseline is
-Supabase's currently supported Postgres majors and the matching
-PostgREST + GoTrue API versions.
+The Supabase REST surface (PostgREST, GoTrue, Storage, Realtime) is
+deliberately out of scope at this stage: ADR-0019 limits Phase 3 to
+the pg-wire path. A future ADR will decide whether to layer REST
+capabilities on top of the flavored adapter.
 
 ## Adding or moving a version
 
