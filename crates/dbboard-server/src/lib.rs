@@ -35,7 +35,10 @@ use tokio::task::JoinHandle;
 
 use backend::connect_adapter;
 
-pub use config::{backend_config_from_env, backend_config_from_env_and_store, BackendConfig};
+pub use config::{
+    backend_config_from_env, backend_config_from_env_and_store, resolved_connection_label,
+    BackendConfig,
+};
 
 /// Maximum accepted `POST /query` body. 64 KiB comfortably holds any
 /// hand-written SQL statement while bounding per-request memory.

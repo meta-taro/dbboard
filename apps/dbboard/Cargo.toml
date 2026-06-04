@@ -28,6 +28,10 @@ dbboard-ui = { path = "../../crates/dbboard-ui" }
 eframe = { workspace = true }
 egui = { workspace = true }
 tokio = { workspace = true }
+# ADR-0017 history.jsonl stamps RFC 3339 ms-precision timestamps. The
+# binary owns the clock so `dbboard-ui` stays free of any date crate;
+# `formatting` is the only feature needed for OffsetDateTime → RFC 3339.
+time = { version = "0.3", default-features = false, features = ["formatting", "std"] }
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }

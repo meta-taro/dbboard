@@ -411,6 +411,40 @@ impl PersistentHistoryStore {
         self.inner.push_entry(entry);
         disk_result
     }
+
+    /// Submit-time path: push a bare SQL statement into the in-memory
+    /// ring **only**. Disk is not touched (the completion record lands
+    /// later via [`record_completion`](Self::record_completion) once the
+    /// reply carries duration / rows / status).
+    ///
+    /// Used by `DbboardApp::run_sql` so the history panel updates as
+    /// soon as the user clicks Run — matching the UX expectation of
+    /// `DataGrip` / `pgAdmin` / mainstream SQL clients — without waiting on
+    /// the query reply.
+    pub fn record_submit(&mut self, sql: impl Into<String>) {
+        self.inner.push(sql);
+    }
+
+    /// Completion-time path: append a fully-populated record to disk
+    /// **only**. The in-memory ring was already updated at submit time
+    /// via [`record_submit`](Self::record_submit) so this is a pure
+    /// disk write.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`io::Error`] when the disk append fails.
+    /// Callers should log and otherwise swallow — the contract is
+    /// best-effort (ADR-0017 §6). When the store is in-memory-only
+    /// (no path) this is an immediate `Ok(())` with no work done.
+    pub fn record_completion(&self, entry: &HistoryEntry) -> io::Result<()> {
+        if entry.sql.trim().is_empty() {
+            return Ok(());
+        }
+        match self.path.as_ref() {
+            Some(path) => append_record(path, entry),
+            None => Ok(()),
+        }
+    }
 }
 
 fn maybe_rotate(path: &Path) -> io::Result<()> {
@@ -816,5 +850,55 @@ mod tests {
         // deliberate breaking change — this test forces the author to
         // touch the ADR + the web sibling together.
         assert_eq!(CURRENT_VERSION, 1);
+    }
+
+    #[test]
+    fn record_submit_pushes_to_memory_without_touching_disk() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let mut store = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        store.record_submit("SELECT 1");
+        assert_eq!(store.store().len(), 1);
+        assert_eq!(store.store().iter().next().unwrap().sql, "SELECT 1");
+        assert!(
+            !path.exists() || fs::read_to_string(&path).unwrap().is_empty(),
+            "record_submit must not touch disk"
+        );
+    }
+
+    #[test]
+    fn record_completion_appends_to_disk_without_touching_memory() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let store = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        store
+            .record_completion(&sample_entry("SELECT 1"))
+            .expect("append");
+        assert!(store.store().is_empty(), "in-memory ring must stay empty");
+        let contents = fs::read_to_string(&path).expect("read");
+        assert_eq!(contents.lines().count(), 1);
+        let parsed: serde_json::Value =
+            serde_json::from_str(contents.lines().next().unwrap()).expect("valid json");
+        assert_eq!(parsed["v"], 1);
+        assert_eq!(parsed["status"], "ok");
+    }
+
+    #[test]
+    fn record_completion_with_no_path_is_ok() {
+        let store = PersistentHistoryStore::in_memory_only(100);
+        store
+            .record_completion(&sample_entry("SELECT 1"))
+            .expect("in-memory-only must accept the call");
+    }
+
+    #[test]
+    fn record_completion_drops_whitespace_only_sql() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let store = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        let mut blank = sample_entry("   ");
+        blank.sql = "   ".to_string();
+        store.record_completion(&blank).expect("ok");
+        assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
     }
 }
