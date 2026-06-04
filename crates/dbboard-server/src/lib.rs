@@ -36,8 +36,8 @@ use tokio::task::JoinHandle;
 use backend::connect_adapter;
 
 pub use config::{
-    backend_config_from_env, backend_config_from_env_and_store, resolved_connection_label,
-    BackendConfig,
+    backend_config_for_entry, backend_config_from_env, backend_config_from_env_and_store,
+    resolved_connection_label, BackendConfig,
 };
 
 /// Maximum accepted `POST /query` body. 64 KiB comfortably holds any
@@ -102,13 +102,27 @@ pub enum ServerError {
 
 /// A running server and the handle needed to stop it. The port is the
 /// OS-assigned loopback port the UI connects to.
+///
+/// The shared [`AppState`] is exposed through [`RunningServer::state`]
+/// so the desktop binary can swap the live adapter at runtime via
+/// [`swap_backend`] (ADR-0020) without restarting the server.
 pub struct RunningServer {
     pub port: u16,
+    state: AppState,
     shutdown_tx: oneshot::Sender<()>,
     handle: JoinHandle<std::io::Result<()>>,
 }
 
 impl RunningServer {
+    /// Snapshot the live [`AppState`] so the caller can hand it to
+    /// [`swap_backend`] later. Returns a clone — `AppState` is `Clone`
+    /// and internally `Arc`-shared, so the returned handle still points
+    /// at the same shared adapter slot the router sees.
+    #[must_use]
+    pub fn state(&self) -> AppState {
+        self.state.clone()
+    }
+
     /// Signal graceful shutdown and wait for the server task to finish.
     ///
     /// # Errors
@@ -203,7 +217,7 @@ pub fn build_router(state: AppState) -> Router {
 /// socket cannot be bound.
 pub async fn serve(config: BackendConfig) -> Result<RunningServer, ServerError> {
     let state = connect(config).await?;
-    let router = build_router(state);
+    let router = build_router(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -219,6 +233,7 @@ pub async fn serve(config: BackendConfig) -> Result<RunningServer, ServerError> 
 
     Ok(RunningServer {
         port,
+        state,
         shutdown_tx,
         handle,
     })

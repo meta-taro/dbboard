@@ -24,13 +24,19 @@
 //! tofu — egui's bundled Ubuntu-Light covers Latin + Cyrillic but no
 //! CJK ranges.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use dbboard_config::store::{default_history_path, default_path, load_or_empty};
 use dbboard_config::{ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore};
 use dbboard_i18n::t;
-use dbboard_server::{backend_config_from_env_and_store, resolved_connection_label, serve};
-use dbboard_ui::{ConnectionsView, DbboardApp, PersistentHistoryStore, DEFAULT_CAPACITY};
+use dbboard_server::{
+    backend_config_for_entry, backend_config_from_env_and_store, build_adapter,
+    resolved_connection_label, serve, swap_backend, AppState, ServerError,
+};
+use dbboard_ui::{
+    ConnectionSwitcher, ConnectionsView, DbError, DbboardApp, PersistentHistoryStore,
+    DEFAULT_CAPACITY,
+};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -56,7 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(path) => {
             let file = load_or_empty(&path)?;
             let admin = ConnectionAdmin::new_with_file(path, Arc::clone(&secrets), file.clone());
-            (file, Some(admin))
+            // The same ConnectionAdmin instance is shared between the
+            // Connections UI (which mutates it) and the DesktopSwitcher
+            // (ADR-0020, which reads entries by id to look up the
+            // backend config). Wrapping it in Arc<Mutex<_>> keeps both
+            // sides looking at the same in-memory state.
+            (file, Some(Arc::new(Mutex::new(admin))))
         }
         Err(_) => (ConnectionFile::empty(), None),
     };
@@ -97,6 +108,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = rt.block_on(serve(backend))?;
     let base_url = format!("http://127.0.0.1:{}", server.port);
 
+    // The switcher needs four things in scope: the server's live
+    // AppState (so swap_backend writes to the slot the router reads),
+    // the shared ConnectionAdmin (to look up entries by id), the
+    // SecretStore (for keyring lookups during backend_config_for_entry),
+    // and a Handle to the server runtime (so build_adapter can drive
+    // async I/O — the UI worker's current_thread runtime cannot host a
+    // nested block_on). When the OS reports no per-user config dir we
+    // fall through to a NullSwitcher that returns a Connection error,
+    // matching the UI's "no admin available" affordance.
+    let switcher: Arc<dyn ConnectionSwitcher> = match &admin {
+        Some(admin) => Arc::new(DesktopSwitcher {
+            state: server.state(),
+            admin: Arc::clone(admin),
+            secrets: Arc::clone(&secrets),
+            rt: rt.handle().clone(),
+        }),
+        None => Arc::new(NullSwitcher),
+    };
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
         ..Default::default()
@@ -113,6 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 history,
                 conn_label,
                 now_rfc3339,
+                switcher,
             );
             Ok(Box::new(DesktopApp::new(inner, admin)))
         }),
@@ -134,12 +165,14 @@ struct DesktopApp {
     connections: ConnectionsView,
     /// `None` when the OS reported no per-user config dir. The menu
     /// button is suppressed in that case rather than showing a window
-    /// that would always fail to save.
-    admin: Option<ConnectionAdmin>,
+    /// that would always fail to save. Wrapped in `Arc<Mutex<_>>` so
+    /// the [`DesktopSwitcher`] (ADR-0020) can read entries by id from
+    /// the same instance the UI mutates.
+    admin: Option<Arc<Mutex<ConnectionAdmin>>>,
 }
 
 impl DesktopApp {
-    fn new(inner: DbboardApp, admin: Option<ConnectionAdmin>) -> Self {
+    fn new(inner: DbboardApp, admin: Option<Arc<Mutex<ConnectionAdmin>>>) -> Self {
         Self {
             inner,
             connections: ConnectionsView::new(),
@@ -157,10 +190,71 @@ impl eframe::App for DesktopApp {
                 }
             });
         });
-        if let Some(admin) = self.admin.as_mut() {
-            self.connections.ui(ui.ctx(), admin);
+        if let Some(admin) = &self.admin {
+            // Same poison-handling rationale as the server's AppState
+            // (ADR-0020): a panicked writer leaves the inner state valid,
+            // so unwrap the poison and keep going rather than aborting.
+            let mut guard = admin.lock().unwrap_or_else(PoisonError::into_inner);
+            self.connections.ui(ui.ctx(), &mut guard);
         }
         self.inner.ui(ui, frame);
+    }
+}
+
+/// Production [`ConnectionSwitcher`] impl (ADR-0020). The worker thread
+/// calls [`Self::switch`] when a `Command::SwitchConnection { id }`
+/// arrives; this resolves the id against the shared connection store,
+/// builds a fresh adapter on the server runtime, and atomically swaps
+/// it into the live `AppState`. The HTTP contract is unchanged — only
+/// the in-process wiring moves.
+struct DesktopSwitcher {
+    state: AppState,
+    admin: Arc<Mutex<ConnectionAdmin>>,
+    secrets: Arc<dyn SecretStore>,
+    rt: tokio::runtime::Handle,
+}
+
+impl ConnectionSwitcher for DesktopSwitcher {
+    fn switch(&self, id: &str) -> Result<(), DbError> {
+        // Resolve the config under the lock, but drop the guard before
+        // the (potentially slow) build_adapter await so concurrent UI
+        // edits to the connection store are not blocked behind a TCP
+        // handshake.
+        let config = {
+            let admin = self.admin.lock().unwrap_or_else(PoisonError::into_inner);
+            let entry = admin
+                .entries()
+                .iter()
+                .find(|e| e.id == id)
+                .cloned()
+                .ok_or_else(|| DbError::Connection(format!("unknown connection id: {id}")))?;
+            backend_config_for_entry(&entry, &*self.secrets)
+                .map_err(|e| DbError::Connection(e.to_string()))?
+        };
+        let adapter = self
+            .rt
+            .block_on(build_adapter(config))
+            .map_err(|e| match e {
+                ServerError::Backend(db) => db,
+                other => DbError::Connection(other.to_string()),
+            })?;
+        swap_backend(&self.state, adapter);
+        Ok(())
+    }
+}
+
+/// Fallback [`ConnectionSwitcher`] used when the OS reports no per-user
+/// config dir (`admin` is `None`). The worker still has a switcher to
+/// call, but every attempt surfaces a typed `Connection` error so the
+/// UI shows "could not switch" instead of hanging.
+struct NullSwitcher;
+
+impl ConnectionSwitcher for NullSwitcher {
+    fn switch(&self, _id: &str) -> Result<(), DbError> {
+        Err(DbError::Connection(
+            "no connection store available on this host; configure one to switch connections"
+                .into(),
+        ))
     }
 }
 

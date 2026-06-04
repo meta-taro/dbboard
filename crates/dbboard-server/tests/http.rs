@@ -214,6 +214,50 @@ async fn swap_backend_routes_next_request_to_new_adapter() {
     assert_eq!(body, json!({ "tables": [] }));
 }
 
+/// ADR-0020: the desktop binary owns a `RunningServer` and reaches the
+/// live `AppState` through it. After a swap issued via that state, the
+/// loopback server's next response must reflect the new adapter.
+#[tokio::test]
+async fn running_server_state_lets_swap_take_effect_over_loopback() {
+    let server = serve(BackendConfig::turso(":memory:"))
+        .await
+        .expect("server starts");
+    let base = format!("http://127.0.0.1:{}", server.port);
+    let client = reqwest::Client::new();
+
+    // Plant a table through the original adapter.
+    let create: Value = client
+        .post(format!("{base}/query"))
+        .json(&json!({ "sql": "CREATE TABLE in_original (n INTEGER)" }))
+        .send()
+        .await
+        .expect("create request")
+        .json()
+        .await
+        .expect("create body");
+    assert_eq!(create["rows_affected"], json!(0));
+
+    // Build a fresh adapter and swap it in via the exposed AppState.
+    let fresh = build_adapter(BackendConfig::turso(":memory:"))
+        .await
+        .expect("build fresh adapter");
+    swap_backend(&server.state(), fresh);
+
+    // The next /tables call over the same loopback socket must see the
+    // fresh adapter's empty schema, not the original `in_original` row.
+    let tables: Value = client
+        .get(format!("{base}/tables"))
+        .send()
+        .await
+        .expect("tables request")
+        .json()
+        .await
+        .expect("tables body");
+    assert_eq!(tables, json!({ "tables": [] }));
+
+    server.shutdown().await.expect("clean shutdown");
+}
+
 #[tokio::test]
 async fn real_serve_round_trips_over_loopback() {
     let server = serve(BackendConfig::turso(":memory:"))
