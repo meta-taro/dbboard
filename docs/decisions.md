@@ -1157,3 +1157,263 @@ fixes its shape.
   the form's `ConnectionKind` dropdown is a presentation detail keyed
   by the existing enum, not adapter-specific logic.
 
+---
+
+## ADR-0017 — Query history persistence (JSON Lines, schema shared with `dbboard-web`, Stage 2)
+
+**Status:** Accepted (2026-06-04). Realises the deferred "Stage 2 ADR"
+promised by ADR-0014.
+
+**Context.** ADR-0014 landed Stage 1 of query history: a bounded,
+newest-first ring buffer in `dbboard-ui` with no on-disk
+representation. The deferred "Stage 2 ADR" had two open questions —
+*what format* and *where on disk* — that we deliberately punted until
+the connection-management UI (ADR-0016) shipped. Both have now landed,
+so the constraints are knowable.
+
+A maintainer call on 2026-06-03 added a third constraint: the on-disk
+record shape should be **shared with the `dbboard-web` sibling** so
+that the history of a desktop and a web instance can be read by the
+same `jq` pipeline. Storage location and write implementation can
+diverge between the two repos; the *record schema* cannot.
+
+Survey of comparable tools (also from the 2026-06-03 call):
+
+| Tool | Persistence | Format |
+| --- | --- | --- |
+| HeidiSQL | Windows registry / `portable_settings.txt` | Delphi INI-style |
+| DBeaver | Workspace SQLite | Opaque binary |
+| DataGrip | `consoles/db/<dsn>/console.history` | Plain text with comments |
+| TablePlus | Per-connection SQLite | Opaque binary |
+| Beekeeper Studio | App-data SQLite | Opaque binary |
+
+None of them are friendly to `jq` / `tail -F` / `grep`. Making the
+file directly inspectable by standard Unix tools is a deliberate UX
+differentiator for `dbboard`, not an accident.
+
+**Decision.**
+
+1. **Format: JSON Lines (`.jsonl`, one JSON object per line, LF-only).**
+   The file is appended to in real time; readers can `tail -F` it,
+   `jq` it, `grep` it, or feed it to any stream-oriented pipeline
+   without an intermediate parse step. Newlines are LF on every
+   platform (Windows readers cope with LF; Unix readers do not cope
+   with CRLF). Encoding is UTF-8 without BOM.
+
+2. **Record schema (single source of truth, shared cross-repo):**
+
+   ```jsonc
+   {
+     "v": 1,                              // schema version
+     "ts": "2026-06-04T14:22:01.123Z",   // RFC 3339, UTC, ms precision
+     "conn": "prod-pg",                   // connection id (TOML primary key)
+     "actor": null,                       // desktop null; web populates
+     "sql": "SELECT * FROM users LIMIT 10",
+     "status": "ok",                      // "ok" | "error"
+     "duration_ms": 42,                   // wall-clock from submit to envelope
+     "rows": 10,                          // row-returning result; null otherwise
+     "rows_affected": null,               // DML result; null otherwise
+     "error": null                        // {category, message} when status="error"
+   }
+   ```
+
+   Field semantics:
+
+   - **`v`**: schema version. Currently `1`. **Renaming or
+     repurposing any field is a breaking change and requires a new
+     ADR** that bumps `v`. Adding optional fields is additive and
+     does not bump `v`.
+   - **`ts`**: RFC 3339 with millisecond precision, always UTC
+     (trailing `Z`). Local-time conversion is the reader's job —
+     `jq` users typically pipe through `fromdateiso8601`.
+   - **`conn`**: matches the `id` field of the corresponding
+     `connections.toml` entry on desktop (or the equivalent
+     server-side connection record on web). Lookup of friendly name,
+     kind, etc. is the reader's job — keeping the file
+     denormalisation-free makes rotation trivial.
+   - **`actor`**: `null` on desktop (single-user, single-process —
+     ADR-0016). Web populates from the authenticated session / user
+     id. Reserving the field on desktop day-1 prevents a schema bump
+     when web's multi-user story matures.
+   - **`status`**: lowercase. The only two values are `"ok"` and
+     `"error"`. A future "cancelled" or "timeout" addition is
+     additive (writers emit the new value, readers default to
+     unknown).
+   - **`duration_ms`**: wall-clock milliseconds from the moment the
+     UI submits the query to the moment the result envelope is
+     received. On error, the duration up to the error. Integer.
+   - **`rows`** vs **`rows_affected`**: mutually exclusive. SELECT
+     returns `rows` non-null and `rows_affected` null; DML returns
+     the inverse; DDL/`ok` with no result population returns both
+     `null`.
+   - **`error`**: when `status="error"`, an object
+     `{ "category": "<connection|query|schema|type_conversion|capability>", "message": "<English text>" }`
+     matching the categories already shipped in
+     `dbboard-core::DbError` (ADR-0009 / ADR-0004 / ADR-0012). The
+     message is the raw English `DbError::message()` payload — UI
+     translation (ADR-0015) is not applied to logs (the file should
+     be locale-agnostic so cross-team `jq` works).
+
+3. **Storage location (desktop).** Resolved via the same
+   `directories::ProjectDirs` lookup that `connections.toml` uses,
+   so a single OS config dir owns both:
+
+   - Linux: `$XDG_CONFIG_HOME/dbboard/history.jsonl`
+     (fallback `~/.config/dbboard/history.jsonl`)
+   - macOS: `~/Library/Application Support/dev.dbboard.dbboard/history.jsonl`
+   - Windows: `%APPDATA%\dbboard\dbboard\config\history.jsonl`
+
+   A helper `dbboard_config::default_history_path()` returns the
+   resolved path so the path policy stays in the same crate that
+   already owns `default_path()`. The reader/writer itself lives in
+   `dbboard-ui` (UI is the only crate that needs to read it; no other
+   workspace crate should grow this dependency surface).
+
+   The file lives next to `connections.toml`, but uses **no atomic
+   rename** semantics: it is opened with `O_APPEND` (or the Windows
+   equivalent — `OpenOptions::new().append(true).create(true)`) and
+   each record is a single `write_all` of `serde_json::to_vec`
+   followed by `b"\n"`. POSIX guarantees `O_APPEND` writes ≤ PIPE_BUF
+   are atomic vs. concurrent writers; Windows' append handle behaves
+   equivalently for the small (< 4 KiB) record sizes we produce. The
+   resulting trade-off — a crash mid-write may leave a partial line —
+   is accepted: the reader skips lines that fail to parse, logs the
+   skip count, and continues.
+
+4. **Rotation: size-based, lazy.** When the active file exceeds
+   **50 MiB** *or* **100 000 lines** at startup, it is renamed to
+   `history.jsonl.1` (overwriting any existing `.1`) and a fresh
+   `history.jsonl` is created. Rotation is **not** triggered
+   mid-session — a long-running session can grow the file past the
+   cap; the cap only fires the next time the app starts. This keeps
+   the write path lock-free and the rotation policy testable as a
+   pure function.
+
+   Only one generation (`.1`) is retained. Users who want longer
+   retention can `mv history.jsonl ~/dbboard-archive/history-$(date +%F).jsonl`
+   from a cron / scheduled task — the file is plain text and self-
+   contained, no app cooperation required.
+
+5. **Read policy (startup).** `apps/dbboard` reads the last
+   `DEFAULT_CAPACITY` (= 100, unchanged from ADR-0014) lines, parses
+   each, drops malformed lines with a startup-log warning that
+   includes the count, and pushes the surviving entries into the
+   in-memory `HistoryStore` newest-first. The UI sees the same API
+   surface as Stage 1 — `HistoryStore::iter()` returns entries in
+   newest-first order, the panel renders unchanged.
+
+   The reader **ignores unknown JSON fields** (`serde(default)` +
+   `#[serde(deny_unknown_fields)]` is NOT set) so a future schema
+   that adds, say, `"user_agent"` does not break a freshly-installed
+   client reading an older format.
+
+6. **Write policy (runtime).** On every successful or failed query
+   reply received by `DbboardApp`, build a record from the
+   already-available metadata (the response envelope already carries
+   row count / affected count / error category) and append it. The
+   write is best-effort: a failure (disk full, file removed) logs to
+   `tracing::warn!` and is otherwise swallowed — the UI must not
+   block or fail because the history file is unwritable.
+
+7. **Secret handling: write queries verbatim.** A `SELECT … WHERE
+   token = 'sk_live_xxx'` lands in the file as-is. Justification:
+
+   - The file lives at the same trust level as `connections.toml`
+     (same per-user config dir, same OS user filesystem permissions).
+   - Detecting and redacting "secret-looking" literals would require
+     a lexer that understands every dialect — a perpetually wrong
+     heuristic. The DBeaver / DataGrip prior art logs queries
+     verbatim for the same reason.
+   - README and `docs/connections.md` will note "the history file
+     contains the literal text of every query you have run,
+     including any string literals" so the affordance is not
+     surprising.
+
+   Encryption-at-rest is intentionally **not** added in Stage 2:
+   adding a keyring-derived key would force every reader (including
+   `jq`) to go through `dbboard`, killing the differentiator the
+   format choice was made for. If a future privacy-sensitive
+   deployment needs it, that is a Stage 3 ADR with its own UX
+   trade-offs.
+
+8. **HTTP contract is not touched.** No `GET /history` endpoint, no
+   wire shape, no server state. The web sibling implements its own
+   reader/writer with the same record schema; it does **not** consume
+   any desktop code path. Rejecting an endpoint here is a deliberate
+   call so that the file format stays a first-class UX surface and
+   web's access-control design is not dragged into the cross-repo
+   contract.
+
+9. **Cross-repo coordination.** ADR-0017 is the single source of
+   truth for the record schema. The sibling ADR on `dbboard-web` will
+   say "schema is identical to desktop ADR-0017" and add only the
+   web-specific I/O bits (storage location env var, multi-tenant
+   `actor` semantics, NestJS write path). A handoff brief
+   (`.claude/issues/0003-web-history-schema-mirror.md`, same format as
+   `0001` / `0002`) lands in this PR for the web Claude session to
+   pick up.
+
+**Alternatives considered.**
+
+- **SQLite alongside `connections.toml`.** Rejected: the
+  differentiator we want is `jq` / `tail -F` / `grep` over the raw
+  file. SQLite requires a client (or `sqlite3 ... | jq`), can't be
+  tail-followed live, and adds a non-trivial dependency to
+  `dbboard-ui` (today it has none beyond `egui` / `reqwest`). The
+  prior-art table above is unanimous on SQLite — and unanimous on
+  "users do not actually `jq` it".
+- **Plain text (one SQL per line, no JSON).** Rejected: drops
+  duration / status / connection / error category. The whole point
+  of structured logging is structured filtering.
+- **One file per connection.** Rejected: the most useful cross-cut
+  is "find slow queries across all my databases" — denormalising
+  `conn` into one global file keeps that one-liner trivial.
+- **Atomic write via temp-file rename per record.** Rejected:
+  ~100× slower under typical use, no real safety win (an
+  `O_APPEND` write of a < 4 KiB JSON line is atomic on the
+  platforms we care about), and would defeat the `tail -F` UX
+  (every record would replace the inode).
+- **Encryption-at-rest.** Rejected for Stage 2 (point 7). If the
+  user is on a multi-tenant machine where the history file leaks,
+  `connections.toml` already leaks `keyring_*_ref` pointers and
+  any plaintext URL — and the OS keychain protects the actual
+  secret material. Encrypting just the history would not raise the
+  effective floor.
+- **Adding `GET /history` to the HTTP contract.** Rejected (point 8).
+
+**Consequences.**
+
+- `dbboard-config` grows a `default_history_path()` symmetric to
+  `default_path()`. No new external dependency (`directories` already
+  in.).
+- `dbboard-ui::history` grows a `PersistentHistoryStore` that wraps
+  `HistoryStore` and owns the append-only writer and a `load_tail`
+  associated function for startup. `HistoryStore`'s public API is
+  unchanged — Stage 1 callers that only need the in-memory ring
+  buffer keep working.
+- `HistoryEntry` gains `ts` / `conn` / `status` / `duration_ms` /
+  `rows` / `rows_affected` / `error` fields (and the `v=1` / `actor`
+  envelope is added at serde-time, not stored in the in-memory
+  struct). The in-memory store still keys uniqueness off `sql` for
+  adjacent dedup.
+- `apps/dbboard` resolves the path at startup, calls `load_tail`, and
+  hands the writer to `DbboardApp`. When path resolution fails
+  (headless / CI), the app falls back to an in-memory-only store and
+  logs the reason — same fallback pattern as `ConnectionAdmin`
+  resolution.
+- `dbboard-ui` gains a `serde_json` dev-dep usage for tests (the crate
+  already pulls it transitively through `reqwest`); no production
+  dependency added.
+- README and `docs/connections.md` get a short "Query history" section
+  noting the file location per OS, the format, and the "queries are
+  stored verbatim, including any string literals" warning.
+- Web mirror brief at `.claude/issues/0003-web-history-schema-mirror.md`
+  lands in the same PR.
+- Roadmap Phase 2 history bullet flips from "Stage 1, persistence
+  deferred" to "Stage 2 persisted via ADR-0017". Phase 2 exit
+  criteria still hold (UI does not know "Turso").
+- SemVer impact (ADR-0011): additive. The on-disk format becomes a
+  semver-tracked surface — a future `v=2` is a minor bump if reader
+  forward-compat holds, major if a `v=1` reader would mis-parse.
+
+
