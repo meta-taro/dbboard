@@ -77,6 +77,16 @@ pub enum ConnectionKind {
     Neon {
         keyring_url_ref: String,
     },
+    /// A Supabase connection (ADR-0019). Shape is byte-identical to
+    /// [`ConnectionKind::Postgres`]; the discriminator is the only
+    /// distinction so the connection picker and capability output can
+    /// label the connection as Supabase rather than generic Postgres.
+    /// REST surfaces (auth / storage / realtime / functions) are not
+    /// part of this kind; ADR-0019 §Decision defers them to a future
+    /// ADR with the matching capability flag extension.
+    Supabase {
+        keyring_url_ref: String,
+    },
 }
 
 impl ConnectionFile {
@@ -349,6 +359,26 @@ keyring_url_ref = "dbboard.neon-prod.url"
     }
 
     #[test]
+    fn parses_a_supabase_entry() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id              = "supabase-prod"
+name            = "Supabase (prod)"
+kind            = "supabase"
+keyring_url_ref = "dbboard.supabase-prod.url"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("supabase entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::Supabase {
+                keyring_url_ref: "dbboard.supabase-prod.url".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn parses_a_postgres_entry() {
         let toml_src = r#"
 version = 1
@@ -471,6 +501,13 @@ path = ":memory:"
                     name: "Neon (managed)".to_string(),
                     kind: ConnectionKind::Neon {
                         keyring_url_ref: "dbboard.neon-managed.url".to_string(),
+                    },
+                },
+                ConnectionEntry {
+                    id: "supabase-prod".to_string(),
+                    name: "Supabase (prod)".to_string(),
+                    kind: ConnectionKind::Supabase {
+                        keyring_url_ref: "dbboard.supabase-prod.url".to_string(),
                     },
                 },
             ],
