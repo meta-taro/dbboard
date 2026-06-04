@@ -21,7 +21,10 @@ mod worker;
 pub use connections::{
     AddFormState, ConnectionsView, EditFormState, EditKindState, KindSelector, Mode,
 };
-pub use history::{HistoryEntry, HistoryStore, DEFAULT_CAPACITY};
+pub use history::{
+    HistoryEntry, HistoryError, HistoryStatus, HistoryStore, PersistentHistoryStore,
+    CURRENT_VERSION, DEFAULT_CAPACITY, ROTATION_BYTES, ROTATION_LINES,
+};
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
