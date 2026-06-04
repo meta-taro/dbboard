@@ -5,17 +5,16 @@
 
 ## 最終更新
 
-- 日付: 2026-06-04 (本セッション末、Phase 3 Neon adapter as flavored
-  kind — ADR-0018 起票 + 実装完了、push & PR は人間担当)
-- ブランチ: `feature/neon-adapter-kind` (= `0385aaf`、未 push)。
-  `develop` は `origin/develop` = `7555c58` のまま (本セッションは
-  まだ merge 前)。
+- 日付: 2026-06-04 (本セッション末、Phase 3 Neon ADR-0018 PR #11
+  マージ完了、ローカル feature ブランチ削除済)
+- ブランチ: `develop` (= `origin/develop` = `c249bc4`、sync 済)
 - 現在の Phase: **Phase 3 Neon adapter (flavored kind over
-  `dbboard-postgres`) 実装完了、ローカルテスト全 green。次のステップ
-  は人間による `git push -u origin feature/neon-adapter-kind`
-  → PR open → merge。次セッションは Supabase アダプタ着手か、
-  web 側 Claude が `0003-web-history-schema-mirror` を pickup した
-  場合のフォローアップ対応。**
+  `dbboard-postgres`) シップ完了。PR #11 マージ済 (`c249bc4`、
+  merge commit `c249bc4`)、ローカル `feature/neon-adapter-kind`
+  ブランチ削除済。次セッションは Phase 3 残り = Supabase アダプタ
+  (REST + sqlx hybrid) 着手、あるいは web 側 Claude が
+  `0003-web-history-schema-mirror` を pickup した場合の
+  cross-repo フォローアップ対応。**
 
 ### Phase 3 Neon adapter (本セッション / 2026-06-04)
 
