@@ -3,7 +3,9 @@
 //! Owns three halves that must never blur into one another:
 //!
 //! - [`store`] — the on-disk shape of `connections.toml`, plus the
-//!   filesystem layer (`load_or_empty`, `save_atomic`).
+//!   filesystem layer (`load_or_empty`, `save_atomic`) and the
+//!   `default_history_path()` helper that `dbboard-ui` uses to find
+//!   `history.jsonl` (ADR-0017) under the same config dir.
 //! - [`secrets`] — `SecretStore` trait with an OS-keychain backend
 //!   ([`secrets::KeyringStore`]) and an in-memory fallback
 //!   ([`secrets::InMemorySecretStore`]) for tests and CI.
@@ -26,4 +28,7 @@ pub use admin::{
 };
 pub use error::ConfigError;
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
-pub use store::{ConnectionEntry, ConnectionFile, ConnectionKind, CONFIG_VERSION};
+pub use store::{
+    default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind,
+    CONFIG_VERSION,
+};

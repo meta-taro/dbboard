@@ -129,6 +129,24 @@ pub fn default_path() -> Result<PathBuf, ConfigError> {
     Ok(dirs.config_dir().join("connections.toml"))
 }
 
+/// The default per-user path for `history.jsonl` (ADR-0017), resolved
+/// via the same `directories` lookup as [`default_path`] so the two
+/// live side by side under one config dir:
+///
+/// - Windows: `%APPDATA%\dbboard\dbboard\config\history.jsonl`
+/// - macOS:   `~/Library/Application Support/dev.dbboard.dbboard/history.jsonl`
+/// - Linux:   `$XDG_CONFIG_HOME/dbboard/history.jsonl`
+///   (default `~/.config/dbboard/history.jsonl`)
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoConfigDir`] when the OS reports no usable
+/// per-user config directory (no `$HOME`, no `%APPDATA%`).
+pub fn default_history_path() -> Result<PathBuf, ConfigError> {
+    let dirs = ProjectDirs::from("dev", "dbboard", "dbboard").ok_or(ConfigError::NoConfigDir)?;
+    Ok(dirs.config_dir().join("history.jsonl"))
+}
+
 /// Read and parse `connections.toml` at `path`.
 ///
 /// A missing file is **not** an error: it yields an empty store at the
