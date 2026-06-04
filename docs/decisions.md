@@ -1024,7 +1024,11 @@ locale falls back to `en` (which is the source-of-truth for all keys).
 
 ## ADR-0016 — Connection management UI (HeidiSQL model: process-per-connection, Stage 1)
 
-**Status:** Accepted (2026-06-03).
+**Status:** Superseded in part by [ADR-0020](#adr-0020--in-process-connection-switching-supersedes-adr-0016s-stage-1-mental-model) (2026-06-04) for the
+"process-per-connection / in-app switching out of scope" parts
+(decision points 1, 2, and 3). The rest of the ADR — `ConnectionAdmin`
+in `dbboard-config`, secrets handling, validation, no HTTP contract
+change — remains accepted.
 
 **Context.** ADR-0013 introduced `connections.toml` + OS keychain
 through `crates/dbboard-config`, but exposed no UI: the only ways for
@@ -1679,4 +1683,159 @@ alone clears every Phase 3 exit criterion.
   When the REST integration eventually lands, **that** ADR will
   emit a fresh handoff brief; this one does not.
 
+---
+
+## ADR-0020 — In-process connection switching (supersedes ADR-0016's Stage 1 mental model)
+
+**Status:** Accepted (2026-06-04). Supersedes ADR-0016 decision points
+1, 2, and 3 (process-per-connection mental model, in-app switching
+out of scope, list-only Stage 1 surface). The rest of ADR-0016
+remains in force.
+
+### Context
+
+ADR-0016 (2026-06-03) shipped Add / Edit / Delete on the connections
+window and explicitly deferred in-app switching to a "Stage 2 ADR if
+usage warrants." First-real-world-use feedback (2026-06-04) made
+clear that usage warrants it now: after saving a connection the user
+hits a dead end — the connections window lists `[ Edit | Delete ]`
+per row with no obvious way to *use* the connection just saved. The
+HeidiSQL multi-process model assumed familiarity that the
+maintainer's actual workflow does not have, and every other desktop
+DB client the maintainer reaches for (DBeaver, TablePlus, DataGrip,
+HeidiSQL itself when used via "open as new tab") swaps the active
+connection inside one window. The dead-end UX is the failure mode
+ADR-0016's "Alternatives considered" listed under "tabbed
+multi-connection in one process" — except it shows up at a far
+lower complexity bar: the user does not need *multiple* concurrent
+connections, just *the ability to use the one they saved*.
+
+### Decision
+
+1. **The connections window grows a "Connect" affordance per row.**
+   Each row's action cluster becomes `[ Connect | Edit | Delete ]`.
+   Clicking Connect switches the **running process's** active
+   connection to that row's `id`. The currently active row is
+   visually marked (highlight + check mark). The window itself stays
+   open so the user can confirm the switch and pick another if
+   needed.
+
+2. **Switching is in-process, not a new window or process restart.**
+   `apps/dbboard` constructs a new `Arc<dyn DatabaseAdapter>` via
+   `ConnectionAdmin` (already shipped) and hands it to
+   `dbboard-server` through a shared swap point — no admin HTTP
+   endpoint, no second loopback bind, no second egui window. The
+   HTTP contract (`docs/api-contract.md`) is unchanged.
+
+3. **The server's adapter handle becomes swappable.** The current
+   `Arc<dyn DatabaseAdapter>` field on `Backend` becomes
+   `Arc<ArcSwap<dyn DatabaseAdapter>>` (or an equivalent
+   `Arc<RwLock<Arc<dyn DatabaseAdapter>>>` — the choice is internal).
+   Every request handler reads the current adapter through that
+   handle at the start of the request and operates on the captured
+   `Arc` for the duration of the request. This preserves the
+   "one adapter per request" invariant ADR-0012 relied on, while
+   letting the *next* request see the swapped-in adapter.
+
+4. **In-flight queries are not interrupted.** A switch issued while
+   a query is in flight does not cancel that query; the running
+   request keeps the captured `Arc` and finishes against the old
+   adapter. The new adapter takes effect for the *next* request the
+   UI issues. This is the cheapest correct behaviour and matches
+   how users mentally model "I clicked switch, the next thing I
+   run goes to the new DB."
+
+5. **No persistence of "last active."** The switch is per-session.
+   On next process launch the existing precedence chain (env vars
+   > `DBBOARD_CONNECTION=<id>` > single-entry auto-select > Turso
+   `:memory:`) decides the startup adapter, same as today. A future
+   ADR may persist a "last active connection" hint if usage data
+   argues for it.
+
+6. **History recording follows the active connection at write time.**
+   `history.jsonl` records each entry with the `conn` field set to
+   the active connection's `id` at the moment the query ran. ADR-0017
+   already keyed history off `connection.id` rather than adapter id,
+   so no schema change.
+
+7. **The wire mechanism for the swap is the existing
+   `Command` / `Reply` channel pair, not a new HTTP endpoint.** The
+   UI sends `Command::SwitchConnection { id }` over the channel that
+   already carries `Command::RunQuery` etc.; `apps/dbboard` resolves
+   the connection, builds the adapter, swaps the server's handle,
+   and replies with `Reply::ConnectionSwitched { id }` or
+   `Reply::Error { ... }`. **No HTTP contract change, no web
+   mirror.** The web sibling has its own connection-switching story
+   over its own admin surface; this ADR does not constrain it.
+
+### Alternatives considered
+
+- **`POST /admin/switch` HTTP endpoint.** Rejected: adds an admin
+  surface that requires a web mirror (HTTP contract policy in
+  `CLAUDE.md` and ADR-0009), and the swap is a purely local-process
+  concern. The egui UI and the local server live in the same binary;
+  channel-based wiring is direct, typed, and doesn't pollute the
+  shared contract.
+- **Spawn a new `dbboard.exe` process per switch (the original
+  "new window" pitch).** Rejected as the primary path: ADR-0016
+  already showed this matches the maintainer's HeidiSQL-style
+  workflow, but first-use feedback shows it does not match
+  *expectations* — users expect "Connect" to act on the current
+  window. Multi-process is still available to the maintainer
+  (launch another `dbboard.exe` from the command line with a
+  different `DBBOARD_CONNECTION=<id>`); this ADR does not remove
+  that, it just stops *requiring* it.
+- **Tabbed multi-connection in one process.** Still rejected for
+  now — same reasoning as ADR-0016. Single-active-connection with
+  fast in-place switching covers the actual use case without the
+  N-pane UI cost. Revisitable as a future ADR if usage warrants.
+- **Block the switch until in-flight queries finish, instead of
+  letting them run on the old adapter.** Rejected as user-hostile:
+  the existing row cap (`MAX_RESULT_ROWS`) plus the
+  fail-fast network paths make a "queries always finish quickly"
+  invariant strong enough that simple "switch takes effect on
+  next request" wins on both UX and implementation cost.
+
+### Consequences
+
+- `dbboard-server` learns a `swap_backend(new: Arc<dyn DatabaseAdapter>)`
+  entry point. Request handlers read the current adapter through an
+  `ArcSwap` (or equivalent) and capture an `Arc` for the request's
+  lifetime. No HTTP types change.
+- `apps/dbboard` learns `Command::SwitchConnection { id }`,
+  `Reply::ConnectionSwitched { id }`. The existing connect-at-startup
+  flow is unchanged: startup still resolves the adapter once and
+  hands it to the server through the same swap point that the
+  in-process switch later uses.
+- `dbboard-ui` `ConnectionsWindow`:
+  - per-row `[ Connect | Edit | Delete ]`,
+  - active-row highlight + check mark (`connections-row-active` and
+    `connections-button-connect` Fluent keys added to all 11 locales
+    — ADR-0015 tier 1+2 stay in sync),
+  - removes the "変更は dbboard の次回起動時から有効になります"
+    notice on the connections window (it was only true under
+    ADR-0016 — under ADR-0020 it's misleading; the *form's* Save
+    still requires a Connect to activate, which the row state now
+    expresses visibly).
+- `ConnectionAdmin` (`dbboard-config`, ADR-0016) is unchanged. The
+  only change is who calls it: previously only startup, now also
+  the UI-driven switch.
+- `dbboard-web` sibling: **no contract or wire change**. ADR-0020
+  joins the ADR-0013 / ADR-0015 / ADR-0016 / ADR-0018 / ADR-0019
+  category of desktop-side-only changes; `dbboard-web-state.md`
+  memory records it the same way. No `0NNN-web-*` issue file.
+- ADR-0012's "one `Arc<dyn DatabaseAdapter>` per process lifetime"
+  becomes "one `Arc<dyn DatabaseAdapter>` per request"; the trait
+  itself is unchanged. The invariant ADR-0012 actually needs
+  ("a request operates on a fixed adapter from start to end") is
+  preserved through the per-request capture.
+- Roadmap: no new phase. This is UX polish on Phase 2 — Stage 2 of
+  the "Connection management UI" line item that ADR-0016 left
+  half-shipped. `docs/roadmap.md` Phase 2 row gets a short
+  parenthetical noting ADR-0020 closes the Stage 1 dead-end.
+- Future work: `0004-runtime-locale-switcher.md` queues the
+  analogous fix on the i18n side (ADR-0015 chose startup-only
+  resolution; once ADR-0020 lands, the same in-process-mutation
+  precedent makes a runtime locale switcher trivial — same shape,
+  smaller blast radius).
 
