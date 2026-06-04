@@ -52,8 +52,8 @@ Shared `dbboard-postgres` adapter on `sqlx 0.8 + tls-rustls-ring`.
 
 | Server | Tier 1 | Tier 2 | Notes |
 |---|---|---|---|
-| CockroachDB | `v24.x` | `v23.2` LTS | Postgres wire 3.0; live test gated on `DBBOARD_PG_URL`. |
-| Neon (managed Postgres) | Postgres `17`, `16` | Postgres `15` | Same adapter; connection picker quirks land in Phase 3. |
+| CockroachDB | `v24.x` | `v23.2` LTS | Postgres wire 3.0; live test gated on `DBBOARD_PG_URL`; `id()` returns `"postgres"`. |
+| Neon (managed Postgres) | Postgres `17`, `16` | Postgres `15` | Same adapter; flavored as a first-class kind (ADR-0018) so the runtime adapter id is `"neon"`. Live test gated on `DBBOARD_NEON_URL` (TLS required — Neon enforces `sslmode=require`). |
 | Vanilla PostgreSQL | Postgres `17`, `16` | Postgres `15` | Same adapter; no special handling. |
 
 Older Postgres majors (≤ 14) are best effort — the wire protocol

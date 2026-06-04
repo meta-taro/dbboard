@@ -171,11 +171,16 @@ locale falls back to `en` without aborting.
 Goal: prove the trait by adding two more adapters without changing the
 UI or the core.
 
-- [ ] Neon via the shared `dbboard-postgres` adapter (it is Postgres-wire;
-  Phase 1.7 already covers the SQL path — this step is mostly the
-  connection picker and any Neon-specific quirks)
+- [x] Neon via the shared `dbboard-postgres` adapter (ADR-0018: flavored
+  first-class kind. `PostgresAdapter::connect_neon` returns the same
+  adapter but with `id() == "neon"`; new `DBBOARD_NEON_URL` env var
+  ranks above `DBBOARD_PG_URL`; `ConnectionKind::Neon` is an additive
+  v=1 variant in `connections.toml`; UI Add form lists "Neon" alongside
+  the three existing kinds. Live test gated on `DBBOARD_NEON_URL`.)
+- [x] Connection picker recognises adapter kind (delivered by ADR-0018
+  alongside the Neon flavor — the same machinery generalises to Supabase
+  when it lands)
 - [ ] `dbboard-supabase` (REST + sqlx hybrid)
-- [ ] Connection picker recognises adapter kind
 - [ ] Adapter-specific quirks documented in each crate's README
 
 Exit criteria: a user can switch between three live connections in one
