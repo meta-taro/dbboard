@@ -5,16 +5,142 @@
 
 ## 最終更新
 
-- 日付: 2026-06-04 (本セッション末、Phase 3 Neon ADR-0018 PR #11
-  マージ完了、ローカル feature ブランチ削除済)
-- ブランチ: `develop` (= `origin/develop` = `c249bc4`、sync 済)
-- 現在の Phase: **Phase 3 Neon adapter (flavored kind over
-  `dbboard-postgres`) シップ完了。PR #11 マージ済 (`c249bc4`、
-  merge commit `c249bc4`)、ローカル `feature/neon-adapter-kind`
-  ブランチ削除済。次セッションは Phase 3 残り = Supabase アダプタ
-  (REST + sqlx hybrid) 着手、あるいは web 側 Claude が
-  `0003-web-history-schema-mirror` を pickup した場合の
-  cross-repo フォローアップ対応。**
+- 日付: 2026-06-04 (本セッション末、Phase 3 Supabase ADR-0019 実装
+  完了 + close-out commit 済、push 待ち)
+- ブランチ: `feature/supabase-adapter-kind` (= `develop` (`87c4eb6`)
+  から分岐、5 commit、workspace tests 全 green、未 push)
+- 現在の Phase: **Phase 3 Supabase adapter (second flavored kind
+  over `dbboard-postgres`) 実装完了。ADR-0019 起票 → flavor 定数 +
+  constructor → config/admin/store + server/resolver + UI 配線 →
+  docs + live test gate の 4 機能 commit + close-out commit。
+  Phase 3 は本 PR を持って完了 (Neon + Supabase 双方シップで
+  「trait の証明」exit criteria 達成)。次は `git push -u origin
+  feature/supabase-adapter-kind` → PR open against `develop`。**
+
+### Phase 3 Supabase adapter (本セッション / 2026-06-04)
+
+`develop` (= `87c4eb6`) から `feature/supabase-adapter-kind` を切って
+4 機能 commit + 本 close-out commit = 5 commit、workspace tests
+全 green。ユーザ確認済の scope は **「pg-wire flavored kind のみ
+(推奨)」** — ADR-0019 で Neon (ADR-0018) と同じ recipe を Supabase
+に機械的適用、REST hybrid (PostgREST / GoTrue / Storage / Realtime)
+は future ADR 送り。
+
+積んだ commit (古い順):
+
+- `84c1137` `docs: ADR-0019 Supabase as a flavored kind over dbboard-postgres`
+- `2c0b734` `feat(postgres): add FLAVOR_SUPABASE and connect_supabase (ADR-0019)`
+- `618344f` `feat(supabase): wire ConnectionKind::Supabase through config, resolver, and UI (ADR-0019)`
+- `a5090af` `docs: document Supabase flavor and add DBBOARD_SUPABASE_URL live test (ADR-0019)`
+- (本 commit) `chore(status): record Phase 3 Supabase ADR-0019 close-out`
+
+実装の要点:
+
+- **ADR-0019 起票**: `docs/decisions.md` に Accepted で append。
+  ADR-0018 (Neon flavored kind) を「Supabase にも適用」する形で
+  refine。rejected alternatives は (1) REST hybrid を最初から
+  混ぜる / (2) `dbboard-supabase` 別クレート / (3) `kind = "postgres"`
+  のラベルに留める / (4) pooler URL 用 sub-flavor を分ける、の 4 件。
+  capability flags (`has_auth` / `has_storage` / `has_realtime`) は
+  default-false のまま、REST 統合時に future ADR で立てる。
+- **`dbboard-postgres` 3 つ目の flavor**: `FLAVOR_SUPABASE = "supabase"`
+  を pub const として追加 (FLAVOR_POSTGRES / FLAVOR_NEON と並ぶ)。
+  新規 `connect_supabase(config)` constructor が内部
+  `connect_with_flavor(config, FLAVOR_SUPABASE)` に委譲。wire / SQL /
+  TLS hardening (Prefer → Require) は完全に同一。既存 unit test
+  `flavor_constants_are_stable_and_distinct` を 3-way distinctness で
+  拡張。
+- **`dbboard-config` 第 3 variant**: `ConnectionKind::Supabase {
+  keyring_url_ref }` を additive v=1 として追加。`ConnectionAdmin`
+  add / update / delete は Neon のミラー、kind 変更 (Postgres ↔
+  Neon ↔ Supabase) は引き続き `KindMismatch` で拒否。
+  `keyring_refs_in` は共有アーム `ConnectionKind::Postgres |
+  ConnectionKind::Neon | ConnectionKind::Supabase` に集約。
+  `store.rs` に Supabase parse / serialize、`admin.rs` に
+  Supabase add / update (set + keep) / delete / cross-kind-rejection
+  の 5 新規テスト。
+- **`dbboard-server` リゾルバ**: `BackendConfig::Supabase { url:
+  String }` variant を追加 (`Debug` で `Supabase(<redacted>)`)、
+  `DBBOARD_SUPABASE_URL` env var を **Neon の下 / PG の上** に配置
+  (alphabetical tiebreaker、両方 pg-wire flavored なので順序は規約)。
+  `entry_to_backend` は `ConnectionKind::Supabase` を
+  `BackendConfig::Supabase` へ、`backend.rs::connect_adapter` は
+  `BackendConfig::Supabase` を `PostgresAdapter::connect_supabase`
+  でディスパッチ (direct `:5432` / pooler `:6543` 両方この経路で
+  受ける — URL 自体が選択)。`label_for` は env path で
+  `"env:supabase"`。新規テスト 6 件: env precedence (Supabase vs
+  PG / Supabase vs Neon)、entry → Supabase backend、label_for
+  env:supabase、Neon > Supabase の tiebreaker、Debug 漏洩防止
+  (Supabase URL の `supa-pw` を含まない)。
+- **`dbboard-ui` Connections フォーム**: `KindSelector::Supabase` /
+  `AddFormState::supabase_url` / `EditKindState::Supabase` を追加、
+  Add フォームの kind dropdown に "Supabase" を追加、Edit フォームは
+  Neon と同じ `replace_url` / `new_url` UI を再利用 (Fluent key
+  `connections-field-pg-url` を共有して 11 locale の同期コストゼロ)。
+  新規 UI テスト 3 (Supabase add 経路 / Supabase edit prefill /
+  replace_url=true 上書き)。`render_edit_form` の Postgres | Neon
+  パターンを Postgres | Neon | Supabase に拡張。
+- **docs**: `connections.md` の Resolution order に
+  `DBBOARD_SUPABASE_URL` を Neon の下に追記、TOML schema 例に
+  `kind = "supabase"` のエントリを追加 (direct/pooler 両 URL OK の
+  注釈付き)、`kind` の説明に Supabase を追加。`compatibility.md`
+  の Postgres-wire テーブルで Supabase 行を Tier 1 に昇格
+  (Postgres 17/16/15、`DBBOARD_SUPABASE_URL` gated、TLS required、
+  direct/pooler 両エンドポイント covered)、REST 系 (PostgREST /
+  GoTrue / Storage / Realtime) は本 ADR では out of scope と
+  明記。`roadmap.md` Phase 3 を ✅ done (2026-06-04) に、Supabase
+  bullet + adapter-specific quirks documented チェックを追加、exit
+  criteria 達成文 (Neon + Supabase + 汎用 Postgres を 1 セッションで
+  切り替え可能) に更新。`crates/dbboard-postgres/README.md` の
+  flavor table に Supabase 行 (direct/pooler URL 注記)、TLS hardening
+  note を `connect_supabase` に拡張、live test 例コマンドに
+  Supabase バリエーション追加、ADR-0019 リンク追加。
+- **live test gate**: `tests/pg_roundtrip.rs` に
+  `supabase_round_trip_reports_supabase_flavor` を追加、
+  `DBBOARD_SUPABASE_URL` set 時のみ実行 (未 set なら skip)。
+  `adapter.id() == "supabase"` を end-to-end でアサート。既存の
+  `DBBOARD_PG_URL` / `DBBOARD_NEON_URL` gated test は不変なので、
+  1 マシンで 3 エンドポイントに向けて並行実行可能。
+
+検証状況 (本セッション末、close-out commit 直前):
+
+- `cargo fmt --all -- --check`: pass
+- `cargo clippy --all-targets --all-features -- -D warnings`: pass
+- `cargo test --all-features`: **全クレート green** (dbboard-config
+  49 + 4 + 8 / dbboard-server 35 + 10 / dbboard-postgres 10 + 6
+  (pg_roundtrip に Supabase 1 件追加) / dbboard-ui 77 (前回 74 から
+  Supabase UI 3 件追加) / 他はそのまま)
+- pre-commit hook (cargo-husky) は 4 機能 commit すべて
+  fmt/clippy/check/test green でブロック通過。
+
+次のステップ (人間担当):
+
+1. `git push -u origin feature/supabase-adapter-kind`
+2. GitHub で PR open: base = `develop`, head =
+   `feature/supabase-adapter-kind`, title 例
+   `feat: Supabase as flavored kind over dbboard-postgres (ADR-0019)`。
+   本文は 5 commit と ADR-0019 をリンク、scope 確定経緯
+   (AskUserQuestion で「pg-wire flavored kind のみ」採択、REST
+   hybrid は future ADR) も書く。
+3. merge 後にローカルの feature ブランチを `git branch -d`、`develop`
+   を fast-forward sync、次のセッション開始時に本ファイルを更新。
+4. **Phase 3 はこの PR を持って完了**: Neon (ADR-0018) + Supabase
+   (ADR-0019) 双方シップ、roadmap.md の Phase 3 が ✅ done。
+   次セッションでは Phase 4 (AI integration, optional layer) 着手か、
+   web 側 Claude が `0003-web-history-schema-mirror` を pickup した
+   場合の cross-repo フォローアップ対応に分岐。
+
+web 側への影響:
+
+- **HTTP contract: 変更なし**。`/capabilities` レスポンス shape も
+  error category も触れていない (Supabase capability flags はすべて
+  default-false のまま) ので web 側 mirror は不要。
+- **history per-record JSON schema: 変更なし**。ADR-0017 の `conn`
+  field は接続 id (例 `"supabase-prod"`) なのでアダプタ id とは
+  独立、既存テストにも影響なし。
+- 次セッションで `dbboard-web-state.md` memory を更新する際に
+  「ADR-0019 は web 側 mirror 不要」を ADR-0013 / 0015 / 0016 /
+  0018 と同じカテゴリに追記する。
 
 ### Phase 3 Neon adapter (本セッション / 2026-06-04)
 
