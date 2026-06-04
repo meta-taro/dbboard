@@ -11,7 +11,9 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use dbboard_server::{build_router, connect, serve, AppState, BackendConfig};
+use dbboard_server::{
+    build_adapter, build_router, connect, serve, swap_backend, AppState, BackendConfig,
+};
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
@@ -182,6 +184,34 @@ async fn non_json_content_type_is_unsupported_media_type() {
         .expect("build request");
     let (status, _) = request(&state, req).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+/// ADR-0020 swap point: after `swap_backend` runs, the *next* request
+/// must hit the new adapter. Two distinct in-memory libSQL databases —
+/// each its own empty schema — make the swap observable: a table
+/// created against adapter A must not be visible through adapter B.
+#[tokio::test]
+async fn swap_backend_routes_next_request_to_new_adapter() {
+    let state = memory_state().await;
+
+    // Create a table against the original adapter.
+    let (status, _) = request(&state, post_query("CREATE TABLE in_original (n INTEGER)")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Build a *fresh* in-memory Turso adapter — independent connection,
+    // therefore independent (empty) schema.
+    let fresh_adapter = build_adapter(BackendConfig::turso(":memory:"))
+        .await
+        .expect("build fresh adapter");
+
+    // Swap the running state to point at the fresh adapter.
+    swap_backend(&state, fresh_adapter);
+
+    // The next /tables request must see the fresh adapter's empty
+    // schema, not the original adapter's `in_original` table.
+    let (status, body) = request(&state, get("/tables")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "tables": [] }));
 }
 
 #[tokio::test]
