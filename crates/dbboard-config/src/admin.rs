@@ -68,6 +68,9 @@ pub enum ConnectionKindDraft {
     Supabase {
         url: String,
     },
+    AuroraDsql {
+        url: String,
+    },
 }
 
 /// User-supplied draft for **editing** an existing connection.
@@ -105,6 +108,9 @@ pub enum ConnectionKindEditDraft {
         url: SecretField,
     },
     Supabase {
+        url: SecretField,
+    },
+    AuroraDsql {
         url: SecretField,
     },
 }
@@ -387,6 +393,17 @@ impl ConnectionAdmin {
                     keyring_url_ref: keyring_url_ref.clone(),
                 }
             }
+            (
+                ConnectionKind::AuroraDsql { keyring_url_ref },
+                ConnectionKindEditDraft::AuroraDsql { url },
+            ) => {
+                if let SecretField::Set(new_value) = url {
+                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
+                }
+                ConnectionKind::AuroraDsql {
+                    keyring_url_ref: keyring_url_ref.clone(),
+                }
+            }
             (_, _) => {
                 return Err(ConfigError::KindMismatch { id: id.to_string() });
             }
@@ -434,7 +451,8 @@ fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
         } => vec![keyring_token_ref.clone()],
         ConnectionKind::Postgres { keyring_url_ref }
         | ConnectionKind::Neon { keyring_url_ref }
-        | ConnectionKind::Supabase { keyring_url_ref } => {
+        | ConnectionKind::Supabase { keyring_url_ref }
+        | ConnectionKind::AuroraDsql { keyring_url_ref } => {
             vec![keyring_url_ref.clone()]
         }
     }
@@ -512,6 +530,17 @@ fn build_kind_for_add(
             }];
             (kind, writes)
         }
+        ConnectionKindDraft::AuroraDsql { url } => {
+            let url_ref = keyring_ref(id, "url");
+            let kind = ConnectionKind::AuroraDsql {
+                keyring_url_ref: url_ref.clone(),
+            };
+            let writes = vec![PendingSecretWrite {
+                key_ref: url_ref,
+                value: url,
+            }];
+            (kind, writes)
+        }
     }
 }
 
@@ -578,6 +607,16 @@ mod tests {
             id: id.to_string(),
             name: format!("Supabase {id}"),
             kind: ConnectionKindDraft::Supabase {
+                url: url.to_string(),
+            },
+        }
+    }
+
+    fn aurora_dsql_draft(id: &str, url: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            id: id.to_string(),
+            name: format!("Aurora DSQL {id}"),
+            kind: ConnectionKindDraft::AuroraDsql {
                 url: url.to_string(),
             },
         }
@@ -685,6 +724,139 @@ mod tests {
             secrets.get("dbboard.supabase-prod.url").expect("url"),
             "postgres://postgres:pw@db.example.supabase.co:5432/postgres?sslmode=require"
         );
+    }
+
+    #[test]
+    fn add_aurora_dsql_routes_url_through_secret_store_and_records_keyring_ref() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(aurora_dsql_draft(
+                "dsql-prod",
+                "postgres://admin:iam-token@example.dsql.us-east-1.on.aws:5432/postgres?sslmode=require",
+            ))
+            .expect("add aurora-dsql");
+        let entry = &admin.entries()[0];
+        match &entry.kind {
+            ConnectionKind::AuroraDsql { keyring_url_ref } => {
+                assert_eq!(keyring_url_ref, "dbboard.dsql-prod.url");
+            }
+            other => panic!("expected AuroraDsql, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.dsql-prod.url").expect("url"),
+            "postgres://admin:iam-token@example.dsql.us-east-1.on.aws:5432/postgres?sslmode=require"
+        );
+    }
+
+    #[test]
+    fn update_aurora_dsql_with_secret_set_overwrites_the_keyring_entry() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(aurora_dsql_draft(
+                "dsql",
+                "postgres://admin:old-token@example.dsql.us-east-1.on.aws/postgres",
+            ))
+            .expect("add");
+
+        // IAM tokens expire ~15 min after issue (ADR-0021); rotating the
+        // URL is the expected hot path for this kind.
+        admin
+            .update(
+                "dsql",
+                ConnectionEditDraft {
+                    name: "Aurora DSQL dsql".to_string(),
+                    kind: ConnectionKindEditDraft::AuroraDsql {
+                        url: SecretField::Set(
+                            "postgres://admin:new-token@example.dsql.us-east-1.on.aws/postgres"
+                                .to_string(),
+                        ),
+                    },
+                },
+            )
+            .expect("update with set");
+
+        assert_eq!(
+            secrets.get("dbboard.dsql.url").expect("url"),
+            "postgres://admin:new-token@example.dsql.us-east-1.on.aws/postgres"
+        );
+    }
+
+    #[test]
+    fn update_aurora_dsql_with_secret_keep_does_not_touch_the_keyring() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(aurora_dsql_draft(
+                "dsql",
+                "postgres://admin:tok@example.dsql.us-east-1.on.aws/postgres",
+            ))
+            .expect("add");
+
+        admin
+            .update(
+                "dsql",
+                ConnectionEditDraft {
+                    name: "Renamed Aurora DSQL".to_string(),
+                    kind: ConnectionKindEditDraft::AuroraDsql {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update with keep");
+
+        assert_eq!(
+            secrets.get("dbboard.dsql.url").expect("url"),
+            "postgres://admin:tok@example.dsql.us-east-1.on.aws/postgres"
+        );
+        assert_eq!(admin.entries()[0].name, "Renamed Aurora DSQL");
+    }
+
+    #[test]
+    fn update_postgres_to_aurora_dsql_kind_is_rejected() {
+        // Kind changes stay forbidden (ADR-0016 rule, carried by 0018,
+        // 0019, and now 0021). Switching Postgres → Aurora DSQL requires
+        // delete + re-add even though the keyring shape is identical.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(pg_draft("pg", "postgres://example/db"))
+            .expect("add");
+        let err = admin
+            .update(
+                "pg",
+                ConnectionEditDraft {
+                    name: "pg".to_string(),
+                    kind: ConnectionKindEditDraft::AuroraDsql {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect_err("kind change must be rejected");
+        match &err {
+            ConfigError::KindMismatch { id } => assert_eq!(id, "pg"),
+            other => panic!("expected KindMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_aurora_dsql_removes_entry_and_purges_keyring() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(aurora_dsql_draft(
+                "dsql",
+                "postgres://admin:tok@example.dsql.us-east-1.on.aws/postgres",
+            ))
+            .expect("add");
+        assert_eq!(
+            secrets.get("dbboard.dsql.url").expect("seeded"),
+            "postgres://admin:tok@example.dsql.us-east-1.on.aws/postgres"
+        );
+
+        admin.delete("dsql").expect("delete");
+
+        assert!(admin.entries().is_empty());
+        assert!(matches!(
+            secrets.get("dbboard.dsql.url"),
+            Err(SecretError::NotFound(_))
+        ));
     }
 
     #[test]

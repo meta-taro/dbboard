@@ -24,6 +24,7 @@ const D1_BASE_URL_ENV: &str = "DBBOARD_D1_BASE_URL";
 const PG_URL_ENV: &str = "DBBOARD_PG_URL";
 const NEON_URL_ENV: &str = "DBBOARD_NEON_URL";
 const SUPABASE_URL_ENV: &str = "DBBOARD_SUPABASE_URL";
+const AURORA_DSQL_URL_ENV: &str = "DBBOARD_AURORA_DSQL_URL";
 
 const CONNECTION_SELECTOR_ENV: &str = "DBBOARD_CONNECTION";
 
@@ -57,6 +58,15 @@ pub enum BackendConfig {
     Supabase {
         url: String,
     },
+    /// Postgres-wire connection labelled as AWS Aurora DSQL (ADR-0021).
+    /// Wire shape is identical to [`BackendConfig::Postgres`]; the
+    /// distinction is the flavor the adapter exposes through `id()`. The
+    /// URL is expected to embed a short-lived IAM authentication token
+    /// (~15 min TTL) in its password field; automatic refresh via the
+    /// AWS SDK is out of scope for v=1 and will land via a future ADR.
+    AuroraDsql {
+        url: String,
+    },
 }
 
 impl BackendConfig {
@@ -79,22 +89,25 @@ impl fmt::Debug for BackendConfig {
             Self::Postgres { .. } => f.write_str("Postgres(<redacted>)"),
             Self::Neon { .. } => f.write_str("Neon(<redacted>)"),
             Self::Supabase { .. } => f.write_str("Supabase(<redacted>)"),
+            Self::AuroraDsql { .. } => f.write_str("AuroraDsql(<redacted>)"),
         }
     }
 }
 
 /// Resolve the backend from the environment, in priority order:
 ///
-/// 1. `DBBOARD_NEON_URL` — a Neon Postgres-wire database. Wins over
-///    [`SUPABASE_URL_ENV`] / [`PG_URL_ENV`] because Neon is the more
-///    specific labelling (ADR-0018).
-/// 2. `DBBOARD_SUPABASE_URL` — a Supabase Postgres-wire database
-///    (ADR-0019). Ranks below Neon (alphabetical tiebreaker between the
-///    two specific labels) and above generic `DBBOARD_PG_URL`.
-/// 3. `DBBOARD_PG_URL` — a PostgreSQL-wire database (`CockroachDB`,
+/// 1. `DBBOARD_AURORA_DSQL_URL` — an AWS Aurora DSQL Postgres-wire
+///    database (ADR-0021). Ranks first by alphabetical tiebreaker
+///    between the three specific pg-wire labels (aurora-dsql < neon <
+///    supabase).
+/// 2. `DBBOARD_NEON_URL` — a Neon Postgres-wire database (ADR-0018).
+///    Ranks above Supabase and the generic `DBBOARD_PG_URL`.
+/// 3. `DBBOARD_SUPABASE_URL` — a Supabase Postgres-wire database
+///    (ADR-0019). Ranks below Neon and above generic `DBBOARD_PG_URL`.
+/// 4. `DBBOARD_PG_URL` — a PostgreSQL-wire database (`CockroachDB`,
 ///    self-hosted Postgres).
-/// 4. The `DBBOARD_D1_*` trio — Cloudflare D1 over REST.
-/// 5. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
+/// 5. The `DBBOARD_D1_*` trio — Cloudflare D1 over REST.
+/// 6. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
 ///    `":memory:"`), so a fresh checkout runs without configuration.
 ///
 /// This entry point does not consult `connections.toml`; for the
@@ -109,17 +122,19 @@ pub fn backend_config_from_env() -> BackendConfig {
 /// Resolve the backend from the environment first, then fall back to
 /// `connections.toml` resolved through `store`. Priority order:
 ///
-/// 1. `DBBOARD_NEON_URL` — wins outright (Neon-flavored Postgres,
-///    ADR-0018; more specific than `DBBOARD_PG_URL` so it ranks above).
-/// 2. `DBBOARD_SUPABASE_URL` — wins outright (Supabase-flavored
-///    Postgres, ADR-0019; ranks below Neon by alphabetical tiebreaker
-///    and above generic `DBBOARD_PG_URL`).
-/// 3. `DBBOARD_PG_URL` — wins outright.
-/// 4. The `DBBOARD_D1_*` trio — wins outright.
-/// 5. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
-/// 6. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
-/// 7. If `file` has exactly one entry — auto-select it.
-/// 8. Otherwise Turso `:memory:` (the unchanged default).
+/// 1. `DBBOARD_AURORA_DSQL_URL` — wins outright (Aurora DSQL-flavored
+///    Postgres, ADR-0021; first by alphabetical tiebreaker between the
+///    three pg-wire specific labels).
+/// 2. `DBBOARD_NEON_URL` — wins outright (Neon-flavored Postgres,
+///    ADR-0018; ranks above Supabase and generic `DBBOARD_PG_URL`).
+/// 3. `DBBOARD_SUPABASE_URL` — wins outright (Supabase-flavored
+///    Postgres, ADR-0019; ranks above generic `DBBOARD_PG_URL`).
+/// 4. `DBBOARD_PG_URL` — wins outright.
+/// 5. The `DBBOARD_D1_*` trio — wins outright.
+/// 6. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
+/// 7. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
+/// 8. If `file` has exactly one entry — auto-select it.
+/// 9. Otherwise Turso `:memory:` (the unchanged default).
 ///
 /// Secret-bearing entries (D1, Postgres) resolve their credentials
 /// through `secrets`, propagating [`ConfigError::Secret`] on miss so
@@ -147,6 +162,7 @@ pub fn backend_config_from_env_and_store(
 /// without touching the process environment.
 #[derive(Debug, Default, Clone)]
 struct EnvSnapshot {
+    aurora_dsql_url: Option<String>,
     neon_url: Option<String>,
     supabase_url: Option<String>,
     pg_url: Option<String>,
@@ -161,6 +177,7 @@ struct EnvSnapshot {
 impl EnvSnapshot {
     fn from_process() -> Self {
         Self {
+            aurora_dsql_url: non_empty(std::env::var(AURORA_DSQL_URL_ENV).ok()),
             neon_url: non_empty(std::env::var(NEON_URL_ENV).ok()),
             supabase_url: non_empty(std::env::var(SUPABASE_URL_ENV).ok()),
             pg_url: non_empty(std::env::var(PG_URL_ENV).ok()),
@@ -179,6 +196,9 @@ fn non_empty(s: Option<String>) -> Option<String> {
 }
 
 fn resolve_from_env_only(env: &EnvSnapshot) -> BackendConfig {
+    if let Some(url) = env.aurora_dsql_url.clone() {
+        return BackendConfig::AuroraDsql { url };
+    }
     if let Some(url) = env.neon_url.clone() {
         return BackendConfig::Neon { url };
     }
@@ -213,10 +233,13 @@ fn resolve_backend(
     file: &ConnectionFile,
     secrets: &dyn SecretStore,
 ) -> Result<BackendConfig, ConfigError> {
-    // Rule 1-5: env-only wins. Neon URL (more specific), then Supabase
-    // URL (also specific, ranks below Neon by alphabetical tiebreaker),
-    // then generic Postgres URL, then the D1 trio, then an explicit
-    // TURSO_PATH all short-circuit the file-backed store.
+    // Rule 1-6: env-only wins. Aurora DSQL URL (alphabetically first
+    // among the specific pg-wire labels), then Neon URL, then Supabase
+    // URL, then generic Postgres URL, then the D1 trio, then an
+    // explicit TURSO_PATH all short-circuit the file-backed store.
+    if env.aurora_dsql_url.is_some() {
+        return Ok(resolve_from_env_only(env));
+    }
     if env.neon_url.is_some() {
         return Ok(resolve_from_env_only(env));
     }
@@ -284,6 +307,9 @@ pub fn resolved_connection_label(file: &ConnectionFile) -> String {
 }
 
 fn label_for(env: &EnvSnapshot, file: &ConnectionFile) -> String {
+    if env.aurora_dsql_url.is_some() {
+        return "env:aurora-dsql".to_string();
+    }
     if env.neon_url.is_some() {
         return "env:neon".to_string();
     }
@@ -347,6 +373,10 @@ fn entry_to_backend(
         ConnectionKind::Supabase { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
             Ok(BackendConfig::Supabase { url })
+        }
+        ConnectionKind::AuroraDsql { keyring_url_ref } => {
+            let url = secrets.get(keyring_url_ref)?;
+            Ok(BackendConfig::AuroraDsql { url })
         }
     }
 }
@@ -419,6 +449,16 @@ mod tests {
             id: id.to_string(),
             name: format!("supabase {id}"),
             kind: ConnectionKind::Supabase {
+                keyring_url_ref: url_ref.to_string(),
+            },
+        }
+    }
+
+    fn aurora_dsql_entry(id: &str, url_ref: &str) -> ConnectionEntry {
+        ConnectionEntry {
+            id: id.to_string(),
+            name: format!("aurora-dsql {id}"),
+            kind: ConnectionKind::AuroraDsql {
                 keyring_url_ref: url_ref.to_string(),
             },
         }
@@ -623,6 +663,53 @@ mod tests {
     }
 
     #[test]
+    fn aurora_dsql_env_var_wins_over_pg_env_var_and_the_file_store() {
+        // ADR-0021: DBBOARD_AURORA_DSQL_URL ranks above DBBOARD_PG_URL
+        // because it is the more specific labelling, and first among the
+        // three pg-wire specific labels by alphabetical tiebreaker.
+        let mut env = empty_env();
+        env.aurora_dsql_url = Some("postgres://from-aurora-dsql-env".to_string());
+        env.pg_url = Some("postgres://from-pg-env".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::AuroraDsql { url } if url == "postgres://from-aurora-dsql-env"),
+            "AURORA_DSQL_URL must short-circuit the store and outrank PG_URL"
+        );
+    }
+
+    #[test]
+    fn aurora_dsql_env_outranks_neon_and_supabase_envs() {
+        // All three set → Aurora DSQL wins (alphabetical tiebreak among
+        // aurora-dsql < neon < supabase, codified by ADR-0021).
+        let mut env = empty_env();
+        env.aurora_dsql_url = Some("postgres://from-aurora-dsql".to_string());
+        env.neon_url = Some("postgres://from-neon".to_string());
+        env.supabase_url = Some("postgres://from-supabase".to_string());
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &empty_file(), &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::AuroraDsql { url } if url == "postgres://from-aurora-dsql"),
+            "AURORA_DSQL_URL must outrank NEON_URL and SUPABASE_URL"
+        );
+    }
+
+    #[test]
+    fn aurora_dsql_entry_resolves_url_through_the_secret_store() {
+        let file = file_with(vec![aurora_dsql_entry("dsql", "dbboard.dsql.url")]);
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set("dbboard.dsql.url", "postgres://from-store-as-aurora-dsql")
+            .expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::AuroraDsql { url } if url == "postgres://from-store-as-aurora-dsql"),
+            "Aurora DSQL URL must be loaded from the secret store under the AuroraDsql variant"
+        );
+    }
+
+    #[test]
     fn supabase_entry_resolves_url_through_the_secret_store() {
         let file = file_with(vec![supabase_entry("supabase", "dbboard.supabase.url")]);
         let secrets = InMemorySecretStore::new();
@@ -662,6 +749,27 @@ mod tests {
             matches!(cfg, BackendConfig::Postgres { url } if url == "postgres://from-store"),
             "Postgres URL must be loaded from the secret store"
         );
+    }
+
+    #[test]
+    fn resolved_label_aurora_dsql_env_wins() {
+        let mut env = empty_env();
+        env.aurora_dsql_url = Some("postgres://aurora".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        assert_eq!(label_for(&env, &file), "env:aurora-dsql");
+    }
+
+    #[test]
+    fn resolved_label_aurora_dsql_env_outranks_neon_supabase_and_pg_env() {
+        // ADR-0021: aurora-dsql < neon < supabase alphabetically, so the
+        // tiebreaker between the three specific pg-wire labels makes
+        // Aurora DSQL win when more than one is set.
+        let mut env = empty_env();
+        env.aurora_dsql_url = Some("postgres://aurora".to_string());
+        env.neon_url = Some("postgres://neon".to_string());
+        env.supabase_url = Some("postgres://supabase".to_string());
+        env.pg_url = Some("postgres://generic".to_string());
+        assert_eq!(label_for(&env, &empty_file()), "env:aurora-dsql");
     }
 
     #[test]
@@ -804,6 +912,15 @@ mod tests {
         assert!(
             !rendered_supabase.contains("supa-pw"),
             "{rendered_supabase}"
+        );
+
+        let aurora_dsql = BackendConfig::AuroraDsql {
+            url: "postgres://admin:dsql-iam-pw@example.dsql.us-east-1.on.aws/postgres".to_string(),
+        };
+        let rendered_aurora_dsql = format!("{aurora_dsql:?}");
+        assert!(
+            !rendered_aurora_dsql.contains("dsql-iam-pw"),
+            "{rendered_aurora_dsql}"
         );
     }
 }
