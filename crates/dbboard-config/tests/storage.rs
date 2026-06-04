@@ -5,7 +5,7 @@
 //! against a `tempfile::TempDir` so each test gets a clean filesystem
 //! root that is dropped automatically.
 
-use dbboard_config::store::{default_path, load_or_empty, save_atomic};
+use dbboard_config::store::{default_history_path, default_path, load_or_empty, save_atomic};
 use dbboard_config::{ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind};
 
 #[test]
@@ -141,6 +141,25 @@ fn default_path_resolves_to_a_connections_toml_filename() {
     assert!(
         as_str.contains("dbboard"),
         "default path should live under a dbboard-named directory: {path:?}"
+    );
+}
+
+#[test]
+fn default_history_path_resolves_to_history_jsonl_next_to_connections_toml() {
+    // ADR-0017: history.jsonl lives in the same config dir as
+    // connections.toml so a single OS lookup owns both. We assert (a)
+    // the filename is the expected one and (b) the parent directory
+    // matches default_path()'s parent — i.e. both files share a parent.
+    let history = default_history_path().expect("default_history_path");
+    assert_eq!(
+        history.file_name().and_then(|s| s.to_str()),
+        Some("history.jsonl")
+    );
+    let connections = default_path().expect("default_path");
+    assert_eq!(
+        history.parent(),
+        connections.parent(),
+        "history.jsonl must live in the same parent dir as connections.toml: history={history:?} connections={connections:?}"
     );
 }
 
