@@ -64,6 +64,7 @@ pub enum KindSelector {
     D1,
     Postgres,
     Neon,
+    Supabase,
 }
 
 /// Backing buffers for the Add form. Every kind's fields are kept side
@@ -81,6 +82,7 @@ pub struct AddFormState {
     pub d1_token: String,
     pub pg_url: String,
     pub neon_url: String,
+    pub supabase_url: String,
 }
 
 /// Backing buffers for the Edit form. The id is held outside this
@@ -114,6 +116,10 @@ pub enum EditKindState {
         new_url: String,
     },
     Neon {
+        replace_url: bool,
+        new_url: String,
+    },
+    Supabase {
         replace_url: bool,
         new_url: String,
     },
@@ -398,6 +404,9 @@ impl AddFormState {
             KindSelector::Neon => ConnectionKindDraft::Neon {
                 url: self.neon_url.clone(),
             },
+            KindSelector::Supabase => ConnectionKindDraft::Supabase {
+                url: self.supabase_url.clone(),
+            },
         };
         ConnectionDraft {
             id: self.id.clone(),
@@ -433,6 +442,10 @@ impl EditFormState {
                 new_url: String::new(),
             },
             ConnectionKind::Neon { keyring_url_ref: _ } => EditKindState::Neon {
+                replace_url: false,
+                new_url: String::new(),
+            },
+            ConnectionKind::Supabase { keyring_url_ref: _ } => EditKindState::Supabase {
                 replace_url: false,
                 new_url: String::new(),
             },
@@ -484,6 +497,16 @@ impl EditFormState {
                     SecretField::Keep
                 },
             },
+            EditKindState::Supabase {
+                replace_url,
+                new_url,
+            } => ConnectionKindEditDraft::Supabase {
+                url: if *replace_url {
+                    SecretField::Set(new_url.clone())
+                } else {
+                    SecretField::Keep
+                },
+            },
         };
         ConnectionEditDraft {
             name: self.name.clone(),
@@ -507,6 +530,7 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::D1 { .. } => "Cloudflare D1",
         ConnectionKind::Postgres { .. } => "Postgres",
         ConnectionKind::Neon { .. } => "Neon",
+        ConnectionKind::Supabase { .. } => "Supabase",
     }
 }
 
@@ -544,6 +568,7 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) -> bool {
                     ui.selectable_value(&mut form.kind, KindSelector::D1, "Cloudflare D1");
                     ui.selectable_value(&mut form.kind, KindSelector::Postgres, "Postgres");
                     ui.selectable_value(&mut form.kind, KindSelector::Neon, "Neon");
+                    ui.selectable_value(&mut form.kind, KindSelector::Supabase, "Supabase");
                 });
             ui.end_row();
         });
@@ -573,6 +598,13 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) -> bool {
             // without a new tier-1 key for an identical concept.
             ui.label(t!("connections-field-pg-url"));
             ui.add(egui::TextEdit::singleline(&mut form.neon_url).password(true));
+        }
+        KindSelector::Supabase => {
+            // Supabase is also pg-wire — same reasoning as Neon: reuse
+            // the existing field key rather than fan out a synonym
+            // across all 11 locales (ADR-0019).
+            ui.label(t!("connections-field-pg-url"));
+            ui.add(egui::TextEdit::singleline(&mut form.supabase_url).password(true));
         }
     }
     false
@@ -624,6 +656,10 @@ fn render_edit_form(ui: &mut egui::Ui, id: &str, form: &mut EditFormState) {
         | EditKindState::Neon {
             replace_url,
             new_url,
+        }
+        | EditKindState::Supabase {
+            replace_url,
+            new_url,
         } => {
             ui.checkbox(replace_url, t!("connections-replace-url"));
             ui.add_enabled(
@@ -640,6 +676,7 @@ fn kind_selector_label(kind: KindSelector) -> &'static str {
         KindSelector::D1 => "Cloudflare D1",
         KindSelector::Postgres => "Postgres",
         KindSelector::Neon => "Neon",
+        KindSelector::Supabase => "Supabase",
     }
 }
 
@@ -916,6 +953,92 @@ mod tests {
         assert_eq!(
             secrets.get("dbboard.n.url").expect("url"),
             "postgres://neon.example/new"
+        );
+    }
+
+    #[test]
+    fn submit_add_supabase_routes_the_url_through_the_secret_store_and_records_supabase_kind() {
+        let (_dir, secrets, mut admin) = build_admin();
+        let mut view = ConnectionsView::new();
+        view.start_add();
+        if let Mode::Add(form) = &mut view.mode {
+            form.id = "prod-supa".into();
+            form.name = "Prod Supabase".into();
+            form.kind = KindSelector::Supabase;
+            form.supabase_url = "postgres://supabase.example/db?sslmode=require".into();
+        }
+        view.submit_add(&mut admin).expect("submit_add");
+
+        match &admin.entries()[0].kind {
+            ConnectionKind::Supabase { keyring_url_ref } => {
+                assert_eq!(keyring_url_ref, "dbboard.prod-supa.url");
+            }
+            other => panic!("expected Supabase, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.prod-supa.url").expect("url"),
+            "postgres://supabase.example/db?sslmode=require"
+        );
+    }
+
+    #[test]
+    fn start_edit_on_supabase_entry_prefills_without_secret() {
+        let mut view = ConnectionsView::new();
+        let entry = ConnectionEntry {
+            id: "s".into(),
+            name: "S".into(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "dbboard.s.url".into(),
+            },
+        };
+        view.start_edit(&entry);
+        match view.mode() {
+            Mode::Edit { id, form } => {
+                assert_eq!(id, "s");
+                match &form.kind {
+                    EditKindState::Supabase {
+                        replace_url,
+                        new_url,
+                    } => {
+                        assert!(!*replace_url);
+                        assert!(new_url.is_empty());
+                    }
+                    other => panic!("expected Supabase edit state, got {other:?}"),
+                }
+            }
+            other => panic!("expected Edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_edit_on_supabase_with_replace_url_true_overwrites_the_secret() {
+        let (_dir, secrets, mut admin) = build_admin();
+        admin
+            .add(ConnectionDraft {
+                id: "s".into(),
+                name: "S".into(),
+                kind: ConnectionKindDraft::Supabase {
+                    url: "postgres://supabase.example/old".into(),
+                },
+            })
+            .expect("seed");
+
+        let mut view = ConnectionsView::new();
+        view.start_edit(&admin.entries()[0].clone());
+        if let Mode::Edit { form, .. } = &mut view.mode {
+            if let EditKindState::Supabase {
+                replace_url,
+                new_url,
+            } = &mut form.kind
+            {
+                *replace_url = true;
+                *new_url = "postgres://supabase.example/new".into();
+            }
+        }
+        view.submit_edit(&mut admin).expect("submit_edit");
+        assert_eq!(
+            secrets.get("dbboard.s.url").expect("url"),
+            "postgres://supabase.example/new"
         );
     }
 
