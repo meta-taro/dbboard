@@ -70,6 +70,13 @@ pub enum ConnectionKind {
     Postgres {
         keyring_url_ref: String,
     },
+    /// A Neon connection (ADR-0018). Shape is byte-identical to
+    /// [`ConnectionKind::Postgres`]; the discriminator is the only
+    /// distinction so the connection picker and capability output can
+    /// label the connection as Neon rather than generic Postgres.
+    Neon {
+        keyring_url_ref: String,
+    },
 }
 
 impl ConnectionFile {
@@ -322,6 +329,26 @@ keyring_token_ref = "dbboard.prod-d1.token"
     }
 
     #[test]
+    fn parses_a_neon_entry() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id              = "neon-prod"
+name            = "Neon (prod)"
+kind            = "neon"
+keyring_url_ref = "dbboard.neon-prod.url"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("neon entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::Neon {
+                keyring_url_ref: "dbboard.neon-prod.url".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn parses_a_postgres_entry() {
         let toml_src = r#"
 version = 1
@@ -437,6 +464,13 @@ path = ":memory:"
                     name: "Neon".to_string(),
                     kind: ConnectionKind::Postgres {
                         keyring_url_ref: "dbboard.neon.url".to_string(),
+                    },
+                },
+                ConnectionEntry {
+                    id: "neon-managed".to_string(),
+                    name: "Neon (managed)".to_string(),
+                    kind: ConnectionKind::Neon {
+                        keyring_url_ref: "dbboard.neon-managed.url".to_string(),
                     },
                 },
             ],

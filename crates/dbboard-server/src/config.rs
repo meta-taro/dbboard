@@ -22,6 +22,7 @@ const D1_TOKEN_ENV: &str = "DBBOARD_D1_TOKEN";
 const D1_BASE_URL_ENV: &str = "DBBOARD_D1_BASE_URL";
 
 const PG_URL_ENV: &str = "DBBOARD_PG_URL";
+const NEON_URL_ENV: &str = "DBBOARD_NEON_URL";
 
 const CONNECTION_SELECTOR_ENV: &str = "DBBOARD_CONNECTION";
 
@@ -29,9 +30,21 @@ const CONNECTION_SELECTOR_ENV: &str = "DBBOARD_CONNECTION";
 /// handed to [`crate::serve`], which does the actual connecting inside
 /// its tokio runtime.
 pub enum BackendConfig {
-    Turso { path: String },
+    Turso {
+        path: String,
+    },
     D1(D1Config),
-    Postgres { url: String },
+    Postgres {
+        url: String,
+    },
+    /// Postgres-wire connection labelled as Neon (ADR-0018). Wire shape
+    /// is identical to [`BackendConfig::Postgres`]; the distinction is
+    /// the flavor the adapter exposes through `id()`, so the connection
+    /// picker and history records can name "neon" instead of generic
+    /// "postgres".
+    Neon {
+        url: String,
+    },
 }
 
 impl BackendConfig {
@@ -52,15 +65,20 @@ impl fmt::Debug for BackendConfig {
             Self::Turso { path } => f.debug_struct("Turso").field("path", path).finish(),
             Self::D1(_) => f.write_str("D1(<redacted>)"),
             Self::Postgres { .. } => f.write_str("Postgres(<redacted>)"),
+            Self::Neon { .. } => f.write_str("Neon(<redacted>)"),
         }
     }
 }
 
 /// Resolve the backend from the environment, in priority order:
 ///
-/// 1. `DBBOARD_PG_URL` — a PostgreSQL-wire database (`CockroachDB`, Neon).
-/// 2. The `DBBOARD_D1_*` trio — Cloudflare D1 over REST.
-/// 3. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
+/// 1. `DBBOARD_NEON_URL` — a Neon Postgres-wire database. Wins over the
+///    generic `DBBOARD_PG_URL` because Neon is the more specific
+///    labelling (ADR-0018).
+/// 2. `DBBOARD_PG_URL` — a PostgreSQL-wire database (`CockroachDB`,
+///    self-hosted Postgres).
+/// 3. The `DBBOARD_D1_*` trio — Cloudflare D1 over REST.
+/// 4. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
 ///    `":memory:"`), so a fresh checkout runs without configuration.
 ///
 /// This entry point does not consult `connections.toml`; for the
@@ -75,12 +93,14 @@ pub fn backend_config_from_env() -> BackendConfig {
 /// Resolve the backend from the environment first, then fall back to
 /// `connections.toml` resolved through `store`. Priority order:
 ///
-/// 1. `DBBOARD_PG_URL` — wins outright.
-/// 2. The `DBBOARD_D1_*` trio — wins outright.
-/// 3. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
-/// 4. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
-/// 5. If `file` has exactly one entry — auto-select it.
-/// 6. Otherwise Turso `:memory:` (the unchanged default).
+/// 1. `DBBOARD_NEON_URL` — wins outright (Neon-flavored Postgres,
+///    ADR-0018; more specific than `DBBOARD_PG_URL` so it ranks above).
+/// 2. `DBBOARD_PG_URL` — wins outright.
+/// 3. The `DBBOARD_D1_*` trio — wins outright.
+/// 4. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
+/// 5. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
+/// 6. If `file` has exactly one entry — auto-select it.
+/// 7. Otherwise Turso `:memory:` (the unchanged default).
 ///
 /// Secret-bearing entries (D1, Postgres) resolve their credentials
 /// through `secrets`, propagating [`ConfigError::Secret`] on miss so
@@ -108,6 +128,7 @@ pub fn backend_config_from_env_and_store(
 /// without touching the process environment.
 #[derive(Debug, Default, Clone)]
 struct EnvSnapshot {
+    neon_url: Option<String>,
     pg_url: Option<String>,
     d1_account_id: Option<String>,
     d1_database_id: Option<String>,
@@ -120,6 +141,7 @@ struct EnvSnapshot {
 impl EnvSnapshot {
     fn from_process() -> Self {
         Self {
+            neon_url: non_empty(std::env::var(NEON_URL_ENV).ok()),
             pg_url: non_empty(std::env::var(PG_URL_ENV).ok()),
             d1_account_id: non_empty(std::env::var(D1_ACCOUNT_ID_ENV).ok()),
             d1_database_id: non_empty(std::env::var(D1_DATABASE_ID_ENV).ok()),
@@ -136,6 +158,9 @@ fn non_empty(s: Option<String>) -> Option<String> {
 }
 
 fn resolve_from_env_only(env: &EnvSnapshot) -> BackendConfig {
+    if let Some(url) = env.neon_url.clone() {
+        return BackendConfig::Neon { url };
+    }
     if let Some(url) = env.pg_url.clone() {
         return BackendConfig::Postgres { url };
     }
@@ -164,8 +189,12 @@ fn resolve_backend(
     file: &ConnectionFile,
     secrets: &dyn SecretStore,
 ) -> Result<BackendConfig, ConfigError> {
-    // Rule 1-3: env-only wins. Postgres URL, then the D1 trio, then an
-    // explicit TURSO_PATH all short-circuit the file-backed store.
+    // Rule 1-4: env-only wins. Neon URL (more specific), then plain
+    // Postgres URL, then the D1 trio, then an explicit TURSO_PATH all
+    // short-circuit the file-backed store.
+    if env.neon_url.is_some() {
+        return Ok(resolve_from_env_only(env));
+    }
     if env.pg_url.is_some() {
         return Ok(resolve_from_env_only(env));
     }
@@ -227,6 +256,9 @@ pub fn resolved_connection_label(file: &ConnectionFile) -> String {
 }
 
 fn label_for(env: &EnvSnapshot, file: &ConnectionFile) -> String {
+    if env.neon_url.is_some() {
+        return "env:neon".to_string();
+    }
     if env.pg_url.is_some() {
         return "env:postgres".to_string();
     }
@@ -276,6 +308,10 @@ fn entry_to_backend(
         ConnectionKind::Postgres { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
             Ok(BackendConfig::Postgres { url })
+        }
+        ConnectionKind::Neon { keyring_url_ref } => {
+            let url = secrets.get(keyring_url_ref)?;
+            Ok(BackendConfig::Neon { url })
         }
     }
 }
@@ -328,6 +364,16 @@ mod tests {
             id: id.to_string(),
             name: format!("pg {id}"),
             kind: ConnectionKind::Postgres {
+                keyring_url_ref: url_ref.to_string(),
+            },
+        }
+    }
+
+    fn neon_entry(id: &str, url_ref: &str) -> ConnectionEntry {
+        ConnectionEntry {
+            id: id.to_string(),
+            name: format!("neon {id}"),
+            kind: ConnectionKind::Neon {
                 keyring_url_ref: url_ref.to_string(),
             },
         }
@@ -482,6 +528,37 @@ mod tests {
     }
 
     #[test]
+    fn neon_env_var_wins_over_pg_env_var_and_the_file_store() {
+        // ADR-0018: DBBOARD_NEON_URL ranks above DBBOARD_PG_URL because
+        // it is the more specific labelling. Both being set is rare but
+        // we still need a defined precedence.
+        let mut env = empty_env();
+        env.neon_url = Some("postgres://from-neon-env".to_string());
+        env.pg_url = Some("postgres://from-pg-env".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Neon { url } if url == "postgres://from-neon-env"),
+            "NEON_URL must short-circuit the store and outrank PG_URL"
+        );
+    }
+
+    #[test]
+    fn neon_entry_resolves_url_through_the_secret_store() {
+        let file = file_with(vec![neon_entry("neon", "dbboard.neon.url")]);
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set("dbboard.neon.url", "postgres://from-store-as-neon")
+            .expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Neon { url } if url == "postgres://from-store-as-neon"),
+            "Neon URL must be loaded from the secret store under the Neon variant"
+        );
+    }
+
+    #[test]
     fn postgres_entry_resolves_url_through_the_secret_store() {
         let file = file_with(vec![pg_entry("neon", "dbboard.neon.url")]);
         let secrets = InMemorySecretStore::new();
@@ -493,6 +570,22 @@ mod tests {
             matches!(cfg, BackendConfig::Postgres { url } if url == "postgres://from-store"),
             "Postgres URL must be loaded from the secret store"
         );
+    }
+
+    #[test]
+    fn resolved_label_neon_env_wins() {
+        let mut env = empty_env();
+        env.neon_url = Some("postgres://neon".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        assert_eq!(label_for(&env, &file), "env:neon");
+    }
+
+    #[test]
+    fn resolved_label_neon_env_outranks_pg_env() {
+        let mut env = empty_env();
+        env.neon_url = Some("postgres://neon".to_string());
+        env.pg_url = Some("postgres://generic".to_string());
+        assert_eq!(label_for(&env, &empty_file()), "env:neon");
     }
 
     #[test]
@@ -580,5 +673,11 @@ mod tests {
         };
         let rendered_pg = format!("{pg:?}");
         assert!(!rendered_pg.contains("pw@host"), "{rendered_pg}");
+
+        let neon = BackendConfig::Neon {
+            url: "postgres://user:neon-pw@neon.example/db".to_string(),
+        };
+        let rendered_neon = format!("{neon:?}");
+        assert!(!rendered_neon.contains("neon-pw"), "{rendered_neon}");
     }
 }

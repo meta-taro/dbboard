@@ -62,6 +62,9 @@ pub enum ConnectionKindDraft {
     Postgres {
         url: String,
     },
+    Neon {
+        url: String,
+    },
 }
 
 /// User-supplied draft for **editing** an existing connection.
@@ -93,6 +96,9 @@ pub enum ConnectionKindEditDraft {
         token: SecretField,
     },
     Postgres {
+        url: SecretField,
+    },
+    Neon {
         url: SecretField,
     },
 }
@@ -356,6 +362,14 @@ impl ConnectionAdmin {
                     keyring_url_ref: keyring_url_ref.clone(),
                 }
             }
+            (ConnectionKind::Neon { keyring_url_ref }, ConnectionKindEditDraft::Neon { url }) => {
+                if let SecretField::Set(new_value) = url {
+                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
+                }
+                ConnectionKind::Neon {
+                    keyring_url_ref: keyring_url_ref.clone(),
+                }
+            }
             (_, _) => {
                 return Err(ConfigError::KindMismatch { id: id.to_string() });
             }
@@ -393,14 +407,17 @@ fn keyring_ref(id: &str, field: &str) -> String {
 }
 
 /// Enumerate every keyring ref that a given [`ConnectionKind`] points
-/// at. `Turso` has none; `D1` and `Postgres` each carry exactly one.
+/// at. `Turso` has none; `D1`, `Postgres`, and `Neon` each carry
+/// exactly one.
 fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
     match kind {
         ConnectionKind::Turso { .. } => Vec::new(),
         ConnectionKind::D1 {
             keyring_token_ref, ..
         } => vec![keyring_token_ref.clone()],
-        ConnectionKind::Postgres { keyring_url_ref } => vec![keyring_url_ref.clone()],
+        ConnectionKind::Postgres { keyring_url_ref } | ConnectionKind::Neon { keyring_url_ref } => {
+            vec![keyring_url_ref.clone()]
+        }
     }
 }
 
@@ -446,6 +463,17 @@ fn build_kind_for_add(
         ConnectionKindDraft::Postgres { url } => {
             let url_ref = keyring_ref(id, "url");
             let kind = ConnectionKind::Postgres {
+                keyring_url_ref: url_ref.clone(),
+            };
+            let writes = vec![PendingSecretWrite {
+                key_ref: url_ref,
+                value: url,
+            }];
+            (kind, writes)
+        }
+        ConnectionKindDraft::Neon { url } => {
+            let url_ref = keyring_ref(id, "url");
+            let kind = ConnectionKind::Neon {
                 keyring_url_ref: url_ref.clone(),
             };
             let writes = vec![PendingSecretWrite {
@@ -500,6 +528,16 @@ mod tests {
             id: id.to_string(),
             name: format!("PG {id}"),
             kind: ConnectionKindDraft::Postgres {
+                url: url.to_string(),
+            },
+        }
+    }
+
+    fn neon_draft(id: &str, url: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            id: id.to_string(),
+            name: format!("Neon {id}"),
+            kind: ConnectionKindDraft::Neon {
                 url: url.to_string(),
             },
         }
@@ -563,6 +601,125 @@ mod tests {
             secrets.get("dbboard.neon.url").expect("url"),
             "postgres://example/db"
         );
+    }
+
+    #[test]
+    fn add_neon_routes_url_through_secret_store_and_records_keyring_ref() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(neon_draft(
+                "prod-neon",
+                "postgres://neon.example/db?sslmode=require",
+            ))
+            .expect("add neon");
+        let entry = &admin.entries()[0];
+        match &entry.kind {
+            ConnectionKind::Neon { keyring_url_ref } => {
+                assert_eq!(keyring_url_ref, "dbboard.prod-neon.url");
+            }
+            other => panic!("expected Neon, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.prod-neon.url").expect("url"),
+            "postgres://neon.example/db?sslmode=require"
+        );
+    }
+
+    #[test]
+    fn update_neon_with_secret_set_overwrites_the_keyring_entry() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(neon_draft("neon", "postgres://neon.example/old"))
+            .expect("add");
+
+        admin
+            .update(
+                "neon",
+                ConnectionEditDraft {
+                    name: "Neon neon".to_string(),
+                    kind: ConnectionKindEditDraft::Neon {
+                        url: SecretField::Set("postgres://neon.example/new".to_string()),
+                    },
+                },
+            )
+            .expect("update with set");
+
+        assert_eq!(
+            secrets.get("dbboard.neon.url").expect("url"),
+            "postgres://neon.example/new"
+        );
+    }
+
+    #[test]
+    fn update_neon_with_secret_keep_does_not_touch_the_keyring() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(neon_draft("neon", "postgres://neon.example/db"))
+            .expect("add");
+
+        admin
+            .update(
+                "neon",
+                ConnectionEditDraft {
+                    name: "Renamed Neon".to_string(),
+                    kind: ConnectionKindEditDraft::Neon {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update with keep");
+
+        assert_eq!(
+            secrets.get("dbboard.neon.url").expect("url"),
+            "postgres://neon.example/db"
+        );
+        assert_eq!(admin.entries()[0].name, "Renamed Neon");
+    }
+
+    #[test]
+    fn update_postgres_to_neon_kind_is_rejected() {
+        // Kind changes are not supported on update (ADR-0018 keeps the
+        // ADR-0016 rule). Switching from Postgres to Neon requires
+        // delete + re-add even though the keyring shape is identical.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(pg_draft("pg", "postgres://example/db"))
+            .expect("add");
+        let err = admin
+            .update(
+                "pg",
+                ConnectionEditDraft {
+                    name: "pg".to_string(),
+                    kind: ConnectionKindEditDraft::Neon {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect_err("kind change must be rejected");
+        match &err {
+            ConfigError::KindMismatch { id } => assert_eq!(id, "pg"),
+            other => panic!("expected KindMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_neon_removes_entry_and_purges_keyring() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(neon_draft("neon", "postgres://neon.example/db"))
+            .expect("add");
+        assert_eq!(
+            secrets.get("dbboard.neon.url").expect("seeded"),
+            "postgres://neon.example/db"
+        );
+
+        admin.delete("neon").expect("delete");
+
+        assert!(admin.entries().is_empty());
+        assert!(matches!(
+            secrets.get("dbboard.neon.url"),
+            Err(SecretError::NotFound(_))
+        ));
     }
 
     #[test]
