@@ -6,13 +6,34 @@
 ## 最終更新
 
 - 日付: 2026-06-04 (本セッション末、Phase 2 query history persistence
-  ADR-0017 Stage 2 実装完了、PR 起票待ち)
-- ブランチ: `feature/query-history-persistence` (`develop` から 7 commits
-  ahead = `7180407..c7aac22`、push は人間担当)
+  ADR-0017 Stage 2 — PR #10 マージ完了)
+- ブランチ: `develop` (= `origin/develop` = `ca6ca93`、sync 済)
 - 現在の Phase: **Phase 2 query history persistence (ADR-0017 Stage 2)
-  実装完了。残作業は `develop` への PR 起票のみ (commit `c7aac22` まで
-  agent 完了済、push と PR 作成は人間)。次セッションは PR レビュー
-  対応もしくは Phase 3 (Neon / Supabase アダプタ) 着手。**
+  シップ完了。PR #10 マージ済 (`ca6ca93`)、ローカル feature ブランチ
+  削除済。次セッションは Phase 3 (Neon / Supabase アダプタ) 着手、
+  あるいは web 側 Claude が `0003-web-history-schema-mirror` を着手
+  した場合の cross-repo フォローアップ対応。**
+
+### Phase 2 PR #10 マージクローズ (本セッション末 / 2026-06-04)
+
+- PR #10 (`feature/query-history-persistence` → `develop`) マージ済
+  = `ca6ca93` (GitHub 上で merge commit、`mergedAt`
+  2026-06-04T03:57:54Z)。
+- 取り込まれた 7 commits: `62ed834` (ADR) / `b4c1c1c` (path fix) /
+  `c023eba` (default_history_path) / `c3bfcb5` (persistence layer) /
+  `72cb165` (app wiring + server label helper) / `c7aac22` (web
+  handoff brief) / `ae86627` (closeout)。
+- リモート `feature/query-history-persistence` は merge 時に削除済
+  (`git fetch --prune` で `[deleted] (none) -> origin/feature/
+  query-history-persistence`)、ローカル feature ブランチも
+  `git branch -d` 済。
+- ローカル `develop` は `origin/develop` (= `ca6ca93`) と fast-forward
+  sync 済。
+- web 側への handoff: `.claude/issues/0003-web-history-schema-mirror.md`
+  が `develop` 上で読める状態。web 側 Claude が pickup する時のアンカー
+  commit は `ca6ca93` (PR コメントには `72cb165` を引用しているが、
+  実体は merge 後の `ca6ca93` から参照可)。HTTP contract には触らない
+  ので desktop 側の追加作業なしに並行可。
 
 ### 本セッション (2026-06-04) で landed したもの
 
@@ -56,18 +77,21 @@
 - pre-commit hook (cargo-husky) は各 commit で fmt/clippy/check/test
   をすべて green でブロック通過。
 
-### 次セッション開始タスク: PR レビュー対応 or Phase 3 着手
+### 次セッション開始タスク: Phase 3 着手 (Neon / Supabase アダプタ)
 
-- PR 起票は人間担当 (`gh pr create --base develop --head
-  feature/query-history-persistence`)。タイトル案:
-  `feat: Phase 2 — query history persistence (ADR-0017, Stage 2)`。
-- PR コミットレンジ: `7180407..c7aac22` (5 commits、ADR + helper +
-  persistence layer + app wiring + handoff brief)。
-- web 側への handoff は `.claude/issues/0003-web-history-schema-mirror.md`
-  を read-only ポインタとして web 側 Claude session が pickup。HTTP
-  contract に触らないので desktop PR とは並行可。
+- 主目的は trait の証明 — UI / core / contract を変えずに新アダプタを
+  追加できることを示す。
+- 候補順: Neon (pg-wire なので `dbboard-postgres` を再利用、Phase 1.7
+  実装をそのまま流用) → Supabase (REST + sqlx ハイブリッド、新クレート
+  `dbboard-supabase` 起票が必要)。
+- 開始前にやること: roadmap.md Phase 3 の項目を再読、Neon 接続文字列の
+  形式と Postgres URL parser の互換性を確認 (`dbboard-postgres` の
+  `sslmode=require` 昇格周りが Neon 推奨と合うか)、ADR-0011 tiered
+  support 上の位置付けを確認。
+- 先んじて Phase 2 の追記候補がもしあれば (capability 周りの flag を
+  Postgres 側で立てる等)、Phase 3 着手前に切り出す。
 
-### Phase 2 PR #9 マージクローズ (前セッション末 / 2026-06-03)
+### Phase 2 PR #9 マージクローズ (前々セッション末 / 2026-06-03)
 
 - PR #9 (`feature/connection-admin-ui` → `develop`) マージ済 = `88d0f45`
   (GitHub 上で merge commit、squash ではない)。
