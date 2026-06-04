@@ -63,5 +63,15 @@ pub(crate) async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn D
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }
+        BackendConfig::AuroraDsql { url } => {
+            // Same wire protocol as Postgres; the only difference is the
+            // flavor label exposed by `id()` (ADR-0021). The URL's
+            // password segment is expected to carry a short-lived IAM
+            // authentication token (~15 min TTL); an expired token
+            // surfaces here as a `DbError::Connection`.
+            let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url }).await?;
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
+        }
     }
 }

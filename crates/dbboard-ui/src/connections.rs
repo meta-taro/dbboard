@@ -65,6 +65,7 @@ pub enum KindSelector {
     Postgres,
     Neon,
     Supabase,
+    AuroraDsql,
 }
 
 /// Backing buffers for the Add form. Every kind's fields are kept side
@@ -83,6 +84,7 @@ pub struct AddFormState {
     pub pg_url: String,
     pub neon_url: String,
     pub supabase_url: String,
+    pub aurora_dsql_url: String,
 }
 
 /// Backing buffers for the Edit form. The id is held outside this
@@ -120,6 +122,10 @@ pub enum EditKindState {
         new_url: String,
     },
     Supabase {
+        replace_url: bool,
+        new_url: String,
+    },
+    AuroraDsql {
         replace_url: bool,
         new_url: String,
     },
@@ -407,6 +413,9 @@ impl AddFormState {
             KindSelector::Supabase => ConnectionKindDraft::Supabase {
                 url: self.supabase_url.clone(),
             },
+            KindSelector::AuroraDsql => ConnectionKindDraft::AuroraDsql {
+                url: self.aurora_dsql_url.clone(),
+            },
         };
         ConnectionDraft {
             id: self.id.clone(),
@@ -446,6 +455,10 @@ impl EditFormState {
                 new_url: String::new(),
             },
             ConnectionKind::Supabase { keyring_url_ref: _ } => EditKindState::Supabase {
+                replace_url: false,
+                new_url: String::new(),
+            },
+            ConnectionKind::AuroraDsql { keyring_url_ref: _ } => EditKindState::AuroraDsql {
                 replace_url: false,
                 new_url: String::new(),
             },
@@ -507,6 +520,16 @@ impl EditFormState {
                     SecretField::Keep
                 },
             },
+            EditKindState::AuroraDsql {
+                replace_url,
+                new_url,
+            } => ConnectionKindEditDraft::AuroraDsql {
+                url: if *replace_url {
+                    SecretField::Set(new_url.clone())
+                } else {
+                    SecretField::Keep
+                },
+            },
         };
         ConnectionEditDraft {
             name: self.name.clone(),
@@ -531,6 +554,7 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::Postgres { .. } => "Postgres",
         ConnectionKind::Neon { .. } => "Neon",
         ConnectionKind::Supabase { .. } => "Supabase",
+        ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
     }
 }
 
@@ -569,6 +593,7 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) -> bool {
                     ui.selectable_value(&mut form.kind, KindSelector::Postgres, "Postgres");
                     ui.selectable_value(&mut form.kind, KindSelector::Neon, "Neon");
                     ui.selectable_value(&mut form.kind, KindSelector::Supabase, "Supabase");
+                    ui.selectable_value(&mut form.kind, KindSelector::AuroraDsql, "Aurora DSQL");
                 });
             ui.end_row();
         });
@@ -605,6 +630,14 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) -> bool {
             // across all 11 locales (ADR-0019).
             ui.label(t!("connections-field-pg-url"));
             ui.add(egui::TextEdit::singleline(&mut form.supabase_url).password(true));
+        }
+        KindSelector::AuroraDsql => {
+            // Aurora DSQL is pg-wire too (ADR-0021); reuse the existing
+            // tier-1 Fluent key so the 11-locale catalog stays stable.
+            // The URL's password segment is expected to carry a
+            // short-lived IAM authentication token (~15 min TTL).
+            ui.label(t!("connections-field-pg-url"));
+            ui.add(egui::TextEdit::singleline(&mut form.aurora_dsql_url).password(true));
         }
     }
     false
@@ -660,6 +693,10 @@ fn render_edit_form(ui: &mut egui::Ui, id: &str, form: &mut EditFormState) {
         | EditKindState::Supabase {
             replace_url,
             new_url,
+        }
+        | EditKindState::AuroraDsql {
+            replace_url,
+            new_url,
         } => {
             ui.checkbox(replace_url, t!("connections-replace-url"));
             ui.add_enabled(
@@ -677,6 +714,7 @@ fn kind_selector_label(kind: KindSelector) -> &'static str {
         KindSelector::Postgres => "Postgres",
         KindSelector::Neon => "Neon",
         KindSelector::Supabase => "Supabase",
+        KindSelector::AuroraDsql => "Aurora DSQL",
     }
 }
 
@@ -1039,6 +1077,95 @@ mod tests {
         assert_eq!(
             secrets.get("dbboard.s.url").expect("url"),
             "postgres://supabase.example/new"
+        );
+    }
+
+    #[test]
+    fn submit_add_aurora_dsql_routes_the_url_through_the_secret_store_and_records_aurora_dsql_kind()
+    {
+        let (_dir, secrets, mut admin) = build_admin();
+        let mut view = ConnectionsView::new();
+        view.start_add();
+        if let Mode::Add(form) = &mut view.mode {
+            form.id = "dsql-prod".into();
+            form.name = "DSQL Prod".into();
+            form.kind = KindSelector::AuroraDsql;
+            form.aurora_dsql_url =
+                "postgres://admin:iam-token@example.dsql.us-east-1.on.aws/postgres?sslmode=require"
+                    .into();
+        }
+        view.submit_add(&mut admin).expect("submit_add");
+
+        match &admin.entries()[0].kind {
+            ConnectionKind::AuroraDsql { keyring_url_ref } => {
+                assert_eq!(keyring_url_ref, "dbboard.dsql-prod.url");
+            }
+            other => panic!("expected AuroraDsql, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.dsql-prod.url").expect("url"),
+            "postgres://admin:iam-token@example.dsql.us-east-1.on.aws/postgres?sslmode=require"
+        );
+    }
+
+    #[test]
+    fn start_edit_on_aurora_dsql_entry_prefills_without_secret() {
+        let mut view = ConnectionsView::new();
+        let entry = ConnectionEntry {
+            id: "d".into(),
+            name: "D".into(),
+            kind: ConnectionKind::AuroraDsql {
+                keyring_url_ref: "dbboard.d.url".into(),
+            },
+        };
+        view.start_edit(&entry);
+        match view.mode() {
+            Mode::Edit { id, form } => {
+                assert_eq!(id, "d");
+                match &form.kind {
+                    EditKindState::AuroraDsql {
+                        replace_url,
+                        new_url,
+                    } => {
+                        assert!(!*replace_url);
+                        assert!(new_url.is_empty());
+                    }
+                    other => panic!("expected AuroraDsql edit state, got {other:?}"),
+                }
+            }
+            other => panic!("expected Edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_edit_on_aurora_dsql_with_replace_url_true_overwrites_the_secret() {
+        let (_dir, secrets, mut admin) = build_admin();
+        admin
+            .add(ConnectionDraft {
+                id: "d".into(),
+                name: "D".into(),
+                kind: ConnectionKindDraft::AuroraDsql {
+                    url: "postgres://admin:old@example.dsql.us-east-1.on.aws/postgres".into(),
+                },
+            })
+            .expect("seed");
+
+        let mut view = ConnectionsView::new();
+        view.start_edit(&admin.entries()[0].clone());
+        if let Mode::Edit { form, .. } = &mut view.mode {
+            if let EditKindState::AuroraDsql {
+                replace_url,
+                new_url,
+            } = &mut form.kind
+            {
+                *replace_url = true;
+                *new_url = "postgres://admin:new@example.dsql.us-east-1.on.aws/postgres".into();
+            }
+        }
+        view.submit_edit(&mut admin).expect("submit_edit");
+        assert_eq!(
+            secrets.get("dbboard.d.url").expect("url"),
+            "postgres://admin:new@example.dsql.us-east-1.on.aws/postgres"
         );
     }
 
