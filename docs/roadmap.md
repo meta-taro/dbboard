@@ -166,7 +166,7 @@ locale at startup; `DbError` body text stays English (ADR-0009 HTTP
 contract); a malformed override falls back to the OS locale; an unknown
 locale falls back to `en` without aborting.
 
-## Phase 3 — Neon and Supabase adapters
+## Phase 3 — Neon and Supabase adapters ✅ done (2026-06-04)
 
 Goal: prove the trait by adding two more adapters without changing the
 UI or the core.
@@ -178,13 +178,22 @@ UI or the core.
   v=1 variant in `connections.toml`; UI Add form lists "Neon" alongside
   the three existing kinds. Live test gated on `DBBOARD_NEON_URL`.)
 - [x] Connection picker recognises adapter kind (delivered by ADR-0018
-  alongside the Neon flavor — the same machinery generalises to Supabase
-  when it lands)
-- [ ] `dbboard-supabase` (REST + sqlx hybrid)
-- [ ] Adapter-specific quirks documented in each crate's README
+  alongside the Neon flavor; ADR-0019 extends the same machinery to
+  Supabase)
+- [x] Supabase via the shared `dbboard-postgres` adapter (ADR-0019:
+  second flavored first-class kind. `PostgresAdapter::connect_supabase`
+  returns the same adapter with `id() == "supabase"`; new
+  `DBBOARD_SUPABASE_URL` env var ranks between Neon and PG;
+  `ConnectionKind::Supabase` is an additive v=1 variant. Both the
+  direct `:5432` and pooler `:6543` endpoints fit the same kind — the
+  URL itself picks. Live test gated on `DBBOARD_SUPABASE_URL`. REST
+  hybrid deliberately deferred to a future ADR.)
+- [x] Adapter-specific quirks documented in each crate's README
 
-Exit criteria: a user can switch between three live connections in one
-session without restarting the app.
+Exit criteria met: a user can switch between Neon, Supabase, and a
+generic Postgres / Cockroach connection in one session without
+restarting the app, with each labelled distinctly in the connection
+picker and history.
 
 ## Phase 4 — AI integration (optional layer)
 

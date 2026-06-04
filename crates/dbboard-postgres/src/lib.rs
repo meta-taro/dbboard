@@ -68,6 +68,15 @@ pub const FLAVOR_POSTGRES: &str = "postgres";
 /// picker UI.
 pub const FLAVOR_NEON: &str = "neon";
 
+/// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
+/// connection the user declared as Supabase (ADR-0019). Wire and SQL
+/// path are identical to [`FLAVOR_POSTGRES`]; the difference is the
+/// label the rest of the system sees in capability output and
+/// connection picker UI. REST surfaces (auth / storage / realtime /
+/// functions) are out of scope for this flavor and will land via a
+/// future ADR.
+pub const FLAVOR_SUPABASE: &str = "supabase";
+
 pub struct PostgresAdapter {
     // Only the pool is retained; the connection URL (with its password)
     // is intentionally not stored, so it cannot leak through Debug.
@@ -105,6 +114,22 @@ impl PostgresAdapter {
     /// Same as [`connect`](Self::connect).
     pub async fn connect_neon(config: PostgresConfig) -> DbResult<Self> {
         Self::connect_with_flavor(config, FLAVOR_NEON).await
+    }
+
+    /// Connect to a Supabase Postgres database (ADR-0019). The wire
+    /// protocol and SQL path are identical to [`connect`](Self::connect);
+    /// the only difference is that the adapter reports
+    /// [`FLAVOR_SUPABASE`] as its id, so capabilities output and the
+    /// connection picker can label the connection as Supabase rather
+    /// than generic Postgres. Both the direct connection (`:5432`) and
+    /// the transaction-pooler endpoint (`:6543`) accept this entry
+    /// point — the URL itself encodes the choice.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`connect`](Self::connect).
+    pub async fn connect_supabase(config: PostgresConfig) -> DbResult<Self> {
+        Self::connect_with_flavor(config, FLAVOR_SUPABASE).await
     }
 
     async fn connect_with_flavor(config: PostgresConfig, flavor: &'static str) -> DbResult<Self> {
@@ -340,21 +365,24 @@ fn truncate(text: &str) -> String {
 mod tests {
     use super::{
         classify_error, harden_ssl_mode, reclassify_schema, truncate, tuple_to_table, FLAVOR_NEON,
-        FLAVOR_POSTGRES,
+        FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
     use dbboard_core::DbError;
     use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
     /// `id()` is part of the public contract documented in
     /// `docs/architecture.md` (adapter identifiers `turso`, `neon`,
-    /// `supabase` are stable strings). Both flavor constants must keep
-    /// their byte-content stable across releases — capability consumers
+    /// `supabase` are stable strings). Every flavor constant must keep
+    /// its byte-content stable across releases — capability consumers
     /// match on them — and must be different from each other.
     #[test]
     fn flavor_constants_are_stable_and_distinct() {
         assert_eq!(FLAVOR_POSTGRES, "postgres");
         assert_eq!(FLAVOR_NEON, "neon");
+        assert_eq!(FLAVOR_SUPABASE, "supabase");
         assert_ne!(FLAVOR_POSTGRES, FLAVOR_NEON);
+        assert_ne!(FLAVOR_POSTGRES, FLAVOR_SUPABASE);
+        assert_ne!(FLAVOR_NEON, FLAVOR_SUPABASE);
     }
 
     #[test]
