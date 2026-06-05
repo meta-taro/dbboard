@@ -48,3 +48,8 @@ connections-field-d1-token = API token
 connections-field-pg-url = Connection URL
 connections-replace-token = Replace token
 connections-replace-url = Replace URL
+# ADR-0020: per-row "Connect" button switches the running adapter in
+# place; the active row is decorated with `connections-active-marker`
+# and its Connect button is disabled.
+connections-connect-button = Connect
+connections-active-marker = (active)

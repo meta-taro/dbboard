@@ -39,3 +39,5 @@ connections-field-d1-token = API 令牌
 connections-field-pg-url = 连接 URL
 connections-replace-token = 替换令牌
 connections-replace-url = 替换 URL
+connections-connect-button = 连接
+connections-active-marker = （当前）

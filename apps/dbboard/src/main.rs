@@ -195,7 +195,15 @@ impl eframe::App for DesktopApp {
             // (ADR-0020): a panicked writer leaves the inner state valid,
             // so unwrap the poison and keep going rather than aborting.
             let mut guard = admin.lock().unwrap_or_else(PoisonError::into_inner);
-            self.connections.ui(ui.ctx(), &mut guard);
+            self.connections
+                .ui(ui.ctx(), &mut guard, self.inner.active_connection_id());
+        }
+        // ADR-0020: drain a "Connect" click from the Connections window
+        // and turn it into a SwitchConnection command. Done before the
+        // inner UI renders so the active-id marker on the next frame
+        // already reflects the request (if it succeeds).
+        if let Some(id) = self.connections.take_pending_connect() {
+            self.inner.switch_connection(id);
         }
         self.inner.ui(ui, frame);
     }
