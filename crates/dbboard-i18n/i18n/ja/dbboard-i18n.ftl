@@ -39,3 +39,5 @@ connections-field-d1-token = API トークン
 connections-field-pg-url = 接続 URL
 connections-replace-token = トークンを置換
 connections-replace-url = URL を置換
+connections-connect-button = 接続
+connections-active-marker = （接続中）
