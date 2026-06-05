@@ -5,7 +5,129 @@
 
 ## 最終更新
 
-- 日付: 2026-06-04 (本セッション末、Phase 3 Aurora DSQL ADR-0021
+- 日付: 2026-06-05 (本セッション末、ADR-0020 in-process connection
+  switching の最終 UI 配線 (#48) 完了、verify ゲート (#50 自動部) も全 green、
+  push 待ち)
+- ブランチ: `feature/in-process-connect-switching` (= `develop` (`d7c58ad`)
+  から分岐、ADR-0020 + issue 0004 同居、新たに #48 を 6f63382 で commit、
+  本ブランチ累計 10 commit + close-out 用 status 更新、workspace tests
+  全 green、`cargo build --release` + `cargo test --all-features
+  --release` も green、未 push)
+- 現在の Phase: **ADR-0020 in-process connection switching 完了。
+  fd3e36f (server `swap_backend`) → 0237a45 (UI worker
+  `Command::SwitchConnection` + DesktopSwitcher 配線) → 6f63382
+  (Connections フォームに per-row `Connect` ボタン) の 3 機能 commit。
+  以降の人間タスクは push + PR open + 任意の手動接続切替確認 (#50)。**
+
+### ADR-0020 in-process connection switching (本セッション / 2026-06-05)
+
+`develop` (= `d7c58ad`) から `feature/in-process-connect-switching`
+(ADR-0020 + issue 0004 と同居) で `swap_backend` server API → UI
+worker `SwitchConnection` → 一覧 UI の `Connect` ボタン、と 3 段で
+段階的に実装。Phase 3 Aurora DSQL (ADR-0021) は別ブランチで先行
+shipped 済 (`d7c58ad` 含まれ済) なので本ブランチには重複しない。
+
+本セッションで追加した commit (古い順):
+
+- `fd3e36f` `feat(server): allow live adapter swap on a running AppState (ADR-0020)`
+- `0237a45` `feat(ui,bin): wire SwitchConnection through UI worker and desktop app (ADR-0020)`
+- `6f63382` `feat(ui): add per-row Connect button to the connection list`
+
+実装の要点:
+
+- **`dbboard-server` live swap**: `AppState` を
+  `Arc<RwLock<Arc<dyn DatabaseAdapter>>>` に置き換え (RwLock over
+  arc-swap、`dyn DatabaseAdapter` が `!Sized` のため)。各 HTTP
+  ハンドラはリクエスト開始時に `current_adapter()` で 1 回スナップ
+  ショットしてリクエスト中固定 → in-flight クエリは古いアダプタで
+  完了、新規リクエストは新アダプタへ。`swap_backend(state, adapter)`
+  公開関数、`RunningServer::state()` を pub にして desktop バイナリ
+  から swap 可能。`PoisonError::into_inner()` で poisoned-lock graceful
+  recovery。`http.rs` に in-flight swap roundtrip 2 件
+  (`swap_backend_routes_next_request_to_new_adapter` /
+  `running_server_state_lets_swap_take_effect_over_loopback`) 追加。
+- **`dbboard-ui` worker + DbboardApp**: `Command::SwitchConnection
+  { id }` / `Reply::ConnectionSwitched { id }` / `Reply::SwitchFailed
+  { id, err }` を追加 (additive、既存 reply への影響なし)。
+  `ConnectionSwitcher` trait (Send + Sync + 'static) を worker thread
+  に inject、`tokio::runtime::Handle::block_on` で同期実行
+  (アダプタ build はネストされた block_on ではないので安全)。
+  `DbboardApp` に `switch_connection(id)` / `active_connection_id()`
+  / `pending_switch_error()` を追加、`connection_switched_reply_*` /
+  `switch_failed_reply_*` / `successful_switch_clears_a_prior_*` の
+  3 状態遷移テストを追加。`pub use dbboard_core::DbError;` を
+  追加して binary の dbboard-core 直接依存を避ける (architectural
+  rule)。worker の `match &cmd` を `if let ... else` に refactor
+  (clippy `single_match_else`)。
+- **`apps/dbboard` 配線**: `DesktopSwitcher` (本物、`Arc<Mutex<
+  ConnectionAdmin>>` + `Arc<dyn SecretStore>` + `RunningServer`
+  state + `tokio::runtime::Runtime` をクローズ) と `NullSwitcher`
+  (headless / config なし fallback) を実装。`backend_config_for_entry`
+  を pub にして re-use。`DbboardApp::connect` に switcher を inject、
+  `DesktopApp::ui` で admin を `Arc<Mutex<_>>` で UI / switcher で
+  共有し、UI フレーム毎に `pending_connect` を drain して
+  `switch_connection` へ転送。`PoisonError::into_inner()` で
+  ロック poisoned 時の graceful recovery。
+- **Connections 一覧の `Connect` ボタン (#48)**: `ConnectionsView`
+  に `pending_connect: Option<String>` + `request_connect(id)` +
+  `take_pending_connect()` を追加。`render_list` シグネチャを
+  `(... , pending_connect: &mut Option<String>, active_id: &str)`
+  に拡張、各エントリ行に小さな `Connect` ボタン (active 行は
+  `egui::Button::small()` を `add_enabled(!is_active, ...)` で disable、
+  `connections-active-marker` ラベル付与)。Fluent key
+  `connections-connect-button` / `connections-active-marker` を
+  11 locale 全件に追加 (en "Connect"/"(active)"、ja「接続」「（接続中）」、
+  zh-TW「連線」「（目前）」、ru「Подключиться」「(активно)」など、
+  ADR-0015 tier stability を維持)。新規テスト 3 (`new_view_has_no_
+  pending_connect_request` / `request_connect_records_id_then_taking
+  _clears_it` / `request_connect_overwrites_a_prior_unread_request`)。
+
+検証状況 (本セッション末):
+
+- `cargo fmt --all -- --check`: pass
+- `cargo clippy --all-targets --all-features -- -D warnings`: pass
+- `cargo check --all-targets --all-features`: pass
+- `cargo test --all-features`: **全クレート green** (dbboard-config
+  55 / dbboard-core 45 / dbboard-d1 21 / dbboard-postgres 10 +
+  pg_roundtrip 7 / dbboard-server 40 + http 12 (in-flight swap 2 件
+  追加) / dbboard-ui 87 (switch state machine 3 件 + pending_connect
+  3 件 = 6 件追加))
+- `cargo build --release`: pass
+- `cargo test --all-features --release`: 全クレート green
+- pre-commit hook (cargo-husky) は本ブランチの 3 機能 commit すべて
+  fmt/clippy/check/test green でブロック通過。
+
+次のステップ (人間担当):
+
+1. `git push -u origin feature/in-process-connect-switching` (Norton
+   の release build スキャン挙動については `env-windows-norton.md`
+   参照)。
+2. GitHub で PR open: base = `develop`, head =
+   `feature/in-process-connect-switching`, title 例
+   `feat: in-process connection switching (ADR-0020)`。本文に
+   3 機能 commit (fd3e36f / 0237a45 / 6f63382) + ADR-0020 +
+   issue 0004 を引用、scope (UI restart 不要で adapter を live swap、
+   in-flight クエリは古い adapter で完了する semantics) を明記。
+3. 動作確認 (#50 マニュアル部、任意): Supabase など複数接続を
+   `connections.toml` に登録し、UI の「Connect」ボタンで切替→
+   テーブル一覧更新→クエリ実行を確認。失敗時の `pending_switch_error`
+   表示も確認。
+4. merge 後にローカル feature ブランチを `git branch -d`、`develop`
+   を fast-forward sync、次セッション開始時に本ファイルを更新。
+
+web 側への影響:
+
+- **HTTP contract: 変更なし**。`/capabilities` レスポンス shape も
+  error category も触れていない (swap は server 内部での `AppState`
+  更新のみ、外向き API は無変更) ので web 側 mirror は不要。
+- **history per-record JSON schema: 変更なし**。
+- 次セッションで `dbboard-web-state.md` memory を更新する際に
+  「ADR-0020 は web 側 mirror 不要」を ADR-0013 / 0015 / 0016 /
+  0018 / 0019 / 0021 と同じカテゴリに追記する。
+
+### Phase 3 Aurora DSQL adapter (前セッション / 2026-06-04 — シップ済)
+
+- 日付: 2026-06-04 (前セッション末、Phase 3 Aurora DSQL ADR-0021
   実装完了 + docs catch up 済、push 待ち)
 - ブランチ: `feature/aurora-dsql-adapter-kind` (= `develop` (`d7c58ad`)
   から分岐、5 commit + 後続 ADR-0020 / issue 0004 含む、workspace
