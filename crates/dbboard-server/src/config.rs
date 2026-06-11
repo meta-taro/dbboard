@@ -342,6 +342,22 @@ fn label_for(env: &EnvSnapshot, file: &ConnectionFile) -> String {
     "in-memory".to_string()
 }
 
+/// Translate a single connection-store entry into the [`BackendConfig`]
+/// the server needs to connect it. Looks up any secret-field references
+/// in `secrets`. Used by the runtime connection switcher (ADR-0020) and
+/// by [`resolve_backend`] internally.
+///
+/// # Errors
+///
+/// Propagates [`ConfigError`] when a referenced keyring entry cannot be
+/// read (missing, denied, or the OS keychain is unreachable).
+pub fn backend_config_for_entry(
+    entry: &ConnectionEntry,
+    secrets: &dyn SecretStore,
+) -> Result<BackendConfig, ConfigError> {
+    entry_to_backend(entry, secrets)
+}
+
 fn entry_to_backend(
     entry: &ConnectionEntry,
     secrets: &dyn SecretStore,

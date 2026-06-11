@@ -39,3 +39,5 @@ connections-field-d1-token = Jeton API
 connections-field-pg-url = URL de connexion
 connections-replace-token = Remplacer le jeton
 connections-replace-url = Remplacer l'URL
+connections-connect-button = Connecter
+connections-active-marker = (active)

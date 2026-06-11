@@ -39,3 +39,5 @@ connections-field-d1-token = API-Token
 connections-field-pg-url = Verbindungs-URL
 connections-replace-token = Token ersetzen
 connections-replace-url = URL ersetzen
+connections-connect-button = Verbinden
+connections-active-marker = (aktiv)

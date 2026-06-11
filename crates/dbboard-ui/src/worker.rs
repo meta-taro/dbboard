@@ -13,8 +13,16 @@
 //! [`report_fatal`] covers the rarer case where the worker cannot even
 //! build its runtime or HTTP client: it answers every command with that
 //! error so the UI still makes progress.
+//!
+//! [`Command::SwitchConnection`] (ADR-0020) is NOT translated to HTTP —
+//! the swap is an in-process operation on the local server's
+//! `AppState`, not a wire concept. The worker delegates it to an
+//! injected [`ConnectionSwitcher`] supplied by the binary, which holds
+//! everything the swap needs (the live `AppState`, the connection
+//! store, secrets, and a runtime handle for `build_adapter`).
 
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 
 use dbboard_core::DbError;
@@ -23,17 +31,41 @@ use eframe::egui;
 use crate::client::{self, HttpRequest};
 use crate::{Command, Reply};
 
+/// Bridge from a `Command::SwitchConnection { id }` to the actual swap.
+/// The worker calls [`Self::switch`] from its dedicated thread (so the
+/// impl may block) and turns the result into a [`Reply`]. The desktop
+/// binary supplies the production impl in `apps/dbboard`; tests inject
+/// a stub.
+///
+/// The trait is intentionally narrow — given an `id`, either return
+/// `Ok(())` to signal a clean swap, or return a `DbError` whose
+/// category reflects the failure (typically `Connection` or
+/// `Capability`). The UI does not need to know how the swap happened.
+pub trait ConnectionSwitcher: Send + Sync + 'static {
+    /// Swap the live adapter to the connection named `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DbError`] when the id is unknown, the underlying
+    /// secret lookup fails, or the new adapter cannot be connected. The
+    /// previous adapter remains live in that case — the swap is atomic
+    /// or it does not happen at all.
+    fn switch(&self, id: &str) -> Result<(), DbError>;
+}
+
 /// Spawn the worker thread. `base_url` is the loopback server root the
-/// binary just started (e.g. `http://127.0.0.1:54123`).
+/// binary just started (e.g. `http://127.0.0.1:54123`). `switcher` is
+/// the in-process bridge used to handle `SwitchConnection` commands.
 pub(crate) fn spawn_worker(
     base_url: String,
     cmd_rx: Receiver<Command>,
     reply_tx: Sender<Reply>,
     egui_ctx: egui::Context,
+    switcher: Arc<dyn ConnectionSwitcher>,
 ) {
     thread::Builder::new()
         .name("dbboard-http-worker".into())
-        .spawn(move || run_worker(&base_url, &cmd_rx, &reply_tx, &egui_ctx))
+        .spawn(move || run_worker(&base_url, &cmd_rx, &reply_tx, &egui_ctx, switcher.as_ref()))
         .expect("spawn dbboard-http-worker thread");
 }
 
@@ -42,6 +74,7 @@ fn run_worker(
     cmd_rx: &Receiver<Command>,
     reply_tx: &Sender<Reply>,
     egui_ctx: &egui::Context,
+    switcher: &dyn ConnectionSwitcher,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -70,8 +103,21 @@ fn run_worker(
     };
 
     while let Ok(cmd) = cmd_rx.recv() {
-        let request = client::request_for(&cmd);
-        let reply = rt.block_on(execute(&http, base_url, &request));
+        // ADR-0020: SwitchConnection is an in-process operation, not an
+        // HTTP call. Branch it out with `if let` so the HTTP path stays
+        // a single straight-line block.
+        let reply = if let Command::SwitchConnection { id } = &cmd {
+            match switcher.switch(id) {
+                Ok(()) => Reply::ConnectionSwitched { id: id.clone() },
+                Err(error) => Reply::SwitchFailed {
+                    id: id.clone(),
+                    error,
+                },
+            }
+        } else {
+            let request = client::request_for(&cmd);
+            rt.block_on(execute(&http, base_url, &request))
+        };
         if reply_tx.send(reply).is_err() {
             break; // UI side hung up — nothing left to answer.
         }
@@ -135,6 +181,13 @@ fn report_fatal(
         let reply = match cmd {
             Command::ListTables => Reply::Tables(Err(err.clone())),
             Command::Query(_) => Reply::QueryResult(Err(err.clone())),
+            // The worker never came up, so the in-process switcher
+            // hand-off is unreachable too. Echo the same fatal error
+            // back as a `SwitchFailed` so the UI can surface it.
+            Command::SwitchConnection { id } => Reply::SwitchFailed {
+                id,
+                error: err.clone(),
+            },
         };
         if reply_tx.send(reply).is_err() {
             break;

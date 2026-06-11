@@ -39,3 +39,5 @@ connections-field-d1-token = API 토큰
 connections-field-pg-url = 연결 URL
 connections-replace-token = 토큰 교체
 connections-replace-url = URL 교체
+connections-connect-button = 연결
+connections-active-marker = (활성)
