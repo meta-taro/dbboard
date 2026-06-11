@@ -141,6 +141,14 @@ contract (ADR-0011).
   `history.jsonl` next to `connections.toml`, shared record schema
   with `dbboard-web` per the cross-repo brief in
   `.claude/issues/0003-web-history-schema-mirror.md`)
+- [x] In-process connection switching (ADR-0020; per-row **Connect**
+  button on the connection list swaps the active adapter on the
+  running server via `Arc<RwLock<Arc<dyn DatabaseAdapter>>>`. Each
+  HTTP handler snapshots the adapter once at request start, so
+  in-flight requests complete on the old adapter and new requests
+  pick up the new one. Lifts the HeidiSQL multi-process limitation
+  noted under ADR-0016 — a single desktop process can now drive
+  many connections in one session.)
 
 Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
 
@@ -202,7 +210,8 @@ the UI or the core.
 
 Exit criteria met: a user can switch between Neon, Supabase, Aurora
 DSQL, and a generic Postgres / Cockroach connection in one session
-without restarting the app, with each labelled distinctly in the
+without restarting the app (the in-process swap mechanism is delivered
+by ADR-0020 under Phase 2), with each labelled distinctly in the
 connection picker and history.
 
 ## Phase 4 — AI integration (optional layer)
