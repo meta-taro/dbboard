@@ -41,3 +41,5 @@ connections-replace-token = Remplacer le jeton
 connections-replace-url = Remplacer l'URL
 connections-connect-button = Connecter
 connections-active-marker = (active)
+
+language-menu = Langue

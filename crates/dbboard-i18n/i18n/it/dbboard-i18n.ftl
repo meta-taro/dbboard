@@ -41,3 +41,5 @@ connections-replace-token = Sostituisci token
 connections-replace-url = Sostituisci URL
 connections-connect-button = Connetti
 connections-active-marker = (attiva)
+
+language-menu = Lingua
