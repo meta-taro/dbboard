@@ -1,6 +1,11 @@
 //! axum request handlers. Each is a thin adapter from HTTP to the
 //! shared `dyn DatabaseAdapter` behind [`AppState`]; all business logic
 //! lives in the adapter implementations themselves.
+//!
+//! Each handler snapshots the live adapter through
+//! [`AppState::current_adapter`] before doing any work, so a
+//! mid-request swap (ADR-0020) cannot pull the adapter out from under
+//! a query in flight.
 
 use axum::extract::State;
 use axum::Json;
@@ -18,7 +23,8 @@ pub(crate) async fn health() -> Json<HealthResponse> {
 pub(crate) async fn list_tables(
     State(state): State<AppState>,
 ) -> Result<Json<TablesResponse>, ApiError> {
-    let tables = state.adapter.list_tables().await?;
+    let adapter = state.current_adapter();
+    let tables = adapter.list_tables().await?;
     Ok(Json(TablesResponse { tables }))
 }
 
@@ -26,7 +32,8 @@ pub(crate) async fn run_query(
     State(state): State<AppState>,
     Json(req): Json<QueryRequest>,
 ) -> Result<Json<QueryResult>, ApiError> {
-    let result = state.adapter.query(&req.sql).await?;
+    let adapter = state.current_adapter();
+    let result = adapter.query(&req.sql).await?;
     Ok(Json(result))
 }
 
@@ -34,8 +41,9 @@ pub(crate) async fn run_query(
 /// the boolean capability flags so the UI can decide which optional
 /// features to surface without probing each one individually.
 pub(crate) async fn capabilities(State(state): State<AppState>) -> Json<CapabilitiesResponse> {
+    let adapter = state.current_adapter();
     Json(CapabilitiesResponse {
-        id: state.adapter.id(),
-        capabilities: state.adapter.capabilities(),
+        id: adapter.id(),
+        capabilities: adapter.capabilities(),
     })
 }

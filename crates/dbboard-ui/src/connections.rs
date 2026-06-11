@@ -30,6 +30,14 @@ pub struct ConnectionsView {
     /// Last error from a failed submit, surfaced inline above the form
     /// buttons. Cleared on every successful submit or mode transition.
     last_error: Option<String>,
+    /// Id of a connection the user just asked to switch to via the
+    /// per-row "Connect" button (ADR-0020). Drained by the host
+    /// (typically `DesktopApp`) via [`Self::take_pending_connect`]
+    /// after every `ui()` call and turned into a
+    /// [`crate::DbboardApp::switch_connection`]. Holds at most one id;
+    /// a second click before the host drains overwrites the first, so
+    /// only the most recent intent reaches the worker.
+    pending_connect: Option<String>,
 }
 
 impl Default for ConnectionsView {
@@ -139,6 +147,7 @@ impl ConnectionsView {
             is_open: false,
             mode: Mode::List,
             last_error: None,
+            pending_connect: None,
         }
     }
 
@@ -169,6 +178,23 @@ impl ConnectionsView {
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    /// Record a click on the per-row "Connect" button (ADR-0020). The
+    /// host drains the value with [`Self::take_pending_connect`] after
+    /// every `ui()` call. A repeat click before the host drains
+    /// overwrites the previous id — only the most recent intent is
+    /// honoured, since older clicks are stale.
+    pub fn request_connect(&mut self, id: &str) {
+        self.pending_connect = Some(id.to_string());
+    }
+
+    /// Drain a pending "Connect" click, if any. Returns the id once and
+    /// then resets to `None`, so the host should call this on every
+    /// frame and forward the result into
+    /// [`crate::DbboardApp::switch_connection`].
+    pub fn take_pending_connect(&mut self) -> Option<String> {
+        self.pending_connect.take()
     }
 
     /// Switch to the Add form with empty fields.
@@ -288,7 +314,12 @@ impl ConnectionsView {
     /// Holds a `&mut ConnectionAdmin` for the duration of the call;
     /// the caller is responsible for guarding shared access (typically
     /// `Arc<Mutex<ConnectionAdmin>>` in the desktop binary).
-    pub fn ui(&mut self, ctx: &egui::Context, admin: &mut ConnectionAdmin) {
+    ///
+    /// `active_id` is the connection id currently bound to the running
+    /// server (ADR-0020). The active row is marked and its Connect
+    /// button disabled so the user does not re-trigger a swap to a
+    /// connection they are already on.
+    pub fn ui(&mut self, ctx: &egui::Context, admin: &mut ConnectionAdmin, active_id: &str) {
         if !self.is_open {
             return;
         }
@@ -298,12 +329,12 @@ impl ConnectionsView {
             .resizable(true)
             .default_width(420.0)
             .show(ctx, |ui| {
-                self.render(ui, admin);
+                self.render(ui, admin, active_id);
             });
         self.is_open = is_open;
     }
 
-    fn render(&mut self, ui: &mut egui::Ui, admin: &mut ConnectionAdmin) {
+    fn render(&mut self, ui: &mut egui::Ui, admin: &mut ConnectionAdmin, active_id: &str) {
         // The restart hint is always visible at the top so the user
         // can never mistake an Add for an in-process switch (ADR-0016).
         ui.label(t!("connections-restart-hint"));
@@ -311,7 +342,13 @@ impl ConnectionsView {
 
         match &mut self.mode {
             Mode::List => {
-                Self::render_list(ui, admin, &mut self.mode);
+                Self::render_list(
+                    ui,
+                    admin,
+                    &mut self.mode,
+                    &mut self.pending_connect,
+                    active_id,
+                );
             }
             Mode::Add(form) => {
                 let submit_now = render_add_form(ui, form);
@@ -351,7 +388,13 @@ impl ConnectionsView {
         }
     }
 
-    fn render_list(ui: &mut egui::Ui, admin: &mut ConnectionAdmin, mode: &mut Mode) {
+    fn render_list(
+        ui: &mut egui::Ui,
+        admin: &mut ConnectionAdmin,
+        mode: &mut Mode,
+        pending_connect: &mut Option<String>,
+        active_id: &str,
+    ) {
         if ui.button(t!("connections-add-button")).clicked() {
             *mode = Mode::Add(AddFormState::default());
             return;
@@ -368,7 +411,32 @@ impl ConnectionsView {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for entry in &entries {
                 ui.horizontal(|ui| {
-                    ui.label(format!("{} ({})", entry.name, kind_label(&entry.kind)));
+                    let is_active = entry.id == active_id;
+                    let label = if is_active {
+                        format!(
+                            "{} ({}) {}",
+                            entry.name,
+                            kind_label(&entry.kind),
+                            t!("connections-active-marker")
+                        )
+                    } else {
+                        format!("{} ({})", entry.name, kind_label(&entry.kind))
+                    };
+                    ui.label(label);
+                    // ADR-0020: the Connect button is the user-facing
+                    // entry point for an in-process adapter swap. The
+                    // active row's button is disabled — re-clicking it
+                    // would only rebuild the same adapter we already
+                    // have live.
+                    if ui
+                        .add_enabled(
+                            !is_active,
+                            egui::Button::new(t!("connections-connect-button")).small(),
+                        )
+                        .clicked()
+                    {
+                        *pending_connect = Some(entry.id.clone());
+                    }
                     if ui.small_button(t!("connections-edit-button")).clicked() {
                         *mode = Mode::Edit {
                             id: entry.id.clone(),
@@ -1313,5 +1381,33 @@ mod tests {
             }
             other => panic!("expected D1, got {other:?}"),
         }
+    }
+
+    // --- ADR-0020 in-process connection switching ---
+
+    #[test]
+    fn new_view_has_no_pending_connect_request() {
+        let mut view = ConnectionsView::new();
+        assert!(view.take_pending_connect().is_none());
+    }
+
+    #[test]
+    fn request_connect_records_id_then_taking_clears_it() {
+        let mut view = ConnectionsView::new();
+        view.request_connect("prod-pg");
+        assert_eq!(view.take_pending_connect().as_deref(), Some("prod-pg"));
+        // Drained: a subsequent take returns None until the next request.
+        assert!(view.take_pending_connect().is_none());
+    }
+
+    #[test]
+    fn request_connect_overwrites_a_prior_unread_request() {
+        // Two clicks before the host drains: only the most recent wins;
+        // older intent is stale and should not be replayed.
+        let mut view = ConnectionsView::new();
+        view.request_connect("a");
+        view.request_connect("b");
+        assert_eq!(view.take_pending_connect().as_deref(), Some("b"));
+        assert!(view.take_pending_connect().is_none());
     }
 }

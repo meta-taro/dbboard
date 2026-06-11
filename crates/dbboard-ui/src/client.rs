@@ -43,10 +43,19 @@ struct ErrorBody {
 }
 
 /// Decide which HTTP request a command becomes.
+///
+/// `SwitchConnection` is intentionally *not* an HTTP request — the swap
+/// is an in-process operation against the local server's `AppState`
+/// (ADR-0020). The worker short-circuits that variant before calling
+/// `request_for`, so reaching the panic arm would indicate a bug in
+/// the worker's dispatch order rather than user input.
 pub(crate) fn request_for(command: &Command) -> HttpRequest {
     match command {
         Command::ListTables => HttpRequest::GetTables,
         Command::Query(sql) => HttpRequest::PostQuery(sql.clone()),
+        Command::SwitchConnection { .. } => {
+            unreachable!("SwitchConnection is handled in the worker before request_for")
+        }
     }
 }
 

@@ -25,11 +25,18 @@ pub use history::{
     HistoryEntry, HistoryError, HistoryStatus, HistoryStore, PersistentHistoryStore,
     CURRENT_VERSION, DEFAULT_CAPACITY, ROTATION_BYTES, ROTATION_LINES,
 };
+pub use worker::ConnectionSwitcher;
+// Re-export so the desktop binary can implement [`ConnectionSwitcher`]
+// (return type `Result<(), DbError>`) without taking a direct dep on
+// `dbboard-core` — the architecture rule is that only the server and
+// adapters link to `dbboard-core` (see CLAUDE.md).
+pub use dbboard_core::DbError;
 
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Instant;
 
-use dbboard_core::{DbError, DbResult, QueryResult, TableInfo};
+use dbboard_core::{DbResult, QueryResult, TableInfo};
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
@@ -40,6 +47,11 @@ pub enum Command {
     ListTables,
     /// Run an arbitrary SQL statement entered in the editor.
     Query(String),
+    /// Swap the running server's adapter to the named connection
+    /// (ADR-0020). The id is the same one [`ConnectionAdmin`] uses;
+    /// resolving and connecting it is delegated to the binary via
+    /// [`worker::ConnectionSwitcher`].
+    SwitchConnection { id: String },
 }
 
 /// Result flowing worker → UI.
@@ -47,6 +59,19 @@ pub enum Command {
 pub enum Reply {
     Tables(DbResult<Vec<TableInfo>>),
     QueryResult(DbResult<QueryResult>),
+    /// The swap succeeded; the named connection is now active. The UI
+    /// uses this to update the active-row marker and to stamp `id` on
+    /// subsequent history records.
+    ConnectionSwitched {
+        id: String,
+    },
+    /// The swap failed; the previous adapter is still live. The id of
+    /// the failed target travels with the error so the UI can show
+    /// "could not connect to <id>".
+    SwitchFailed {
+        id: String,
+        error: DbError,
+    },
 }
 
 /// Captures everything we know at submit time about a query whose reply
@@ -73,8 +98,15 @@ pub struct DbboardApp {
     /// `drain_replies` path uses this to compute `duration_ms`.
     pending: Option<PendingSubmit>,
     /// Connection id stamped on every completion record (ADR-0017
-    /// `conn` field). Empty string for tests / in-memory-only flows.
+    /// `conn` field). Updated on every successful `ConnectionSwitched`
+    /// reply (ADR-0020) so subsequent history records carry the new id.
+    /// Empty string for tests / in-memory-only flows.
     conn_label: String,
+    /// Last `SwitchConnection` failure surfaced to the UI (id + error).
+    /// Cleared on the next successful switch. Independent of the main
+    /// query-result error path so a failed switch does not overwrite
+    /// the result panel.
+    last_switch_error: Option<(String, DbError)>,
     /// Wall-clock RFC 3339 source, injected.
     now_rfc3339: RfcClock,
     busy: bool,
@@ -97,6 +129,12 @@ impl DbboardApp {
     /// record. `now_rfc3339` is the wall-clock RFC 3339 timestamp source;
     /// the desktop binary supplies a real implementation, tests pass a
     /// fixed-string stub.
+    ///
+    /// `switcher` is the in-process bridge the worker calls when a
+    /// `SwitchConnection` command arrives (ADR-0020). The desktop
+    /// binary supplies an implementation that owns the live
+    /// [`AppState`](dbboard_server::AppState), the connection store,
+    /// and a runtime handle.
     #[must_use]
     pub fn connect(
         base_url: String,
@@ -104,10 +142,11 @@ impl DbboardApp {
         history: PersistentHistoryStore,
         conn_label: String,
         now_rfc3339: RfcClock,
+        switcher: Arc<dyn ConnectionSwitcher>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
         let (reply_tx, reply_rx) = mpsc::channel::<Reply>();
-        worker::spawn_worker(base_url, cmd_rx, reply_tx, egui_ctx);
+        worker::spawn_worker(base_url, cmd_rx, reply_tx, egui_ctx, switcher);
         Self::new(cmd_tx, reply_rx, history, conn_label, now_rfc3339)
     }
 
@@ -135,6 +174,7 @@ impl DbboardApp {
             history,
             pending: None,
             conn_label,
+            last_switch_error: None,
             now_rfc3339,
             busy: false,
             cmd_tx,
@@ -165,6 +205,21 @@ impl DbboardApp {
                     self.last_result = Some(r);
                     self.busy = false;
                 }
+                // ADR-0020: swap completed. Treat the new id as the
+                // active connection from now on — subsequent history
+                // records stamp it, and the active-row marker tracks
+                // it. Also refresh the sidebar since the new adapter
+                // may have a different schema.
+                Reply::ConnectionSwitched { id } => {
+                    self.conn_label = id;
+                    self.last_switch_error = None;
+                    let _ = self.cmd_tx.send(Command::ListTables);
+                }
+                // The previous adapter is still live; just surface the
+                // error and leave `conn_label` untouched.
+                Reply::SwitchFailed { id, error } => {
+                    self.last_switch_error = Some((id, error));
+                }
             }
         }
     }
@@ -191,6 +246,34 @@ impl DbboardApp {
     #[must_use]
     pub fn is_busy(&self) -> bool {
         self.busy
+    }
+
+    /// Request a switch to the named connection (ADR-0020). The actual
+    /// adapter rebuild + swap happens in the worker thread via the
+    /// [`worker::ConnectionSwitcher`] the binary injected at startup;
+    /// the UI just signals intent here. A `ConnectionSwitched` /
+    /// `SwitchFailed` reply lands on the next `drain_replies` pass.
+    pub fn switch_connection(&mut self, id: String) {
+        let _ = self.cmd_tx.send(Command::SwitchConnection { id });
+    }
+
+    /// Id of the connection currently active in the running server
+    /// (ADR-0020). Returns the empty string for the early bootstrap
+    /// window when no startup label was supplied (tests / in-memory).
+    #[must_use]
+    pub fn active_connection_id(&self) -> &str {
+        &self.conn_label
+    }
+
+    /// Last `SwitchConnection` failure, if any. Cleared on the next
+    /// successful switch. The id is the target the user asked for; the
+    /// `DbError` is the wire error. Surfaced read-only so the UI can
+    /// render "could not connect to <id>".
+    #[must_use]
+    pub fn last_switch_error(&self) -> Option<(&str, &DbError)> {
+        self.last_switch_error
+            .as_ref()
+            .map(|(id, err)| (id.as_str(), err))
     }
 
     /// Read-only view of the recently-run SQL statements (ADR-0014 /
@@ -783,6 +866,89 @@ mod tests {
         app.drain_replies();
 
         assert!(!path.exists() || std::fs::read_to_string(&path).unwrap().is_empty());
+    }
+
+    // --- ADR-0020 in-process connection switching ---
+
+    #[test]
+    fn switch_connection_sends_command_over_channel() {
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+        app.switch_connection("prod-pg".into());
+        let cmd = cmd_rx.try_recv().expect("SwitchConnection command emitted");
+        assert!(matches!(cmd, Command::SwitchConnection { id } if id == "prod-pg"));
+    }
+
+    #[test]
+    fn connection_switched_reply_updates_active_id_and_refreshes_tables() {
+        let (mut app, cmd_rx, reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+        reply_tx
+            .send(Reply::ConnectionSwitched {
+                id: "prod-pg".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        assert_eq!(app.active_connection_id(), "prod-pg");
+        assert!(app.last_switch_error().is_none());
+        // Side-effect: a follow-up ListTables runs so the sidebar
+        // reflects the new adapter's schema.
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("post-switch ListTables refresh emitted");
+        assert!(matches!(cmd, Command::ListTables));
+    }
+
+    #[test]
+    fn switch_failed_reply_records_error_without_changing_active_id() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        // `build()` leaves conn_label empty; record the value before the
+        // failure so we can assert it is untouched.
+        let before = app.active_connection_id().to_string();
+        reply_tx
+            .send(Reply::SwitchFailed {
+                id: "prod-pg".into(),
+                error: DbError::Connection("host unreachable".into()),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        assert_eq!(
+            app.active_connection_id(),
+            before,
+            "active id must not change on a failed swap"
+        );
+        let (id, err) = app
+            .last_switch_error()
+            .expect("failure surfaced via last_switch_error");
+        assert_eq!(id, "prod-pg");
+        assert_eq!(err.category(), "connection");
+    }
+
+    #[test]
+    fn successful_switch_clears_a_prior_switch_failure() {
+        let (mut app, cmd_rx, reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        reply_tx
+            .send(Reply::SwitchFailed {
+                id: "prod-pg".into(),
+                error: DbError::Connection("first try".into()),
+            })
+            .unwrap();
+        app.drain_replies();
+        assert!(app.last_switch_error().is_some());
+
+        reply_tx
+            .send(Reply::ConnectionSwitched {
+                id: "prod-pg".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+        assert!(
+            app.last_switch_error().is_none(),
+            "successful switch clears the prior failure"
+        );
     }
 
     #[test]

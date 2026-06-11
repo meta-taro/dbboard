@@ -39,3 +39,5 @@ connections-field-d1-token = API 權杖
 connections-field-pg-url = 連線 URL
 connections-replace-token = 替換權杖
 connections-replace-url = 替換 URL
+connections-connect-button = 連線
+connections-active-marker = （目前）
