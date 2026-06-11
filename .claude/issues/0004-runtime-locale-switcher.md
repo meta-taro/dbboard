@@ -1,8 +1,9 @@
 # 0004: Runtime locale switcher (revises ADR-0015)
 
-- **Status**: open
+- **Status**: open (unblocked)
 - **Phase**: 2 (UX polish, post ADR-0020)
 - **Opened**: 2026-06-04
+- **Unblocked**: 2026-06-11 (ADR-0020 merged in PR #14, `develop@209fd81`)
 
 ## Context
 
@@ -64,5 +65,7 @@ re-rendering).
   doesn't, this issue grows to include font re-registration.
 - No web mirror — same category as ADR-0015 / ADR-0020 (desktop-
   side UX, no contract change).
-- Blocked by: ADR-0020 implementation (in-process-mutation
-  precedent + the no-restart-needed wiring lessons).
+- ~~Blocked by: ADR-0020 implementation~~ — ADR-0020 shipped in PR #14
+  (`develop@209fd81`, 2026-06-11). The in-process-mutation precedent
+  and the `ConnectionSwitcher`-style trait wiring through
+  `Command`/`Reply` are the direct template for the locale switcher.

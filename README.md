@@ -119,6 +119,13 @@ with no configuration. The backend is chosen by, in priority order:
 See [`docs/connections.md`](docs/connections.md) for the connection-store
 schema and where the file lives per OS.
 
+Once registered, the **Connections** window (top menu bar) lets you
+add / edit / delete entries and swap the active connection on the
+running process — the per-row **Connect** button swaps the backend
+in-place, no app restart needed (in-flight requests intentionally
+finish on the old backend; new ones pick up the new one). See
+[ADR-0020](docs/decisions.md) for the swap semantics.
+
 ### Local Turso/libSQL (default)
 
 | Variable | Purpose | Default |
