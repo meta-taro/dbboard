@@ -41,3 +41,5 @@ connections-replace-token = 替換權杖
 connections-replace-url = 替換 URL
 connections-connect-button = 連線
 connections-active-marker = （目前）
+
+language-menu = 語言

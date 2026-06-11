@@ -41,3 +41,5 @@ connections-replace-token = トークンを置換
 connections-replace-url = URL を置換
 connections-connect-button = 接続
 connections-active-marker = （接続中）
+
+language-menu = 言語

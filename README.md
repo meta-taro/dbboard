@@ -126,6 +126,12 @@ in-place, no app restart needed (in-flight requests intentionally
 finish on the old backend; new ones pick up the new one). See
 [ADR-0020](docs/decisions.md) for the swap semantics.
 
+The same menu bar carries a **Language** / **言語** submenu listing
+the 11 shipped locales by their native names. Picking one swaps the
+UI language in place; the `DBBOARD_LANG` env var still drives the
+startup default and is unchanged by the runtime switcher. See
+[ADR-0022](docs/decisions.md).
+
 ### Local Turso/libSQL (default)
 
 | Variable | Purpose | Default |

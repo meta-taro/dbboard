@@ -53,3 +53,10 @@ connections-replace-url = Replace URL
 # and its Connect button is disabled.
 connections-connect-button = Connect
 connections-active-marker = (active)
+
+# ADR-0022: runtime locale switcher. The menu-bar label itself is
+# translated so a user who landed in the wrong locale still finds the
+# switcher; the submenu entries below it stay in each locale's native
+# name (`English`, `日本語`, `한국어`, …) which is hard-coded in
+# `apps/dbboard` rather than translated.
+language-menu = Language
