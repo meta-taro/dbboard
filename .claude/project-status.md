@@ -5,18 +5,92 @@
 
 ## 最終更新
 
-- 日付: 2026-06-11 (本セッション末、ADR-0020 PR #14 マージクローズ済 →
-  README + roadmap + issue 0004 + memory を 209fd81 整合状態に更新)
-- ブランチ: `develop` (= `origin/develop` = `209fd81`、fast-forward sync 済)
-- 現在の Phase: **ADR-0020 in-process connection switching シップ完了。
-  Phase 2 のスコープは ADR-0013/0014/0015/0016/0017/0020 で出揃った
-  (trait 抽出 / config 層 / 多言語 / 接続管理 UI / history 永続化 /
-  in-process swap)。Phase 3 (Neon/Supabase/Aurora DSQL) も既に done
-  (2026-06-04 / PR #11/#12/#13)。次セッションの分岐先は (a) Phase 4
-  AI integration 着手 / (b) issue 0004 runtime locale switcher (ADR-0020
-  パターンの直接ポート、unblocked) / (c) web 側 cross-repo 確認。**
+- 日付: 2026-06-11 (本セッション末、ADR-0022 runtime locale switcher
+  実装完了 → `feature/runtime-locale-switcher` ローカルにあり、push 待ち)
+- ブランチ: `feature/runtime-locale-switcher` (`develop` = `701422b` から
+  5 commit ぶん advance)
+- 現在の Phase: **ADR-0022 runtime locale switcher 実装完了。Phase 2.5
+  multilingual UI の残タスク (issue 0004) はこれで closed。Phase 2 +
+  Phase 2.5 + Phase 3 (Neon/Supabase/Aurora DSQL) すべて done。次の
+  分岐先は (a) Phase 4 AI integration 着手 / (b) web 側 cross-repo
+  (0003 NestJS / 0004 Postgres adapter / 0005 row cap など Phase 1
+  実装が web 側 Claude 担当で残っている)。**
 
-### ADR-0020 PR #14 マージクローズ (本セッション / 2026-06-11)
+### ADR-0022 runtime locale switcher 実装 (本セッション / 2026-06-11)
+
+ADR-0020 PR #14 マージクローズ直後、`develop@209fd81` を起点に
+`feature/runtime-locale-switcher` を切って issue 0004 を実装、
+合計 4 commit ぶん advance。
+
+本セッションで追加した commit (古い順):
+
+- `8ddd7e1` `feat(i18n): expose set_language / current_language for runtime swap (ADR-0022)`
+- `3be9845` `feat(i18n): add language-menu key across all 11 locales`
+- `1057ff7` `feat(ui): add Language submenu to the menu bar (ADR-0022)`
+- (4 つめ = 本コミット) `docs: ADR-0022 + supersede ADR-0015 startup-only + close issue 0004`
+
+実装の要点 (issue 0004 の予測より大幅にシンプル):
+
+- **`dbboard-i18n` API**: `init()` がすでに「Safe to call more than
+  once — later calls reselect without rebuilding the bundle cache」と
+  documented されており fluent-rs runtime swap は自前実装不要。新規
+  surface は `set_language(tag) -> Result<&'static FluentLanguageLoader,
+  I18nEmbedError>` (thin wrapper around `init(Some(tag))`) と
+  `current_language() -> LanguageIdentifier` の 2 関数のみ。
+  `Arc<RwLock<FluentBundle>>` 再設計は **不要**。`t!()` / `t_args!()`
+  マクロも変更なし。
+- **テスト**: `set_language_swaps_active_bundle_at_runtime` を追加、
+  ja → en → zh-CN を歩いて `t!("connect-button")` と
+  `current_language()` の両方が毎ステップ flip することを assert。
+  全 9 tests pass。
+- **`apps/dbboard/src/main.rs`**: `SUPPORTED_LOCALES: &[(&str, &str)]`
+  定数テーブル (タグ + native 名) + `language_menu(ui)` ヘルパー
+  関数。各エントリに「✓ 」/「    」で active 表示、クリックで
+  `set_language` + `ui.ctx().request_repaint()` + `ui.close()`。
+  メニューバーで Connections ボタンの直後に配置。
+- **Command/Reply パターンを採用しなかった**: locale switch は I/O
+  なし → UI スレッド同期実行 + `request_repaint()` が正解。worker
+  経由はレイテンシ追加するだけ。ADR-0022 "Alternatives considered"
+  に文書化。
+- **CJK font 再登録 不要**: `install_cjk_font` は egui の font stack
+  に CJK fallback を *append* するだけなので、ja/ko/zh-CN/zh-TW
+  すべて起動時 1 回の登録で covered。ja → zh-CN switch で tofu に
+  なる心配なし。
+- **egui 0.34 deprecation**: `ui.close_menu()` が deprecated になって
+  おり、pre-commit hook の `-D warnings` を通すため `ui.close()` に
+  修正。
+
+ドキュメント整合 (本コミットに同梱):
+
+- **docs/decisions.md**: ADR-0015 Status を「Superseded in part by
+  ADR-0022 (2026-06-11) for the 'startup-only resolution' decision」に
+  更新、その後に ADR-0022 を append (8 decisions / 5 alternatives /
+  8 consequences)。
+- **docs/roadmap.md**: Phase 2.5 に runtime switcher 完了の `[x]`
+  bullet 追加、exit criteria に「menu-bar Language submenu (ADR-0022)
+  switches it at runtime」追記。
+- **README.md**: Connections 段落の直後に「Language / 言語 submenu」
+  段落を追加 (ADR-0022 link)。
+- **.claude/issues/0004-runtime-locale-switcher.md**: Status →
+  closed、Closed 行追加、全 8 acceptance items `[x]`、Notes 全面
+  改訂 (実装が予測より simpler だった旨)。
+- **memory** (`dbboard-web-state.md` / `MEMORY.md`): ADR-0022 を
+  「web 側 mirror 不要」リストに追加 (ADR-0015/0020 と同じカテゴリ:
+  desktop 側 UX 変更で HTTP contract / JSON schema 影響なし)。
+
+次セッション分岐候補:
+
+- (a) **本ブランチ push & PR 作成** — user による push 待ち
+  (agent は push しない workflow rule)、PR タイトル候補
+  `feat(ui): runtime locale switcher (ADR-0022, closes #4)`。
+- (b) **Phase 4 着手** — `dbboard-ai` クレート + `AiProvider` trait
+  ADR から。Claude (Anthropic API) first provider、`Explain` /
+  `Suggest SQL from prompt` の 2 コマンド、graceful degradation。
+- (c) **web 側 cross-repo** — web 側 Claude が `0004` Postgres
+  adapter 着手 → `0009` (history schema impl) unblock。desktop 側
+  からは観察のみ。
+
+### ADR-0020 PR #14 マージクローズ (前セッション同日 / 2026-06-11)
 
 - PR #14 (`feature/in-process-connect-switching` → `develop`) マージ済 =
   `209fd81` (mergedAt 2026-06-11T08:34:03Z)。

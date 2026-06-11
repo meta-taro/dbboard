@@ -168,11 +168,17 @@ server-emitted text.
   category label
 - [x] `apps/dbboard` resolves the locale at startup and registers an
   OS-installed CJK font so `ja` / `ko` / `zh` users do not render tofu
+- [x] Runtime locale switcher (ADR-0022; Language / 言語 submenu in
+  the menu bar lists all 11 locales by native name and swaps the
+  active Fluent bundle in place. `DBBOARD_LANG` still wins at
+  startup; the switcher only mutates the current session. Closes the
+  "shipped 11 locales but no switcher" gap ADR-0015 left open.)
 
 Exit criteria: `DBBOARD_LANG=<tag>` switches every UI label to that
-locale at startup; `DbError` body text stays English (ADR-0009 HTTP
-contract); a malformed override falls back to the OS locale; an unknown
-locale falls back to `en` without aborting.
+locale at startup; the menu-bar Language submenu (ADR-0022) switches
+it at runtime in the running session; `DbError` body text stays English
+(ADR-0009 HTTP contract); a malformed override falls back to the OS
+locale; an unknown locale falls back to `en` without aborting.
 
 ## Phase 3 — Neon, Supabase, and Aurora DSQL adapters ✅ done (2026-06-04)
 

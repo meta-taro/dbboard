@@ -869,7 +869,7 @@ dedicated ADR will draft that contract change first.
 ## ADR-0015 — Multi-language support (11 locales, Stage 1)
 
 - **Date**: 2026-06-03
-- **Status**: accepted
+- **Status**: Superseded in part by [ADR-0022](#adr-0022--runtime-locale-switcher-revises-adr-0015s-startup-only-resolution) (2026-06-11) for the "startup-only resolution" decision (the runtime switcher mutates the active bundle in place). The locale list, the `fluent-rs` + `i18n-embed` framework choice, the `DBBOARD_LANG` startup precedence, and the CJK font strategy all remain in force.
 
 ### Context
 
@@ -1995,4 +1995,156 @@ connections, just *the ability to use the one they saved*.
   resolution; once ADR-0020 lands, the same in-process-mutation
   precedent makes a runtime locale switcher trivial — same shape,
   smaller blast radius).
+
+## ADR-0022 — Runtime locale switcher (revises ADR-0015's startup-only resolution)
+
+**Status:** Accepted (2026-06-11). Supersedes ADR-0015's "startup-only
+resolution" decision. The Stage 1 locale list, the `fluent-rs` +
+`i18n-embed` framework, the `DBBOARD_LANG` startup precedence, and
+the CJK font strategy all remain in force.
+
+### Context
+
+ADR-0015 (2026-06-03) shipped 11 locales but resolved them once at
+startup: `DBBOARD_LANG` → OS → `en`. Changing language required
+restarting the binary with a different env var. First-real-world-use
+feedback (2026-06-04, the same review session that produced
+ADR-0020): "11 言語に対応したのに切り替えのメニューバーもないですね"
+— a multilingual UI without a switcher reads as "shipped capability,
+missing UX". Same shape as the ADR-0016 → ADR-0020 dead-end the
+connections window had.
+
+The fix was queued as `.claude/issues/0004-runtime-locale-switcher.md`
+with one explicit blocker: wait until ADR-0020 lands so the
+in-process-mutation precedent (mutate a running process's global state,
+no restart) is established. ADR-0020 shipped in PR #14 on 2026-06-11;
+this ADR captures the now-unblocked switcher.
+
+### Decision
+
+1. **The menu bar gains a Language submenu** next to the Connections
+   button. The submenu label is **translated** (`Language` / `言語` /
+   `언어` / `语言` / `語言` / `Sprache` / `Langue` / `Idioma` /
+   `Idioma` / `Язык` / `Lingua`) so a user who landed in the wrong
+   locale can still recognise the entry point.
+
+2. **Submenu entries are the 11 ADR-0015 locales by their native
+   names** (`English`, `日本語`, `한국어`, `中文 (简体)`,
+   `中文 (繁體)`, `Deutsch`, `Français`, `Español`,
+   `Português (Brasil)`, `Русский`, `Italiano`). The active locale
+   gets a `✓` prefix. Order is fixed (Tier 1 then Tier 2 from
+   ADR-0015) so the list does not reshuffle as the active locale
+   changes.
+
+3. **Switching is in-process and synchronous on the UI thread.**
+   Clicking a row calls `dbboard_i18n::set_language(tag)` directly,
+   which delegates to the same `i18n_embed::select` the startup path
+   uses. No `Command` / `Reply` round trip — unlike ADR-0020's
+   connection switch there is no I/O, no adapter rebuild, just a
+   reselect against an already-loaded bundle cache. The UI then asks
+   egui for `request_repaint()` so the next frame redraws every
+   `t!()` against the new bundle.
+
+4. **`DBBOARD_LANG` still wins at startup.** The startup precedence
+   from ADR-0015 (`DBBOARD_LANG` → OS → `en`) is unchanged. The
+   runtime switcher only mutates the *current session*. Setting
+   `DBBOARD_LANG=ja` and then picking `Deutsch` from the menu gives
+   you `de` for the rest of the session and `ja` again on next launch.
+
+5. **No persistence of "last picked" locale.** Same shape as
+   ADR-0020's "no persistence of last-active connection" — runtime
+   selection is per-session. A future ADR may persist a "last
+   active locale" hint if usage data argues for it; until then
+   `DBBOARD_LANG` is the persistence story.
+
+6. **Native names are constants in `apps/dbboard`, not translation
+   keys.** `日本語` is the same string regardless of which locale
+   the menu is currently rendering in. Putting native names in
+   `.ftl` files would either duplicate them across 11 files
+   (wasteful, prone to drift) or pin them to one locale and hide
+   the affordance for misrouted users. Native-name-of-self does not
+   translate per active locale — by design, it is the recognition
+   signal.
+
+7. **No CJK font re-registration.** `apps/dbboard`'s startup
+   `install_cjk_font` *appends* a CJK fallback to egui's font stack
+   (ADR-0015). The stack covers every CJK locale at once; a
+   `ja` → `zh-CN` switch does not need a different font. Latin and
+   Cyrillic are covered by the bundled `Ubuntu-Light` regardless of
+   locale.
+
+8. **No HTTP contract change, no web mirror.** Same category as
+   ADR-0015 / ADR-0016 / ADR-0020: a desktop-side presentation-only
+   change. `DbError` text stays English (the ADR-0009 wire contract).
+   `dbboard-web-state.md` records this as another "no mirror
+   needed" entry.
+
+### Alternatives considered
+
+- **Route the switch through ADR-0020's `Command` / `Reply` channel
+  pair.** Rejected: locale switching has no I/O and does not need
+  the worker thread. Going through the channel would add a frame of
+  UI lag (the worker has to deliver `Reply::LocaleSwitched` before
+  the UI repaints), serialise it behind in-flight `RunQuery`
+  traffic, and require a new `Command::SwitchLocale` variant for
+  no payoff. The mutation is local and synchronous; treat it that
+  way.
+
+- **Persist the runtime-picked locale across launches.** Deferred.
+  Same reasoning as ADR-0020's "no persistence" decision: ship the
+  minimum, watch usage, add persistence later if the data argues
+  for it. Until then `DBBOARD_LANG` is the durable override.
+
+- **Restart the process to apply the new locale (a Language
+  submenu that re-launches the binary).** Rejected on first
+  principles — ADR-0020 already established that "first-use
+  feedback shows users expect a Connect button to act on the
+  current window". A restart for a label-only change is even less
+  defensible than a restart for an adapter change.
+
+- **Translate native names per active locale (`Japanese` /
+  `Japonais` / `Japanisch` / …).** Rejected: the recognition
+  signal *is* the locale's name in itself. Translating it removes
+  the affordance for a user who cannot read the current locale.
+
+- **Add `ar` / `hi` along with the switcher.** Still rejected;
+  same Stage 2 deferral as ADR-0015. The switcher does not change
+  the Stage 1 locale set.
+
+### Consequences
+
+- `dbboard-i18n` gains `set_language(tag: &str)` and
+  `current_language() -> LanguageIdentifier`. Both delegate to the
+  global `FluentLanguageLoader`; the existing `init()` already
+  supports reselect, so the surface change is only ergonomic. A
+  unit test covers a `ja → en → zh-CN` swap and asserts both
+  `t!()` output and `current_language()` flip on every step.
+- A new translation key `language-menu` is added to all 11
+  `.ftl` files for the menu-bar label. No other translation keys
+  change. ADR-0015 tier 1 + tier 2 stay in sync (the rule from
+  ADR-0020's `Consequences` block).
+- `apps/dbboard` gains a `SUPPORTED_LOCALES: &[(&str, &str)]`
+  constant table and a `language_menu` UI helper next to
+  `install_cjk_font`. The menu bar wiring is one extra call inside
+  the existing `egui::MenuBar::new().ui(...)`.
+- `dbboard-ui` is unchanged. The switcher lives entirely in
+  `apps/dbboard` (the binary) because `dbboard-ui` is
+  binary-agnostic by design (ADR-0002, ADR-0009).
+- ADR-0015 status block is updated to "Superseded in part by
+  ADR-0022 for the startup-only resolution". The rest of ADR-0015
+  (locale list, framework, env precedence, font strategy) is
+  unchanged.
+- Roadmap: no new phase. UX polish on Phase 2 — same row category
+  as ADR-0020. `docs/roadmap.md` Phase 2 entry adds a short
+  parenthetical noting ADR-0022 closes the runtime-switcher gap
+  ADR-0015 left open.
+- `.claude/issues/0004-runtime-locale-switcher.md` closes against
+  this ADR.
+- `dbboard-web` sibling: **no contract or wire change**. ADR-0022
+  joins the ADR-0013 / ADR-0015 / ADR-0016 / ADR-0018 / ADR-0019 /
+  ADR-0020 / ADR-0021 desktop-side-only category. No `0NNN-web-*`
+  issue file.
+- SemVer impact (ADR-0011): additive. The
+  `set_language` / `current_language` API on `dbboard-i18n` is new;
+  nothing existing changes signature.
 
