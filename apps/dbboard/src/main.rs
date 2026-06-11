@@ -38,6 +38,29 @@ use dbboard_ui::{
     DEFAULT_CAPACITY,
 };
 use time::format_description::well_known::Rfc3339;
+
+/// Locales offered by the runtime language switcher (ADR-0022). The
+/// tag must match a shipped `dbboard-i18n` locale folder; the second
+/// element is the locale's name written *in itself* (`日本語` for
+/// Japanese, `한국어` for Korean) and is intentionally **not**
+/// translated — a user who landed in the wrong locale at startup must
+/// be able to spot their language without already reading it.
+///
+/// Order is fixed (Tier 1 then Tier 2 from ADR-0015) so the submenu
+/// does not reshuffle as the active locale changes.
+const SUPPORTED_LOCALES: &[(&str, &str)] = &[
+    ("en", "English"),
+    ("ja", "日本語"),
+    ("ko", "한국어"),
+    ("zh-CN", "中文 (简体)"),
+    ("zh-TW", "中文 (繁體)"),
+    ("de", "Deutsch"),
+    ("fr", "Français"),
+    ("es", "Español"),
+    ("pt-BR", "Português (Brasil)"),
+    ("ru", "Русский"),
+    ("it", "Italiano"),
+];
 use time::OffsetDateTime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -188,6 +211,7 @@ impl eframe::App for DesktopApp {
                 if self.admin.is_some() && ui.button(t!("connections-window-title")).clicked() {
                     self.connections.open();
                 }
+                language_menu(ui);
             });
         });
         if let Some(admin) = &self.admin {
@@ -276,6 +300,38 @@ fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default()
+}
+
+/// Render the runtime locale switcher submenu inside the menu bar
+/// (ADR-0022). One row per [`SUPPORTED_LOCALES`] entry: the active
+/// locale is prefixed with `✓`, the rest with two non-breaking spaces
+/// so every label lines up. Clicking a row swaps the global Fluent
+/// loader in place via [`dbboard_i18n::set_language`] and asks egui
+/// for a repaint so the next frame redraws every string against the
+/// new bundle.
+///
+/// Swap failures (e.g. a malformed `.ftl` in a freshly added locale)
+/// are logged but non-fatal — the previous locale stays selected so
+/// the UI keeps painting.
+fn language_menu(ui: &mut egui::Ui) {
+    ui.menu_button(t!("language-menu"), |ui| {
+        let current = dbboard_i18n::current_language().to_string();
+        for (tag, native) in SUPPORTED_LOCALES {
+            // BCP-47 region subtags are upper-case by convention but
+            // both sides come from string literals; case-insensitive
+            // compare is the defensive choice if `unic-langid` ever
+            // normalises differently.
+            let active = current.eq_ignore_ascii_case(tag);
+            let prefix = if active { "✓ " } else { "    " };
+            if ui.button(format!("{prefix}{native}")).clicked() {
+                if let Err(e) = dbboard_i18n::set_language(tag) {
+                    eprintln!("dbboard: locale switch to {tag} failed: {e}");
+                }
+                ui.ctx().request_repaint();
+                ui.close();
+            }
+        }
+    });
 }
 
 /// Look up an OS-installed CJK font and append it to egui's font stack
