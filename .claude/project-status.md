@@ -5,21 +5,64 @@
 
 ## 最終更新
 
-- 日付: 2026-06-05 (本セッション末、ADR-0020 in-process connection
-  switching の最終 UI 配線 (#48) 完了、verify ゲート (#50 自動部) も全 green、
-  push 待ち)
-- ブランチ: `feature/in-process-connect-switching` (= `develop` (`d7c58ad`)
-  から分岐、ADR-0020 + issue 0004 同居、新たに #48 を 6f63382 で commit、
-  本ブランチ累計 10 commit + close-out 用 status 更新、workspace tests
-  全 green、`cargo build --release` + `cargo test --all-features
-  --release` も green、未 push)
-- 現在の Phase: **ADR-0020 in-process connection switching 完了。
-  fd3e36f (server `swap_backend`) → 0237a45 (UI worker
-  `Command::SwitchConnection` + DesktopSwitcher 配線) → 6f63382
-  (Connections フォームに per-row `Connect` ボタン) の 3 機能 commit。
-  以降の人間タスクは push + PR open + 任意の手動接続切替確認 (#50)。**
+- 日付: 2026-06-11 (本セッション末、ADR-0020 PR #14 マージクローズ済 →
+  README + roadmap + issue 0004 + memory を 209fd81 整合状態に更新)
+- ブランチ: `develop` (= `origin/develop` = `209fd81`、fast-forward sync 済)
+- 現在の Phase: **ADR-0020 in-process connection switching シップ完了。
+  Phase 2 のスコープは ADR-0013/0014/0015/0016/0017/0020 で出揃った
+  (trait 抽出 / config 層 / 多言語 / 接続管理 UI / history 永続化 /
+  in-process swap)。Phase 3 (Neon/Supabase/Aurora DSQL) も既に done
+  (2026-06-04 / PR #11/#12/#13)。次セッションの分岐先は (a) Phase 4
+  AI integration 着手 / (b) issue 0004 runtime locale switcher (ADR-0020
+  パターンの直接ポート、unblocked) / (c) web 側 cross-repo 確認。**
 
-### ADR-0020 in-process connection switching (本セッション / 2026-06-05)
+### ADR-0020 PR #14 マージクローズ (本セッション / 2026-06-11)
+
+- PR #14 (`feature/in-process-connect-switching` → `develop`) マージ済 =
+  `209fd81` (mergedAt 2026-06-11T08:34:03Z)。
+- リモート `feature/in-process-connect-switching` は GitHub 側で削除済
+  (`git fetch --prune` で `[deleted] (none) -> origin/feature/in-process
+  -connect-switching` 確認)。ローカル feature ブランチも `git branch -d`
+  済 (was `85e0cae`)。
+- ローカル `develop` は `origin/develop` (= `209fd81`) と fast-forward
+  sync 済 (`cdb35bc..209fd81`、8 commit ぶん advance)。
+- README / docs/roadmap / .claude/issues/0004 / memory を一括で
+  209fd81 整合状態に更新:
+  - **README.md**: connections.toml 説明の直後に「Connections ウィンドウ
+    + per-row Connect ボタンでリスタート不要に in-place swap」の段落を
+    追加 (ADR-0020 link)。
+  - **docs/roadmap.md**: Phase 2 末尾に ADR-0020 done 行を追加、Phase 3
+    exit criteria の「without restarting the app」に「(the in-process
+    swap mechanism is delivered by ADR-0020 under Phase 2)」と補足。
+  - **.claude/issues/0004-runtime-locale-switcher.md**: Status を
+    「open (unblocked)」に、`Blocked by` 行を取り消し線で残しつつ
+    「PR #14 でブロック解除、ConnectionSwitcher パターンが直接の
+    テンプレート」と上書き。
+  - **memory** (`dbboard-web-state.md` / `MEMORY.md`): anchor を
+    `desktop@209fd81 / 2026-06-11` に更新、ADR-0020 用「web 側 mirror
+    不要」セクションを追加 (ADR-0019/0021 と同じカテゴリ)、MEMORY.md
+    index 行を対応更新。
+- web 側への影響: **HTTP contract: 変更なし**、**history JSON schema:
+  変更なし**。swap は server 内部の `AppState` 更新のみ。web 側 mirror
+  brief 不要。
+- 次セッション分岐候補:
+  - (a) **Phase 4 着手** — `dbboard-ai` クレート + `AiProvider` trait の
+    ADR 起票から。Claude (Anthropic API) を first provider、`Explain` /
+    `Suggest SQL from prompt` の 2 コマンド、Graceful degradation
+    (provider 未設定時は AI パネル非表示)。
+  - (b) **issue 0004 runtime locale switcher** — ADR-0020 unblocked。
+    fluent-rs runtime swap + `Arc<RwLock<FluentBundle>>` + egui
+    `request_repaint()`。font 再登録の要否は実装中に判断。先行 ADR
+    起票 (ADR-0015 の startup-only 決定を partial supersede) が必要。
+  - (c) **web 側 cross-repo** — web 側 Claude が `0004` Postgres adapter
+    着手すると `0009` (history schema impl) が unblock される。desktop
+    側からは観察のみで OK、impl は web 側担当。
+
+---
+
+## 以下は過去セッションの記録 (履歴目的、整合性は最新セッション側を優先)
+
+### ADR-0020 in-process connection switching (前セッション / 2026-06-05)
 
 `develop` (= `d7c58ad`) から `feature/in-process-connect-switching`
 (ADR-0020 + issue 0004 と同居) で `swap_backend` server API → UI
