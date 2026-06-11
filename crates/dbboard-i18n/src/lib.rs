@@ -138,6 +138,32 @@ pub fn init(
     Ok(loader)
 }
 
+/// Switch the global loader to the given BCP-47 tag at runtime
+/// (ADR-0022). Thin wrapper over [`init`] — kept separate so the
+/// runtime-switch call site in the menu bar reads as a mutation rather
+/// than a startup initialisation, and so a future refactor of the
+/// startup path can change without disturbing the switcher.
+///
+/// # Errors
+///
+/// Same as [`init`].
+pub fn set_language(
+    tag: &str,
+) -> Result<&'static FluentLanguageLoader, i18n_embed::I18nEmbedError> {
+    init(Some(tag))
+}
+
+/// The locale currently selected on the global loader.
+///
+/// Drives the active-row check mark in the runtime language switcher
+/// (ADR-0022). The returned identifier reflects whatever [`init`] /
+/// [`set_language`] last selected, falling back to the loader's
+/// hard-coded `en` before any selection has happened.
+#[must_use]
+pub fn current_language() -> LanguageIdentifier {
+    loader_init().current_language()
+}
+
 /// Re-exports used by the [`t!`] / [`t_args!`] macros. Kept under
 /// `__private` so callers do not depend on `fluent-bundle` types
 /// transitively.
@@ -270,5 +296,29 @@ mod tests {
         let loader = init(Some("xx")).expect("init must not error on unknown locale");
         let v = loader.get("tables-heading");
         assert_eq!(v, "Tables", "fell back to en");
+    }
+
+    #[test]
+    fn set_language_swaps_active_bundle_at_runtime() {
+        // ADR-0022: a runtime switch from ja → en → zh-CN must update
+        // both `t!()` lookups and `current_language()` reporting on
+        // every step, without rebuilding the loader. This is the
+        // contract the menu-bar switcher in apps/dbboard relies on.
+        let _g = LOADER_GUARD.lock().unwrap();
+
+        set_language("ja").expect("ja must swap in");
+        assert!(current_language().to_string().starts_with("ja"));
+        let ja = loader().get("tables-heading");
+        assert_ne!(ja, "Tables", "ja must differ from en");
+
+        set_language("en").expect("en must swap in");
+        assert!(current_language().to_string().starts_with("en"));
+        assert_eq!(loader().get("tables-heading"), "Tables");
+
+        set_language("zh-CN").expect("zh-CN must swap in");
+        assert!(current_language().to_string().starts_with("zh"));
+        let zh = loader().get("tables-heading");
+        assert_ne!(zh, "Tables", "zh-CN must differ from en");
+        assert_ne!(zh, ja, "zh-CN must differ from ja");
     }
 }

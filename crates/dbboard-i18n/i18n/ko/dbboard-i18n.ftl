@@ -41,3 +41,5 @@ connections-replace-token = 토큰 교체
 connections-replace-url = URL 교체
 connections-connect-button = 연결
 connections-active-marker = (활성)
+
+language-menu = 언어
