@@ -5,18 +5,44 @@
 
 ## 最終更新
 
-- 日付: 2026-06-11 (本セッション末、ADR-0022 runtime locale switcher
-  実装完了 → `feature/runtime-locale-switcher` ローカルにあり、push 待ち)
-- ブランチ: `feature/runtime-locale-switcher` (`develop` = `701422b` から
-  5 commit ぶん advance)
-- 現在の Phase: **ADR-0022 runtime locale switcher 実装完了。Phase 2.5
-  multilingual UI の残タスク (issue 0004) はこれで closed。Phase 2 +
-  Phase 2.5 + Phase 3 (Neon/Supabase/Aurora DSQL) すべて done。次の
-  分岐先は (a) Phase 4 AI integration 着手 / (b) web 側 cross-repo
-  (0003 NestJS / 0004 Postgres adapter / 0005 row cap など Phase 1
-  実装が web 側 Claude 担当で残っている)。**
+- 日付: 2026-06-11 (PR #16 マージクローズ済 → `develop@99c11b0` 整合、
+  本コミットは post-merge doc sync)
+- ブランチ: `chore/post-pr16-doc-sync` (`develop` = `99c11b0` から
+  1 commit ぶん advance、push 待ち)
+- 現在の Phase: **Phase 2.5 multilingual UI 完了 (ADR-0015 + ADR-0022)。
+  Phase 2 (ADR-0013/0014/0015/0016/0017/0020) + Phase 2.5 (ADR-0015
+  + ADR-0022) + Phase 3 (Neon/Supabase/Aurora DSQL, ADR-0018/0019/0021)
+  すべて done。次の分岐先は (a) Phase 4 AI integration 着手 (`dbboard-ai`
+  + `AiProvider` trait ADR) / (b) web 側 cross-repo (0004 Postgres
+  adapter / 0005 row cap / 0009 history schema impl)。**
 
-### ADR-0022 runtime locale switcher 実装 (本セッション / 2026-06-11)
+### PR #16 (ADR-0022) マージクローズ (本セッション / 2026-06-11)
+
+- PR #16 (`feature/runtime-locale-switcher` → `develop`) マージ済 =
+  `99c11b0` (mergedAt 2026-06-11T09:40:38Z)。
+- リモート `feature/runtime-locale-switcher` は GitHub 側で削除済
+  (`git fetch --prune` で `[deleted] (none) -> origin/feature/runtime-
+  locale-switcher` 確認)。ローカル feature ブランチも `git branch -d`
+  済 (was `135cf79`)。
+- ローカル `develop` は `origin/develop` (= `99c11b0`) と fast-forward
+  sync 済 (`701422b..99c11b0`、4 commit ぶん advance)。
+- 本ブランチ (`chore/post-pr16-doc-sync`) は project-status と memory
+  の anchor 更新のみの 1 commit。push & merge は別 PR。
+- web 側への影響: **HTTP contract / JSON schema 変更なし**。web mirror
+  brief 不要 (memory `dbboard-web-state.md` ADR-0022 セクション参照)。
+- 次セッション分岐候補:
+  - (a) **Phase 4 着手** — `dbboard-ai` クレート + `AiProvider` trait
+    ADR から。Claude (Anthropic API) を first provider、`Explain` /
+    `Suggest SQL from prompt` の 2 コマンド、graceful degradation
+    (provider 未設定時は AI パネル非表示)。
+  - (b) **web 側 cross-repo** — web 側 Claude が `0004` Postgres
+    adapter 着手 → `0009` (history schema impl) unblock。desktop 側
+    からは観察のみで OK。
+  - (c) **後続 UX 磨き** — locale 永続化 (last-active hint 保存)、
+    Tier 2 (ar / hi) lockstep lift、ConnectionAdmin の add/edit UI
+    の小磨きなど。currently 緊急性なし。
+
+### ADR-0022 runtime locale switcher 実装 (前セッション同日 / 2026-06-11)
 
 ADR-0020 PR #14 マージクローズ直後、`develop@209fd81` を起点に
 `feature/runtime-locale-switcher` を切って issue 0004 を実装、
