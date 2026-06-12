@@ -5,18 +5,140 @@
 
 ## 最終更新
 
-- 日付: 2026-06-11 (本セッション末、ADR-0022 runtime locale switcher
-  実装完了 → `feature/runtime-locale-switcher` ローカルにあり、push 待ち)
-- ブランチ: `feature/runtime-locale-switcher` (`develop` = `701422b` から
-  5 commit ぶん advance)
-- 現在の Phase: **ADR-0022 runtime locale switcher 実装完了。Phase 2.5
-  multilingual UI の残タスク (issue 0004) はこれで closed。Phase 2 +
-  Phase 2.5 + Phase 3 (Neon/Supabase/Aurora DSQL) すべて done。次の
-  分岐先は (a) Phase 4 AI integration 着手 / (b) web 側 cross-repo
-  (0003 NestJS / 0004 Postgres adapter / 0005 row cap など Phase 1
-  実装が web 側 Claude 担当で残っている)。**
+- 日付: 2026-06-11 (Phase 4 着手準備セッション末、ADR-0023 設計判断
+  確定 → 本文起草前に session 区切り、ユーザ usage limit 接近で停止)
+- ブランチ: 2 本が push 待ち状態:
+  - `chore/post-pr16-doc-sync` — `fb6085d` (PR #16 マージクローズの
+    status / memory 同期) + 本コミット (本セッション末記録) の 2 commit
+  - `docs/adr-0023-ai-provider-trait` — `develop@99c11b0` から切ったまま
+    0 commit (ADR 本文未起草)
+- 現在の Phase: **Phase 4 (AI integration, optional layer) 起票準備中。
+  ADR-0023 の設計判断はピン留め済 (下記セクション参照)、本文・issue
+  0005 起票・roadmap 更新は次セッションで実施。Phase 2 + 2.5 + 3 は
+  すべて done。**
 
-### ADR-0022 runtime locale switcher 実装 (本セッション / 2026-06-11)
+### Phase 4 (ADR-0023) 起票準備 (本セッション / 2026-06-11)
+
+ユーザ指示 (`(a) Phase 4 dbboard-ai ADR 起票お願いします。`) を
+受けて `develop@99c11b0` から `docs/adr-0023-ai-provider-trait` を
+切り、設計判断を固めた段階で usage limit 接近のため区切り終了。
+ADR 本文・issue 0005・roadmap / status 更新は次セッション。
+
+**ピン留め済の設計判断** (次セッションで `docs/decisions.md` 末尾に
+ADR-0023 として append する内容):
+
+- **Status**: Accepted (2026-06-11)
+- **Crate 構造**: `dbboard-ai` (trait only、I/O なし、`dbboard-core`
+  と同じレイヤリング方針) + 初実装 `dbboard-anthropic` (reqwest +
+  Anthropic API)。adapter パターンの機械的再利用 — `dbboard-core` /
+  `dbboard-turso` / `dbboard-postgres` / `dbboard-d1` の関係を AI 層
+  にミラー。
+- **`AiProvider` trait shape**: `async_trait` + `Send + Sync`、
+  `fn id() -> &'static str` (e.g. `"anthropic"`)、`fn capabilities()
+  -> AiCapabilities` (flat bool struct、`DatabaseAdapter::capabilities`
+  と同型)、Stage 1 surface は 2 必須メソッド:
+  - `async fn explain(req: &ExplainRequest) -> AiResult<AiResponse>`
+  - `async fn suggest_sql(req: &SuggestRequest) -> AiResult<AiResponse>`
+  - object-safe (`Arc<dyn AiProvider>` 想定)。streaming 用 optional
+    capability accessor (`fn streaming(&self) -> Option<&dyn
+    StreamingProvider>`) は Stage 2 ADR の余地として trait に残す
+    構造を採るが Stage 1 では追加しない。
+- **配線**: **HTTP contract 不変**。AI 呼び出しは `dbboard-server`
+  を介さず `apps/dbboard` バイナリで `Option<Arc<dyn AiProvider>>`
+  を構築し UI worker に渡す in-process 方式 (ADR-0020 swap_backend
+  / ADR-0022 set_language と同じ desktop-side-only カテゴリ)。理由:
+  ループバック HTTP 経由はレイテンシ追加するだけ + DTO 層が増える +
+  web 側は別 provider story (NestJS 内) なので contract 共有しても
+  benefit ない。
+- **First provider**: Claude (Anthropic API)。default model は
+  `claude-sonnet-4-6` (rules/performance.md "Best coding model")。
+  Stage 1 では model は env var で override 可能、ハードコード fallback
+  あり。
+- **設定**: Stage 1 は **`DBBOARD_ANTHROPIC_API_KEY` env var のみ**。
+  Settings UI / `ai-providers.toml` 永続化 / SecretStore 統合は
+  **Stage 2 ADR** に分離 (ADR-0013 connections.toml が Stage 2 の
+  template になる)。env var 未設定なら provider 構築失敗 → graceful
+  degradation 経路へ。
+- **Graceful degradation**: provider 未構築 (`None`) なら UI は AI
+  panel を render しない。runtime fallback (provider 故障で AI 機能
+  だけ無効化) はやらない — env var の有無が toggle。
+- **Stage 1 commands**:
+  1. "Explain this query" — 現在の SQL を AI に渡して自然言語の解説
+     を返す。schema 不要、SQL だけ。
+  2. "Suggest SQL from prompt" — 自然言語プロンプト + 現在の
+     `list_tables` 結果 (`Vec<TableInfo>`) を schema snapshot として
+     AI に渡し、SQL を返す。full DDL extraction は Stage 2 (`DatabaseAdapter`
+     に `dump_schema` 追加が必要)。
+- **エラー型**: `AiError` enum を新設 (`Configuration` / `Network`
+  / `Provider` / `Quota` / `Cancelled`)。`DbError` と独立、HTTP contract
+  に乗らないので translation 層も不要。
+- **Defer (Stage 2 以降)**: streaming、token budget meter、multi-provider
+  switcher UI、ai-providers.toml + keychain SecretStore、history への
+  AI 呼び出し記録、conversation history 保持、`dump_schema` extension。
+- **Web mirror**: 不要。ADR-0013 / 0015 / 0016 / 0018 / 0019 / 0020 /
+  0021 / 0022 と同じ desktop-side-only カテゴリ (HTTP contract /
+  JSON schema 変更なし)。web 側は独自の provider story を持つので
+  `0NNN-web-ai-mirror` brief は作らない。
+- **SemVer impact** (ADR-0011): additive。新規 crate 2 つ追加、既存
+  signature 不変、新規 env var のみ。
+
+**次セッション再開タスク** (順序):
+1. `docs/decisions.md` に ADR-0023 を append (ADR-0022 末尾の後ろ、
+   format は ADR-0022 と完全同型: Status / Context / Decision 番号
+   付き / Alternatives considered / Consequences / SemVer impact)
+2. `.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`
+   を起票 (issue 0004 の closure pattern を参考)
+3. `docs/roadmap.md` Phase 4 セクション (lines 223-236) に ADR-0023
+   リファレンスを追加。Phase 4 bullet 自体は `[ ]` のまま (trait
+   決定のみ shipped、impl 未着手)
+4. 本ファイル `.claude/project-status.md` の本セクションを「ADR-0023
+   起票完了」状態に更新
+5. 単一 docs commit: `docs: ADR-0023 dbboard-ai provider trait + open
+   issue 0005`
+6. 人間が push & PR 作成 (agent-commits-human-pushes rule)
+
+**Open design questions** (PR レビューで decide すれば良いもの、
+ADR drafting 時点で先送り):
+- `dbboard-anthropic` 内部の HTTP client は reqwest 直叩きか
+  `anthropic-rs` 等の community crate か (Anthropic 公式 Rust SDK は
+  まだない)
+- `ExplainRequest` / `SuggestRequest` に dialect hint (`"postgres"` /
+  `"sqlite"` / `"d1-sql"`) を入れるかどうか (たぶん入れる)
+- AI worker thread を query worker と分けるか共有するか (Stage 1 は
+  共有で YAGNI、レイテンシ問題出たら Stage 2 で分離 ADR)
+
+**並行して push 待ちの別件**:
+- `chore/post-pr16-doc-sync@fb6085d` — PR #16 マージクローズの
+  status / memory 同期 commit。本セッション末記録 (本コミット) を
+  乗せた 2 commit ぶん。1 PR としてまとめて push 可。
+
+### PR #16 (ADR-0022) マージクローズ (前セッション同日 / 2026-06-11)
+
+- PR #16 (`feature/runtime-locale-switcher` → `develop`) マージ済 =
+  `99c11b0` (mergedAt 2026-06-11T09:40:38Z)。
+- リモート `feature/runtime-locale-switcher` は GitHub 側で削除済
+  (`git fetch --prune` で `[deleted] (none) -> origin/feature/runtime-
+  locale-switcher` 確認)。ローカル feature ブランチも `git branch -d`
+  済 (was `135cf79`)。
+- ローカル `develop` は `origin/develop` (= `99c11b0`) と fast-forward
+  sync 済 (`701422b..99c11b0`、4 commit ぶん advance)。
+- 本ブランチ (`chore/post-pr16-doc-sync`) は project-status と memory
+  の anchor 更新のみの 1 commit。push & merge は別 PR。
+- web 側への影響: **HTTP contract / JSON schema 変更なし**。web mirror
+  brief 不要 (memory `dbboard-web-state.md` ADR-0022 セクション参照)。
+- 次セッション分岐候補:
+  - (a) **Phase 4 着手** — `dbboard-ai` クレート + `AiProvider` trait
+    ADR から。Claude (Anthropic API) を first provider、`Explain` /
+    `Suggest SQL from prompt` の 2 コマンド、graceful degradation
+    (provider 未設定時は AI パネル非表示)。
+  - (b) **web 側 cross-repo** — web 側 Claude が `0004` Postgres
+    adapter 着手 → `0009` (history schema impl) unblock。desktop 側
+    からは観察のみで OK。
+  - (c) **後続 UX 磨き** — locale 永続化 (last-active hint 保存)、
+    Tier 2 (ar / hi) lockstep lift、ConnectionAdmin の add/edit UI
+    の小磨きなど。currently 緊急性なし。
+
+### ADR-0022 runtime locale switcher 実装 (前セッション同日 / 2026-06-11)
 
 ADR-0020 PR #14 マージクローズ直後、`develop@209fd81` を起点に
 `feature/runtime-locale-switcher` を切って issue 0004 を実装、
