@@ -223,13 +223,18 @@ connection picker and history.
 ## Phase 4 — AI integration (optional layer)
 
 Goal: ship the optional AI plugin layer behind a trait. Default builds
-work without it.
+work without it. Trait + first-provider shape locked in
+[ADR-0023](decisions.md); implementation tracked in
+`.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`.
 
-- [ ] `dbboard-ai` crate with `AiProvider` trait
-- [ ] First provider: Claude (Anthropic API)
+- [ ] `dbboard-ai` crate with `AiProvider` trait (ADR-0023)
+- [ ] First provider: Claude (Anthropic API) — `dbboard-anthropic`
+      crate (ADR-0023)
 - [ ] "Explain this query" command
 - [ ] "Suggest SQL from prompt" command using current schema snapshot
-- [ ] Settings UI for API key, provider choice
+      (`list_tables` result; full DDL extraction deferred)
+- [ ] Settings UI for API key, provider choice — _Stage 2 ADR
+      (env var `DBBOARD_ANTHROPIC_API_KEY` covers Stage 1 per ADR-0023)_
 - [ ] Graceful degradation when no provider configured
 
 Exit criteria: AI panel is hidden cleanly when not configured; visible
