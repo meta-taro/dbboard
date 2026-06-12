@@ -2148,3 +2148,239 @@ this ADR captures the now-unblocked switcher.
   `set_language` / `current_language` API on `dbboard-i18n` is new;
   nothing existing changes signature.
 
+## ADR-0023 — `dbboard-ai` provider trait and the first Anthropic provider
+
+**Status:** Accepted (2026-06-12). Opens Phase 4 (the optional AI
+integration layer) by defining the trait surface and committing to
+Claude (Anthropic API) as the first provider. Settings UI, persisted
+API-key storage, streaming, and multi-provider switching are
+explicitly deferred to a Stage 2 ADR.
+
+### Context
+
+`CLAUDE.md` lists AI integration as a workspace layer from the
+beginning: *"Pluggable AI provider trait; no hard dependency on any
+specific provider."* `docs/roadmap.md` Phase 4 spells out the exit
+shape — `dbboard-ai` crate with an `AiProvider` trait, Claude
+(Anthropic API) as the first provider, Explain / Suggest commands,
+graceful degradation when no provider is configured, default builds
+working without any AI dependency at all.
+
+Phases 1, 2, 2.5, and 3 are now closed (Turso / D1 / Postgres /
+CockroachDB / Neon / Supabase / Aurora DSQL adapters all ship, the
+runtime locale switcher is live, the connection switcher is live).
+The Phase 4 layer can be opened without disturbing any of them.
+
+This ADR commits the **trait-and-first-provider** shape. The
+implementation work is queued as
+`.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`.
+
+### Decision
+
+1. **Two new crates, mirroring `dbboard-core` + adapter crates.**
+   `crates/dbboard-ai` is a pure trait crate — no network I/O, no
+   concrete provider — exactly the shape of `dbboard-core`.
+   `crates/dbboard-anthropic` is the first concrete implementation,
+   talking to the Anthropic Messages API over `reqwest`. Future
+   providers land as sibling crates (`dbboard-openai`,
+   `dbboard-ollama`, …) following the same pattern. The dependency
+   rule is the same one ADR-0002 enforces for DB adapters:
+   `dbboard-ai` depends on nothing in the workspace; concrete
+   providers depend on `dbboard-ai` only.
+
+2. **`AiProvider` trait shape.** `async_trait` + `Send + Sync` so
+   `Arc<dyn AiProvider>` is object-safe. Discovery surface mirrors
+   `DatabaseAdapter`:
+   - `fn id(&self) -> &'static str` — stable provider id
+     (`"anthropic"` for the first provider). Used for history
+     labels and a future provider picker.
+   - `fn capabilities(&self) -> AiCapabilities` — a flat bool
+     struct (`has_streaming`, `has_function_calling`, …) defaulting
+     to all-false. Same evolutionary recipe as `Capabilities` in
+     `dbboard-core`: add a field as additive change when a new
+     capability is introduced.
+
+   Stage 1 surface is two required methods:
+   - `async fn explain(&self, req: &ExplainRequest) -> AiResult<AiResponse>`
+   - `async fn suggest_sql(&self, req: &SuggestRequest) -> AiResult<AiResponse>`
+
+   Streaming follows the optional-capability-accessor pattern from
+   `DatabaseAdapter::views` / `views_full` etc.: when Stage 2 adds
+   it, the trait grows `fn streaming(&self) -> Option<&dyn
+   StreamingProvider> { None }` and existing providers keep
+   working without recompile.
+
+3. **In-process wiring, not HTTP-mediated.** The two AI methods are
+   called directly from the UI worker thread via
+   `Option<Arc<dyn AiProvider>>` held in `apps/dbboard`. They do
+   **not** go through `dbboard-server`'s HTTP surface. Reasons:
+   - The HTTP contract is the desktop ↔ web shared surface (ADR-0009).
+     The web sibling has its own provider story (NestJS-side) so
+     mirroring an AI route between the two would not buy parity.
+   - Looping AI calls through localhost adds a serialisation /
+     deserialisation hop and a DTO layer for zero benefit — they
+     are network-bound on the external API call anyway.
+   - The precedent is set by ADR-0020 (`swap_backend`) and ADR-0022
+     (`set_language`): mutate the running desktop process directly
+     when no wire contract is involved.
+
+4. **Anthropic as the first concrete provider.** `dbboard-anthropic`
+   ships a `AnthropicProvider` struct holding a `reqwest::Client`,
+   the API key, and the model id. Default model is
+   `claude-sonnet-4-6` (per `rules/performance.md`'s
+   "best coding model" pick); the model is overridable via env var
+   so a user can switch without a code change. The crate uses
+   `reqwest` directly — the official Anthropic Rust SDK does not
+   exist yet, and the Messages API surface area we need (one POST,
+   one JSON envelope) is small enough that a community wrapper
+   would be additional surface for zero abstraction win.
+
+5. **Stage 1 configuration is env-var-only:
+   `DBBOARD_ANTHROPIC_API_KEY` (required) and
+   `DBBOARD_ANTHROPIC_MODEL` (optional override).** The provider is
+   constructed at `apps/dbboard` startup *only if* the API key env
+   var is present. No `connections.toml` analogue. No keyring.
+   Stage 2 will add `ai-providers.toml` + `SecretStore` integration
+   (ADR-0013 connections.toml is the template) plus a Settings UI
+   for picking a provider and managing keys. Mirroring the
+   `DBBOARD_TURSO_PATH` → `connections.toml` evolution path —
+   env-var-only first, then persisted store.
+
+6. **Graceful degradation = absence of the panel.** `DbboardApp`
+   gains an `Option<Arc<dyn AiProvider>>` field set at construction
+   time. When `None`, the UI does not render the AI panel at all —
+   no "AI unavailable" stub, no greyed-out button. Same pattern as
+   the connections window hiding itself when `ConnectionAdmin` is
+   absent (headless / CI fallback path in ADR-0016 wiring). No
+   runtime fallback ("provider call failed → silently switch off
+   AI") — provider call failures surface as `AiError` in the UI.
+
+7. **Stage 1 commands and request payloads.**
+   - **Explain** takes the current SQL only: `ExplainRequest { sql:
+     String, dialect: Option<String> }`. `dialect` is a hint like
+     `"postgres"` or `"sqlite"` derived from the active adapter's
+     `id()` so the provider tailors its explanation. Schema is
+     **not** passed; explanations of a known SQL string do not
+     need the table list and would inflate every prompt.
+   - **Suggest** takes a natural-language prompt plus the current
+     adapter's `list_tables()` result: `SuggestRequest { prompt:
+     String, dialect: Option<String>, schema: Vec<TableInfo> }`.
+     Reusing `TableInfo` from `dbboard-core` keeps `dbboard-ai`
+     self-contained for the shape (the trait crate re-exports the
+     type rather than redefining it). Full DDL extraction (full
+     column types, constraints, indexes) is a Stage 2 concern that
+     will need a new `DatabaseAdapter::dump_schema` method, queued
+     separately.
+
+   Both methods return `AiResponse { text: String, tokens_in: u32,
+   tokens_out: u32 }`. `tokens_in` / `tokens_out` are recorded for
+   future cost-meter work but the Stage 1 UI does not display them.
+
+8. **`AiError` is a new enum, independent of `DbError`.**
+   Variants: `Configuration` (missing key, malformed config),
+   `Network` (HTTP timeout, TLS failure), `Provider` (rate limit,
+   model unavailable, content filter), `Quota` (caller-imposed
+   budget exceeded — wired for Stage 2 but the enum slot exists
+   now), `Cancelled` (user cancelled an in-flight request).
+   AI errors never travel over the desktop ↔ web HTTP contract, so
+   ADR-0009's English-category-prefix translation rule does not
+   apply; `dbboard-ui` translates `AiError` variants directly to
+   Fluent keys (the `t!()`-on-an-enum pattern from ADR-0015).
+
+9. **Stage 2 deferrals, recorded explicitly so the Stage 1 review
+   does not relitigate them.** Streaming (`AiProvider::streaming`
+   accessor + chunked `Reply` variants). Token budget meter and
+   cancel button. Multi-provider switcher UI. `ai-providers.toml`
+   + keychain. Conversation history (Stage 1 is single-shot).
+   Recording AI calls in the query history file (ADR-0017). Full
+   DDL extraction on `DatabaseAdapter`. Function-calling /
+   tool-use provider capability.
+
+### Alternatives considered
+
+- **Single `dbboard-ai` crate with provider implementations gated
+  behind cargo features (e.g. `--features anthropic`).** Rejected.
+  Provider crates can pull in heavy or licence-incompatible
+  dependencies (vendor SDKs, model-specific tokenizers). Folding
+  them under one crate with feature flags couples build time and
+  dependency surface for users who only want one provider. The
+  separate-crate pattern matches what we already did for DB
+  adapters (`dbboard-turso` / `dbboard-postgres` / `dbboard-d1`),
+  which is the closest precedent.
+
+- **Route AI calls through `dbboard-server` as new HTTP endpoints
+  (`POST /ai/explain`, `POST /ai/suggest`).** Rejected for Stage 1.
+  See Decision 3. Would force a DTO layer, a new contract section
+  in `docs/api-contract.md`, and a coordination obligation with
+  `dbboard-web`, all for no measurable benefit on a single-process
+  desktop app. If a future use case (e.g. CLI clients, browser
+  extension talking to the local server) needs HTTP-mediated AI,
+  the trait can be re-wrapped behind the server then; the trait
+  shape does not predetermine the wiring.
+
+- **Ship streaming on day one.** Deferred. Streaming adds a
+  channel-based partial-response delivery path, mid-flight cancel
+  handling, and per-chunk UI rendering — each of those is a real
+  design decision worth a separate ADR. Stage 1 ships the
+  non-streaming baseline so the trait and the wiring can be
+  proven before the more complex shape.
+
+- **Ship two providers (Claude + OpenAI) on day one.** Deferred.
+  The trait was designed to make additional providers cheap, but
+  the Stage 1 surface needs to be validated against exactly one
+  real implementation before locking it. A multi-provider switcher
+  UI is itself a Stage 2 concern (Decision 5).
+
+- **Generic `complete(prompt: &str)` method instead of typed
+  `explain` / `suggest_sql`.** Rejected. A typed surface lets the
+  provider own its system prompt and response shape. A generic
+  `complete` would push prompt construction up into the UI layer,
+  forcing every provider crate to expose its prompt template as
+  public API and making it easy to forget the dialect hint or the
+  schema snapshot at the call site. Adding a new command later is
+  a trait-extension cost we accept (one new method per command);
+  in exchange the call sites stay simple and provider-agnostic.
+
+- **Persist API keys via `dbboard-config`'s `SecretStore` from day
+  one.** Deferred. The env-var-first → persisted-store evolution
+  path is the one the connection adapters used (env vars first in
+  Phase 1, connection store in Phase 2 via ADR-0013). Doing it the
+  same way here keeps the Stage 1 surface auditable and ships
+  faster; the Stage 2 ADR re-uses the proven `SecretStore`
+  abstraction.
+
+### Consequences
+
+- Two new crates land in the workspace: `dbboard-ai` (trait + value
+  types + `AiError`, no I/O) and `dbboard-anthropic` (first
+  concrete provider, reqwest-based). Workspace `Cargo.toml` grows
+  by two `members` entries. `apps/dbboard` gains a new optional
+  dependency on both.
+- `dbboard-ai` re-exports `dbboard_core::TableInfo` for the
+  `SuggestRequest::schema` field. This is the first time a
+  workspace crate publicly re-exports a `dbboard-core` type, but
+  it keeps `dbboard-ai`'s public API self-contained for
+  downstream provider crates.
+- `apps/dbboard` env-var resolution gains
+  `DBBOARD_ANTHROPIC_API_KEY` (required to construct the provider)
+  and `DBBOARD_ANTHROPIC_MODEL` (optional). README documents both.
+- `DbboardApp::new` grows an `Option<Arc<dyn AiProvider>>`
+  parameter; UI rendering checks `has_ai_provider()` and only
+  renders the AI panel when present.
+- `dbboard-ui` gains an AI panel (UI-side state machine + two
+  command/reply pairs through the existing worker). New Fluent
+  keys for the panel labels in all 11 locales (ADR-0015 tier
+  stability is maintained).
+- HTTP contract is unchanged. `dbboard-web` mirror is not
+  needed. ADR-0023 joins the ADR-0013 / ADR-0015 / ADR-0016 /
+  ADR-0018 / ADR-0019 / ADR-0020 / ADR-0021 / ADR-0022
+  desktop-side-only category. No `0NNN-web-*` brief.
+- Roadmap: Phase 4 row is annotated with "trait + first provider
+  shape locked in ADR-0023". Phase 4 bullet checkmarks land as
+  the implementation issue 0005 progresses.
+- Implementation tracking: `.claude/issues/0005-dbboard-ai-trait-
+  and-anthropic-provider.md` opens against this ADR.
+- SemVer impact (ADR-0011): additive. Two new crates, two new env
+  vars, one new optional UI panel. No existing public API
+  changes signature.
+
