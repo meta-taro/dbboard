@@ -5,19 +5,68 @@
 
 ## 最終更新
 
-- 日付: 2026-06-11 (Phase 4 着手準備セッション末、ADR-0023 設計判断
-  確定 → 本文起草前に session 区切り、ユーザ usage limit 接近で停止)
-- ブランチ: 2 本が push 待ち状態:
-  - `chore/post-pr16-doc-sync` — `fb6085d` (PR #16 マージクローズの
-    status / memory 同期) + 本コミット (本セッション末記録) の 2 commit
-  - `docs/adr-0023-ai-provider-trait` — `develop@99c11b0` から切ったまま
-    0 commit (ADR 本文未起草)
-- 現在の Phase: **Phase 4 (AI integration, optional layer) 起票準備中。
-  ADR-0023 の設計判断はピン留め済 (下記セクション参照)、本文・issue
-  0005 起票・roadmap 更新は次セッションで実施。Phase 2 + 2.5 + 3 は
-  すべて done。**
+- 日付: 2026-06-12 (PR #18 マージクローズ、ADR-0023 起票完了
+  セッション末)
+- ブランチ: `develop` (= `673a0c2`)、ローカル feature ブランチなし
+  (`chore/post-pr16-doc-sync` と `docs/adr-0023-ai-provider-trait`
+  は merge 済で `git branch -d` 済)
+- 現在の Phase: **Phase 4 (AI integration, optional layer) 起票完了。
+  ADR-0023 (dbboard-ai trait + Anthropic API first provider) は
+  `develop` 上に landed、issue 0005 (実装トラッキング) も同梱
+  open 状態。次セッションは issue 0005 acceptance に沿った impl
+  着手 — `dbboard-ai` crate skeleton + `AiProvider` trait + 値型
+  + `AiError`。Phase 2 + 2.5 + 3 はすべて done。**
 
-### Phase 4 (ADR-0023) 起票準備 (本セッション / 2026-06-11)
+### PR #18 (ADR-0023) マージクローズ (本セッション / 2026-06-12)
+
+- PR #17 (`chore/post-pr16-doc-sync` → `develop`) マージ済 (前段)、
+  続けて PR #18 (`docs/adr-0023-ai-provider-trait` → `develop`)
+  マージ済 = `673a0c2`。
+- ローカル `develop` は `origin/develop` (= `673a0c2`) と
+  fast-forward sync 済 (`5a06a00..673a0c2`、4 commit ぶん advance)。
+- マージ済ローカルブランチ 2 本 (`chore/post-pr16-doc-sync` =
+  `a520b54` / `docs/adr-0023-ai-provider-trait` = `07b932c`) は
+  `git branch -d` 済。リモート `docs/adr-0023-ai-provider-trait`
+  は GitHub 側で削除済 (`git fetch --prune` で
+  `[deleted] (none) -> origin/docs/adr-0023-ai-provider-trait` 確認)。
+- 本 PR の scope: docs-only / 3 ファイル / +397 / −4
+  (`docs/decisions.md` ADR-0023 append、`docs/roadmap.md` Phase 4
+  ADR ピン留め、`.claude/issues/0005-dbboard-ai-trait-and-anthropic
+  -provider.md` 新規起票)。
+- ADR-0023 確定内容 (詳細は本ファイル下の "Phase 4 (ADR-0023)
+  起票準備" セクション参照):
+  - `dbboard-ai` crate (trait + 値型 + `AiError`、I/O なし)
+  - First provider: `dbboard-anthropic` (reqwest + Anthropic API、
+    default model `claude-sonnet-4-6`)
+  - 配線: in-process (`apps/dbboard` で `Option<Arc<dyn AiProvider>>`
+    を構築し UI worker に渡す、HTTP contract 不変)
+  - Stage 1 設定: `DBBOARD_ANTHROPIC_API_KEY` env var のみ。
+    Settings UI / `ai-providers.toml` + keychain は **Stage 2 ADR**
+    送り。
+  - Stage 1 commands: "Explain this query" + "Suggest SQL from
+    prompt" (現在の `list_tables` 結果を schema snapshot として
+    渡す、full DDL extraction は Stage 2)。
+  - Graceful degradation: env var 未設定 → provider `None` → AI
+    panel 非表示。
+- web 側への影響: **HTTP contract / JSON schema 変更なし**。AI 呼び出し
+  は `dbboard-server` を介さず in-process なので web mirror 不要
+  (ADR-0013 / 0015 / 0016 / 0018 / 0019 / 0020 / 0021 / 0022 と
+  同じ desktop-side-only カテゴリ)。
+- 次セッション分岐候補:
+  - (a) **issue 0005 実装着手** — `dbboard-ai` crate skeleton から。
+    trait shape + 値型 (`ExplainRequest` / `SuggestRequest` /
+    `AiResponse`) + `AiError` enum + capabilities struct。
+    `dbboard-core` と同じく依存なし、`#[cfg(test)]` で trait の
+    contract test (mock provider) を併走させて TDD 起点に。
+  - (b) **`dbboard-anthropic` 先行起票** — reqwest 直叩きで Anthropic
+    Messages API を呼ぶ first provider。env var resolution は
+    `apps/dbboard` 側、`dbboard-anthropic::AnthropicProvider::new(
+    api_key, model)` だけを公開。
+  - (c) **web 側 cross-repo** — web 側 Claude が `0004` Postgres
+    adapter 着手 → `0009` (history schema impl) unblock。desktop
+    側からは観察のみで OK。
+
+### Phase 4 (ADR-0023) 起票準備 (前セッション / 2026-06-11)
 
 ユーザ指示 (`(a) Phase 4 dbboard-ai ADR 起票お願いします。`) を
 受けて `develop@99c11b0` から `docs/adr-0023-ai-provider-trait` を
