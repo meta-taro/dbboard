@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "apps/dbboard",
     "crates/dbboard-ai",
+    "crates/dbboard-anthropic",
     "crates/dbboard-config",
     "crates/dbboard-core",
     "crates/dbboard-d1",
@@ -29,6 +30,10 @@ dbboard-core = { path = "crates/dbboard-core" }
 # `AiProvider` surface; concrete providers (Anthropic, …) live in
 # sibling crates that depend on this one only.
 dbboard-ai = { path = "crates/dbboard-ai" }
+# First concrete AI provider — talks to the Anthropic Messages API over
+# `reqwest` (ADR-0023). The binary depends on this only when AI is
+# wired in (Stage 1 wiring follows in a sibling PR).
+dbboard-anthropic = { path = "crates/dbboard-anthropic" }
 # Local user configuration: connections.toml + OS keychain (ADR-0013).
 # The server depends on this to wire env-vars with the file-backed store
 # into a single BackendConfig resolution.
@@ -74,6 +79,9 @@ directories = "5"
 keyring = "3"
 # tempfile-based integration tests for dbboard-config's filesystem layer.
 tempfile = "3"
+# Pure-Rust mock HTTP server for dbboard-anthropic's round-trip tests.
+# Dev-dep only — the production code never depends on it.
+wiremock = "0.6"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
