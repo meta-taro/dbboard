@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "apps/dbboard",
+    "crates/dbboard-ai",
     "crates/dbboard-config",
     "crates/dbboard-core",
     "crates/dbboard-d1",
@@ -24,6 +25,10 @@ publish = false
 
 [workspace.dependencies]
 dbboard-core = { path = "crates/dbboard-core" }
+# Optional AI integration layer (ADR-0023). The trait crate defines the
+# `AiProvider` surface; concrete providers (Anthropic, …) live in
+# sibling crates that depend on this one only.
+dbboard-ai = { path = "crates/dbboard-ai" }
 # Local user configuration: connections.toml + OS keychain (ADR-0013).
 # The server depends on this to wire env-vars with the file-backed store
 # into a single BackendConfig resolution.
