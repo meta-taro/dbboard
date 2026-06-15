@@ -33,31 +33,33 @@ ADR-0023 §9 and out of scope for this issue.
 
 ### `dbboard-ai` (trait crate, no I/O)
 
-- [ ] New `crates/dbboard-ai` workspace member, depending on
+- [x] New `crates/dbboard-ai` workspace member, depending on
       `dbboard-core` only (for `TableInfo`) plus `async_trait` +
-      `serde` + `thiserror`. No `reqwest`, no `tokio`.
-- [ ] `AiProvider` trait: `async_trait` + `Send + Sync`,
+      `serde` + `thiserror`. No `reqwest`, no `tokio`. (`tokio` is
+      a dev-dependency only — required to drive `async fn` trait
+      tests; it is not a runtime dep of the trait crate.)
+- [x] `AiProvider` trait: `async_trait` + `Send + Sync`,
       object-safe behind `Arc<dyn AiProvider>`. Required methods:
       `id(&self) -> &'static str`, `capabilities(&self) ->
       AiCapabilities`, `async fn explain(&self, req:
       &ExplainRequest) -> AiResult<AiResponse>`,
       `async fn suggest_sql(&self, req: &SuggestRequest) ->
       AiResult<AiResponse>`.
-- [ ] `AiCapabilities` flat bool struct (`has_streaming`,
+- [x] `AiCapabilities` flat bool struct (`has_streaming`,
       `has_function_calling`), `#[derive(Copy, Debug, Default,
       Deserialize, Serialize)]`, all-false by default.
-- [ ] `ExplainRequest { sql: String, dialect: Option<String> }`,
+- [x] `ExplainRequest { sql: String, dialect: Option<String> }`,
       `SuggestRequest { prompt: String, dialect: Option<String>,
       schema: Vec<TableInfo> }`,
       `AiResponse { text: String, tokens_in: u32, tokens_out:
       u32 }`. `TableInfo` re-exported from `dbboard-core`.
-- [ ] `AiError` enum with `Configuration` / `Network` /
+- [x] `AiError` enum with `Configuration` / `Network` /
       `Provider` / `Quota` / `Cancelled`, `#[derive(Debug,
       thiserror::Error)]`, `AiResult<T> = Result<T, AiError>`
       type alias.
-- [ ] Unit tests: object-safety (`Arc<dyn AiProvider>` constructs),
+- [x] Unit tests: object-safety (`Arc<dyn AiProvider>` constructs),
       capability flag round-trip through JSON, `AiError` Display
-      covers every variant.
+      covers every variant. (15 tests pass on the trait crate.)
 
 ### `dbboard-anthropic` (first concrete provider)
 

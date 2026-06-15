@@ -592,6 +592,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbboard-ai"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dbboard-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "dbboard-config"
 version = "0.1.0"
 dependencies = [
