@@ -5,19 +5,101 @@
 
 ## 最終更新
 
-- 日付: 2026-06-12 (PR #18 マージクローズ、ADR-0023 起票完了
-  セッション末)
-- ブランチ: `develop` (= `673a0c2`)、ローカル feature ブランチなし
-  (`chore/post-pr16-doc-sync` と `docs/adr-0023-ai-provider-trait`
-  は merge 済で `git branch -d` 済)
-- 現在の Phase: **Phase 4 (AI integration, optional layer) 起票完了。
-  ADR-0023 (dbboard-ai trait + Anthropic API first provider) は
-  `develop` 上に landed、issue 0005 (実装トラッキング) も同梱
-  open 状態。次セッションは issue 0005 acceptance に沿った impl
-  着手 — `dbboard-ai` crate skeleton + `AiProvider` trait + 値型
-  + `AiError`。Phase 2 + 2.5 + 3 はすべて done。**
+- 日付: 2026-06-15 (PR #20 マージクローズ、`dbboard-ai` trait crate
+  shipped セッション末)
+- ブランチ: `develop` (= `584348f`)、ローカル feature ブランチなし
+  (`feat/dbboard-ai-crate` は merge 済で `git branch -d` 済)
+- 現在の Phase: **Phase 4 (AI integration, optional layer) 第 1 PR
+  shipped。`dbboard-ai` trait crate (`AiProvider` / `AiCapabilities` /
+  `ExplainRequest` / `SuggestRequest` / `AiResponse` / `AiError`) が
+  `develop` 上 landed、issue 0005 の `dbboard-ai` セクション全 6
+  チェック `[x]` 済。残り 3 セクション (`dbboard-anthropic` 具象
+  provider / `apps/dbboard` 起動配線 / `dbboard-ui` AI panel +
+  docs sweep) は open のまま、issue 0005 split-by-crate note に従い
+  別 PR で順次。Phase 2 + 2.5 + 3 はすべて done。**
 
-### PR #18 (ADR-0023) マージクローズ (本セッション / 2026-06-12)
+### PR #20 (dbboard-ai trait crate) マージクローズ (本セッション / 2026-06-15)
+
+- PR #20 (`feat/dbboard-ai-crate` → `develop`) マージ済 = `584348f`
+  (mergedAt 2026-06-15T06:21:33Z)。
+- ローカル `develop` は `origin/develop` (= `584348f`) と
+  fast-forward sync 済 (`d7e6ac9..584348f`、2 commit ぶん advance:
+  feat commit `8b582a7` + merge commit `584348f`)。
+- マージ済ローカル feature ブランチ (`feat/dbboard-ai-crate` =
+  `8b582a7`) は `git branch -d` 済。リモートも GitHub 側で削除済
+  想定 (Settings の auto-delete branch on merge が ON なら自動、
+  OFF でも次回 `git fetch --prune` で剥がれる)。
+- 本 PR の scope: `crates/dbboard-ai` 新規 + workspace 配線 + issue
+  0005 のチェックマーク更新の 9 ファイル / +525 / −8。中身:
+  - `AiProvider` trait (`#[async_trait]`, `Send + Sync`,
+    `Arc<dyn AiProvider>` で object-safe) — `id` / `capabilities` /
+    `async explain` / `async suggest_sql` の 4 メソッド surface
+  - `AiCapabilities` (flat all-false bool struct,
+    `has_streaming` / `has_function_calling`) — `dbboard-core::
+    Capabilities` と同型 (`#[derive(Copy, Debug, Default, Deserialize,
+    Serialize)]`)
+  - `ExplainRequest { sql, dialect }` / `SuggestRequest { prompt,
+    dialect, schema: Vec<TableInfo> }` / `AiResponse { text,
+    tokens_in, tokens_out }` — `TableInfo` は `dbboard-core` から
+    re-export (provider crate が直接 `dbboard-core` 依存しないで
+    済むように)
+  - `AiError` 5 variants (`Configuration` / `Network` / `Provider`
+    / `Quota` / `Cancelled`) + `AiResult<T>` alias — `DbError` と
+    独立、HTTP contract に乗らないので translation 層不要
+  - 単体テスト 15 本: object-safety、capability JSON round-trip、
+    `AiError` Display 全 variant、value-type 等価、`Arc<dyn
+    AiProvider>` 経由のリクエスト伝搬とエラー伝搬
+  - Cargo.toml deps: `dbboard-core` + `async-trait` + `serde` +
+    `thiserror`、dev-only に `tokio` + `serde_json`。`reqwest` は
+    無し (trait crate には I/O なし、ADR-0023 Decision 1 通り)
+- 検証: pre-commit hook (`cargo fmt --check` / `cargo clippy
+  --all-targets --all-features -- -D warnings` / `cargo check
+  --all-targets --all-features` / `cargo test --all-features`) 全
+  green、`cargo test --all-features` workspace 全クレート緑
+  (dbboard-ai 15 / dbboard-config 55 / dbboard-core 45 / dbboard-d1
+  21 + 3 / dbboard-i18n 9 / dbboard-postgres 10 + 7 / dbboard-server
+  40 + 12 / dbboard-turso 13 + 8 / dbboard-ui 87)。
+- 着地中に当てたミニ事象:
+  - `cargo fmt`: `display_covers_every_variant` テストの配列リテラル
+    が 1 行に詰まっていて改行整形が入った (自動修正のみ)。
+  - `cargo clippy -D warnings`: `result_alias_round_trips` テストの
+    `let ok: AiResult<u32> = Ok(7);` が `unnecessary_literal_unwrap`
+    / `unnecessary_wraps` 両方に当たった。意図 (alias の round-trip
+    保証) を保ったまま、`Vec<AiResult<u32>>` 経由で値を構築する
+    パターンに書き直して回避。
+- web 側への影響: **HTTP contract / JSON schema 変更なし**。AI 呼び出し
+  自体まだ存在しない、trait crate 単独追加なので contract に届かない。
+  web mirror brief 不要 (ADR-0013 / 0015 / 0016 / 0018 / 0019 / 0020 /
+  0021 / 0022 / 0023 と同じ desktop-side-only カテゴリ継続)。
+- 次セッション分岐候補 (issue 0005 split-by-crate の残り 3 段):
+  - (a) **`dbboard-anthropic` 具象 provider 着手** — 次の自然なステップ。
+    新規 `crates/dbboard-anthropic`、deps: `dbboard-ai` + `reqwest`
+    (`tls-rustls-ring`) + `tokio` + `serde_json` + (dev) `mockito`。
+    `AnthropicProvider::new(api_key, model)` /
+    `with_default_model(api_key)` (default `claude-sonnet-4-6`)、
+    `id()` → `"anthropic"`、`capabilities()` → default (Stage 1)。
+    `explain` / `suggest_sql` は Anthropic Messages API
+    (`https://api.anthropic.com/v1/messages`) を POST、レスポンス
+    envelope を parse して `AiResponse` を返す。エラー分類 (4xx
+    rate_limit / overloaded → Provider、5xx → Provider、network →
+    Network、malformed → Provider、API key 系 → Configuration)。
+    `Debug` impl で api_key を redact。`mockito` で success /
+    rate-limit / 5xx / malformed / timeout を網羅、live test は
+    follow-up issue 送り。
+  - (b) **`apps/dbboard` 起動配線 + `dbboard-ui` AI panel** — issue
+    0005 の (a) の後段、`DBBOARD_ANTHROPIC_API_KEY` /
+    `DBBOARD_ANTHROPIC_MODEL` env var 解決、`DbboardApp::new` が
+    `Option<Arc<dyn AiProvider>>` を受け取る、AI panel は egui::Window
+    で provider 存在時のみ render、Worker side に `Command::AiExplain`
+    / `Command::AiSuggest` / `Reply::AiResponded` / `Reply::AiFailed`、
+    Fluent key を 11 locale 全件に追加 (ADR-0022 Consequences
+    rule)。`(a)` と統合して 1 PR にしても良いが、UI 周りで膨らみ
+    そうなら分離可。
+  - (c) **web 側 cross-repo** — web 側 Claude が `0004` Postgres
+    adapter 着手 → `0009` (history schema impl) unblock。desktop
+    側からは観察のみで OK。
+
+### PR #18 (ADR-0023) マージクローズ (前セッション / 2026-06-12)
 
 - PR #17 (`chore/post-pr16-doc-sync` → `develop`) マージ済 (前段)、
   続けて PR #18 (`docs/adr-0023-ai-provider-trait` → `develop`)
