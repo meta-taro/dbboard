@@ -31,17 +31,20 @@ dbboard/
     │                       #   ADR-0018/0019/0021)
     ├── dbboard-server/     # local axum HTTP backend (ADR-0006)
     ├── dbboard-ai/         # AI provider trait + value types (ADR-0023)
+    ├── dbboard-anthropic/  # AI provider: Anthropic Messages API (ADR-0023)
     └── dbboard-ui/         # egui views; HTTP client of dbboard-server
 ```
 
 As of the latest `develop`, `dbboard-core`, `dbboard-config`,
 `dbboard-i18n`, `dbboard-turso`, `dbboard-d1`, `dbboard-postgres` (with
 its three pg-wire flavors), `dbboard-server`, `dbboard-ui`, `dbboard-ai`
-(trait crate; landed via PR #20 on 2026-06-15), and `apps/dbboard` all
-ship. The UI talks to the server over HTTP rather than calling adapters
-directly; `apps/dbboard` boots both in one process. The first concrete
-AI provider (`dbboard-anthropic`) and the UI panel that drives it
-follow in later PRs against issue 0005 — see [`roadmap.md`](roadmap.md).
+(trait crate; landed via PR #20 on 2026-06-15), `dbboard-anthropic`
+(first concrete provider; landed via PR #22 on 2026-06-15), and
+`apps/dbboard` all ship. The UI talks to the server over HTTP rather
+than calling adapters directly; `apps/dbboard` boots both in one
+process. The binary does not yet construct an `AiProvider`; the
+`apps/dbboard` env-var wiring and the `dbboard-ui` AI panel land in
+two follow-up PRs against issue 0005 — see [`roadmap.md`](roadmap.md).
 
 ## Dependency Rules
 
@@ -132,10 +135,12 @@ its `None` default — no code changes elsewhere.
 
 ## AI Layer (optional)
 
-A separate trait in `dbboard-ai` that mirrors the adapter pattern. The
-trait crate is in `develop` as of PR #20 (2026-06-15); concrete
-providers (`dbboard-anthropic`) and the UI panel follow in subsequent
-PRs ([ADR-0023](decisions.md);
+A separate trait in `dbboard-ai` that mirrors the adapter pattern.
+The trait crate is in `develop` as of PR #20 (2026-06-15); the first
+concrete provider `dbboard-anthropic` (Anthropic Messages API over
+`reqwest`) followed in PR #22 (2026-06-15). The `apps/dbboard`
+env-var wiring and the `dbboard-ui` AI panel follow in subsequent
+PRs against the same issue ([ADR-0023](decisions.md);
 `.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`).
 
 ```rust
