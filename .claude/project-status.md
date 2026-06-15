@@ -5,20 +5,131 @@
 
 ## 最終更新
 
-- 日付: 2026-06-15 (PR #20 マージクローズ、`dbboard-ai` trait crate
-  shipped セッション末)
-- ブランチ: `develop` (= `584348f`)、ローカル feature ブランチなし
-  (`feat/dbboard-ai-crate` は merge 済で `git branch -d` 済)
-- 現在の Phase: **Phase 4 (AI integration, optional layer) 第 1 PR
-  shipped。`dbboard-ai` trait crate (`AiProvider` / `AiCapabilities` /
-  `ExplainRequest` / `SuggestRequest` / `AiResponse` / `AiError`) が
-  `develop` 上 landed、issue 0005 の `dbboard-ai` セクション全 6
-  チェック `[x]` 済。残り 3 セクション (`dbboard-anthropic` 具象
-  provider / `apps/dbboard` 起動配線 / `dbboard-ui` AI panel +
+- 日付: 2026-06-15 (PR #22 マージクローズ、`dbboard-anthropic` 具象
+  provider shipped セッション末)
+- ブランチ: `develop` (= `c705918`)、ローカル feature ブランチなし
+  (`feat/dbboard-anthropic-provider` は merge 済で `git branch -d` 済)
+- 現在の Phase: **Phase 4 (AI integration, optional layer) 第 2 PR
+  shipped。`dbboard-anthropic` (第 1 の具象 `AiProvider` 実装 — Anthropic
+  Messages API を `reqwest` 経由で叩く) が `develop` 上 landed、issue
+  0005 の `dbboard-anthropic` セクション全 6 チェック `[x]` 済。残り 2
+  セクション (`apps/dbboard` 起動配線 / `dbboard-ui` AI panel +
   docs sweep) は open のまま、issue 0005 split-by-crate note に従い
   別 PR で順次。Phase 2 + 2.5 + 3 はすべて done。**
 
-### PR #20 (dbboard-ai trait crate) マージクローズ (本セッション / 2026-06-15)
+### PR #22 (dbboard-anthropic 具象 provider) マージクローズ (本セッション / 2026-06-15)
+
+- PR #22 (`feat/dbboard-anthropic-provider` → `develop`) マージ済 =
+  `c705918` (mergedAt 2026-06-15T11:51:41Z)。
+- ローカル `develop` は `origin/develop` (= `c705918`) と
+  fast-forward sync 済 (`c7fca0b..c705918`、2 commit ぶん advance:
+  feat commit `89f0cdf` + merge commit `c705918`)。
+- マージ済ローカル feature ブランチ (`feat/dbboard-anthropic-provider`
+  = `89f0cdf`) は `git branch -d` 済。
+- 本 PR の scope: `crates/dbboard-anthropic` 新規 + workspace 配線
+  (workspace member 追加、`wiremock = "0.6"` dev-only workspace dep
+  追加) + issue 0005 チェックマーク更新の 7 ファイル / +1143 / −25。
+  中身:
+  - `AnthropicProvider` struct (`reqwest::Client` + 事前解決
+    `messages_url: String` + `api_key: String` (private) + `model:
+    String`)。3 つの constructor: `new(api_key, model)` /
+    `with_default_model(api_key)` (default `claude-sonnet-4-6` —
+    `rules/performance.md` の Best coding model) /
+    `with_config(AnthropicConfig)` (test の base_url override 用)。
+    いずれも空文字 / whitespace の key/model を construction-time に
+    `AiError::Configuration` で reject。
+  - `AiProvider` impl: `id()` → `"anthropic"`、`capabilities()` →
+    `AiCapabilities::default()` (Stage 1 は all-false)、async
+    `explain` / `suggest_sql` は内部 `call_messages` に委譲。Anthropic
+    Messages API (`POST /v1/messages`) に `x-api-key` +
+    `anthropic-version: 2023-06-01` headers + JSON body
+    (`model` / `system` / `messages: [{role, content}]` / `max_tokens`)
+    を POST、response の `content: [{type:"text",text:...}]` blocks を
+    concatenate して `AiResponse { text, tokens_in, tokens_out }` を
+    返す。
+  - 未知の content block (`tool_use` / `image` / 将来追加) は
+    `#[serde(tag="type")] enum ResponseBlock { Text { ... }, #[serde(other)] Other }`
+    で forward-compat に parse、無視。`deny_unknown_fields` を避けて
+    脆くしない。
+  - エラー分類 (ADR-0023 §8 / issue 0005): construction-time の
+    空 key/model → `Configuration`。HTTP 4xx (401 auth / 429 rate-limit
+    含む) → `Provider`。HTTP 5xx → `Provider`。malformed body →
+    `Provider`。timeout / TLS / transport → `Network` (`reqwest::
+    Error::without_url` で URL を scrub、log に key 含む URL が漏れ
+    ない)。runtime 401 は **意図的に** `Configuration` ではなく
+    `Provider` (`authentication_failure_becomes_a_provider_error_
+    not_configuration` テストで保証)。
+  - Security posture: api_key は struct field private、`Debug` impl で
+    `<redacted>` 化 + `finish_non_exhaustive()` (reqwest::Client field
+    を非表示にしたまま clippy `missing_fields_in_debug` を回避)。
+    `https_only(true)` がデフォルト。ただし wiremock のためだけに
+    narrow な `is_localhost(base)` 述語 (`http://127.0.0.1` /
+    `http://localhost` / `http://[::1]` のみ match) で `https_only`
+    を off にし、**それ以外の任意 URL に対する production の TLS
+    guard は維持**。
+  - 24 unit tests inline (URL build / payload shape / response parse /
+    error 分類 / truncation / Debug redaction / localhost predicate)
+    + 7 wiremock 統合テスト (`tests/messages_roundtrip.rs`) で
+    success (explain/suggest) / request body 検査 / 429 / 5xx / 401 /
+    malformed をカバー。live network 不要、env var 不要。live
+    round-trip (`DBBOARD_ANTHROPIC_API_KEY` gated) は follow-up
+    issue 送り。
+  - Cargo.toml deps: `dbboard-ai` + `async-trait` + `reqwest` +
+    `serde` + `serde_json` (production)、dev-only に `tokio` +
+    `wiremock`。`dbboard-ui` / `dbboard-server` への依存なし
+    (ADR-0023 Decision 1 通り、provider は in-process で binary に
+    plug する)。
+- 検証: pre-commit hook (`cargo fmt --check` / `cargo clippy
+  --all-targets --all-features -- -D warnings` / `cargo check
+  --all-targets --all-features` / `cargo test --all-features`) 全
+  green、`cargo test --all-features` workspace 全クレート緑
+  (dbboard-anthropic 24 unit + 7 integration 含む)。
+- 着地中に当てたミニ事象:
+  - `rustc E0382`: `transport_error` で `reqwest::Error::without_url`
+    が `self` を consume するため `err.is_timeout()` が move 後呼び
+    出しになる。`let timed_out = err.is_timeout();` を `without_url`
+    前に capture して回避。
+  - `clippy missing_fields_in_debug`: `AnthropicProvider` の `Debug`
+    で `reqwest::Client` field を surface していない警告。`.finish()`
+    を `.finish_non_exhaustive()` に変更 + 説明コメントで対応。
+  - `clippy default_trait_access`: test 内 `Default::default()` 警告。
+    `AiCapabilities` を import して `AiCapabilities::default()` に
+    explicit 化。
+- web 側への影響: **HTTP contract / JSON schema 変更なし**。AI 呼び出し
+  は `dbboard-server` を介さず in-process (ADR-0023 Decision 3) なので
+  contract に届かない。web 側 mirror brief 不要 (ADR-0013 / 0015 /
+  0016 / 0018 / 0019 / 0020 / 0021 / 0022 / 0023 trait crate と同じ
+  desktop-side-only カテゴリ継続)。
+- 次セッション分岐候補 (issue 0005 split-by-crate の残り 2 段):
+  - (a) **`apps/dbboard` 起動配線** — `DBBOARD_ANTHROPIC_API_KEY`
+    (required) / `DBBOARD_ANTHROPIC_MODEL` (optional, default
+    `claude-sonnet-4-6`) を `apps/dbboard::main` で resolve、
+    `AnthropicProvider::with_default_model` または
+    `AnthropicProvider::new` を試行 → 成功なら `Option<Arc<dyn
+    AiProvider>>` を `DbboardApp::new` (相当) に渡す、失敗は log 出力
+    のみで graceful (env var 無し時は `None` で AI panel 非表示)。
+    README の "Run" セクションに "AI integration (optional)"
+    subsection を追加。
+  - (b) **`dbboard-ui` AI panel + worker** — `egui::Window` toggled
+    from menu bar、`has_ai_provider()` true 時のみ register。
+    `Command::AiExplain { sql }` / `Command::AiSuggest { prompt,
+    schema }` / `Reply::AiResponded { text, tokens_in, tokens_out }` /
+    `Reply::AiFailed { err }` を worker に追加。`tokio::runtime::
+    Handle::block_on` パターンは `ConnectionSwitcher` と同型。
+    Fluent keys を 11 locale 全件に追加 (ADR-0022 Consequences rule)。
+    UI state machine の単体テスト (mode switch / send while busy
+    は noop / response が stale を置換 / error が stale を置換)。
+    docs sweep (`docs/architecture.md` AI Layer 詳細補完、README
+    の AI panel 説明追記、`.claude/issues/0005` 全 checkmark 確定 +
+    Status → closed)。
+  - (c) **web 側 cross-repo** — web 側 Claude が `0004` Postgres
+    adapter 着手 → `0009` (history schema impl) unblock。desktop
+    側からは観察のみで OK。
+  - これらは (a) + (b) を 1 PR にしても良いし、UI 周りが膨らみそう
+    なら (a) 単独 → (b) で分離可能 (issue 0005 split-by-crate note
+    が明示)。
+
+### PR #20 (dbboard-ai trait crate) マージクローズ (前セッション / 2026-06-15)
 
 - PR #20 (`feat/dbboard-ai-crate` → `develop`) マージ済 = `584348f`
   (mergedAt 2026-06-15T06:21:33Z)。

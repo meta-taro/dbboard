@@ -231,8 +231,13 @@ work without it. Trait + first-provider shape locked in
       crate landed via PR #20 on 2026-06-15 — `AiProvider` /
       `AiCapabilities` / `ExplainRequest` / `SuggestRequest` /
       `AiResponse` / `AiError`, 15 unit tests, no runtime I/O)
-- [ ] First provider: Claude (Anthropic API) — `dbboard-anthropic`
-      crate (ADR-0023)
+- [x] First provider: Claude (Anthropic API) — `dbboard-anthropic`
+      crate (ADR-0023; landed via PR #22 on 2026-06-15 — `reqwest`
+      against `POST /v1/messages`, `explain` / `suggest_sql`,
+      construction-time key/model validation, redacted `Debug`,
+      24 unit + 7 wiremock round-trip tests, no live network. The
+      `apps/dbboard` env-var wiring and `dbboard-ui` AI panel land
+      in two follow-up PRs per issue 0005's split-by-crate plan.)
 - [ ] "Explain this query" command
 - [ ] "Suggest SQL from prompt" command using current schema snapshot
       (`list_tables` result; full DDL extraction deferred)
