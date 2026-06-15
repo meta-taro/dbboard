@@ -63,32 +63,46 @@ ADR-0023 §9 and out of scope for this issue.
 
 ### `dbboard-anthropic` (first concrete provider)
 
-- [ ] New `crates/dbboard-anthropic` workspace member, depending
-      on `dbboard-ai` + `reqwest` (`tls-rustls-ring`) + `tokio` +
-      `serde_json`.
-- [ ] `AnthropicProvider` struct holding `reqwest::Client`,
-      `api_key: String`, `model: String`. Constructor
-      `AnthropicProvider::new(api_key, model)` plus
+- [x] New `crates/dbboard-anthropic` workspace member, depending
+      on `dbboard-ai` + `reqwest` (workspace `rustls-tls` feature —
+      issue wording said `tls-rustls-ring`, but that is the sqlx
+      feature name; reqwest's rustls feature is `rustls-tls`) +
+      `serde` + `serde_json`. `async-trait` for the AiProvider impl;
+      `tokio` + `wiremock` as dev-deps only.
+- [x] `AnthropicProvider` struct holding `reqwest::Client`,
+      `api_key: String`, `model: String` (plus a cached
+      `messages_url` resolved at construction). Constructors
+      `AnthropicProvider::new(api_key, model)` and
       `AnthropicProvider::with_default_model(api_key)` defaulting
-      to `claude-sonnet-4-6`.
-- [ ] `id()` returns `"anthropic"`. `capabilities()` returns
-      defaults (all-false for Stage 1).
-- [ ] `explain` and `suggest_sql` build the system prompt + user
-      message, POST to
-      `https://api.anthropic.com/v1/messages`, parse the response
-      envelope, surface `AiResponse` (or appropriate `AiError`
-      variant).
-- [ ] Error classification: HTTP 4xx with `rate_limit` /
-      `overloaded_error` → `AiError::Provider`. HTTP 5xx →
-      `AiError::Provider`. Network errors (timeout, TLS) →
-      `AiError::Network`. Malformed response → `AiError::Provider`.
-      Missing / invalid API key → `AiError::Configuration` at
-      request time (Stage 1 trusts construction-time validation).
-- [ ] Unit tests with `mockito` (or hand-rolled `httptest`) for
-      success, rate-limit, 5xx, malformed response, timeout.
-      No live-network tests in Stage 1 (gated live test deferred
-      to a follow-up issue).
-- [ ] `Debug` impl redacts the API key.
+      to `claude-sonnet-4-6`. `AnthropicProvider::with_config` takes
+      an `AnthropicConfig { api_key, model, base_url }` for test
+      base-URL overrides (wiremock).
+- [x] `id()` returns `"anthropic"`. `capabilities()` returns
+      `AiCapabilities::default()` (all-false for Stage 1).
+- [x] `explain` and `suggest_sql` build the system prompt + user
+      message, POST to `{base}/v1/messages` with `x-api-key` +
+      `anthropic-version: 2023-06-01` headers, concatenate text
+      blocks from the response, and surface
+      `AiResponse { text, tokens_in, tokens_out }`. Tool-use and
+      other unknown block types deserialize cleanly via
+      `#[serde(other)]` and are ignored.
+- [x] Error classification: HTTP 4xx (incl. 401 auth, 429 rate-limit)
+      → `AiError::Provider`. HTTP 5xx → `AiError::Provider`.
+      Malformed response body → `AiError::Provider`. Timeout / TLS /
+      transport → `AiError::Network` (with the URL scrubbed via
+      `reqwest::Error::without_url`). Construction-time empty key
+      or empty model → `AiError::Configuration`. Runtime 401 is
+      intentionally NOT re-raised as Configuration — the design
+      trusts the construction-time check.
+- [x] Round-trip tests with `wiremock` for success (explain /
+      suggest), request-body shape (model + system prompt + user
+      content), rate-limit 429, server 5xx, authentication 401,
+      and malformed success body. 24 unit tests + 7 integration
+      tests, all green. Live-network test (gated behind
+      `DBBOARD_ANTHROPIC_API_KEY`) deferred to a follow-up issue.
+- [x] `Debug` impl redacts the API key (`<redacted>`) and uses
+      `finish_non_exhaustive` so the `reqwest::Client` field stays
+      hidden without tripping the `missing_fields_in_debug` lint.
 
 ### `apps/dbboard` wiring
 
