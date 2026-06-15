@@ -227,7 +227,10 @@ work without it. Trait + first-provider shape locked in
 [ADR-0023](decisions.md); implementation tracked in
 `.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`.
 
-- [ ] `dbboard-ai` crate with `AiProvider` trait (ADR-0023)
+- [x] `dbboard-ai` crate with `AiProvider` trait (ADR-0023; trait
+      crate landed via PR #20 on 2026-06-15 — `AiProvider` /
+      `AiCapabilities` / `ExplainRequest` / `SuggestRequest` /
+      `AiResponse` / `AiError`, 15 unit tests, no runtime I/O)
 - [ ] First provider: Claude (Anthropic API) — `dbboard-anthropic`
       crate (ADR-0023)
 - [ ] "Explain this query" command
