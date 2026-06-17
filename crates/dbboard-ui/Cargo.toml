@@ -9,6 +9,11 @@ publish.workspace = true
 description = "egui-based presentation layer for dbboard. Depends only on dbboard-core."
 
 [dependencies]
+# Optional AI provider trait (ADR-0023). The UI stores
+# `Option<Arc<dyn AiProvider>>` so the AI panel can hide when no provider
+# is wired in; concrete providers live in sibling crates that
+# `apps/dbboard` constructs at startup and injects here.
+dbboard-ai = { workspace = true }
 # Connection management UI (ADR-0016) routes every TOML + keychain
 # mutation through dbboard-config so the UI layer never reaches for the
 # filesystem or the OS keychain directly.
@@ -33,6 +38,11 @@ serde_json = { workspace = true }
 # `ConnectionsView` tests need a real on-disk path for
 # `ConnectionAdmin::new_with_file` to round-trip the TOML through.
 tempfile = { workspace = true }
+# In-test stub implementation of `AiProvider` (ADR-0023). The trait is
+# `#[async_trait]` decorated; tests that build a real `Arc<dyn AiProvider>`
+# need the macro too. Dev-dep only — production code in dbboard-ui never
+# implements the trait, it only stores `Option<Arc<dyn ...>>`.
+async-trait = { workspace = true }
 
 [lints]
 workspace = true
