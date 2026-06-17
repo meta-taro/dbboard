@@ -209,6 +209,36 @@ DBBOARD_AURORA_DSQL_URL='postgres://admin:<IAM-token>@<cluster>.dsql.<region>.on
   cargo run -p dbboard
 ```
 
+### AI integration (optional)
+
+dbboard ships an optional AI panel that can explain SQL and suggest
+queries against the active connection's schema. It is **opt-in**: with
+no AI env var set the app behaves exactly as before and the panel is
+hidden — graceful degradation = absence (see
+[ADR-0023](docs/decisions.md)).
+
+Stage 1 wires a single provider (Anthropic Messages API):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `DBBOARD_ANTHROPIC_API_KEY` | API key from the Anthropic console. **Required** to enable the AI panel. | _(unset = AI panel hidden)_ |
+| `DBBOARD_ANTHROPIC_MODEL` | Model identifier override. | `claude-sonnet-4-6` |
+
+If the key is missing or construction fails (e.g. an empty model
+override), the binary logs to stderr and continues without AI — the
+rest of the app keeps working. The key never appears in `Debug`
+output or in `history.jsonl`; it is held only in memory for the
+process lifetime.
+
+```sh
+DBBOARD_ANTHROPIC_API_KEY='sk-ant-…' cargo run -p dbboard
+```
+
+Stage 2 capabilities (streaming, multi-provider switcher,
+keychain-backed `ai-providers.toml`, AI calls recorded in
+`history.jsonl`, full-DDL schema snapshots, function-calling) are
+deferred — see ADR-0023 §9.
+
 ## Development
 
 Before committing, the pre-commit hook runs:

@@ -26,6 +26,8 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use dbboard_ai::AiProvider;
+use dbboard_anthropic::AnthropicProvider;
 use dbboard_config::store::{default_history_path, default_path, load_or_empty};
 use dbboard_config::{ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore};
 use dbboard_i18n::t;
@@ -150,6 +152,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => Arc::new(NullSwitcher),
     };
 
+    // Optional AI provider (ADR-0023). Resolved purely from env vars in
+    // Stage 1 — `DBBOARD_ANTHROPIC_API_KEY` is the gate, the model is an
+    // optional override. A missing key or a construction error logs and
+    // returns `None` so the binary still runs without AI; the UI panel
+    // hides itself when `has_ai_provider()` is false.
+    let ai_provider: Option<Arc<dyn AiProvider>> = resolve_ai_provider();
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
         ..Default::default()
@@ -167,6 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 conn_label,
                 now_rfc3339,
                 switcher,
+                ai_provider,
             );
             Ok(Box::new(DesktopApp::new(inner, admin)))
         }),
@@ -287,6 +297,45 @@ impl ConnectionSwitcher for NullSwitcher {
             "no connection store available on this host; configure one to switch connections"
                 .into(),
         ))
+    }
+}
+
+/// Resolve the optional AI provider from the environment (ADR-0023).
+///
+/// Stage 1 wires a single provider — Anthropic — via two env vars:
+///
+/// - `DBBOARD_ANTHROPIC_API_KEY` (required): the gate. When unset or
+///   blank, the function returns `None` silently — AI is opt-in and
+///   most users do not want the panel.
+/// - `DBBOARD_ANTHROPIC_MODEL` (optional): overrides the default
+///   (`claude-sonnet-4-6`) at the provider level. An empty value is
+///   treated as "not set" so a shell exporting `DBBOARD_ANTHROPIC_MODEL=`
+///   does not fail construction.
+///
+/// Construction failures (the only Stage 1 case is an empty trimmed
+/// key, which the key-presence check above rejects first, but the
+/// branch is kept for the model-override path) log to stderr and
+/// degrade to `None`. This mirrors the `dbboard_i18n::init` /
+/// `install_cjk_font` pattern: a misconfigured optional layer must
+/// not brick startup.
+fn resolve_ai_provider() -> Option<Arc<dyn AiProvider>> {
+    let key = std::env::var("DBBOARD_ANTHROPIC_API_KEY").ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    let model = std::env::var("DBBOARD_ANTHROPIC_MODEL")
+        .ok()
+        .filter(|m| !m.trim().is_empty());
+    let result = match model {
+        Some(m) => AnthropicProvider::new(key, m),
+        None => AnthropicProvider::with_default_model(key),
+    };
+    match result {
+        Ok(provider) => Some(Arc::new(provider)),
+        Err(e) => {
+            eprintln!("dbboard: AI provider init failed, AI panel disabled: {e}");
+            None
+        }
     }
 }
 
