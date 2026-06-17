@@ -235,15 +235,25 @@ work without it. Trait + first-provider shape locked in
       crate (ADR-0023; landed via PR #22 on 2026-06-15 — `reqwest`
       against `POST /v1/messages`, `explain` / `suggest_sql`,
       construction-time key/model validation, redacted `Debug`,
-      24 unit + 7 wiremock round-trip tests, no live network. The
-      `apps/dbboard` env-var wiring and `dbboard-ui` AI panel land
-      in two follow-up PRs per issue 0005's split-by-crate plan.)
-- [ ] "Explain this query" command
+      24 unit + 7 wiremock round-trip tests, no live network.)
+- [x] `apps/dbboard` env-var wiring (ADR-0023; landed via PR #24
+      on 2026-06-17 — `DBBOARD_ANTHROPIC_API_KEY` (required gate) +
+      optional `DBBOARD_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
+      resolved at startup, `Option<Arc<dyn AiProvider>>` injected
+      into `DbboardApp::connect`, `has_ai_provider()` accessor for
+      the slice (b) panel to gate registration. README "AI
+      integration (optional)" subsection added.)
+- [ ] "Explain this query" command — _slice (b) of issue 0005,
+      open against the dbboard-ui AI panel + worker round-trip_
 - [ ] "Suggest SQL from prompt" command using current schema snapshot
-      (`list_tables` result; full DDL extraction deferred)
-- [ ] Settings UI for API key, provider choice — _Stage 2 ADR
-      (env var `DBBOARD_ANTHROPIC_API_KEY` covers Stage 1 per ADR-0023)_
-- [ ] Graceful degradation when no provider configured
+      (`list_tables` result; full DDL extraction deferred) — _slice
+      (b) of issue 0005_
+- [ ] Settings UI for API key, provider choice — _Stage 2 ADR;
+      env var `DBBOARD_ANTHROPIC_API_KEY` covers Stage 1 (PR #24)_
+- [ ] Graceful degradation when no provider configured — _wiring
+      half landed via PR #24 (`has_ai_provider()` returns false when
+      env unset); the panel that hides on `false` follows in
+      slice (b)_
 
 Exit criteria: AI panel is hidden cleanly when not configured; visible
 and usable when it is.
