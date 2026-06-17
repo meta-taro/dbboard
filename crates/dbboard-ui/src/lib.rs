@@ -30,6 +30,7 @@ pub use worker::ConnectionSwitcher;
 // (return type `Result<(), DbError>`) without taking a direct dep on
 // `dbboard-core` — the architecture rule is that only the server and
 // adapters link to `dbboard-core` (see CLAUDE.md).
+pub use dbboard_ai::AiProvider;
 pub use dbboard_core::DbError;
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -109,6 +110,12 @@ pub struct DbboardApp {
     last_switch_error: Option<(String, DbError)>,
     /// Wall-clock RFC 3339 source, injected.
     now_rfc3339: RfcClock,
+    /// Optional AI provider (ADR-0023). `Some` when the binary
+    /// successfully constructs one from env vars at startup; `None`
+    /// otherwise. The Stage 2 AI panel reads this through
+    /// [`Self::has_ai_provider`] to decide whether to register itself;
+    /// graceful degradation = absence.
+    ai_provider: Option<Arc<dyn AiProvider>>,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -135,6 +142,11 @@ impl DbboardApp {
     /// binary supplies an implementation that owns the live
     /// [`AppState`](dbboard_server::AppState), the connection store,
     /// and a runtime handle.
+    ///
+    /// `ai_provider` is the optional AI integration (ADR-0023). `Some`
+    /// when the binary successfully constructed one from env vars;
+    /// `None` otherwise. The Stage 2 AI panel reads this through
+    /// [`Self::has_ai_provider`].
     #[must_use]
     pub fn connect(
         base_url: String,
@@ -143,11 +155,19 @@ impl DbboardApp {
         conn_label: String,
         now_rfc3339: RfcClock,
         switcher: Arc<dyn ConnectionSwitcher>,
+        ai_provider: Option<Arc<dyn AiProvider>>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
         let (reply_tx, reply_rx) = mpsc::channel::<Reply>();
         worker::spawn_worker(base_url, cmd_rx, reply_tx, egui_ctx, switcher);
-        Self::new(cmd_tx, reply_rx, history, conn_label, now_rfc3339)
+        Self::new(
+            cmd_tx,
+            reply_rx,
+            history,
+            conn_label,
+            now_rfc3339,
+            ai_provider,
+        )
     }
 
     /// Build a fresh app and immediately request the table list so
@@ -165,6 +185,7 @@ impl DbboardApp {
         history: PersistentHistoryStore,
         conn_label: String,
         now_rfc3339: RfcClock,
+        ai_provider: Option<Arc<dyn AiProvider>>,
     ) -> Self {
         let _ = cmd_tx.send(Command::ListTables);
         Self {
@@ -176,6 +197,7 @@ impl DbboardApp {
             conn_label,
             last_switch_error: None,
             now_rfc3339,
+            ai_provider,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -283,6 +305,16 @@ impl DbboardApp {
     #[must_use]
     pub fn history(&self) -> &HistoryStore {
         self.history.store()
+    }
+
+    /// True when a Stage 1 AI provider was successfully constructed at
+    /// startup (ADR-0023). The Stage 2 AI panel registers itself only
+    /// when this returns `true`; graceful degradation = absence, so a
+    /// missing `DBBOARD_ANTHROPIC_API_KEY` (or a construction failure)
+    /// simply hides the panel rather than aborting startup.
+    #[must_use]
+    pub fn has_ai_provider(&self) -> bool {
+        self.ai_provider.is_some()
     }
 }
 
@@ -511,6 +543,7 @@ mod tests {
             history,
             String::new(),
             stub_clock as super::RfcClock,
+            None,
         );
         (app, cmd_rx, reply_tx)
     }
@@ -527,6 +560,7 @@ mod tests {
             history,
             conn_label.to_string(),
             stub_clock as super::RfcClock,
+            None,
         );
         (app, cmd_rx, reply_tx)
     }
@@ -949,6 +983,67 @@ mod tests {
             app.last_switch_error().is_none(),
             "successful switch clears the prior failure"
         );
+    }
+
+    // --- ADR-0023 optional AI provider injection ---
+
+    /// Compile-time stub the slice (a) tests use as a stand-in for a
+    /// real `Arc<dyn AiProvider>`. Slice (b) replaces these with a real
+    /// AI panel + worker round-trip; for slice (a) all we need to assert
+    /// is that the field round-trips through the constructor.
+    struct StubAiProvider;
+
+    #[async_trait::async_trait]
+    impl dbboard_ai::AiProvider for StubAiProvider {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        fn capabilities(&self) -> dbboard_ai::AiCapabilities {
+            dbboard_ai::AiCapabilities::default()
+        }
+        async fn explain(
+            &self,
+            _req: &dbboard_ai::ExplainRequest,
+        ) -> dbboard_ai::AiResult<dbboard_ai::AiResponse> {
+            Err(dbboard_ai::AiError::Cancelled)
+        }
+        async fn suggest_sql(
+            &self,
+            _req: &dbboard_ai::SuggestRequest,
+        ) -> dbboard_ai::AiResult<dbboard_ai::AiResponse> {
+            Err(dbboard_ai::AiError::Cancelled)
+        }
+    }
+
+    fn build_with_ai_provider(
+        provider: std::sync::Arc<dyn dbboard_ai::AiProvider>,
+    ) -> (DbboardApp, mpsc::Receiver<Command>, mpsc::Sender<Reply>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let history = PersistentHistoryStore::in_memory_only(DEFAULT_CAPACITY);
+        let app = DbboardApp::new(
+            cmd_tx,
+            reply_rx,
+            history,
+            String::new(),
+            stub_clock as super::RfcClock,
+            Some(provider),
+        );
+        (app, cmd_rx, reply_tx)
+    }
+
+    #[test]
+    fn has_ai_provider_is_false_when_none_was_injected() {
+        let (app, _cmd_rx, _reply_tx) = build();
+        assert!(!app.has_ai_provider());
+    }
+
+    #[test]
+    fn has_ai_provider_is_true_when_some_was_injected() {
+        let provider: std::sync::Arc<dyn dbboard_ai::AiProvider> =
+            std::sync::Arc::new(StubAiProvider);
+        let (app, _cmd_rx, _reply_tx) = build_with_ai_provider(provider);
+        assert!(app.has_ai_provider());
     }
 
     #[test]

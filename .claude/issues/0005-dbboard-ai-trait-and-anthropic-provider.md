@@ -106,14 +106,17 @@ ADR-0023 §9 and out of scope for this issue.
 
 ### `apps/dbboard` wiring
 
-- [ ] `DBBOARD_ANTHROPIC_API_KEY` env var resolution at startup
+- [x] `DBBOARD_ANTHROPIC_API_KEY` env var resolution at startup
       → construct `AnthropicProvider`. `DBBOARD_ANTHROPIC_MODEL`
-      optional override.
-- [ ] `DbboardApp::new` (or equivalent) takes
+      optional override. Implemented in `apps/dbboard::resolve_ai_provider`;
+      missing key or construction error logs to stderr and returns `None`.
+- [x] `DbboardApp::new` (or equivalent) takes
       `Option<Arc<dyn AiProvider>>`. None when env var absent or
       construction fails (logged but not fatal — desktop still
-      runs without AI).
-- [ ] README documents both env vars in the existing "Run"
+      runs without AI). `DbboardApp::connect` + `DbboardApp::new`
+      both accept the option; the accessor `has_ai_provider()` lets the
+      slice (b) UI panel gate registration.
+- [x] README documents both env vars in the existing "Run"
       section. New "AI integration (optional)" subsection.
 
 ### `dbboard-ui`

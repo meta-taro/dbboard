@@ -591,6 +591,8 @@ name = "dbboard"
 version = "0.1.0"
 dependencies = [
  "cargo-husky",
+ "dbboard-ai",
+ "dbboard-anthropic",
  "dbboard-config",
  "dbboard-i18n",
  "dbboard-server",
@@ -717,6 +719,8 @@ dependencies = [
 name = "dbboard-ui"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "dbboard-ai",
  "dbboard-config",
  "dbboard-core",
  "dbboard-i18n",
