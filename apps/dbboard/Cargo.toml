@@ -25,6 +25,13 @@ dbboard-config = { workspace = true }
 dbboard-i18n = { workspace = true }
 dbboard-server = { path = "../../crates/dbboard-server" }
 dbboard-ui = { path = "../../crates/dbboard-ui" }
+# Optional AI provider trait + the first concrete provider (ADR-0023).
+# The binary resolves `DBBOARD_ANTHROPIC_API_KEY` at startup, constructs
+# an `AnthropicProvider` on success, and injects it into the UI as
+# `Option<Arc<dyn AiProvider>>`. A missing env var or a construction
+# failure degrades gracefully — the binary still runs without AI.
+dbboard-ai = { workspace = true }
+dbboard-anthropic = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 tokio = { workspace = true }
