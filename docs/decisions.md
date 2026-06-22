@@ -2384,3 +2384,238 @@ implementation work is queued as
   vars, one new optional UI panel. No existing public API
   changes signature.
 
+## ADR-0024 — At-rest file permissions for `connections.toml` and `history.jsonl`
+
+**Status:** Accepted (2026-06-22). Locks down the per-user config
+files dbboard creates against the *"laptop is lost or stolen"* threat
+model. Unix gets explicit `0o600` on creation; Windows relies on the
+inherited DACL of `%APPDATA%\Roaming\<user>\` (already user-only by
+default on every supported Windows version); a startup-time warning
+fires when the config dir resolves to a likely cloud-synced path
+(OneDrive Known Folder Move, iCloud Drive). The workspace-wide
+`unsafe_code = "forbid"` lint is upheld.
+
+### Context
+
+Phase 4 Stage 1 (ADR-0023) wired the first AI provider through
+`apps/dbboard`. As part of preparing the next slice (the AI panel),
+we ran a focused security audit scoped to **secrets at rest** and
+**secrets in memory / leakage paths** under the threat model of
+*"the laptop was lost; the disk is the attack surface."* The
+in-memory pass came back clean — the `BackendConfig`, `AiProvider`,
+and `EnvSnapshot` types all redact secrets in their `Debug` impls;
+`reqwest::Error::without_url()` is applied at every HTTP failure
+site; `eprintln!` paths surface no secrets; the OS keychain
+(Windows Credential Manager / DPAPI, macOS Keychain, Linux Secret
+Service) is the only at-rest secret store and remains scoped to a
+logged-in session.
+
+The at-rest pass found two real exposures on **Unix**:
+
+1. `crates/dbboard-ui/src/history.rs:486` opens `history.jsonl`
+   with `OpenOptions::new().append(true).create(true)`, no
+   explicit mode. The first time the file is created its
+   permissions are `0o666 & !umask`. The default umask on most
+   Linux distributions (`0o022`) and on macOS (`0o022`) leaves
+   the file group- and world-readable. SQL queries logged through
+   ADR-0017 may contain literal credentials
+   (`UPDATE users SET password = '…'`), so this is not just
+   metadata — the file can contain real secrets.
+
+2. `crates/dbboard-config/src/store.rs:256-264` covers the same
+   gap for the `connections.toml.tmp` sibling on
+   `#[cfg(not(unix))]`. The Unix branch already sets
+   `mode(0o600)` (correct since ADR-0013); the Windows branch was
+   flagged as a parallel concern.
+
+On **Windows**, the practical exposure is much smaller than the
+audit's initial framing suggested:
+
+- `%APPDATA%\Roaming\<user>\` is part of the user's profile.
+  Its DACL grants `SYSTEM Full`, `Administrators Full`,
+  `<user> Full`, and **denies inheritance to other limited-priv
+  accounts**. Files created under it inherit that DACL.
+- Our config dir resolves via `directories::ProjectDirs` to
+  `%APPDATA%\Roaming\dbboard\dbboard\config\`. Every file we
+  create there inherits the restrictive ACL by default.
+- The "lost laptop, single-user attacker" branch of the threat
+  model is therefore mitigated by NTFS inheritance + (when the
+  user enables it) BitLocker. The "multi-user shared machine"
+  branch is outside the threat model the user asked us to harden
+  against.
+
+The audit also surfaced a third concern that is **not** a code bug
+but a configuration risk: OneDrive's *Known Folder Move* feature
+silently relocates `%APPDATA%\Roaming\` (or `Documents\`) under
+`%OneDrive%\`, which then syncs the directory contents to the
+Microsoft cloud. A `history.jsonl` containing literal credentials
+would propagate to the user's OneDrive replica. This is documented
+behaviour of OneDrive, not a dbboard bug, but we can detect it at
+startup and warn the user.
+
+Finally, the workspace declares `unsafe_code = "forbid"` in
+`Cargo.toml:87`. The cleanest Win32 path for an *explicit*
+user-only DACL on each file would be `windows-sys` →
+`SetNamedSecurityInfoW`, which requires `unsafe`. The available
+no-unsafe alternatives all have material drawbacks:
+
+- `windows-acl` (trailofbits) — last release 2020, abandoned;
+  conflicts with `CLAUDE.md`'s "avoid abandoned crates" rule.
+- Shell out to `icacls.exe` — works but adds process-spawn cost,
+  locale-dependent error parsing, and a runtime dependency on a
+  Windows binary path.
+- `cap-std` — large dep tree for what would be a single helper.
+
+Given the modest Windows exposure (inherited ACL is already
+restrictive) and the cost of every workaround, this ADR upholds
+`unsafe_code = "forbid"` and accepts inherited-DACL behaviour on
+Windows. If a future threat model (e.g. enterprise multi-user
+workstations) demands explicit per-file DACLs, a follow-up ADR
+will reopen this decision.
+
+### Decision
+
+1. **New `crates/dbboard-config/src/secure_fs.rs` helper module.**
+   Two functions plus a path-classifier:
+   - `pub fn create_new_user_only(path: &Path) -> io::Result<File>`
+     — `OpenOptions::create_new(true)` everywhere, plus `mode(0o600)`
+     under `#[cfg(unix)]`. Replaces both Unix and non-Unix branches
+     of `write_new_file`.
+   - `pub fn open_append_user_only(path: &Path) -> io::Result<File>`
+     — opens append, creating the file if absent. On first
+     creation under `#[cfg(unix)]`, a *single* open with the
+     combined flags `O_CREAT | O_EXCL | O_APPEND | mode(0o600)`
+     returns the handle the file was created with — no
+     close-and-reopen window in which a hostile process could
+     substitute a symlink. On subsequent opens, calls
+     `set_permissions(0o600)` defensively in case the file
+     pre-dates this ADR, then opens append. The tightening
+     branch retains a narrow `chmod`-then-`open` TOCTOU, accepted
+     under this ADR's lost-laptop threat model (which does not
+     assume a hostile *active* local attacker). On Windows, no
+     ACL manipulation — relies on inheritance.
+   - `pub fn is_likely_cloud_synced_path(path: &Path) -> Option<&'static str>`
+     — pure string matcher. Returns the cloud provider name
+     (`"OneDrive"`, `"iCloud Drive"`, `"Dropbox"`, `"Google Drive"`)
+     when the path traverses a directory segment matching a known
+     vendor folder. The Google Drive arm recognises the legacy
+     `Google Drive` / `GoogleDrive` mount names plus the modern
+     `My Drive` root and the macOS `CloudStorage` / `GoogleDrive-*`
+     layout introduced by Google Drive for Desktop. No I/O, no
+     platform-specific calls. Returns `None` for everything else,
+     and silently skips non-UTF-8 path segments (heuristic, not a
+     guarantee — NTFS junctions hiding a cloud-sync vendor name
+     will produce false negatives).
+
+2. **`crates/dbboard-config/src/store.rs::write_new_file` is
+   replaced by `secure_fs::create_new_user_only`.** The Unix
+   branch's behaviour (mode 0o600, `create_new`, `sync_all`) is
+   preserved exactly. The non-Unix branch picks up the same
+   `create_new` semantics — no behavioural change on Windows
+   beyond inheriting `sync_all`. The dedicated module makes the
+   policy easy to grep for and easy to share with `dbboard-ui`.
+
+3. **`crates/dbboard-ui/src/history.rs::append_record` switches to
+   `secure_fs::open_append_user_only`.** First-creation case now
+   lands as `0o600` on Unix instead of umask-dependent. Existing
+   `history.jsonl` files surviving an upgrade get tightened on
+   the next append via the defensive `set_permissions` path.
+
+4. **Startup OneDrive / cloud-sync warning in
+   `apps/dbboard/src/main.rs`.** Right after resolving the config
+   dir via `default_path()` / `default_history_path()`, the binary
+   calls `is_likely_cloud_synced_path` and, on a hit, emits a
+   single `eprintln!` warning to stderr naming the provider and
+   recommending the user disable Known Folder Move for the dbboard
+   config dir. The warning fires at most once per process. No
+   panic, no exit — dbboard still runs (the user might genuinely
+   want this).
+
+5. **README and `docs/connections.md` document the at-rest
+   posture.** A short section explains the threat model, the
+   `0o600` policy, the recommendation to enable BitLocker /
+   FileVault / dm-crypt (the practical mitigation that Windows
+   inherited ACL alone does not provide on a stolen unencrypted
+   disk), and the OneDrive caveat with vendor links for disabling
+   the relevant cloud-sync feature.
+
+6. **`unsafe_code = "forbid"` is upheld at the workspace level.**
+   No new `unsafe` blocks. No `unsafe`-bearing crates added. If a
+   future ADR opens explicit Windows DACL manipulation, it must
+   gate the unsafety inside one module with an in-module
+   `#![allow(unsafe_code)]` and justify the carve-out per
+   `CLAUDE.md`'s decision-log requirement.
+
+### Alternatives considered
+
+- **Explicit `SetNamedSecurityInfoW` DACL on every file via
+  `windows-sys`.** Rejected. Forces `unsafe`, conflicting with
+  the workspace lint. Marginal benefit over inherited ACL on a
+  default Windows install; meaningful benefit only on multi-user
+  shared workstations, which are outside the stated threat
+  model. Re-openable as a follow-up ADR if that threat model
+  changes.
+
+- **Shell out to `icacls.exe`.** Rejected. Runtime dependency on
+  a Windows binary path, locale-dependent stderr parsing, and a
+  process spawn per file create. The benefit (one extra layer
+  over inherited ACL) does not justify the operational surface.
+
+- **Move the config dir to `%LOCALAPPDATA%\dbboard\` to escape
+  OneDrive Known Folder Move.** Rejected for now.
+  `directories::ProjectDirs::config_dir()` returns the per-user
+  roaming dir on Windows by design; switching to local-only
+  would diverge from the `directories` crate's convention and
+  break upgrades for existing users (their `connections.toml`
+  would be invisible). A startup warning is cheaper and gives
+  the user an informed choice.
+
+- **Encrypt `history.jsonl` at rest with a per-machine key.**
+  Rejected. The OS keychain is the right tool for "encrypt small
+  secrets at rest" — see ADR-0013's `KeyringStore`. Encrypting a
+  log file with rotating-content semantics adds a key-management
+  problem (DPAPI on Windows is the cleanest answer, but it again
+  requires `unsafe` via `windows-sys::Security::Cryptography`).
+  The simpler answer for a log file is "don't let other users
+  read it" + "encrypt the whole disk" — both of which this ADR
+  delivers via `0o600` + the BitLocker recommendation.
+
+- **Sanitise SQL text in `history.jsonl` to strip likely
+  literals.** Rejected as scope creep. The user explicitly
+  excluded "history.jsonl content filtering" when scoping this
+  audit. The right shape would be a separate ADR with its own
+  redaction policy (regex against `password\s*=\s*'…'`,
+  `IDENTIFIED BY '…'`, etc.) and a test corpus. Out of scope
+  here.
+
+### Consequences
+
+- One new module: `crates/dbboard-config/src/secure_fs.rs` with
+  three public functions and tests. No new dependencies.
+- `crates/dbboard-config/src/store.rs::write_new_file` is
+  replaced by a one-line delegation to `secure_fs`. The two
+  cfg-gated branches collapse.
+- `crates/dbboard-ui/src/history.rs::append_record` switches to
+  `secure_fs::open_append_user_only`. Behaviour change on Unix:
+  newly created `history.jsonl` lands as `0o600` (was
+  umask-dependent). Existing files get tightened on next write.
+- `apps/dbboard/src/main.rs` gains one `eprintln!` warning path
+  guarded by `is_likely_cloud_synced_path`. No new env vars.
+- README and `docs/connections.md` grow an "At-rest data" /
+  "File permissions" section pointing at this ADR.
+- `Cargo.toml` workspace `unsafe_code = "forbid"` stays. No
+  `#![allow(unsafe_code)]` overrides land.
+- HTTP contract unchanged. No `dbboard-web` mirror needed
+  (file-permission policy is a desktop-only concern; the web
+  sibling is server-side and uses a different storage model).
+- SemVer impact (ADR-0011): non-breaking. The public API of
+  `dbboard-config` gains a `secure_fs` module (additive). The
+  on-disk file permissions get tighter (also additive — users
+  who could read the file before still can; users who shouldn't
+  no longer can).
+- Implementation tracking: this ADR is implemented in-branch
+  (`feat/secure-fs-permissions`); no `.claude/issues/` entry,
+  since the work is small enough to land in one PR.
+- Roadmap: no row change. This is a security hardening pass on
+  Phase 2 / Phase 3 artefacts, not a Phase 4 advancement.
+
