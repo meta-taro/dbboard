@@ -5,17 +5,205 @@
 
 ## 最終更新
 
-- 日付: 2026-06-15 (PR #22 マージクローズ、`dbboard-anthropic` 具象
-  provider shipped セッション末)
-- ブランチ: `develop` (= `c705918`)、ローカル feature ブランチなし
-  (`feat/dbboard-anthropic-provider` は merge 済で `git branch -d` 済)
-- 現在の Phase: **Phase 4 (AI integration, optional layer) 第 2 PR
-  shipped。`dbboard-anthropic` (第 1 の具象 `AiProvider` 実装 — Anthropic
-  Messages API を `reqwest` 経由で叩く) が `develop` 上 landed、issue
-  0005 の `dbboard-anthropic` セクション全 6 チェック `[x]` 済。残り 2
-  セクション (`apps/dbboard` 起動配線 / `dbboard-ui` AI panel +
-  docs sweep) は open のまま、issue 0005 split-by-crate note に従い
-  別 PR で順次。Phase 2 + 2.5 + 3 はすべて done。**
+- 日付: 2026-06-22 (PR #25 マージクローズ、at-rest file permissions /
+  ADR-0024 shipped セッション末)
+- ブランチ: `develop` (= `5590996`)、ローカル feature ブランチなし
+  (`feat/secure-fs-permissions` は merge 済 / origin 側も削除済)
+- 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 第 3 PR まで shipped。
+  この PR #25 は Phase 4 の roadmap 行ではなく、Phase 2 の
+  `connections.toml` + `history.jsonl` ストアに対する at-rest
+  security 強化 (ADR-0024)。動機はユーザの「PC 紛失したと想定して
+  セキュリティ問題ないかチェックしたい」要望で、audit → fix →
+  rust-reviewer + security-reviewer → PR と進んだセッション。
+  Phase 4 残スコープ (`dbboard-ui` AI panel + 11-locale Fluent
+  + docs sweep = issue 0005 slice (b)) は引き続き open、次セッ
+  ション分岐候補。**
+
+### PR #25 (at-rest file permissions / ADR-0024) マージクローズ (本セッション / 2026-06-22)
+
+- PR #25 (`feat/secure-fs-permissions` → `develop`) マージ済 =
+  `5590996` (mergedAt 2026-06-22T05:52:56Z)。
+- ローカル `develop` は `origin/develop` (= `5590996`) と
+  fast-forward sync 済 (`6ad670d..5590996`、5 commit ぶん advance:
+  feat commits `36daa95` + `9e26456` + `ef1380b` + `47ed5c4` +
+  merge commit `5590996`)。
+- マージ済 feature ブランチ (`feat/secure-fs-permissions`) は
+  origin 側で自動削除済、ローカルは `47ed5c4 [origin/...: gone]`
+  状態で残置 (clean-up は次セッション or 任意)。
+- 本 PR の scope: at-rest secret 保護 + cloud-sync 警告 + ADR-0024
+  策定の 8 ファイル / +690 / −22。きっかけはユーザの「PC 紛失したと
+  想定したセキュリティ check + 必要なら実装」要望。スコープは
+  audit 結果に基づき (a) at-rest secret 保存と (b) in-memory 漏洩
+  経路に絞り、env var docs と history.jsonl 中身フィルタは scope 外。
+- セッション流れ:
+  - **Audit phase**: security-reviewer agent を at-rest + in-memory
+    scope で走らせ、3 件発見:
+    - (HIGH→LOW) `connections.toml.tmp` が umask デフォルトで
+      作られていた → 再評価で LOW (TOML 自体はシークレットを含まず
+      keyring_*_ref のみ、`directories::config_dir()` も他ユーザ
+      readable な場所ではない)。
+    - (MEDIUM) `history.jsonl` が umask デフォルト = 通常 `0o644`
+      で landing。Linux multi-user で他アカウントから読める。
+    - (LOW) Windows の OneDrive Known Folder Move で
+      `%APPDATA%\Roaming\` が `%OneDrive%\` 配下に飛ぶケース、
+      `history.jsonl` が暗黙的にクラウド同期される。
+  - **Fix scope 決定**: ユーザ確認で「MEDIUM + LOW (defense-in-depth)
+    + OneDrive doc」→ `unsafe_code = "forbid"` 制約に当たり再確認
+    → 「Unix 0o600 + Windows は継承 ACL 依存 + OneDrive 警告 +
+    ADR-0024」で確定。`SetNamedSecurityInfoW` 経路は `windows-sys`
+    の `unsafe` ブロックが必要なため却下、`icacls.exe` shell-out も
+    locale 依存で却下、`%LOCALAPPDATA%` migration も Windows-only
+    分岐の保守コスト > リターンで却下。
+  - **TDD 実装**: secure_fs Red → Green。`create_new_user_only` /
+    `open_append_user_only` / `is_likely_cloud_synced_path` の
+    3 公開関数。`#[cfg(unix)]` で `OpenOptionsExt::mode(0o600)`、
+    `#[cfg(not(unix))]` は parent DACL 継承に委ねる。15 tests
+    (Unix-gated 3 + 共通 12; rebase 前は 12 だったが reviewer
+    指摘で Google Drive 系を +3)。
+  - **配線**: `store.rs::write_new_file` と
+    `history.rs::append_record` を secure_fs に切替。
+    `apps/dbboard::default_path` で起動時に
+    `is_likely_cloud_synced_path` を呼び、hit したら stderr
+    1 行 warning (panic / exit はせず継続)。
+  - **Docs sweep**: ADR-0024 を `docs/decisions.md` に追記
+    (Context / Decision / Alternatives / Consequences)、README の
+    Security checks 段落に at-rest 姿勢を追記、`docs/connections.md`
+    に新 section "File permissions and at-rest posture (ADR-0024)"
+    を追加 (Unix 0o600 / Windows 継承 ACL / cloud-sync 警告 /
+    BitLocker 推奨 / keychain 不変動の 5 点)。
+- レビュー: rust-reviewer + security-reviewer 並列実行。
+  - rust-reviewer **HIGH (BLOCK)**: `open_append_user_only` の
+    drop→reopen に Unix で symlink-substitution TOCTOU。
+    → 修正: `O_CREAT|O_EXCL|O_APPEND|mode(0o600)` の単一 atomic
+    open に書き換え、返却 fd は作成時のものそのまま。close-and-reopen
+    window を完全に消した。
+  - rust-reviewer **MEDIUM**: cloud-sync matcher が Google Drive
+    for Desktop の `My Drive` / macOS `CloudStorage` / `GoogleDrive-*`
+    を見逃す。→ 修正: matcher に追加 + テスト 2 件追加。
+  - rust-reviewer **LOW** (doc 文言): 修正済 (atomic open の文言に
+    更新、heuristic 限界を明記)。
+  - security-reviewer は rust-reviewer H1 と同じ問題を MEDIUM A で
+    指摘、修正後に閉じた。MEDIUM B (chmod→open TOCTOU) は脅威モデル
+    外として ADR と doc コメントで明記。LOW (NTFS junction false
+    negative / stderr username / ADR 文言) も heuristic 限界 / 妥当な
+    判断としてドキュメント化。
+- 検証: pre-commit hook (fmt / clippy `-D warnings` / check / test)
+  全 4 コミットで green、workspace 全テスト緑 (dbboard-config 15
+  unit / dbboard-ui 67 unit 含む)。pre-push release build + release
+  test も human 側で green 確認済 (push 通過実績)。
+- 着地中に当てたミニ事象:
+  - **rustfmt diff** 2 件: secure_fs.rs の multi-line chain →
+    1 行 / multi-line let assignment → 1 行、`cargo fmt --all`
+    で自動修正。
+  - **clippy err_expect**: `.err().expect(...)` を `.expect_err(...)`
+    に置換。
+  - **clippy doc_markdown**: doc コメントの "OneDrive" を
+    backtick で囲む。
+  - **`unsafe_code = "forbid"` 制約**: 当初 windows-sys 直 DACL も
+    検討したが workspace 全体の `unsafe` 禁止に直撃。ADR-0024
+    Alternatives で正式に却下を記録し、Windows は inherited ACL
+    依存 + ADR で reopen 条件を明示する形に落とした。
+- web 側への影響: **HTTP contract / JSON schema 変更なし**。secure_fs
+  は desktop binary 内のファイルシステム層、web 側 (Nuxt + NestJS)
+  には対応物が存在しない (web 側は browser 環境で sqlite ファイル
+  を扱わない)。web 側 mirror brief 不要。
+- 次セッション分岐候補:
+  - **issue 0005 slice (b)** = `dbboard-ui` AI panel + worker
+    `Command::AiExplain` / `Command::AiSuggest` + 11-locale Fluent
+    + 状態機械テスト。本セッションで audit のため一時中断したスコープ。
+  - **`feat/dbboard-ui-ai-panel` ローカル空ブランチ** が `6ad670d`
+    時点で残置中。slice (b) 着手時に rebase or 削除 + 切り直し。
+
+### PR #24 (apps/dbboard AI 起動配線) マージクローズ (前セッション / 2026-06-17)
+
+- PR #24 (`feat/apps-dbboard-ai-wiring` → `develop`) マージ済 =
+  `6ad670d` (mergedAt 2026-06-17T04:03:12Z)。
+- ローカル `develop` は `origin/develop` (= `6ad670d`) と
+  fast-forward sync 済 (`1459899..6ad670d`、2 commit ぶん advance:
+  feat commit `481c667` + merge commit `6ad670d`)。
+- マージ済ローカル feature ブランチ (`feat/apps-dbboard-ai-wiring`
+  = `481c667`) は `git branch -d` 済。
+- 本 PR の scope: `apps/dbboard` 起動経路 + `dbboard-ui::DbboardApp`
+  シグネチャ拡張 + README + issue 0005 ティック の 7 ファイル /
+  +204 / −6。中身:
+  - `apps/dbboard::resolve_ai_provider`: 新ヘルパー。
+    `DBBOARD_ANTHROPIC_API_KEY` を読み取り、未設定 / trim 後空白なら
+    silent `None`。設定済みなら `DBBOARD_ANTHROPIC_MODEL` (任意、空
+    文字なら無視) を見て `AnthropicProvider::new` or
+    `with_default_model` を呼び分け、失敗時は stderr へ
+    `"dbboard: AI provider init failed, AI panel disabled: <err>"` を
+    出して `None`。`dbboard_i18n::init` / `install_cjk_font` と同じ
+    "optional layer が壊れても起動を bricks しない" パターン。
+  - `dbboard-ui::DbboardApp`: 新 field `ai_provider:
+    Option<Arc<dyn AiProvider>>` + 新 accessor `has_ai_provider()
+    -> bool`。`connect()` / `new()` 両方に `ai_provider` 引数を
+    追加 (6 args → 7 args)。`AiProvider` を `dbboard_ai` から
+    re-export (`DbError` と同じ "binary が trait crate 直接 dep
+    せず済む" 配慮)。
+  - 既存 lib テスト (`build` / `build_with_persistent`) を
+    `None` 渡しで signature 一致に追従、`build_with_ai_provider`
+    helper + tiny `StubAiProvider` (5 メソッド) + 2 つの新規 test
+    (`has_ai_provider_is_false_when_none_was_injected` /
+    `has_ai_provider_is_true_when_some_was_injected`) で round-trip
+    を保証。`async-trait` を `dbboard-ui` の dev-dep に追加
+    (`#[async_trait]` decoration が要るため; production code は
+    `Option<Arc<dyn ...>>` を握るだけで impl しない)。
+  - `apps/dbboard/Cargo.toml`: `dbboard-ai` + `dbboard-anthropic`
+    を deps に追加。`crates/dbboard-ui/Cargo.toml`: `dbboard-ai`
+    deps + `async-trait` dev-dep。
+  - `README.md`: `## Run` の最後に新 subsection
+    "### AI integration (optional)" を追加。env var 表
+    (`DBBOARD_ANTHROPIC_API_KEY` = required gate、
+    `DBBOARD_ANTHROPIC_MODEL` = default `claude-sonnet-4-6`)、
+    graceful-degradation 説明 (key 未設定なら panel hidden、key
+    は process メモリのみで `Debug` / `history.jsonl` には出ない)、
+    ADR-0023 §9 Stage 2 deferrals (streaming / multi-provider
+    switcher / keychain `ai-providers.toml` / history mirror /
+    full-DDL / function-calling) への link。
+  - `.claude/issues/0005`: `apps/dbboard wiring` の 3 つを `[x]`
+    化、各 item に "where it landed" コメント追加。残り
+    `dbboard-ui` 5 項目 + `Documentation` 4 項目 (10 項目中
+    `dbboard-anthropic/README.md` のみ既に `[x]`) は slice (b)
+    送り。
+- 検証: pre-commit hook (fmt / clippy `-D warnings` / check /
+  test) 全 green、workspace 全クレートテスト緑 (dbboard-ui
+  89 unit, 新規 2 件含む / dbboard-ai 15 / dbboard-anthropic
+  24 unit + 7 wiremock 統合 / 他 既存)。pre-push hook の
+  release build + release test も human 側で green を確認済
+  (push 通過実績)。
+- 着地中に当てたミニ事象: なし (clippy / fmt 一発緑、
+  signature 追加だけ呼び出し側全箇所通る形だった)。
+- web 側への影響: **HTTP contract / JSON schema 変更なし**。AI
+  呼び出しは `dbboard-server` を介さず in-process (ADR-0023
+  Decision 3)、env var も desktop only。web 側 mirror brief 不要
+  (ADR-0023 trait crate / 具象 provider と同じ desktop-side-only
+  カテゴリ継続)。
+- 次セッション分岐候補 (slice (b) = issue 0005 残り 1 段):
+  - **`dbboard-ui` AI panel + worker** — `egui::Window` を menu
+    bar から toggle、`has_ai_provider()` true 時のみ register。
+    `Command::AiExplain { sql }` / `Command::AiSuggest { prompt,
+    schema }` / `Reply::AiResponded { text, tokens_in, tokens_out
+    }` / `Reply::AiFailed { err }` を worker に追加。
+    `tokio::runtime::Handle::block_on` パターンは
+    `ConnectionSwitcher` と同型 (`AiProvider` は `Arc<dyn>` で
+    worker thread に shared、async は worker runtime 上で走らせる)。
+    UI state machine の単体テスト (mode switch / send while busy
+    は noop / response が stale を置換 / error が stale を置換)。
+  - **Fluent keys 11 locale 全件** — panel title / 2 mode label
+    (Explain / Suggest) / send button / 5 error category prefix
+    (AiError 5 variant) を Tier 1 (en / ja) → Tier 2 (ko / zh-CN
+    / zh-TW / de / fr / es / pt-BR / ru / it) の順で追加。ADR-0022
+    Consequences rule で Tier 1+2 同期必須。
+  - **docs sweep** — `docs/architecture.md` AI Layer
+    詳細 (panel registration の `has_ai_provider()` ゲート、
+    worker thread での block_on パターン)、
+    `crates/dbboard-anthropic/README.md` の "where used" 行
+    更新、`.claude/issues/0005` 全 checkmark 確定 + Status →
+    closed。
+  - **規模**: panel 本体 (200-300 行) + worker 拡張 (100-150
+    行) + Fluent 11 locale × ~10 key (110 行) + 状態機械テスト
+    (5-7 件、150 行) + docs sweep。1 PR にまとめても review
+    可能サイズに収まる想定。
 
 ### PR #22 (dbboard-anthropic 具象 provider) マージクローズ (本セッション / 2026-06-15)
 
