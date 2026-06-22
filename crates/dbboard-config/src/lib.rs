@@ -20,6 +20,7 @@
 pub mod admin;
 pub mod error;
 pub mod secrets;
+pub mod secure_fs;
 pub mod store;
 
 pub use admin::{
