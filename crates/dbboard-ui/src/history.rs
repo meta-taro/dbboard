@@ -14,10 +14,11 @@
 //! single startup warning.
 
 use std::collections::VecDeque;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use dbboard_config::secure_fs;
 use serde::{Deserialize, Serialize};
 
 /// Default cap used by [`HistoryStore::default`]. Chosen for UI
@@ -483,7 +484,9 @@ fn append_record(path: &Path, entry: &HistoryEntry) -> io::Result<()> {
             fs::create_dir_all(parent)?;
         }
     }
-    let mut file = OpenOptions::new().append(true).create(true).open(path)?;
+    // ADR-0024: open with user-only permissions on first creation, and
+    // defensively tighten any pre-existing legacy file on Unix.
+    let mut file = secure_fs::open_append_user_only(path)?;
     let rec = RecordWire::from_entry(entry);
     let mut bytes =
         serde_json::to_vec(&rec).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

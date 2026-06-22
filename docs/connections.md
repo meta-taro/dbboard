@@ -153,3 +153,42 @@ seed the keychain by hand with your OS's tooling:
 
 A missing keychain entry surfaces as `ConfigError::Secret` at startup,
 naming the reference that could not be resolved.
+
+## File permissions and at-rest posture (ADR-0024)
+
+dbboard tightens the per-user config files it creates against the
+*"laptop lost or stolen"* threat model.
+
+- **Unix (Linux, macOS):** `connections.toml`, its `connections.toml.tmp`
+  sibling, and `history.jsonl` are created with mode `0o600`
+  (owner-read-write only). On every append, `history.jsonl` is
+  defensively re-tightened so a file that pre-dates ADR-0024 gets
+  fixed automatically on the next write.
+- **Windows:** files inherit the DACL of
+  `%APPDATA%\Roaming\<user>\`, which grants
+  `SYSTEM Full`, `Administrators Full`, `<user> Full`, and denies
+  inheritance to other limited-priv accounts on the same machine.
+  dbboard does not set an explicit DACL on each file — the workspace
+  forbids `unsafe` (see `Cargo.toml`'s `unsafe_code = "forbid"`) and
+  the inherited ACL is already restrictive on every supported
+  Windows version.
+- **OneDrive / iCloud Drive / Dropbox / Google Drive:** if the
+  resolved config dir traverses a known cloud-sync vendor folder
+  (e.g. OneDrive *Known Folder Move* relocates `%APPDATA%\Roaming\`
+  under `%OneDrive%\`), dbboard logs one stderr warning at startup
+  naming the vendor and the path. The binary keeps running — the
+  user might want this — but the warning makes the cloud
+  replication of `history.jsonl` visible. To exclude the dbboard
+  config dir from OneDrive sync, follow Microsoft's *"Choose folders
+  to sync"* guidance and uncheck the `dbboard\dbboard\config`
+  subtree.
+- **The single most effective hardening on a lost laptop is
+  full-disk encryption.** Enable BitLocker (Windows), FileVault
+  (macOS), or LUKS/dm-crypt (Linux). NTFS / POSIX permissions are
+  only meaningful while the OS is booted; an attacker with the raw
+  disk bypasses them.
+
+The OS keychain (`KeyringStore`) is unaffected by any of the above —
+secrets there are encrypted by the OS (DPAPI on Windows, Keychain on
+macOS, Secret Service on Linux) and are not readable from a powered-off
+disk even without full-disk encryption.

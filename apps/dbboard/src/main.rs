@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use dbboard_ai::AiProvider;
 use dbboard_anthropic::AnthropicProvider;
 use dbboard_config::store::{default_history_path, default_path, load_or_empty};
-use dbboard_config::{ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore};
+use dbboard_config::{secure_fs, ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore};
 use dbboard_i18n::t;
 use dbboard_server::{
     backend_config_for_entry, backend_config_from_env_and_store, build_adapter,
@@ -85,6 +85,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // can mutate the same file the server resolved its backend from.
     let (file, admin) = match default_path() {
         Ok(path) => {
+            // ADR-0024: warn (don't abort) when the per-user config dir
+            // resolves under a cloud-sync vendor folder (OneDrive Known
+            // Folder Move, iCloud Drive, Dropbox, Google Drive). Files
+            // there are silently replicated to the vendor's servers; a
+            // history.jsonl containing literal credentials would
+            // propagate. The startup-time string match catches the
+            // common cases without I/O.
+            if let Some(vendor) = secure_fs::is_likely_cloud_synced_path(&path) {
+                eprintln!(
+                    "dbboard: config path appears to be inside {vendor} ({}); \
+                     query history may sync to the cloud. See README for how to \
+                     exclude the dbboard config dir from {vendor} sync.",
+                    path.display()
+                );
+            }
             let file = load_or_empty(&path)?;
             let admin = ConnectionAdmin::new_with_file(path, Arc::clone(&secrets), file.clone());
             // The same ConnectionAdmin instance is shared between the
