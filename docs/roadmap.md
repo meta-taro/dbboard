@@ -135,12 +135,20 @@ contract (ADR-0011).
 - [x] Local config file (TOML) + OS keychain for secrets *(ADR-0013;
   `connections.toml` resolved via `directories`, secrets via the
   `keyring` crate behind a `SecretStore` trait; see
-  [`docs/connections.md`](connections.md))*
+  [`docs/connections.md`](connections.md). At-rest hardening
+  follow-up — ADR-0024 / PR #25 (2026-06-22): `0o600` on Unix
+  via the new `dbboard_config::secure_fs` module, inherited DACL on
+  Windows, and a startup stderr warning when the resolved config
+  dir traverses a cloud-sync folder (OneDrive / iCloud Drive /
+  Dropbox / Google Drive).)*
 - [x] Query history — in-memory (ADR-0014, Stage 1)
 - [x] Query history — persistent JSON Lines (ADR-0017, Stage 2;
   `history.jsonl` next to `connections.toml`, shared record schema
   with `dbboard-web` per the cross-repo brief in
-  `.claude/issues/0003-web-history-schema-mirror.md`)
+  `.claude/issues/0003-web-history-schema-mirror.md`. At-rest
+  posture tightened by ADR-0024 / PR #25 — `0o600` on Unix on first
+  creation, defensively re-tightened on every append for files
+  that pre-date the ADR.)
 - [x] In-process connection switching (ADR-0020; per-row **Connect**
   button on the connection list swaps the active adapter on the
   running server via `Arc<RwLock<Arc<dyn DatabaseAdapter>>>`. Each
@@ -235,15 +243,25 @@ work without it. Trait + first-provider shape locked in
       crate (ADR-0023; landed via PR #22 on 2026-06-15 — `reqwest`
       against `POST /v1/messages`, `explain` / `suggest_sql`,
       construction-time key/model validation, redacted `Debug`,
-      24 unit + 7 wiremock round-trip tests, no live network. The
-      `apps/dbboard` env-var wiring and `dbboard-ui` AI panel land
-      in two follow-up PRs per issue 0005's split-by-crate plan.)
-- [ ] "Explain this query" command
+      24 unit + 7 wiremock round-trip tests, no live network.)
+- [x] `apps/dbboard` env-var wiring (ADR-0023; landed via PR #24
+      on 2026-06-17 — `DBBOARD_ANTHROPIC_API_KEY` (required gate) +
+      optional `DBBOARD_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
+      resolved at startup, `Option<Arc<dyn AiProvider>>` injected
+      into `DbboardApp::connect`, `has_ai_provider()` accessor for
+      the slice (b) panel to gate registration. README "AI
+      integration (optional)" subsection added.)
+- [ ] "Explain this query" command — _slice (b) of issue 0005,
+      open against the dbboard-ui AI panel + worker round-trip_
 - [ ] "Suggest SQL from prompt" command using current schema snapshot
-      (`list_tables` result; full DDL extraction deferred)
-- [ ] Settings UI for API key, provider choice — _Stage 2 ADR
-      (env var `DBBOARD_ANTHROPIC_API_KEY` covers Stage 1 per ADR-0023)_
-- [ ] Graceful degradation when no provider configured
+      (`list_tables` result; full DDL extraction deferred) — _slice
+      (b) of issue 0005_
+- [ ] Settings UI for API key, provider choice — _Stage 2 ADR;
+      env var `DBBOARD_ANTHROPIC_API_KEY` covers Stage 1 (PR #24)_
+- [ ] Graceful degradation when no provider configured — _wiring
+      half landed via PR #24 (`has_ai_provider()` returns false when
+      env unset); the panel that hides on `false` follows in
+      slice (b)_
 
 Exit criteria: AI panel is hidden cleanly when not configured; visible
 and usable when it is.

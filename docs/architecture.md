@@ -42,9 +42,12 @@ its three pg-wire flavors), `dbboard-server`, `dbboard-ui`, `dbboard-ai`
 (first concrete provider; landed via PR #22 on 2026-06-15), and
 `apps/dbboard` all ship. The UI talks to the server over HTTP rather
 than calling adapters directly; `apps/dbboard` boots both in one
-process. The binary does not yet construct an `AiProvider`; the
-`apps/dbboard` env-var wiring and the `dbboard-ui` AI panel land in
-two follow-up PRs against issue 0005 — see [`roadmap.md`](roadmap.md).
+process. The binary now constructs `Option<Arc<dyn AiProvider>>` from
+env vars at startup (landed via PR #24 on 2026-06-17 —
+`DBBOARD_ANTHROPIC_API_KEY` is the opt-in gate, missing or
+construction failure degrades to `None`). The `dbboard-ui` AI panel
+that consumes the provider behind `has_ai_provider()` lands in a
+follow-up PR against issue 0005 — see [`roadmap.md`](roadmap.md).
 
 ## Dependency Rules
 
@@ -85,9 +88,13 @@ contract ([ADR-0023](decisions.md)).
   other.
 - `apps/dbboard` boots `dbboard-server` (binding to `127.0.0.1:0`,
   reading back the assigned port) and starts `dbboard-ui` with that
-  port. On exit it shuts the server down cleanly. When the AI layer
-  is enabled, the binary additionally constructs the chosen provider
-  and passes `Option<Arc<dyn AiProvider>>` to the UI worker.
+  port. On exit it shuts the server down cleanly. The binary also
+  resolves the optional AI provider at startup
+  (`resolve_ai_provider`): when `DBBOARD_ANTHROPIC_API_KEY` is set,
+  it constructs an `AnthropicProvider` and passes
+  `Some(Arc::new(provider))` to `DbboardApp::connect`; otherwise
+  it passes `None` and the UI hides AI controls via
+  `has_ai_provider()`.
 
 This means new DB support is added by writing one crate that implements
 the trait, then wiring it into `dbboard-server`. No UI or core changes
@@ -139,8 +146,12 @@ A separate trait in `dbboard-ai` that mirrors the adapter pattern.
 The trait crate is in `develop` as of PR #20 (2026-06-15); the first
 concrete provider `dbboard-anthropic` (Anthropic Messages API over
 `reqwest`) followed in PR #22 (2026-06-15). The `apps/dbboard`
-env-var wiring and the `dbboard-ui` AI panel follow in subsequent
-PRs against the same issue ([ADR-0023](decisions.md);
+env-var wiring landed via PR #24 (2026-06-17) —
+`DBBOARD_ANTHROPIC_API_KEY` resolves to `Option<Arc<dyn AiProvider>>`
+and is injected into `DbboardApp::connect`. The `dbboard-ui` AI
+panel that consumes the provider through `has_ai_provider()` follows
+in a subsequent PR against the same issue
+([ADR-0023](decisions.md);
 `.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`).
 
 ```rust
@@ -222,11 +233,15 @@ User-facing configuration lives in a dedicated crate
   with a list of `[[connections]]` entries (`kind = "turso" | "d1" |
   "postgres"`). A missing file yields an empty store; the file is
   created lazily when the UI saves the first entry, with mode `0o600`
-  on Unix.
+  on Unix (routed through `dbboard_config::secure_fs::create_new_user_only`
+  per ADR-0024). `history.jsonl` lands the same way and re-tightens
+  defensively on every append for files that pre-date the ADR.
 - **Secrets** in the OS keychain via the `keyring` crate (Windows
   Credential Manager, macOS Keychain, Linux Secret Service). The TOML
   stores only opaque `keyring_*_ref` keys; tokens and connection
-  strings never appear on disk.
+  strings never appear on disk. The OS keychain is unaffected by the
+  ADR-0024 at-rest hardening — secrets there are encrypted by the OS
+  even on a recovered powered-off disk.
 
 `apps/dbboard::main` resolves a backend in this order:
 `DBBOARD_PG_URL` → `DBBOARD_D1_*` → `DBBOARD_TURSO_PATH` →
