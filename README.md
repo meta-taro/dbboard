@@ -264,6 +264,17 @@ You can run these manually at any time.
 
 ### Security checks
 
+dbboard creates `connections.toml` and `history.jsonl` under your
+per-user config dir. On Unix both land as mode `0o600`; on Windows
+they inherit the user-only DACL of `%APPDATA%\Roaming\<user>\`. If
+the resolved config dir lives under a cloud-sync vendor folder
+(OneDrive Known Folder Move, iCloud Drive, Dropbox, Google Drive),
+the binary emits one stderr warning at startup naming the vendor.
+The single most effective hardening on a lost laptop is full-disk
+encryption — enable BitLocker / FileVault / dm-crypt. See
+[`docs/connections.md` § File permissions](docs/connections.md#file-permissions-and-at-rest-posture-adr-0024)
+and ADR-0024 for the full posture.
+
 `cargo-deny` gates the dependency graph on advisories, licenses,
 duplicate versions, and unknown sources. Configuration lives in
 [`deny.toml`](deny.toml).
