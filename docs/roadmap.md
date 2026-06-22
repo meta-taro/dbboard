@@ -135,12 +135,20 @@ contract (ADR-0011).
 - [x] Local config file (TOML) + OS keychain for secrets *(ADR-0013;
   `connections.toml` resolved via `directories`, secrets via the
   `keyring` crate behind a `SecretStore` trait; see
-  [`docs/connections.md`](connections.md))*
+  [`docs/connections.md`](connections.md). At-rest hardening
+  follow-up — ADR-0024 / PR #25 (2026-06-22): `0o600` on Unix
+  via the new `dbboard_config::secure_fs` module, inherited DACL on
+  Windows, and a startup stderr warning when the resolved config
+  dir traverses a cloud-sync folder (OneDrive / iCloud Drive /
+  Dropbox / Google Drive).)*
 - [x] Query history — in-memory (ADR-0014, Stage 1)
 - [x] Query history — persistent JSON Lines (ADR-0017, Stage 2;
   `history.jsonl` next to `connections.toml`, shared record schema
   with `dbboard-web` per the cross-repo brief in
-  `.claude/issues/0003-web-history-schema-mirror.md`)
+  `.claude/issues/0003-web-history-schema-mirror.md`. At-rest
+  posture tightened by ADR-0024 / PR #25 — `0o600` on Unix on first
+  creation, defensively re-tightened on every append for files
+  that pre-date the ADR.)
 - [x] In-process connection switching (ADR-0020; per-row **Connect**
   button on the connection list swaps the active adapter on the
   running server via `Arc<RwLock<Arc<dyn DatabaseAdapter>>>`. Each

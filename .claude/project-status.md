@@ -5,19 +5,116 @@
 
 ## 最終更新
 
-- 日付: 2026-06-17 (PR #24 マージクローズ、`apps/dbboard` AI 起動配線
-  shipped セッション末)
-- ブランチ: `develop` (= `6ad670d`)、ローカル feature ブランチなし
-  (`feat/apps-dbboard-ai-wiring` は merge 済で `git branch -d` 済)
-- 現在の Phase: **Phase 4 (AI integration, optional layer) 第 3 PR
-  shipped。`apps/dbboard` の env-var → `Option<Arc<dyn AiProvider>>`
-  配線が `develop` 上 landed、issue 0005 の `apps/dbboard wiring`
-  セクション全 3 チェック `[x]` 済。残り 1 セクション (`dbboard-ui`
-  AI panel + 11-locale Fluent + docs sweep = slice (b)) は open の
-  まま、issue 0005 split-by-crate note に従い別 PR で着手予定。
-  Phase 2 + 2.5 + 3 はすべて done。**
+- 日付: 2026-06-22 (PR #25 マージクローズ、at-rest file permissions /
+  ADR-0024 shipped セッション末)
+- ブランチ: `develop` (= `5590996`)、ローカル feature ブランチなし
+  (`feat/secure-fs-permissions` は merge 済 / origin 側も削除済)
+- 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 第 3 PR まで shipped。
+  この PR #25 は Phase 4 の roadmap 行ではなく、Phase 2 の
+  `connections.toml` + `history.jsonl` ストアに対する at-rest
+  security 強化 (ADR-0024)。動機はユーザの「PC 紛失したと想定して
+  セキュリティ問題ないかチェックしたい」要望で、audit → fix →
+  rust-reviewer + security-reviewer → PR と進んだセッション。
+  Phase 4 残スコープ (`dbboard-ui` AI panel + 11-locale Fluent
+  + docs sweep = issue 0005 slice (b)) は引き続き open、次セッ
+  ション分岐候補。**
 
-### PR #24 (apps/dbboard AI 起動配線) マージクローズ (本セッション / 2026-06-17)
+### PR #25 (at-rest file permissions / ADR-0024) マージクローズ (本セッション / 2026-06-22)
+
+- PR #25 (`feat/secure-fs-permissions` → `develop`) マージ済 =
+  `5590996` (mergedAt 2026-06-22T05:52:56Z)。
+- ローカル `develop` は `origin/develop` (= `5590996`) と
+  fast-forward sync 済 (`6ad670d..5590996`、5 commit ぶん advance:
+  feat commits `36daa95` + `9e26456` + `ef1380b` + `47ed5c4` +
+  merge commit `5590996`)。
+- マージ済 feature ブランチ (`feat/secure-fs-permissions`) は
+  origin 側で自動削除済、ローカルは `47ed5c4 [origin/...: gone]`
+  状態で残置 (clean-up は次セッション or 任意)。
+- 本 PR の scope: at-rest secret 保護 + cloud-sync 警告 + ADR-0024
+  策定の 8 ファイル / +690 / −22。きっかけはユーザの「PC 紛失したと
+  想定したセキュリティ check + 必要なら実装」要望。スコープは
+  audit 結果に基づき (a) at-rest secret 保存と (b) in-memory 漏洩
+  経路に絞り、env var docs と history.jsonl 中身フィルタは scope 外。
+- セッション流れ:
+  - **Audit phase**: security-reviewer agent を at-rest + in-memory
+    scope で走らせ、3 件発見:
+    - (HIGH→LOW) `connections.toml.tmp` が umask デフォルトで
+      作られていた → 再評価で LOW (TOML 自体はシークレットを含まず
+      keyring_*_ref のみ、`directories::config_dir()` も他ユーザ
+      readable な場所ではない)。
+    - (MEDIUM) `history.jsonl` が umask デフォルト = 通常 `0o644`
+      で landing。Linux multi-user で他アカウントから読める。
+    - (LOW) Windows の OneDrive Known Folder Move で
+      `%APPDATA%\Roaming\` が `%OneDrive%\` 配下に飛ぶケース、
+      `history.jsonl` が暗黙的にクラウド同期される。
+  - **Fix scope 決定**: ユーザ確認で「MEDIUM + LOW (defense-in-depth)
+    + OneDrive doc」→ `unsafe_code = "forbid"` 制約に当たり再確認
+    → 「Unix 0o600 + Windows は継承 ACL 依存 + OneDrive 警告 +
+    ADR-0024」で確定。`SetNamedSecurityInfoW` 経路は `windows-sys`
+    の `unsafe` ブロックが必要なため却下、`icacls.exe` shell-out も
+    locale 依存で却下、`%LOCALAPPDATA%` migration も Windows-only
+    分岐の保守コスト > リターンで却下。
+  - **TDD 実装**: secure_fs Red → Green。`create_new_user_only` /
+    `open_append_user_only` / `is_likely_cloud_synced_path` の
+    3 公開関数。`#[cfg(unix)]` で `OpenOptionsExt::mode(0o600)`、
+    `#[cfg(not(unix))]` は parent DACL 継承に委ねる。15 tests
+    (Unix-gated 3 + 共通 12; rebase 前は 12 だったが reviewer
+    指摘で Google Drive 系を +3)。
+  - **配線**: `store.rs::write_new_file` と
+    `history.rs::append_record` を secure_fs に切替。
+    `apps/dbboard::default_path` で起動時に
+    `is_likely_cloud_synced_path` を呼び、hit したら stderr
+    1 行 warning (panic / exit はせず継続)。
+  - **Docs sweep**: ADR-0024 を `docs/decisions.md` に追記
+    (Context / Decision / Alternatives / Consequences)、README の
+    Security checks 段落に at-rest 姿勢を追記、`docs/connections.md`
+    に新 section "File permissions and at-rest posture (ADR-0024)"
+    を追加 (Unix 0o600 / Windows 継承 ACL / cloud-sync 警告 /
+    BitLocker 推奨 / keychain 不変動の 5 点)。
+- レビュー: rust-reviewer + security-reviewer 並列実行。
+  - rust-reviewer **HIGH (BLOCK)**: `open_append_user_only` の
+    drop→reopen に Unix で symlink-substitution TOCTOU。
+    → 修正: `O_CREAT|O_EXCL|O_APPEND|mode(0o600)` の単一 atomic
+    open に書き換え、返却 fd は作成時のものそのまま。close-and-reopen
+    window を完全に消した。
+  - rust-reviewer **MEDIUM**: cloud-sync matcher が Google Drive
+    for Desktop の `My Drive` / macOS `CloudStorage` / `GoogleDrive-*`
+    を見逃す。→ 修正: matcher に追加 + テスト 2 件追加。
+  - rust-reviewer **LOW** (doc 文言): 修正済 (atomic open の文言に
+    更新、heuristic 限界を明記)。
+  - security-reviewer は rust-reviewer H1 と同じ問題を MEDIUM A で
+    指摘、修正後に閉じた。MEDIUM B (chmod→open TOCTOU) は脅威モデル
+    外として ADR と doc コメントで明記。LOW (NTFS junction false
+    negative / stderr username / ADR 文言) も heuristic 限界 / 妥当な
+    判断としてドキュメント化。
+- 検証: pre-commit hook (fmt / clippy `-D warnings` / check / test)
+  全 4 コミットで green、workspace 全テスト緑 (dbboard-config 15
+  unit / dbboard-ui 67 unit 含む)。pre-push release build + release
+  test も human 側で green 確認済 (push 通過実績)。
+- 着地中に当てたミニ事象:
+  - **rustfmt diff** 2 件: secure_fs.rs の multi-line chain →
+    1 行 / multi-line let assignment → 1 行、`cargo fmt --all`
+    で自動修正。
+  - **clippy err_expect**: `.err().expect(...)` を `.expect_err(...)`
+    に置換。
+  - **clippy doc_markdown**: doc コメントの "OneDrive" を
+    backtick で囲む。
+  - **`unsafe_code = "forbid"` 制約**: 当初 windows-sys 直 DACL も
+    検討したが workspace 全体の `unsafe` 禁止に直撃。ADR-0024
+    Alternatives で正式に却下を記録し、Windows は inherited ACL
+    依存 + ADR で reopen 条件を明示する形に落とした。
+- web 側への影響: **HTTP contract / JSON schema 変更なし**。secure_fs
+  は desktop binary 内のファイルシステム層、web 側 (Nuxt + NestJS)
+  には対応物が存在しない (web 側は browser 環境で sqlite ファイル
+  を扱わない)。web 側 mirror brief 不要。
+- 次セッション分岐候補:
+  - **issue 0005 slice (b)** = `dbboard-ui` AI panel + worker
+    `Command::AiExplain` / `Command::AiSuggest` + 11-locale Fluent
+    + 状態機械テスト。本セッションで audit のため一時中断したスコープ。
+  - **`feat/dbboard-ui-ai-panel` ローカル空ブランチ** が `6ad670d`
+    時点で残置中。slice (b) 着手時に rebase or 削除 + 切り直し。
+
+### PR #24 (apps/dbboard AI 起動配線) マージクローズ (前セッション / 2026-06-17)
 
 - PR #24 (`feat/apps-dbboard-ai-wiring` → `develop`) マージ済 =
   `6ad670d` (mergedAt 2026-06-17T04:03:12Z)。
