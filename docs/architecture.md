@@ -233,11 +233,15 @@ User-facing configuration lives in a dedicated crate
   with a list of `[[connections]]` entries (`kind = "turso" | "d1" |
   "postgres"`). A missing file yields an empty store; the file is
   created lazily when the UI saves the first entry, with mode `0o600`
-  on Unix.
+  on Unix (routed through `dbboard_config::secure_fs::create_new_user_only`
+  per ADR-0024). `history.jsonl` lands the same way and re-tightens
+  defensively on every append for files that pre-date the ADR.
 - **Secrets** in the OS keychain via the `keyring` crate (Windows
   Credential Manager, macOS Keychain, Linux Secret Service). The TOML
   stores only opaque `keyring_*_ref` keys; tokens and connection
-  strings never appear on disk.
+  strings never appear on disk. The OS keychain is unaffected by the
+  ADR-0024 at-rest hardening — secrets there are encrypted by the OS
+  even on a recovered powered-off disk.
 
 `apps/dbboard::main` resolves a backend in this order:
 `DBBOARD_PG_URL` → `DBBOARD_D1_*` → `DBBOARD_TURSO_PATH` →
