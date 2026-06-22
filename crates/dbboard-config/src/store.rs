@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use crate::secure_fs;
 use crate::ConfigError;
 
 /// The single TOML schema version this build understands.
@@ -239,26 +240,12 @@ fn tmp_path_for(path: &Path) -> PathBuf {
     parent.join(name)
 }
 
-#[cfg(unix)]
+// `create_new_user_only` rejects a stale temp left behind by an
+// interrupted save — better to fail loudly than to clobber. On Unix
+// the file lands as `0o600`; on Windows it inherits the user-only DACL
+// of `%APPDATA%\Roaming\<user>\` (ADR-0024).
 fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    // `create_new(true)` rejects a stale temp left behind by an
-    // interrupted save — better to fail loudly than to clobber.
-    let mut handle = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    handle.write_all(contents)?;
-    handle.sync_all()
-}
-
-#[cfg(not(unix))]
-fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let mut handle = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
+    let mut handle = secure_fs::create_new_user_only(path)?;
     handle.write_all(contents)?;
     handle.sync_all()
 }
