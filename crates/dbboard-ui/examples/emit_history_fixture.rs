@@ -2,11 +2,21 @@
 //! cross-implementation round-trip test (see web's handoff brief
 //! `2026-06-23-history-fixture-emit-outgoing.md` and ADR-0017 §6).
 //!
-//! Run from the workspace root:
+//! Run from the workspace root. Two modes:
 //!
 //! ```text
-//! cargo run --example emit_history_fixture -p dbboard-ui > desktop-history.jsonl
+//! cargo run --example emit_history_fixture -p dbboard-ui -- --output desktop-history.jsonl
+//! cargo run --example emit_history_fixture -p dbboard-ui                    # stdout
 //! ```
+//!
+//! Prefer `--output PATH` (or its short alias `-o PATH`): the bytes go
+//! through `File::create` + `write_all` so no shell ever re-encodes
+//! them. PowerShell's `>` redirection in particular defaults to
+//! UTF-16 LE + CRLF on Windows PowerShell 5.x and to UTF-8 + CRLF on
+//! PowerShell 7+, both of which silently violate web's byte
+//! equivalence check. The stdout mode is retained for piping into
+//! bytewise-safe shells (Git Bash, `cmd /c "... > file"`) and for the
+//! in-memory smoke test.
 //!
 //! The output bytes go through the production [`RecordWire`] serialiser
 //! via [`dbboard_ui::history::fixture`] so they are byte-identical to
@@ -44,9 +54,66 @@
 //! [`CategorizedError`]: dbboard_core
 //! [`RecordWire`]: dbboard_ui::history
 
-use std::io::{self, Write};
+use std::env;
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use dbboard_ui::{fixture, HistoryEntry, HistoryError, HistoryStatus};
+
+const USAGE: &str = "\
+usage: emit_history_fixture [--output PATH | -o PATH]
+
+Emit the dbboard ADR-0017 cross-implementation round-trip fixture.
+
+With --output PATH the bytes are written to PATH via File::create + \
+write_all, bypassing any shell re-encoding. Without it, the bytes are \
+written to stdout (use a byte-safe shell — Git Bash or `cmd /c`).
+";
+
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    Stdout,
+    File(PathBuf),
+    Help,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ParseError {
+    UnknownArg(String),
+    MissingValue(&'static str),
+    TrailingArg(String),
+}
+
+fn parse_args<I, S>(args: I) -> Result<Mode, ParseError>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut iter = args.into_iter().map(Into::into);
+    let mut mode = Mode::Stdout;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(Mode::Help),
+            "-o" | "--output" => {
+                let value = iter.next().ok_or(ParseError::MissingValue("--output"))?;
+                mode = Mode::File(PathBuf::from(value));
+            }
+            other => {
+                // Reject unknown flags so a typo like `--out` cannot
+                // silently fall through to stdout and corrupt the
+                // ship-it-to-web step.
+                return Err(if other.starts_with('-') {
+                    ParseError::UnknownArg(other.to_owned())
+                } else {
+                    ParseError::TrailingArg(other.to_owned())
+                });
+            }
+        }
+    }
+    Ok(mode)
+}
 
 fn ok_with_rows(ts: &str, sql: &str, duration_ms: u64, rows: u64) -> HistoryEntry {
     HistoryEntry {
@@ -228,15 +295,54 @@ fn run(out: &mut impl Write) -> io::Result<()> {
     out.flush()
 }
 
-fn main() -> io::Result<()> {
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-    run(&mut handle)
+fn run_to_path(path: &Path) -> io::Result<()> {
+    // `File::create` truncates an existing target so a re-run after a
+    // shell-corrupted attempt cleanly replaces the bytes. `BufWriter`
+    // batches the per-line writes; `run` already flushes at the end.
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    run(&mut writer)
+}
+
+fn main() -> ExitCode {
+    let argv: Vec<String> = env::args().skip(1).collect();
+    let mode = match parse_args(argv) {
+        Ok(mode) => mode,
+        Err(err) => {
+            let detail = match err {
+                ParseError::UnknownArg(a) => format!("unknown argument: {a}"),
+                ParseError::MissingValue(flag) => format!("{flag} needs a PATH"),
+                ParseError::TrailingArg(a) => format!("unexpected positional argument: {a}"),
+            };
+            eprintln!("error: {detail}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let result = match mode {
+        Mode::Help => {
+            print!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Mode::Stdout => {
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
+            run(&mut handle)
+        }
+        Mode::File(path) => run_to_path(&path),
+    };
+
+    if let Err(err) = result {
+        eprintln!("error: {err}");
+        return ExitCode::from(1);
+    }
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]
 mod tests {
-    use super::run;
+    use super::{parse_args, run, run_to_path, Mode, ParseError};
+    use std::path::PathBuf;
 
     /// End-to-end smoke test: every line we emit must be valid UTF-8
     /// JSON, the file must end in `\n`, no `\r` anywhere, and the
@@ -325,5 +431,146 @@ mod tests {
         ] {
             assert!(text.contains(duration), "fixture must exercise {duration}");
         }
+    }
+
+    /// `run_to_path` must produce byte-identical output to the
+    /// in-memory `run`. This is the contract that lets the maintainer
+    /// trust `--output PATH` as a drop-in replacement for the
+    /// shell-redirect path — the bytes web's round-trip check sees
+    /// are exactly the bytes the in-memory smoke test pins above.
+    #[test]
+    fn run_to_path_is_byte_identical_to_in_memory_run() {
+        let mut in_memory: Vec<u8> = Vec::new();
+        run(&mut in_memory).expect("in-memory run must succeed");
+
+        let dir = tempfile::tempdir().expect("tempdir must succeed");
+        let path = dir.path().join("fixture.jsonl");
+        run_to_path(&path).expect("run_to_path must succeed");
+        let on_disk = std::fs::read(&path).expect("must read back the fixture");
+
+        assert_eq!(
+            on_disk, in_memory,
+            "run_to_path bytes must equal run bytes byte-for-byte"
+        );
+        // Belt-and-braces: assert LF-only on the on-disk bytes
+        // explicitly, in case a future writer wrapper sneaks in CRLF
+        // translation. (Vec<u8> can't sneak that, but a future
+        // `File::create` wrapper or buffered text mode could.)
+        assert!(
+            !on_disk.contains(&b'\r'),
+            "on-disk fixture must be LF-only, not CRLF"
+        );
+        assert_eq!(
+            on_disk.last(),
+            Some(&b'\n'),
+            "on-disk fixture must end with a trailing LF"
+        );
+    }
+
+    /// `run_to_path` must truncate an existing target so a re-run
+    /// cleanly replaces the bytes — important because the documented
+    /// recovery path from a shell-corrupted attempt is "just re-run
+    /// with --output". A leftover-byte concat would silently violate
+    /// web's byte-equivalence check.
+    #[test]
+    fn run_to_path_truncates_existing_target() {
+        let dir = tempfile::tempdir().expect("tempdir must succeed");
+        let path = dir.path().join("fixture.jsonl");
+        std::fs::write(&path, b"stale bytes that should disappear\n")
+            .expect("seed write must succeed");
+
+        run_to_path(&path).expect("run_to_path must succeed");
+        let on_disk = std::fs::read(&path).expect("must read back the fixture");
+
+        assert!(
+            !on_disk.starts_with(b"stale bytes"),
+            "run_to_path must truncate; saw stale bytes at start: {:?}",
+            String::from_utf8_lossy(&on_disk[..32.min(on_disk.len())])
+        );
+
+        let mut fresh: Vec<u8> = Vec::new();
+        run(&mut fresh).expect("fresh run must succeed");
+        assert_eq!(on_disk, fresh, "re-run must equal a fresh run");
+    }
+
+    #[test]
+    fn parse_args_no_args_is_stdout() {
+        assert_eq!(parse_args(Vec::<String>::new()), Ok(Mode::Stdout));
+    }
+
+    #[test]
+    fn parse_args_long_output_flag() {
+        assert_eq!(
+            parse_args(vec!["--output", "fixture.jsonl"]),
+            Ok(Mode::File(PathBuf::from("fixture.jsonl")))
+        );
+    }
+
+    #[test]
+    fn parse_args_short_output_flag() {
+        assert_eq!(
+            parse_args(vec!["-o", "fixture.jsonl"]),
+            Ok(Mode::File(PathBuf::from("fixture.jsonl")))
+        );
+    }
+
+    #[test]
+    fn parse_args_help_long_and_short() {
+        assert_eq!(parse_args(vec!["--help"]), Ok(Mode::Help));
+        assert_eq!(parse_args(vec!["-h"]), Ok(Mode::Help));
+    }
+
+    #[test]
+    fn parse_args_unknown_flag_is_rejected() {
+        // Typo guard — a future maintainer who types `--out` must not
+        // silently fall through to stdout and ship corrupted bytes.
+        assert_eq!(
+            parse_args(vec!["--out", "fixture.jsonl"]),
+            Err(ParseError::UnknownArg("--out".to_owned()))
+        );
+    }
+
+    #[test]
+    fn parse_args_missing_output_value_is_rejected() {
+        assert_eq!(
+            parse_args(vec!["--output"]),
+            Err(ParseError::MissingValue("--output"))
+        );
+        assert_eq!(
+            parse_args(vec!["-o"]),
+            Err(ParseError::MissingValue("--output"))
+        );
+    }
+
+    #[test]
+    fn parse_args_positional_is_rejected() {
+        // Force the explicit flag form rather than overloading
+        // positionals — keeps the call sites self-documenting in
+        // PowerShell / cmd / bash transcripts.
+        assert_eq!(
+            parse_args(vec!["fixture.jsonl"]),
+            Err(ParseError::TrailingArg("fixture.jsonl".to_owned()))
+        );
+    }
+
+    #[test]
+    fn parse_args_help_short_circuits_before_other_flags() {
+        // `--help` first means show help and exit, regardless of
+        // anything that follows.
+        assert_eq!(
+            parse_args(vec!["--help", "--output", "fixture.jsonl"]),
+            Ok(Mode::Help)
+        );
+    }
+
+    #[test]
+    fn parse_args_last_output_wins() {
+        // Conventional CLI semantics — the last `--output` wins so a
+        // wrapper script can append `--output` to override an earlier
+        // default without surprising errors.
+        assert_eq!(
+            parse_args(vec!["--output", "first.jsonl", "-o", "second.jsonl"]),
+            Ok(Mode::File(PathBuf::from("second.jsonl")))
+        );
     }
 }
