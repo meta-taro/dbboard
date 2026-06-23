@@ -13,11 +13,13 @@
 //! [`DbboardApp::new`] is the lower-level constructor over raw channels
 //! (used by [`connect`](DbboardApp::connect) and by tests).
 
+mod ai;
 mod client;
 mod connections;
 mod history;
 mod worker;
 
+pub use ai::{AiMode, AiPanel, AiResponseView};
 pub use connections::{
     AddFormState, ConnectionsView, EditFormState, EditKindState, KindSelector, Mode,
 };
@@ -30,7 +32,7 @@ pub use worker::ConnectionSwitcher;
 // (return type `Result<(), DbError>`) without taking a direct dep on
 // `dbboard-core` — the architecture rule is that only the server and
 // adapters link to `dbboard-core` (see CLAUDE.md).
-pub use dbboard_ai::AiProvider;
+pub use dbboard_ai::{AiError, AiProvider};
 pub use dbboard_core::DbError;
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -53,6 +55,22 @@ pub enum Command {
     /// resolving and connecting it is delegated to the binary via
     /// [`worker::ConnectionSwitcher`].
     SwitchConnection { id: String },
+    /// AI: explain the given SQL via the injected provider (ADR-0023).
+    /// Routed to `AiProvider::explain` by the worker; never traverses
+    /// the HTTP loopback. Surfaces as `Reply::AiResponded` /
+    /// `Reply::AiFailed`. `dialect` is an optional adapter-id hint.
+    AiExplain {
+        sql: String,
+        dialect: Option<String>,
+    },
+    /// AI: suggest SQL for the given prompt via the injected provider
+    /// (ADR-0023). `schema` is the active connection's `list_tables()`
+    /// snapshot, used as the provider's schema hint.
+    AiSuggest {
+        prompt: String,
+        dialect: Option<String>,
+        schema: Vec<TableInfo>,
+    },
 }
 
 /// Result flowing worker → UI.
@@ -72,6 +90,20 @@ pub enum Reply {
     SwitchFailed {
         id: String,
         error: DbError,
+    },
+    /// AI provider returned a response (ADR-0023). The panel replaces
+    /// any stale content with `text`; token counts are recorded for the
+    /// future cost-meter wiring deferred to Stage 2.
+    AiResponded {
+        text: String,
+        tokens_in: u32,
+        tokens_out: u32,
+    },
+    /// AI request failed (ADR-0023). The panel renders the error using
+    /// its own translation table — the AI taxonomy is independent of
+    /// the HTTP `DbError` taxonomy (ADR-0023 Decision 8).
+    AiFailed {
+        error: AiError,
     },
 }
 
@@ -112,10 +144,14 @@ pub struct DbboardApp {
     now_rfc3339: RfcClock,
     /// Optional AI provider (ADR-0023). `Some` when the binary
     /// successfully constructs one from env vars at startup; `None`
-    /// otherwise. The Stage 2 AI panel reads this through
-    /// [`Self::has_ai_provider`] to decide whether to register itself;
+    /// otherwise. The AI panel registers itself only when this is set;
     /// graceful degradation = absence.
     ai_provider: Option<Arc<dyn AiProvider>>,
+    /// AI panel local state (slice (b) of issue 0005). Always present;
+    /// the panel is only *rendered* when [`Self::has_ai_provider`]
+    /// returns true, so the field carries no runtime cost on the AI-less
+    /// path.
+    ai_panel: AiPanel,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -159,7 +195,14 @@ impl DbboardApp {
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
         let (reply_tx, reply_rx) = mpsc::channel::<Reply>();
-        worker::spawn_worker(base_url, cmd_rx, reply_tx, egui_ctx, switcher);
+        worker::spawn_worker(
+            base_url,
+            cmd_rx,
+            reply_tx,
+            egui_ctx,
+            switcher,
+            ai_provider.clone(),
+        );
         Self::new(
             cmd_tx,
             reply_rx,
@@ -198,6 +241,7 @@ impl DbboardApp {
             last_switch_error: None,
             now_rfc3339,
             ai_provider,
+            ai_panel: AiPanel::new(),
             busy: false,
             cmd_tx,
             reply_rx,
@@ -241,6 +285,20 @@ impl DbboardApp {
                 // error and leave `conn_label` untouched.
                 Reply::SwitchFailed { id, error } => {
                     self.last_switch_error = Some((id, error));
+                }
+                // ADR-0023: AI round-trip reply. Route into the panel's
+                // state machine — both success and failure clear `busy`
+                // and replace any stale content (ai::tests cover the
+                // ordering invariants).
+                Reply::AiResponded {
+                    text,
+                    tokens_in,
+                    tokens_out,
+                } => {
+                    self.ai_panel.on_response(text, tokens_in, tokens_out);
+                }
+                Reply::AiFailed { error } => {
+                    self.ai_panel.on_error(&error);
                 }
             }
         }
@@ -308,13 +366,39 @@ impl DbboardApp {
     }
 
     /// True when a Stage 1 AI provider was successfully constructed at
-    /// startup (ADR-0023). The Stage 2 AI panel registers itself only
-    /// when this returns `true`; graceful degradation = absence, so a
-    /// missing `DBBOARD_ANTHROPIC_API_KEY` (or a construction failure)
-    /// simply hides the panel rather than aborting startup.
+    /// startup (ADR-0023). The AI panel registers itself only when this
+    /// returns `true`; graceful degradation = absence, so a missing
+    /// `DBBOARD_ANTHROPIC_API_KEY` (or a construction failure) simply
+    /// hides the panel rather than aborting startup.
     #[must_use]
     pub fn has_ai_provider(&self) -> bool {
         self.ai_provider.is_some()
+    }
+
+    /// True when the AI panel window is currently open. Always false
+    /// when no provider is wired (the menu button that flips this is
+    /// suppressed by [`Self::has_ai_provider`]).
+    #[must_use]
+    pub fn ai_panel_is_open(&self) -> bool {
+        self.has_ai_provider() && self.ai_panel.is_open()
+    }
+
+    /// Toggle the AI panel window. Noop when no provider is wired —
+    /// callers do not need to gate this themselves, but in practice the
+    /// menu bar already hides the button so this is defence-in-depth.
+    pub fn toggle_ai_panel(&mut self) {
+        if self.has_ai_provider() {
+            self.ai_panel.toggle();
+        }
+    }
+
+    /// Read-only access to the AI panel state for tests and binary-side
+    /// observers. Exposed because the panel's state is interesting to
+    /// inspect from outside even when not rendered (e.g. integration
+    /// tests asserting that `Reply::AiResponded` routed into it).
+    #[must_use]
+    pub fn ai_panel(&self) -> &AiPanel {
+        &self.ai_panel
     }
 }
 
@@ -371,6 +455,41 @@ fn build_completion_entry(
 impl eframe::App for DbboardApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_replies();
+
+        // ADR-0023: AI panel as a free-floating egui::Window. Only
+        // register it when a provider was wired in at startup; the panel
+        // itself trusts the gate. Send-clicks return a Command that we
+        // forward to the worker — failure to send (worker hung up)
+        // becomes the user's next Reply::AiFailed, not a silent drop,
+        // because the panel's `busy` flag would otherwise stick.
+        if self.has_ai_provider() {
+            // `dialect` is the active adapter id (e.g. "postgres", "neon").
+            // The UI does not currently reach the loopback server's
+            // adapter id — bridging that requires either a
+            // `Command::GetCapabilities` round-trip or a dedicated binary-
+            // side accessor. Slice (b) ships without the hint; Stage 2
+            // wires it once the adapter-id surface is decided.
+            let dialect: Option<&str> = None;
+            // Borrow the cached tables rather than cloning them every
+            // frame; the panel only allocates a Vec when Send is clicked
+            // and the Suggest arm fires.
+            let schema_slice: &[TableInfo] = self.tables.as_ref().map_or(&[], Vec::as_slice);
+            if let Some(cmd) = self.ai_panel.ui(ui.ctx(), dialect, schema_slice) {
+                if self.cmd_tx.send(cmd).is_err() {
+                    // Worker hung up — surface a synthetic failure so
+                    // the panel exits the busy state immediately rather
+                    // than waiting forever for a reply that will never
+                    // arrive.
+                    self.ai_panel
+                        .on_error(&AiError::Network("ai worker channel closed".into()));
+                }
+            }
+            // Drive a follow-up frame while the AI request is in flight
+            // so the reply drains promptly without a user gesture.
+            if self.ai_panel.is_busy() {
+                ui.ctx().request_repaint();
+            }
+        }
 
         egui::Panel::left("tables").show_inside(ui, |ui| {
             ui.heading(t!("tables-heading"));

@@ -236,6 +236,14 @@ impl eframe::App for DesktopApp {
                 if self.admin.is_some() && ui.button(t!("connections-window-title")).clicked() {
                     self.connections.open();
                 }
+                // ADR-0023 Decision 11: the AI menu entry is hidden
+                // entirely when no provider was wired at startup
+                // (graceful degradation = absence). When present, the
+                // button toggles the panel open/closed; the open state
+                // lives on `DbboardApp::ai_panel`.
+                if self.inner.has_ai_provider() && ui.button(t!("ai-menu-button")).clicked() {
+                    self.inner.toggle_ai_panel();
+                }
                 language_menu(ui);
             });
         });
