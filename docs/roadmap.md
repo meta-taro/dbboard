@@ -251,20 +251,26 @@ work without it. Trait + first-provider shape locked in
       into `DbboardApp::connect`, `has_ai_provider()` accessor for
       the slice (b) panel to gate registration. README "AI
       integration (optional)" subsection added.)
-- [ ] "Explain this query" command — _slice (b) of issue 0005,
-      open against the dbboard-ui AI panel + worker round-trip_
-- [ ] "Suggest SQL from prompt" command using current schema snapshot
-      (`list_tables` result; full DDL extraction deferred) — _slice
-      (b) of issue 0005_
+- [x] "Explain this query" command — slice (b) of issue 0005:
+      `Command::AiExplain { sql, dialect }` routed through the worker
+      to `AiProvider::explain`, response rendered in the egui panel.
+- [x] "Suggest SQL from prompt" command using current schema snapshot
+      (`list_tables` result; full DDL extraction deferred) — slice (b)
+      of issue 0005: `Command::AiSuggest { prompt, dialect, schema }`
+      carries the current `Vec<TableInfo>` to `AiProvider::suggest_sql`.
 - [ ] Settings UI for API key, provider choice — _Stage 2 ADR;
       env var `DBBOARD_ANTHROPIC_API_KEY` covers Stage 1 (PR #24)_
-- [ ] Graceful degradation when no provider configured — _wiring
-      half landed via PR #24 (`has_ai_provider()` returns false when
-      env unset); the panel that hides on `false` follows in
-      slice (b)_
+- [x] Graceful degradation when no provider configured (ADR-0023
+      Decision 11): `has_ai_provider()` gates both the menu entry
+      and the panel; with no key set, neither renders. Defence-in-depth
+      in the worker too — `Command::Ai*` with `ai_provider == None`
+      returns `Reply::AiFailed { AiError::Configuration }` so the
+      panel never deadlocks on its busy flag.
 
-Exit criteria: AI panel is hidden cleanly when not configured; visible
-and usable when it is.
+Exit criteria met for Stage 1: AI panel hidden cleanly when not
+configured; visible, two-mode, and usable when it is. Stage 2 (in-app
+settings, multi-provider switcher, streaming, history persistence,
+full-DDL schema snapshots) remains scoped to ADR-0023 §9.
 
 ## Phase 5 — Quality of life
 

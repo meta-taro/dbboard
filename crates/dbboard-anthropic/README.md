@@ -12,8 +12,7 @@ recorded in ADR-0023 §9.
 
 ## Configuration
 
-Stage 1 wiring is env-var-only and lives in `apps/dbboard` (added in
-the sibling PR that wires the provider into the binary). The crate
+Stage 1 wiring is env-var-only and lives in `apps/dbboard`. The crate
 itself accepts an [`AnthropicConfig`] / [`AnthropicProvider::new`]
 constructor that the binary populates from these variables:
 
@@ -23,8 +22,14 @@ constructor that the binary populates from these variables:
 | `DBBOARD_ANTHROPIC_MODEL`      | no       | `claude-sonnet-4-6`  |
 
 When `DBBOARD_ANTHROPIC_API_KEY` is absent or empty, the binary does
-not construct the provider and the AI panel does not render — graceful
-degradation by absence (ADR-0023 Decision 6).
+not construct the provider; the AI menu entry and the panel both
+hide — graceful degradation by absence (ADR-0023 Decision 11). When
+present, the desktop UI's worker thread routes
+`Command::AiExplain { sql, dialect }` and
+`Command::AiSuggest { prompt, dialect, schema }` to this provider via
+`tokio::runtime::block_on(provider.explain | suggest_sql)` and surfaces
+the result as `Reply::AiResponded { text, tokens_in, tokens_out }` or
+`Reply::AiFailed { error: AiError }`.
 
 The API key is held privately on the provider struct and never appears
 in `Debug` output, log lines, or `AiError` messages.
