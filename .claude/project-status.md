@@ -5,23 +5,134 @@
 
 ## 最終更新
 
-- 日付: 2026-06-23 (PR #29 マージクローズ、`emit_history_fixture`
-  example + `history::fixture` shim shipped / web sibling issue 0018
-  の round-trip テスト用 desktop 側 deliverable 完了)
-- ブランチ: `develop` (= `8d73e75`)、ローカル
-  `chore/post-pr29-doc-sync` 作業中
-  (`feature/history-fixture-emit-helper` は merge 済 / 削除は
-  maintainer 判断保留)
+- 日付: 2026-06-23 (PR #31 マージクローズ、`emit_history_fixture`
+  に `--output PATH` フラグ追加 / PowerShell の `>` リダイレクトが
+  UTF-16 LE + CRLF で再エンコードする問題を恒久回避 / 同日 fixture
+  バイトを `dbboard-web/apps/api/test/fixtures/desktop-history.jsonl`
+  に手動配置済 = web sibling issue 0018 が live に flip 可能な状態に)
+- ブランチ: `develop` (= `34b60ff`)、ローカル
+  `chore/post-pr31-doc-sync` 作業中
+  (`feature/history-fixture-output-flag` は merge 済 / origin 側は
+  auto-delete 済 / local 削除は maintainer 判断保留)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  PR #29 は ADR-0017 (per-record JSON schema mirror) の cross-impl
-  round-trip 補助で、Phase milestone ではなく ADR-0017 の運用層
-  延長線。Phase 4 Stage 2 (Settings UI / 永続化キー / streaming /
-  multi-provider switcher / DDL extraction / function-calling / AI
-  履歴記録) は ADR-0023 §9 通り deferral 継続、次セッションは
-  新規 ADR + 新規 issue で開く想定。Phase 2 ADR-0024 at-rest
-  hardening (PR #25, 2026-06-22) もそのまま load-bearing。**
+  PR #31 は PR #29 と同列で ADR-0017 (per-record JSON schema mirror)
+  の cross-impl round-trip 補助の操作性ハードニング (shell
+  encoding footgun を CLI フラグで殺す)。Phase milestone ではなく
+  ADR-0017 の運用層延長線。Phase 4 Stage 2 (Settings UI / 永続化
+  キー / streaming / multi-provider switcher / DDL extraction /
+  function-calling / AI 履歴記録) は ADR-0023 §9 通り deferral
+  継続、次セッションは新規 ADR + 新規 issue で開く想定。Phase 2
+  ADR-0024 at-rest hardening (PR #25, 2026-06-22) もそのまま
+  load-bearing。**
 
-### PR #29 (`emit_history_fixture` example + `history::fixture` doc-hidden shim / ADR-0017 cross-impl round-trip support, web sibling issue 0018) マージクローズ (本セッション / 2026-06-23)
+### PR #31 (`emit_history_fixture` に `--output PATH` フラグ追加 / shell encoding 回避 / ADR-0017 cross-impl round-trip 操作性ハードニング) マージクローズ (本セッション / 2026-06-23)
+
+- PR #31 (`feature/history-fixture-output-flag` → `develop`) マージ済
+  = `34b60ff` (mergedAt 2026-06-23T06:01:07Z = JST 15:01)。
+- ローカル `develop` は `origin/develop` (= `34b60ff`) と
+  fast-forward sync 済。origin 側の `feature/history-fixture-output-flag`
+  はマージ時 auto-delete された (今までと違って手動で `gh pr merge --delete-branch`
+  を使ったか、リポジトリ側で auto-delete が有効になった模様)。
+- 本 chore (`chore/post-pr31-doc-sync`) は `develop` ベース、
+  本セッションで切り直し。PR #30 (post-PR29 chore) の連番続き。
+- 本 PR の scope: PR #29 で shipped した `emit_history_fixture`
+  example の操作性問題への対応。**初回 ship 試行で `cargo run
+  --example ... > desktop-history.jsonl` (PowerShell) が UTF-16 LE
+  + CRLF で再エンコードしてしまい、4286 bytes の壊れた fixture が
+  生成された** = web 側 byte-equivalence check で確実にコケる状態。
+  原因は example 側ではなく PowerShell の `>` (Out-File 既定)
+  の host-output layer。Windows PowerShell 5.x は UTF-16 LE + CRLF、
+  PowerShell 7+ は UTF-8 + CRLF。どちらも brief の "LF only, no BOM"
+  要件違反。example 側で `write_all` + `b"\n"` まで頑張っていても
+  介在を防げないので、**shell を介さずに `File::create` で書き出す
+  CLI モードを追加** = 恒久対策。1 ファイル / +255 / −8。中身:
+  - `crates/dbboard-ui/examples/emit_history_fixture.rs` を拡張:
+    - 新規 `parse_args(IntoIter<Item=Into<String>>) -> Result<Mode,
+      ParseError>`: `Mode::{Stdout, File(PathBuf), Help}` を返す
+      手書きパーサ。`--output PATH` / `-o PATH` で File モード、
+      `--help` / `-h` で Help モード、引数なしで Stdout (= 既存
+      互換)。**未知フラグ (`--out` typo 含む) は `ParseError::UnknownArg`
+      で reject** = silent fallthrough で stdout に流れて壊れた
+      バイトを送る footgun の防止。**positional 引数も `TrailingArg`
+      で reject** = CLI shape を flag 専用に固定 (PowerShell /
+      cmd / bash のトランスクリプトで self-documenting にする
+      ため)。conventional CLI semantics として **最後の `--output`
+      が勝つ** (wrapper script からの override 容認)。
+    - 新規 `run_to_path(path: &Path) -> io::Result<()>`:
+      `File::create(path)` + `BufWriter` でラップして既存の
+      `run(&mut impl Write)` を呼ぶだけ。`File::create` は既存
+      ファイルを **truncate** するので、shell で壊した後の
+      ``--output`` 再実行で旧バイトが残らない (re-run = clean
+      replacement のセマンティクス保証)。
+    - `main` を `fn main() -> ExitCode` に変更し、`parse_args` の
+      結果から Mode を分岐。Mode::Help は `print!` + `SUCCESS`、
+      Mode::Stdout は既存通り stdout.lock()、Mode::File は
+      `run_to_path`。ParseError は `eprintln` + `ExitCode::from(2)`、
+      io error は `eprintln` + `ExitCode::from(1)`。
+    - 冒頭 doc-comment に PowerShell encoding 問題と `--output`
+      理由を明文化 (将来読み手が CLI のなぜを doc-comment 参照
+      せずに使える状態を目指す)。
+- テスト: 既存 smoke 1 (`fixture_output_matches_brief_conventions`)
+  + 新規 11 = この example 単体で 12 テスト、全 pass。
+  - **`run_to_path_is_byte_identical_to_in_memory_run`** (core contract):
+    `tempfile::tempdir` に書き出して読み戻し、`run(Vec<u8>)` の
+    in-memory 結果とバイト単位で完全一致を確認。belt-and-braces で
+    LF only + 末尾 `\n` も独立 assertion (将来 wrapper 増えても
+    text-mode CRLF 翻訳が混入しないことの保証)。
+  - **`run_to_path_truncates_existing_target`**: 事前に旧 bytes を
+    seed → `run_to_path` → 旧 bytes が残らないこと + fresh run と
+    一致を確認。recovery path "just re-run with --output" の
+    contract test。
+  - 9 つの `parse_args` ユニットテスト: no-args / `--output PATH`
+    long + short / `--help` long + short / unknown flag reject
+    (`--out` typo guard) / missing value reject (long + short) /
+    positional reject / `--help` short-circuits 他フラグ / last
+    `--output` wins。
+- 検証:
+  - `cargo fmt --all -- --check` clean
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+    (pedantic 含む) clean = 一発通った (PR #29 のような分割
+    必要なし)
+  - `cargo check --all-targets --all-features` clean
+  - `cargo test --all-features` 全 pass (workspace 全体)
+  - pre-commit hook (cargo-husky) green
+  - **実機 dry-run**: `target/debug/examples/emit_history_fixture.exe
+    --output desktop-history.jsonl` を PowerShell から実行 → 2132
+    bytes / 10 行 / 0 CRLF / no BOM / 末尾 `}\n` の UTF-8 LF only
+    fixture が生成された。**brief の出力規約を完全に満たす**
+    (壊れた初回 ship 試行の 4286 bytes UTF-16 + CRLF と対照的)。
+- **fixture 配送完了**: 本セッション中に maintainer が
+  `cargo run ... -- --output desktop-history.jsonl` で正しいバイトを
+  生成 → 手動で **`dbboard-web/apps/api/test/fixtures/desktop-history.jsonl`
+  に移動** した。これにより:
+  - web sibling issue 0018 (history export round-trip fixture) の
+    DoD = fixture 配置 + `describe.skip` を live に flip まで、
+    残るは web 側の `describe` reactivation のみ (web 側責務、
+    desktop は完了)。
+  - 受け渡し方式は brief §"Delivery" の "Email / paste-into-chat /
+    commit to a shared scratch repo — whichever is easiest" の
+    範囲内。今回は両リポジトリが maintainer の同じローカルマシン
+    にあるので手動コピーで完結。
+  - **desktop 側にはバイトを残さない** = brief §"What desktop must
+    NOT do" の "Do not commit the fixture into `dbboard` either"
+    遵守。working tree clean を確認済。
+- 次セッション以降の運用:
+  - 再生成手順は **PowerShell でも cmd でも bash でも同一の 1 行**
+    `cargo run --example emit_history_fixture -p dbboard-ui --
+    --output desktop-history.jsonl` に統一済。shell 文化差を
+    一切問わない。
+  - 万が一 web 側 round-trip が future commit で割れた場合は
+    fixture を patch するのではなく **ADR-0017 §2 / §6 (および
+    web `docs/decisions.md` の drift policy entry) の更新を先に
+    通す**。fixture は smoke alarm。
+- 次セッション候補は PR #30 chore で書いた通り変わらず:
+  1. Phase 4 Stage 2 ADR + 新規 issue
+  2. `/views` / `/functions` 等 per-capability endpoints (ADR-0012
+     promise) で contract bump + web handoff brief
+  3. web 側で round-trip 実走後にドリフト顕在化したら ADR-level
+     event 扱い
+
+### PR #29 (`emit_history_fixture` example + `history::fixture` doc-hidden shim / ADR-0017 cross-impl round-trip support, web sibling issue 0018) マージクローズ (前セッション / 2026-06-23)
 
 - PR #29 (`feature/history-fixture-emit-helper` → `develop`) マージ済
   = `8d73e75` (mergedAt 2026-06-23T04:07:54Z = JST 13:07)。
