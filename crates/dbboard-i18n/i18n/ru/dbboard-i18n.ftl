@@ -43,3 +43,18 @@ connections-connect-button = Подключиться
 connections-active-marker = (активно)
 
 language-menu = Язык
+
+ai-menu-button = ИИ-ассистент
+ai-panel-title = ИИ-ассистент
+ai-mode-explain = Объяснить SQL
+ai-mode-suggest = Предложить SQL
+ai-input-explain = SQL для объяснения:
+ai-input-suggest = Опишите нужный запрос:
+ai-send-button = Отправить
+ai-busy = Ожидание ответа поставщика…
+ai-empty = (Ответа пока нет — введите запрос выше и нажмите «Отправить»)
+ai-error-prefix-configuration = Ошибка конфигурации ИИ
+ai-error-prefix-network = Сетевая ошибка ИИ
+ai-error-prefix-provider = Ошибка поставщика ИИ
+ai-error-prefix-quota = Превышена квота ИИ
+ai-error-prefix-cancelled = Запрос ИИ отменён

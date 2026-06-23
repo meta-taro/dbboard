@@ -43,3 +43,18 @@ connections-connect-button = 连接
 connections-active-marker = （当前）
 
 language-menu = 语言
+
+ai-menu-button = AI 助手
+ai-panel-title = AI 助手
+ai-mode-explain = 解释 SQL
+ai-mode-suggest = 生成 SQL
+ai-input-explain = 要解释的 SQL：
+ai-input-suggest = 描述您想要的查询：
+ai-send-button = 发送
+ai-busy = 正在等待提供方响应……
+ai-empty = （暂无响应 — 请在上方输入提示并发送）
+ai-error-prefix-configuration = AI 配置错误
+ai-error-prefix-network = AI 网络错误
+ai-error-prefix-provider = AI 提供方错误
+ai-error-prefix-quota = AI 配额已超出
+ai-error-prefix-cancelled = AI 请求已取消
