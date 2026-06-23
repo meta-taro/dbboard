@@ -5,27 +5,108 @@
 
 ## 最終更新
 
-- 日付: 2026-06-23 (PR #31 マージクローズ、`emit_history_fixture`
-  に `--output PATH` フラグ追加 / PowerShell の `>` リダイレクトが
-  UTF-16 LE + CRLF で再エンコードする問題を恒久回避 / 同日 fixture
-  バイトを `dbboard-web/apps/api/test/fixtures/desktop-history.jsonl`
-  に手動配置済 = web sibling issue 0018 が live に flip 可能な状態に)
-- ブランチ: `develop` (= `34b60ff`)、ローカル
-  `chore/post-pr31-doc-sync` 作業中
-  (`feature/history-fixture-output-flag` は merge 済 / origin 側は
-  auto-delete 済 / local 削除は maintainer 判断保留)
+- 日付: 2026-06-23 (PR #33 マージクローズ、cross-repo outbound
+  brief 2 本 — `0006-web-aurora-dsql-no-mirror.md` (ADR-0021 / web
+  ticket 0010 = 動作不要、Postgres adapter のまま) +
+  `0007-web-ai-phase6-no-contract-mirror.md` (ADR-0023 Stage 1 =
+  HTTP contract に降ろさない、web Phase 6 は独自実装で OK) —
+  desktop ship。explicit no-op brief パターン確立、web 側の 3 週間
+  ブロックを解放)
+- ブランチ: `develop` (= `359778a`)、ローカル
+  `chore/post-pr33-doc-sync` 作業中
+  (`feature/handoff-briefs-aurora-dsql-and-ai` は merge 済 /
+  origin 側 auto-delete 済 / local 削除は maintainer 判断保留)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  PR #31 は PR #29 と同列で ADR-0017 (per-record JSON schema mirror)
-  の cross-impl round-trip 補助の操作性ハードニング (shell
-  encoding footgun を CLI フラグで殺す)。Phase milestone ではなく
-  ADR-0017 の運用層延長線。Phase 4 Stage 2 (Settings UI / 永続化
-  キー / streaming / multi-provider switcher / DDL extraction /
-  function-calling / AI 履歴記録) は ADR-0023 §9 通り deferral
-  継続、次セッションは新規 ADR + 新規 issue で開く想定。Phase 2
-  ADR-0024 at-rest hardening (PR #25, 2026-06-22) もそのまま
-  load-bearing。**
+  PR #33 は cross-repo coordination 整理であり Phase milestone
+  ではない。これで `dbboard-web` 側の "desktop 待ち" 旗が 2 つとも
+  下りる: (a) `0010` Aurora DSQL = web は既存 Postgres adapter
+  (web ticket 0004, web PR #9) で対応済、IAM token は
+  `@aws-sdk/dsql-signer` で web application 層、(b) Phase 6 AI =
+  `@anthropic-ai/sdk` で web 独自 NestJS module を組んでよい、
+  desktop の AiProvider trait は pattern reference として参照可。
+  Phase 4 Stage 2 (Settings UI / 永続化キー / streaming /
+  multi-provider switcher / DDL extraction / function-calling /
+  AI 履歴記録) は ADR-0023 §9 通り deferral 継続、次セッションは
+  新規 ADR + 新規 issue で開く想定。Phase 2 ADR-0024 at-rest
+  hardening (PR #25, 2026-06-22) もそのまま load-bearing。**
 
-### PR #31 (`emit_history_fixture` に `--output PATH` フラグ追加 / shell encoding 回避 / ADR-0017 cross-impl round-trip 操作性ハードニング) マージクローズ (本セッション / 2026-06-23)
+### PR #33 (cross-repo outbound briefs: 0006 Aurora DSQL no-mirror + 0007 AI Phase 6 no-contract-mirror) マージクローズ (本セッション / 2026-06-23)
+
+- PR #33 (`feature/handoff-briefs-aurora-dsql-and-ai` → `develop`)
+  マージ済 = `359778a`。ローカル `develop` は
+  `origin/develop` (= `359778a`) と fast-forward sync 済。
+- 本 chore (`chore/post-pr33-doc-sync`) は `develop` ベース、
+  本セッションで切り直し。PR #32 (post-PR31 chore) の連番続き。
+- 本 PR の scope: cross-repo coordination の整理。web 側の
+  `dbboard-web/.claude/project-status.md` line 56 で 3 週間放置
+  されていた 「Aurora DSQL adapter (`0010`). Blocked on a desktop
+  handoff brief」 と、web roadmap Phase 6 DoD の 「API-contract
+  alignment on AI shapes」 の 2 件を **explicit no-op brief で
+  unblock**。2 ファイル / +367 行 / 新規のみ:
+  - `.claude/issues/0006-web-aurora-dsql-no-mirror.md` (+189) —
+    ADR-0021 (Aurora DSQL as flavored kind, PR #13) が pg-wire
+    byte-identical なので web の既存 Postgres adapter (web ticket
+    0004 = web PR #9) でそのまま動く、ということを明示。IAM
+    token (~15 min TTL) は URL の password 部分に入れる UX 規約
+    の話で、`aws dsql generate-db-connect-auth-token` CLI or
+    `@aws-sdk/dsql-signer` SDK で更新するのは web application
+    層の判断。**contract に降りる要素はゼロ**
+    (`/capabilities` の `adapter` フィールドは ADR-0012 で free-form
+    識別子扱い、値そのものは contract opaque)。SDK-integrated
+    auto-refresh は ADR-0021 で deferred、それ自体も contract に
+    出ない見込み。Acceptance: web 側 ticket 0010 を no-op で
+    close + `.claude/decisions.md` で ADR-0021 を anchor 参照 +
+    connection docs に IAM token UX を documented する依頼。
+  - `.claude/issues/0007-web-ai-phase6-no-contract-mirror.md`
+    (+178) — ADR-0023 Decision 3 が **in-process wiring, not
+    HTTP-mediated** を明示的に選んでいる (ADR-0020 `swap_backend`
+    / ADR-0022 `set_language` と同じ precedent)。web Phase 6 DoD
+    「API-contract alignment on AI shapes」 は Stage 1 では空集合。
+    web は `@anthropic-ai/sdk` で NestJS module を独自に組んで
+    よい。desktop の `AiProvider` trait shape (`id` /
+    `capabilities` / `explain` / `suggest_sql`) は **pattern
+    reference** として参照可だが contract ではない。env-var-only
+    Stage 1 + graceful degradation = absence + capability flags
+    default-false は対称性として推奨。Stage 2 deferrals
+    (Settings UI / 永続化キー / streaming / multi-provider
+    switcher / DDL extraction / function-calling / `history.jsonl`
+    への AI 記録) は将来 wire-level brief を出す可能性として
+    enumerate、ただし **pre-design するなと明示**。重要な
+    constraint: **web 側で AI 呼び出しを `history.jsonl` に
+    記録するのは v:2 schema bump 圧力になるので fresh brief
+    なしには絶対やるな** を §"NOT" に明記。
+- パターン確立: **explicit no-op brief**。ADR-0018 (Neon) と
+  ADR-0019 (Supabase) は no-op だったので brief を出さなかった
+  が、それが web 側の 3 週間ブロックの遠因。今後 no-op
+  coordination も brief を出す。numbering は desktop 側
+  `0NNN-web-*` シーケンス (0001 / 0002 / 0003 / **0006** / **0007**)、
+  web 側 ticket numbering (0010 など) は独立して進む。
+- 検証 (docs-only PR、hooks は通常通り全 run):
+  - `cargo fmt --all -- --check` clean (Rust 変更なし)
+  - `cargo clippy --all-targets --all-features -- -D warnings` clean
+  - `cargo check --all-targets --all-features` clean
+  - `cargo test --all-features` 全 pass
+  - pre-commit hook (cargo-husky) green
+  - CRLF warning (`autocrlf` の checkout 側変換通知) は出たが、
+    commit に入ったバイトは LF only (Write tool が `newline='\n'`
+    で書込済) — 無害
+- 次セッション以降の運用 / 候補:
+  - web 側がこの 2 本の brief を受けて (a) ticket 0010 を
+    no-op で close、(b) `.claude/decisions.md` 更新、(c) web
+    Phase 6 DoD 修正、を進めるはず。desktop 側は web の
+    更新を見届けたら memory ([[dbboard-web-state]]) の
+    "**Phase 2 ADR-0017** の handoff 行 + Aurora DSQL 行 +
+    AI 行" のステータスを反映する。
+  - Phase 4 Stage 2 ADR (Settings UI / 永続化キー /
+    keychain / streaming / multi-provider) は依然次セッション
+    候補のトップ。
+  - `/views` / `/functions` per-capability endpoints (ADR-0012
+    promise) も次の `feat(contract)` 候補で、これは web 側に
+    handoff brief が必要になる本物の coordination。
+  - web 側で round-trip 実走 (web 0018 reactivation 後) で
+    ドリフト顕在化したら ADR-level event 扱い。
+
+### PR #31 (`emit_history_fixture` に `--output PATH` フラグ追加 / shell encoding 回避 / ADR-0017 cross-impl round-trip 操作性ハードニング) マージクローズ (前セッション / 2026-06-23)
 
 - PR #31 (`feature/history-fixture-output-flag` → `develop`) マージ済
   = `34b60ff` (mergedAt 2026-06-23T06:01:07Z = JST 15:01)。
