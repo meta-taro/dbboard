@@ -43,3 +43,18 @@ connections-connect-button = 연결
 connections-active-marker = (활성)
 
 language-menu = 언어
+
+ai-menu-button = AI 어시스턴트
+ai-panel-title = AI 어시스턴트
+ai-mode-explain = SQL 설명
+ai-mode-suggest = SQL 생성
+ai-input-explain = 설명할 SQL:
+ai-input-suggest = 원하는 쿼리를 설명하세요:
+ai-send-button = 보내기
+ai-busy = 제공자의 응답 대기 중…
+ai-empty = (아직 응답 없음 — 위에 프롬프트를 입력하고 보내기를 누르세요)
+ai-error-prefix-configuration = AI 구성 오류
+ai-error-prefix-network = AI 네트워크 오류
+ai-error-prefix-provider = AI 제공자 오류
+ai-error-prefix-quota = AI 할당량 초과
+ai-error-prefix-cancelled = AI 요청 취소됨

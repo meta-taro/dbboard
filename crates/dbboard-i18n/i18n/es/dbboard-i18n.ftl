@@ -43,3 +43,18 @@ connections-connect-button = Conectar
 connections-active-marker = (activa)
 
 language-menu = Idioma
+
+ai-menu-button = Asistente de IA
+ai-panel-title = Asistente de IA
+ai-mode-explain = Explicar SQL
+ai-mode-suggest = Sugerir SQL
+ai-input-explain = SQL a explicar:
+ai-input-suggest = Describe la consulta que quieres:
+ai-send-button = Enviar
+ai-busy = Esperando al proveedor…
+ai-empty = (Sin respuesta aún — escribe un mensaje arriba y pulsa Enviar)
+ai-error-prefix-configuration = Error de configuración de IA
+ai-error-prefix-network = Error de red de IA
+ai-error-prefix-provider = Error del proveedor de IA
+ai-error-prefix-quota = Cuota de IA superada
+ai-error-prefix-cancelled = Solicitud de IA cancelada

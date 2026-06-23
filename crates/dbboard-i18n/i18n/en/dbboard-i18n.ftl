@@ -60,3 +60,23 @@ connections-active-marker = (active)
 # name (`English`, `日本語`, `한국어`, …) which is hard-coded in
 # `apps/dbboard` rather than translated.
 language-menu = Language
+
+# ADR-0023: AI assistance panel (Phase 4 Stage 1). The menu entry and
+# the panel are both hidden when no provider is wired at startup, so
+# these keys are only ever rendered behind that gate. Error prefixes
+# mirror the `AiError` variants; the body of each error stays in the
+# language the provider returned it in (typically English).
+ai-menu-button = AI Assistant
+ai-panel-title = AI Assistant
+ai-mode-explain = Explain SQL
+ai-mode-suggest = Suggest SQL
+ai-input-explain = SQL to explain:
+ai-input-suggest = Describe the query you want:
+ai-send-button = Send
+ai-busy = Waiting for the provider…
+ai-empty = (no response yet — write a prompt above and press Send)
+ai-error-prefix-configuration = AI configuration error
+ai-error-prefix-network = AI network error
+ai-error-prefix-provider = AI provider error
+ai-error-prefix-quota = AI quota exceeded
+ai-error-prefix-cancelled = AI request cancelled
