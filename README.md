@@ -212,10 +212,20 @@ DBBOARD_AURORA_DSQL_URL='postgres://admin:<IAM-token>@<cluster>.dsql.<region>.on
 ### AI integration (optional)
 
 dbboard ships an optional AI panel that can explain SQL and suggest
-queries against the active connection's schema. It is **opt-in**: with
-no AI env var set the app behaves exactly as before and the panel is
-hidden — graceful degradation = absence (see
-[ADR-0023](docs/decisions.md)).
+queries against the active connection's schema. The panel and the
+menu entry that toggles it are both hidden when no provider is
+configured — graceful degradation = absence (see
+[ADR-0023](docs/decisions.md) Decision 11).
+
+When wired, the **AI Assistant** menu entry (top bar, between
+Connections and Language) opens a two-mode window: **Explain SQL**
+(paste SQL, get a natural-language walkthrough) and **Suggest SQL**
+(describe a question, get a SQL draft using the active connection's
+table list as context). Responses render inline; errors are surfaced
+with translated prefixes so a 429 or network failure does not look
+identical to a successful empty response. AI calls do **not** travel
+the dbboard-web HTTP contract — they go directly from the desktop
+binary's worker thread to the provider over `reqwest`.
 
 Stage 1 wires a single provider (Anthropic Messages API):
 

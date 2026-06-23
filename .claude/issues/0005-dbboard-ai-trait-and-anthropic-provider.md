@@ -1,6 +1,7 @@
 # 0005: `dbboard-ai` trait + Anthropic provider (Phase 4 Stage 1)
 
-- **Status**: open
+- **Status**: ready-to-close once slice (b) PR merges (all acceptance
+  boxes ticked as of 2026-06-23; awaiting human merge + chore close-out)
 - **Phase**: 4 (AI integration, optional layer)
 - **Opened**: 2026-06-12
 - **Tracks**: ADR-0023
@@ -121,38 +122,57 @@ ADR-0023 §9 and out of scope for this issue.
 
 ### `dbboard-ui`
 
-- [ ] AI panel as an `egui::Window` toggled from the menu bar,
+- [x] AI panel as an `egui::Window` toggled from the menu bar,
       registered only when `has_ai_provider()` is true.
-- [ ] Two-mode UI: "Explain" (textarea for SQL → response box) and
-      "Suggest" (textarea for prompt → response box). Active
-      adapter id passed in as the `dialect` hint.
-- [ ] Worker-side: `Command::AiExplain { sql }` /
-      `Command::AiSuggest { prompt, schema }` /
+      (`crates/dbboard-ui/src/ai.rs`; menu button in
+      `apps/dbboard/src/main.rs` gated on the same accessor.)
+- [x] Two-mode UI: "Explain" (textarea for SQL → response box) and
+      "Suggest" (textarea for prompt → response box).
+      `dialect` hint is currently `None` from the UI side — adapter
+      id resolution from the loopback server is deferred to Stage 2
+      (commented in `lib.rs::ui()`); the request still carries it
+      end-to-end so the provider sees the field when wiring catches up.
+- [x] Worker-side: `Command::AiExplain { sql, dialect }` /
+      `Command::AiSuggest { prompt, dialect, schema }` /
       `Reply::AiResponded { text, tokens_in, tokens_out }` /
-      `Reply::AiFailed { err }`. AI worker uses the same
+      `Reply::AiFailed { error }`. AI worker uses the same
       `tokio::runtime::Handle::block_on` pattern as
-      `ConnectionSwitcher`.
-- [ ] New Fluent keys (panel title, mode labels, send button,
-      error categories) translated for all 11 ADR-0015 locales.
-      Tier 1 + Tier 2 stay in sync (ADR-0022 Consequences rule).
-- [ ] Unit tests on the UI state machine (mode switch, send while
-      busy is a noop, response replaces stale content, error
-      replaces stale content).
+      `ConnectionSwitcher`. Defence-in-depth: a `Command::Ai*` with
+      `ai_provider == None` surfaces `Reply::AiFailed
+      { AiError::Configuration }` so the panel's busy flag clears.
+- [x] New Fluent keys (`ai-menu-button`, `ai-panel-title`,
+      `ai-mode-explain` / `ai-mode-suggest`,
+      `ai-input-explain` / `ai-input-suggest`, `ai-send-button`,
+      `ai-busy`, `ai-empty`, `ai-error-prefix-*` for the 5 AiError
+      variants) translated for all 11 ADR-0015 locales (en, ja, ko,
+      zh-CN, zh-TW, de, fr, es, pt-BR, ru, it). Tier 1 + Tier 2 in
+      sync (ADR-0022 Consequences rule).
+- [x] Unit tests on the UI state machine: 11 tests in
+      `crates/dbboard-ui/src/ai.rs` covering open/close/toggle, mode
+      switch, empty/whitespace input noop, explain + dialect, suggest
+      + schema, send-while-busy noop, on_response clears busy and
+      records success, on_error clears busy and translates the message,
+      fresh response replaces stale error and vice versa,
+      `ai_error_display` variant coverage. 5 worker dispatch tests in
+      `crates/dbboard-ui/src/worker.rs` covering explain success,
+      suggest success, provider error, no-provider configuration
+      failure, and unchanged SwitchConnection smoke.
 
 ### Documentation
 
-- [ ] `docs/architecture.md` gains an `AI layer` row in the crate
-      table, with the dependency rule (`dbboard-anthropic` →
-      `dbboard-ai`; `dbboard-ai` → `dbboard-core` for `TableInfo`
-      only).
-- [ ] `docs/roadmap.md` Phase 4 bullets tick as scope lands.
-      Trait + first provider bullet refs ADR-0023.
-- [ ] `README.md` mentions the optional AI panel in the run
-      section, alongside the Connections and Language paragraphs
-      (parallels ADR-0020 / ADR-0022).
-- [ ] `crates/dbboard-anthropic/README.md` documents env vars,
-      model override, the deferral list (no streaming, no
-      keychain, no history).
+- [x] `docs/architecture.md` AI layer paragraphs updated to mention
+      PR #24 env-var wiring AND the slice (b) UI panel routing
+      (worker block_on, `Reply::AiResponded` / `AiFailed`, hide-on-absence).
+- [x] `docs/roadmap.md` Phase 4 bullets ticked for slice (b);
+      Stage 1 exit criteria called out as met, Stage 2 scope refs
+      ADR-0023 §9.
+- [x] `README.md` AI integration subsection rewritten to describe
+      the panel surface (menu entry placement, two modes, error
+      rendering) on top of the existing env-var docs.
+- [x] `crates/dbboard-anthropic/README.md` Configuration section
+      drops the "sibling PR" wording and adds the slice (b) wiring
+      (worker → provider routing, hide-on-absence reference to
+      Decision 11).
 
 ## Notes
 

@@ -42,12 +42,17 @@ its three pg-wire flavors), `dbboard-server`, `dbboard-ui`, `dbboard-ai`
 (first concrete provider; landed via PR #22 on 2026-06-15), and
 `apps/dbboard` all ship. The UI talks to the server over HTTP rather
 than calling adapters directly; `apps/dbboard` boots both in one
-process. The binary now constructs `Option<Arc<dyn AiProvider>>` from
-env vars at startup (landed via PR #24 on 2026-06-17 —
-`DBBOARD_ANTHROPIC_API_KEY` is the opt-in gate, missing or
-construction failure degrades to `None`). The `dbboard-ui` AI panel
-that consumes the provider behind `has_ai_provider()` lands in a
-follow-up PR against issue 0005 — see [`roadmap.md`](roadmap.md).
+process. The binary constructs `Option<Arc<dyn AiProvider>>` from env
+vars at startup (landed via PR #24 on 2026-06-17 —
+`DBBOARD_ANTHROPIC_API_KEY` is the opt-in gate, missing or construction
+failure degrades to `None`). The `dbboard-ui` AI panel consumes the
+provider behind `has_ai_provider()`; the worker thread routes
+`Command::AiExplain` / `Command::AiSuggest` through
+`tokio::runtime::block_on(provider.*)` and surfaces results as
+`Reply::AiResponded` / `Reply::AiFailed`. Eleven Fluent locales carry
+the `ai-*` strings; the menu entry and the panel are hidden entirely
+when no provider was wired (ADR-0023 Decision 11). Phase 4 Stage 1
+slice (b).
 
 ## Dependency Rules
 
@@ -146,13 +151,18 @@ A separate trait in `dbboard-ai` that mirrors the adapter pattern.
 The trait crate is in `develop` as of PR #20 (2026-06-15); the first
 concrete provider `dbboard-anthropic` (Anthropic Messages API over
 `reqwest`) followed in PR #22 (2026-06-15). The `apps/dbboard`
-env-var wiring landed via PR #24 (2026-06-17) —
-`DBBOARD_ANTHROPIC_API_KEY` resolves to `Option<Arc<dyn AiProvider>>`
-and is injected into `DbboardApp::connect`. The `dbboard-ui` AI
-panel that consumes the provider through `has_ai_provider()` follows
-in a subsequent PR against the same issue
+env-var wiring landed via PR #24 (2026-06-17), and the `dbboard-ui`
+AI panel slice (b) landed as the next PR against the same issue
 ([ADR-0023](decisions.md);
 `.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`).
+The UI panel is registered only when `has_ai_provider()` returns
+true; the worker thread routes `Command::AiExplain` /
+`Command::AiSuggest` through `tokio::runtime::block_on(provider.*)`
+just like ADR-0020's `ConnectionSwitcher`, surfacing results as
+`Reply::AiResponded { text, tokens_in, tokens_out }` or
+`Reply::AiFailed { error: AiError }`. The menu entry and the panel
+both hide entirely when no provider was wired (ADR-0023 Decision 11
+graceful degradation = absence).
 
 ```rust
 #[async_trait::async_trait]

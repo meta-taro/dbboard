@@ -43,3 +43,18 @@ connections-connect-button = 接続
 connections-active-marker = （接続中）
 
 language-menu = 言語
+
+ai-menu-button = AI アシスタント
+ai-panel-title = AI アシスタント
+ai-mode-explain = SQL を説明
+ai-mode-suggest = SQL を生成
+ai-input-explain = 説明したい SQL：
+ai-input-suggest = 生成したいクエリを記述：
+ai-send-button = 送信
+ai-busy = プロバイダの応答を待機中…
+ai-empty = （未応答 — 上部にプロンプトを入力して送信してください）
+ai-error-prefix-configuration = AI 設定エラー
+ai-error-prefix-network = AI ネットワークエラー
+ai-error-prefix-provider = AI プロバイダエラー
+ai-error-prefix-quota = AI 利用上限超過
+ai-error-prefix-cancelled = AI リクエストがキャンセルされました

@@ -43,3 +43,18 @@ connections-connect-button = Verbinden
 connections-active-marker = (aktiv)
 
 language-menu = Sprache
+
+ai-menu-button = KI-Assistent
+ai-panel-title = KI-Assistent
+ai-mode-explain = SQL erklären
+ai-mode-suggest = SQL vorschlagen
+ai-input-explain = Zu erklärendes SQL:
+ai-input-suggest = Beschreiben Sie die gewünschte Abfrage:
+ai-send-button = Senden
+ai-busy = Warte auf Antwort des Anbieters…
+ai-empty = (Noch keine Antwort — bitte oben einen Prompt eingeben und Senden drücken)
+ai-error-prefix-configuration = KI-Konfigurationsfehler
+ai-error-prefix-network = KI-Netzwerkfehler
+ai-error-prefix-provider = KI-Anbieterfehler
+ai-error-prefix-quota = KI-Kontingent überschritten
+ai-error-prefix-cancelled = KI-Anfrage abgebrochen
