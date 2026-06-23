@@ -25,6 +25,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
+use dbboard_ai::{AiError, AiProvider, ExplainRequest, SuggestRequest};
 use dbboard_core::DbError;
 use eframe::egui;
 
@@ -56,16 +57,31 @@ pub trait ConnectionSwitcher: Send + Sync + 'static {
 /// Spawn the worker thread. `base_url` is the loopback server root the
 /// binary just started (e.g. `http://127.0.0.1:54123`). `switcher` is
 /// the in-process bridge used to handle `SwitchConnection` commands.
+/// `ai_provider` is `Some` when the binary successfully constructed one
+/// from env vars at startup (ADR-0023); `None` causes any Ai* command
+/// to surface immediately as `Reply::AiFailed { AiError::Configuration }`
+/// — defence-in-depth, since the UI panel is already gated on
+/// `has_ai_provider()`.
 pub(crate) fn spawn_worker(
     base_url: String,
     cmd_rx: Receiver<Command>,
     reply_tx: Sender<Reply>,
     egui_ctx: egui::Context,
     switcher: Arc<dyn ConnectionSwitcher>,
+    ai_provider: Option<Arc<dyn AiProvider>>,
 ) {
     thread::Builder::new()
         .name("dbboard-http-worker".into())
-        .spawn(move || run_worker(&base_url, &cmd_rx, &reply_tx, &egui_ctx, switcher.as_ref()))
+        .spawn(move || {
+            run_worker(
+                &base_url,
+                &cmd_rx,
+                &reply_tx,
+                &egui_ctx,
+                switcher.as_ref(),
+                ai_provider.as_deref(),
+            );
+        })
         .expect("spawn dbboard-http-worker thread");
 }
 
@@ -75,6 +91,7 @@ fn run_worker(
     reply_tx: &Sender<Reply>,
     egui_ctx: &egui::Context,
     switcher: &dyn ConnectionSwitcher,
+    ai_provider: Option<&dyn AiProvider>,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -103,25 +120,82 @@ fn run_worker(
     };
 
     while let Ok(cmd) = cmd_rx.recv() {
-        // ADR-0020: SwitchConnection is an in-process operation, not an
-        // HTTP call. Branch it out with `if let` so the HTTP path stays
-        // a single straight-line block.
-        let reply = if let Command::SwitchConnection { id } = &cmd {
-            match switcher.switch(id) {
-                Ok(()) => Reply::ConnectionSwitched { id: id.clone() },
-                Err(error) => Reply::SwitchFailed {
-                    id: id.clone(),
-                    error,
-                },
-            }
-        } else {
-            let request = client::request_for(&cmd);
-            rt.block_on(execute(&http, base_url, &request))
-        };
+        let reply = rt.block_on(dispatch(cmd, &http, base_url, switcher, ai_provider));
         if reply_tx.send(reply).is_err() {
             break; // UI side hung up — nothing left to answer.
         }
         egui_ctx.request_repaint();
+    }
+}
+
+/// Pure dispatch: turn a single [`Command`] into the matching [`Reply`].
+/// Extracted so the AI + switcher arms can be exercised under
+/// `#[tokio::test]` without spawning a real worker thread or HTTP
+/// server. The HTTP arms still need a reachable `base_url` so they are
+/// tested indirectly through `client.rs`.
+pub(crate) async fn dispatch(
+    cmd: Command,
+    http: &reqwest::Client,
+    base_url: &str,
+    switcher: &dyn ConnectionSwitcher,
+    ai_provider: Option<&dyn AiProvider>,
+) -> Reply {
+    match cmd {
+        // ADR-0020: SwitchConnection is in-process — no HTTP.
+        Command::SwitchConnection { id } => match switcher.switch(&id) {
+            Ok(()) => Reply::ConnectionSwitched { id },
+            Err(error) => Reply::SwitchFailed { id, error },
+        },
+        // ADR-0023: AI commands route to the injected provider. With no
+        // provider the panel is hidden, but defence-in-depth: surface a
+        // configuration error so a stray command never deadlocks the
+        // panel's busy flag.
+        Command::AiExplain { sql, dialect } => match ai_provider {
+            Some(provider) => {
+                let req = ExplainRequest { sql, dialect };
+                ai_reply(provider.explain(&req).await)
+            }
+            None => no_provider_failure(),
+        },
+        Command::AiSuggest {
+            prompt,
+            dialect,
+            schema,
+        } => match ai_provider {
+            Some(provider) => {
+                let req = SuggestRequest {
+                    prompt,
+                    dialect,
+                    schema,
+                };
+                ai_reply(provider.suggest_sql(&req).await)
+            }
+            None => no_provider_failure(),
+        },
+        // HTTP arms — unchanged from before slice (b).
+        Command::ListTables | Command::Query(_) => {
+            let request = client::request_for(&cmd);
+            execute(http, base_url, &request).await
+        }
+    }
+}
+
+fn ai_reply(result: dbboard_ai::AiResult<dbboard_ai::AiResponse>) -> Reply {
+    match result {
+        Ok(resp) => Reply::AiResponded {
+            text: resp.text,
+            tokens_in: resp.tokens_in,
+            tokens_out: resp.tokens_out,
+        },
+        Err(error) => Reply::AiFailed { error },
+    }
+}
+
+fn no_provider_failure() -> Reply {
+    Reply::AiFailed {
+        error: AiError::Configuration(
+            "no AI provider configured; set DBBOARD_ANTHROPIC_API_KEY".into(),
+        ),
     }
 }
 
@@ -188,10 +262,247 @@ fn report_fatal(
                 id,
                 error: err.clone(),
             },
+            // Same fate for AI commands: the worker has no provider
+            // handle, so surface a configuration-style AI failure so
+            // the panel exits busy state rather than waiting forever.
+            // The error message preserves the underlying transport
+            // failure (DbError::Connection) verbatim so the user sees
+            // the actual cause.
+            Command::AiExplain { .. } | Command::AiSuggest { .. } => Reply::AiFailed {
+                error: AiError::Configuration(format!("ai worker unavailable: {}", err.message())),
+            },
         };
         if reply_tx.send(reply).is_err() {
             break;
         }
         egui_ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dispatch, ConnectionSwitcher};
+    use crate::{Command, Reply};
+    use dbboard_ai::{
+        AiCapabilities, AiError, AiProvider, AiResponse, AiResult, ExplainRequest, SuggestRequest,
+    };
+    use dbboard_core::DbError;
+    use std::sync::Arc;
+
+    /// Switcher stub that never gets called — AI tests do not exercise
+    /// the switch path, but the dispatch fn requires a `&dyn` argument
+    /// so we hand it a no-op.
+    struct UnusedSwitcher;
+    impl ConnectionSwitcher for UnusedSwitcher {
+        fn switch(&self, _id: &str) -> Result<(), DbError> {
+            unreachable!("dispatch test must not exercise SwitchConnection here")
+        }
+    }
+
+    /// Configurable AI provider stub. Each round-trip returns the same
+    /// pre-staged outcome.
+    struct StubProvider {
+        kind: StubOutcome,
+    }
+    enum StubOutcome {
+        Ok {
+            text: String,
+            tokens_in: u32,
+            tokens_out: u32,
+        },
+        Err(AiError),
+    }
+
+    #[async_trait::async_trait]
+    impl AiProvider for StubProvider {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        fn capabilities(&self) -> AiCapabilities {
+            AiCapabilities::default()
+        }
+        async fn explain(&self, _req: &ExplainRequest) -> AiResult<AiResponse> {
+            self.outcome()
+        }
+        async fn suggest_sql(&self, _req: &SuggestRequest) -> AiResult<AiResponse> {
+            self.outcome()
+        }
+    }
+    impl StubProvider {
+        fn outcome(&self) -> AiResult<AiResponse> {
+            match &self.kind {
+                StubOutcome::Ok {
+                    text,
+                    tokens_in,
+                    tokens_out,
+                } => Ok(AiResponse {
+                    text: text.clone(),
+                    tokens_in: *tokens_in,
+                    tokens_out: *tokens_out,
+                }),
+                // AiError does not derive Clone (its variants are
+                // one-shot), so we reconstruct the error here.
+                StubOutcome::Err(e) => Err(match e {
+                    AiError::Configuration(s) => AiError::Configuration(s.clone()),
+                    AiError::Network(s) => AiError::Network(s.clone()),
+                    AiError::Provider(s) => AiError::Provider(s.clone()),
+                    AiError::Quota(s) => AiError::Quota(s.clone()),
+                    AiError::Cancelled => AiError::Cancelled,
+                }),
+            }
+        }
+    }
+
+    fn http_client() -> reqwest::Client {
+        // The AI dispatch arms do not touch http; an empty client is
+        // fine. `build()` is infallible for the default builder on
+        // every supported platform.
+        reqwest::Client::builder()
+            .build()
+            .expect("default reqwest client builds")
+    }
+
+    #[tokio::test]
+    async fn dispatch_ai_explain_with_provider_returns_responded() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider {
+            kind: StubOutcome::Ok {
+                text: "this query selects one row".into(),
+                tokens_in: 12,
+                tokens_out: 34,
+            },
+        });
+        let switcher = UnusedSwitcher;
+        let http = http_client();
+        let reply = dispatch(
+            Command::AiExplain {
+                sql: "SELECT 1".into(),
+                dialect: Some("postgres".into()),
+            },
+            &http,
+            "http://127.0.0.1:1",
+            &switcher,
+            Some(provider.as_ref()),
+        )
+        .await;
+        match reply {
+            Reply::AiResponded {
+                text,
+                tokens_in,
+                tokens_out,
+            } => {
+                assert_eq!(text, "this query selects one row");
+                assert_eq!(tokens_in, 12);
+                assert_eq!(tokens_out, 34);
+            }
+            other => panic!("expected AiResponded, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_ai_suggest_with_provider_returns_responded() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider {
+            kind: StubOutcome::Ok {
+                text: "SELECT 1".into(),
+                tokens_in: 1,
+                tokens_out: 2,
+            },
+        });
+        let switcher = UnusedSwitcher;
+        let http = http_client();
+        let reply = dispatch(
+            Command::AiSuggest {
+                prompt: "monthly active users".into(),
+                dialect: None,
+                schema: Vec::new(),
+            },
+            &http,
+            "http://127.0.0.1:1",
+            &switcher,
+            Some(provider.as_ref()),
+        )
+        .await;
+        assert!(matches!(
+            reply,
+            Reply::AiResponded { text, .. } if text == "SELECT 1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_ai_explain_with_provider_error_returns_failed() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider {
+            kind: StubOutcome::Err(AiError::Provider("rate_limit".into())),
+        });
+        let switcher = UnusedSwitcher;
+        let http = http_client();
+        let reply = dispatch(
+            Command::AiExplain {
+                sql: "SELECT 1".into(),
+                dialect: None,
+            },
+            &http,
+            "http://127.0.0.1:1",
+            &switcher,
+            Some(provider.as_ref()),
+        )
+        .await;
+        match reply {
+            Reply::AiFailed { error } => {
+                assert!(matches!(error, AiError::Provider(msg) if msg == "rate_limit"));
+            }
+            other => panic!("expected AiFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_ai_command_without_provider_yields_configuration_failure() {
+        let switcher = UnusedSwitcher;
+        let http = http_client();
+        let reply = dispatch(
+            Command::AiExplain {
+                sql: "SELECT 1".into(),
+                dialect: None,
+            },
+            &http,
+            "http://127.0.0.1:1",
+            &switcher,
+            None,
+        )
+        .await;
+        match reply {
+            Reply::AiFailed {
+                error: AiError::Configuration(msg),
+            } => {
+                assert!(
+                    msg.contains("DBBOARD_ANTHROPIC_API_KEY") || msg.contains("provider"),
+                    "configuration error should mention the env var or provider gate: {msg}"
+                );
+            }
+            other => panic!("expected AiFailed(Configuration), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_switch_connection_short_circuits_before_http() {
+        // Smoke test the existing SwitchConnection arm still routes
+        // through the dispatch fn after refactoring.
+        struct OkSwitcher;
+        impl ConnectionSwitcher for OkSwitcher {
+            fn switch(&self, _id: &str) -> Result<(), DbError> {
+                Ok(())
+            }
+        }
+        let switcher = OkSwitcher;
+        let http = http_client();
+        let reply = dispatch(
+            Command::SwitchConnection {
+                id: "prod-pg".into(),
+            },
+            &http,
+            "http://127.0.0.1:1",
+            &switcher,
+            None,
+        )
+        .await;
+        assert!(matches!(reply, Reply::ConnectionSwitched { id } if id == "prod-pg"));
     }
 }
