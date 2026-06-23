@@ -495,10 +495,67 @@ fn append_record(path: &Path, entry: &HistoryEntry) -> io::Result<()> {
     Ok(())
 }
 
+// --- Fixture-emission helpers (ADR-0017 cross-implementation round-trip) -----
+
+/// Fixture-emission shim used by the `emit_history_fixture` example to
+/// generate the cross-implementation round-trip fixture consumed by the
+/// `dbboard-web` sibling (see web's handoff brief
+/// `2026-06-23-history-fixture-emit-outgoing.md`).
+///
+/// Not part of the runtime surface — exposed only so the example can
+/// drive the same [`RecordWire`] serialiser the persistent writer uses
+/// (instead of a hand-rolled stand-in that would defeat the purpose of
+/// the byte-equivalence check). Hidden from rustdoc; do not call from
+/// production code.
+#[doc(hidden)]
+pub mod fixture {
+    use super::{HistoryEntry, RecordWire};
+
+    /// Serialise an entry exactly as the persistent writer would, with
+    /// an optional `actor` override. The desktop runtime always emits
+    /// `actor: null` (single-user, single-process — ADR-0016 / ADR-0017);
+    /// the round-trip fixture needs at least one populated line so the
+    /// web side can verify the field carries through.
+    #[must_use]
+    pub fn serialize(entry: &HistoryEntry, actor: Option<&str>) -> String {
+        let mut rec = RecordWire::from_entry(entry);
+        rec.actor = actor.map(str::to_owned);
+        serde_json::to_string(&rec).expect("RecordWire is always serialisable")
+    }
+
+    /// Serialise an entry with one extra string-valued top-level field
+    /// appended after the standard envelope. Field order is preserved:
+    /// the declared [`RecordWire`] fields come first in declaration
+    /// order, then `extra_key`. Used for the forward-compat fixture
+    /// case (ADR-0017 §6) where the reader on either side must ignore
+    /// unknown fields.
+    ///
+    /// Implemented by surgically appending `,"key":"value"` before the
+    /// closing `}` of the serialised base record rather than going
+    /// through a `#[serde(flatten)]` wrapper — the concatenation is
+    /// transparent about field order and does not depend on serde's
+    /// flatten ordering semantics. `extra_key` / `extra_value` are
+    /// JSON-encoded through `serde_json::to_string` so embedded quotes
+    /// and backslashes are escaped correctly.
+    #[must_use]
+    pub fn serialize_with_extra(
+        entry: &HistoryEntry,
+        extra_key: &str,
+        extra_value: &str,
+    ) -> String {
+        let base = serialize(entry, None);
+        debug_assert!(base.ends_with('}'), "RecordWire JSON must end with '}}'");
+        let body = &base[..base.len() - 1];
+        let k = serde_json::to_string(extra_key).expect("string is always serialisable");
+        let v = serde_json::to_string(extra_value).expect("string is always serialisable");
+        format!("{body},{k}:{v}}}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        HistoryEntry, HistoryError, HistoryStatus, HistoryStore, PersistentHistoryStore,
+        fixture, HistoryEntry, HistoryError, HistoryStatus, HistoryStore, PersistentHistoryStore,
         RecordWire, CURRENT_VERSION, DEFAULT_CAPACITY, ROTATION_LINES,
     };
     use std::fs;
@@ -903,5 +960,100 @@ mod tests {
         blank.sql = "   ".to_string();
         store.record_completion(&blank).expect("ok");
         assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
+    }
+
+    // ---- Fixture-emission helpers (ADR-0017 cross-implementation round-trip) ----
+
+    #[test]
+    fn fixture_serialize_writes_null_actor_by_default() {
+        let entry = sample_entry("SELECT 1");
+        let line = fixture::serialize(&entry, None);
+        assert!(
+            line.contains(r#""actor":null"#),
+            "default actor must serialise as null: {line}"
+        );
+    }
+
+    #[test]
+    fn fixture_serialize_overrides_actor() {
+        let entry = sample_entry("SELECT 1");
+        let line = fixture::serialize(&entry, Some("alice@example.com"));
+        assert!(
+            line.contains(r#""actor":"alice@example.com""#),
+            "actor override must propagate: {line}"
+        );
+        let parsed: RecordWire = serde_json::from_str(&line).expect("valid json");
+        assert_eq!(parsed.actor.as_deref(), Some("alice@example.com"));
+    }
+
+    #[test]
+    fn fixture_serialize_preserves_declaration_field_order() {
+        // The web sibling's byte-equivalence check depends on declaration
+        // order: v, ts, conn, actor, sql, status, duration_ms, rows,
+        // rows_affected, error.
+        let entry = sample_entry("SELECT 1");
+        let line = fixture::serialize(&entry, None);
+        let expected_order = [
+            r#""v":"#,
+            r#""ts":"#,
+            r#""conn":"#,
+            r#""actor":"#,
+            r#""sql":"#,
+            r#""status":"#,
+            r#""duration_ms":"#,
+            r#""rows":"#,
+            r#""rows_affected":"#,
+            r#""error":"#,
+        ];
+        let mut last_pos = 0usize;
+        for needle in expected_order {
+            let pos = line[last_pos..]
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing {needle} after offset {last_pos} in {line}"));
+            last_pos += pos + needle.len();
+        }
+    }
+
+    #[test]
+    fn fixture_serialize_with_extra_appends_after_standard_envelope() {
+        let entry = sample_entry("SELECT 1");
+        let line = fixture::serialize_with_extra(&entry, "unknown_field", "value-from-the-future");
+        // Standard envelope still present in declaration order, with the
+        // extra key last.
+        assert!(
+            line.ends_with(r#","unknown_field":"value-from-the-future"}"#),
+            "extra field must come at the end: {line}"
+        );
+        let error_pos = line.find(r#""error":null"#).expect("error field present");
+        let extra_pos = line
+            .find(r#""unknown_field":"#)
+            .expect("extra field present");
+        assert!(
+            error_pos < extra_pos,
+            "extra field must follow declaration-order fields: {line}"
+        );
+    }
+
+    #[test]
+    fn fixture_serialize_with_extra_round_trips_through_record_wire_ignoring_extra() {
+        // The current reader's RecordWire silently drops unknown fields
+        // (matches ADR-0017 §6 forward-compat). The fixture must
+        // continue to parse so future drift surfaces in the byte
+        // comparison rather than at parse time.
+        let entry = sample_entry("SELECT 1");
+        let line = fixture::serialize_with_extra(&entry, "unknown_field", "value-from-the-future");
+        let parsed: RecordWire = serde_json::from_str(&line).expect("known fields must parse");
+        let back = parsed.into_entry().expect("v=1 status=ok must round-trip");
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn fixture_serialize_with_extra_escapes_special_characters() {
+        let entry = sample_entry("SELECT 1");
+        let line = fixture::serialize_with_extra(&entry, "with\"quote", "with\\backslash");
+        // The result must still be valid JSON despite the awkward key
+        // and value — the helper escapes both via serde_json.
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("valid json");
+        assert_eq!(parsed["with\"quote"], "with\\backslash");
     }
 }

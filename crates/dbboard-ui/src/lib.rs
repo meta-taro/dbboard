@@ -27,6 +27,12 @@ pub use history::{
     HistoryEntry, HistoryError, HistoryStatus, HistoryStore, PersistentHistoryStore,
     CURRENT_VERSION, DEFAULT_CAPACITY, ROTATION_BYTES, ROTATION_LINES,
 };
+// Fixture-emission shim for the `dbboard-web` sibling's
+// cross-implementation round-trip test (ADR-0017). Used only by the
+// `emit_history_fixture` example — hidden from rustdoc; do not call
+// from production code.
+#[doc(hidden)]
+pub use history::fixture;
 pub use worker::ConnectionSwitcher;
 // Re-export so the desktop binary can implement [`ConnectionSwitcher`]
 // (return type `Result<(), DbError>`) without taking a direct dep on
