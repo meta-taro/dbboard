@@ -5,22 +5,151 @@
 
 ## 最終更新
 
-- 日付: 2026-06-23 (PR #27 マージクローズ、`dbboard-ui` AI panel
-  slice (b) + 11-locale Fluent + docs sweep shipped / ADR-0023
-  Phase 4 Stage 1 = issue 0005 完了)
-- ブランチ: `develop` (= `c86424a`)、ローカル
-  `chore/post-pr27-doc-sync` 作業中 (`feat/ai-panel-slice-b` は
-  merge 済 / origin 側も削除済)
-- 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = ADR-0023
-  全 4 implementation PR shipped (trait crate / Anthropic provider /
-  apps env-var wiring / dbboard-ui AI panel)。issue 0005 は PR #27
-  でクローズ。Phase 4 Stage 2 (Settings UI / 永続化キー /
-  streaming / multi-provider switcher / DDL extraction /
-  function-calling / AI 履歴記録) は ADR-0023 §9 通り deferral 継続、
-  次セッションは新規 ADR + 新規 issue で開く想定。Phase 2 ADR-0024
-  at-rest hardening (PR #25, 2026-06-22) もそのまま load-bearing。**
+- 日付: 2026-06-23 (PR #29 マージクローズ、`emit_history_fixture`
+  example + `history::fixture` shim shipped / web sibling issue 0018
+  の round-trip テスト用 desktop 側 deliverable 完了)
+- ブランチ: `develop` (= `8d73e75`)、ローカル
+  `chore/post-pr29-doc-sync` 作業中
+  (`feature/history-fixture-emit-helper` は merge 済 / 削除は
+  maintainer 判断保留)
+- 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
+  PR #29 は ADR-0017 (per-record JSON schema mirror) の cross-impl
+  round-trip 補助で、Phase milestone ではなく ADR-0017 の運用層
+  延長線。Phase 4 Stage 2 (Settings UI / 永続化キー / streaming /
+  multi-provider switcher / DDL extraction / function-calling / AI
+  履歴記録) は ADR-0023 §9 通り deferral 継続、次セッションは
+  新規 ADR + 新規 issue で開く想定。Phase 2 ADR-0024 at-rest
+  hardening (PR #25, 2026-06-22) もそのまま load-bearing。**
 
-### PR #27 (`dbboard-ui` AI panel slice (b) + 11-locale Fluent + docs sweep / ADR-0023 issue 0005) マージクローズ (本セッション / 2026-06-23)
+### PR #29 (`emit_history_fixture` example + `history::fixture` doc-hidden shim / ADR-0017 cross-impl round-trip support, web sibling issue 0018) マージクローズ (本セッション / 2026-06-23)
+
+- PR #29 (`feature/history-fixture-emit-helper` → `develop`) マージ済
+  = `8d73e75` (mergedAt 2026-06-23T04:07:54Z = JST 13:07)。
+- ローカル `develop` は `origin/develop` (= `8d73e75`) と
+  fast-forward sync 済 (`09d2c52..8d73e75`、2 commit ぶん advance:
+  feat commit `a87a73e` + merge commit)。
+- マージ済 feature ブランチ `feature/history-fixture-emit-helper`
+  は local / remote ともそのまま残置 (本セッション中に削除を試行 →
+  permission denied で skip)。次セッション以降で maintainer 判断。
+- 本 chore (`chore/post-pr29-doc-sync`) は `develop` ベース、
+  本セッションで切り直し。
+- 本 PR の scope: **web sibling 側の handoff brief**
+  `dbboard-web/.claude/handoff/2026-06-23-history-fixture-emit-outgoing.md`
+  (web issue 0018 = history export round-trip fixture) に対する
+  desktop 側 deliverable。**option 1 形式** (`cargo run --example`
+  stdout 出力) で実装。3 ファイル / +488 / −1。中身:
+  - `crates/dbboard-ui/src/history.rs`: production の private
+    `RecordWire` + `RecordWire::from_entry` をそのまま hand-rolled
+    stand-in せずに reuse するために、子モジュール `fixture`
+    (`#[doc(hidden)] pub mod fixture`) を追加。2 関数のみ:
+    - `serialize(entry: &HistoryEntry, actor: Option<&str>) ->
+      String`: `RecordWire::from_entry` を呼んでから actor を
+      override。desktop production は `actor: null` 固定なので
+      fixture の actor populated case (case 6) はこの override で
+      対応。
+    - `serialize_with_extra(entry, extra_key, extra_value) ->
+      String`: `serialize(entry, None)` の戻り値の末尾 `}` を
+      取って `,"key":"value"}` を append。`#[serde(flatten)]`
+      wrapper や `serde_json::Value::Object` (BTreeMap で alphabetical
+      reorder してしまう) を避けて文字列連結。`extra_key` /
+      `extra_value` は `serde_json::to_string` で encode 済なので
+      引用符・バックスラッシュは escape される。子モジュールから
+      private item (`RecordWire`, `ErrorWire`, `RecordWire::from_entry`)
+      が参照できるのは Rust の visibility 規則 (parent の private
+      item は child module からも見える) を活用。
+  - `crates/dbboard-ui/src/lib.rs`: `mod history;` は private のまま
+    据え置きつつ `#[doc(hidden)] pub use history::fixture;` を追加。
+    これがないと `pub mod fixture` 内の `pub fn` が rustc の
+    `dead_code` lint で reject される (lib 外部からの reach path が
+    無いため)。docs 上は hidden、surface は example だけが触る。
+  - `crates/dbboard-ui/examples/emit_history_fixture.rs` (新規):
+    `cargo run --example emit_history_fixture -p dbboard-ui` で
+    起動。10 行 LF-only JSONL を stdout に出力。各 case:
+    1. SELECT-shaped ok + `rows`, `duration_ms=42` (mid)
+    2. DML-shaped ok + `rows_affected`, `duration_ms=0` (lower)
+    3. both-null ok (BEGIN), `duration_ms=1234` (upper)
+    4. 5 つの `CategorizedError` カテゴリ各 1 行 (`query` /
+       `connection` / `schema` / `type_conversion` / `capability`)
+    5. forward-compat: `unknown_field: "value-from-the-future"` を
+       envelope 末尾に append
+    6. `actor: "alice@example.com"` populated
+    出力規約: brief 通り **`println!` を避けて `Write::write_all`
+    + 明示 `\n`** (Windows コンソールの text-mode CRLF 翻訳を
+    回避)、最終行末も LF、JSON 内は no whitespace、`actor` /
+    `rows` / `rows_affected` / `error` は **omit せず常に
+    `null`** (web 側の byte equivalence check はキー集合一致が
+    前提)、フィールド順は declaration order = `v, ts, conn,
+    actor, sql, status, duration_ms, rows, rows_affected, error`。
+- **意図的に PR に含めない**:
+  - **fixture 出力ファイルそのもの**: brief の
+    "What desktop must NOT do" に "Do not commit the fixture into
+    `dbboard` either — it's a test artefact for `dbboard-web`
+    only" と明示。maintainer が `cargo run > desktop-history.jsonl`
+    して web 側で `apps/api/test/fixtures/desktop-history.jsonl`
+    にコミットする想定。
+  - HTTP contract / JSON schema 変更: `RecordWire` 宣言 +
+    `CURRENT_VERSION = 1` 据え置き。fixture は existing schema を
+    exercise するだけ。
+  - 新規依存: なし (既存 `serde_json` のみ)。
+- 検証:
+  - `cargo fmt --all -- --check` (clippy 4-error 経由を含む 1 度の
+    自動 fmt apply 後) clean
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+    (pedantic 含む) clean。途中 `clippy::too_many_lines` (107 > 100)
+    が `fn run` で fire したので `emit_ok_cases` / `emit_error_cases`
+    / `emit_special_cases` に分割。pre-`pub use` 段階では
+    `pub fn` への dead_code lint も発生 → `lib.rs` で
+    `#[doc(hidden)] pub use history::fixture;` 再エクスポートして
+    解消。
+  - `cargo check --all-targets --all-features` clean
+  - `cargo test --all-features` 全 pass。新規追加 = `history.rs` の
+    fixture helpers ユニットテスト 5 本
+    (`fixture_serialize_writes_null_actor_by_default` /
+    `_overrides_actor` / `_preserves_declaration_field_order` /
+    `fixture_serialize_with_extra_appends_after_standard_envelope` /
+    `_round_trips_through_record_wire_ignoring_extra` /
+    `_escapes_special_characters`) + example 末尾の E2E smoke
+    1 本 (`fixture_output_matches_brief_conventions` = 10 行 pin /
+    LF only / envelope key 完全 / 5 カテゴリ各 1 / `unknown_field`
+    と `actor` override の各 1 / `duration_ms` 0/42/1234 全
+    出現)。
+  - pre-commit hook (cargo-husky) も green。
+  - 実出力 `cargo run --example emit_history_fixture -p dbboard-ui`
+    確認済 (10 行、`{"v":1,"ts":...,"actor":null/...,"sql":...,...
+    "error":null}` 形、case 5 末尾 `,"unknown_field":
+    "value-from-the-future"}`、case 6 `"actor":
+    "alice@example.com"`)。
+- コミット message のエンコード問題で `§` が `ยง` に化けた一件あり。
+  `git reset --soft HEAD~1` + `git commit -F` (UTF-8 file 経由) で
+  リコミット。CLAUDE.md の "Always create NEW commits rather than
+  amending" を尊重するため `--amend` ではなく soft reset を使った。
+  最終コミット `a87a73e`。本文中の "section 6" は ADR-0017 §6
+  指して書いている (ASCII 化)。
+- web 側との関係:
+  - **HTTP contract: 未変更**。`docs/api-contract.md` UNTOUCHED、
+    `dbboard-server` UNTOUCHED。
+  - **per-record JSON schema: 未変更**。`CURRENT_VERSION = 1` のまま。
+  - **次のアクション**: maintainer が `cargo run --example
+    emit_history_fixture -p dbboard-ui > desktop-history.jsonl` し、
+    `dbboard-web` リポジトリ側で `apps/api/test/fixtures/
+    desktop-history.jsonl` にコミット + 既存の `describe.skip`
+    を live に flip。これは web 側 issue 0018 の DoD であり
+    desktop 側ではない。
+- 次セッション候補:
+  1. Phase 4 Stage 2 ADR (Settings UI / 永続化キー / streaming /
+     multi-provider switcher / DDL extraction / function-calling /
+     AI 履歴記録) を新規 ADR + 新規 issue で開く。ADR-0023 §9 の
+     deferral 一覧をそのまま起点にできる。
+  2. ADR-0012 promise の per-capability endpoints (`/views`,
+     `/functions` …) を opening する場合は HTTP contract bump =
+     web sibling との coordination trigger になるので、handoff
+     brief を `dbboard-web/.claude/handoff/` 形式で書き起こす。
+  3. web 側で desktop fixture を実際に consume してドリフトが出た
+     場合 (case 5 の field ordering、case 6 の actor 表現など) は
+     **ADR-level event**: fixture を patch せずに ADR-0017 §2 / §6
+     の更新を先に通す。
+
+### PR #27 (`dbboard-ui` AI panel slice (b) + 11-locale Fluent + docs sweep / ADR-0023 issue 0005) マージクローズ (前セッション / 2026-06-23)
 
 - PR #27 (`feat/ai-panel-slice-b` → `develop`) マージ済 = `c86424a`
   (mergedAt 2026-06-23T02:31:38Z = JST 11:31)。
