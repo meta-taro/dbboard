@@ -5,21 +5,149 @@
 
 ## 最終更新
 
-- 日付: 2026-06-22 (PR #25 マージクローズ、at-rest file permissions /
-  ADR-0024 shipped セッション末)
-- ブランチ: `develop` (= `5590996`)、ローカル feature ブランチなし
-  (`feat/secure-fs-permissions` は merge 済 / origin 側も削除済)
-- 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 第 3 PR まで shipped。
-  この PR #25 は Phase 4 の roadmap 行ではなく、Phase 2 の
-  `connections.toml` + `history.jsonl` ストアに対する at-rest
-  security 強化 (ADR-0024)。動機はユーザの「PC 紛失したと想定して
-  セキュリティ問題ないかチェックしたい」要望で、audit → fix →
-  rust-reviewer + security-reviewer → PR と進んだセッション。
-  Phase 4 残スコープ (`dbboard-ui` AI panel + 11-locale Fluent
-  + docs sweep = issue 0005 slice (b)) は引き続き open、次セッ
-  ション分岐候補。**
+- 日付: 2026-06-23 (PR #27 マージクローズ、`dbboard-ui` AI panel
+  slice (b) + 11-locale Fluent + docs sweep shipped / ADR-0023
+  Phase 4 Stage 1 = issue 0005 完了)
+- ブランチ: `develop` (= `c86424a`)、ローカル
+  `chore/post-pr27-doc-sync` 作業中 (`feat/ai-panel-slice-b` は
+  merge 済 / origin 側も削除済)
+- 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = ADR-0023
+  全 4 implementation PR shipped (trait crate / Anthropic provider /
+  apps env-var wiring / dbboard-ui AI panel)。issue 0005 は PR #27
+  でクローズ。Phase 4 Stage 2 (Settings UI / 永続化キー /
+  streaming / multi-provider switcher / DDL extraction /
+  function-calling / AI 履歴記録) は ADR-0023 §9 通り deferral 継続、
+  次セッションは新規 ADR + 新規 issue で開く想定。Phase 2 ADR-0024
+  at-rest hardening (PR #25, 2026-06-22) もそのまま load-bearing。**
 
-### PR #25 (at-rest file permissions / ADR-0024) マージクローズ (本セッション / 2026-06-22)
+### PR #27 (`dbboard-ui` AI panel slice (b) + 11-locale Fluent + docs sweep / ADR-0023 issue 0005) マージクローズ (本セッション / 2026-06-23)
+
+- PR #27 (`feat/ai-panel-slice-b` → `develop`) マージ済 = `c86424a`
+  (mergedAt 2026-06-23T02:31:38Z = JST 11:31)。
+- ローカル `develop` は `origin/develop` (= `c86424a`) と
+  fast-forward sync 済 (`409fa54..c86424a`、5 commit ぶん advance:
+  feat commits `e56d58d` + `1ba5660` + `a676ea7` + 前段 chore
+  `0eaab59` (PR #26 = post-PR25-doc-sync) + merge commits)。
+- マージ済 feature ブランチ (`feat/ai-panel-slice-b`) は local /
+  remote 両方削除済。本 chore (`chore/post-pr27-doc-sync`) は
+  `develop` ベース、本セッションで切り直し。
+- 本 PR の scope: ADR-0023 Phase 4 Stage 1 の最後のスライス
+  (slice (b))。21 ファイル / +1221 / −87。中身:
+  - `crates/dbboard-ui/src/ai.rs` (新規): `AiPanel` 構造体 =
+    `egui::Window` 形式の AI パネル。`AiMode::{Explain, Suggest}`
+    トグル、`input: String`、`busy: bool`、`last_response:
+    Option<Result<AiResponse, String>>`。`prepare_send(dialect:
+    Option<String>, schema: &[TableInfo]) -> Option<Command>` で
+    送信時 `Command::AiExplain` / `Command::AiSuggest` を生成
+    (Suggest アームでのみ `schema.to_vec()`)。`on_response` /
+    `on_error(&AiError)` で busy 解除 + 結果反映。11 unit tests
+    (open/close/toggle, mode switch, empty/whitespace noop, explain,
+    suggest + schema, send-while-busy noop, on_response, on_error,
+    fresh-replaces-stale, `ai_error_display` の 5 variant カバー)。
+  - `crates/dbboard-ui/src/worker.rs`: `Command::AiExplain` /
+    `Command::AiSuggest` 受け取り → `tokio::runtime::Handle::block_on`
+    で `provider.explain` / `provider.suggest_sql` を駆動 →
+    `Reply::AiResponded { text, tokens_in, tokens_out }` /
+    `Reply::AiFailed { error }`。`ai_provider == None` は防御で
+    `Reply::AiFailed { AiError::Configuration }`。5 dispatch tests
+    (explain success / suggest success / provider error /
+    no-provider Configuration 失敗 / unchanged SwitchConnection
+    smoke)。ADR-0020 + ADR-0022 の switcher と同じ runtime pattern。
+  - `crates/dbboard-ui/src/lib.rs`: `DbboardApp` から `AiPanel` を
+    保有、`Reply::AiResponded` / `Reply::AiFailed` を受信ループに
+    配線、`self.tables.as_ref().map_or(&[], Vec::as_slice)` で
+    per-frame の `Vec<TableInfo>` clone を排除し slice 越しに渡す。
+  - `apps/dbboard/src/main.rs`: メニューバーの AI ボタンを
+    `app.has_ai_provider()` で gate (provider が None の時はボタン
+    ごと不在 = ADR-0023 Decision 11 の graceful degradation =
+    absence)。
+  - `crates/dbboard-i18n/i18n/<locale>/dbboard.ftl` × 11 ロケール
+    (en/ja/ko/zh-CN/zh-TW/de/fr/es/pt-BR/ru/it): `ai-menu-button` /
+    `ai-panel-title` / `ai-mode-explain` / `ai-mode-suggest` /
+    `ai-input-explain` / `ai-input-suggest` / `ai-send-button` /
+    `ai-busy` / `ai-empty` / `ai-error-prefix-{configuration,
+    network,provider,quota,cancelled}` (= 5 AiError variant) の
+    新キー群を翻訳。ADR-0022 Consequences の "Tier 1 + Tier 2 を
+    同期させる" ルールに準拠。
+  - Docs sweep: `docs/architecture.md` (AI layer 段落に slice (b)
+    の worker block_on + Reply 配線 + hide-on-absence を追記)、
+    `docs/roadmap.md` (Phase 4 bullets を slice (b) shipped に
+    ティック + Stage 1 exit criteria 達成、Stage 2 = ADR-0023 §9
+    参照)、`README.md` (AI integration subsection を panel surface
+    も含む形に書き換え)、`crates/dbboard-anthropic/README.md`
+    (Configuration section の "sibling PR" 文言を削除して slice (b)
+    完了済の表現に書き換え、Decision 11 を再参照)、`.claude/issues/0005-*.md`
+    の全 acceptance ボックスをチェック。
+- コミット粒度: 3 commits (CLAUDE.md "small focused chunks per
+  logical change" に従い、(コード) / (翻訳) / (ドキュメント) に分離):
+  - `e56d58d` `feat(ui): wire AI Explain/Suggest panel into the
+    desktop worker (ADR-0023)`
+  - `1ba5660` `feat(i18n): translate AI panel keys for slice (b)
+    across all 11 locales`
+  - `a676ea7` `docs: tick slice (b) acceptance and refresh AI
+    panel surface (ADR-0023)`
+- 検証: mandatory verification 4 コマンド (`cargo fmt --all --
+  check` / `cargo clippy --all-targets --all-features -- -D
+  warnings` / `cargo check --all-targets --all-features` /
+  `cargo test --all-features`) と release build / release test、
+  いずれもグリーン。cargo-husky の pre-commit / pre-push が同セット
+  を各 commit / push 直前に再実行。本 PR で追加された
+  `dbboard-ui` 側テスト = `ai.rs` 11 + `worker.rs` 5 = 16 件。
+- レビュー: rust-reviewer 実施。
+  - **MEDIUM #1**: `AiPanel::on_error(&mut self, error: AiError)`
+    が `AiError` を value で受けるが consume するだけ。
+    → 修正: `on_error(&AiError)` に変更 (clippy
+    `needless_pass_by_value` 同時解消)、call site 5 箇所更新。
+  - **MEDIUM #2**: `ui()` 内で `Vec<TableInfo>` を per-frame clone
+    していた。Suggest アームが実際に send されるまで必要ない。
+    → 修正: `ui(dialect: Option<&str>, schema: &[TableInfo])`
+    に変更、`prepare_send(schema: &[TableInfo])` 内の Suggest
+    アームでのみ `schema.to_vec()`。`lib.rs` 側は
+    `self.tables.as_ref().map_or(&[], Vec::as_slice)` で
+    pass-through (一瞬 `clippy::map_unwrap_or` に当たり
+    `map_or` に書き換え)。
+  - HIGH / CRITICAL: 0 件。
+- 着地中に当てたミニ事象:
+  - **clippy 4 件で task #32 ブロック**: rust-reviewer fix 後の
+    再実行で `needless_pass_by_value` ×2 (`ai.rs` の `on_error` +
+    `dialect: Option<String>`) + `semicolon_if_nothing_returned`
+    (`worker.rs:76` の `run_worker(...)` 末尾 `;`) +
+    `items_after_test_module` (`worker.rs:203` の
+    `#[cfg(test)] mod tests` を `execute()` の前ではなくファイル
+    末尾に移動)。一括修正後クリーン。
+  - `dialect: Option<String>` → `Option<&str>` 化に伴い `lib.rs`
+    側で `let dialect: Option<&str> = None;` を per-frame に
+    定義 (Stage 1 では dialect 取得経路がまだ無く、Stage 2 で
+    loopback server からの adapter id 解決を入れる予定; `ui()`
+    と `prepare_send()` のシグネチャはその時に値が入る形)。
+- web 影響: なし。Phase 4 Stage 1 全体が in-process / 環境変数
+  経由ベースで HTTP contract も history JSON schema も
+  unchanged (ADR-0023 §9 で Stage 1 は wire に出さない方針が確定)。
+  `dbboard-web-state.md` メモを slice (b) shipped に書き換え済。
+  web 側に mirror brief 不要。
+- issue 0005 ステータス: `.claude/issues/0005-*.md` を closed に
+  更新。slice (a) = trait crate (PR #20, 2026-06-15) + Anthropic
+  provider (PR #22, 2026-06-15) + apps env-var wiring (PR #24,
+  2026-06-17)、slice (b) = `dbboard-ui` AI panel (PR #27,
+  2026-06-23)。Stage 1 全 acceptance box チェック済。
+- 次セッション分岐候補:
+  - **Phase 4 Stage 2 ADR (新規)**: ADR-0023 §9 defer の中から
+    1 つ選んで新 ADR + 新 issue 起票。優先度の自然な順は
+    Settings UI + `ai-providers.toml` + OS keychain 永続化 →
+    multi-provider switcher → streaming → function-calling →
+    full-DDL schema snapshot → ADR-0017 拡張 (AI 履歴記録)。
+    Settings UI が一段目だと環境変数依存から脱却できる。
+  - **新規 connector の追加**: Phase 3 で flavored kind 化した
+    Postgres-wire 系の延長で、PlanetScale (Vitess) /
+    CockroachDB / TiDB / Yugabyte 等。トライ前に
+    `dbboard-core` Capabilities / `DbError` taxonomy に
+    dialect-specific 概念が不足していないか軽く再点検。
+  - **web 同期 / coordination**: 現状 contract も history schema
+    も unchanged のまま slice (b) shipped、web 側にも mirror
+    不要。次の coordination trigger は `feat(contract)` commit
+    or `v: 2` history bump or Tier 2 i18n lift。
+
+### PR #25 (at-rest file permissions / ADR-0024) マージクローズ (前セッション / 2026-06-22)
 
 - PR #25 (`feat/secure-fs-permissions` → `develop`) マージ済 =
   `5590996` (mergedAt 2026-06-22T05:52:56Z)。

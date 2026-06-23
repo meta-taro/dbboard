@@ -1,7 +1,10 @@
 # 0005: `dbboard-ai` trait + Anthropic provider (Phase 4 Stage 1)
 
-- **Status**: ready-to-close once slice (b) PR merges (all acceptance
-  boxes ticked as of 2026-06-23; awaiting human merge + chore close-out)
+- **Status**: closed by PR #27 (merged 2026-06-23 at desktop@c86424a) —
+  all acceptance boxes ticked. Slice (a) (trait crate + Anthropic
+  provider + `apps/dbboard` env-var wiring) closed previously by
+  PRs #20 / #22 / #24; slice (b) (`dbboard-ui` AI panel + worker
+  dispatch + 11-locale Fluent + docs sweep) closed by PR #27.
 - **Phase**: 4 (AI integration, optional layer)
 - **Opened**: 2026-06-12
 - **Tracks**: ADR-0023
