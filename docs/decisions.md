@@ -2619,3 +2619,414 @@ will reopen this decision.
 - Roadmap: no row change. This is a security hardening pass on
   Phase 2 / Phase 3 artefacts, not a Phase 4 advancement.
 
+## ADR-0025 — Phase 4 Stage 2 Group A: `ai-providers.toml` + Settings UI + runtime provider switcher
+
+**Status:** Accepted (2026-06-24). Opens Phase 4 Stage 2 by lifting
+the AI provider out of the env-var-only construction path
+established in ADR-0023 Decision 5 into a versioned per-user TOML
+file (`ai-providers.toml`) keyed by opaque keychain references,
+adds an in-app Settings UI for managing providers (mirroring the
+ADR-0016 connections window), and adds a runtime provider switcher
+that swaps the active `Arc<dyn AiProvider>` in-process without
+restarting the desktop binary (mirroring ADR-0020's `swap_backend`
+for adapters and ADR-0022's `set_language` for locales). Streaming,
+cancel button, AI calls in `history.jsonl`, conversation history,
+full DDL extraction, and function-calling stay deferred per
+ADR-0023 §9.
+
+### Context
+
+Phase 4 Stage 1 (ADR-0023, PRs #18 / #20 / #22 / #24 / #27) shipped
+the `dbboard-ai` trait crate, the `dbboard-anthropic` first
+concrete provider, env-var-only wiring in `apps/dbboard`, and an
+AI panel in `dbboard-ui`. Decision 5 explicitly previewed Stage 2:
+
+> Stage 1 configuration is env-var-only:
+> `DBBOARD_ANTHROPIC_API_KEY` (required) and
+> `DBBOARD_ANTHROPIC_MODEL` (optional override). [...] **Stage 2
+> will add `ai-providers.toml` + `SecretStore` integration (ADR-0013
+> connections.toml is the template) plus a Settings UI for picking
+> a provider and managing keys.** Mirroring the `DBBOARD_TURSO_PATH`
+> → `connections.toml` evolution path — env-var-only first, then
+> persisted store.
+
+ADR-0023 §9 also reserved the multi-provider switcher UI as a
+Stage 2 concern. Group A of the Stage 2 slate (per the four-group
+split agreed in this session's planning) bundles three deferrals
+together because they are co-dependent: a Settings UI is not useful
+without a persistent store to mutate, the store is not useful
+without a switcher to make a saved provider active, and the
+switcher is not useful without a UI to drive it. Bundling them in
+one ADR keeps the design coherent; bundling them in one PR is a
+slicing question left to issue 0008.
+
+Streaming, cancel button, AI calls in `history.jsonl`, conversation
+history, full DDL extraction, function-calling, and token budget
+meter — the other Stage 2 deferrals from ADR-0023 §9 — are **not**
+in this ADR's scope. They group into separate ADRs (Group B
+streaming + cancel, Group C history + v:2 schema bump, Group D
+capability expansion) which can land in any order after this one.
+
+The infrastructure to reuse already exists:
+
+- **`dbboard-config::store`** (ADR-0013) — TOML schema versioning
+  pattern (`version = 1`, hard error on unknown version),
+  `default_path()` / `default_history_path()` for the per-user
+  config dir, `load_or_empty()` / `save_atomic()` for atomic
+  read-modify-write.
+- **`dbboard-config::secrets`** (ADR-0013) — `SecretStore` trait,
+  `KeyringStore` / `InMemorySecretStore`, `KEYRING_SERVICE = "dbboard"`,
+  opaque `keyring_*_ref` strings stored in TOML.
+- **`dbboard-config::secure_fs`** (ADR-0024) — `create_new_user_only`
+  for `0o600` on Unix / inherited DACL on Windows. The same
+  hardening applies unchanged to `ai-providers.toml`.
+- **`dbboard-config::ConnectionAdmin`** (ADR-0016) — the use-case
+  shape for add / edit / delete / list with secret references
+  routed through a `SecretStore`. `AiSettingsAdmin` mirrors this
+  exactly.
+- **`dbboard-server::swap_backend`** (ADR-0020) — the in-process
+  atomic swap pattern. AI provider switching reuses this shape
+  inside `apps/dbboard` (no server-side swap because Decision 3 of
+  ADR-0023 keeps AI off the HTTP contract).
+- **`dbboard-i18n::set_language`** (ADR-0022) — the runtime-switcher
+  precedent. AI provider switching is the third "in-process
+  mutate-while-running" surface after backend and locale.
+
+The HTTP contract (`docs/api-contract.md`) and the per-record
+history JSON schema (ADR-0017) are both **unchanged** by this ADR.
+The desktop ↔ web coordination posture established by
+`.claude/issues/0007-web-ai-phase6-no-contract-mirror.md` (2026-06-23,
+PR #33) holds: web's Phase 6 ships independently with its own
+NestJS-side persistence; this ADR adds nothing for web to mirror.
+
+### Decision
+
+1. **New TOML file `ai-providers.toml`, sibling to `connections.toml`
+   and `history.jsonl` under the per-user config dir.** Same
+   resolution (`directories::ProjectDirs::from("dev", "dbboard",
+   "dbboard").config_dir()`), same at-rest hardening
+   (`secure_fs::create_new_user_only` → `0o600` on Unix, inherited
+   DACL on Windows). New helper
+   `dbboard_config::store::default_ai_providers_path()` symmetric
+   with `default_path()` / `default_history_path()`. A missing file
+   is **not** an error — `load_or_empty` returns an empty store and
+   no file is created until the user adds the first entry via the
+   Settings UI.
+
+2. **Schema (`AiProviderFile`).** Versioned (`version = 1`,
+   unknown version is a hard error — same posture as
+   `ConnectionFile`). Two top-level keys plus a list of entries:
+
+   ```toml
+   version = 1
+   active_id = "anthropic-sonnet"     # optional; absent => no auto-select
+
+   [[providers]]
+   id   = "anthropic-sonnet"
+   name = "Anthropic (Sonnet 4.6)"
+   kind = "anthropic"
+   model = "claude-sonnet-4-6"        # optional override
+   keyring_api_key_ref = "dbboard.ai.anthropic-sonnet.api_key"
+
+   [[providers]]
+   id   = "anthropic-opus"
+   name = "Anthropic (Opus 4.7)"
+   kind = "anthropic"
+   model = "claude-opus-4-7"
+   keyring_api_key_ref = "dbboard.ai.anthropic-opus.api_key"
+   ```
+
+   `kind = "anthropic"` is the only Stage 2 variant — additional
+   providers (`openai`, `ollama`, …) land as additive variants in
+   future ADRs, mirroring `ConnectionKind`'s evolution
+   (`Turso` → +`D1` → +`Postgres` → +`Neon` → +`Supabase` →
+   +`AuroraDsql`). The `model` field is optional; when absent the
+   provider crate's compile-time default applies
+   (`claude-sonnet-4-6` for Anthropic). Duplicate `id`, unknown
+   `kind`, and unknown `version` are hard parse errors —
+   `ConnectionFile`'s posture.
+
+   `active_id` is optional. When present it must reference an
+   existing `id` (validated at parse time — dangling `active_id`
+   is a hard error). When absent, the app does not auto-construct
+   a provider from the TOML; the user must either set an env var
+   (precedence below) or select a provider through the Settings
+   UI (which writes `active_id`).
+
+3. **Resolution order in `apps/dbboard::resolve_ai_provider`,
+   in precedence.** Mirrors the connection resolution chain
+   established by ADR-0013:
+
+   1. `DBBOARD_ANTHROPIC_API_KEY` (existing Stage 1 env var) —
+      when set and non-blank, constructs an ad-hoc Anthropic
+      provider using `DBBOARD_ANTHROPIC_MODEL` if set or the
+      crate default. **Highest precedence**, preserves Stage 1
+      back-compat verbatim — existing CI / scripted users see no
+      change.
+   2. `ai-providers.toml` `active_id` — when the env var is unset
+      and the TOML has a non-null `active_id`, the named entry is
+      resolved through `SecretStore` (looking up
+      `keyring_api_key_ref`) and constructed into the matching
+      concrete provider. The `model` field overrides the crate
+      default for that entry.
+   3. None — neither env var nor active TOML entry. The AI panel
+      stays hidden (graceful degradation = absence, ADR-0023
+      Decision 6 unchanged).
+
+   No silent fallback between providers. A configured-but-broken
+   `active_id` (missing keychain entry, malformed model, etc.)
+   logs to stderr and degrades to `None` — same posture as
+   Stage 1's "construction failure → log + None" path in
+   `resolve_ai_provider`.
+
+4. **`AiSettingsAdmin` use-case in `dbboard-config::ai_settings`.**
+   Mirrors `ConnectionAdmin` (ADR-0016) module-for-module:
+   - `entries() -> &[AiProviderEntry]` — read-only snapshot.
+   - `add(draft: AiProviderDraft) -> Result<&AiProviderEntry,
+     AiSettingsError>` — assigns / validates id, writes the API
+     key into the `SecretStore` under
+     `dbboard.ai.<id>.api_key`, appends the entry, calls
+     `save_atomic`.
+   - `update(id, edit_draft)` — preserves existing
+     `keyring_api_key_ref` unless the draft carries a new key
+     (mirrors `ConnectionEditDraft::SecretField` semantics: leave
+     unchanged / replace / clear).
+   - `delete(id)` — removes the entry, removes the matching
+     keychain entry via `SecretStore::delete` (best-effort —
+     surface a soft warning if the keychain delete fails but the
+     TOML write succeeded; identical to ADR-0016's posture for
+     orphaned secrets when a delete is interrupted), clears
+     `active_id` if it pointed at this entry.
+   - `set_active(id: Option<&str>)` — writes the `active_id` slot
+     and calls `save_atomic`. Passing `None` clears it (returns
+     to "no auto-select").
+
+   `AiSettingsError` is crate-local (`Parse` / `Io` /
+   `UnsupportedVersion` / `DuplicateId` / `UnknownActiveId` /
+   `Secret`), independent of `DbError` and `AiError` — these
+   errors happen at process startup or in UI handlers, never
+   reach the wire.
+
+5. **`AiProviderSwitcher` trait + `DesktopAiSwitcher` impl, mirroring
+   ADR-0020's `ConnectionSwitcher` precedent.** The trait lives in
+   `dbboard-server` next to `ConnectionSwitcher` (the worker
+   already takes one `Arc<dyn ConnectionSwitcher>` from
+   `apps/dbboard`; adding `Arc<dyn AiProviderSwitcher>` is a
+   symmetric expansion of the same wiring). One method:
+   `fn switch(&self, id: &str) -> Result<(), AiError>`. The
+   desktop impl resolves the entry through `AiSettingsAdmin`,
+   looks up the secret through `SecretStore::get`, constructs the
+   concrete provider (Stage 2: only `AnthropicProvider`), and
+   atomically swaps an `Arc<RwLock<Option<Arc<dyn AiProvider>>>>`
+   held in `DbboardApp`. A `NullAiSwitcher` (returns
+   `AiError::Configuration("no ai store available")`) covers the
+   headless / no-config-dir fallback, same shape as
+   `NullSwitcher`.
+
+   `DbboardApp` upgrades from `Option<Arc<dyn AiProvider>>` to
+   `Arc<RwLock<Option<Arc<dyn AiProvider>>>>` — a single new
+   indirection layer. The worker snapshots the current provider
+   once per request (same "snapshot at request start" rule as
+   ADR-0020 for `AppState`'s adapter slot), so an in-flight
+   `Command::AiExplain` completes against the provider it started
+   with even if the switcher fires mid-call. `has_ai_provider()`
+   becomes `read().is_some()`.
+
+6. **UI: new `AiSettingsView` in `dbboard-ui`, mirroring
+   `ConnectionsView` (ADR-0016).** Opens via a new menu entry
+   "AI > Settings" (Fluent key `ai-settings-window-title`,
+   localised across all 11 locales — ADR-0015 tier stability
+   maintained). Lists entries with id / name / kind / model /
+   active marker, with inline add / edit / delete forms. The
+   active provider is set by clicking a per-row "Use" button —
+   the same shape as the connections window's per-row "Connect"
+   button (ADR-0020). `AiSettingsView::take_pending_switch()`
+   mirrors `ConnectionsView::take_pending_connect()` and routes
+   into the worker as `Command::SwitchAiProvider { id }` →
+   `Reply::AiProviderSwitched { id }` / `Reply::AiProviderSwitchFailed
+   { reason }`. The AI panel's existing dropdown (currently a
+   single-provider stub) reflects the active id.
+
+7. **Keychain naming convention.** Following the
+   `dbboard.<connection-id>.token` pattern from ADR-0013, AI keys
+   land under `dbboard.ai.<provider-id>.api_key`. Service string
+   stays `KEYRING_SERVICE = "dbboard"` so a single OS-keychain
+   wipe still clears everything dbboard owns. The `ai.` infix
+   keeps connection secrets and AI secrets distinguishable in the
+   OS UI without needing a separate service string.
+
+8. **Per-provider `model` override semantics.** The TOML's `model`
+   field (optional, per entry) is the second-highest precedence
+   after `DBBOARD_ANTHROPIC_MODEL`. Combined with Decision 3:
+   when `DBBOARD_ANTHROPIC_API_KEY` is the active path, the model
+   resolves as env var → crate default (existing Stage 1
+   behaviour, unchanged). When the TOML path is active, the model
+   resolves as `entry.model` → crate default. This keeps the env
+   var path entirely independent of the TOML — explicit override
+   stays explicit. **`DBBOARD_ANTHROPIC_MODEL` does not bleed into
+   the TOML path** because it would couple two configuration
+   channels users would reasonably expect to be orthogonal.
+
+9. **Stage 2 deferrals re-confirmed (out of scope for this ADR,
+   queued for separate ADRs).** Streaming
+   (`AiProvider::streaming` accessor + chunked `Reply` variants).
+   Cancel button + in-flight token budget meter. Multi-provider
+   `kind` variants other than `anthropic` — the schema permits
+   them but no concrete impl ships in this ADR's slice; a
+   follow-up ADR per provider (`dbboard-openai`,
+   `dbboard-ollama`, …) lands the matching `kind` variant
+   additively. Conversation history (single-turn stays the Stage
+   1 / Stage 2 surface). AI calls in `history.jsonl` (still
+   blocked behind a v:2 schema bump — coordinates with web per
+   `0007-web-ai-phase6-no-contract-mirror`'s explicit guard).
+   Full DDL extraction (still needs a new
+   `DatabaseAdapter::dump_schema` method). Function-calling /
+   tool-use provider capability.
+
+10. **Cross-repo posture: no `0NNN-web-*` brief.** This ADR is
+    desktop-only — no contract change, no history schema change.
+    The desktop-side AI persistence file (`ai-providers.toml`) is
+    not part of any shared surface, and web's Phase 6
+    (NestJS-side) ships independently per
+    `0007-web-ai-phase6-no-contract-mirror`. Joins ADR-0013 /
+    ADR-0015 / ADR-0016 / ADR-0018 / ADR-0019 / ADR-0020 /
+    ADR-0021 / ADR-0022 / ADR-0023 / ADR-0024 in the desktop-only
+    category.
+
+### Alternatives considered
+
+- **Store AI providers inside `connections.toml` as a new
+  `[[ai_providers]]` table.** Rejected. ADR-0017 chose a separate
+  `history.jsonl` over a `[[history]]` table in `connections.toml`
+  for the same reason: mixing two concerns into one file forces
+  every read/write to touch both, and a corrupted AI provider
+  parse would block connection loading. Separate file with
+  separate version field is the precedent.
+
+- **One big `dbboard.toml` with three top-level sections
+  (connections, ai_providers, history-config).** Rejected for now —
+  see above. A single combined config file is a reasonable future
+  refactor *if* the three files start needing cross-cutting
+  invariants (which they do not today), but the cost of splitting
+  it later is small enough that we should not pre-pay it.
+
+- **Skip the file entirely; persist via the OS keychain only.**
+  Rejected. The keychain holds the *secret*; it does not hold
+  the *metadata* (name, kind, model, the user's list of
+  configured providers). Trying to encode all that into keychain
+  account strings would re-create the worst parts of registry
+  programming and would not survive a keychain wipe (the user
+  loses the metadata along with the secrets, instead of being
+  able to re-paste a key into a still-visible row).
+
+- **Hold the active provider as an env var (`DBBOARD_AI_ACTIVE_ID`)
+  instead of a TOML field.** Rejected. Env vars are session-scoped
+  (typically per-shell); a Settings UI choice that needed the
+  user to also export an env var to make it stick across reboots
+  is bad UX. The TOML `active_id` is the natural home — same
+  shape as `DBBOARD_CONNECTION`'s relationship to the
+  auto-select-single-entry path (ADR-0013).
+
+- **Mutate `apps/dbboard`'s `Option<Arc<dyn AiProvider>>` directly
+  without the `Arc<RwLock<...>>` wrapper, by recreating the
+  `DbboardApp` whenever the user switches.** Rejected. Recreation
+  would lose the existing AI panel state (drafted prompt, scroll
+  position, in-flight response), and the worker channel would
+  need to be torn down and rebuilt. The lock-wrapped slot is one
+  layer of indirection and matches ADR-0020's `AppState` adapter
+  swap exactly — proven pattern, no new shape.
+
+- **Allow `DBBOARD_ANTHROPIC_MODEL` to override the TOML's
+  `model` field.** Rejected (see Decision 8). Coupling the two
+  channels would make it impossible for a user to test "what
+  does the TOML entry actually do" without unsetting the env
+  var. Orthogonal channels keep the precedence table predictable.
+
+- **Ship a second concrete provider (`dbboard-openai`,
+  `dbboard-ollama`, …) in this ADR's slice to validate the
+  multi-provider surface end-to-end.** Deferred to a follow-up
+  ADR per provider. The TOML schema and switcher infrastructure
+  are multi-provider-ready (multiple entries with `kind =
+  "anthropic"` already exercise the active-id selection and
+  switcher round-trip); a second `kind` value is purely additive
+  and slots in without re-litigating any of the Stage 2 Group A
+  decisions. Same posture as ADR-0023 Decision 1: validate the
+  trait against one real implementation before locking the next
+  shape.
+
+- **Encrypt the API key in the TOML directly (passphrase /
+  hardware key) instead of routing it through the OS keychain.**
+  Rejected. The OS keychain is the right tool — see ADR-0013's
+  rejection of self-rolled secret encryption. Reusing the
+  existing `SecretStore` abstraction is the cheapest, safest
+  path and stays consistent with how connection secrets land.
+
+### Consequences
+
+- Workspace gains one new file (`ai-providers.toml`) and one new
+  module (`crates/dbboard-config/src/ai_settings.rs`). No new
+  crates. No new external dependencies — `dbboard-config`
+  already pulls in `toml` / `serde` / `directories` / `keyring`
+  via ADR-0013.
+- `dbboard-config`'s public API gains: `default_ai_providers_path`,
+  `AiProviderFile`, `AiProviderEntry`, `AiProviderKind`,
+  `AiProviderDraft`, `AiProviderEditDraft`, `AiSettingsAdmin`,
+  `AiSettingsError`. Re-exported from `lib.rs` next to the
+  ADR-0013 / ADR-0016 surfaces. The TOML schema is itself
+  versioned (`version = 1`) so future evolution is explicit.
+- `dbboard-server` gains an `AiProviderSwitcher` trait (~10 LOC,
+  one method) next to `ConnectionSwitcher`. The worker grows a
+  second switcher slot. Worker `Command` enum gains
+  `SwitchAiProvider { id }`; `Reply` gains
+  `AiProviderSwitched { id }` and `AiProviderSwitchFailed
+  { reason }`. The HTTP contract is **unchanged** — these are
+  in-process channel additions, not wire surface.
+- `apps/dbboard` gains: `DesktopAiSwitcher` (concrete impl),
+  `NullAiSwitcher` (headless fallback), `ai_provider_for_entry`
+  (the AI-provider analogue of `backend_config_for_entry`).
+  `DbboardApp::connect` takes
+  `Arc<RwLock<Option<Arc<dyn AiProvider>>>>` instead of
+  `Option<Arc<dyn AiProvider>>`. `resolve_ai_provider` keeps the
+  env-var path verbatim and adds the TOML-active-id fallback as
+  step 2 of the precedence chain.
+- `dbboard-ui` gains `AiSettingsView` (egui surface),
+  `take_pending_switch()`, Fluent keys for the panel labels in
+  all 11 locales (the per-locale add cost is ~6 strings —
+  `ai-settings-window-title` / `ai-settings-add` /
+  `ai-settings-edit` / `ai-settings-delete` / `ai-settings-use` /
+  `ai-settings-active-marker`). ADR-0015 tier stability is
+  maintained.
+- README and `docs/connections.md` (or a new `docs/ai.md` —
+  slicing decided in the implementation issue) document the
+  precedence chain, the keychain naming, and the migration path
+  from Stage 1 env-vars-only to Stage 2 TOML-backed.
+- HTTP contract unchanged. Per-record history JSON schema
+  unchanged. `dbboard-web` mirror not needed (this is the
+  follow-up to `0007-web-ai-phase6-no-contract-mirror` — the
+  no-mirror posture established there still holds; web's
+  Phase 6 implementation is independent of how desktop persists
+  its providers).
+- Roadmap: Phase 4 row's currently open box "Settings UI for
+  API key, provider choice" — annotated with the ADR-0025
+  reference and the issue 0008 link, ticks off when
+  implementation lands.
+- Implementation tracking: `.claude/issues/0008-ai-provider-settings-ui-and-persistence.md`
+  opens against this ADR. Slicing within issue 0008 is left to
+  the implementer — natural slices are (a) TOML schema +
+  `AiSettingsAdmin` + tests, (b) `AiProviderSwitcher` +
+  `DesktopAiSwitcher` + worker plumbing, (c) `AiSettingsView`
+  egui surface + Fluent keys + 11-locale translations, (d) README
+  + docs sweep. The Stage 1 implementation issue 0005 split into
+  two slices (a/b) across PRs #20/22/24 + #27; issue 0008 may
+  split similarly or land smaller — the ADR does not prescribe.
+- SemVer impact (ADR-0011): additive. New public types in
+  `dbboard-config`. New trait in `dbboard-server` (additive
+  worker channel variants — existing `Command` / `Reply`
+  consumers ignore unknown variants under the `serde` derive,
+  but for the in-process channel the variants are exhaustively
+  matched, so the worker code change is the additive surface,
+  not the serialization). `DbboardApp::connect` signature
+  changes — caught at compile time, the only caller is
+  `apps/dbboard::main`. No HTTP contract changes. No
+  `dbboard-core` changes.
+
