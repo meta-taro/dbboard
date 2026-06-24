@@ -5,32 +5,136 @@
 
 ## 最終更新
 
-- 日付: 2026-06-23 (PR #33 マージクローズ、cross-repo outbound
-  brief 2 本 — `0006-web-aurora-dsql-no-mirror.md` (ADR-0021 / web
-  ticket 0010 = 動作不要、Postgres adapter のまま) +
-  `0007-web-ai-phase6-no-contract-mirror.md` (ADR-0023 Stage 1 =
-  HTTP contract に降ろさない、web Phase 6 は独自実装で OK) —
-  desktop ship。explicit no-op brief パターン確立、web 側の 3 週間
-  ブロックを解放)
-- ブランチ: `develop` (= `359778a`)、ローカル
-  `chore/post-pr33-doc-sync` 作業中
-  (`feature/handoff-briefs-aurora-dsql-and-ai` は merge 済 /
+- 日付: 2026-06-24 (PR #35 マージクローズ、**Phase 4 Stage 2 Group A
+  ADR-0025** ship — `ai-providers.toml` + Settings UI +
+  multi-provider switcher の設計確定。ADR-0023 §9 で 8 件 deferral
+  していた Stage 2 残務を A/B/C/D の 4 グループに分割し、
+  Group A (永続化 + switcher) を本 ADR で着地。実装は新規 issue
+  `0008-ai-provider-settings-ui-and-persistence.md` で追跡。
+  docs/planning-only PR、Rust 触らず)
+- ブランチ: `develop` (= `f4126f1`)、ローカル
+  `chore/post-pr35-doc-sync` 作業中
+  (`feature/adr-phase-4-stage-2-planning` は merge 済 /
   origin 側 auto-delete 済 / local 削除は maintainer 判断保留)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  PR #33 は cross-repo coordination 整理であり Phase milestone
-  ではない。これで `dbboard-web` 側の "desktop 待ち" 旗が 2 つとも
-  下りる: (a) `0010` Aurora DSQL = web は既存 Postgres adapter
-  (web ticket 0004, web PR #9) で対応済、IAM token は
-  `@aws-sdk/dsql-signer` で web application 層、(b) Phase 6 AI =
-  `@anthropic-ai/sdk` で web 独自 NestJS module を組んでよい、
-  desktop の AiProvider trait は pattern reference として参照可。
-  Phase 4 Stage 2 (Settings UI / 永続化キー / streaming /
-  multi-provider switcher / DDL extraction / function-calling /
-  AI 履歴記録) は ADR-0023 §9 通り deferral 継続、次セッションは
-  新規 ADR + 新規 issue で開く想定。Phase 2 ADR-0024 at-rest
-  hardening (PR #25, 2026-06-22) もそのまま load-bearing。**
+  Phase 4 Stage 2 は Group A の設計のみ確定、実装は issue 0008
+  で別 PR(自然な分割は (a) インフラ + (b) UI の 2 スライス、issue
+  0005 が PR #20/22/24 + #27 で 2 分割した先例に倣う)。Stage 2
+  残り Group B (streaming + cancel + token meter)、Group C
+  (`history.jsonl` への AI 記録、v:2 schema bump、web 側 fresh
+  brief 必要)、Group D (full DDL extraction + function-calling) は
+  独立 ADR で順不同。Phase 2 ADR-0024 at-rest hardening + ADR-0023
+  Stage 1 + ADR-0025 設計の 3 本が現状 Stage 2 への足場として
+  load-bearing。**
 
-### PR #33 (cross-repo outbound briefs: 0006 Aurora DSQL no-mirror + 0007 AI Phase 6 no-contract-mirror) マージクローズ (本セッション / 2026-06-23)
+### PR #35 (ADR-0025 — Phase 4 Stage 2 Group A planning: `ai-providers.toml` + Settings UI + multi-provider switcher) マージクローズ (本セッション / 2026-06-24)
+
+- PR #35 (`feature/adr-phase-4-stage-2-planning` → `develop`)
+  マージ済 = `f4126f1`。ローカル `develop` は `origin/develop`
+  (= `f4126f1`) と fast-forward sync 済。
+- 本 chore (`chore/post-pr35-doc-sync`) は `develop` ベース、
+  本セッションで切り直し。PR #34 (post-PR33 chore) の連番続き。
+- 本 PR の scope: Phase 4 Stage 2 を開く設計 ADR。ADR-0023 §9 で
+  8 件 deferral していた残務を **A/B/C/D 4 グループ** に分割し、
+  Group A (Persistence + Switcher) の決定を確定させる。中身は
+  docs/planning only、Rust ソースは無変更。3 ファイル / +420 / −2:
+  - `docs/decisions.md` (+411) — ADR-0025 を ADR-0024 の後に追加。
+    13 個の Decision、7 件の Alternatives considered、Consequences
+    まで網羅。設計の柱:
+    1. **`ai-providers.toml`** (sibling to `connections.toml` /
+       `history.jsonl`、同じ `ProjectDirs` 配下、同じ
+       `secure_fs::create_new_user_only` で at-rest hardening =
+       `0o600` Unix / 継承 DACL Windows)。`version = 1`、
+       `active_id: Option<String>`、`[[providers]]` で
+       `id`/`name`/`kind`/`model`/`keyring_api_key_ref`。
+       `kind = "anthropic"` のみ Stage 2 で具象化、他は additive
+       variant で後続 ADR で追加(`ConnectionKind` の進化と同型)。
+    2. **解決順**: (1) `DBBOARD_ANTHROPIC_API_KEY` env var
+       (Stage 1 完全互換、最優先)→(2) TOML の `active_id` を
+       `SecretStore` 経由でロード → (3) `None`。
+       `DBBOARD_ANTHROPIC_MODEL` は env var パスのみに適用、
+       TOML 側 `entry.model` には漏らさない (channel 直交)。
+    3. **`AiSettingsAdmin`** use-case = `ConnectionAdmin` (ADR-0016)
+       と module-for-module 対称。add / update / delete / set_active、
+       `SecretField::{Unchanged, Replace, Clear}` semantics 完全踏襲。
+       keychain naming = `dbboard.ai.<id>.api_key`、service は
+       `dbboard` のまま (OS keychain 一括 wipe で AI と connection
+       両方クリア可)。
+    4. **`AiProviderSwitcher`** trait = ADR-0020 `ConnectionSwitcher`
+       precedent + ADR-0022 `set_language` precedent と同じ
+       「in-process mutate-while-running」面。`DesktopAiSwitcher` /
+       `NullAiSwitcher`、`DbboardApp` の `ai_provider` を
+       `Arc<RwLock<Option<Arc<dyn AiProvider>>>>` に拡張、worker は
+       request 開始時 1 回 snapshot (ADR-0020 と同じルール)。
+    5. **新規 worker channel variants**: `Command::SwitchAiProvider
+       { id }` / `Reply::AiProviderSwitched { id }` /
+       `Reply::AiProviderSwitchFailed { reason }`。**HTTP contract
+       は完全無変更** (Decision 3 of ADR-0023 を継続、AI は wire
+       に降りない)。
+    6. **`AiSettingsView`** egui surface = `ConnectionsView` 完全踏襲、
+       11 ロケール Fluent (ADR-0015 Tier 1+2 同期、ADR-0022
+       Consequences ルール)。新規 Fluent key 約 13 個。
+    7. **Stage 2 残り deferrals 再確認**: streaming + cancel + token
+       meter (Group B)、`history.jsonl` への AI 記録 (Group C、v:2
+       schema bump 必要、web 側 fresh brief なしには禁止 =
+       `0007-web-ai-phase6-no-contract-mirror` のガード継続)、full
+       DDL extraction + function-calling (Group D) は全て本 ADR
+       スコープ外、独立 ADR で順不同。
+    8. **Cross-repo posture: 送出ブリーフなし**。HTTP contract も
+       history schema も無変更、web Phase 6 は `0007` brief で既に
+       独立進行に切ってあるため。今後 wire-level な驚きが出たら
+       fresh `0NNN-web-*` brief を出す方針。
+  - `.claude/issues/0008-ai-provider-settings-ui-and-persistence.md`
+    (+302、新規) — ADR-0025 の実装トラッカー。受入は crate 単位で
+    整理 (dbboard-config / dbboard-server / apps/dbboard /
+    dbboard-ui / docs)。**自然な分割は (a) インフラ + (b) UI の 2
+    スライス、issue 0005 が PR #20/22/24 + #27 で実質 2 分割した
+    先例に倣う**。シングル PR 着地でも可、ADR は強制しない。
+    out-of-scope セクションで Stage 2 残り (Groups B/C/D) を再確認、
+    `history.jsonl` v:2 ガードも明示。
+  - `docs/roadmap.md` (+8/-2) — Phase 4 行 L261 "Settings UI for
+    API key, provider choice" に ADR-0025 + issue 0008 アンカーを
+    付与、env-var パスが最優先で残ることも併記。
+- SemVer (ADR-0011): **additive**。`dbboard-config` に新規 public
+  types、`dbboard-server` に新規 trait + 新規 worker channel
+  variants、`DbboardApp::connect` シグネチャ変更 (compile-time
+  catch、呼び出し元は `apps/dbboard::main` のみ)。**HTTP contract
+  変更ゼロ**、`dbboard-core` 変更ゼロ。
+- なぜ Group A を最初に取ったか: ADR-0023 Decision 5 が
+  `ai-providers.toml` + `SecretStore` + Settings UI を **明示的に
+  preview** している唯一の Stage 2 グループ。ADR-0013 (`SecretStore`)
+  + ADR-0016 (`ConnectionAdmin`) + ADR-0020 (in-process swap) +
+  ADR-0022 (runtime switcher) + ADR-0024 (`secure_fs`) の 5 本を
+  そのまま再利用するだけで設計が立つ = 「既存基盤の自然な拡張」。
+  cross-repo 影響もゼロで独立に進められる。
+- 検証 (docs-only PR、hooks は通常通り全 run):
+  - `cargo fmt --all -- --check` clean (Rust 変更なし)
+  - `cargo clippy --all-targets --all-features -- -D warnings` clean
+  - `cargo check --all-targets --all-features` clean
+  - `cargo test --all-features` 全 pass
+  - pre-commit hook (cargo-husky) green
+  - issue 0008 の Markdown ファイルに CRLF warning が出たが、
+    commit に入ったバイトは LF only (Write tool が `newline='\n'`
+    で書込済) — 無害
+- 次セッション以降の運用 / 候補:
+  - issue 0008 slice (a) **infra** = `dbboard-config` の TOML
+    schema + `AiSettingsAdmin` + `dbboard-server` の switcher
+    trait + 新規 worker variants + `apps/dbboard` の
+    `DesktopAiSwitcher` + 解決チェーン + tests。
+    UI は触らず、env-var パスは無変更、integration test で
+    end-to-end 検証可能。
+  - issue 0008 slice (b) **UI** = `AiSettingsView` egui + 11
+    locale Fluent + メニュー配線 + docs sweep。slice (a) と
+    完全独立に作れる (channel variants が既に additive で
+    実装済の前提)。
+  - Stage 2 Group B / C / D の ADR はそれぞれ独立して任意の
+    順で立てられる。Group C (history v:2) は **web 側 fresh
+    brief 必須** の点に注意。
+  - `/views` / `/functions` per-capability endpoints (ADR-0012
+    promise) は依然「次の `feat(contract)` 候補」、これは web 側
+    handoff brief が必要になる本物の coordination。
+
+### PR #33 (cross-repo outbound briefs: 0006 Aurora DSQL no-mirror + 0007 AI Phase 6 no-contract-mirror) マージクローズ (前セッション / 2026-06-23)
 
 - PR #33 (`feature/handoff-briefs-aurora-dsql-and-ai` → `develop`)
   マージ済 = `359778a`。ローカル `develop` は
