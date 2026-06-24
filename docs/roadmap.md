@@ -258,8 +258,12 @@ work without it. Trait + first-provider shape locked in
       (`list_tables` result; full DDL extraction deferred) — slice (b)
       of issue 0005: `Command::AiSuggest { prompt, dialect, schema }`
       carries the current `Vec<TableInfo>` to `AiProvider::suggest_sql`.
-- [ ] Settings UI for API key, provider choice — _Stage 2 ADR;
-      env var `DBBOARD_ANTHROPIC_API_KEY` covers Stage 1 (PR #24)_
+- [ ] Settings UI for API key, provider choice — _Stage 2 Group A,
+      planned in ADR-0025 (`ai-providers.toml` + multi-provider
+      switcher + Settings UI). Implementation tracked in
+      [`.claude/issues/0008-ai-provider-settings-ui-and-persistence.md`](../.claude/issues/0008-ai-provider-settings-ui-and-persistence.md).
+      Env var `DBBOARD_ANTHROPIC_API_KEY` keeps working as the
+      highest-precedence resolution path (Stage 1 / PR #24)._
 - [x] Graceful degradation when no provider configured (ADR-0023
       Decision 11): `has_ai_provider()` gates both the menu entry
       and the panel; with no key set, neither renders. Defence-in-depth
