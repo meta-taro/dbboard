@@ -5,29 +5,158 @@
 
 ## 最終更新
 
-- 日付: 2026-06-24 (PR #35 マージクローズ、**Phase 4 Stage 2 Group A
-  ADR-0025** ship — `ai-providers.toml` + Settings UI +
-  multi-provider switcher の設計確定。ADR-0023 §9 で 8 件 deferral
-  していた Stage 2 残務を A/B/C/D の 4 グループに分割し、
-  Group A (永続化 + switcher) を本 ADR で着地。実装は新規 issue
-  `0008-ai-provider-settings-ui-and-persistence.md` で追跡。
-  docs/planning-only PR、Rust 触らず)
-- ブランチ: `develop` (= `f4126f1`)、ローカル
-  `chore/post-pr35-doc-sync` 作業中
-  (`feature/adr-phase-4-stage-2-planning` は merge 済 /
+- 日付: 2026-06-25 (PR #37 マージクローズ、**ADR-0025 Phase 4
+  Stage 2 Group A 実装 slice a-1** ship — `dbboard-config` 層の
+  `ai-providers.toml` 永続化 (`AiProviderFile` / `AiProviderEntry`
+  / `AiProviderKind::Anthropic`) + `AiSettingsAdmin` use-case +
+  `secure_fs` ベースのアットレストハードニング + キーリング
+  ネームスペース `dbboard.ai.<id>.api_key` を着地。issue 0008
+  を maintainer 確認のもとで 3 スライスに分割し、本 PR は最初の
+  config 層のみ。+1519 / −6、3 ファイル、35 新規ユニットテスト
+  追加 = dbboard-config 単体で 73 → 108、ワークスペース全体で
+  448 件 pass。HTTP contract 完全無変更、web side 影響ゼロ)
+- ブランチ: `develop` (= `e72ebb5`)、ローカル
+  `chore/post-pr37-doc-sync` 作業中
+  (`feature/ai-settings-config-layer` は merge 済 /
   origin 側 auto-delete 済 / local 削除は maintainer 判断保留)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  Phase 4 Stage 2 は Group A の設計のみ確定、実装は issue 0008
-  で別 PR(自然な分割は (a) インフラ + (b) UI の 2 スライス、issue
-  0005 が PR #20/22/24 + #27 で 2 分割した先例に倣う)。Stage 2
-  残り Group B (streaming + cancel + token meter)、Group C
+  Phase 4 Stage 2 Group A は slice a-1 (config 層) が landed、残り
+  は slice a-2 (`dbboard-server` の `AiProviderSwitcher` trait +
+  `Command::SwitchAiProvider` worker variants + `apps/dbboard` の
+  `DesktopAiSwitcher` + 解決チェーン拡張 + integration tests) と
+  slice b (`dbboard-ui` `AiSettingsView` egui + 11 ロケール
+  Fluent + メニュー配線 + docs sweep) の 2 本が次セッション候補。
+  Stage 2 残り Group B (streaming + cancel + token meter)、Group C
   (`history.jsonl` への AI 記録、v:2 schema bump、web 側 fresh
   brief 必要)、Group D (full DDL extraction + function-calling) は
   独立 ADR で順不同。Phase 2 ADR-0024 at-rest hardening + ADR-0023
-  Stage 1 + ADR-0025 設計の 3 本が現状 Stage 2 への足場として
-  load-bearing。**
+  Stage 1 + ADR-0025 設計 + slice a-1 実装の 4 本が現状 Stage 2
+  への足場として load-bearing。**
 
-### PR #35 (ADR-0025 — Phase 4 Stage 2 Group A planning: `ai-providers.toml` + Settings UI + multi-provider switcher) マージクローズ (本セッション / 2026-06-24)
+### PR #37 (ADR-0025 Phase 4 Stage 2 Group A — slice a-1 / `dbboard-config` 層: `ai-providers.toml` schema + `AiSettingsAdmin`) マージクローズ (本セッション / 2026-06-25)
+
+- PR #37 (`feature/ai-settings-config-layer` → `develop`) マージ済
+  = `e72ebb5` (mergedAt 2026-06-25T05:03:12Z = JST 14:03)。
+  ローカル `develop` は `origin/develop` (= `e72ebb5`) と
+  fast-forward sync 済。
+- 本 chore (`chore/post-pr37-doc-sync`) は `develop` ベース、
+  本セッションで切り直し。PR #36 (post-PR35 chore) の連番続き。
+- 本 PR の scope: ADR-0025 (PR #35) で設計が確定した Phase 4 Stage 2
+  Group A の **最初の実装スライス**。issue 0008 が当初 (a) インフラ
+  + (b) UI の 2 分割を想定していたが、maintainer 確認の上で
+  **slice (a) を更に a-1 (config 層) と a-2 (server 層 + apps
+  wiring) に分割** = 本 PR が reviewable サイズに収まるように。
+  3 ファイル / +1519 / −6、Rust ソースのみ:
+  - `crates/dbboard-config/src/ai_store.rs` (+663、新規) — Stage 2
+    の on-disk 表現。`store.rs` (connections) と module-for-module
+    対称。**`AI_CONFIG_VERSION: u32 = 1`** 公開、`AiProviderFile {
+    version, active_id: Option<String>, providers: Vec<AiProviderEntry>
+    }`、`AiProviderEntry { id, name, #[serde(flatten)] kind }`、
+    `AiProviderKind` は `#[serde(tag = "kind", rename_all =
+    "snake_case")]` で `Anthropic { model: Option<String>,
+    keyring_api_key_ref: String }` の 1 variant のみを Stage 2 で
+    具象化 (`ConnectionKind` の進化と同型、追加 variant は additive
+    で後続 ADR が乗せる)。`parse()` で **schema version 検証 + id
+    一意性検証 + `active_id` が存在する entry を指していることの
+    検証** を行う = TOML 段階で dangling pointer を弾く。
+    `default_ai_providers_path()` は `connections.toml` と同じ
+    `directories::ProjectDirs::from("dev", "dbboard", "dbboard")`
+    解決で `<config_dir>/ai-providers.toml`。`load_or_empty` /
+    `save_atomic` は **`secure_fs::create_new_user_only` (ADR-0024)
+    を再利用** = Unix `0o600` / Windows 継承 DACL のままで at-rest
+    posture が `connections.toml` / `history.jsonl` と完全同一。
+    `AiSettingsError` は `DbError` / `AiError` から独立 = process
+    startup or in-process Settings UI 操作の境界で起きるので
+    **HTTP 封筒 (`{category, message}`) には絶対に降りない**。
+  - `crates/dbboard-config/src/ai_settings.rs` (+832、新規) —
+    `admin.rs` (connections) と module-for-module 対称な use-case
+    層。`AiSettingsAdmin { path, secrets: Arc<dyn SecretStore>,
+    file: AiProviderFile }` 構造体、`open()` で TOML をロード or
+    空ファイルから出発、`add` / `update` / `delete` / `set_active`
+    の 4 mutator。**TOML と keyring の commit discipline は
+    `ConnectionAdmin` の precedent を完全踏襲**:
+    - `add`: keyring 先書き → TOML save → 失敗時 keyring 巻き戻し
+    - `update`: 旧 secret 読み出し → keyring 上書き → TOML save →
+      失敗時 keyring を旧値に restore
+    - `delete`: TOML save 先行 → ベストエフォートで keyring purge
+    - 「**`active_id` が指している entry を delete したら同じ TOML
+      write 内で `active_id` を None にクリア**」 = 次回 load 時の
+      schema 検証で reject される dangling pointer を未然に防ぐ
+    - kind change は update で reject (delete + add で migrate を
+      強制) = `Anthropic` ↔ 将来 variant の偶発的なフィールド
+      meaning shift を防ぐ
+    - `set_active` は TOML-only、unknown id は reject
+    `AiProviderDraft` / `AiProviderEditDraft` + `SecretField::{Keep,
+    Set(String)}` パターンは既存 `ConnectionDraft` 等と同一語彙。
+    本 PR では既存の `SecretField` enum (`Keep` / `Set`) を再利用
+    した = ADR-0025 では `Unchanged / Replace / Clear` 3-variant
+    として preview されていたが、AI provider に API key なしの状態は
+    機能的に意味がないため `Clear` の実需要は今のところなし。
+    後続 PR で必要になったら additive に拡張。
+  - `crates/dbboard-config/src/lib.rs` (+24 / −6) — 2 つの新規
+    module の `pub mod` 宣言 + re-export 一式
+    (`AiProviderDraft` / `AiProviderEditDraft` / `AiProviderKindDraft`
+    / `AiProviderKindEditDraft` / `AiSettingsAdmin` /
+    `default_ai_providers_path` / `AiProviderEntry` / `AiProviderFile`
+    / `AiProviderKind` / `AiSettingsError` / `AI_CONFIG_VERSION`)。
+    crate doc-comment も更新、ADR-0025 を新たに参照し
+    `[ai_store]` / `[ai_settings]` / `[secrets]` の役割分担と
+    keyring namespace (`dbboard.ai.<id>.api_key` ≠
+    `dbboard.<id>.<field>`) を明記。
+- **keychain naming = `dbboard.ai.<id>.api_key`**: service は
+  `dbboard` のまま (OS keychain 一括 wipe で AI と connection
+  両方クリア可、ADR-0025 Decision 3 の方針通り)。`ai.` infix で
+  connection namespace と完全衝突回避。専用テスト
+  `keyring_namespace_does_not_collide_with_the_connection_namespace`
+  でピン留め。
+- ADR-0025 設計と本 PR の対応関係:
+  - Decision 1 (`ai-providers.toml` schema) = **着地済**
+    (`ai_store.rs`)
+  - Decision 2 (resolve chain env > TOML > None) = **後回し**
+    (slice a-2 で `dbboard-server` 側の resolve に組み込む)
+  - Decision 3 (`AiSettingsAdmin` use-case) = **着地済**
+    (`ai_settings.rs`)
+  - Decision 4 (`AiProviderSwitcher` trait) = **後回し** (slice a-2)
+  - Decision 5 (worker `Command::SwitchAiProvider` / `Reply::*`
+    variants) = **後回し** (slice a-2)
+  - Decision 6 (`AiSettingsView` egui + Fluent) = **後回し**
+    (slice b)
+- 検証:
+  - `cargo fmt --all -- --check` clean
+  - `cargo clippy --all-targets --all-features -- -D warnings` clean
+  - `cargo check --all-targets --all-features` clean
+  - `cargo test --all-features` = **448 件 pass / 0 failed**
+    (dbboard-config 単体 73 → 108、新規 35 件)
+  - pre-commit hook (cargo-husky) green
+  - pre-push hook (release build + release test) green
+  - CI green on develop PR build
+- SemVer (ADR-0011): **additive**。`dbboard-config` に新規 public
+  types のみ、既存シグネチャ無変更。`dbboard-core` 無変更、
+  HTTP contract 無変更、`history.jsonl` schema 無変更、
+  cross-repo brief なし (ADR-0025 と同様、desktop-only)。
+- 次セッション以降の運用 / 候補:
+  - **issue 0008 slice a-2** = `dbboard-server` に
+    `AiProviderSwitcher` trait + 解決チェーン拡張
+    (`DBBOARD_ANTHROPIC_API_KEY` env var → `ai-providers.toml`
+    `active_id` → `None` の 3 段) + 新規 worker variants 追加 +
+    `apps/dbboard` 側 `DesktopAiSwitcher` 実装 + integration tests
+    (`tempfile::tempdir` で本物の TOML + `InMemorySecretStore`
+    で end-to-end)。UI は触らず env-var パスは無変更なので
+    Stage 1 (PR #24) との backward compat は維持できる。
+  - **issue 0008 slice b** = `dbboard-ui` `AiSettingsView` egui +
+    11 ロケール Fluent (ADR-0015 Tier 1+2 + ADR-0022 Consequences
+    のルール、新規 key ~13 個) + メニュー配線 + README / docs
+    sweep。slice a-2 が channel variants と switcher trait を
+    additive に landing 済み前提で独立に作れる。
+  - Stage 2 Group B / C / D の ADR はそれぞれ独立して任意の
+    順で立てられる。Group C (history v:2) は **web 側 fresh
+    brief 必須** の点に注意 (`0007-web-ai-phase6-no-contract-mirror`
+    の §"NOT" で明示)。
+  - `/views` / `/functions` per-capability endpoints (ADR-0012
+    promise) は依然「次の `feat(contract)` 候補」、これは web 側
+    handoff brief が必要になる本物の coordination。
+
+### PR #35 (ADR-0025 — Phase 4 Stage 2 Group A planning: `ai-providers.toml` + Settings UI + multi-provider switcher) マージクローズ (前セッション / 2026-06-24)
 
 - PR #35 (`feature/adr-phase-4-stage-2-planning` → `develop`)
   マージ済 = `f4126f1`。ローカル `develop` は `origin/develop`
