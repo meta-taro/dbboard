@@ -59,6 +59,9 @@ pub(crate) fn request_for(command: &Command) -> HttpRequest {
         Command::AiExplain { .. } | Command::AiSuggest { .. } => {
             unreachable!("AI commands are routed to the provider before request_for")
         }
+        Command::SwitchAiProvider { .. } => {
+            unreachable!("SwitchAiProvider is handled by AiProviderSwitcher before request_for")
+        }
     }
 }
 

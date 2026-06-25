@@ -33,7 +33,7 @@ pub use history::{
 // from production code.
 #[doc(hidden)]
 pub use history::fixture;
-pub use worker::ConnectionSwitcher;
+pub use worker::{AiProviderSwitcher, ConnectionSwitcher};
 // Re-export so the desktop binary can implement [`ConnectionSwitcher`]
 // (return type `Result<(), DbError>`) without taking a direct dep on
 // `dbboard-core` — the architecture rule is that only the server and
@@ -77,6 +77,12 @@ pub enum Command {
         dialect: Option<String>,
         schema: Vec<TableInfo>,
     },
+    /// Swap the active AI provider to the entry named `id` from
+    /// `ai-providers.toml` (ADR-0025). In-process, not HTTP — the swap
+    /// is delegated to an injected [`worker::AiProviderSwitcher`]
+    /// supplied by the binary. Surfaces as `Reply::AiProviderSwitched`
+    /// or `Reply::AiProviderSwitchFailed`.
+    SwitchAiProvider { id: String },
 }
 
 /// Result flowing worker → UI.
@@ -110,6 +116,19 @@ pub enum Reply {
     /// the HTTP `DbError` taxonomy (ADR-0023 Decision 8).
     AiFailed {
         error: AiError,
+    },
+    /// AI provider swap succeeded (ADR-0025). The Settings UI (slice b)
+    /// uses this to update the active-row marker and dismiss any prior
+    /// switch error.
+    AiProviderSwitched {
+        id: String,
+    },
+    /// AI provider swap failed (ADR-0025). `reason` carries the
+    /// `AiError::Display` text so the panel can show it inline without
+    /// re-translating the AI taxonomy through `DbError`. The previous
+    /// provider (if any) remains live; the swap is atomic.
+    AiProviderSwitchFailed {
+        reason: String,
     },
 }
 
@@ -185,10 +204,22 @@ impl DbboardApp {
     /// [`AppState`](dbboard_server::AppState), the connection store,
     /// and a runtime handle.
     ///
+    /// `ai_switcher` is the in-process bridge the worker calls when a
+    /// `SwitchAiProvider` command arrives (ADR-0025). The desktop
+    /// binary supplies a `DesktopAiSwitcher` that owns the
+    /// `AiSettingsAdmin` and the active-provider slot; tests pass a
+    /// stub.
+    ///
     /// `ai_provider` is the optional AI integration (ADR-0023). `Some`
     /// when the binary successfully constructed one from env vars;
     /// `None` otherwise. The Stage 2 AI panel reads this through
     /// [`Self::has_ai_provider`].
+    // Arg count grows by one with each in-process switcher we wire
+    // through the worker (ADR-0020 ConnectionSwitcher, ADR-0025
+    // AiProviderSwitcher). A struct-builder refactor is queued for
+    // slice (b) of issue 0008 when the AI panel adds yet another
+    // handle; until then, allowing here keeps the slice focused.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn connect(
         base_url: String,
@@ -197,6 +228,7 @@ impl DbboardApp {
         conn_label: String,
         now_rfc3339: RfcClock,
         switcher: Arc<dyn ConnectionSwitcher>,
+        ai_switcher: Arc<dyn AiProviderSwitcher>,
         ai_provider: Option<Arc<dyn AiProvider>>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -207,6 +239,7 @@ impl DbboardApp {
             reply_tx,
             egui_ctx,
             switcher,
+            ai_switcher,
             ai_provider.clone(),
         );
         Self::new(
@@ -306,6 +339,14 @@ impl DbboardApp {
                 Reply::AiFailed { error } => {
                     self.ai_panel.on_error(&error);
                 }
+                // ADR-0025: AI provider swap outcomes. The Settings UI
+                // that consumes these lands in slice (b) of issue 0008;
+                // for now we absorb the replies so the worker channel
+                // stays drained and the dispatch match remains
+                // exhaustive. No state on `DbboardApp` is updated here
+                // — the panel will read switch state directly off the
+                // `AiSettingsAdmin` it owns once it ships.
+                Reply::AiProviderSwitched { .. } | Reply::AiProviderSwitchFailed { .. } => {}
             }
         }
     }

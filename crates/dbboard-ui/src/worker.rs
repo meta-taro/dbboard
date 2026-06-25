@@ -54,6 +54,36 @@ pub trait ConnectionSwitcher: Send + Sync + 'static {
     fn switch(&self, id: &str) -> Result<(), DbError>;
 }
 
+/// Bridge from a `Command::SwitchAiProvider { id }` to the actual swap
+/// (ADR-0025). Symmetric with [`ConnectionSwitcher`] but ai-specific:
+/// the swap targets the active `AiProvider` slot the binary owns rather
+/// than the DB adapter slot. Failures surface as `AiError` because the
+/// AI taxonomy is independent of `DbError` (ADR-0023 Decision 8).
+///
+/// The trait stays narrow on purpose. Given an `id` from
+/// `ai-providers.toml`, the implementation:
+///
+/// * resolves the entry (returning `AiError::Configuration` when the id
+///   is unknown);
+/// * fetches the api key from the [`SecretStore`](dbboard_config::SecretStore)
+///   (returning `AiError::Configuration` on miss);
+/// * constructs the concrete provider (e.g. `AnthropicProvider`);
+/// * swaps the live slot atomically.
+///
+/// The previous provider (if any) stays live when any step fails.
+pub trait AiProviderSwitcher: Send + Sync + 'static {
+    /// Swap the live AI provider to the entry named `id` from
+    /// `ai-providers.toml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AiError`] when the id is unknown, the api key
+    /// lookup fails, or the new provider cannot be constructed. Like
+    /// [`ConnectionSwitcher::switch`] the swap is atomic — on error the
+    /// previous provider remains live.
+    fn switch(&self, id: &str) -> Result<(), AiError>;
+}
+
 /// Spawn the worker thread. `base_url` is the loopback server root the
 /// binary just started (e.g. `http://127.0.0.1:54123`). `switcher` is
 /// the in-process bridge used to handle `SwitchConnection` commands.
@@ -68,6 +98,7 @@ pub(crate) fn spawn_worker(
     reply_tx: Sender<Reply>,
     egui_ctx: egui::Context,
     switcher: Arc<dyn ConnectionSwitcher>,
+    ai_switcher: Arc<dyn AiProviderSwitcher>,
     ai_provider: Option<Arc<dyn AiProvider>>,
 ) {
     thread::Builder::new()
@@ -79,6 +110,7 @@ pub(crate) fn spawn_worker(
                 &reply_tx,
                 &egui_ctx,
                 switcher.as_ref(),
+                ai_switcher.as_ref(),
                 ai_provider.as_deref(),
             );
         })
@@ -91,6 +123,7 @@ fn run_worker(
     reply_tx: &Sender<Reply>,
     egui_ctx: &egui::Context,
     switcher: &dyn ConnectionSwitcher,
+    ai_switcher: &dyn AiProviderSwitcher,
     ai_provider: Option<&dyn AiProvider>,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -120,7 +153,14 @@ fn run_worker(
     };
 
     while let Ok(cmd) = cmd_rx.recv() {
-        let reply = rt.block_on(dispatch(cmd, &http, base_url, switcher, ai_provider));
+        let reply = rt.block_on(dispatch(
+            cmd,
+            &http,
+            base_url,
+            switcher,
+            ai_switcher,
+            ai_provider,
+        ));
         if reply_tx.send(reply).is_err() {
             break; // UI side hung up — nothing left to answer.
         }
@@ -138,6 +178,7 @@ pub(crate) async fn dispatch(
     http: &reqwest::Client,
     base_url: &str,
     switcher: &dyn ConnectionSwitcher,
+    ai_switcher: &dyn AiProviderSwitcher,
     ai_provider: Option<&dyn AiProvider>,
 ) -> Reply {
     match cmd {
@@ -145,6 +186,16 @@ pub(crate) async fn dispatch(
         Command::SwitchConnection { id } => match switcher.switch(&id) {
             Ok(()) => Reply::ConnectionSwitched { id },
             Err(error) => Reply::SwitchFailed { id, error },
+        },
+        // ADR-0025: SwitchAiProvider is also in-process. The switcher
+        // owns the live `AiProvider` slot the dispatch arms read from
+        // via `ai_provider`; the next dispatch tick will see the new
+        // slot value transparently.
+        Command::SwitchAiProvider { id } => match ai_switcher.switch(&id) {
+            Ok(()) => Reply::AiProviderSwitched { id },
+            Err(error) => Reply::AiProviderSwitchFailed {
+                reason: error.to_string(),
+            },
         },
         // ADR-0023: AI commands route to the injected provider. With no
         // provider the panel is hidden, but defence-in-depth: surface a
@@ -271,6 +322,12 @@ fn report_fatal(
             Command::AiExplain { .. } | Command::AiSuggest { .. } => Reply::AiFailed {
                 error: AiError::Configuration(format!("ai worker unavailable: {}", err.message())),
             },
+            // Same shape for the AI swap: the worker never built its
+            // runtime, so any pending `SwitchAiProvider` fails fast
+            // with the underlying transport error preserved.
+            Command::SwitchAiProvider { .. } => Reply::AiProviderSwitchFailed {
+                reason: format!("ai worker unavailable: {}", err.message()),
+            },
         };
         if reply_tx.send(reply).is_err() {
             break;
@@ -281,13 +338,16 @@ fn report_fatal(
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, ConnectionSwitcher};
+    use super::{dispatch, AiProviderSwitcher, ConnectionSwitcher};
     use crate::{Command, Reply};
     use dbboard_ai::{
         AiCapabilities, AiError, AiProvider, AiResponse, AiResult, ExplainRequest, SuggestRequest,
     };
     use dbboard_core::DbError;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     /// Switcher stub that never gets called — AI tests do not exercise
     /// the switch path, but the dispatch fn requires a `&dyn` argument
@@ -296,6 +356,43 @@ mod tests {
     impl ConnectionSwitcher for UnusedSwitcher {
         fn switch(&self, _id: &str) -> Result<(), DbError> {
             unreachable!("dispatch test must not exercise SwitchConnection here")
+        }
+    }
+
+    /// Mirror of [`UnusedSwitcher`] for the AI swap path — most
+    /// dispatch tests do not exercise it but the fn signature requires
+    /// a `&dyn AiProviderSwitcher`.
+    struct UnusedAiSwitcher;
+    impl AiProviderSwitcher for UnusedAiSwitcher {
+        fn switch(&self, _id: &str) -> Result<(), AiError> {
+            unreachable!("dispatch test must not exercise SwitchAiProvider here")
+        }
+    }
+
+    /// Capturing stub: records the last id `switch` was called with and
+    /// returns the configured outcome. Used by the `SwitchAiProvider`
+    /// dispatch tests.
+    struct StubAiSwitcher {
+        outcome: AiSwitchOutcome,
+        calls: AtomicUsize,
+    }
+    enum AiSwitchOutcome {
+        Ok,
+        Err(AiError),
+    }
+    impl AiProviderSwitcher for StubAiSwitcher {
+        fn switch(&self, _id: &str) -> Result<(), AiError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match &self.outcome {
+                AiSwitchOutcome::Ok => Ok(()),
+                AiSwitchOutcome::Err(e) => Err(match e {
+                    AiError::Configuration(s) => AiError::Configuration(s.clone()),
+                    AiError::Network(s) => AiError::Network(s.clone()),
+                    AiError::Provider(s) => AiError::Provider(s.clone()),
+                    AiError::Quota(s) => AiError::Quota(s.clone()),
+                    AiError::Cancelled => AiError::Cancelled,
+                }),
+            }
         }
     }
 
@@ -372,6 +469,7 @@ mod tests {
             },
         });
         let switcher = UnusedSwitcher;
+        let ai_switcher = UnusedAiSwitcher;
         let http = http_client();
         let reply = dispatch(
             Command::AiExplain {
@@ -381,6 +479,7 @@ mod tests {
             &http,
             "http://127.0.0.1:1",
             &switcher,
+            &ai_switcher,
             Some(provider.as_ref()),
         )
         .await;
@@ -408,6 +507,7 @@ mod tests {
             },
         });
         let switcher = UnusedSwitcher;
+        let ai_switcher = UnusedAiSwitcher;
         let http = http_client();
         let reply = dispatch(
             Command::AiSuggest {
@@ -418,6 +518,7 @@ mod tests {
             &http,
             "http://127.0.0.1:1",
             &switcher,
+            &ai_switcher,
             Some(provider.as_ref()),
         )
         .await;
@@ -433,6 +534,7 @@ mod tests {
             kind: StubOutcome::Err(AiError::Provider("rate_limit".into())),
         });
         let switcher = UnusedSwitcher;
+        let ai_switcher = UnusedAiSwitcher;
         let http = http_client();
         let reply = dispatch(
             Command::AiExplain {
@@ -442,6 +544,7 @@ mod tests {
             &http,
             "http://127.0.0.1:1",
             &switcher,
+            &ai_switcher,
             Some(provider.as_ref()),
         )
         .await;
@@ -456,6 +559,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_ai_command_without_provider_yields_configuration_failure() {
         let switcher = UnusedSwitcher;
+        let ai_switcher = UnusedAiSwitcher;
         let http = http_client();
         let reply = dispatch(
             Command::AiExplain {
@@ -465,6 +569,7 @@ mod tests {
             &http,
             "http://127.0.0.1:1",
             &switcher,
+            &ai_switcher,
             None,
         )
         .await;
@@ -492,6 +597,7 @@ mod tests {
             }
         }
         let switcher = OkSwitcher;
+        let ai_switcher = UnusedAiSwitcher;
         let http = http_client();
         let reply = dispatch(
             Command::SwitchConnection {
@@ -500,9 +606,97 @@ mod tests {
             &http,
             "http://127.0.0.1:1",
             &switcher,
+            &ai_switcher,
             None,
         )
         .await;
         assert!(matches!(reply, Reply::ConnectionSwitched { id } if id == "prod-pg"));
+    }
+
+    // --- ADR-0025: SwitchAiProvider dispatch tests ----------------------
+
+    #[tokio::test]
+    async fn dispatch_switch_ai_provider_returns_switched_on_success() {
+        let switcher = UnusedSwitcher;
+        let ai_switcher = StubAiSwitcher {
+            outcome: AiSwitchOutcome::Ok,
+            calls: AtomicUsize::new(0),
+        };
+        let http = http_client();
+        let reply = dispatch(
+            Command::SwitchAiProvider {
+                id: "anthropic-prod".into(),
+            },
+            &http,
+            "http://127.0.0.1:1",
+            &switcher,
+            &ai_switcher,
+            None,
+        )
+        .await;
+        assert_eq!(
+            ai_switcher.calls.load(Ordering::SeqCst),
+            1,
+            "switcher must be called exactly once"
+        );
+        assert!(matches!(reply, Reply::AiProviderSwitched { id } if id == "anthropic-prod"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_switch_ai_provider_returns_switch_failed_on_error() {
+        let switcher = UnusedSwitcher;
+        let ai_switcher = StubAiSwitcher {
+            outcome: AiSwitchOutcome::Err(AiError::Configuration("unknown id".into())),
+            calls: AtomicUsize::new(0),
+        };
+        let http = http_client();
+        let reply = dispatch(
+            Command::SwitchAiProvider {
+                id: "missing".into(),
+            },
+            &http,
+            "http://127.0.0.1:1",
+            &switcher,
+            &ai_switcher,
+            None,
+        )
+        .await;
+        match reply {
+            // Reason is the AiError::Display text — not the raw enum
+            // variant — because the AI taxonomy is not exposed on this
+            // reply (ADR-0023 Decision 8 keeps AiError out of the
+            // cross-channel UI message types).
+            Reply::AiProviderSwitchFailed { reason } => {
+                assert!(
+                    reason.contains("unknown id"),
+                    "reason should carry the AiError display text: {reason}"
+                );
+            }
+            other => panic!("expected AiProviderSwitchFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_switch_ai_provider_does_not_touch_ai_provider_slot() {
+        // The swap is owned by the switcher, not by the read-side
+        // `ai_provider` arg the dispatch fn carries for AI* commands.
+        // Pass `None` for the read slot to prove dispatch never reads
+        // it during a swap.
+        let switcher = UnusedSwitcher;
+        let ai_switcher = StubAiSwitcher {
+            outcome: AiSwitchOutcome::Ok,
+            calls: AtomicUsize::new(0),
+        };
+        let http = http_client();
+        let reply = dispatch(
+            Command::SwitchAiProvider { id: "x".into() },
+            &http,
+            "http://127.0.0.1:1",
+            &switcher,
+            &ai_switcher,
+            None,
+        )
+        .await;
+        assert!(matches!(reply, Reply::AiProviderSwitched { .. }));
     }
 }
