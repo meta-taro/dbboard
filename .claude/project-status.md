@@ -5,35 +5,167 @@
 
 ## 最終更新
 
-- 日付: 2026-06-25 (PR #37 マージクローズ、**ADR-0025 Phase 4
-  Stage 2 Group A 実装 slice a-1** ship — `dbboard-config` 層の
-  `ai-providers.toml` 永続化 (`AiProviderFile` / `AiProviderEntry`
-  / `AiProviderKind::Anthropic`) + `AiSettingsAdmin` use-case +
-  `secure_fs` ベースのアットレストハードニング + キーリング
-  ネームスペース `dbboard.ai.<id>.api_key` を着地。issue 0008
-  を maintainer 確認のもとで 3 スライスに分割し、本 PR は最初の
-  config 層のみ。+1519 / −6、3 ファイル、35 新規ユニットテスト
-  追加 = dbboard-config 単体で 73 → 108、ワークスペース全体で
-  448 件 pass。HTTP contract 完全無変更、web side 影響ゼロ)
-- ブランチ: `develop` (= `e72ebb5`)、ローカル
-  `chore/post-pr37-doc-sync` 作業中
-  (`feature/ai-settings-config-layer` は merge 済 /
+- 日付: 2026-06-25 (PR #39 マージクローズ、**ADR-0025 Phase 4
+  Stage 2 Group A 実装 slice a-2-α** ship — `dbboard-ui` worker 側に
+  `AiProviderSwitcher` trait + `Command::SwitchAiProvider` +
+  `Reply::AiProviderSwitched` / `Reply::AiProviderSwitchFailed` +
+  `dispatch` / `report_fatal` 両方の対応 arm + `NullAiSwitcher` を
+  `apps/dbboard` 側に着地。slice (a) を更に 3 段 (a-1 config 層 /
+  a-2-α worker plumbing / a-2-β 実 switcher + 解決チェーン) に
+  分割した中段。+268 / −6、4 ファイル、3 新規 dispatch テスト追加
+  = ワークスペース全体で 448 → 451 件 pass。HTTP contract 完全
+  無変更、web side 影響ゼロ、`NullAiSwitcher` 経由で全 swap が
+  `AiError::Configuration("no ai store available")` を返す = slice
+  a-2-β で本物の `DesktopAiSwitcher` に差し替わるまでの safe stub)
+- ブランチ: `develop` (= `abc718b`)、ローカル
+  `chore/post-pr39-doc-sync` 作業中
+  (`feature/ai-provider-switcher-trait` は merge 済 /
   origin 側 auto-delete 済 / local 削除は maintainer 判断保留)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  Phase 4 Stage 2 Group A は slice a-1 (config 層) が landed、残り
-  は slice a-2 (`dbboard-server` の `AiProviderSwitcher` trait +
-  `Command::SwitchAiProvider` worker variants + `apps/dbboard` の
-  `DesktopAiSwitcher` + 解決チェーン拡張 + integration tests) と
-  slice b (`dbboard-ui` `AiSettingsView` egui + 11 ロケール
-  Fluent + メニュー配線 + docs sweep) の 2 本が次セッション候補。
-  Stage 2 残り Group B (streaming + cancel + token meter)、Group C
-  (`history.jsonl` への AI 記録、v:2 schema bump、web 側 fresh
-  brief 必要)、Group D (full DDL extraction + function-calling) は
-  独立 ADR で順不同。Phase 2 ADR-0024 at-rest hardening + ADR-0023
-  Stage 1 + ADR-0025 設計 + slice a-1 実装の 4 本が現状 Stage 2
-  への足場として load-bearing。**
+  Phase 4 Stage 2 Group A は slice a-1 (config 層) + slice a-2-α
+  (worker plumbing) が landed、残りは slice a-2-β (実
+  `DesktopAiSwitcher` + `resolve_ai_provider` の env > TOML > None
+  3 段化 + `Arc<RwLock<Option<Arc<dyn AiProvider>>>>` slot 化 +
+  integration tests in `apps/dbboard/tests/` + README "AI integration
+  (optional)" 書き換え) と slice b (`dbboard-ui` `AiSettingsView`
+  egui + 11 ロケール Fluent + メニュー配線 + docs sweep) の 2 本が
+  次セッション候補。Stage 2 残り Group B (streaming + cancel + token
+  meter)、Group C (`history.jsonl` への AI 記録、v:2 schema bump、
+  web 側 fresh brief 必要)、Group D (full DDL extraction +
+  function-calling) は独立 ADR で順不同。Phase 2 ADR-0024 at-rest
+  hardening + ADR-0023 Stage 1 + ADR-0025 設計 + slice a-1 + a-2-α
+  実装の 5 本が現状 Stage 2 への足場として load-bearing。**
 
-### PR #37 (ADR-0025 Phase 4 Stage 2 Group A — slice a-1 / `dbboard-config` 層: `ai-providers.toml` schema + `AiSettingsAdmin`) マージクローズ (本セッション / 2026-06-25)
+### PR #39 (ADR-0025 Phase 4 Stage 2 Group A — slice a-2-α / `dbboard-ui` worker plumbing: `AiProviderSwitcher` trait + `Command::SwitchAiProvider` + `Reply::AiProviderSwitched` / `Reply::AiProviderSwitchFailed`) マージクローズ (本セッション / 2026-06-25)
+
+- PR #39 (`feature/ai-provider-switcher-trait` → `develop`) マージ済
+  = `abc718b` (mergedAt 2026-06-25T11:14:07Z = JST 20:14)。
+  ローカル `develop` は `origin/develop` (= `abc718b`) と
+  fast-forward sync 済。
+- 本 chore (`chore/post-pr39-doc-sync`) は `develop` ベース、
+  本セッションで切り直し。PR #38 (post-PR37 chore) の連番続き。
+- 本 PR の scope: slice (a) の中段 = worker channel + dispatch +
+  trait の **`dbboard-ui` 側 plumbing のみ**。実 switcher
+  (`DesktopAiSwitcher` + `resolve_ai_provider` の precedence chain
+  化) は slice a-2-β に切り出し、本 PR は **`NullAiSwitcher` だけを
+  apps 側で wire** = 全 `SwitchAiProvider` command が
+  `AiError::Configuration("no ai store available")` を返す safe stub
+  状態に着地。4 ファイル / +268 / −6、Rust ソースのみ:
+  - `crates/dbboard-ui/src/worker.rs` (+200) — `AiProviderSwitcher`
+    trait (`Send + Sync + 'static`、`switch(&self, id) -> Result<(),
+    AiError>` 単一メソッド)。`ConnectionSwitcher` (ADR-0020) と
+    シグネチャ語彙を完全対称化、failure 側のみ `AiError` vs
+    `DbError` の taxonomy 差を反映 (ADR-0023 Decision 8)。
+    `spawn_worker` / `run_worker` / `dispatch` の 3 関数に
+    `ai_switcher` 引数を thread through。`dispatch` arm:
+    `Ok(())` → `Reply::AiProviderSwitched { id }`、`Err(error)` →
+    `Reply::AiProviderSwitchFailed { reason: error.to_string() }`
+    で **`AiError` 型は reply に降ろさず Display 表記のみ運ぶ** =
+    `AiError` が `Clone` を導出していない (variant が one-shot
+    なため) ので `SwitchFailed { id, error: DbError }` precedent と
+    意図的に形が異なる。`report_fatal` arm も対称に追加
+    (`SwitchAiProvider { .. } => AiProviderSwitchFailed { reason:
+    format!("ai worker unavailable: {}", err.message()) }`) =
+    worker init 失敗時も Settings UI が dead-lock しない。
+    既存 dispatch テスト 5 件に `&UnusedAiSwitcher` 引数追加 +
+    新規 3 件 (`dispatch_switch_ai_provider_returns_switched_on_success`
+    / `dispatch_switch_ai_provider_returns_switch_failed_on_error` /
+    `dispatch_switch_ai_provider_does_not_touch_ai_provider_slot`)。
+    `StubAiSwitcher` で `AtomicUsize` 経由のコール回数検証 +
+    `AiSwitchOutcome::{Ok, Err(AiError)}` で outcome 注入パターン
+    を追加。
+  - `crates/dbboard-ui/src/lib.rs` (+43 / −1) — `Command::SwitchAiProvider
+    { id }` + `Reply::AiProviderSwitched { id }` /
+    `Reply::AiProviderSwitchFailed { reason }` 3 variant 追加。
+    `pub use worker::{AiProviderSwitcher, ConnectionSwitcher}` で
+    trait 公開、`DbboardApp::connect` シグネチャ 7 → 8 引数
+    (clippy `too_many_arguments` の閾値 7 を超えるため
+    `#[allow(clippy::too_many_arguments)]` を局所付与、slice b で
+    AI panel handle を加える時に struct-builder refactor 予定の旨
+    コメントで予告)。`drain_replies` exhaustive match に
+    `AiProviderSwitched / AiProviderSwitchFailed` arm 追加 =
+    現状は state 更新なしの absorbe-only、slice b で
+    `AiSettingsAdmin` 経由で UI が直接 switch state を読むため
+    `DbboardApp` 側に state を持たせない方針。
+  - `crates/dbboard-ui/src/client.rs` (+3) — `request_for` match に
+    `SwitchAiProvider { .. } => unreachable!(...)` arm 追加
+    (`SwitchConnection` / AI commands の既存 unreachable arm と同じ
+    パターン、全部 in-process で HTTP に降りない)。
+  - `apps/dbboard/src/main.rs` (+28 / −2) — `AiProviderSwitcher`
+    import、`ai_switcher: Arc<dyn AiProviderSwitcher> = Arc::new(
+    NullAiSwitcher)` を `DbboardApp::connect` に渡す、ファイル末尾に
+    `NullAiSwitcher` struct + `AiProviderSwitcher` impl 追加。
+    `DesktopAiSwitcher` は **意図的に未実装** = slice a-2-β で
+    `Arc<Mutex<AiSettingsAdmin>>` + `Arc<RwLock<Option<Arc<dyn
+    AiProvider>>>>` + `dbboard_anthropic::AnthropicProvider`
+    construction を担う。
+- ADR-0025 設計と本 PR の対応関係 (PR #37 の対応表を更新):
+  - Decision 1 (`ai-providers.toml` schema) = **着地済** (PR #37)
+  - Decision 2 (resolve chain env > TOML > None) = **後回し**
+    (slice a-2-β で `dbboard-server` 側の `resolve_ai_provider` を
+    `Arc<RwLock<...>>` に拡張)
+  - Decision 3 (`AiSettingsAdmin` use-case) = **着地済** (PR #37)
+  - Decision 4 (`AiProviderSwitcher` trait) = **着地済 (本 PR)** =
+    trait + worker dispatch + report_fatal + Null impl
+  - Decision 5 (worker `Command::SwitchAiProvider` / `Reply::*`
+    variants) = **着地済 (本 PR)** = 3 variant + drain_replies arm
+  - Decision 6 (`AiSettingsView` egui + Fluent) = **後回し**
+    (slice b)
+- 検証:
+  - `cargo fmt --all -- --check` clean
+  - `cargo clippy --all-targets --all-features -- -D warnings` clean
+  - `cargo check --all-targets --all-features` clean
+  - `cargo test --all-features` = **451 件 pass / 0 failed**
+    (前回 448 + 新規 dispatch テスト 3 件)
+  - pre-commit hook (cargo-husky) green = 1 度 dbboard-server の
+    `http::swap_backend_routes_next_request_to_new_adapter` が
+    `STATUS_ACCESS_VIOLATION (0xc0000005)` で segfault、retry で
+    pass = Windows 側で再現性のある flake、本 PR と無関係 (再現
+    手順は track できていないが、`dbboard-server` の hyper / tokio
+    server 終了処理に絡んでいる疑い、後続セッションでもし再現したら
+    issue 化候補)
+  - pre-push hook (release build + release test) green
+  - CI green on develop PR build
+- SemVer (ADR-0011): **additive**。`dbboard-ui` に新規 trait +
+  新規 channel variants、`DbboardApp::connect` シグネチャ変更
+  (compile-time catch、呼び出し元は `apps/dbboard::main` のみ)。
+  **HTTP contract 変更ゼロ**、`dbboard-core` 変更ゼロ、history
+  schema 変更ゼロ、cross-repo brief なし
+  (`0007-web-ai-phase6-no-contract-mirror` の posture を継続)。
+- 次セッション以降の運用 / 候補:
+  - **issue 0008 slice a-2-β** = `apps/dbboard` 側 `DesktopAiSwitcher`
+    実装 (`Arc<Mutex<AiSettingsAdmin>>` で TOML を読み、`SecretStore`
+    で keyring から API key を引き、`AnthropicProvider::new` で
+    構築し、`Arc<RwLock<Option<Arc<dyn AiProvider>>>>` slot を
+    `RwLock::write` で atomic 入替) + `resolve_ai_provider` を
+    env > TOML > None 3 段化 + `DbboardApp::connect` の
+    `ai_provider: Option<Arc<dyn AiProvider>>` 引数を
+    `Arc<RwLock<Option<Arc<dyn AiProvider>>>>` slot に変更
+    (`has_ai_provider()` も `slot.read().unwrap_or_else(
+    PoisonError::into_inner).is_some()` に更新) + worker 側で
+    AI command dispatch が request 開始時に slot snapshot を取る
+    (ADR-0020 の "snapshot at request start" rule 踏襲) +
+    `apps/dbboard/tests/ai_provider_resolution.rs` で `tempfile::
+    tempdir` + `InMemorySecretStore` で env / TOML 両パスの
+    end-to-end 検証 + README "AI integration (optional)" 書き換え。
+    UI 無変更、Stage 1 (PR #24) との backward compat 維持。
+  - **issue 0008 slice b** = `dbboard-ui` `AiSettingsView` egui +
+    11 ロケール Fluent (ADR-0015 Tier 1+2 + ADR-0022 Consequences
+    のルール、新規 key ~13 個) + メニュー配線 + README / docs
+    sweep。slice a-2-α + a-2-β が channel variants と switcher
+    trait と precedence chain を additive に landing 済み前提で
+    独立に作れる。`DbboardApp::connect` 引数増のタイミングで
+    struct-builder refactor も同時にやると clippy allowance を
+    剥がせる。
+  - Stage 2 Group B / C / D の ADR はそれぞれ独立して任意の
+    順で立てられる。Group C (history v:2) は **web 側 fresh
+    brief 必須** の点に注意 (`0007-web-ai-phase6-no-contract-mirror`
+    の §"NOT" で明示)。
+  - `/views` / `/functions` per-capability endpoints (ADR-0012
+    promise) は依然「次の `feat(contract)` 候補」、これは web 側
+    handoff brief が必要になる本物の coordination。
+
+### PR #37 (ADR-0025 Phase 4 Stage 2 Group A — slice a-1 / `dbboard-config` 層: `ai-providers.toml` schema + `AiSettingsAdmin`) マージクローズ (前セッション / 2026-06-25)
 
 - PR #37 (`feature/ai-settings-config-layer` → `develop`) マージ済
   = `e72ebb5` (mergedAt 2026-06-25T05:03:12Z = JST 14:03)。
