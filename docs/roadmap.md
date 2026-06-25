@@ -263,7 +263,16 @@ work without it. Trait + first-provider shape locked in
       switcher + Settings UI). Implementation tracked in
       [`.claude/issues/0008-ai-provider-settings-ui-and-persistence.md`](../.claude/issues/0008-ai-provider-settings-ui-and-persistence.md).
       Env var `DBBOARD_ANTHROPIC_API_KEY` keeps working as the
-      highest-precedence resolution path (Stage 1 / PR #24)._
+      highest-precedence resolution path (Stage 1 / PR #24).
+      **Progress:** slice a-1 (`dbboard-config` layer =
+      `ai-providers.toml` schema + `AiSettingsAdmin` use-case +
+      `dbboard.ai.<id>.api_key` keyring namespace + `secure_fs`
+      at-rest hardening) landed via PR #37 on 2026-06-25. Remaining
+      slices: a-2 (`dbboard-server` `AiProviderSwitcher` trait +
+      worker `Command::SwitchAiProvider` variants + `apps/dbboard`
+      wiring + integration tests) and b (`dbboard-ui`
+      `AiSettingsView` egui + 11-locale Fluent + menu wiring +
+      docs sweep)._
 - [x] Graceful degradation when no provider configured (ADR-0023
       Decision 11): `has_ai_provider()` gates both the menu entry
       and the panel; with no key set, neither renders. Defence-in-depth
