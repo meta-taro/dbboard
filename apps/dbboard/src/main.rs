@@ -36,8 +36,8 @@ use dbboard_server::{
     resolved_connection_label, serve, swap_backend, AppState, ServerError,
 };
 use dbboard_ui::{
-    ConnectionSwitcher, ConnectionsView, DbError, DbboardApp, PersistentHistoryStore,
-    DEFAULT_CAPACITY,
+    AiProviderSwitcher, ConnectionSwitcher, ConnectionsView, DbError, DbboardApp,
+    PersistentHistoryStore, DEFAULT_CAPACITY,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -174,6 +174,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // hides itself when `has_ai_provider()` is false.
     let ai_provider: Option<Arc<dyn AiProvider>> = resolve_ai_provider();
 
+    // ADR-0025: AI provider switcher slot. Slice a-2-α wires only the
+    // null impl — every `SwitchAiProvider` command surfaces as
+    // `AiProviderSwitchFailed { reason: "no ai store available" }`.
+    // The real `DesktopAiSwitcher` (reading ai-providers.toml +
+    // SecretStore + swapping a shared slot) lands in slice a-2-β
+    // together with the precedence-chain wiring of `resolve_ai_provider`.
+    let ai_switcher: Arc<dyn AiProviderSwitcher> = Arc::new(NullAiSwitcher);
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
         ..Default::default()
@@ -191,6 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 conn_label,
                 now_rfc3339,
                 switcher,
+                ai_switcher,
                 ai_provider,
             );
             Ok(Box::new(DesktopApp::new(inner, admin)))
@@ -319,6 +328,21 @@ impl ConnectionSwitcher for NullSwitcher {
         Err(DbError::Connection(
             "no connection store available on this host; configure one to switch connections"
                 .into(),
+        ))
+    }
+}
+
+/// Fallback [`AiProviderSwitcher`] (ADR-0025). Slice a-2-α wires only
+/// this null impl — every `SwitchAiProvider` command surfaces an
+/// `AiError::Configuration("no ai store available")`. The real
+/// `DesktopAiSwitcher` that reads `ai-providers.toml` + `SecretStore`
+/// and atomically swaps a shared provider slot lands in slice a-2-β.
+struct NullAiSwitcher;
+
+impl AiProviderSwitcher for NullAiSwitcher {
+    fn switch(&self, _id: &str) -> Result<(), dbboard_ai::AiError> {
+        Err(dbboard_ai::AiError::Configuration(
+            "no ai store available".into(),
         ))
     }
 }
