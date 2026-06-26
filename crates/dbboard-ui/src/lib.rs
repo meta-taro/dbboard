@@ -33,7 +33,7 @@ pub use history::{
 // from production code.
 #[doc(hidden)]
 pub use history::fixture;
-pub use worker::{AiProviderSwitcher, ConnectionSwitcher};
+pub use worker::{AiProviderSlot, AiProviderSwitcher, ConnectionSwitcher};
 // Re-export so the desktop binary can implement [`ConnectionSwitcher`]
 // (return type `Result<(), DbError>`) without taking a direct dep on
 // `dbboard-core` — the architecture rule is that only the server and
@@ -42,7 +42,7 @@ pub use dbboard_ai::{AiError, AiProvider};
 pub use dbboard_core::DbError;
 
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
 use dbboard_core::{DbResult, QueryResult, TableInfo};
@@ -167,11 +167,15 @@ pub struct DbboardApp {
     last_switch_error: Option<(String, DbError)>,
     /// Wall-clock RFC 3339 source, injected.
     now_rfc3339: RfcClock,
-    /// Optional AI provider (ADR-0023). `Some` when the binary
-    /// successfully constructs one from env vars at startup; `None`
-    /// otherwise. The AI panel registers itself only when this is set;
-    /// graceful degradation = absence.
-    ai_provider: Option<Arc<dyn AiProvider>>,
+    /// Shared, atomically-swappable AI provider slot (ADR-0023 +
+    /// ADR-0025). Starts populated when the binary's precedence chain
+    /// (`env > ai-providers.toml > None`) resolves a provider at
+    /// startup. The `AiProviderSwitcher` injected by the binary may
+    /// replace the inner `Option` at any time; the worker reads a fresh
+    /// snapshot per dispatch and [`Self::has_ai_provider`] reads the
+    /// slot directly, so the AI panel reveals itself the moment a swap
+    /// fills a previously-empty slot.
+    ai_provider_slot: AiProviderSlot,
     /// AI panel local state (slice (b) of issue 0005). Always present;
     /// the panel is only *rendered* when [`Self::has_ai_provider`]
     /// returns true, so the field carries no runtime cost on the AI-less
@@ -207,13 +211,15 @@ impl DbboardApp {
     /// `ai_switcher` is the in-process bridge the worker calls when a
     /// `SwitchAiProvider` command arrives (ADR-0025). The desktop
     /// binary supplies a `DesktopAiSwitcher` that owns the
-    /// `AiSettingsAdmin` and the active-provider slot; tests pass a
-    /// stub.
+    /// `AiSettingsAdmin` and writes the same [`AiProviderSlot`] the
+    /// worker reads from; tests pass a stub.
     ///
-    /// `ai_provider` is the optional AI integration (ADR-0023). `Some`
-    /// when the binary successfully constructed one from env vars;
-    /// `None` otherwise. The Stage 2 AI panel reads this through
-    /// [`Self::has_ai_provider`].
+    /// `ai_provider_slot` is the shared, atomically-swappable AI
+    /// provider slot (ADR-0023 + ADR-0025). The binary's precedence
+    /// chain seeds the slot (`Some` when env or TOML resolves a
+    /// provider, `None` otherwise) and the Stage 2 AI panel registers
+    /// itself only when [`Self::has_ai_provider`] returns true, which
+    /// reads the slot directly so it tracks live swaps.
     // Arg count grows by one with each in-process switcher we wire
     // through the worker (ADR-0020 ConnectionSwitcher, ADR-0025
     // AiProviderSwitcher). A struct-builder refactor is queued for
@@ -229,7 +235,7 @@ impl DbboardApp {
         now_rfc3339: RfcClock,
         switcher: Arc<dyn ConnectionSwitcher>,
         ai_switcher: Arc<dyn AiProviderSwitcher>,
-        ai_provider: Option<Arc<dyn AiProvider>>,
+        ai_provider_slot: AiProviderSlot,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
         let (reply_tx, reply_rx) = mpsc::channel::<Reply>();
@@ -240,7 +246,7 @@ impl DbboardApp {
             egui_ctx,
             switcher,
             ai_switcher,
-            ai_provider.clone(),
+            Arc::clone(&ai_provider_slot),
         );
         Self::new(
             cmd_tx,
@@ -248,7 +254,7 @@ impl DbboardApp {
             history,
             conn_label,
             now_rfc3339,
-            ai_provider,
+            ai_provider_slot,
         )
     }
 
@@ -267,7 +273,7 @@ impl DbboardApp {
         history: PersistentHistoryStore,
         conn_label: String,
         now_rfc3339: RfcClock,
-        ai_provider: Option<Arc<dyn AiProvider>>,
+        ai_provider_slot: AiProviderSlot,
     ) -> Self {
         let _ = cmd_tx.send(Command::ListTables);
         Self {
@@ -279,7 +285,7 @@ impl DbboardApp {
             conn_label,
             last_switch_error: None,
             now_rfc3339,
-            ai_provider,
+            ai_provider_slot,
             ai_panel: AiPanel::new(),
             busy: false,
             cmd_tx,
@@ -412,14 +418,21 @@ impl DbboardApp {
         self.history.store()
     }
 
-    /// True when a Stage 1 AI provider was successfully constructed at
-    /// startup (ADR-0023). The AI panel registers itself only when this
-    /// returns `true`; graceful degradation = absence, so a missing
-    /// `DBBOARD_ANTHROPIC_API_KEY` (or a construction failure) simply
-    /// hides the panel rather than aborting startup.
+    /// True when the shared AI provider slot is currently populated
+    /// (ADR-0023 + ADR-0025). The AI panel registers itself only when
+    /// this returns `true`. The slot starts populated when the binary's
+    /// precedence chain resolves a provider at startup (env var or
+    /// ai-providers.toml active id); graceful degradation = absence, so
+    /// neither configured simply hides the panel rather than aborting
+    /// startup. A successful `SwitchAiProvider` performed at runtime
+    /// fills a previously-empty slot, revealing the panel on the next
+    /// render tick.
     #[must_use]
     pub fn has_ai_provider(&self) -> bool {
-        self.ai_provider.is_some()
+        self.ai_provider_slot
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
     }
 
     /// True when the AI panel window is currently open. Always false
@@ -687,16 +700,21 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
 #[cfg(test)]
 mod tests {
     use super::{
-        error_display, Command, DbboardApp, HistoryStatus, PersistentHistoryStore, Reply,
-        DEFAULT_CAPACITY,
+        error_display, AiProviderSlot, Command, DbboardApp, HistoryStatus, PersistentHistoryStore,
+        Reply, DEFAULT_CAPACITY,
     };
     use dbboard_core::{Column, DbError, QueryResult, Row, TableInfo, Value};
     use std::sync::mpsc;
+    use std::sync::{Arc, RwLock};
 
     const FIXED_TS: &str = "2026-06-04T00:00:00.000Z";
 
     fn stub_clock() -> String {
         FIXED_TS.to_string()
+    }
+
+    fn empty_ai_slot() -> AiProviderSlot {
+        Arc::new(RwLock::new(None))
     }
 
     fn build() -> (DbboardApp, mpsc::Receiver<Command>, mpsc::Sender<Reply>) {
@@ -709,7 +727,7 @@ mod tests {
             history,
             String::new(),
             stub_clock as super::RfcClock,
-            None,
+            empty_ai_slot(),
         );
         (app, cmd_rx, reply_tx)
     }
@@ -726,7 +744,7 @@ mod tests {
             history,
             conn_label.to_string(),
             stub_clock as super::RfcClock,
-            None,
+            empty_ai_slot(),
         );
         (app, cmd_rx, reply_tx)
     }
@@ -1187,13 +1205,14 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (reply_tx, reply_rx) = mpsc::channel();
         let history = PersistentHistoryStore::in_memory_only(DEFAULT_CAPACITY);
+        let slot: AiProviderSlot = Arc::new(RwLock::new(Some(provider)));
         let app = DbboardApp::new(
             cmd_tx,
             reply_rx,
             history,
             String::new(),
             stub_clock as super::RfcClock,
-            Some(provider),
+            slot,
         );
         (app, cmd_rx, reply_tx)
     }
