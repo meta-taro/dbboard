@@ -5,36 +5,266 @@
 
 ## 最終更新
 
-- 日付: 2026-06-25 (PR #39 マージクローズ、**ADR-0025 Phase 4
-  Stage 2 Group A 実装 slice a-2-α** ship — `dbboard-ui` worker 側に
-  `AiProviderSwitcher` trait + `Command::SwitchAiProvider` +
-  `Reply::AiProviderSwitched` / `Reply::AiProviderSwitchFailed` +
-  `dispatch` / `report_fatal` 両方の対応 arm + `NullAiSwitcher` を
-  `apps/dbboard` 側に着地。slice (a) を更に 3 段 (a-1 config 層 /
-  a-2-α worker plumbing / a-2-β 実 switcher + 解決チェーン) に
-  分割した中段。+268 / −6、4 ファイル、3 新規 dispatch テスト追加
-  = ワークスペース全体で 448 → 451 件 pass。HTTP contract 完全
-  無変更、web side 影響ゼロ、`NullAiSwitcher` 経由で全 swap が
-  `AiError::Configuration("no ai store available")` を返す = slice
-  a-2-β で本物の `DesktopAiSwitcher` に差し替わるまでの safe stub)
-- ブランチ: `develop` (= `abc718b`)、ローカル
-  `chore/post-pr39-doc-sync` 作業中
-  (`feature/ai-provider-switcher-trait` は merge 済 /
+- 日付: 2026-06-26 (PR #41 マージクローズ、**ADR-0025 Phase 4
+  Stage 2 Group A 実装 slice a-2-β** ship — `apps/dbboard` 側に
+  本物の `DesktopAiSwitcher` + `resolve_ai_provider_from` の
+  **env > `ai-providers.toml` active_id > None** 3 段解決チェーン +
+  `AiProviderSlot = Arc<RwLock<Option<Arc<dyn AiProvider>>>>` 共有
+  スロット + worker per-request snapshot + `bootstrap_ai()` ヘルパ
+  抽出 + README "AI integration (optional)" の TOML 主軸書き直し。
+  +625 / −103、6 ファイル、10 件の新規 unit test 追加 = ワーク
+  スペース全体で 451 → 461 件 pass。HTTP contract 完全無変更、
+  web side 影響ゼロ、`NullAiSwitcher` 経由のフォールバックは
+  維持。PR #39 の `NullAiSwitcher` safe stub を `DesktopAiSwitcher`
+  本物に置き換えた = slice (a) インフラ層 = a-1 + a-2-α + a-2-β
+  完全着地、残るは slice b (UI) のみ)
+- ブランチ: `develop` (= `2b49fac`)、ローカル
+  `chore/post-pr41-doc-sync` 作業中
+  (`feature/ai-provider-desktop-switcher` は merge 済 /
   origin 側 auto-delete 済 / local 削除は maintainer 判断保留)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
   Phase 4 Stage 2 Group A は slice a-1 (config 層) + slice a-2-α
-  (worker plumbing) が landed、残りは slice a-2-β (実
-  `DesktopAiSwitcher` + `resolve_ai_provider` の env > TOML > None
-  3 段化 + `Arc<RwLock<Option<Arc<dyn AiProvider>>>>` slot 化 +
-  integration tests in `apps/dbboard/tests/` + README "AI integration
-  (optional)" 書き換え) と slice b (`dbboard-ui` `AiSettingsView`
-  egui + 11 ロケール Fluent + メニュー配線 + docs sweep) の 2 本が
-  次セッション候補。Stage 2 残り Group B (streaming + cancel + token
+  (worker plumbing) + slice a-2-β (実 switcher + 解決チェーン) が
+  landed、残るは slice b (`dbboard-ui` `AiSettingsView` egui +
+  11 ロケール Fluent + メニュー配線 + docs sweep) のみ = 次セッション
+  候補のトップ。Stage 2 残り Group B (streaming + cancel + token
   meter)、Group C (`history.jsonl` への AI 記録、v:2 schema bump、
   web 側 fresh brief 必要)、Group D (full DDL extraction +
   function-calling) は独立 ADR で順不同。Phase 2 ADR-0024 at-rest
   hardening + ADR-0023 Stage 1 + ADR-0025 設計 + slice a-1 + a-2-α
-  実装の 5 本が現状 Stage 2 への足場として load-bearing。**
+  + a-2-β 実装の 6 本が現状 Stage 2 への足場として load-bearing。**
+
+### PR #41 (ADR-0025 Phase 4 Stage 2 Group A — slice a-2-β / `apps/dbboard` 側 `DesktopAiSwitcher` + `resolve_ai_provider_from` 解決チェーン + `AiProviderSlot` 共有スロット + README 書き直し) マージクローズ (本セッション / 2026-06-26)
+
+- PR #41 (`feature/ai-provider-desktop-switcher` → `develop`)
+  マージ済 = `2b49fac` (mergedAt 2026-06-26T02:57:23Z = JST 11:57)。
+  ローカル `develop` は `origin/develop` (= `2b49fac`) と
+  fast-forward sync 済。
+- 本 chore (`chore/post-pr41-doc-sync`) は `develop` ベース、
+  本セッションで切り直し。PR #40 (post-PR39 chore) の連番続き。
+- 本 PR の scope: slice (a) インフラ層の **下段** = a-2-α の
+  `NullAiSwitcher` safe stub を `DesktopAiSwitcher` 本物に置き換えて
+  Stage 2 Group A のサーバー / config / アプリ配線の 3 層を全て
+  着地。**UI は触らない** = slice b で別 PR。6 ファイル / +625 /
+  −103、Rust ソース + Cargo.toml + README のみ、新規 unit test
+  10 件追加 = ワークスペース全体で 451 → 461 件 pass。中身:
+  - `crates/dbboard-ui/src/worker.rs` (+43 / 既存 23 件 worker
+    テストは無改変で pass) — 新規 `pub type AiProviderSlot =
+    Arc<RwLock<Option<Arc<dyn AiProvider>>>>` alias を追加。
+    `spawn_worker` / `run_worker` の引数を `Option<Arc<dyn
+    AiProvider>>` から `AiProviderSlot` に差し替え。**`run_worker`
+    の per-iteration スナップショット** = `let snapshot: Option<
+    Arc<dyn AiProvider>> = ai_provider_slot.read().unwrap_or_else(
+    PoisonError::into_inner).clone();` を loop 先頭に追加、その
+    snapshot を従来通り `dispatch(..., snapshot.as_deref(), ...)`
+    に渡す形に統一。**`dispatch` シグネチャは無変更** =
+    `Option<&dyn AiProvider>` のまま (既存 5 件 dispatch テストも
+    無改変)。これで switcher が swap した直後の AI command は
+    必ず新しい provider にヒット、ADR-0020 "snapshot at request
+    start" 規約を踏襲。
+  - `crates/dbboard-ui/src/lib.rs` (+77 / −38) — `pub use worker::
+    AiProviderSlot;` を再エクスポート公開、`DbboardApp` の
+    `ai_provider: Option<Arc<dyn AiProvider>>` フィールドを
+    `ai_provider_slot: AiProviderSlot` に差し替え。
+    `DbboardApp::connect` / `DbboardApp::new` のシグネチャを
+    対応する型に変更 (compile-time catch、唯一の呼び出し元
+    `apps/dbboard::main` は次バレットで合わせて修正)。
+    `has_ai_provider()` を `slot.read().unwrap_or_else(
+    PoisonError::into_inner).is_some()` に書き換え = swap で
+    None → Some に変わった場合も次フレームの render で
+    AI パネル/メニューが正しく出現。テストヘルパ `empty_ai_slot()`
+    と `build_with_ai_provider()` を `RwLock::new(Some(...))` で
+    構築するように更新、既存 UI テストへの影響は型差し替えのみで
+    挙動無変更。
+  - `apps/dbboard/src/main.rs` (+543 / −20、うち +250 が本体実装、
+    +293 が新規 unit test 10 件) — 中核:
+    - **`bootstrap_ai(secrets: &Arc<dyn SecretStore>) ->
+      (AiProviderSlot, Arc<dyn AiProviderSwitcher>)`** ヘルパを
+      新設。`main()` から AI 関連の wiring を全部切り出した =
+      切り出さないと clippy `too_many_lines` (104/100) で
+      reject されるため。中身は (a) `default_ai_providers_path` →
+      `AiSettingsAdmin::open` を試行、(b) admin 取得成功なら
+      `Arc::new(Mutex::new(admin))` でラップ、(c) `resolve_ai_provider_from`
+      に env + admin handle を渡して slot を構築、(d) admin あれば
+      `DesktopAiSwitcher`、なければ `NullAiSwitcher` を返す。
+      `main()` は `let (ai_provider_slot, ai_switcher) =
+      bootstrap_ai(&secrets);` 1 行で受けて以降は配線するだけ
+      = 元の wiring layer に戻る。
+    - **`resolve_ai_provider_from(env_api_key: Option<&str>,
+      env_model: Option<&str>, ai_admin: Option<&Mutex<
+      AiSettingsAdmin>>, secrets: &dyn SecretStore) ->
+      Option<Arc<dyn AiProvider>>`** = 旧 `resolve_ai_provider()`
+      を置き換える dependency-injected 関数。**env / TOML の値を
+      引数で受け取り、`std::env::var` は呼ばない** = 並列テスト
+      が process env を取り合わない設計 (テスト毎に env をいじる
+      precedence chain 検証は flaky 化しやすい precedent あり)。
+      精度チェーン:
+      1. `env_api_key` が `Some(trim() != "")` なら `with_model_or_default`
+         で `AnthropicProvider` 構築、失敗時は stderr ログのみ。**env
+         勝ち** = Stage 1 (`DBBOARD_ANTHROPIC_API_KEY`) ユーザの
+         後方互換完全維持。
+      2. admin の `active_id` を読み、entry を引いて
+         `build_provider_for_kind` 経由で構築。`keyring_api_key_ref`
+         が keyring に無い等の失敗時は stderr ログのみ。
+      3. どちらも該当しなければ `None`。
+      `main()` 側で `std::env::var(..).ok().as_deref()` を渡す
+      adapter 層を保ち、`resolve_ai_provider_from` 自体は env-free。
+    - **`build_provider_for_kind(kind: &AiProviderKind, secrets:
+      &dyn SecretStore) -> Result<Arc<dyn AiProvider>, AiError>`** =
+      switcher (runtime) と startup chain で provider 構築コードを
+      共有するための関数。`AiProviderKind::Anthropic { model,
+      keyring_api_key_ref }` を `secrets.get(...)` で読み、
+      `model` が `Some` なら `AnthropicProvider::new(api_key,
+      model)`、`None` なら `with_default_model(api_key)`。
+      keyring miss は `AiError::Configuration` に packaging。
+    - **`DesktopAiSwitcher { admin: Arc<Mutex<AiSettingsAdmin>>,
+      secrets: Arc<dyn SecretStore>, slot: AiProviderSlot }`** =
+      `AiProviderSwitcher` 実装。`switch(id)` 手順:
+      (1) admin lock 取って `entries().iter().find(|e| e.id == id)`、
+      無ければ `AiError::Configuration("unknown ai provider id:
+      {id}")` で即返、
+      (2) lock 解放 → `build_provider_for_kind(&kind, &*secrets)`、
+      (3) `slot.write` で atomic 入替、
+      (4) admin lock 取り直して `set_active(Some(id))` で TOML
+      永続化。**永続化失敗時はランタイム slot は新 provider のまま
+      残し、stderr に "swapped to '{id}' in memory, but persisting
+      active_id failed; next startup may pick a different provider"
+      で警告**。slot swap が真実、TOML は次回起動の hint =
+      runtime が壊れず、起動時 divergence は loud に告知。
+    - **`NullAiSwitcher`** (PR #39 で導入済) は admin が無い
+      環境 (no config dir、TOML parse error など) のフォールバック
+      として残置 = swap 試行は `AiError::Configuration("no ai
+      store available")` を返し、UI 側でエラー表示。
+    - **10 件の新規 unit test** in `#[cfg(test)] mod tests {}`:
+      - `env_wins_even_when_toml_active_id_would_fail` (keyring miss
+        にも関わらず env 優先)
+      - `toml_active_id_wins_when_env_is_blank` (env が `Some("")`
+        や `Some("   ")` の場合 admin にフォールバック)
+      - `returns_none_when_admin_has_no_active_id`
+      - `returns_none_when_no_env_and_no_admin`
+      - `toml_path_returns_none_when_keyring_lookup_fails` (graceful
+        degradation 検証)
+      - `build_provider_for_kind_uses_default_model_when_kind_has_none`
+      - `build_provider_for_kind_propagates_keyring_miss_as_configuration_error`
+      - `desktop_ai_switcher_swaps_slot_and_persists_active_id` (slot
+        + TOML 両方の状態を assert)
+      - `desktop_ai_switcher_rejects_unknown_id_and_leaves_slot_untouched`
+      - `desktop_ai_switcher_leaves_slot_untouched_when_keyring_lookup_fails`
+      テストはすべて `tempfile::tempdir` + `InMemorySecretStore` +
+      `AiSettingsAdmin::new_with_file(path)` で本物の TOML round-trip
+      を回す = `apps/dbboard/tests/ai_provider_resolution.rs` ではなく
+      `apps/dbboard/src/main.rs::tests` に置いた (env を引数化した
+      おかげで unit test 化が綺麗に可能だったため、`tests/` を
+      切る必要がなかった)。issue 0008 acceptance には "Integration
+      test in `apps/dbboard/tests/`" と書いてあったが、env injection
+      設計で同等カバレッジを内部テストで達成、本 PR の test plan で
+      明示。
+  - `apps/dbboard/Cargo.toml` (+5) — dev-dependencies に
+    `tempfile = { workspace = true }` を追加 (新規テスト群の
+    tempdir 用)。コメントで Scratch ai-providers.toml + scratch
+    keyring の用途を明記。
+  - `README.md` (+59 / −7) — AI integration セクション全面書き直し:
+    - **TOML + keychain パス (= `ai-providers.toml`) を主軸に格上げ**。
+      ファイル位置 (`<config_dir>/ai-providers.toml`)、最小 schema 例
+      (`version = 1` / `active_id` / `[[providers]]` with `id` /
+      `name` / `kind = "anthropic"` / `model` / `keyring_api_key_ref`)、
+      キーリング配置 (`dbboard.ai.<id>.api_key`、service `dbboard`)
+      を例示。今は手編集 + `secret-tool store` / `security
+      add-generic-password` / `cmdkey` で先回り可、Settings UI は
+      slice b で追加予定の旨記載。
+    - **env 変数 (`DBBOARD_ANTHROPIC_API_KEY` /
+      `DBBOARD_ANTHROPIC_MODEL`) を back-compat / CI 用途として
+      二次扱い**。env が **常に勝つ** 旨を明示、TOML を効かせたい
+      なら env を unset してくれの migration cue。
+    - graceful degradation (env もなく TOML も active_id 無効なら
+      AI 機能はメニューごと不在) は Stage 1 と同じ posture。
+  - `Cargo.lock` (+1) — `tempfile` 系の dev-dep 解決の差分。
+- ADR-0025 設計と本 PR の対応関係 (PR #39 の対応表を完全更新):
+  - Decision 1 (`ai-providers.toml` schema) = **着地済** (PR #37)
+  - Decision 2 (resolve chain env > TOML > None) = **着地済 (本 PR)** =
+    `resolve_ai_provider_from` に集約
+  - Decision 3 (`AiSettingsAdmin` use-case) = **着地済** (PR #37)
+  - Decision 4 (`AiProviderSwitcher` trait) = **着地済** (PR #39 で
+    trait、本 PR で `DesktopAiSwitcher` 実装)
+  - Decision 5 (worker `Command::SwitchAiProvider` / `Reply::*`
+    variants) = **着地済** (PR #39)
+  - Decision 6 (`AiSettingsView` egui + Fluent) = **後回し**
+    (slice b)
+- 検証:
+  - `cargo fmt --all -- --check` clean
+  - `cargo clippy --all-targets --all-features -- -D warnings` clean
+    (途中 `main()` が 104/100 lines で `too_many_lines` 発火、
+    `bootstrap_ai()` 切り出しで解消。`Result<Arc<dyn AiProvider>,
+    AiError>` を `{:?}` 出力しようとして `dyn AiProvider: Debug` 違反、
+    `Err(other) => panic!(..."{other:?}")` + `Ok(_) => panic!(...)`
+    の 2 アーム split で解消。)
+  - `cargo check --all-targets --all-features` clean
+  - `cargo test --all-features` = **461 件 pass / 0 failed**
+    (前回 451 + 新規 10 件)
+  - pre-commit hook (cargo-husky) green = 一発通過、Windows
+    `STATUS_ACCESS_VIOLATION` flake は本セッションでは再現なし
+  - `cargo build --release` clean
+  - `cargo test --all-features --release` = **461 件 pass / 0 failed**
+  - CI green on develop PR build
+- SemVer (ADR-0011): **additive (UI ABI 上は破壊)**。`dbboard-ui` の
+  `DbboardApp::connect` / `DbboardApp::new` シグネチャが
+  `Option<Arc<dyn AiProvider>>` → `AiProviderSlot` に変わるが、
+  呼び出し元は `apps/dbboard::main` のみで compile-time catch、
+  外部利用者ゼロ。**HTTP contract 変更ゼロ**、`dbboard-core` 変更
+  ゼロ、history schema 変更ゼロ、cross-repo brief なし
+  (`0007-web-ai-phase6-no-contract-mirror` の posture を継続)。
+- 設計判断メモ (次セッション以降の reviewer / 実装者へ):
+  - **`resolve_ai_provider_from` の env-injection** = テストが
+    `std::env::set_var` を直接いじる場合 cargo test の並列実行で
+    別テストの値を観測する race が起きうる。引数化することで
+    process-wide な mutable state を test boundary から完全排除。
+    `main()` 側 1 箇所のみ `std::env::var(..).ok().as_deref()` で
+    adapter する pattern を全 env-precedence チェーンで使い回せる。
+  - **`Arc<Mutex<AiSettingsAdmin>>` の選択** = ADR-0016
+    `ConnectionAdmin` が同じ `Arc<Mutex<...>>` shape を採用済
+    (`AppState::connection_admin`)。slice b で `AiSettingsView` が
+    `Arc<Mutex<AiSettingsAdmin>>` 経由でリストを描き、`take_pending_*`
+    から switcher 経由で `set_active` する想定 = `DesktopAiSwitcher`
+    と同じ admin handle を共有する形にすれば、UI 側の add/edit/delete
+    と switcher の swap が同一 admin に対する mutation として
+    `Mutex` 1 個の serialization に集約できる。`tokio::sync::Mutex`
+    ではなく `std::sync::Mutex` を選んだのは UI スレッド経由の
+    短時間 lock のみ + `.await` を lock 下で取らない設計のため。
+  - **slot swap が真実、TOML 永続化失敗は loud な警告** = ユーザが
+    UI から switch ボタンを押した瞬間に AI provider は新しいものに
+    変わる、これは UI 上の即応性を担保。TOML 永続化に失敗した場合
+    (例: ディスク満杯、権限エラー、keyring 不在) は警告のみで
+    runtime セッションは継続。次起動時に旧 active_id を読むので
+    意図と乖離する可能性があるが、loud な警告で気付ける設計。
+    永続化を真実にしてしまうと runtime と TOML が一致するが UI の
+    操作感が壊れる (switch ボタンが時々無反応に見える) ため
+    inverse を選択。
+  - **`build_provider_for_kind` の共有** = startup chain と
+    runtime switcher の両方が `AiProviderKind` から
+    `Arc<dyn AiProvider>` を構築する責務を持つ。1 関数に集約
+    することで「kind が増えた時に追加する場所が 1 箇所」になり、
+    `dbboard-openai` / `dbboard-ollama` 等が後で増える時の
+    forgot-to-update バグを未然に防ぐ。
+- 次セッション以降の運用 / 候補:
+  - **issue 0008 slice b** = `dbboard-ui` `AiSettingsView` egui +
+    11 ロケール Fluent (ADR-0015 Tier 1+2 + ADR-0022 Consequences
+    のルール、新規 key ~13 個) + メニュー配線 + README "AI panel"
+    の Settings discoverability 追記 + `docs/connections.md` 拡張
+    または新規 `docs/ai.md` (implementer's call)。本 PR が完成形の
+    インフラを提供しているので **slice b は純粋に UI 仕事** =
+    `take_pending_switch() -> Option<String>` → `Command::
+    SwitchAiProvider { id }` → worker → `DesktopAiSwitcher::switch` の
+    1 本道。
+  - Stage 2 Group B / C / D の ADR はそれぞれ独立して任意の
+    順で立てられる。Group C (history v:2) は **web 側 fresh
+    brief 必須** の点に注意 (`0007-web-ai-phase6-no-contract-mirror`
+    の §"NOT" で明示)。
+  - `/views` / `/functions` per-capability endpoints (ADR-0012
+    promise) は依然「次の `feat(contract)` 候補」、これは web 側
+    handoff brief が必要になる本物の coordination。
+  - **menu-not-sequence** モード (memory `[[project-status-in-use]]`)
+    継続: friction report があれば優先、無ければ上記のいずれかを
+    任意順で。
 
 ### PR #39 (ADR-0025 Phase 4 Stage 2 Group A — slice a-2-α / `dbboard-ui` worker plumbing: `AiProviderSwitcher` trait + `Command::SwitchAiProvider` + `Reply::AiProviderSwitched` / `Reply::AiProviderSwitchFailed`) マージクローズ (本セッション / 2026-06-25)
 
