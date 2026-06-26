@@ -271,12 +271,16 @@ work without it. Trait + first-provider shape locked in
       a-2-α (`dbboard-ui` worker plumbing = `AiProviderSwitcher`
       trait + `Command::SwitchAiProvider` + `Reply::AiProviderSwitched`
       / `Reply::AiProviderSwitchFailed` + `NullAiSwitcher` apps-side
-      stub) landed via PR #39 on 2026-06-25. Remaining slices:
-      a-2-β (`apps/dbboard` `DesktopAiSwitcher` real impl +
-      `resolve_ai_provider` env > TOML > None precedence chain +
-      `Arc<RwLock<Option<Arc<dyn AiProvider>>>>` slot + integration
-      tests + README rewrite) and b (`dbboard-ui` `AiSettingsView`
-      egui + 11-locale Fluent + menu wiring + docs sweep)._
+      stub) landed via PR #39 on 2026-06-25. Slice a-2-β
+      (`apps/dbboard` `DesktopAiSwitcher` real impl +
+      `resolve_ai_provider_from` env > TOML > None precedence chain +
+      `AiProviderSlot = Arc<RwLock<Option<Arc<dyn AiProvider>>>>`
+      shared slot + worker per-request snapshot + 10 new unit tests
+      + README "AI integration" rewritten with TOML as the primary
+      path) landed via PR #41 on 2026-06-26 — slice (a)
+      infrastructure now complete end-to-end. Remaining: slice b
+      (`dbboard-ui` `AiSettingsView` egui + 11-locale Fluent +
+      menu wiring + docs sweep)._
 - [x] Graceful degradation when no provider configured (ADR-0023
       Decision 11): `has_ai_provider()` gates both the menu entry
       and the panel; with no key set, neither renders. Defence-in-depth
