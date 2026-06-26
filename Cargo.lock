@@ -599,6 +599,7 @@ dependencies = [
  "dbboard-ui",
  "eframe",
  "egui",
+ "tempfile",
  "time",
  "tokio",
 ]
