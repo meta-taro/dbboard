@@ -18,25 +18,36 @@
 //! id, a missing keyring entry) abort startup loudly rather than
 //! silently swapping in a different backend.
 //!
+//! The AI provider follows an analogous but optional precedence
+//! (ADR-0023 + ADR-0025): env (`DBBOARD_ANTHROPIC_API_KEY`) >
+//! `ai-providers.toml` active id > none. AI is opt-in, so a failure on
+//! any branch degrades to no provider rather than aborting startup. A
+//! runtime switch performed through [`DesktopAiSwitcher`] persists the
+//! new active id to TOML *and* swaps the live provider slot in-process,
+//! so the worker thread sees the change on the next AI command.
+//!
 //! Locale resolution (ADR-0015) runs here too: `DBBOARD_LANG` > OS
 //! locale > `en`. The binary also registers an OS CJK font into the
 //! egui font stack so `ja` / `ko` / `zh-CN` / `zh-TW` users do not see
 //! tofu — egui's bundled Ubuntu-Light covers Latin + Cyrillic but no
 //! CJK ranges.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use dbboard_ai::AiProvider;
+use dbboard_ai::{AiError, AiProvider};
 use dbboard_anthropic::AnthropicProvider;
 use dbboard_config::store::{default_history_path, default_path, load_or_empty};
-use dbboard_config::{secure_fs, ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore};
+use dbboard_config::{
+    default_ai_providers_path, secure_fs, AiProviderKind, AiSettingsAdmin, ConnectionAdmin,
+    ConnectionFile, KeyringStore, SecretStore,
+};
 use dbboard_i18n::t;
 use dbboard_server::{
     backend_config_for_entry, backend_config_from_env_and_store, build_adapter,
     resolved_connection_label, serve, swap_backend, AppState, ServerError,
 };
 use dbboard_ui::{
-    AiProviderSwitcher, ConnectionSwitcher, ConnectionsView, DbError, DbboardApp,
+    AiProviderSlot, AiProviderSwitcher, ConnectionSwitcher, ConnectionsView, DbError, DbboardApp,
     PersistentHistoryStore, DEFAULT_CAPACITY,
 };
 use time::format_description::well_known::Rfc3339;
@@ -167,20 +178,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => Arc::new(NullSwitcher),
     };
 
-    // Optional AI provider (ADR-0023). Resolved purely from env vars in
-    // Stage 1 — `DBBOARD_ANTHROPIC_API_KEY` is the gate, the model is an
-    // optional override. A missing key or a construction error logs and
-    // returns `None` so the binary still runs without AI; the UI panel
-    // hides itself when `has_ai_provider()` is false.
-    let ai_provider: Option<Arc<dyn AiProvider>> = resolve_ai_provider();
-
-    // ADR-0025: AI provider switcher slot. Slice a-2-α wires only the
-    // null impl — every `SwitchAiProvider` command surfaces as
-    // `AiProviderSwitchFailed { reason: "no ai store available" }`.
-    // The real `DesktopAiSwitcher` (reading ai-providers.toml +
-    // SecretStore + swapping a shared slot) lands in slice a-2-β
-    // together with the precedence-chain wiring of `resolve_ai_provider`.
-    let ai_switcher: Arc<dyn AiProviderSwitcher> = Arc::new(NullAiSwitcher);
+    // ADR-0023 + ADR-0025: AI provider bootstrap. The helper owns the
+    // four moving parts (admin open, precedence chain, slot, switcher
+    // selection) so `main()` stays at the wiring layer.
+    let (ai_provider_slot, ai_switcher) = bootstrap_ai(&secrets);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
@@ -200,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 now_rfc3339,
                 switcher,
                 ai_switcher,
-                ai_provider,
+                ai_provider_slot,
             );
             Ok(Box::new(DesktopApp::new(inner, admin)))
         }),
@@ -332,55 +333,218 @@ impl ConnectionSwitcher for NullSwitcher {
     }
 }
 
-/// Fallback [`AiProviderSwitcher`] (ADR-0025). Slice a-2-α wires only
-/// this null impl — every `SwitchAiProvider` command surfaces an
-/// `AiError::Configuration("no ai store available")`. The real
-/// `DesktopAiSwitcher` that reads `ai-providers.toml` + `SecretStore`
-/// and atomically swaps a shared provider slot lands in slice a-2-β.
+/// Fallback [`AiProviderSwitcher`] (ADR-0025). Wired when the OS
+/// reports no per-user config dir (`ai_admin` is `None`) — every
+/// `SwitchAiProvider` command surfaces an
+/// `AiError::Configuration("no ai store available")` so the UI shows a
+/// usable error rather than hanging.
 struct NullAiSwitcher;
 
 impl AiProviderSwitcher for NullAiSwitcher {
-    fn switch(&self, _id: &str) -> Result<(), dbboard_ai::AiError> {
-        Err(dbboard_ai::AiError::Configuration(
-            "no ai store available".into(),
-        ))
+    fn switch(&self, _id: &str) -> Result<(), AiError> {
+        Err(AiError::Configuration("no ai store available".into()))
     }
 }
 
-/// Resolve the optional AI provider from the environment (ADR-0023).
-///
-/// Stage 1 wires a single provider — Anthropic — via two env vars:
-///
-/// - `DBBOARD_ANTHROPIC_API_KEY` (required): the gate. When unset or
-///   blank, the function returns `None` silently — AI is opt-in and
-///   most users do not want the panel.
-/// - `DBBOARD_ANTHROPIC_MODEL` (optional): overrides the default
-///   (`claude-sonnet-4-6`) at the provider level. An empty value is
-///   treated as "not set" so a shell exporting `DBBOARD_ANTHROPIC_MODEL=`
-///   does not fail construction.
-///
-/// Construction failures (the only Stage 1 case is an empty trimmed
-/// key, which the key-presence check above rejects first, but the
-/// branch is kept for the model-override path) log to stderr and
-/// degrade to `None`. This mirrors the `dbboard_i18n::init` /
-/// `install_cjk_font` pattern: a misconfigured optional layer must
-/// not brick startup.
-fn resolve_ai_provider() -> Option<Arc<dyn AiProvider>> {
-    let key = std::env::var("DBBOARD_ANTHROPIC_API_KEY").ok()?;
-    if key.trim().is_empty() {
-        return None;
+/// Production [`AiProviderSwitcher`] (ADR-0025). The worker thread calls
+/// [`Self::switch`] when a `Command::SwitchAiProvider { id }` arrives;
+/// this resolves the id against the shared `ai-providers.toml` admin,
+/// builds a fresh provider from the keyring secret, atomically swaps it
+/// into the shared [`AiProviderSlot`] the worker reads from, and only
+/// then persists the new active id to TOML. The HTTP contract is
+/// unchanged — every AI call stays in-process (ADR-0023 Decision 3).
+struct DesktopAiSwitcher {
+    /// Shared with the Settings UI (slice b of issue 0008) so a swap
+    /// performed by either side is visible to the other.
+    admin: Arc<Mutex<AiSettingsAdmin>>,
+    /// Same handle the connection store uses; lookups stay consistent
+    /// with the UI's own keyring writes.
+    secrets: Arc<dyn SecretStore>,
+    /// The slot the worker reads on every AI command dispatch. Holding
+    /// an `Arc` clone here lets us swap it without coordinating with
+    /// the worker thread.
+    slot: AiProviderSlot,
+}
+
+impl AiProviderSwitcher for DesktopAiSwitcher {
+    fn switch(&self, id: &str) -> Result<(), AiError> {
+        // Resolve the entry under the lock, but drop the guard before
+        // the (potentially slow) provider construction so a concurrent
+        // Settings UI edit is not blocked behind it. The `.kind` clone
+        // is cheap (a String + an Option<String>).
+        let kind: AiProviderKind = {
+            let admin = self.admin.lock().unwrap_or_else(PoisonError::into_inner);
+            admin
+                .entries()
+                .iter()
+                .find(|e| e.id == id)
+                .map(|entry| entry.kind.clone())
+                .ok_or_else(|| AiError::Configuration(format!("unknown ai provider id: {id}")))?
+        };
+        let provider: Arc<dyn AiProvider> = build_provider_for_kind(&kind, &*self.secrets)?;
+
+        // Swap the live slot *before* touching the TOML: a provider
+        // that constructs successfully but fails to persist is still
+        // better than a TOML that records an active id we never wired.
+        {
+            let mut guard = self.slot.write().unwrap_or_else(PoisonError::into_inner);
+            *guard = Some(provider);
+        }
+
+        // Persist the new active id. A failure here means the running
+        // process is correct (the slot points at the new provider) but
+        // the next startup will pick whatever active id was on disk;
+        // log loudly and proceed rather than rolling back, because the
+        // user just saw the switch take effect in the panel.
+        let mut admin = self.admin.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Err(e) = admin.set_active(Some(id.to_string())) {
+            eprintln!(
+                "dbboard: ai provider swapped to '{id}' in memory, but persisting active_id \
+                 failed; next startup may pick a different provider: {e}"
+            );
+        }
+        Ok(())
     }
-    let model = std::env::var("DBBOARD_ANTHROPIC_MODEL")
-        .ok()
-        .filter(|m| !m.trim().is_empty());
-    let result = match model {
-        Some(m) => AnthropicProvider::new(key, m),
-        None => AnthropicProvider::with_default_model(key),
+}
+
+/// Build an [`AiProvider`] from a [`AiProviderKind`] entry by looking
+/// up the keyring secret it references. Shared between the startup
+/// precedence chain and [`DesktopAiSwitcher::switch`] so both paths
+/// agree on how each provider kind is constructed.
+fn build_provider_for_kind(
+    kind: &AiProviderKind,
+    secrets: &dyn SecretStore,
+) -> Result<Arc<dyn AiProvider>, AiError> {
+    match kind {
+        AiProviderKind::Anthropic {
+            model,
+            keyring_api_key_ref,
+        } => {
+            let key = secrets.get(keyring_api_key_ref).map_err(|e| {
+                AiError::Configuration(format!(
+                    "api key lookup failed for {keyring_api_key_ref}: {e}"
+                ))
+            })?;
+            let provider = match model.as_deref().filter(|m| !m.trim().is_empty()) {
+                Some(m) => AnthropicProvider::new(key, m)?,
+                None => AnthropicProvider::with_default_model(key)?,
+            };
+            Ok(Arc::new(provider))
+        }
+    }
+}
+
+/// Stand up the optional AI layer (ADR-0023 + ADR-0025):
+///
+/// 1. Open `ai-providers.toml` when the OS reports a per-user config
+///    dir; a corrupt/unreadable file is logged and degrades to no
+///    admin (AI is opt-in, the env-var fallback still works).
+/// 2. Run the precedence chain env > TOML > none to seed the initial
+///    provider, wrap it in the shared [`AiProviderSlot`] the worker
+///    will read from.
+/// 3. Pick the matching [`AiProviderSwitcher`]: the real
+///    [`DesktopAiSwitcher`] when admin is present (so the future
+///    Settings UI and the slot share the same handle), the
+///    [`NullAiSwitcher`] otherwise.
+///
+/// Returns the slot and switcher; the admin handle is captured by the
+/// switcher and otherwise opaque to `main()` until slice (b) wires the
+/// Settings UI directly to it.
+fn bootstrap_ai(secrets: &Arc<dyn SecretStore>) -> (AiProviderSlot, Arc<dyn AiProviderSwitcher>) {
+    let ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>> = match default_ai_providers_path() {
+        Ok(path) => match AiSettingsAdmin::open(path, Arc::clone(secrets)) {
+            Ok(admin) => Some(Arc::new(Mutex::new(admin))),
+            Err(e) => {
+                eprintln!(
+                    "dbboard: ai-providers.toml unreadable, AI TOML store disabled (env var \
+                     fallback still works): {e}"
+                );
+                None
+            }
+        },
+        Err(_) => None,
     };
-    match result {
-        Ok(provider) => Some(Arc::new(provider)),
+
+    let ai_provider: Option<Arc<dyn AiProvider>> = resolve_ai_provider_from(
+        std::env::var("DBBOARD_ANTHROPIC_API_KEY").ok().as_deref(),
+        std::env::var("DBBOARD_ANTHROPIC_MODEL").ok().as_deref(),
+        ai_admin.as_deref(),
+        &**secrets,
+    );
+    let slot: AiProviderSlot = Arc::new(RwLock::new(ai_provider));
+
+    let switcher: Arc<dyn AiProviderSwitcher> = match &ai_admin {
+        Some(admin) => Arc::new(DesktopAiSwitcher {
+            admin: Arc::clone(admin),
+            secrets: Arc::clone(secrets),
+            slot: Arc::clone(&slot),
+        }),
+        None => Arc::new(NullAiSwitcher),
+    };
+    (slot, switcher)
+}
+
+/// Resolve the optional AI provider via the precedence chain
+/// **env > `ai-providers.toml` active id > none** (ADR-0023 + ADR-0025).
+///
+/// The env path (`DBBOARD_ANTHROPIC_API_KEY` + optional
+/// `DBBOARD_ANTHROPIC_MODEL`) preserves Stage 1 back-compat: a user who
+/// already exports the key keeps working even if `ai-providers.toml` is
+/// absent or has a different active id. A user who has only TOML
+/// configured falls through to the second branch. Every failure on
+/// either branch (missing key, empty trim, keyring miss, construction
+/// error) logs to stderr and degrades to `None` — AI is opt-in and a
+/// misconfigured optional layer must never brick startup.
+///
+/// Tests inject `env_*` directly to avoid touching real process env
+/// (which would race other tests). The binary reads from `std::env::var`
+/// at the call site.
+fn resolve_ai_provider_from(
+    env_api_key: Option<&str>,
+    env_model: Option<&str>,
+    ai_admin: Option<&Mutex<AiSettingsAdmin>>,
+    secrets: &dyn SecretStore,
+) -> Option<Arc<dyn AiProvider>> {
+    if let Some(key) = env_api_key.map(str::trim).filter(|k| !k.is_empty()) {
+        let model = env_model.map(str::trim).filter(|m| !m.is_empty());
+        let result = match model {
+            Some(m) => AnthropicProvider::new(key, m),
+            None => AnthropicProvider::with_default_model(key),
+        };
+        return match result {
+            Ok(provider) => Some(Arc::new(provider)),
+            Err(e) => {
+                eprintln!("dbboard: AI provider init from env failed, AI panel disabled: {e}");
+                None
+            }
+        };
+    }
+
+    let admin = ai_admin?;
+    let (active_id, kind) = {
+        let guard = admin.lock().unwrap_or_else(PoisonError::into_inner);
+        let id = guard.active_id()?.to_string();
+        let kind = guard
+            .entries()
+            .iter()
+            .find(|e| e.id == id)
+            .map(|entry| entry.kind.clone());
+        (id, kind)
+    };
+    let Some(kind) = kind else {
+        eprintln!(
+            "dbboard: ai-providers.toml active_id='{active_id}' refers to no entry; AI panel \
+             disabled"
+        );
+        return None;
+    };
+    match build_provider_for_kind(&kind, secrets) {
+        Ok(provider) => Some(provider),
         Err(e) => {
-            eprintln!("dbboard: AI provider init failed, AI panel disabled: {e}");
+            eprintln!(
+                "dbboard: AI provider init from ai-providers.toml (active_id='{active_id}') \
+                 failed, AI panel disabled: {e}"
+            );
             None
         }
     }
@@ -515,4 +679,271 @@ fn load_first_cjk_font() -> Option<(&'static str, Vec<u8>)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the slice a-2-β AI wiring: the env > TOML > none
+    //! precedence chain ([`resolve_ai_provider_from`]) and the in-process
+    //! [`DesktopAiSwitcher`].
+    //!
+    //! Tests inject `env_*` directly rather than mutating
+    //! `std::env::*` — Rust test binaries run in parallel by default,
+    //! and a real env mutation would race other tests on the same
+    //! process. `AnthropicProvider::new` / `with_default_model` are
+    //! constructors that only validate the key locally (no network
+    //! call), so a non-empty placeholder key is enough to land a real
+    //! `Arc<dyn AiProvider>` in the slot.
+    use super::{
+        build_provider_for_kind, resolve_ai_provider_from, AiProviderSwitcher, DesktopAiSwitcher,
+    };
+    use dbboard_ai::{AiError, AiProvider};
+    use dbboard_config::{
+        AiProviderEntry, AiProviderFile, AiProviderKind, AiSettingsAdmin, InMemorySecretStore,
+        SecretStore, AI_CONFIG_VERSION,
+    };
+    use dbboard_ui::AiProviderSlot;
+    use std::sync::{Arc, Mutex, RwLock};
+    use tempfile::TempDir;
+
+    fn admin_with(
+        entries: Vec<AiProviderEntry>,
+        active_id: Option<&str>,
+        secrets: Arc<dyn SecretStore>,
+    ) -> (Arc<Mutex<AiSettingsAdmin>>, TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("ai-providers.toml");
+        let file = AiProviderFile {
+            version: AI_CONFIG_VERSION,
+            active_id: active_id.map(str::to_string),
+            providers: entries,
+        };
+        let admin = AiSettingsAdmin::new_with_file(path, secrets, file);
+        (Arc::new(Mutex::new(admin)), tmp)
+    }
+
+    fn anthropic_entry(id: &str, keyring_ref: &str) -> AiProviderEntry {
+        AiProviderEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind: AiProviderKind::Anthropic {
+                model: None,
+                keyring_api_key_ref: keyring_ref.to_string(),
+            },
+        }
+    }
+
+    fn empty_slot() -> AiProviderSlot {
+        Arc::new(RwLock::new(None))
+    }
+
+    #[test]
+    fn env_wins_even_when_toml_active_id_would_fail() {
+        // Admin has an entry whose keyring secret is NOT registered, so
+        // taking the TOML branch would yield `None`. If env wins, the
+        // result is `Some` despite the broken TOML entry.
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        let (admin, _tmp) = admin_with(
+            vec![anthropic_entry("broken", "dbboard.ai.broken.api_key")],
+            Some("broken"),
+            Arc::clone(&secrets),
+        );
+        let resolved =
+            resolve_ai_provider_from(Some("sk-env-test-key"), None, Some(&*admin), &*secrets);
+        assert!(
+            resolved.is_some(),
+            "env path should produce a provider regardless of TOML state"
+        );
+    }
+
+    #[test]
+    fn toml_active_id_wins_when_env_is_blank() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        secrets
+            .set("dbboard.ai.primary.api_key", "sk-toml-test-key")
+            .expect("seed keyring");
+        let (admin, _tmp) = admin_with(
+            vec![anthropic_entry("primary", "dbboard.ai.primary.api_key")],
+            Some("primary"),
+            Arc::clone(&secrets),
+        );
+        let resolved = resolve_ai_provider_from(
+            // Blank-trim is treated as "not set" so a shell exporting
+            // `DBBOARD_ANTHROPIC_API_KEY=` does not silently disable AI.
+            Some("   "),
+            None,
+            Some(&*admin),
+            &*secrets,
+        );
+        assert!(
+            resolved.is_some(),
+            "TOML path should resolve when env is blank-trim"
+        );
+    }
+
+    #[test]
+    fn returns_none_when_admin_has_no_active_id() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        let (admin, _tmp) = admin_with(
+            vec![anthropic_entry("p", "dbboard.ai.p.api_key")],
+            None,
+            Arc::clone(&secrets),
+        );
+        let resolved = resolve_ai_provider_from(None, None, Some(&*admin), &*secrets);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn returns_none_when_no_env_and_no_admin() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        let resolved = resolve_ai_provider_from(None, None, None, &*secrets);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn toml_path_returns_none_when_keyring_lookup_fails() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        // active_id points at an entry whose keyring secret was never
+        // registered — graceful degradation to `None` rather than panic.
+        let (admin, _tmp) = admin_with(
+            vec![anthropic_entry("ghost", "dbboard.ai.ghost.api_key")],
+            Some("ghost"),
+            Arc::clone(&secrets),
+        );
+        let resolved = resolve_ai_provider_from(None, None, Some(&*admin), &*secrets);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn build_provider_for_kind_uses_default_model_when_kind_has_none() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        secrets
+            .set("dbboard.ai.k.api_key", "sk-x")
+            .expect("seed keyring");
+        let kind = AiProviderKind::Anthropic {
+            model: None,
+            keyring_api_key_ref: "dbboard.ai.k.api_key".into(),
+        };
+        let provider = build_provider_for_kind(&kind, &*secrets).expect("provider built");
+        // Construction succeeded — observable through the Arc being
+        // non-null and the AiProvider trait being object-safe.
+        let _: Arc<dyn AiProvider> = provider;
+    }
+
+    #[test]
+    fn build_provider_for_kind_propagates_keyring_miss_as_configuration_error() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        let kind = AiProviderKind::Anthropic {
+            model: None,
+            keyring_api_key_ref: "dbboard.ai.absent.api_key".into(),
+        };
+        match build_provider_for_kind(&kind, &*secrets) {
+            Err(AiError::Configuration(msg)) => {
+                assert!(
+                    msg.contains("api key lookup failed"),
+                    "expected configuration error mentioning lookup, got {msg}"
+                );
+            }
+            Err(other) => panic!("expected Configuration error, got {other:?}"),
+            Ok(_) => panic!("expected Configuration error, got Ok provider"),
+        }
+    }
+
+    #[test]
+    fn desktop_ai_switcher_swaps_slot_and_persists_active_id() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        secrets
+            .set("dbboard.ai.primary.api_key", "sk-test")
+            .expect("seed keyring");
+        let (admin, _tmp) = admin_with(
+            vec![anthropic_entry("primary", "dbboard.ai.primary.api_key")],
+            None,
+            Arc::clone(&secrets),
+        );
+        let slot = empty_slot();
+        let switcher = DesktopAiSwitcher {
+            admin: Arc::clone(&admin),
+            secrets: Arc::clone(&secrets),
+            slot: Arc::clone(&slot),
+        };
+
+        switcher.switch("primary").expect("switch ok");
+
+        assert!(
+            slot.read().unwrap().is_some(),
+            "slot should be populated after a successful switch"
+        );
+        assert_eq!(
+            admin
+                .lock()
+                .unwrap()
+                .active_id()
+                .map(str::to_string)
+                .as_deref(),
+            Some("primary"),
+            "active_id should persist alongside the in-memory swap"
+        );
+    }
+
+    #[test]
+    fn desktop_ai_switcher_rejects_unknown_id_and_leaves_slot_untouched() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        let (admin, _tmp) = admin_with(Vec::new(), None, Arc::clone(&secrets));
+        let slot = empty_slot();
+        let switcher = DesktopAiSwitcher {
+            admin: Arc::clone(&admin),
+            secrets: Arc::clone(&secrets),
+            slot: Arc::clone(&slot),
+        };
+
+        let err = switcher
+            .switch("nope")
+            .expect_err("unknown id should error");
+        match err {
+            AiError::Configuration(msg) => {
+                assert!(
+                    msg.contains("unknown ai provider id"),
+                    "expected 'unknown ai provider id', got {msg}"
+                );
+            }
+            other => panic!("expected Configuration error, got {other:?}"),
+        }
+        assert!(
+            slot.read().unwrap().is_none(),
+            "slot must stay empty when switch fails"
+        );
+        assert!(
+            admin.lock().unwrap().active_id().is_none(),
+            "active_id must stay None when switch fails"
+        );
+    }
+
+    #[test]
+    fn desktop_ai_switcher_leaves_slot_untouched_when_keyring_lookup_fails() {
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        let (admin, _tmp) = admin_with(
+            vec![anthropic_entry("ghost", "dbboard.ai.ghost.api_key")],
+            None,
+            Arc::clone(&secrets),
+        );
+        let slot = empty_slot();
+        let switcher = DesktopAiSwitcher {
+            admin: Arc::clone(&admin),
+            secrets: Arc::clone(&secrets),
+            slot: Arc::clone(&slot),
+        };
+
+        let err = switcher
+            .switch("ghost")
+            .expect_err("keyring miss should error");
+        assert!(matches!(err, AiError::Configuration(_)));
+        assert!(
+            slot.read().unwrap().is_none(),
+            "slot must stay empty when the keyring lookup fails"
+        );
+        assert!(
+            admin.lock().unwrap().active_id().is_none(),
+            "active_id must stay None when the keyring lookup fails"
+        );
+    }
 }

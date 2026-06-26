@@ -227,27 +227,64 @@ identical to a successful empty response. AI calls do **not** travel
 the dbboard-web HTTP contract — they go directly from the desktop
 binary's worker thread to the provider over `reqwest`.
 
-Stage 1 wires a single provider (Anthropic Messages API):
+A single provider (Anthropic Messages API) is wired today, configured
+via **either** of two paths. They are evaluated in the order below;
+the first to resolve wins.
+
+#### 1. `ai-providers.toml` + OS keychain (recommended)
+
+Add one or more entries to a per-user `ai-providers.toml` next to
+`connections.toml` (path: same OS config dir as the connection store)
+and the API key is held in the OS keychain — Windows Credential
+Manager, macOS Keychain, or Linux Secret Service — under
+`dbboard.ai.<id>.api_key`. The TOML file itself records the keyring
+reference, never the literal key.
+
+The runtime store is the same one the (in-flight) Settings UI will
+use: switching the active provider rebuilds the in-process provider
+and updates the file's `active_id` atomically (ADR-0025). Until the
+Settings UI ships, use the `dbboard-config` crate's `AiSettingsAdmin`
+or hand-edit the TOML against a hand-seeded keychain entry:
+
+```toml
+# ai-providers.toml
+version = 1
+active_id = "primary"
+
+[[providers]]
+id = "primary"
+name = "Anthropic"
+[providers.kind]
+type = "anthropic"
+model = "claude-sonnet-4-6"           # optional; omitted = default
+keyring_api_key_ref = "dbboard.ai.primary.api_key"
+```
+
+#### 2. Environment variables (back-compat / CI)
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `DBBOARD_ANTHROPIC_API_KEY` | API key from the Anthropic console. **Required** to enable the AI panel. | _(unset = AI panel hidden)_ |
+| `DBBOARD_ANTHROPIC_API_KEY` | API key from the Anthropic console. Sets the panel up without touching `ai-providers.toml`. | _(unset = fall through to TOML)_ |
 | `DBBOARD_ANTHROPIC_MODEL` | Model identifier override. | `claude-sonnet-4-6` |
 
-If the key is missing or construction fails (e.g. an empty model
-override), the binary logs to stderr and continues without AI — the
-rest of the app keeps working. The key never appears in `Debug`
-output or in `history.jsonl`; it is held only in memory for the
-process lifetime.
+When `DBBOARD_ANTHROPIC_API_KEY` is set, it **always wins** over
+`ai-providers.toml`. This preserves the original Stage 1 wiring for
+headless / CI use and avoids surprising a user who already exports
+the env var. Unset it to let the TOML path take over:
 
 ```sh
 DBBOARD_ANTHROPIC_API_KEY='sk-ant-…' cargo run -p dbboard
 ```
 
-Stage 2 capabilities (streaming, multi-provider switcher,
-keychain-backed `ai-providers.toml`, AI calls recorded in
-`history.jsonl`, full-DDL schema snapshots, function-calling) are
-deferred — see ADR-0023 §9.
+If neither path resolves a provider (or any branch fails — missing
+keyring entry, construction error), the binary logs to stderr and
+continues without AI; the panel and menu entry are hidden. The key
+never appears in `Debug` output or in `history.jsonl`; it is held
+only in memory for the process lifetime.
+
+Remaining deferred Stage 2 capabilities (streaming, AI calls recorded
+in `history.jsonl`, full-DDL schema snapshots, function-calling) are
+tracked in ADR-0023 §9 and ADR-0025.
 
 ## Development
 
