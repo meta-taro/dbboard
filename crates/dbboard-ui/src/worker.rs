@@ -22,12 +22,28 @@
 //! store, secrets, and a runtime handle for `build_adapter`).
 
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::thread;
 
 use dbboard_ai::{AiError, AiProvider, ExplainRequest, SuggestRequest};
 use dbboard_core::DbError;
 use eframe::egui;
+
+/// Shared, atomically-swappable slot for the active AI provider
+/// (ADR-0025). The binary constructs the slot once at startup
+/// (initialised by the precedence chain `env > ai-providers.toml > None`)
+/// and clones the `Arc` into two places:
+///
+/// * the UI / worker side, which reads it on every `AiExplain` /
+///   `AiSuggest` dispatch through [`run_worker`];
+/// * the [`AiProviderSwitcher`] implementation, which writes it on every
+///   `SwitchAiProvider` command.
+///
+/// `std::sync::RwLock` rather than `tokio::sync::RwLock` because the
+/// worker's runtime is `current_thread` and the slot is held only across
+/// a `clone()` of the inner `Arc` — no `.await` happens under the lock.
+/// Lock contention is microscopic (writes only on user-driven swaps).
+pub type AiProviderSlot = Arc<RwLock<Option<Arc<dyn AiProvider>>>>;
 
 use crate::client::{self, HttpRequest};
 use crate::{Command, Reply};
@@ -87,8 +103,11 @@ pub trait AiProviderSwitcher: Send + Sync + 'static {
 /// Spawn the worker thread. `base_url` is the loopback server root the
 /// binary just started (e.g. `http://127.0.0.1:54123`). `switcher` is
 /// the in-process bridge used to handle `SwitchConnection` commands.
-/// `ai_provider` is `Some` when the binary successfully constructed one
-/// from env vars at startup (ADR-0023); `None` causes any Ai* command
+/// `ai_provider_slot` is the shared, atomically-swappable AI provider
+/// slot (ADR-0025): the worker reads a fresh snapshot off it on every
+/// AI command dispatch, so a `SwitchAiProvider` performed by
+/// `ai_switcher` becomes visible on the very next AI command without
+/// any further plumbing. An empty slot (`None`) causes any Ai* command
 /// to surface immediately as `Reply::AiFailed { AiError::Configuration }`
 /// — defence-in-depth, since the UI panel is already gated on
 /// `has_ai_provider()`.
@@ -99,7 +118,7 @@ pub(crate) fn spawn_worker(
     egui_ctx: egui::Context,
     switcher: Arc<dyn ConnectionSwitcher>,
     ai_switcher: Arc<dyn AiProviderSwitcher>,
-    ai_provider: Option<Arc<dyn AiProvider>>,
+    ai_provider_slot: AiProviderSlot,
 ) {
     thread::Builder::new()
         .name("dbboard-http-worker".into())
@@ -111,7 +130,7 @@ pub(crate) fn spawn_worker(
                 &egui_ctx,
                 switcher.as_ref(),
                 ai_switcher.as_ref(),
-                ai_provider.as_deref(),
+                &ai_provider_slot,
             );
         })
         .expect("spawn dbboard-http-worker thread");
@@ -124,7 +143,7 @@ fn run_worker(
     egui_ctx: &egui::Context,
     switcher: &dyn ConnectionSwitcher,
     ai_switcher: &dyn AiProviderSwitcher,
-    ai_provider: Option<&dyn AiProvider>,
+    ai_provider_slot: &AiProviderSlot,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -153,13 +172,23 @@ fn run_worker(
     };
 
     while let Ok(cmd) = cmd_rx.recv() {
+        // Snapshot the slot per dispatch so a swap performed between
+        // commands becomes visible on the very next tick. The clone is
+        // a single `Arc::clone` — the underlying provider is shared, not
+        // copied. A poisoned lock is recovered into the inner value
+        // because a writer panicking mid-swap leaves the slot in a
+        // valid (Some or None) state.
+        let snapshot: Option<Arc<dyn AiProvider>> = ai_provider_slot
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let reply = rt.block_on(dispatch(
             cmd,
             &http,
             base_url,
             switcher,
             ai_switcher,
-            ai_provider,
+            snapshot.as_deref(),
         ));
         if reply_tx.send(reply).is_err() {
             break; // UI side hung up — nothing left to answer.

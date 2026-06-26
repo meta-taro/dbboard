@@ -42,6 +42,11 @@ time = { version = "0.3", default-features = false, features = ["formatting", "s
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+# Scratch ai-providers.toml + scratch keyring for the in-process AI
+# switcher tests (ADR-0025). Tests construct AiSettingsAdmin via
+# `new_with_file` against a tempdir path; `set_active` writes to that
+# path so each test leaves a clean disk state.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
