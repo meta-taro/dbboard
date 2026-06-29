@@ -3044,3 +3044,385 @@ NestJS-side persistence; this ADR adds nothing for web to mirror.
   `apps/dbboard::main`. No HTTP contract changes. No
   `dbboard-core` changes.
 
+## ADR-0026 — Phase 4 Stage 2 Group B: AI streaming, cooperative cancel, and token meter
+
+**Status:** Proposed (2026-06-29). Implementation tracker:
+`.claude/issues/0009-ai-streaming-cancel-tokens.md`. Lands on
+`feature/ai-streaming-cancel-tokens`.
+
+Opens Phase 4 Stage 2 Group B by extending the `dbboard-ai`
+`AiProvider` trait with **additive** streaming methods, wiring SSE
+streaming through `dbboard-anthropic` against Anthropic's
+`/v1/messages?stream=true` endpoint, adding a cooperative cancel
+path through the `dbboard-ui` worker channel, and surfacing a token
+meter sublabel in `AiPanel`. The HTTP contract and per-record
+history JSON schema are both **unchanged** by this ADR. Group C
+(`history.jsonl` AI records + v:2 schema bump, the one Stage 2
+deferral that needs a web brief) and Group D (full DDL extraction +
+function-calling) remain deferred per ADR-0023 §9 and can land in
+any order after this one.
+
+### Context
+
+Phase 4 Stage 1 (ADR-0023) shipped the `AiProvider` trait with two
+methods that return atomic `AiResult<AiResponse>`. Stage 2 Group A
+(ADR-0025) shipped runtime provider switching, a per-user TOML
+file, and a Settings UI — but kept every AI call atomic.
+
+Three observed friction sources motivate Group B:
+
+1. **No incremental feedback during long generations.** A Claude
+   Sonnet 4.6 explanation of a non-trivial SQL statement can take
+   8–30 seconds end-to-end. The Stage 1 UI shows a spinner with no
+   intermediate output, so the user cannot tell whether the
+   request is making progress, has stalled, or has produced a
+   wrong direction worth aborting.
+2. **No way to abort an in-flight request.** Stage 1 has no cancel
+   button. A user who realises mid-generation that the prompt was
+   wrong, or that the response is heading in a useless direction,
+   has no way to reclaim the tokens that have not yet been
+   generated. The only option is to wait for completion (token
+   spend already committed) or to close the AI panel (the request
+   continues, the response is discarded).
+3. **No visibility into token spend.** `AiResponse` already carries
+   `tokens_in` / `tokens_out` (Stage 1, ADR-0023), but the
+   `AiPanel` does not render them. Without visible cost per
+   request, the user cannot calibrate how aggressively to use the
+   AI features.
+
+The audit of the existing AI surface (the slice-b PR #43 baseline)
+found three pieces of infrastructure that were **already reserved**
+in Stage 1 but unused:
+
+- `AiCapabilities::has_streaming` — boolean flag, declared
+  Stage 1, set to `false` by every provider so far.
+- `AiError::Cancelled` — variant declared Stage 1 with no payload,
+  no production code path emits it.
+- `AiResponse.tokens_in` / `tokens_out` — `u32` fields populated
+  by `dbboard-anthropic` since PR #22 but never read by the UI.
+
+This ADR activates all three rather than introducing parallel
+machinery.
+
+### Research summary
+
+The Anthropic Messages API streams via Server-Sent Events when
+called with `"stream": true`. The wire format is RFC SSE
+(`event: <type>\ndata: <json>\n\n`). Required headers are
+unchanged from the non-streaming path (`x-api-key`,
+`anthropic-version: 2023-06-01`, `content-type: application/json`).
+
+Event sequence (per Anthropic's streaming reference):
+
+```
+message_start                        // initial Message stub + usage.input_tokens
+( content_block_start
+  ( content_block_delta )+           // delta.type = text_delta (also: input_json_delta,
+  content_block_stop )+              //              thinking_delta, signature_delta)
+( message_delta )+                   // delta.stop_reason, cumulative usage.output_tokens
+message_stop
+```
+
+Two cross-cutting concerns: `ping` events can appear at any
+point (must be tolerated, never surfaced), and `error` events
+(`overloaded_error`, etc.) can interrupt mid-stream and must map
+to `AiError::Provider`. **Critical:** the `usage.output_tokens`
+field in `message_delta` is **cumulative**, not incremental — the
+token meter reads the *last* observed value rather than summing
+deltas.
+
+The Rust SSE crate landscape converged on **`reqwest-eventsource`**
+(builds on `eventsource-stream`, adds a `RequestBuilder.eventsource()`
+extension method and an explicit `.close()`). Production Rust
+Anthropic clients — `bosun-ai/async-anthropic`, `spiceai/spiceai`,
+`zed-industries/zed`, `microsoft/prompty`, `Kuberwastaken/claurst` —
+all return `Pin<Box<dyn Stream<Item = Result<Event, E>> + Send>>`
+(equivalent to `futures::stream::BoxStream<'static, _>`) and all
+cancel by dropping the stream (reqwest closes the underlying h2
+connection on drop, no `unsafe` and no `tokio_util::CancellationToken`
+coupling in the trait).
+
+### Decision
+
+1. **Additive trait extension.** Add two methods to `AiProvider`
+   alongside the existing `explain` / `suggest_sql`. No existing
+   method changes shape:
+
+   ```rust
+   pub type AiStream =
+       futures::stream::BoxStream<'static, AiResult<StreamEvent>>;
+
+   #[async_trait]
+   pub trait AiProvider: Send + Sync {
+       fn id(&self) -> &'static str;
+       fn capabilities(&self) -> AiCapabilities;
+       async fn explain(&self, req: &ExplainRequest)
+           -> AiResult<AiResponse>;                              // unchanged
+       async fn suggest_sql(&self, req: &SuggestRequest)
+           -> AiResult<AiResponse>;                              // unchanged
+       async fn stream_explain(&self, req: &ExplainRequest)
+           -> AiResult<AiStream>;                                // new
+       async fn stream_suggest_sql(&self, req: &SuggestRequest)
+           -> AiResult<AiStream>;                                // new
+   }
+   ```
+
+   Trait stays object-safe under `Arc<dyn AiProvider>`.
+   `#[async_trait]` is kept because dropping it for `impl Future`
+   would re-break object-safety, and every production Rust
+   Anthropic client surveyed uses the same pattern.
+
+2. **Default implementations delegate to the atomic methods.**
+   `stream_explain` and `stream_suggest_sql` ship default bodies
+   that call `self.explain(...)` (resp. `self.suggest_sql(...)`)
+   and yield the full response as a one-shot
+   `TextDelta` + `Usage` + `MessageStop` event sequence. This
+   means any provider that does **not** override the streaming
+   methods (and any future non-Anthropic provider) still satisfies
+   the streaming contract — they just stream a single chunk.
+   `AiCapabilities::has_streaming` distinguishes the two: `true`
+   means "this provider produces token-granularity chunks", `false`
+   means "the default delegate is in effect and chunks arrive
+   in one piece".
+
+3. **`StreamEvent` is a normalized enum, not a re-export of the
+   Anthropic shape.** The trait surface stays
+   provider-independent:
+
+   ```rust
+   pub enum StreamEvent {
+       MessageStart { tokens_in: u32 },          // input usage snapshot
+       TextDelta(String),                        // append to accumulated text
+       Usage { tokens_in: u32, tokens_out: u32 },// cumulative; replace meter
+       MessageStop { stop_reason: StopReason },  // end-of-stream marker
+       Error(AiError),                           // mid-stream interruption
+   }
+
+   pub enum StopReason {
+       EndTurn,
+       MaxTokens,
+       StopSequence,
+       ToolUse,
+       Refusal,
+       Other(String),
+   }
+   ```
+
+   `input_json_delta` / `thinking_delta` / `signature_delta` (the
+   non-`text_delta` content-block deltas Anthropic emits for
+   tool-use / extended thinking) are **dropped** at the provider
+   layer for Group B — the UI does not need to render them and
+   surfacing them would lock the contract to Anthropic. Group D
+   (function-calling) can revisit.
+
+4. **SSE crate: `reqwest-eventsource` with `RetryPolicy::Never`.**
+   New dependency on `crates/dbboard-anthropic/Cargo.toml`. Retry
+   is disabled because token-billed POSTs must not silently
+   retry — a transparent retry doubles the cost and confuses
+   token accounting. A 5xx is surfaced as `StreamEvent::Error`
+   exactly once.
+
+5. **Cancel is drop-the-stream, never a trait-level token.** The
+   `AiProvider` trait does **not** take a `CancellationToken`
+   argument. The `dbboard-ui` worker owns the stream future and a
+   per-request `tokio_util::sync::CancellationToken`, and uses
+   `tokio::select!` to race the stream against the token. On
+   cancel the worker drops the `BoxStream`, which drops the
+   `EventSource`, which drops the underlying `reqwest::Response`,
+   which closes the h2 connection — propagating server-side
+   cancellation. No `unsafe`, no manual abort plumbing in the
+   trait. (Decision verified against `bosun-ai/async-anthropic`,
+   `zed-industries/zed`, `spiceai/spiceai` — none threads a token
+   through the trait.)
+
+6. **Worker channel: additive `Command` / `Reply` variants.**
+   Existing `Command::AiExplain` / `AiSuggest` and
+   `Reply::AiResponded` / `AiFailed` stay verbatim. New variants:
+
+   ```rust
+   enum Command {
+       // existing variants unchanged
+       AiExplainStream  { sql: String, dialect: Option<String> },
+       AiSuggestStream  { prompt: String, dialect: Option<String>,
+                          schema: Vec<TableInfo> },
+       CancelAiRequest,
+   }
+
+   enum Reply {
+       // existing variants unchanged
+       AiChunk          { text_delta: String,
+                          tokens_in:  Option<u32>,
+                          tokens_out: Option<u32> },
+       AiStreamComplete { tokens_in:  u32,
+                          tokens_out: u32,
+                          stop_reason: StopReason },
+       AiCancelled,
+   }
+   ```
+
+   `AiChunk.tokens_*` are `Option<u32>` because the typical
+   `content_block_delta` event carries no usage data — only
+   `message_start` and `message_delta` events do. The UI
+   replaces the last-known-good value when `Some`, leaves it
+   alone when `None`. `Reply::AiFailed` continues to carry
+   pre-stream errors; mid-stream errors arrive as
+   `Reply::AiChunk` is interrupted, then a `Reply::AiFailed
+   { error: AiError::Provider(...) }` closes the stream.
+
+7. **Token meter reads the cumulative value.** The UI keeps a
+   `last_tokens_in: Option<u32>` and `last_tokens_out: Option<u32>`
+   pair and **replaces** them on each `AiChunk.tokens_*` that
+   arrives, rather than summing deltas. This matches the
+   Anthropic `message_delta.usage.output_tokens` semantics
+   (cumulative within a single message). On `AiStreamComplete`
+   the final values are written to `AiResponse.tokens_in` /
+   `tokens_out` for the `last_response` field (so the meter
+   stays visible after the stream ends).
+
+8. **`AiCapabilities::has_streaming` is now a contract.** A
+   provider that returns `has_streaming = true` MUST override
+   `stream_explain` / `stream_suggest_sql` with a real streaming
+   implementation. A provider that returns `has_streaming = false`
+   gets the default delegate (single chunk). `dbboard-anthropic`
+   sets `has_streaming = true`. The UI consults this flag to
+   gate the streaming-mode toggle in `AiPanel`.
+
+9. **Streaming is opt-in via a `AiPanel` toggle.** Default behavior
+   stays atomic (`Command::AiExplain` / `AiSuggest`) so existing
+   tests and user flows are unaffected. A new toggle "Stream
+   response" appears in `AiPanel` when
+   `provider.capabilities().has_streaming == true`. When checked,
+   the panel sends the `*Stream` command variants and renders
+   chunks incrementally; when unchecked, behavior is bit-for-bit
+   the same as before this ADR.
+
+10. **Cancel button policy.** The cancel button is enabled
+    whenever `busy == true`, including in the atomic path (it
+    sends `Command::CancelAiRequest`, the worker drops the
+    in-flight future — same drop-the-future cancel mechanism).
+    In the atomic path the worker emits `Reply::AiCancelled` and
+    the panel resets to idle. The intent is "cancel is always
+    possible while busy", not "cancel only when streaming".
+
+11. **Mid-flight provider swap behavior is unchanged.** ADR-0025
+    Decision 6 (the slot snapshot at dispatch time, in-flight
+    requests complete on the old provider, next request uses the
+    new) carries over for the stream path. A swap during a
+    stream does **not** cancel the stream; the user can press
+    Cancel explicitly if desired. This keeps the swap behavior
+    predictable and avoids needing a swap → cancel coupling.
+
+12. **`AiError::Cancelled` is the only outcome for user-initiated
+    cancellation.** A cancelled request does not transition to
+    `AiError::Network` or `AiError::Provider` even though the
+    underlying reqwest connection closed. The worker sets the
+    error variant based on which arm of the `select!` fired (the
+    cancel arm → `Cancelled`; the stream-error arm → preserve the
+    provider's error). The UI renders `Cancelled` distinctly from
+    `Failed` (no error banner, just "Cancelled.").
+
+### Alternatives considered
+
+- **Change the existing methods to return `AiStream`.** Breaking
+  change. Would force every future provider to implement
+  streaming or wrap a one-shot in a stream. Additive is cleaner
+  and matches ADR-0023's "additive only" SemVer posture for
+  `dbboard-ai`.
+
+- **Use `eventsource-stream` directly without
+  `reqwest-eventsource`.** Saves one direct dep. Loses the
+  `RequestBuilder.eventsource()` ergonomics and the explicit
+  `.close()`. The dep weight delta is negligible (both crates
+  are tiny) and `reqwest-eventsource` is what every surveyed
+  production Rust Anthropic client uses.
+
+- **Hand-roll SSE on `reqwest::Response::bytes_stream()` +
+  `LinesCodec`.** zed-industries/zed does this. Saves the
+  dependency entirely but reimplements the CRLF / `:`-comments /
+  multi-line `data:` parsing that the SSE spec requires. The bug
+  surface is real (zed has open issues against their parser) and
+  not worth the saving.
+
+- **Thread a `CancellationToken` through the trait.** Couples
+  `dbboard-ai` to `tokio_util`. None of the surveyed production
+  Rust Anthropic clients do this. Drop-the-stream is the
+  idiomatic choice and matches how `reqwest` documents
+  cancellation.
+
+- **Sum token deltas instead of reading cumulative values.**
+  Would produce incorrect totals because Anthropic explicitly
+  documents `message_delta.usage.output_tokens` as cumulative
+  within the message. Adding deltas would double-count.
+
+- **Add a `Reply::AiStreamProgress` distinct from `AiChunk`.**
+  Two reply variants for the same conceptual event ("the stream
+  produced data") complicate the panel's `drain_replies` arm.
+  One `AiChunk` variant with optional usage fields is enough.
+
+- **Make streaming the default and atomic the opt-in.** Risk: a
+  user who has not noticed the new mode toggle would suddenly
+  see incremental rendering on every request, which changes the
+  feel of the AI panel for everyone. Opt-in keeps the change
+  isolated to users who want it.
+
+### Consequences
+
+- **New crate dependency:** `reqwest-eventsource` (latest stable,
+  pinned in `crates/dbboard-anthropic/Cargo.toml`). Workspace
+  `cargo deny check` must accept it. License (`MIT OR Apache-2.0`)
+  matches the existing policy.
+
+- **`dbboard-ai`:** trait gains two methods, one new `AiStream`
+  type alias, one new `StreamEvent` enum, one new `StopReason`
+  enum. The crate still has no runtime I/O — `BoxStream` is
+  `futures::stream` re-exported, no `tokio` runtime dep added.
+
+- **`dbboard-anthropic`:** new module wiring
+  `reqwest-eventsource`, new SSE event parser (small — maps
+  Anthropic event types into the normalized `StreamEvent`), new
+  wiremock tests for happy-path / mid-stream error / cancel-drop.
+  `has_streaming = true` capability flag.
+
+- **`dbboard-ui`:** new `Command` variants, new `Reply` variants,
+  new worker dispatch arms using `tokio::select!`, new
+  `AiPanel` state (`streaming_enabled: bool`, `accumulated_text:
+  String`, `last_tokens_in/out: Option<u32>`, cancel signal
+  handle). 3 new Fluent keys (`ai-cancel-button`,
+  `ai-stream-toggle`, `ai-tokens-meter`) × 11 locales
+  (ADR-0022 same-commit sync).
+
+- **`apps/dbboard`:** no change. The `DbboardApp::connect`
+  signature does not gain a new argument — streaming flows
+  through the existing `Arc<dyn AiProvider>` because the trait
+  carries the new methods.
+
+- **HTTP contract (`docs/api-contract.md`):** unchanged. AI
+  streaming is in-process, same posture as ADR-0023 Decision 3.
+  No new endpoints, no new error categories, no new DTOs.
+
+- **Per-record history JSON schema:** unchanged. Streaming
+  responses are not recorded in `history.jsonl` — Group C
+  (deferred) is the ADR that lifts that, and Group C is when
+  the v:2 schema bump is debated.
+
+- **Cross-repo coordination:** **none required.** ADR-0023
+  Decision 3 keeps AI off the HTTP wire, and
+  `.claude/issues/0007-web-ai-phase6-no-contract-mirror.md` (PR
+  #33, 2026-06-23) already pre-announced that web's Phase 6 AI
+  work ships independently. Group B does not change that posture.
+  No new `0NNN-web-*-no-mirror.md` brief is needed.
+
+- **Implementation slicing:** issue 0009 may split into (a)
+  `dbboard-ai` trait extension + `StreamEvent` types + default
+  delegate impls, (b) `dbboard-anthropic` SSE implementation +
+  wiremock tests, (c) `dbboard-ui` worker plumbing + `AiPanel`
+  toggle + cancel button + token meter + Fluent keys, (d) docs
+  sweep. May land as one PR or four; the ADR does not prescribe.
+
+- **SemVer impact (ADR-0011):** additive. New trait methods
+  (with default impls, so existing impls do not break — the
+  one existing impl in `dbboard-anthropic` will override).
+  New public types in `dbboard-ai`. New worker channel
+  variants. No removed surface. No HTTP contract changes. No
+  `dbboard-core` changes.
+
