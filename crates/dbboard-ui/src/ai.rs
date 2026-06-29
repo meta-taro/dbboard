@@ -16,7 +16,7 @@
 //! channel. [`AiPanel::on_response`] / [`AiPanel::on_error`] are the
 //! reply-side halves invoked from `drain_replies`.
 
-use dbboard_ai::AiError;
+use dbboard_ai::{AiError, StopReason};
 use dbboard_core::TableInfo;
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
@@ -155,6 +155,50 @@ impl AiPanel {
     pub fn on_error(&mut self, error: &AiError) {
         self.busy = false;
         self.last_response = Some(Err(ai_error_display(error)));
+    }
+
+    /// ADR-0026 Decision 6: one streaming chunk arrived. The panel
+    /// accumulates text into the in-progress view and replaces the
+    /// token meter when the chunk carries cumulative usage
+    /// (Decision 7). Slice (c) keeps the implementation minimal —
+    /// slice (d) replaces this with an `Streaming { acc, tokens }`
+    /// state variant so the panel can render the in-progress text and
+    /// expose a Cancel button. For now it is a no-op signal that the
+    /// stream is making progress, sufficient to satisfy the
+    /// `drain_replies` exhaustiveness check.
+    #[allow(unused_variables)]
+    pub fn on_stream_chunk(
+        &mut self,
+        text_delta: &str,
+        tokens_in: Option<u32>,
+        tokens_out: Option<u32>,
+    ) {
+        // slice (d): accumulate text_delta + persist tokens
+    }
+
+    /// ADR-0026 Decision 6: the stream terminated successfully. Treat
+    /// this as the streaming-path equivalent of [`on_response`]: clear
+    /// busy and surface the final token counts. Slice (d) will replace
+    /// this with a transition from `Streaming { acc }` to
+    /// `Idle { last_response: Ok(...) }` carrying the accumulated text;
+    /// for now we only need busy to reset so the panel reaches idle.
+    #[allow(unused_variables)]
+    pub fn on_stream_complete(
+        &mut self,
+        tokens_in: u32,
+        tokens_out: u32,
+        stop_reason: &StopReason,
+    ) {
+        self.busy = false;
+        // slice (d): write final tokens into a streaming AiResponseView
+    }
+
+    /// ADR-0026 Decision 12: the in-flight request was cancelled.
+    /// Reset busy without surfacing an error banner. Slice (d) will
+    /// render a "Cancelled." sublabel under the panel; for now the
+    /// busy reset is all the state machine needs.
+    pub fn on_cancelled(&mut self) {
+        self.busy = false;
     }
 
     /// Render the panel as an `egui::Window`. Returns `Some(command)`
