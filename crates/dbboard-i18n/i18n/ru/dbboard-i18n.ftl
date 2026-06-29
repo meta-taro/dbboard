@@ -58,3 +58,24 @@ ai-error-prefix-network = Сетевая ошибка ИИ
 ai-error-prefix-provider = Ошибка поставщика ИИ
 ai-error-prefix-quota = Превышена квота ИИ
 ai-error-prefix-cancelled = Запрос ИИ отменён
+
+# ADR-0025 Phase 4 Stage 2 Group A slice (b): окно настроек провайдеров ИИ.
+ai-settings-menu-button = Провайдеры ИИ
+ai-settings-window-title = Провайдеры ИИ
+ai-settings-list-empty = (нет настроенных провайдеров ИИ)
+ai-settings-add-button = Добавить
+ai-settings-edit-button = Изменить
+ai-settings-delete-button = Удалить
+ai-settings-save-button = Сохранить
+ai-settings-cancel-button = Отмена
+ai-settings-use-button = Использовать
+ai-settings-confirm-delete = Удалить этого провайдера ИИ?
+ai-settings-active-marker = (активен)
+ai-settings-field-id = Идентификатор
+ai-settings-field-name = Имя
+ai-settings-field-kind = Тип
+ai-settings-field-model = Модель (необязательно)
+ai-settings-field-api-key = API-ключ
+ai-settings-replace-api-key = Заменить API-ключ
+ai-settings-kind-anthropic = Anthropic
+ai-active-with-name = Активный: { $name }

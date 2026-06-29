@@ -80,3 +80,31 @@ ai-error-prefix-network = AI network error
 ai-error-prefix-provider = AI provider error
 ai-error-prefix-quota = AI quota exceeded
 ai-error-prefix-cancelled = AI request cancelled
+
+# ADR-0025 Phase 4 Stage 2 Group A slice (b): AI provider Settings
+# window. Sits next to the `connections-*` family and reuses its
+# Add/Edit/Delete/Save/Cancel shape — kept as distinct keys so locales
+# can diverge per context (e.g. "Save connection" vs "Save provider"
+# may want different verbs in some languages).
+ai-settings-menu-button = AI Providers
+ai-settings-window-title = AI Providers
+ai-settings-list-empty = (no AI providers configured)
+ai-settings-add-button = Add
+ai-settings-edit-button = Edit
+ai-settings-delete-button = Delete
+ai-settings-save-button = Save
+ai-settings-cancel-button = Cancel
+ai-settings-use-button = Use
+ai-settings-confirm-delete = Delete this AI provider?
+ai-settings-active-marker = (active)
+ai-settings-field-id = Id
+ai-settings-field-name = Name
+ai-settings-field-kind = Kind
+ai-settings-field-model = Model (optional)
+ai-settings-field-api-key = API key
+ai-settings-replace-api-key = Replace API key
+ai-settings-kind-anthropic = Anthropic
+# Subtitle on the AI assistant panel showing which provider is bound
+# to the in-process slot right now. Rendered only when a provider is
+# active (i.e. the panel is visible).
+ai-active-with-name = Active: { $name }

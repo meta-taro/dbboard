@@ -58,3 +58,24 @@ ai-error-prefix-network = Erreur réseau IA
 ai-error-prefix-provider = Erreur du fournisseur IA
 ai-error-prefix-quota = Quota IA dépassé
 ai-error-prefix-cancelled = Requête IA annulée
+
+# ADR-0025 Phase 4 Stage 2 Group A slice (b) : fenêtre de paramètres des fournisseurs IA.
+ai-settings-menu-button = Fournisseurs IA
+ai-settings-window-title = Fournisseurs IA
+ai-settings-list-empty = (aucun fournisseur IA configuré)
+ai-settings-add-button = Ajouter
+ai-settings-edit-button = Modifier
+ai-settings-delete-button = Supprimer
+ai-settings-save-button = Enregistrer
+ai-settings-cancel-button = Annuler
+ai-settings-use-button = Utiliser
+ai-settings-confirm-delete = Supprimer ce fournisseur IA ?
+ai-settings-active-marker = (actif)
+ai-settings-field-id = Id
+ai-settings-field-name = Nom
+ai-settings-field-kind = Type
+ai-settings-field-model = Modèle (optionnel)
+ai-settings-field-api-key = Clé API
+ai-settings-replace-api-key = Remplacer la clé API
+ai-settings-kind-anthropic = Anthropic
+ai-active-with-name = Actif : { $name }

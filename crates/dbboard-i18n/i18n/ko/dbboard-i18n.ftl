@@ -58,3 +58,24 @@ ai-error-prefix-network = AI 네트워크 오류
 ai-error-prefix-provider = AI 제공자 오류
 ai-error-prefix-quota = AI 할당량 초과
 ai-error-prefix-cancelled = AI 요청 취소됨
+
+# ADR-0025 Phase 4 Stage 2 Group A slice (b): AI 공급자 설정 창.
+ai-settings-menu-button = AI 공급자
+ai-settings-window-title = AI 공급자
+ai-settings-list-empty = (구성된 AI 공급자가 없습니다)
+ai-settings-add-button = 추가
+ai-settings-edit-button = 편집
+ai-settings-delete-button = 삭제
+ai-settings-save-button = 저장
+ai-settings-cancel-button = 취소
+ai-settings-use-button = 사용
+ai-settings-confirm-delete = 이 AI 공급자를 삭제하시겠습니까?
+ai-settings-active-marker = (사용 중)
+ai-settings-field-id = ID
+ai-settings-field-name = 이름
+ai-settings-field-kind = 종류
+ai-settings-field-model = 모델 (선택)
+ai-settings-field-api-key = API 키
+ai-settings-replace-api-key = API 키 교체
+ai-settings-kind-anthropic = Anthropic
+ai-active-with-name = 사용 중: { $name }
