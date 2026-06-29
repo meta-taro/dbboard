@@ -58,3 +58,24 @@ ai-error-prefix-network = KI-Netzwerkfehler
 ai-error-prefix-provider = KI-Anbieterfehler
 ai-error-prefix-quota = KI-Kontingent überschritten
 ai-error-prefix-cancelled = KI-Anfrage abgebrochen
+
+# ADR-0025 Phase 4 Stage 2 Group A slice (b): KI-Anbieter-Einstellungsfenster.
+ai-settings-menu-button = KI-Anbieter
+ai-settings-window-title = KI-Anbieter
+ai-settings-list-empty = (keine KI-Anbieter konfiguriert)
+ai-settings-add-button = Hinzufügen
+ai-settings-edit-button = Bearbeiten
+ai-settings-delete-button = Löschen
+ai-settings-save-button = Speichern
+ai-settings-cancel-button = Abbrechen
+ai-settings-use-button = Verwenden
+ai-settings-confirm-delete = Diesen KI-Anbieter löschen?
+ai-settings-active-marker = (aktiv)
+ai-settings-field-id = ID
+ai-settings-field-name = Name
+ai-settings-field-kind = Art
+ai-settings-field-model = Modell (optional)
+ai-settings-field-api-key = API-Schlüssel
+ai-settings-replace-api-key = API-Schlüssel ersetzen
+ai-settings-kind-anthropic = Anthropic
+ai-active-with-name = Aktiv: { $name }

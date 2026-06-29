@@ -58,3 +58,24 @@ ai-error-prefix-network = AI 网络错误
 ai-error-prefix-provider = AI 提供方错误
 ai-error-prefix-quota = AI 配额已超出
 ai-error-prefix-cancelled = AI 请求已取消
+
+# ADR-0025 Phase 4 Stage 2 Group A slice (b)：AI 提供商设置窗口。
+ai-settings-menu-button = AI 提供商
+ai-settings-window-title = AI 提供商
+ai-settings-list-empty = （未配置 AI 提供商）
+ai-settings-add-button = 添加
+ai-settings-edit-button = 编辑
+ai-settings-delete-button = 删除
+ai-settings-save-button = 保存
+ai-settings-cancel-button = 取消
+ai-settings-use-button = 使用
+ai-settings-confirm-delete = 删除此 AI 提供商？
+ai-settings-active-marker = （活动）
+ai-settings-field-id = ID
+ai-settings-field-name = 名称
+ai-settings-field-kind = 类型
+ai-settings-field-model = 模型（可选）
+ai-settings-field-api-key = API 密钥
+ai-settings-replace-api-key = 替换 API 密钥
+ai-settings-kind-anthropic = Anthropic
+ai-active-with-name = 活动：{ $name }
