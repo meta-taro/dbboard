@@ -1,6 +1,11 @@
 # 0008: AI provider Settings UI + `ai-providers.toml` + runtime switcher (Phase 4 Stage 2 Group A)
 
-- **Status**: open — opens against ADR-0025 (2026-06-24).
+- **Status**: closed 2026-06-29 — implementation landed across PRs
+  #37 / #39 / #41 and `feature/ai-settings-ui` (this PR). All four
+  slices (a-1, a-2-α, a-2-β, b) shipped; the deferred Stage 2 items
+  (streaming, cancel, AI in history.jsonl, full DDL, function-calling)
+  remain in ADR-0023 §9 and are tracked under future Group B / C / D
+  issues, not here.
 - **Phase**: 4 Stage 2 Group A (Persistence + Switcher).
   Phase 4 Stage 1 (issue 0005) is closed.
 - **Opened**: 2026-06-24
