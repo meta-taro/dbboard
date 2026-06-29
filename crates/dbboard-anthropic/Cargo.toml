@@ -22,6 +22,13 @@ async-trait = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# ADR-0026 Decision 4: SSE streaming on the Messages API uses
+# reqwest-eventsource for the EventSource wrapper + explicit
+# RetryPolicy::Never (token-billed POSTs must not silently retry).
+reqwest-eventsource = "0.6"
+# Underlying Stream trait for the AiStream return type. futures-util
+# is already a workspace dep (sqlx fetch_many path).
+futures-util = { workspace = true }
 
 [dev-dependencies]
 # Drives the async `AiProvider` calls under `#[tokio::test]`.
