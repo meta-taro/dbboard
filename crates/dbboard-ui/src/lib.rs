@@ -40,7 +40,7 @@ pub use worker::{AiProviderSlot, AiProviderSwitcher, ConnectionSwitcher};
 // (return type `Result<(), DbError>`) without taking a direct dep on
 // `dbboard-core` — the architecture rule is that only the server and
 // adapters link to `dbboard-core` (see CLAUDE.md).
-pub use dbboard_ai::{AiError, AiProvider};
+pub use dbboard_ai::{AiError, AiProvider, StopReason};
 pub use dbboard_core::DbError;
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -85,6 +85,31 @@ pub enum Command {
     /// supplied by the binary. Surfaces as `Reply::AiProviderSwitched`
     /// or `Reply::AiProviderSwitchFailed`.
     SwitchAiProvider { id: String },
+    /// Streaming counterpart to [`Command::AiExplain`] (ADR-0026
+    /// Decision 6). Routed to `AiProvider::stream_explain` by the
+    /// worker. Each provider chunk surfaces as [`Reply::AiChunk`];
+    /// the stream terminates with [`Reply::AiStreamComplete`] or with
+    /// [`Reply::AiFailed`] on mid-stream error. A [`Command::CancelAiRequest`]
+    /// arriving while this stream is in flight drops the underlying
+    /// future and surfaces [`Reply::AiCancelled`].
+    AiExplainStream {
+        sql: String,
+        dialect: Option<String>,
+    },
+    /// Streaming counterpart to [`Command::AiSuggest`] (ADR-0026
+    /// Decision 6). Same dispatch / reply semantics as
+    /// [`Command::AiExplainStream`].
+    AiSuggestStream {
+        prompt: String,
+        dialect: Option<String>,
+        schema: Vec<TableInfo>,
+    },
+    /// Cancel the in-flight AI request, if any (ADR-0026 Decision 5).
+    /// The worker drops the active stream / one-shot future and emits
+    /// [`Reply::AiCancelled`]; no-op when no request is in flight.
+    /// The cancel button surfaces this in both streaming and atomic
+    /// paths per ADR-0026 Decision 10.
+    CancelAiRequest,
 }
 
 /// Result flowing worker → UI.
@@ -132,6 +157,35 @@ pub enum Reply {
     AiProviderSwitchFailed {
         reason: String,
     },
+    /// One chunk of an in-flight AI stream (ADR-0026 Decision 6).
+    /// `text_delta` is the incremental text to append to the panel's
+    /// accumulated response (empty string for usage-only events such as
+    /// the initial `message_start`). `tokens_in` / `tokens_out` are
+    /// `Some` only on events that carry cumulative usage (typically the
+    /// initial `message_start` and the final `message_delta`); the UI
+    /// **replaces** the running meter with `Some` values, leaves it
+    /// alone otherwise (ADR-0026 Decision 7 — Anthropic
+    /// `usage.output_tokens` is cumulative, not incremental).
+    AiChunk {
+        text_delta: String,
+        tokens_in: Option<u32>,
+        tokens_out: Option<u32>,
+    },
+    /// Terminal marker for a successful AI stream (ADR-0026 Decision 6).
+    /// Carries the final cumulative token counts and the provider's
+    /// `stop_reason`. The panel clears its busy flag here and persists
+    /// the final tokens to its visible meter.
+    AiStreamComplete {
+        tokens_in: u32,
+        tokens_out: u32,
+        stop_reason: StopReason,
+    },
+    /// The in-flight AI request was cancelled by the user (ADR-0026
+    /// Decision 5). Reset the panel's busy flag and render "Cancelled."
+    /// without surfacing an error banner (ADR-0026 Decision 12). Emitted
+    /// for both the streaming and the atomic dispatch paths
+    /// (Decision 10).
+    AiCancelled,
 }
 
 /// Captures everything we know at submit time about a query whose reply
@@ -372,6 +426,37 @@ impl DbboardApp {
                 }
                 Reply::AiProviderSwitchFailed { reason } => {
                     self.last_ai_switch_error = Some(reason);
+                }
+                // ADR-0026 Decision 6: streaming chunks. Slice (c)
+                // wires the worker channel; slice (d) extends
+                // [`AiPanel`] with the accumulator + token meter. For
+                // now the panel does not emit `*Stream` commands so
+                // these arms only fire under tests that drive the
+                // worker directly.
+                Reply::AiChunk {
+                    text_delta,
+                    tokens_in,
+                    tokens_out,
+                } => {
+                    self.ai_panel
+                        .on_stream_chunk(&text_delta, tokens_in, tokens_out);
+                }
+                Reply::AiStreamComplete {
+                    tokens_in,
+                    tokens_out,
+                    stop_reason,
+                } => {
+                    self.ai_panel
+                        .on_stream_complete(tokens_in, tokens_out, &stop_reason);
+                }
+                // ADR-0026 Decision 12: a user-initiated cancel resets
+                // the panel without surfacing an error banner. Lives in
+                // its own arm because `AiError::Cancelled` is never the
+                // payload of `Reply::AiFailed` (the cancel arm of the
+                // `select!` short-circuits before `AiResult::Err` ever
+                // forms).
+                Reply::AiCancelled => {
+                    self.ai_panel.on_cancelled();
                 }
             }
         }

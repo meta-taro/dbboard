@@ -20,14 +20,31 @@
 //! injected [`ConnectionSwitcher`] supplied by the binary, which holds
 //! everything the swap needs (the live `AppState`, the connection
 //! store, secrets, and a runtime handle for `build_adapter`).
+//!
+//! ADR-0026 (Group B, AI streaming + cancel) keeps the `std::mpsc` <-> UI
+//! contract unchanged but rewires the inside of the worker. The main
+//! loop now runs on the runtime (`rt.block_on(async { ... })`) so the
+//! AI streaming arms can `tokio::spawn` a per-request task and the main
+//! loop can keep draining commands while a stream is in flight. A
+//! short bridge thread shuttles `std::mpsc` commands into a
+//! `tokio::mpsc` channel so the main loop can `.await` on `recv()`. A
+//! single-slot `Option<CancellationToken>` tracks the in-flight AI
+//! request; `Command::CancelAiRequest` `.cancel()`s it, the spawned
+//! task observes the cancellation via `tokio::select!` and emits
+//! `Reply::AiCancelled`.
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::thread;
 
-use dbboard_ai::{AiError, AiProvider, ExplainRequest, SuggestRequest};
+use dbboard_ai::{
+    AiError, AiProvider, AiStream, ExplainRequest, StopReason, StreamEvent, SuggestRequest,
+};
 use dbboard_core::DbError;
 use eframe::egui;
+use futures_util::StreamExt;
+use tokio::sync::mpsc as tmpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Shared, atomically-swappable slot for the active AI provider
 /// (ADR-0025). The binary constructs the slot once at startup
@@ -125,12 +142,12 @@ pub(crate) fn spawn_worker(
         .spawn(move || {
             run_worker(
                 &base_url,
-                &cmd_rx,
-                &reply_tx,
-                &egui_ctx,
-                switcher.as_ref(),
-                ai_switcher.as_ref(),
-                &ai_provider_slot,
+                cmd_rx,
+                reply_tx,
+                egui_ctx,
+                switcher,
+                ai_switcher,
+                ai_provider_slot,
             );
         })
         .expect("spawn dbboard-http-worker thread");
@@ -138,12 +155,12 @@ pub(crate) fn spawn_worker(
 
 fn run_worker(
     base_url: &str,
-    cmd_rx: &Receiver<Command>,
-    reply_tx: &Sender<Reply>,
-    egui_ctx: &egui::Context,
-    switcher: &dyn ConnectionSwitcher,
-    ai_switcher: &dyn AiProviderSwitcher,
-    ai_provider_slot: &AiProviderSlot,
+    cmd_rx: Receiver<Command>,
+    reply_tx: Sender<Reply>,
+    egui_ctx: egui::Context,
+    switcher: Arc<dyn ConnectionSwitcher>,
+    ai_switcher: Arc<dyn AiProviderSwitcher>,
+    ai_provider_slot: AiProviderSlot,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -152,10 +169,10 @@ fn run_worker(
         Ok(rt) => rt,
         Err(e) => {
             return report_fatal(
-                reply_tx,
-                egui_ctx,
+                &reply_tx,
+                &egui_ctx,
                 &DbError::Connection(e.to_string()),
-                cmd_rx,
+                &cmd_rx,
             )
         }
     };
@@ -163,99 +180,454 @@ fn run_worker(
         Ok(client) => client,
         Err(e) => {
             return report_fatal(
-                reply_tx,
-                egui_ctx,
+                &reply_tx,
+                &egui_ctx,
                 &DbError::Connection(e.to_string()),
-                cmd_rx,
+                &cmd_rx,
             )
         }
     };
 
-    while let Ok(cmd) = cmd_rx.recv() {
-        // Snapshot the slot per dispatch so a swap performed between
-        // commands becomes visible on the very next tick. The clone is
-        // a single `Arc::clone` — the underlying provider is shared, not
-        // copied. A poisoned lock is recovered into the inner value
-        // because a writer panicking mid-swap leaves the slot in a
-        // valid (Some or None) state.
-        let snapshot: Option<Arc<dyn AiProvider>> = ai_provider_slot
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let reply = rt.block_on(dispatch(
+    // ADR-0026: bridge the synchronous UI-side `cmd_rx` onto a
+    // tokio mpsc channel so the main loop can `.await recv()` and
+    // share the runtime with spawned streaming tasks. The bridge
+    // thread exits when the UI side hangs up; the tokio receiver
+    // then yields `None` and the runtime block returns.
+    let (tokio_cmd_tx, tokio_cmd_rx) = tmpsc::unbounded_channel::<Command>();
+    thread::Builder::new()
+        .name("dbboard-cmd-bridge".into())
+        .spawn(move || {
+            while let Ok(cmd) = cmd_rx.recv() {
+                if tokio_cmd_tx.send(cmd).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn dbboard-cmd-bridge thread");
+
+    rt.block_on(run_command_loop(
+        base_url,
+        tokio_cmd_rx,
+        reply_tx,
+        egui_ctx,
+        http,
+        switcher,
+        ai_switcher,
+        ai_provider_slot,
+    ));
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_command_loop(
+    base_url: &str,
+    mut cmd_rx: tmpsc::UnboundedReceiver<Command>,
+    reply_tx: Sender<Reply>,
+    egui_ctx: egui::Context,
+    http: reqwest::Client,
+    switcher: Arc<dyn ConnectionSwitcher>,
+    ai_switcher: Arc<dyn AiProviderSwitcher>,
+    ai_provider_slot: AiProviderSlot,
+) {
+    // Single-slot in-flight AI cancel handle. ADR-0026's UI gates every
+    // AI command on `busy`, so at most one AI request is in flight at
+    // any time — a HashMap is unnecessary. A stale Some value left
+    // after a task completes naturally is harmless: the next AI command
+    // overwrites it, and a CancelAiRequest on it just `.cancel()`s a
+    // token nobody is listening on.
+    let mut in_flight: Option<CancellationToken> = None;
+    while let Some(cmd) = cmd_rx.recv().await {
+        handle_command(
             cmd,
-            &http,
+            &mut in_flight,
             base_url,
-            switcher,
-            ai_switcher,
-            snapshot.as_deref(),
-        ));
-        if reply_tx.send(reply).is_err() {
-            break; // UI side hung up — nothing left to answer.
-        }
-        egui_ctx.request_repaint();
+            &reply_tx,
+            &egui_ctx,
+            &http,
+            switcher.as_ref(),
+            ai_switcher.as_ref(),
+            &ai_provider_slot,
+        )
+        .await;
     }
 }
 
-/// Pure dispatch: turn a single [`Command`] into the matching [`Reply`].
-/// Extracted so the AI + switcher arms can be exercised under
-/// `#[tokio::test]` without spawning a real worker thread or HTTP
-/// server. The HTTP arms still need a reachable `base_url` so they are
-/// tested indirectly through `client.rs`.
-pub(crate) async fn dispatch(
+// Length is dominated by per-variant match arms (each ~6–10 lines of
+// payload destructuring + spawn_ai_task call). Splitting further would
+// just push the variant payloads into single-use helpers without
+// improving readability — the dispatch *is* the matrix.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn handle_command(
     cmd: Command,
-    http: &reqwest::Client,
+    in_flight: &mut Option<CancellationToken>,
     base_url: &str,
+    reply_tx: &Sender<Reply>,
+    egui_ctx: &egui::Context,
+    http: &reqwest::Client,
     switcher: &dyn ConnectionSwitcher,
     ai_switcher: &dyn AiProviderSwitcher,
-    ai_provider: Option<&dyn AiProvider>,
-) -> Reply {
+    ai_provider_slot: &AiProviderSlot,
+) {
     match cmd {
-        // ADR-0020: SwitchConnection is in-process — no HTTP.
-        Command::SwitchConnection { id } => match switcher.switch(&id) {
-            Ok(()) => Reply::ConnectionSwitched { id },
-            Err(error) => Reply::SwitchFailed { id, error },
-        },
-        // ADR-0025: SwitchAiProvider is also in-process. The switcher
-        // owns the live `AiProvider` slot the dispatch arms read from
-        // via `ai_provider`; the next dispatch tick will see the new
-        // slot value transparently.
-        Command::SwitchAiProvider { id } => match ai_switcher.switch(&id) {
-            Ok(()) => Reply::AiProviderSwitched { id },
-            Err(error) => Reply::AiProviderSwitchFailed {
-                reason: error.to_string(),
-            },
-        },
-        // ADR-0023: AI commands route to the injected provider. With no
-        // provider the panel is hidden, but defence-in-depth: surface a
-        // configuration error so a stray command never deadlocks the
-        // panel's busy flag.
-        Command::AiExplain { sql, dialect } => match ai_provider {
-            Some(provider) => {
-                let req = ExplainRequest { sql, dialect };
-                ai_reply(provider.explain(&req).await)
+        // ADR-0026 Decision 5/10/12: cancel the in-flight AI request,
+        // if any. The spawned task emits AiCancelled via the `select!`
+        // cancel arm on its way out.
+        Command::CancelAiRequest => {
+            if let Some(token) = in_flight.take() {
+                token.cancel();
             }
-            None => no_provider_failure(),
-        },
+        }
+        // ADR-0026 streaming arms: spawn per-request and continue the
+        // main loop so subsequent commands (including CancelAiRequest)
+        // are still drained.
+        Command::AiExplainStream { sql, dialect } => {
+            spawn_ai_task(
+                in_flight,
+                ai_provider_slot,
+                reply_tx,
+                egui_ctx,
+                |p, t, tx, c| {
+                    Box::pin(run_explain_stream(
+                        p,
+                        ExplainRequest { sql, dialect },
+                        t,
+                        tx,
+                        c,
+                    ))
+                },
+            );
+        }
+        Command::AiSuggestStream {
+            prompt,
+            dialect,
+            schema,
+        } => {
+            spawn_ai_task(
+                in_flight,
+                ai_provider_slot,
+                reply_tx,
+                egui_ctx,
+                |p, t, tx, c| {
+                    Box::pin(run_suggest_stream(
+                        p,
+                        SuggestRequest {
+                            prompt,
+                            dialect,
+                            schema,
+                        },
+                        t,
+                        tx,
+                        c,
+                    ))
+                },
+            );
+        }
+        // ADR-0026 Decision 10: the atomic path also routes through the
+        // cancel race so a Cancel arriving mid-`explain` resets the
+        // panel rather than billing for completion.
+        Command::AiExplain { sql, dialect } => {
+            spawn_ai_task(
+                in_flight,
+                ai_provider_slot,
+                reply_tx,
+                egui_ctx,
+                |p, t, tx, c| {
+                    Box::pin(run_explain_atomic(
+                        p,
+                        ExplainRequest { sql, dialect },
+                        t,
+                        tx,
+                        c,
+                    ))
+                },
+            );
+        }
         Command::AiSuggest {
             prompt,
             dialect,
             schema,
-        } => match ai_provider {
-            Some(provider) => {
-                let req = SuggestRequest {
-                    prompt,
-                    dialect,
-                    schema,
-                };
-                ai_reply(provider.suggest_sql(&req).await)
-            }
-            None => no_provider_failure(),
-        },
-        // HTTP arms — unchanged from before slice (b).
-        Command::ListTables | Command::Query(_) => {
+        } => {
+            spawn_ai_task(
+                in_flight,
+                ai_provider_slot,
+                reply_tx,
+                egui_ctx,
+                |p, t, tx, c| {
+                    Box::pin(run_suggest_atomic(
+                        p,
+                        SuggestRequest {
+                            prompt,
+                            dialect,
+                            schema,
+                        },
+                        t,
+                        tx,
+                        c,
+                    ))
+                },
+            );
+        }
+        // Provider/connection swaps stay inline — they are fast
+        // in-process operations that complete before the next command
+        // would benefit from concurrency.
+        Command::SwitchConnection { id } => {
+            let reply = match switcher.switch(&id) {
+                Ok(()) => Reply::ConnectionSwitched { id },
+                Err(error) => Reply::SwitchFailed { id, error },
+            };
+            let _ = reply_tx.send(reply);
+            egui_ctx.request_repaint();
+        }
+        Command::SwitchAiProvider { id } => {
+            let reply = match ai_switcher.switch(&id) {
+                Ok(()) => Reply::AiProviderSwitched { id },
+                Err(error) => Reply::AiProviderSwitchFailed {
+                    reason: error.to_string(),
+                },
+            };
+            let _ = reply_tx.send(reply);
+            egui_ctx.request_repaint();
+        }
+        // HTTP arms — short round-trips, awaited inline.
+        cmd @ (Command::ListTables | Command::Query(_)) => {
             let request = client::request_for(&cmd);
-            execute(http, base_url, &request).await
+            let reply = execute(http, base_url, &request).await;
+            let _ = reply_tx.send(reply);
+            egui_ctx.request_repaint();
+        }
+    }
+}
+
+/// Wire up an AI task: snapshot the provider, install a fresh cancel
+/// token in `in_flight`, and `tokio::spawn` the runner the caller
+/// builds. The runner is built lazily via the closure so each variant
+/// can own its request payload.
+fn spawn_ai_task<F>(
+    in_flight: &mut Option<CancellationToken>,
+    ai_provider_slot: &AiProviderSlot,
+    reply_tx: &Sender<Reply>,
+    egui_ctx: &egui::Context,
+    runner: F,
+) where
+    F: FnOnce(
+        Option<Arc<dyn AiProvider>>,
+        CancellationToken,
+        Sender<Reply>,
+        egui::Context,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+{
+    let token = CancellationToken::new();
+    *in_flight = Some(token.clone());
+    let provider = snapshot_provider(ai_provider_slot);
+    let reply_tx = reply_tx.clone();
+    let ctx = egui_ctx.clone();
+    let fut = runner(provider, token, reply_tx, ctx);
+    tokio::spawn(fut);
+}
+
+fn snapshot_provider(slot: &AiProviderSlot) -> Option<Arc<dyn AiProvider>> {
+    // Snapshot per dispatch so a swap between commands becomes visible
+    // on the next one. A poisoned lock is recovered into the inner
+    // value because a writer panicking mid-swap leaves the slot in a
+    // valid (Some or None) state.
+    slot.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// ADR-0026 Decision 10: atomic explain through the cancel race.
+pub(crate) async fn run_explain_atomic(
+    provider: Option<Arc<dyn AiProvider>>,
+    req: ExplainRequest,
+    token: CancellationToken,
+    reply_tx: Sender<Reply>,
+    egui_ctx: egui::Context,
+) {
+    let Some(provider) = provider else {
+        let _ = reply_tx.send(no_provider_failure());
+        egui_ctx.request_repaint();
+        return;
+    };
+    let reply = tokio::select! {
+        biased;
+        () = token.cancelled() => Reply::AiCancelled,
+        result = provider.explain(&req) => ai_reply(result),
+    };
+    let _ = reply_tx.send(reply);
+    egui_ctx.request_repaint();
+}
+
+/// ADR-0026 Decision 10: atomic `suggest_sql` through the cancel race.
+pub(crate) async fn run_suggest_atomic(
+    provider: Option<Arc<dyn AiProvider>>,
+    req: SuggestRequest,
+    token: CancellationToken,
+    reply_tx: Sender<Reply>,
+    egui_ctx: egui::Context,
+) {
+    let Some(provider) = provider else {
+        let _ = reply_tx.send(no_provider_failure());
+        egui_ctx.request_repaint();
+        return;
+    };
+    let reply = tokio::select! {
+        biased;
+        () = token.cancelled() => Reply::AiCancelled,
+        result = provider.suggest_sql(&req) => ai_reply(result),
+    };
+    let _ = reply_tx.send(reply);
+    egui_ctx.request_repaint();
+}
+
+/// ADR-0026 Decisions 5/6/12: open a streaming explain, race the
+/// per-chunk `next()` against the cancel token, and forward each
+/// chunk over the reply channel.
+pub(crate) async fn run_explain_stream(
+    provider: Option<Arc<dyn AiProvider>>,
+    req: ExplainRequest,
+    token: CancellationToken,
+    reply_tx: Sender<Reply>,
+    egui_ctx: egui::Context,
+) {
+    let Some(provider) = provider else {
+        let _ = reply_tx.send(no_provider_failure());
+        egui_ctx.request_repaint();
+        return;
+    };
+    let open = tokio::select! {
+        biased;
+        () = token.cancelled() => {
+            let _ = reply_tx.send(Reply::AiCancelled);
+            egui_ctx.request_repaint();
+            return;
+        }
+        result = provider.stream_explain(&req) => result,
+    };
+    forward_stream(open, token, reply_tx, egui_ctx).await;
+}
+
+/// ADR-0026 Decisions 5/6/12: streaming `suggest_sql`, same shape as
+/// [`run_explain_stream`].
+pub(crate) async fn run_suggest_stream(
+    provider: Option<Arc<dyn AiProvider>>,
+    req: SuggestRequest,
+    token: CancellationToken,
+    reply_tx: Sender<Reply>,
+    egui_ctx: egui::Context,
+) {
+    let Some(provider) = provider else {
+        let _ = reply_tx.send(no_provider_failure());
+        egui_ctx.request_repaint();
+        return;
+    };
+    let open = tokio::select! {
+        biased;
+        () = token.cancelled() => {
+            let _ = reply_tx.send(Reply::AiCancelled);
+            egui_ctx.request_repaint();
+            return;
+        }
+        result = provider.stream_suggest_sql(&req) => result,
+    };
+    forward_stream(open, token, reply_tx, egui_ctx).await;
+}
+
+/// Drive an opened [`AiStream`] to completion, forwarding each event
+/// onto the reply channel and racing every `next()` against the
+/// cancel token. Cumulative token counts are tracked locally so the
+/// terminal `AiStreamComplete` carries the last-known values even when
+/// the final `message_delta` does not repeat them.
+async fn forward_stream(
+    opened: dbboard_ai::AiResult<AiStream>,
+    token: CancellationToken,
+    reply_tx: Sender<Reply>,
+    egui_ctx: egui::Context,
+) {
+    let mut stream = match opened {
+        Ok(s) => s,
+        Err(error) => {
+            let _ = reply_tx.send(Reply::AiFailed { error });
+            egui_ctx.request_repaint();
+            return;
+        }
+    };
+    let mut last_tokens_in: u32 = 0;
+    let mut last_tokens_out: u32 = 0;
+    loop {
+        let next = tokio::select! {
+            biased;
+            () = token.cancelled() => {
+                drop(stream);
+                let _ = reply_tx.send(Reply::AiCancelled);
+                egui_ctx.request_repaint();
+                return;
+            }
+            next = stream.next() => next,
+        };
+        match next {
+            None => {
+                // Stream exhausted without MessageStop. The
+                // dbboard-anthropic adapter ships a defensive
+                // MessageStop on early close (ADR-0026 Decision 6),
+                // but a non-Anthropic provider using the default
+                // delegate might still end here; emit a synthetic
+                // EndTurn so the panel always sees a terminator.
+                let _ = reply_tx.send(Reply::AiStreamComplete {
+                    tokens_in: last_tokens_in,
+                    tokens_out: last_tokens_out,
+                    stop_reason: StopReason::EndTurn,
+                });
+                egui_ctx.request_repaint();
+                return;
+            }
+            Some(Err(error)) => {
+                let _ = reply_tx.send(Reply::AiFailed { error });
+                egui_ctx.request_repaint();
+                return;
+            }
+            Some(Ok(event)) => match event {
+                StreamEvent::MessageStart { tokens_in } => {
+                    last_tokens_in = tokens_in;
+                    let _ = reply_tx.send(Reply::AiChunk {
+                        text_delta: String::new(),
+                        tokens_in: Some(tokens_in),
+                        tokens_out: None,
+                    });
+                    egui_ctx.request_repaint();
+                }
+                StreamEvent::TextDelta(text) => {
+                    let _ = reply_tx.send(Reply::AiChunk {
+                        text_delta: text,
+                        tokens_in: None,
+                        tokens_out: None,
+                    });
+                    egui_ctx.request_repaint();
+                }
+                StreamEvent::Usage {
+                    tokens_in,
+                    tokens_out,
+                } => {
+                    last_tokens_in = tokens_in;
+                    last_tokens_out = tokens_out;
+                    let _ = reply_tx.send(Reply::AiChunk {
+                        text_delta: String::new(),
+                        tokens_in: Some(tokens_in),
+                        tokens_out: Some(tokens_out),
+                    });
+                    egui_ctx.request_repaint();
+                }
+                StreamEvent::MessageStop { stop_reason } => {
+                    let _ = reply_tx.send(Reply::AiStreamComplete {
+                        tokens_in: last_tokens_in,
+                        tokens_out: last_tokens_out,
+                        stop_reason,
+                    });
+                    egui_ctx.request_repaint();
+                    return;
+                }
+                StreamEvent::Error(error) => {
+                    let _ = reply_tx.send(Reply::AiFailed { error });
+                    egui_ctx.request_repaint();
+                    return;
+                }
+            },
         }
     }
 }
@@ -335,25 +707,21 @@ fn report_fatal(
         let reply = match cmd {
             Command::ListTables => Reply::Tables(Err(err.clone())),
             Command::Query(_) => Reply::QueryResult(Err(err.clone())),
-            // The worker never came up, so the in-process switcher
-            // hand-off is unreachable too. Echo the same fatal error
-            // back as a `SwitchFailed` so the UI can surface it.
             Command::SwitchConnection { id } => Reply::SwitchFailed {
                 id,
                 error: err.clone(),
             },
-            // Same fate for AI commands: the worker has no provider
-            // handle, so surface a configuration-style AI failure so
-            // the panel exits busy state rather than waiting forever.
-            // The error message preserves the underlying transport
-            // failure (DbError::Connection) verbatim so the user sees
-            // the actual cause.
-            Command::AiExplain { .. } | Command::AiSuggest { .. } => Reply::AiFailed {
+            Command::AiExplain { .. }
+            | Command::AiSuggest { .. }
+            | Command::AiExplainStream { .. }
+            | Command::AiSuggestStream { .. } => Reply::AiFailed {
                 error: AiError::Configuration(format!("ai worker unavailable: {}", err.message())),
             },
-            // Same shape for the AI swap: the worker never built its
-            // runtime, so any pending `SwitchAiProvider` fails fast
-            // with the underlying transport error preserved.
+            // ADR-0026 Decision 5: a cancel arriving on the fatal path
+            // is acknowledged with AiCancelled so the panel exits busy
+            // — the request the user wanted to cancel was never
+            // dispatched in the first place.
+            Command::CancelAiRequest => Reply::AiCancelled,
             Command::SwitchAiProvider { .. } => Reply::AiProviderSwitchFailed {
                 reason: format!("ai worker unavailable: {}", err.message()),
             },
@@ -367,20 +735,28 @@ fn report_fatal(
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, AiProviderSwitcher, ConnectionSwitcher};
-    use crate::{Command, Reply};
+    use super::{
+        run_explain_atomic, run_explain_stream, run_suggest_atomic, run_suggest_stream,
+        AiProviderSwitcher, ConnectionSwitcher,
+    };
+    use crate::Reply;
     use dbboard_ai::{
-        AiCapabilities, AiError, AiProvider, AiResponse, AiResult, ExplainRequest, SuggestRequest,
+        AiCapabilities, AiError, AiProvider, AiResponse, AiResult, AiStream, ExplainRequest,
+        StopReason, StreamEvent, SuggestRequest,
     };
     use dbboard_core::DbError;
+    use eframe::egui;
+    use futures_util::stream;
+    use std::sync::mpsc;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
 
-    /// Switcher stub that never gets called — AI tests do not exercise
-    /// the switch path, but the dispatch fn requires a `&dyn` argument
-    /// so we hand it a no-op.
+    /// Switcher stub that never gets called.
+    #[allow(dead_code)]
     struct UnusedSwitcher;
     impl ConnectionSwitcher for UnusedSwitcher {
         fn switch(&self, _id: &str) -> Result<(), DbError> {
@@ -388,9 +764,7 @@ mod tests {
         }
     }
 
-    /// Mirror of [`UnusedSwitcher`] for the AI swap path — most
-    /// dispatch tests do not exercise it but the fn signature requires
-    /// a `&dyn AiProviderSwitcher`.
+    #[allow(dead_code)]
     struct UnusedAiSwitcher;
     impl AiProviderSwitcher for UnusedAiSwitcher {
         fn switch(&self, _id: &str) -> Result<(), AiError> {
@@ -398,45 +772,93 @@ mod tests {
         }
     }
 
-    /// Capturing stub: records the last id `switch` was called with and
-    /// returns the configured outcome. Used by the `SwitchAiProvider`
-    /// dispatch tests.
-    struct StubAiSwitcher {
-        outcome: AiSwitchOutcome,
+    /// Stub provider: streams the pre-staged events on every call.
+    struct StubProvider {
+        events: Vec<AiResult<StreamEvent>>,
+        explain_response: AiResult<AiResponse>,
+        suggest_response: AiResult<AiResponse>,
         calls: AtomicUsize,
     }
-    enum AiSwitchOutcome {
-        Ok,
-        Err(AiError),
-    }
-    impl AiProviderSwitcher for StubAiSwitcher {
-        fn switch(&self, _id: &str) -> Result<(), AiError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            match &self.outcome {
-                AiSwitchOutcome::Ok => Ok(()),
-                AiSwitchOutcome::Err(e) => Err(match e {
-                    AiError::Configuration(s) => AiError::Configuration(s.clone()),
-                    AiError::Network(s) => AiError::Network(s.clone()),
-                    AiError::Provider(s) => AiError::Provider(s.clone()),
-                    AiError::Quota(s) => AiError::Quota(s.clone()),
-                    AiError::Cancelled => AiError::Cancelled,
+
+    impl StubProvider {
+        fn streaming(events: Vec<AiResult<StreamEvent>>) -> Self {
+            Self {
+                events,
+                explain_response: Ok(AiResponse {
+                    text: "unused".into(),
+                    tokens_in: 0,
+                    tokens_out: 0,
                 }),
+                suggest_response: Ok(AiResponse {
+                    text: "unused".into(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                }),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn atomic_ok(text: &str, tokens_in: u32, tokens_out: u32) -> Self {
+            Self {
+                events: Vec::new(),
+                explain_response: Ok(AiResponse {
+                    text: text.into(),
+                    tokens_in,
+                    tokens_out,
+                }),
+                suggest_response: Ok(AiResponse {
+                    text: text.into(),
+                    tokens_in,
+                    tokens_out,
+                }),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn clone_events(&self) -> Vec<AiResult<StreamEvent>> {
+            self.events
+                .iter()
+                .map(|r| match r {
+                    Ok(StreamEvent::MessageStart { tokens_in }) => Ok(StreamEvent::MessageStart {
+                        tokens_in: *tokens_in,
+                    }),
+                    Ok(StreamEvent::TextDelta(s)) => Ok(StreamEvent::TextDelta(s.clone())),
+                    Ok(StreamEvent::Usage {
+                        tokens_in,
+                        tokens_out,
+                    }) => Ok(StreamEvent::Usage {
+                        tokens_in: *tokens_in,
+                        tokens_out: *tokens_out,
+                    }),
+                    Ok(StreamEvent::MessageStop { stop_reason }) => Ok(StreamEvent::MessageStop {
+                        stop_reason: stop_reason.clone(),
+                    }),
+                    Ok(StreamEvent::Error(e)) => Ok(StreamEvent::Error(reclone_error(e))),
+                    Err(e) => Err(reclone_error(e)),
+                })
+                .collect()
+        }
+
+        fn clone_response(r: &AiResult<AiResponse>) -> AiResult<AiResponse> {
+            match r {
+                Ok(resp) => Ok(AiResponse {
+                    text: resp.text.clone(),
+                    tokens_in: resp.tokens_in,
+                    tokens_out: resp.tokens_out,
+                }),
+                Err(e) => Err(reclone_error(e)),
             }
         }
     }
 
-    /// Configurable AI provider stub. Each round-trip returns the same
-    /// pre-staged outcome.
-    struct StubProvider {
-        kind: StubOutcome,
-    }
-    enum StubOutcome {
-        Ok {
-            text: String,
-            tokens_in: u32,
-            tokens_out: u32,
-        },
-        Err(AiError),
+    fn reclone_error(e: &AiError) -> AiError {
+        match e {
+            AiError::Configuration(s) => AiError::Configuration(s.clone()),
+            AiError::Network(s) => AiError::Network(s.clone()),
+            AiError::Provider(s) => AiError::Provider(s.clone()),
+            AiError::Quota(s) => AiError::Quota(s.clone()),
+            AiError::Cancelled => AiError::Cancelled,
+        }
     }
 
     #[async_trait::async_trait]
@@ -445,287 +867,379 @@ mod tests {
             "stub"
         }
         fn capabilities(&self) -> AiCapabilities {
-            AiCapabilities::default()
+            AiCapabilities {
+                has_streaming: true,
+                has_function_calling: false,
+            }
         }
         async fn explain(&self, _req: &ExplainRequest) -> AiResult<AiResponse> {
-            self.outcome()
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            StubProvider::clone_response(&self.explain_response)
         }
         async fn suggest_sql(&self, _req: &SuggestRequest) -> AiResult<AiResponse> {
-            self.outcome()
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            StubProvider::clone_response(&self.suggest_response)
         }
-    }
-    impl StubProvider {
-        fn outcome(&self) -> AiResult<AiResponse> {
-            match &self.kind {
-                StubOutcome::Ok {
-                    text,
-                    tokens_in,
-                    tokens_out,
-                } => Ok(AiResponse {
-                    text: text.clone(),
-                    tokens_in: *tokens_in,
-                    tokens_out: *tokens_out,
-                }),
-                // AiError does not derive Clone (its variants are
-                // one-shot), so we reconstruct the error here.
-                StubOutcome::Err(e) => Err(match e {
-                    AiError::Configuration(s) => AiError::Configuration(s.clone()),
-                    AiError::Network(s) => AiError::Network(s.clone()),
-                    AiError::Provider(s) => AiError::Provider(s.clone()),
-                    AiError::Quota(s) => AiError::Quota(s.clone()),
-                    AiError::Cancelled => AiError::Cancelled,
-                }),
-            }
+        async fn stream_explain(&self, _req: &ExplainRequest) -> AiResult<AiStream> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::pin(stream::iter(self.clone_events())))
+        }
+        async fn stream_suggest_sql(&self, _req: &SuggestRequest) -> AiResult<AiStream> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::pin(stream::iter(self.clone_events())))
         }
     }
 
-    fn http_client() -> reqwest::Client {
-        // The AI dispatch arms do not touch http; an empty client is
-        // fine. `build()` is infallible for the default builder on
-        // every supported platform.
-        reqwest::Client::builder()
-            .build()
-            .expect("default reqwest client builds")
+    fn ctx() -> egui::Context {
+        egui::Context::default()
+    }
+
+    fn explain_req() -> ExplainRequest {
+        ExplainRequest {
+            sql: "SELECT 1".into(),
+            dialect: Some("postgres".into()),
+        }
+    }
+
+    fn suggest_req() -> SuggestRequest {
+        SuggestRequest {
+            prompt: "active users".into(),
+            dialect: None,
+            schema: Vec::new(),
+        }
+    }
+
+    fn drain(rx: &mpsc::Receiver<Reply>) -> Vec<Reply> {
+        let mut out = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            out.push(r);
+        }
+        out
+    }
+
+    // ---- streaming happy path -----------------------------------------
+
+    #[tokio::test]
+    async fn run_explain_stream_forwards_start_deltas_usage_and_complete_in_order() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider::streaming(vec![
+            Ok(StreamEvent::MessageStart { tokens_in: 11 }),
+            Ok(StreamEvent::TextDelta("Hello".into())),
+            Ok(StreamEvent::TextDelta(" world".into())),
+            Ok(StreamEvent::Usage {
+                tokens_in: 11,
+                tokens_out: 7,
+            }),
+            Ok(StreamEvent::MessageStop {
+                stop_reason: StopReason::EndTurn,
+            }),
+        ]));
+        let (tx, rx) = mpsc::channel::<Reply>();
+        let token = CancellationToken::new();
+        run_explain_stream(Some(provider), explain_req(), token, tx, ctx()).await;
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 5, "5 replies: 4 chunks + complete");
+        // First chunk = MessageStart with tokens_in only
+        match &replies[0] {
+            Reply::AiChunk {
+                text_delta,
+                tokens_in,
+                tokens_out,
+            } => {
+                assert!(text_delta.is_empty());
+                assert_eq!(*tokens_in, Some(11));
+                assert_eq!(*tokens_out, None);
+            }
+            other => panic!("expected AiChunk for MessageStart, got {other:?}"),
+        }
+        // Two text deltas
+        assert!(matches!(&replies[1], Reply::AiChunk { text_delta, .. } if text_delta == "Hello"));
+        assert!(matches!(&replies[2], Reply::AiChunk { text_delta, .. } if text_delta == " world"));
+        // Usage carries both counts cumulatively
+        match &replies[3] {
+            Reply::AiChunk {
+                text_delta,
+                tokens_in,
+                tokens_out,
+            } => {
+                assert!(text_delta.is_empty());
+                assert_eq!(*tokens_in, Some(11));
+                assert_eq!(*tokens_out, Some(7));
+            }
+            other => panic!("expected AiChunk for Usage, got {other:?}"),
+        }
+        // Terminal complete with the last-known cumulative counts
+        match &replies[4] {
+            Reply::AiStreamComplete {
+                tokens_in,
+                tokens_out,
+                stop_reason,
+            } => {
+                assert_eq!(*tokens_in, 11);
+                assert_eq!(*tokens_out, 7);
+                assert!(matches!(stop_reason, StopReason::EndTurn));
+            }
+            other => panic!("expected AiStreamComplete, got {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn dispatch_ai_explain_with_provider_returns_responded() {
-        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider {
-            kind: StubOutcome::Ok {
-                text: "this query selects one row".into(),
-                tokens_in: 12,
-                tokens_out: 34,
-            },
-        });
-        let switcher = UnusedSwitcher;
-        let ai_switcher = UnusedAiSwitcher;
-        let http = http_client();
-        let reply = dispatch(
-            Command::AiExplain {
-                sql: "SELECT 1".into(),
-                dialect: Some("postgres".into()),
-            },
-            &http,
-            "http://127.0.0.1:1",
-            &switcher,
-            &ai_switcher,
-            Some(provider.as_ref()),
+    async fn run_suggest_stream_forwards_chunks_then_complete() {
+        // Smoke test: stream_suggest_sql goes through the same
+        // forward_stream pipeline as stream_explain.
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider::streaming(vec![
+            Ok(StreamEvent::TextDelta("SELECT 1".into())),
+            Ok(StreamEvent::MessageStop {
+                stop_reason: StopReason::EndTurn,
+            }),
+        ]));
+        let (tx, rx) = mpsc::channel::<Reply>();
+        run_suggest_stream(
+            Some(provider),
+            suggest_req(),
+            CancellationToken::new(),
+            tx,
+            ctx(),
         )
         .await;
-        match reply {
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 2);
+        assert!(
+            matches!(&replies[0], Reply::AiChunk { text_delta, .. } if text_delta == "SELECT 1")
+        );
+        assert!(matches!(&replies[1], Reply::AiStreamComplete { .. }));
+    }
+
+    // ---- streaming error paths ----------------------------------------
+
+    #[tokio::test]
+    async fn mid_stream_error_event_surfaces_as_ai_failed_and_terminates() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider::streaming(vec![
+            Ok(StreamEvent::MessageStart { tokens_in: 5 }),
+            Ok(StreamEvent::TextDelta("partial".into())),
+            Ok(StreamEvent::Error(AiError::Provider("overloaded".into()))),
+            // Anything after Error must not be forwarded.
+            Ok(StreamEvent::TextDelta("never seen".into())),
+        ]));
+        let (tx, rx) = mpsc::channel::<Reply>();
+        run_explain_stream(
+            Some(provider),
+            explain_req(),
+            CancellationToken::new(),
+            tx,
+            ctx(),
+        )
+        .await;
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 3, "MessageStart + TextDelta + AiFailed");
+        assert!(
+            matches!(&replies[2], Reply::AiFailed { error } if matches!(error, AiError::Provider(s) if s == "overloaded"))
+        );
+    }
+
+    #[tokio::test]
+    async fn outer_stream_err_surfaces_as_ai_failed_and_terminates() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider::streaming(vec![
+            Ok(StreamEvent::TextDelta("partial".into())),
+            Err(AiError::Network("conn reset".into())),
+            Ok(StreamEvent::TextDelta("never seen".into())),
+        ]));
+        let (tx, rx) = mpsc::channel::<Reply>();
+        run_explain_stream(
+            Some(provider),
+            explain_req(),
+            CancellationToken::new(),
+            tx,
+            ctx(),
+        )
+        .await;
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 2);
+        assert!(
+            matches!(&replies[1], Reply::AiFailed { error } if matches!(error, AiError::Network(s) if s == "conn reset"))
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_without_terminator_emits_synthetic_complete() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider::streaming(vec![
+            Ok(StreamEvent::TextDelta("partial".into())),
+            // No MessageStop — exercise the synthetic terminator path.
+        ]));
+        let (tx, rx) = mpsc::channel::<Reply>();
+        run_explain_stream(
+            Some(provider),
+            explain_req(),
+            CancellationToken::new(),
+            tx,
+            ctx(),
+        )
+        .await;
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 2);
+        assert!(matches!(
+            &replies[1],
+            Reply::AiStreamComplete {
+                stop_reason: StopReason::EndTurn,
+                ..
+            }
+        ));
+    }
+
+    // ---- cancel paths --------------------------------------------------
+
+    #[tokio::test]
+    async fn streaming_cancel_during_first_chunk_surfaces_ai_cancelled() {
+        // A provider whose stream never produces a chunk — `next()`
+        // pends forever. Cancelling the token fires the select! cancel
+        // arm and emits AiCancelled.
+        struct PendingStreamProvider;
+        #[async_trait::async_trait]
+        impl AiProvider for PendingStreamProvider {
+            fn id(&self) -> &'static str {
+                "pending"
+            }
+            fn capabilities(&self) -> AiCapabilities {
+                AiCapabilities {
+                    has_streaming: true,
+                    has_function_calling: false,
+                }
+            }
+            async fn explain(&self, _req: &ExplainRequest) -> AiResult<AiResponse> {
+                unreachable!()
+            }
+            async fn suggest_sql(&self, _req: &SuggestRequest) -> AiResult<AiResponse> {
+                unreachable!()
+            }
+            async fn stream_explain(&self, _req: &ExplainRequest) -> AiResult<AiStream> {
+                Ok(Box::pin(stream::pending()))
+            }
+            async fn stream_suggest_sql(&self, _req: &SuggestRequest) -> AiResult<AiStream> {
+                unreachable!()
+            }
+        }
+        let provider: Arc<dyn AiProvider> = Arc::new(PendingStreamProvider);
+        let (tx, rx) = mpsc::channel::<Reply>();
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        // Fire the cancel from a separate task so the main test task
+        // is the one awaiting run_explain_stream.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            token_clone.cancel();
+        });
+        run_explain_stream(Some(provider), explain_req(), token, tx, ctx()).await;
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 1);
+        assert!(matches!(&replies[0], Reply::AiCancelled));
+    }
+
+    #[tokio::test]
+    async fn atomic_cancel_before_completion_surfaces_ai_cancelled() {
+        // Provider whose explain future pends forever. The cancel arm
+        // of the select! fires and emits AiCancelled.
+        struct PendingAtomicProvider;
+        #[async_trait::async_trait]
+        impl AiProvider for PendingAtomicProvider {
+            fn id(&self) -> &'static str {
+                "pending-atomic"
+            }
+            fn capabilities(&self) -> AiCapabilities {
+                AiCapabilities::default()
+            }
+            async fn explain(&self, _req: &ExplainRequest) -> AiResult<AiResponse> {
+                std::future::pending().await
+            }
+            async fn suggest_sql(&self, _req: &SuggestRequest) -> AiResult<AiResponse> {
+                unreachable!()
+            }
+        }
+        let provider: Arc<dyn AiProvider> = Arc::new(PendingAtomicProvider);
+        let (tx, rx) = mpsc::channel::<Reply>();
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            token_clone.cancel();
+        });
+        run_explain_atomic(Some(provider), explain_req(), token, tx, ctx()).await;
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 1);
+        assert!(matches!(&replies[0], Reply::AiCancelled));
+    }
+
+    #[tokio::test]
+    async fn atomic_success_short_circuits_cancel_race_into_responded() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider::atomic_ok("ok", 1, 2));
+        let (tx, rx) = mpsc::channel::<Reply>();
+        run_explain_atomic(
+            Some(provider),
+            explain_req(),
+            CancellationToken::new(),
+            tx,
+            ctx(),
+        )
+        .await;
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 1);
+        match &replies[0] {
             Reply::AiResponded {
                 text,
                 tokens_in,
                 tokens_out,
             } => {
-                assert_eq!(text, "this query selects one row");
-                assert_eq!(tokens_in, 12);
-                assert_eq!(tokens_out, 34);
+                assert_eq!(text, "ok");
+                assert_eq!(*tokens_in, 1);
+                assert_eq!(*tokens_out, 2);
             }
             other => panic!("expected AiResponded, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn dispatch_ai_suggest_with_provider_returns_responded() {
-        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider {
-            kind: StubOutcome::Ok {
-                text: "SELECT 1".into(),
-                tokens_in: 1,
-                tokens_out: 2,
-            },
-        });
-        let switcher = UnusedSwitcher;
-        let ai_switcher = UnusedAiSwitcher;
-        let http = http_client();
-        let reply = dispatch(
-            Command::AiSuggest {
-                prompt: "monthly active users".into(),
-                dialect: None,
-                schema: Vec::new(),
-            },
-            &http,
-            "http://127.0.0.1:1",
-            &switcher,
-            &ai_switcher,
-            Some(provider.as_ref()),
+    async fn atomic_suggest_success_short_circuits_cancel_race_into_responded() {
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider::atomic_ok("sql", 3, 4));
+        let (tx, rx) = mpsc::channel::<Reply>();
+        run_suggest_atomic(
+            Some(provider),
+            suggest_req(),
+            CancellationToken::new(),
+            tx,
+            ctx(),
         )
         .await;
+        let replies = drain(&rx);
         assert!(matches!(
-            reply,
-            Reply::AiResponded { text, .. } if text == "SELECT 1"
+            &replies[0],
+            Reply::AiResponded { text, .. } if text == "sql"
+        ));
+    }
+
+    // ---- no-provider gate ---------------------------------------------
+
+    #[tokio::test]
+    async fn streaming_without_provider_surfaces_configuration_failure() {
+        let (tx, rx) = mpsc::channel::<Reply>();
+        run_explain_stream(None, explain_req(), CancellationToken::new(), tx, ctx()).await;
+        let replies = drain(&rx);
+        assert_eq!(replies.len(), 1);
+        assert!(matches!(
+            &replies[0],
+            Reply::AiFailed {
+                error: AiError::Configuration(_)
+            }
         ));
     }
 
     #[tokio::test]
-    async fn dispatch_ai_explain_with_provider_error_returns_failed() {
-        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider {
-            kind: StubOutcome::Err(AiError::Provider("rate_limit".into())),
-        });
-        let switcher = UnusedSwitcher;
-        let ai_switcher = UnusedAiSwitcher;
-        let http = http_client();
-        let reply = dispatch(
-            Command::AiExplain {
-                sql: "SELECT 1".into(),
-                dialect: None,
-            },
-            &http,
-            "http://127.0.0.1:1",
-            &switcher,
-            &ai_switcher,
-            Some(provider.as_ref()),
-        )
-        .await;
-        match reply {
-            Reply::AiFailed { error } => {
-                assert!(matches!(error, AiError::Provider(msg) if msg == "rate_limit"));
-            }
-            other => panic!("expected AiFailed, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatch_ai_command_without_provider_yields_configuration_failure() {
-        let switcher = UnusedSwitcher;
-        let ai_switcher = UnusedAiSwitcher;
-        let http = http_client();
-        let reply = dispatch(
-            Command::AiExplain {
-                sql: "SELECT 1".into(),
-                dialect: None,
-            },
-            &http,
-            "http://127.0.0.1:1",
-            &switcher,
-            &ai_switcher,
-            None,
-        )
-        .await;
-        match reply {
+    async fn atomic_without_provider_surfaces_configuration_failure() {
+        let (tx, rx) = mpsc::channel::<Reply>();
+        run_explain_atomic(None, explain_req(), CancellationToken::new(), tx, ctx()).await;
+        let replies = drain(&rx);
+        assert!(matches!(
+            &replies[0],
             Reply::AiFailed {
-                error: AiError::Configuration(msg),
-            } => {
-                assert!(
-                    msg.contains("DBBOARD_ANTHROPIC_API_KEY") || msg.contains("provider"),
-                    "configuration error should mention the env var or provider gate: {msg}"
-                );
+                error: AiError::Configuration(_)
             }
-            other => panic!("expected AiFailed(Configuration), got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatch_switch_connection_short_circuits_before_http() {
-        // Smoke test the existing SwitchConnection arm still routes
-        // through the dispatch fn after refactoring.
-        struct OkSwitcher;
-        impl ConnectionSwitcher for OkSwitcher {
-            fn switch(&self, _id: &str) -> Result<(), DbError> {
-                Ok(())
-            }
-        }
-        let switcher = OkSwitcher;
-        let ai_switcher = UnusedAiSwitcher;
-        let http = http_client();
-        let reply = dispatch(
-            Command::SwitchConnection {
-                id: "prod-pg".into(),
-            },
-            &http,
-            "http://127.0.0.1:1",
-            &switcher,
-            &ai_switcher,
-            None,
-        )
-        .await;
-        assert!(matches!(reply, Reply::ConnectionSwitched { id } if id == "prod-pg"));
-    }
-
-    // --- ADR-0025: SwitchAiProvider dispatch tests ----------------------
-
-    #[tokio::test]
-    async fn dispatch_switch_ai_provider_returns_switched_on_success() {
-        let switcher = UnusedSwitcher;
-        let ai_switcher = StubAiSwitcher {
-            outcome: AiSwitchOutcome::Ok,
-            calls: AtomicUsize::new(0),
-        };
-        let http = http_client();
-        let reply = dispatch(
-            Command::SwitchAiProvider {
-                id: "anthropic-prod".into(),
-            },
-            &http,
-            "http://127.0.0.1:1",
-            &switcher,
-            &ai_switcher,
-            None,
-        )
-        .await;
-        assert_eq!(
-            ai_switcher.calls.load(Ordering::SeqCst),
-            1,
-            "switcher must be called exactly once"
-        );
-        assert!(matches!(reply, Reply::AiProviderSwitched { id } if id == "anthropic-prod"));
-    }
-
-    #[tokio::test]
-    async fn dispatch_switch_ai_provider_returns_switch_failed_on_error() {
-        let switcher = UnusedSwitcher;
-        let ai_switcher = StubAiSwitcher {
-            outcome: AiSwitchOutcome::Err(AiError::Configuration("unknown id".into())),
-            calls: AtomicUsize::new(0),
-        };
-        let http = http_client();
-        let reply = dispatch(
-            Command::SwitchAiProvider {
-                id: "missing".into(),
-            },
-            &http,
-            "http://127.0.0.1:1",
-            &switcher,
-            &ai_switcher,
-            None,
-        )
-        .await;
-        match reply {
-            // Reason is the AiError::Display text — not the raw enum
-            // variant — because the AI taxonomy is not exposed on this
-            // reply (ADR-0023 Decision 8 keeps AiError out of the
-            // cross-channel UI message types).
-            Reply::AiProviderSwitchFailed { reason } => {
-                assert!(
-                    reason.contains("unknown id"),
-                    "reason should carry the AiError display text: {reason}"
-                );
-            }
-            other => panic!("expected AiProviderSwitchFailed, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatch_switch_ai_provider_does_not_touch_ai_provider_slot() {
-        // The swap is owned by the switcher, not by the read-side
-        // `ai_provider` arg the dispatch fn carries for AI* commands.
-        // Pass `None` for the read slot to prove dispatch never reads
-        // it during a swap.
-        let switcher = UnusedSwitcher;
-        let ai_switcher = StubAiSwitcher {
-            outcome: AiSwitchOutcome::Ok,
-            calls: AtomicUsize::new(0),
-        };
-        let http = http_client();
-        let reply = dispatch(
-            Command::SwitchAiProvider { id: "x".into() },
-            &http,
-            "http://127.0.0.1:1",
-            &switcher,
-            &ai_switcher,
-            None,
-        )
-        .await;
-        assert!(matches!(reply, Reply::AiProviderSwitched { .. }));
+        ));
     }
 }

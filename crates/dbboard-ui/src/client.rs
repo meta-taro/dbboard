@@ -56,7 +56,11 @@ pub(crate) fn request_for(command: &Command) -> HttpRequest {
         Command::SwitchConnection { .. } => {
             unreachable!("SwitchConnection is handled in the worker before request_for")
         }
-        Command::AiExplain { .. } | Command::AiSuggest { .. } => {
+        Command::AiExplain { .. }
+        | Command::AiSuggest { .. }
+        | Command::AiExplainStream { .. }
+        | Command::AiSuggestStream { .. }
+        | Command::CancelAiRequest => {
             unreachable!("AI commands are routed to the provider before request_for")
         }
         Command::SwitchAiProvider { .. } => {
