@@ -5,35 +5,40 @@
 
 ## 最終更新
 
-- 日付: 2026-06-29 (**ADR-0025 Phase 4 Stage 2 Group A slice (b)**
-  ship 完了 = `feature/ai-settings-ui` ブランチに 5 コミット着地、
-  push 待ち。`dbboard-ui` `AiSettingsView` egui state machine
-  (List / Add / Edit / ConfirmDelete) + 13 件の新規 unit test、
-  19 個の `ai-settings-*` Fluent キー + `ai-active-with-name` を
-  全 11 ロケールに同時追加 (ADR-0022 Tier 1+2 same-commit sync 遵守)、
-  `AiPanel::ui` シグネチャに `active_provider_label: Option<&str>`
-  を追加して "Active: { $name }" サブタイトル表示、`DbboardApp` に
-  `switch_ai_provider` / `set_active_ai_provider_label` /
-  `last_ai_switch_error` accessor 追加、`apps/dbboard` の
-  `DesktopApp` に `AiSettingsView` マウント + メニューボタン
-  (`ai-settings-menu-button`) + 毎フレーム active label push +
-  pending switch drain を配線。ワークスペース全体で 461 → 474 件
-  pass、release build / release test も clean = ADR-0025 全 4
-  slice (a-1 / a-2-α / a-2-β / b) 完了 = **Phase 4 Stage 2 Group A
-  クローズ**。)
-- ブランチ: `feature/ai-settings-ui` (= `e00ae20`、develop= `6e6eb83`
-  から 5 コミット先行)、push 待ち = maintainer 操作
+- 日付: 2026-06-29 (**PR #43 マージクローズ** = ADR-0025 Phase 4
+  Stage 2 Group A slice (b) が `develop` に着地 = `5124b00` (mergedAt
+  2026-06-29T05:59:26Z)。これで ADR-0025 全 4 slice (a-1 PR #37 /
+  a-2-α PR #39 / a-2-β PR #41 / b PR #43) が `develop` に着地完了 =
+  **Phase 4 Stage 2 Group A クローズ**。`ai-providers.toml` + Settings UI
+  + runtime in-process provider switcher の全体像完成。本 chore PR
+  (`chore/post-pr43-doc-sync`) は PR #40 / #42 と同じパターンで
+  post-PR doc sync を担当 = `.claude/project-status.md` の PR #43
+  クローズ記録 + `next-actions.md` を Group A 完了後の menu に再生成。)
+- ブランチ: `develop` (= `5124b00`)、ローカル `chore/post-pr43-doc-sync`
+  作業中 (`feature/ai-settings-ui` は merged 済 / origin auto-delete 判断は
+  maintainer)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  Phase 4 Stage 2 Group A は slice b 着地でクローズ = `ai-providers.toml` +
-  Settings UI + runtime provider switcher の全体像が in-process で完成。
-  Stage 2 残り Group B (streaming + cancel + token meter)、Group C
-  (`history.jsonl` への AI 記録、v:2 schema bump、web 側 fresh brief
-  必要)、Group D (full DDL extraction + function-calling) は独立 ADR
-  で順不同 = 次セッションの「メニュー」候補。Phase 2 ADR-0024 at-rest
-  hardening + ADR-0023 Stage 1 + ADR-0025 完全実装 (4 slice 全着地) の
-  3 本が現状 Stage 2 残り (B/C/D) への足場として load-bearing。**
+  Phase 4 Stage 2 Group A クローズ = `ai-providers.toml` + Settings UI +
+  runtime provider switcher の全体像が in-process で完成。Stage 2 残り
+  Group B (streaming + cancel + token meter)、Group C (`history.jsonl`
+  への AI 記録、v:2 schema bump、web 側 fresh brief 必要)、Group D
+  (full DDL extraction + function-calling) は独立 ADR で順不同 = menu
+  方式で friction or user 指示待ち。Phase 2 ADR-0024 at-rest hardening
+  + ADR-0023 Stage 1 + ADR-0025 完全実装 (4 slice 全着地) の 3 本が
+  現状 Stage 2 残り (B/C/D) への足場として load-bearing。**
 
-### `feature/ai-settings-ui` 5 コミット内訳 (2026-06-29、本セッション)
+### PR #43 (ADR-0025 Phase 4 Stage 2 Group A — slice (b) / `AiSettingsView` egui + 11-locale Fluent + `apps/dbboard` mount) マージクローズ (本セッション / 2026-06-29)
+
+- PR #43 (`feature/ai-settings-ui` → `develop`) マージ済 = `5124b00`
+  (mergedAt 2026-06-29T05:59:26Z = JST 14:59)。ローカル `develop` は
+  `origin/develop` (= `5124b00`) と fast-forward sync 済。
+- 本 chore (`chore/post-pr43-doc-sync`) は `develop` ベース、本セッション
+  で切り直し。PR #40 (post-PR39 chore) / PR #42 (post-PR41 chore) の
+  連番続き = doc-fresh feedback ([[feedback-keep-docs-fresh]]) の
+  「feat PR の merge 直後に short chore PR」パターン継続。
+- 本 PR の scope: status / next-actions のみ更新、Rust + docs/ + README は
+  PR #43 で全て完結済みなので無改変 = pure internal bookkeeping。
+- 6 コミット内訳 (`feature/ai-settings-ui` 上):
 
 | コミット | スコープ | 中身 |
 |---|---|---|
@@ -42,6 +47,7 @@
 | `99e0ba4` | `feat(ui): wire AI provider swap replies + Active subtitle` | `DbboardApp` に `active_ai_provider_label: Option<String>` / `last_ai_switch_error: Option<String>` フィールド + `switch_ai_provider` / `set_active_ai_provider_label` / `active_ai_provider_label` / `last_ai_switch_error` accessor 追加。`Reply::AiProviderSwitched` で error クリア、`Reply::AiProviderSwitchFailed { reason }` で error 保持。`AiPanel::ui` に `active_provider_label: Option<&str>` 引数を追加し、`t_args!("ai-active-with-name", name = owned)` で `FluentValue<'static>` の lifetime 制約を `String` 所有化で回避。 |
 | `11a5ef6` | `feat(apps): mount AiSettingsView in desktop binary` | `bootstrap_ai` の戻り値に `Option<Arc<Mutex<AiSettingsAdmin>>>` を追加 = `DesktopAiSwitcher` と同じ admin インスタンスを共有。`DesktopApp` に `ai_settings: AiSettingsView` + `ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>` 追加。`DesktopApp::ui` で menu button (`ai-settings-menu-button`) を `ai_admin.is_some()` で gating、毎フレーム `active_id` → `name` lookup → `set_active_ai_provider_label` push、`AiSettingsView::ui(ctx, &mut guard, active_id.as_deref())` 描画、`take_pending_switch()` → `switch_ai_provider(id)` drain。Connections UI と同じ Mutex poison-handling パターン (`unwrap_or_else(PoisonError::into_inner)`)。 |
 | `e00ae20` | `docs: close ADR-0025 slice (b)` | README "AI integration" を "in-flight Settings UI" 注記から "open the AI Providers menu" の実ワークフローに書き直し。`docs/roadmap.md` の "Settings UI for API key, provider choice" を `[ ]` → `[x]` に変更、4 スライスの着地記録を全て embed。`docs/decisions.md` の ADR-0025 status note に "Implementation closed 2026-06-29" を追加。`.claude/issues/0008` を open → closed に flip。 |
+| `e56db43` | `chore(status): record slice (b) close + branch ready to push` | 本ステータス + next-actions の事前更新 (push 前に書いた = PR description 内で参照できる形)。 |
 
 ### 検証コマンド (全て pass)
 
