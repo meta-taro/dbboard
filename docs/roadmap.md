@@ -258,29 +258,35 @@ work without it. Trait + first-provider shape locked in
       (`list_tables` result; full DDL extraction deferred) — slice (b)
       of issue 0005: `Command::AiSuggest { prompt, dialect, schema }`
       carries the current `Vec<TableInfo>` to `AiProvider::suggest_sql`.
-- [ ] Settings UI for API key, provider choice — _Stage 2 Group A,
+- [x] Settings UI for API key, provider choice — _Stage 2 Group A,
       planned in ADR-0025 (`ai-providers.toml` + multi-provider
       switcher + Settings UI). Implementation tracked in
       [`.claude/issues/0008-ai-provider-settings-ui-and-persistence.md`](../.claude/issues/0008-ai-provider-settings-ui-and-persistence.md).
       Env var `DBBOARD_ANTHROPIC_API_KEY` keeps working as the
       highest-precedence resolution path (Stage 1 / PR #24).
-      **Progress:** slice a-1 (`dbboard-config` layer =
-      `ai-providers.toml` schema + `AiSettingsAdmin` use-case +
-      `dbboard.ai.<id>.api_key` keyring namespace + `secure_fs`
-      at-rest hardening) landed via PR #37 on 2026-06-25. Slice
-      a-2-α (`dbboard-ui` worker plumbing = `AiProviderSwitcher`
-      trait + `Command::SwitchAiProvider` + `Reply::AiProviderSwitched`
-      / `Reply::AiProviderSwitchFailed` + `NullAiSwitcher` apps-side
-      stub) landed via PR #39 on 2026-06-25. Slice a-2-β
-      (`apps/dbboard` `DesktopAiSwitcher` real impl +
-      `resolve_ai_provider_from` env > TOML > None precedence chain +
-      `AiProviderSlot = Arc<RwLock<Option<Arc<dyn AiProvider>>>>`
-      shared slot + worker per-request snapshot + 10 new unit tests
-      + README "AI integration" rewritten with TOML as the primary
-      path) landed via PR #41 on 2026-06-26 — slice (a)
-      infrastructure now complete end-to-end. Remaining: slice b
-      (`dbboard-ui` `AiSettingsView` egui + 11-locale Fluent +
-      menu wiring + docs sweep)._
+      **Closed 2026-06-29 on `feature/ai-settings-ui`.** Slice a-1
+      (`dbboard-config` layer = `ai-providers.toml` schema +
+      `AiSettingsAdmin` use-case + `dbboard.ai.<id>.api_key` keyring
+      namespace + `secure_fs` at-rest hardening) landed via PR #37 on
+      2026-06-25. Slice a-2-α (`dbboard-ui` worker plumbing =
+      `AiProviderSwitcher` trait + `Command::SwitchAiProvider` +
+      `Reply::AiProviderSwitched` / `Reply::AiProviderSwitchFailed` +
+      `NullAiSwitcher` apps-side stub) landed via PR #39 on
+      2026-06-25. Slice a-2-β (`apps/dbboard` `DesktopAiSwitcher`
+      real impl + `resolve_ai_provider_from` env > TOML > None
+      precedence chain + `AiProviderSlot =
+      Arc<RwLock<Option<Arc<dyn AiProvider>>>>` shared slot + worker
+      per-request snapshot + 10 new unit tests + README "AI
+      integration" rewritten with TOML as the primary path) landed
+      via PR #41 on 2026-06-26. Slice (b) (`dbboard-ui`
+      `AiSettingsView` egui state machine — List/Add/Edit/ConfirmDelete
+      mirroring `ConnectionsView`, with `SecretField::{Keep,Set}` edit
+      semantics from ADR-0016 §3 — plus 13 new unit tests, 19
+      `ai-settings-*` Fluent keys + `ai-active-with-name` across all
+      11 locales (ADR-0022 Tier 1+2 same-commit sync), AI panel
+      "Active: { $name }" subtitle, `apps/dbboard` menu button +
+      `AiSettingsView` mount + active-id label push + pending-switch
+      drain) closes the loop._
 - [x] Graceful degradation when no provider configured (ADR-0023
       Decision 11): `has_ai_provider()` gates both the menu entry
       and the panel; with no key set, neither renders. Defence-in-depth

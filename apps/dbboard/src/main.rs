@@ -47,8 +47,8 @@ use dbboard_server::{
     resolved_connection_label, serve, swap_backend, AppState, ServerError,
 };
 use dbboard_ui::{
-    AiProviderSlot, AiProviderSwitcher, ConnectionSwitcher, ConnectionsView, DbError, DbboardApp,
-    PersistentHistoryStore, DEFAULT_CAPACITY,
+    AiProviderSlot, AiProviderSwitcher, AiSettingsView, ConnectionSwitcher, ConnectionsView,
+    DbError, DbboardApp, PersistentHistoryStore, DEFAULT_CAPACITY,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -180,8 +180,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ADR-0023 + ADR-0025: AI provider bootstrap. The helper owns the
     // four moving parts (admin open, precedence chain, slot, switcher
-    // selection) so `main()` stays at the wiring layer.
-    let (ai_provider_slot, ai_switcher) = bootstrap_ai(&secrets);
+    // selection) so `main()` stays at the wiring layer. Slice (b) also
+    // returns the admin handle here so the Settings UI mutates the same
+    // file the switcher reads from.
+    let (ai_provider_slot, ai_switcher, ai_admin) = bootstrap_ai(&secrets);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
@@ -203,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ai_switcher,
                 ai_provider_slot,
             );
-            Ok(Box::new(DesktopApp::new(inner, admin)))
+            Ok(Box::new(DesktopApp::new(inner, admin, ai_admin)))
         }),
     );
 
@@ -227,14 +229,31 @@ struct DesktopApp {
     /// the [`DesktopSwitcher`] (ADR-0020) can read entries by id from
     /// the same instance the UI mutates.
     admin: Option<Arc<Mutex<ConnectionAdmin>>>,
+    /// AI provider Settings window (ADR-0025 slice b). Always present
+    /// so the toggle state survives across `is_open` cycles; the menu
+    /// button is suppressed when [`Self::ai_admin`] is `None`.
+    ai_settings: AiSettingsView,
+    /// Shared handle to `ai-providers.toml`. `None` when the OS
+    /// reported no per-user config dir or the TOML was unreadable; the
+    /// `AI Providers` menu button is hidden in that case rather than
+    /// showing a window that could never save. Shared with the
+    /// [`DesktopAiSwitcher`] so a swap performed by either side is
+    /// visible to the other on the next frame.
+    ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>,
 }
 
 impl DesktopApp {
-    fn new(inner: DbboardApp, admin: Option<Arc<Mutex<ConnectionAdmin>>>) -> Self {
+    fn new(
+        inner: DbboardApp,
+        admin: Option<Arc<Mutex<ConnectionAdmin>>>,
+        ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>,
+    ) -> Self {
         Self {
             inner,
             connections: ConnectionsView::new(),
             admin,
+            ai_settings: AiSettingsView::new(),
+            ai_admin,
         }
     }
 }
@@ -254,6 +273,14 @@ impl eframe::App for DesktopApp {
                 if self.inner.has_ai_provider() && ui.button(t!("ai-menu-button")).clicked() {
                     self.inner.toggle_ai_panel();
                 }
+                // ADR-0025 slice (b): the AI Settings menu is shown
+                // whenever an `ai-providers.toml` admin is available,
+                // independent of whether a provider is currently bound
+                // — the whole point of the window is to bind one when
+                // none is yet active.
+                if self.ai_admin.is_some() && ui.button(t!("ai-settings-menu-button")).clicked() {
+                    self.ai_settings.open();
+                }
                 language_menu(ui);
             });
         });
@@ -265,12 +292,42 @@ impl eframe::App for DesktopApp {
             self.connections
                 .ui(ui.ctx(), &mut guard, self.inner.active_connection_id());
         }
+        // ADR-0025 slice (b): render the AI Settings window and push the
+        // currently-active provider's display name down to the panel.
+        // The push happens every frame (cheap clone of a short String)
+        // because the active id can change without going through this
+        // closure — e.g. a future CLI tool, or a rollback in the
+        // switcher — and we want the subtitle to track reality.
+        if let Some(ai_admin) = &self.ai_admin {
+            let mut guard = ai_admin.lock().unwrap_or_else(PoisonError::into_inner);
+            let active_id = guard.active_id().map(str::to_owned);
+            let label = active_id.as_ref().and_then(|id| {
+                guard
+                    .entries()
+                    .iter()
+                    .find(|e| &e.id == id)
+                    .map(|e| e.name.clone())
+            });
+            self.inner.set_active_ai_provider_label(label);
+            self.ai_settings
+                .ui(ui.ctx(), &mut guard, active_id.as_deref());
+        } else {
+            self.inner.set_active_ai_provider_label(None);
+        }
         // ADR-0020: drain a "Connect" click from the Connections window
         // and turn it into a SwitchConnection command. Done before the
         // inner UI renders so the active-id marker on the next frame
         // already reflects the request (if it succeeds).
         if let Some(id) = self.connections.take_pending_connect() {
             self.inner.switch_connection(id);
+        }
+        // ADR-0025 slice (b): drain a "Use" click from the Settings
+        // window and route it through the worker channel. The switch
+        // happens off-thread; success or failure lands on
+        // `DbboardApp::last_ai_switch_error` on the next `drain_replies`
+        // pass.
+        if let Some(id) = self.ai_settings.take_pending_switch() {
+            self.inner.switch_ai_provider(id);
         }
         self.inner.ui(ui, frame);
     }
@@ -447,10 +504,19 @@ fn build_provider_for_kind(
 ///    Settings UI and the slot share the same handle), the
 ///    [`NullAiSwitcher`] otherwise.
 ///
-/// Returns the slot and switcher; the admin handle is captured by the
-/// switcher and otherwise opaque to `main()` until slice (b) wires the
-/// Settings UI directly to it.
-fn bootstrap_ai(secrets: &Arc<dyn SecretStore>) -> (AiProviderSlot, Arc<dyn AiProviderSwitcher>) {
+/// Returns the slot, the switcher, and the admin handle. Slice (b)
+/// (ADR-0025) wires the third element into [`DesktopApp`] so the
+/// Settings UI mutates the same `ai-providers.toml` the
+/// [`DesktopAiSwitcher`] reads from. `None` means the OS reported no
+/// per-user config dir or the TOML was unreadable; the menu hides the
+/// Settings entry in that case.
+fn bootstrap_ai(
+    secrets: &Arc<dyn SecretStore>,
+) -> (
+    AiProviderSlot,
+    Arc<dyn AiProviderSwitcher>,
+    Option<Arc<Mutex<AiSettingsAdmin>>>,
+) {
     let ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>> = match default_ai_providers_path() {
         Ok(path) => match AiSettingsAdmin::open(path, Arc::clone(secrets)) {
             Ok(admin) => Some(Arc::new(Mutex::new(admin))),
@@ -481,7 +547,7 @@ fn bootstrap_ai(secrets: &Arc<dyn SecretStore>) -> (AiProviderSlot, Arc<dyn AiPr
         }),
         None => Arc::new(NullAiSwitcher),
     };
-    (slot, switcher)
+    (slot, switcher, ai_admin)
 }
 
 /// Resolve the optional AI provider via the precedence chain
