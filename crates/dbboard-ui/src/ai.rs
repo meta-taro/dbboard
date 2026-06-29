@@ -18,7 +18,7 @@
 
 use dbboard_ai::AiError;
 use dbboard_core::TableInfo;
-use dbboard_i18n::t;
+use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
 use crate::Command;
@@ -162,11 +162,18 @@ impl AiPanel {
     /// worker channel; returns `None` otherwise. The caller is
     /// responsible for not invoking this when `has_ai_provider()` is
     /// false (the panel itself trusts that gate).
+    ///
+    /// `active_provider_label`, when `Some`, is rendered as a subtitle
+    /// (ADR-0025 slice (b)) so the user can tell at a glance which
+    /// provider the next Send will hit. `None` suppresses the subtitle
+    /// — used when no provider is bound or when the host hasn't
+    /// resolved the label yet.
     pub fn ui(
         &mut self,
         ctx: &egui::Context,
         dialect: Option<&str>,
         schema: &[TableInfo],
+        active_provider_label: Option<&str>,
     ) -> Option<Command> {
         let mut pending: Option<Command> = None;
         let mut is_open = self.is_open;
@@ -175,6 +182,10 @@ impl AiPanel {
             .resizable(true)
             .default_width(420.0)
             .show(ctx, |ui| {
+                if let Some(name) = active_provider_label {
+                    let owned = name.to_string();
+                    ui.label(t_args!("ai-active-with-name", name = owned));
+                }
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.mode, AiMode::Explain, t!("ai-mode-explain"));
                     ui.selectable_value(&mut self.mode, AiMode::Suggest, t!("ai-mode-suggest"));

@@ -183,6 +183,18 @@ pub struct DbboardApp {
     /// returns true, so the field carries no runtime cost on the AI-less
     /// path.
     ai_panel: AiPanel,
+    /// Display name of the AI provider currently bound to
+    /// [`Self::ai_provider_slot`] (ADR-0025 slice (b)). Set by the
+    /// binary through [`Self::set_active_ai_provider_label`] — the
+    /// resolution lives there because the `AiSettingsAdmin` that holds
+    /// the id↔name mapping is binary-owned. The panel reads this each
+    /// frame to render an "Active: <name>" subtitle.
+    active_ai_provider_label: Option<String>,
+    /// Last `SwitchAiProvider` failure surfaced through
+    /// [`Reply::AiProviderSwitchFailed`]. Cleared on the next successful
+    /// switch. Kept distinct from [`Self::last_switch_error`] so the
+    /// connection-side and AI-side errors do not overwrite each other.
+    last_ai_switch_error: Option<String>,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -289,6 +301,8 @@ impl DbboardApp {
             now_rfc3339,
             ai_provider_slot,
             ai_panel: AiPanel::new(),
+            active_ai_provider_label: None,
+            last_ai_switch_error: None,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -347,14 +361,18 @@ impl DbboardApp {
                 Reply::AiFailed { error } => {
                     self.ai_panel.on_error(&error);
                 }
-                // ADR-0025: AI provider swap outcomes. The Settings UI
-                // that consumes these lands in slice (b) of issue 0008;
-                // for now we absorb the replies so the worker channel
-                // stays drained and the dispatch match remains
-                // exhaustive. No state on `DbboardApp` is updated here
-                // — the panel will read switch state directly off the
-                // `AiSettingsAdmin` it owns once it ships.
-                Reply::AiProviderSwitched { .. } | Reply::AiProviderSwitchFailed { .. } => {}
+                // ADR-0025 slice (b): AI provider swap outcomes. On
+                // success we just clear any prior error — the resolved
+                // *name* lands separately via
+                // [`set_active_ai_provider_label`], which the binary
+                // pushes from its `AiSettingsAdmin` snapshot each frame
+                // because that admin is the single id↔name map.
+                Reply::AiProviderSwitched { .. } => {
+                    self.last_ai_switch_error = None;
+                }
+                Reply::AiProviderSwitchFailed { reason } => {
+                    self.last_ai_switch_error = Some(reason);
+                }
             }
         }
     }
@@ -462,6 +480,46 @@ impl DbboardApp {
     pub fn ai_panel(&self) -> &AiPanel {
         &self.ai_panel
     }
+
+    /// Request an in-process AI provider swap to the entry named `id`
+    /// in `ai-providers.toml` (ADR-0025). The actual rebuild + slot
+    /// swap happens in the worker thread via the
+    /// [`worker::AiProviderSwitcher`] the binary injected at startup;
+    /// the UI just signals intent here. An `AiProviderSwitched` /
+    /// `AiProviderSwitchFailed` reply lands on the next `drain_replies`
+    /// pass.
+    pub fn switch_ai_provider(&mut self, id: String) {
+        let _ = self.cmd_tx.send(Command::SwitchAiProvider { id });
+    }
+
+    /// Push the resolved display name of the currently-bound AI
+    /// provider down to the panel. The binary owns the
+    /// `AiSettingsAdmin` (the only id↔name source of truth) and is
+    /// expected to call this each frame with the current
+    /// `admin.active_id()` looked up against `admin.entries()`. `None`
+    /// suppresses the panel subtitle — used when no provider is bound.
+    pub fn set_active_ai_provider_label(&mut self, label: Option<String>) {
+        self.active_ai_provider_label = label;
+    }
+
+    /// Snapshot of the label most recently pushed by
+    /// [`Self::set_active_ai_provider_label`]. Useful for tests and for
+    /// other binary-side observers that need the same string the panel
+    /// will render on its next frame.
+    #[must_use]
+    pub fn active_ai_provider_label(&self) -> Option<&str> {
+        self.active_ai_provider_label.as_deref()
+    }
+
+    /// Last `SwitchAiProvider` failure surfaced through
+    /// [`Reply::AiProviderSwitchFailed`]. Cleared on the next
+    /// successful switch. The body is the `AiError::Display` text the
+    /// switcher produced; the AI panel can render it inline without
+    /// re-translating the AI taxonomy through `DbError`.
+    #[must_use]
+    pub fn last_ai_switch_error(&self) -> Option<&str> {
+        self.last_ai_switch_error.as_deref()
+    }
 }
 
 /// Build the completion record stamped on disk at reply time
@@ -536,7 +594,11 @@ impl eframe::App for DbboardApp {
             // frame; the panel only allocates a Vec when Send is clicked
             // and the Suggest arm fires.
             let schema_slice: &[TableInfo] = self.tables.as_ref().map_or(&[], Vec::as_slice);
-            if let Some(cmd) = self.ai_panel.ui(ui.ctx(), dialect, schema_slice) {
+            let active_label = self.active_ai_provider_label.as_deref();
+            if let Some(cmd) = self
+                .ai_panel
+                .ui(ui.ctx(), dialect, schema_slice, active_label)
+            {
                 if self.cmd_tx.send(cmd).is_err() {
                     // Worker hung up — surface a synthetic failure so
                     // the panel exits the busy state immediately rather
