@@ -14,12 +14,14 @@
 //! (used by [`connect`](DbboardApp::connect) and by tests).
 
 mod ai;
+mod ai_settings;
 mod client;
 mod connections;
 mod history;
 mod worker;
 
 pub use ai::{AiMode, AiPanel, AiResponseView};
+pub use ai_settings::AiSettingsView;
 pub use connections::{
     AddFormState, ConnectionsView, EditFormState, EditKindState, KindSelector, Mode,
 };
