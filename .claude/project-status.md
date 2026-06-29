@@ -5,34 +5,61 @@
 
 ## 最終更新
 
-- 日付: 2026-06-26 (PR #41 マージクローズ、**ADR-0025 Phase 4
-  Stage 2 Group A 実装 slice a-2-β** ship — `apps/dbboard` 側に
-  本物の `DesktopAiSwitcher` + `resolve_ai_provider_from` の
-  **env > `ai-providers.toml` active_id > None** 3 段解決チェーン +
-  `AiProviderSlot = Arc<RwLock<Option<Arc<dyn AiProvider>>>>` 共有
-  スロット + worker per-request snapshot + `bootstrap_ai()` ヘルパ
-  抽出 + README "AI integration (optional)" の TOML 主軸書き直し。
-  +625 / −103、6 ファイル、10 件の新規 unit test 追加 = ワーク
-  スペース全体で 451 → 461 件 pass。HTTP contract 完全無変更、
-  web side 影響ゼロ、`NullAiSwitcher` 経由のフォールバックは
-  維持。PR #39 の `NullAiSwitcher` safe stub を `DesktopAiSwitcher`
-  本物に置き換えた = slice (a) インフラ層 = a-1 + a-2-α + a-2-β
-  完全着地、残るは slice b (UI) のみ)
-- ブランチ: `develop` (= `2b49fac`)、ローカル
-  `chore/post-pr41-doc-sync` 作業中
-  (`feature/ai-provider-desktop-switcher` は merge 済 /
-  origin 側 auto-delete 済 / local 削除は maintainer 判断保留)
+- 日付: 2026-06-29 (**ADR-0025 Phase 4 Stage 2 Group A slice (b)**
+  ship 完了 = `feature/ai-settings-ui` ブランチに 5 コミット着地、
+  push 待ち。`dbboard-ui` `AiSettingsView` egui state machine
+  (List / Add / Edit / ConfirmDelete) + 13 件の新規 unit test、
+  19 個の `ai-settings-*` Fluent キー + `ai-active-with-name` を
+  全 11 ロケールに同時追加 (ADR-0022 Tier 1+2 same-commit sync 遵守)、
+  `AiPanel::ui` シグネチャに `active_provider_label: Option<&str>`
+  を追加して "Active: { $name }" サブタイトル表示、`DbboardApp` に
+  `switch_ai_provider` / `set_active_ai_provider_label` /
+  `last_ai_switch_error` accessor 追加、`apps/dbboard` の
+  `DesktopApp` に `AiSettingsView` マウント + メニューボタン
+  (`ai-settings-menu-button`) + 毎フレーム active label push +
+  pending switch drain を配線。ワークスペース全体で 461 → 474 件
+  pass、release build / release test も clean = ADR-0025 全 4
+  slice (a-1 / a-2-α / a-2-β / b) 完了 = **Phase 4 Stage 2 Group A
+  クローズ**。)
+- ブランチ: `feature/ai-settings-ui` (= `e00ae20`、develop= `6e6eb83`
+  から 5 コミット先行)、push 待ち = maintainer 操作
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  Phase 4 Stage 2 Group A は slice a-1 (config 層) + slice a-2-α
-  (worker plumbing) + slice a-2-β (実 switcher + 解決チェーン) が
-  landed、残るは slice b (`dbboard-ui` `AiSettingsView` egui +
-  11 ロケール Fluent + メニュー配線 + docs sweep) のみ = 次セッション
-  候補のトップ。Stage 2 残り Group B (streaming + cancel + token
-  meter)、Group C (`history.jsonl` への AI 記録、v:2 schema bump、
-  web 側 fresh brief 必要)、Group D (full DDL extraction +
-  function-calling) は独立 ADR で順不同。Phase 2 ADR-0024 at-rest
-  hardening + ADR-0023 Stage 1 + ADR-0025 設計 + slice a-1 + a-2-α
-  + a-2-β 実装の 6 本が現状 Stage 2 への足場として load-bearing。**
+  Phase 4 Stage 2 Group A は slice b 着地でクローズ = `ai-providers.toml` +
+  Settings UI + runtime provider switcher の全体像が in-process で完成。
+  Stage 2 残り Group B (streaming + cancel + token meter)、Group C
+  (`history.jsonl` への AI 記録、v:2 schema bump、web 側 fresh brief
+  必要)、Group D (full DDL extraction + function-calling) は独立 ADR
+  で順不同 = 次セッションの「メニュー」候補。Phase 2 ADR-0024 at-rest
+  hardening + ADR-0023 Stage 1 + ADR-0025 完全実装 (4 slice 全着地) の
+  3 本が現状 Stage 2 残り (B/C/D) への足場として load-bearing。**
+
+### `feature/ai-settings-ui` 5 コミット内訳 (2026-06-29、本セッション)
+
+| コミット | スコープ | 中身 |
+|---|---|---|
+| `a1eae06` | `feat(ui): AiSettingsView state machine` | `crates/dbboard-ui/src/ai_settings.rs` 新規 787 行 + 13 unit test。`Mode::{List, Add, Edit, ConfirmDelete}`、`SecretField::{Keep, Set}` 編集セマンティクス (ADR-0016 §3 write-only)、`AiSettingsAdmin::new_with_file` を使った in-process テスト、`InMemorySecretStore` 利用、`take_pending_switch()` で host にスイッチ要求を渡す pattern。`lib.rs` で `pub use AiSettingsView`。 |
+| `e087ac8` | `feat(i18n): ai-settings-* keys × 11 locales` | en/ja/de/es/fr/it/ko/pt-BR/ru/zh-CN/zh-TW の `.ftl` に 19 キー + `ai-active-with-name` を同時追加 = ADR-0022 Tier 1+2 same-commit sync ポリシー遵守。i18n テスト 9/9 維持。 |
+| `99e0ba4` | `feat(ui): wire AI provider swap replies + Active subtitle` | `DbboardApp` に `active_ai_provider_label: Option<String>` / `last_ai_switch_error: Option<String>` フィールド + `switch_ai_provider` / `set_active_ai_provider_label` / `active_ai_provider_label` / `last_ai_switch_error` accessor 追加。`Reply::AiProviderSwitched` で error クリア、`Reply::AiProviderSwitchFailed { reason }` で error 保持。`AiPanel::ui` に `active_provider_label: Option<&str>` 引数を追加し、`t_args!("ai-active-with-name", name = owned)` で `FluentValue<'static>` の lifetime 制約を `String` 所有化で回避。 |
+| `11a5ef6` | `feat(apps): mount AiSettingsView in desktop binary` | `bootstrap_ai` の戻り値に `Option<Arc<Mutex<AiSettingsAdmin>>>` を追加 = `DesktopAiSwitcher` と同じ admin インスタンスを共有。`DesktopApp` に `ai_settings: AiSettingsView` + `ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>` 追加。`DesktopApp::ui` で menu button (`ai-settings-menu-button`) を `ai_admin.is_some()` で gating、毎フレーム `active_id` → `name` lookup → `set_active_ai_provider_label` push、`AiSettingsView::ui(ctx, &mut guard, active_id.as_deref())` 描画、`take_pending_switch()` → `switch_ai_provider(id)` drain。Connections UI と同じ Mutex poison-handling パターン (`unwrap_or_else(PoisonError::into_inner)`)。 |
+| `e00ae20` | `docs: close ADR-0025 slice (b)` | README "AI integration" を "in-flight Settings UI" 注記から "open the AI Providers menu" の実ワークフローに書き直し。`docs/roadmap.md` の "Settings UI for API key, provider choice" を `[ ]` → `[x]` に変更、4 スライスの着地記録を全て embed。`docs/decisions.md` の ADR-0025 status note に "Implementation closed 2026-06-29" を追加。`.claude/issues/0008` を open → closed に flip。 |
+
+### 検証コマンド (全て pass)
+
+- `cargo fmt --all -- --check` ✅
+- `cargo clippy --all-targets --all-features -- -D warnings` ✅
+- `cargo check --all-targets --all-features` ✅
+- `cargo test --all-features` ✅ — **474 件 pass** (461 → +13 = `AiSettingsView` テスト)
+- `cargo build --release` ✅
+- `cargo test --all-features --release` ✅ — **0 failed / 0 ignored** (一部 platform-gated test は ignored on debug でも release でも同様)
+
+### 維持された設計原則 (review tick)
+
+- **ADR-0025 §2.A**: TOML が source of truth、UI mutation で active_id が永続化 = `DesktopAiSwitcher::switch` がスロットを先に swap してから TOML 書き込み、書き込み失敗時は in-memory 状態を信頼 + stderr ログ (既存実装、slice b で変更なし)
+- **ADR-0016 §3 (write-only secret semantics)**: `SecretField::{Keep, Set}` で edit form は既存 API key 値を読み出さない = `AiSettingsAdmin::update` も既存 keyring entry を rotate
+- **ADR-0022 (runtime locale switcher)**: Tier 1+2 全 11 ロケール same-commit sync 維持 = 19 キー + 1 キー (active subtitle) を 11 ファイルに同時追加
+- **ADR-0023 Decision 11 (graceful degradation by absence)**: `ai_admin.is_some()` で AI Providers menu button を gating = TOML 開けない環境では window 自体が出ない (CI / headless safe)
+- **ADR-0020 + ADR-0024 (poison-handling parity)**: `DesktopApp::ui` の admin guard も `unwrap_or_else(PoisonError::into_inner)` で connections UI と統一
+- **HTTP contract**: 完全無変更 = web side 影響ゼロ = cross-repo 通知不要 (ADR-0025 設計通り、slice a-2-β の確認を slice b でも再確認)
 
 ### PR #41 (ADR-0025 Phase 4 Stage 2 Group A — slice a-2-β / `apps/dbboard` 側 `DesktopAiSwitcher` + `resolve_ai_provider_from` 解決チェーン + `AiProviderSlot` 共有スロット + README 書き直し) マージクローズ (本セッション / 2026-06-26)
 

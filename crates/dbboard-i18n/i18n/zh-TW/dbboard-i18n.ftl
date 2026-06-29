@@ -58,3 +58,24 @@ ai-error-prefix-network = AI 網路錯誤
 ai-error-prefix-provider = AI 提供者錯誤
 ai-error-prefix-quota = AI 配額已超出
 ai-error-prefix-cancelled = AI 請求已取消
+
+# ADR-0025 Phase 4 Stage 2 Group A slice (b)：AI 供應商設定視窗。
+ai-settings-menu-button = AI 供應商
+ai-settings-window-title = AI 供應商
+ai-settings-list-empty = （未設定 AI 供應商）
+ai-settings-add-button = 新增
+ai-settings-edit-button = 編輯
+ai-settings-delete-button = 刪除
+ai-settings-save-button = 儲存
+ai-settings-cancel-button = 取消
+ai-settings-use-button = 使用
+ai-settings-confirm-delete = 刪除此 AI 供應商？
+ai-settings-active-marker = （使用中）
+ai-settings-field-id = ID
+ai-settings-field-name = 名稱
+ai-settings-field-kind = 類型
+ai-settings-field-model = 模型（選填）
+ai-settings-field-api-key = API 金鑰
+ai-settings-replace-api-key = 取代 API 金鑰
+ai-settings-kind-anthropic = Anthropic
+ai-active-with-name = 使用中：{ $name }

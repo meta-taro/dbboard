@@ -58,3 +58,24 @@ ai-error-prefix-network = AI ネットワークエラー
 ai-error-prefix-provider = AI プロバイダエラー
 ai-error-prefix-quota = AI 利用上限超過
 ai-error-prefix-cancelled = AI リクエストがキャンセルされました
+
+# ADR-0025 Phase 4 Stage 2 Group A スライス (b)：AI プロバイダ設定ウィンドウ。
+ai-settings-menu-button = AI プロバイダ
+ai-settings-window-title = AI プロバイダ
+ai-settings-list-empty = （AI プロバイダが登録されていません）
+ai-settings-add-button = 追加
+ai-settings-edit-button = 編集
+ai-settings-delete-button = 削除
+ai-settings-save-button = 保存
+ai-settings-cancel-button = キャンセル
+ai-settings-use-button = 使用
+ai-settings-confirm-delete = この AI プロバイダを削除しますか？
+ai-settings-active-marker = （使用中）
+ai-settings-field-id = ID
+ai-settings-field-name = 名前
+ai-settings-field-kind = 種別
+ai-settings-field-model = モデル（任意）
+ai-settings-field-api-key = API キー
+ai-settings-replace-api-key = API キーを置換
+ai-settings-kind-anthropic = Anthropic
+ai-active-with-name = 使用中：{ $name }
