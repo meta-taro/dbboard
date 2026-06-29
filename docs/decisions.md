@@ -2621,7 +2621,21 @@ will reopen this decision.
 
 ## ADR-0025 — Phase 4 Stage 2 Group A: `ai-providers.toml` + Settings UI + runtime provider switcher
 
-**Status:** Accepted (2026-06-24). Opens Phase 4 Stage 2 by lifting
+**Status:** Accepted (2026-06-24). **Implementation closed
+2026-06-29.** Shipped across four PRs over five days: slice a-1
+(PR #37, `dbboard-config` layer) on 2026-06-25, slice a-2-α (PR #39,
+`dbboard-ui` worker plumbing) on 2026-06-25, slice a-2-β (PR #41,
+`apps/dbboard` real `DesktopAiSwitcher` + env > TOML > None
+precedence) on 2026-06-26, and slice (b) (`feature/ai-settings-ui`,
+this PR) on 2026-06-29 — `AiSettingsView` egui state machine
+(List/Add/Edit/ConfirmDelete) + 13 unit tests, 19 `ai-settings-*`
+Fluent keys + `ai-active-with-name` across all 11 locales, AI panel
+"Active: { $name }" subtitle, and the `apps/dbboard` menu wiring.
+The deferred Stage 2 items (streaming, cancel button, AI calls in
+`history.jsonl`, conversation history, full DDL extraction,
+function-calling) remain deferred per ADR-0023 §9.
+
+Opens Phase 4 Stage 2 by lifting
 the AI provider out of the env-var-only construction path
 established in ADR-0023 Decision 5 into a versioned per-user TOML
 file (`ai-providers.toml`) keyed by opaque keychain references,

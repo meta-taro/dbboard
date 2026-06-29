@@ -240,11 +240,13 @@ Manager, macOS Keychain, or Linux Secret Service — under
 `dbboard.ai.<id>.api_key`. The TOML file itself records the keyring
 reference, never the literal key.
 
-The runtime store is the same one the (in-flight) Settings UI will
-use: switching the active provider rebuilds the in-process provider
-and updates the file's `active_id` atomically (ADR-0025). Until the
-Settings UI ships, use the `dbboard-config` crate's `AiSettingsAdmin`
-or hand-edit the TOML against a hand-seeded keychain entry:
+The runtime store is the same one the Settings UI mutates (open it
+from the **AI Providers** menu, ADR-0025 slice b): adding an entry
+seeds the keychain, "Use" rebuilds the in-process provider and
+updates `active_id` atomically, and "Delete" tears down the entry
+and its secret together. A hand-edited TOML works too — useful for
+seeding a new machine without opening the window — provided the
+`keyring_api_key_ref` it names has a matching keychain entry:
 
 ```toml
 # ai-providers.toml
