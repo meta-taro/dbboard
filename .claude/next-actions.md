@@ -8,15 +8,15 @@
 ## 最終更新
 
 - 日付: 2026-06-29
-- develop tip: `6e6eb83` (PR #42 merged = PR #41 post-PR doc sync 完了)
-- 直近ハイライト: **ADR-0025 slice (b) ship 完了** = `feature/ai-settings-ui`
-  に 5 コミット (`a1eae06` / `e087ac8` / `99e0ba4` / `11a5ef6` / `e00ae20`)
-  着地、push 待ち = **maintainer 操作 (= user 側のボール)**。
-  これで **Phase 4 Stage 2 Group A クローズ** = `ai-providers.toml` +
-  Settings UI + runtime provider switcher の全体像が in-process で完成。
-- ワークスペース test count: **474 件 pass** (461 → +13 = `AiSettingsView` 単体テスト)
-- ローカルブランチ状態: `feature/ai-settings-ui` が `develop` から 5 コミット先行、
-  release build / release test も clean
+- develop tip: `5124b00` (PR #43 merged = ADR-0025 slice (b) 着地)
+- 直近ハイライト: **ADR-0025 Phase 4 Stage 2 Group A クローズ** =
+  `ai-providers.toml` + Settings UI + runtime in-process provider
+  switcher の全体像完成。4 slice (a-1 PR #37 / a-2-α PR #39 / a-2-β
+  PR #41 / b PR #43) 全 landed。次は本 chore PR (post-PR43 doc sync) の
+  push & PR 化 → マージで Stage 2 Group A の対外的なクローズ宣言完了。
+- ワークスペース test count: 474 件 pass
+- ローカルブランチ状態: `chore/post-pr43-doc-sync` が `develop` から
+  1 コミット先行 (status + next-actions 更新のみ)、push 待ち
 
 ## モード
 
@@ -28,37 +28,49 @@
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### 選択肢 0: `feature/ai-settings-ui` を push & PR 化 — *最優先 (= 直前作業のクローズ)*
+### 選択肢 0: `chore/post-pr43-doc-sync` を push & PR 化 — *最優先 (= 直前作業のクローズ)*
 
-- **何**: `feature/ai-settings-ui` を `origin` に push、`develop` に対して
-  PR を切る。5 コミット = slice (b) + 11 ロケール + ワイヤリング + apps
-  配線 + docs sweep。
-- **なぜ最優先**: 直前セッションの成果物がローカルにしか居ない。push
-  しないと CI も走らず、レビューも始まらない。
+- **何**: 本 chore ブランチを `origin` に push、`develop` に対して
+  PR を切る。`.claude/project-status.md` の PR #43 クローズ記録 +
+  `next-actions.md` の Group A 完了後 menu 再生成。
+- **なぜ最優先**: PR #40 / #42 と同じ post-PR doc sync パターン継続。
+  Rust 無改変 / docs 無改変 / 内部メモのみ = 小さい PR、すぐマージ可。
 - **キックオフの一言例**:
-  > 「feature/ai-settings-ui を push して PR 化して」
-- **規模感**: 5 コミット、Rust + Fluent + Markdown、HTTP contract 無変更、
-  web 側影響ゼロ。PR description は full commit history を分析して生成。
-- **依存**: なし。`develop` (= `6e6eb83`) からクリーン分岐。
+  > 「chore/post-pr43-doc-sync を push して PR 化して」
+- **規模感**: 1 PR、`.claude/*` の 2 ファイルのみ、CI grep 想定。
+- **依存**: なし。
 
-### 選択肢 1: ADR-0025 slice (b) PR マージ後の post-PR doc sync
+### 選択肢 1: Phase 4 Stage 2 残り (Group B / C / D) を着手
 
-- **何**: PR がマージされた後、PR #40 / #42 と同じパターンで
-  `chore/post-prNN-doc-sync` ブランチを切り、`.claude/project-status.md` の
-  PR ヘッダ更新 + `next-actions.md` 再生成。
-- **なぜ**: doc-fresh feedback ([[feedback-keep-docs-fresh]]) で
-  「feat PR の merge 直後に short chore PR」が pattern として定着。
+- Group A クローズで Stage 2 全体への足場が整った = 順不同で着手可。
+- **Group B**: streaming + cancel + token meter (`AiProvider` trait 拡張)
+  - **規模感**: 中。`AiProvider::explain_sql` / `suggest_sql` を stream
+    バージョンに変える設計判断 (trait method 追加 or 別 method)、
+    worker channel に `Reply::AiChunk` / `Command::CancelAi` 追加、
+    AI panel に cancel button + 部分表示。HTTP contract 無変更。
+- **Group C**: `history.jsonl` への AI 記録、v:2 schema bump、**web 側
+  fresh brief 必要** (= 0NNN-web-*.md を新規に書く工程込み)
+  - **規模感**: 大。schema v:1 → v:2 migration、web 側の `desktop-history.jsonl`
+    fixture 再生成 (PR #29 の `emit_history_fixture` を使う)、web 側に
+    対応する `0008-web-*.md` ブリーフ。**唯一の cross-repo coordination**。
+- **Group D**: full DDL extraction + function-calling
+  - **規模感**: 中〜大。`AdapterCapabilities::extract_full_ddl()` 追加
+    (Turso / Postgres flavors すべてに実装)、`AiProvider::suggest_sql` の
+    schema 引数を `Vec<TableInfo>` から full DDL string に拡張。
 - **キックオフの一言例**:
-  > 「PR マージしたので post-pr-doc-sync を切って」
-- **規模感**: 1 PR、docs / status のみ、Rust 無改変、CI grep 想定。
+  > 「Group B から着手したい、streaming の trait 設計を検討して」
+  > 「Group C の v:2 schema bump を設計するところから」
 
 ### 選択肢 2: 実利用の摩擦報告
 
 - **何**: dbboard を実際に使っていて気になった点を口頭で渡す。
 - **なぜ**: 現モードでは roadmap 順より friction 駆動が優先。
+  Group A クローズで「AI Settings UI が初めて user の手に渡る」段階 =
+  friction 報告が来やすいタイミング。
 - **キックオフの一言例**:
+  > 「AI Providers Settings 画面で Anthropic 以外を追加できないのが辛い」
+  > 「Active subtitle が小さくて読みづらい」
   > 「Turso 接続で〜〜が辛かった、対処したい」
-  > 「AI Providers Settings 画面で〜〜が使いにくい」
 - **規模感**: 内容次第。issue / ADR を起こすかはこちらで提案。
 
 ### 選択肢 3: dbboard-web 側からの依頼を反映
@@ -73,16 +85,6 @@
 - **キックオフの一言例**:
   > 「web 側から `/views` endpoint を追加したいと依頼が来た」
 - **規模感**: 内容次第。HTTP contract に触る場合は ADR + 双方ミラー。
-
-### 選択肢 4: Phase 4 Stage 2 の残りグループ (B / C / D)
-
-- Group A クローズで Stage 2 全体への足場が整った = 順不同で着手可。
-- **Group B**: streaming + cancel + token meter (`AiProvider` trait 拡張)
-- **Group C**: `history.jsonl` への AI 記録、v:2 schema bump、**web 側
-  fresh brief 必要** (= 0NNN-web-*.md を新規に書く工程込み)
-- **Group D**: full DDL extraction + function-calling
-- **キックオフの一言例**:
-  > 「Group C の v:2 schema bump を設計するところから」
 
 ---
 
@@ -100,13 +102,13 @@
 
 ## 私単独で進められる作業がない理由 (確認用)
 
-1. `feature/ai-settings-ui` 5 コミットはローカルに居る = push は user 操作。
-2. push 前に追加で触ると review が崩れる = 静止すべき。
-3. 現モードは menu-not-sequence。Group B/C/D は standing next の優先度が
-   slice b より低く、user 不在で勝手に開始するのは過剰。
+1. `chore/post-pr43-doc-sync` 1 コミットはローカルに居る = push は user 操作。
+2. push 前に Rust に手を入れると review が崩れる = 静止すべき。
+3. 現モードは menu-not-sequence。Group B/C/D は order が user 判断、
+   勝手に開始するのは過剰。
 4. web 側依頼は現時点で着信なし。
 
-→ どれを選ぶかは user 判断。上の選択肢 0〜4 のどれかを伝えてもらえれば
+→ どれを選ぶかは user 判断。上の選択肢 0〜3 のどれかを伝えてもらえれば
 即着手可能 (選択肢 0 = push & PR 化が最優先)。
 
 ---
