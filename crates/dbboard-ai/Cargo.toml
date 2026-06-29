@@ -20,6 +20,11 @@ dbboard-core = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+# ADR-0026 (streaming + cancel + token meter): the `AiStream` alias is
+# `futures_util::stream::BoxStream<'static, _>`, and the default impls
+# on `AiProvider::stream_*` use `futures_util::stream::iter` to wrap a
+# single-shot atomic response into a 3-event stream.
+futures-util = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
