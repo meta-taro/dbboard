@@ -7,71 +7,86 @@
 
 ## 最終更新
 
-- 日付: 2026-06-29
-- develop tip: `8a08f67` (PR #44 merged = post-PR43 doc sync 着地)
-- 作業ブランチ: `feature/ai-streaming-cancel-tokens` (Group B 着手中)
-- 直近ハイライト: **ADR-0026 (Phase 4 Stage 2 Group B = streaming + cancel +
-  token meter) ドラフト完了 / user レビュー待ち。** ADR 本文は
-  `docs/decisions.md`、実装トラッカは `.claude/issues/0009-ai-streaming-cancel-tokens.md`。
-  11 個の Decision を整理済み (additive trait 拡張・drop-the-stream cancel・
-  cumulative token 表示・streaming opt-in toggle 他)。
-- ワークスペース test count: 474 件 pass (Group A 完了時点、Group B はまだ
-  test 書く前)
-- ローカルブランチ状態: docs 3 ファイル変更済み (`docs/decisions.md` +
-  `.claude/issues/0009-*.md` + 当ファイル)、commit 前
+- 日付: 2026-06-30
+- develop tip: `6e6eb83` (PR #42 merged = post-PR41 doc sync 着地後)
+- 作業ブランチ: `feature/ai-streaming-cancel-tokens`
+  (Phase 4 Stage 2 Group B = ADR-0026 / 4 slice 完了、未 push / 未 PR)
+- 直近ハイライト: **ADR-0026 (Phase 4 Stage 2 Group B = streaming +
+  cancel + token meter) 実装完了 / status を Accepted に切替 / push 待ち。**
+  4 commits 全部緑 (fmt / clippy / check / test pre-commit hook OK)。
+  - `3f16697` docs(adr): ADR-0026 draft
+  - `2cb012e` feat(ai) Slice a: dbboard-ai trait 拡張
+    (`stream_explain` / `stream_suggest_sql` + `StreamEvent` / `StopReason`
+    + `AiCapabilities::has_streaming` activate)
+  - `e5f49d0` feat(ai) Slice b: Anthropic SSE in dbboard-anthropic
+    (`reqwest-eventsource` 0.6 + `RetryPolicy::Never`)
+  - `e8f5fd5` feat(ai) Slice c: dbboard-ui worker 改造
+    (tokio async loop + std→tokio mpsc bridge + per-request
+    `CancellationToken` + `tokio::select!` cancel race)
+  - `fff669c` feat(ai) Slice d: `AiPanel` state machine
+    (`StreamingAcc` + Send↔Cancel toggle + token meter +
+    3 Fluent keys × 11 locales)
+- ワークスペース test count: 全 crate 緑、`dbboard-ui` のみで 145 件 pass
+  (Slice c+d で +20 件相当の streaming/cancel テスト追加)
+- ローカルブランチ状態: 5 commits ahead of `origin/feature/ai-streaming-cancel-tokens`
+  (Slice d + doc sweep ぶん、まだ push していない)
+- ドキュメント反映: `docs/decisions.md` ADR-0026 Accepted (2026-06-30) +
+  4 slice 着地 commit ID 列挙 / `docs/roadmap.md` Phase 4 Stage 2 Group B
+  項目を完了マーク / `README.md` AI セクションに streaming + cancel +
+  token meter 段落追加 / deferred リストから streaming 削除
 
 ## モード
 
 **in-use / continuous-improvement (menu-not-sequence)** — 2026-06-24 以降。
 ロードマップ順ではなく実利用の摩擦報告を優先。
-ただし現在は **Group B 着手中** (user が選択肢 1 を選んだため)、
-ADR-0026 user 合意 → Slice a 実装に進む段階。
+Group B が closed したので、次は **user が push + PR 作成** → merge 後に
+別 Group に進むか実利用 friction に切り替えるかの判断段階。
 
 ---
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### **★ 最優先: ADR-0026 をレビュー**
+### **★ 最優先: ブランチを push して PR を作成**
 
-- **何**: `docs/decisions.md` 末尾の ADR-0026 (Phase 4 Stage 2 Group B =
-  streaming + cancel + token meter) をレビューして OK / 修正指示を出す。
-- **特に確認してほしい設計判断** (Decision 番号):
-  - Decision 1: **additive trait 拡張** (`stream_explain` / `stream_suggest_sql`
-    を別 method として追加、既存 `explain` / `suggest_sql` は無変更)
-  - Decision 5: **cancel は drop-the-stream** (trait に
-    `CancellationToken` 引数を取らない、`reqwest` の h2 close で代用)
-  - Decision 7: **token meter は cumulative read** (delta を sum せず、
-    Anthropic の `message_delta.usage.output_tokens` が cumulative なので
-    上書き)
-  - Decision 9: **streaming は UI の opt-in toggle** (デフォルトは atomic、
-    `has_streaming` capability で gate)
-  - Decision 11: **mid-stream provider swap は cancel しない** (ADR-0025
-    の slot snapshot 挙動を継承、cancel は user 明示操作のみ)
+- **何**: `feature/ai-streaming-cancel-tokens` (5 commits 含む) を
+  origin に push し、`develop` への PR を作る。
+- **コミット範囲**: `3f16697` ADR draft → `2cb012e` Slice a → `e5f49d0`
+  Slice b → `e8f5fd5` Slice c → `fff669c` Slice d。
+- **手順 (CLAUDE.md ルール: 私はコミット、push は user)**:
+  ```sh
+  git push -u origin feature/ai-streaming-cancel-tokens
+  gh pr create --title "feat(ai): streaming + cooperative cancel + token meter (ADR-0026)" \
+               --base develop \
+               --body-file <(echo "...")
+  ```
+  PR body 雛形が欲しければ「ADR-0026 の PR 文書いて」と一言下さい。
 - **キックオフの一言例**:
-  > 「ADR-0026 OK、Slice a の RED tests から進めて」
-  > 「Decision 9 を逆にしてほしい (streaming をデフォルトに)」
-  > 「Decision 5 はやはり CancellationToken を渡したい」
+  > 「push して PR 作っといて」 (= PR body 私が下書き)
+  > 「push は俺がやるから body だけ書いて」
 
-### 選択肢 1: Slice a から実装着手 (ADR-0026 合意後)
+### 選択肢 1: マージ後 doc-sync chore PR
 
-- ADR-0026 OK 後、`dbboard-ai` trait 拡張 + `StreamEvent` / `StopReason` 型
-  + default delegate impl を RED tests first で書く。
-- 規模感: 小〜中。新しい trait method 2 個と型 2 個追加、テスト 10 件くらい。
-- HTTP contract 無変更、cross-repo coordination 不要。
+- マージ後、`docs/architecture.md` などに ADR-0026 への参照を追記する
+  pattern を継続する場合の chore PR。
+  過去パターン (PR #38 / #40 / #42 / #44) を踏襲。
+- 規模感: 極小。
 
-### 選択肢 2: 別 Group に切り替え (Group B を保留)
+### 選択肢 2: 次の Group に着手
 
-- Group C (history.jsonl + v:2 + web brief) や Group D (DDL + function-calling)
-  に方針転換する場合。
-- ADR-0026 と issue 0009 は draft のまま残しても良い (Status: Proposed)。
-- branch `feature/ai-streaming-cancel-tokens` は破棄 or 保留。
+- Group C (history.jsonl AI records + v:2 schema bump + web side brief)
+  または Group D (full DDL extraction + function-calling)。
+- どちらも ADR-0023 §9 で deferred 済み。
+- Group C は web 側 mirror が必要 (history JSON schema 変更のため) =
+  cross-repo coordination の手筈を組む必要あり。
+- Group D は in-process のみ = web 影響なし。
 
-### 選択肢 3: 実利用の摩擦報告
+### 選択肢 3: 実利用 friction 報告
 
-- Group A クローズ後、AI Settings UI を実利用していて気になった点があれば
-  Group B 着手より優先する余地あり (menu-not-sequence の原則)。
+- streaming + cancel + token meter を実際に触って気になった点があれば
+  Group C / D 着手より優先する余地あり (menu-not-sequence)。
 - キックオフの一言例:
-  > 「Group B 中断、AI Providers 画面の〜〜が辛い」
+  > 「token meter の表示が見づらい、〜〜にしたい」
+  > 「Cancel ボタンの位置を変えたい」
 
 ---
 
@@ -80,24 +95,21 @@ ADR-0026 user 合意 → Slice a 実装に進む段階。
 - PR #29 で渡した fixture 受領後、web 側で `describe.skip` をフリップする
   作業が残っている。完了通知が来たらこちらの memory
   ([[dbboard-web-state]]) を更新する。
-- ADR-0026 (Group B) は **web 側ミラー不要**。理由: ADR-0023 Decision 3 が
-  AI を HTTP contract から外しているので、streaming も in-process のみ。
-  PR #33 の `0007-web-ai-phase6-no-contract-mirror.md` で既に explicit-no-op
-  brief 済み = 追加 brief 不要。
+- ADR-0026 (Group B) は **web 側ミラー不要** = PR #33 の
+  `0007-web-ai-phase6-no-contract-mirror.md` brief で explicit-no-op
+  済み。追加 brief 不要。
 - 上記以外の coordination は現時点で pending なし。
 
 ---
 
 ## 私単独で進められる作業がない理由 (確認用)
 
-1. ADR-0026 は Proposed 状態 = user の OK が出るまで実装着手しない方が筋。
-2. 設計判断 (特に Decision 5 = cancel design、Decision 9 = streaming opt-in
-   policy) は user の好みで分かれる可能性あり = 勝手に進めて後で書き直しは
-   過剰。
-3. Group A / 過去 ADR でも「ADR draft → user review → 合意 → 実装」の順を
-   踏襲してきた (ADR-0023 / 0024 / 0025 すべて) = 同じパターンを維持。
+1. push は user (CLAUDE.md mandate)。PR 作成も基本は user 主導。
+2. 次の Group 着手は user の優先順位選択 (Group C vs Group D vs friction)。
+3. friction 報告は user が実利用してこそ出てくる情報 = 私が先回りで
+   feature 追加するのは menu-not-sequence の原則に反する。
 
-→ ADR-0026 を読んで OK / 修正指示を出してもらえれば、Slice a から即着手可能。
+→ ブランチを push → PR 作成 → merge する段取りが user 側のボール。
 
 ---
 

@@ -1,6 +1,7 @@
 # 0009: AI streaming + cooperative cancel + token meter (Phase 4 Stage 2 Group B)
 
-- **Status**: open 2026-06-29
+- **Status**: closed 2026-06-30 (4 slice 全完 / branch
+  `feature/ai-streaming-cancel-tokens` ローカル着地 = push 待ち)
 - **Phase**: 4 Stage 2 Group B (Streaming + Cancel + Token meter).
   Phase 4 Stage 2 Group A (issue 0008) is closed.
 - **Opened**: 2026-06-29
