@@ -59,6 +59,14 @@ ai-error-prefix-provider = AI プロバイダエラー
 ai-error-prefix-quota = AI 利用上限超過
 ai-error-prefix-cancelled = AI リクエストがキャンセルされました
 
+# ADR-0026 Phase 4 Stage 2 Group B：ストリーミング + 協調的キャンセル
+# + トークンメーター。`ai-cancel-button` は実行中に Send の代わりに
+# 表示される（ストリーミング / アトミック 両パス）。トークンメーターは
+# `{ $tin }` 入力 / `{ $tout }` 出力。
+ai-cancel-button = キャンセル
+ai-cancelled-message = キャンセルされました。
+ai-tokens-meter = トークン：入力 { $tin } / 出力 { $tout }
+
 # ADR-0025 Phase 4 Stage 2 Group A スライス (b)：AI プロバイダ設定ウィンドウ。
 ai-settings-menu-button = AI プロバイダ
 ai-settings-window-title = AI プロバイダ

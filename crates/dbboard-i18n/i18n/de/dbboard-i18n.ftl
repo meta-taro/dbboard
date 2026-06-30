@@ -59,6 +59,12 @@ ai-error-prefix-provider = KI-Anbieterfehler
 ai-error-prefix-quota = KI-Kontingent überschritten
 ai-error-prefix-cancelled = KI-Anfrage abgebrochen
 
+# ADR-0026 Phase 4 Stage 2 Group B: Streaming + kooperative Stornierung
+# + Token-Anzeige.
+ai-cancel-button = Abbrechen
+ai-cancelled-message = Abgebrochen.
+ai-tokens-meter = Tokens: { $tin } ein / { $tout } aus
+
 # ADR-0025 Phase 4 Stage 2 Group A slice (b): KI-Anbieter-Einstellungsfenster.
 ai-settings-menu-button = KI-Anbieter
 ai-settings-window-title = KI-Anbieter
