@@ -59,6 +59,11 @@ ai-error-prefix-provider = AI 提供方错误
 ai-error-prefix-quota = AI 配额已超出
 ai-error-prefix-cancelled = AI 请求已取消
 
+# ADR-0026 Phase 4 Stage 2 Group B：流式 + 协作取消 + 令牌计数器。
+ai-cancel-button = 取消
+ai-cancelled-message = 已取消。
+ai-tokens-meter = 令牌：输入 { $tin } / 输出 { $tout }
+
 # ADR-0025 Phase 4 Stage 2 Group A slice (b)：AI 提供商设置窗口。
 ai-settings-menu-button = AI 提供商
 ai-settings-window-title = AI 提供商

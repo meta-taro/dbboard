@@ -31,6 +31,14 @@ egui = { workspace = true }
 # serde_json shapes request bodies / parses the contract envelopes.
 reqwest = { workspace = true }
 tokio = { workspace = true }
+# Drop-the-future cancel for in-flight AI requests (ADR-0026 Decision 5).
+# The worker holds a single `CancellationToken` per in-flight AI command
+# and races the stream future against `.cancelled()` via `tokio::select!`.
+tokio-util = { workspace = true }
+# `BoxStream` consumption side of the AI streaming surface (ADR-0026
+# Decision 1). The worker awaits `AiStream::next()` to forward chunks
+# over the std::mpsc reply channel.
+futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

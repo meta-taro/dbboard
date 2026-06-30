@@ -59,6 +59,12 @@ ai-error-prefix-provider = Ошибка поставщика ИИ
 ai-error-prefix-quota = Превышена квота ИИ
 ai-error-prefix-cancelled = Запрос ИИ отменён
 
+# ADR-0026 Phase 4 Stage 2 Group B: потоковая передача + кооперативная
+# отмена + счётчик токенов.
+ai-cancel-button = Отмена
+ai-cancelled-message = Отменено.
+ai-tokens-meter = Токены: { $tin } вход / { $tout } выход
+
 # ADR-0025 Phase 4 Stage 2 Group A slice (b): окно настроек провайдеров ИИ.
 ai-settings-menu-button = Провайдеры ИИ
 ai-settings-window-title = Провайдеры ИИ

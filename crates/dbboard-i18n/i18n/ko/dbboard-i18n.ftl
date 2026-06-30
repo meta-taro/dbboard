@@ -59,6 +59,11 @@ ai-error-prefix-provider = AI 제공자 오류
 ai-error-prefix-quota = AI 할당량 초과
 ai-error-prefix-cancelled = AI 요청 취소됨
 
+# ADR-0026 Phase 4 Stage 2 Group B: 스트리밍 + 협조적 취소 + 토큰 미터.
+ai-cancel-button = 취소
+ai-cancelled-message = 취소되었습니다.
+ai-tokens-meter = 토큰: 입력 { $tin } / 출력 { $tout }
+
 # ADR-0025 Phase 4 Stage 2 Group A slice (b): AI 공급자 설정 창.
 ai-settings-menu-button = AI 공급자
 ai-settings-window-title = AI 공급자
