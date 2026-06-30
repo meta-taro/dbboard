@@ -7,7 +7,12 @@
 
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+// `Clone` + `PartialEq` + `Eq` were added when ADR-0026 introduced
+// `StreamEvent::Error(AiError)`: stream chunks need to be cloneable
+// for fan-out into the UI layer and equatable for state-machine
+// tests. Every variant either has no payload or a `String` payload,
+// so all three derives are mechanical.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AiError {
     /// Missing API key, malformed model id, or other configuration
     /// problem detected before any request is issued.
@@ -68,6 +73,28 @@ mod tests {
         for (err, expected) in cases {
             assert_eq!(err.to_string(), expected);
         }
+    }
+
+    #[test]
+    fn ai_error_clones_and_equates_per_variant() {
+        let cases = [
+            AiError::Configuration("missing key".into()),
+            AiError::Network("timeout".into()),
+            AiError::Provider("rate_limit".into()),
+            AiError::Quota("daily cap".into()),
+            AiError::Cancelled,
+        ];
+        for err in cases {
+            // Clone + Eq are needed so `StreamEvent::Error(AiError)`
+            // (ADR-0026 Decision 3) can flow through the worker
+            // channel and be asserted on in state-machine tests.
+            assert_eq!(err.clone(), err);
+        }
+        assert_ne!(
+            AiError::Configuration("a".into()),
+            AiError::Configuration("b".into())
+        );
+        assert_ne!(AiError::Cancelled, AiError::Provider(String::new()));
     }
 
     #[test]

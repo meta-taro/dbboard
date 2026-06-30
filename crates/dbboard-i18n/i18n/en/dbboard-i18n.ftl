@@ -81,6 +81,17 @@ ai-error-prefix-provider = AI provider error
 ai-error-prefix-quota = AI quota exceeded
 ai-error-prefix-cancelled = AI request cancelled
 
+# ADR-0026 Phase 4 Stage 2 Group B: streaming + cooperative cancel +
+# token meter. `ai-cancel-button` replaces the Send button while a
+# request is in flight (both streaming and atomic paths). The token
+# meter renders under both the in-flight streaming buffer and the final
+# response with `{ $tin }` input + `{ $tout }` output (Anthropic
+# usage.output_tokens is cumulative — the worker hands the panel the
+# latest snapshot, the panel does not sum deltas).
+ai-cancel-button = Cancel
+ai-cancelled-message = Cancelled.
+ai-tokens-meter = Tokens: { $tin } in / { $tout } out
+
 # ADR-0025 Phase 4 Stage 2 Group A slice (b): AI provider Settings
 # window. Sits next to the `connections-*` family and reuses its
 # Add/Edit/Delete/Save/Cancel shape — kept as distinct keys so locales

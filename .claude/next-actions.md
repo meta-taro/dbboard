@@ -7,84 +7,86 @@
 
 ## 最終更新
 
-- 日付: 2026-06-29
-- develop tip: `5124b00` (PR #43 merged = ADR-0025 slice (b) 着地)
-- 直近ハイライト: **ADR-0025 Phase 4 Stage 2 Group A クローズ** =
-  `ai-providers.toml` + Settings UI + runtime in-process provider
-  switcher の全体像完成。4 slice (a-1 PR #37 / a-2-α PR #39 / a-2-β
-  PR #41 / b PR #43) 全 landed。次は本 chore PR (post-PR43 doc sync) の
-  push & PR 化 → マージで Stage 2 Group A の対外的なクローズ宣言完了。
-- ワークスペース test count: 474 件 pass
-- ローカルブランチ状態: `chore/post-pr43-doc-sync` が `develop` から
-  1 コミット先行 (status + next-actions 更新のみ)、push 待ち
+- 日付: 2026-06-30
+- develop tip: `6e6eb83` (PR #42 merged = post-PR41 doc sync 着地後)
+- 作業ブランチ: `feature/ai-streaming-cancel-tokens`
+  (Phase 4 Stage 2 Group B = ADR-0026 / 4 slice 完了、未 push / 未 PR)
+- 直近ハイライト: **ADR-0026 (Phase 4 Stage 2 Group B = streaming +
+  cancel + token meter) 実装完了 / status を Accepted に切替 / push 待ち。**
+  4 commits 全部緑 (fmt / clippy / check / test pre-commit hook OK)。
+  - `3f16697` docs(adr): ADR-0026 draft
+  - `2cb012e` feat(ai) Slice a: dbboard-ai trait 拡張
+    (`stream_explain` / `stream_suggest_sql` + `StreamEvent` / `StopReason`
+    + `AiCapabilities::has_streaming` activate)
+  - `e5f49d0` feat(ai) Slice b: Anthropic SSE in dbboard-anthropic
+    (`reqwest-eventsource` 0.6 + `RetryPolicy::Never`)
+  - `e8f5fd5` feat(ai) Slice c: dbboard-ui worker 改造
+    (tokio async loop + std→tokio mpsc bridge + per-request
+    `CancellationToken` + `tokio::select!` cancel race)
+  - `fff669c` feat(ai) Slice d: `AiPanel` state machine
+    (`StreamingAcc` + Send↔Cancel toggle + token meter +
+    3 Fluent keys × 11 locales)
+- ワークスペース test count: 全 crate 緑、`dbboard-ui` のみで 145 件 pass
+  (Slice c+d で +20 件相当の streaming/cancel テスト追加)
+- ローカルブランチ状態: 5 commits ahead of `origin/feature/ai-streaming-cancel-tokens`
+  (Slice d + doc sweep ぶん、まだ push していない)
+- ドキュメント反映: `docs/decisions.md` ADR-0026 Accepted (2026-06-30) +
+  4 slice 着地 commit ID 列挙 / `docs/roadmap.md` Phase 4 Stage 2 Group B
+  項目を完了マーク / `README.md` AI セクションに streaming + cancel +
+  token meter 段落追加 / deferred リストから streaming 削除
 
 ## モード
 
 **in-use / continuous-improvement (menu-not-sequence)** — 2026-06-24 以降。
 ロードマップ順ではなく実利用の摩擦報告を優先。
-私から自走で進めるべき作業はなし。**user 側のインプット待ち。**
+Group B が closed したので、次は **user が push + PR 作成** → merge 後に
+別 Group に進むか実利用 friction に切り替えるかの判断段階。
 
 ---
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### 選択肢 0: `chore/post-pr43-doc-sync` を push & PR 化 — *最優先 (= 直前作業のクローズ)*
+### **★ 最優先: ブランチを push して PR を作成**
 
-- **何**: 本 chore ブランチを `origin` に push、`develop` に対して
-  PR を切る。`.claude/project-status.md` の PR #43 クローズ記録 +
-  `next-actions.md` の Group A 完了後 menu 再生成。
-- **なぜ最優先**: PR #40 / #42 と同じ post-PR doc sync パターン継続。
-  Rust 無改変 / docs 無改変 / 内部メモのみ = 小さい PR、すぐマージ可。
+- **何**: `feature/ai-streaming-cancel-tokens` (5 commits 含む) を
+  origin に push し、`develop` への PR を作る。
+- **コミット範囲**: `3f16697` ADR draft → `2cb012e` Slice a → `e5f49d0`
+  Slice b → `e8f5fd5` Slice c → `fff669c` Slice d。
+- **手順 (CLAUDE.md ルール: 私はコミット、push は user)**:
+  ```sh
+  git push -u origin feature/ai-streaming-cancel-tokens
+  gh pr create --title "feat(ai): streaming + cooperative cancel + token meter (ADR-0026)" \
+               --base develop \
+               --body-file <(echo "...")
+  ```
+  PR body 雛形が欲しければ「ADR-0026 の PR 文書いて」と一言下さい。
 - **キックオフの一言例**:
-  > 「chore/post-pr43-doc-sync を push して PR 化して」
-- **規模感**: 1 PR、`.claude/*` の 2 ファイルのみ、CI grep 想定。
-- **依存**: なし。
+  > 「push して PR 作っといて」 (= PR body 私が下書き)
+  > 「push は俺がやるから body だけ書いて」
 
-### 選択肢 1: Phase 4 Stage 2 残り (Group B / C / D) を着手
+### 選択肢 1: マージ後 doc-sync chore PR
 
-- Group A クローズで Stage 2 全体への足場が整った = 順不同で着手可。
-- **Group B**: streaming + cancel + token meter (`AiProvider` trait 拡張)
-  - **規模感**: 中。`AiProvider::explain_sql` / `suggest_sql` を stream
-    バージョンに変える設計判断 (trait method 追加 or 別 method)、
-    worker channel に `Reply::AiChunk` / `Command::CancelAi` 追加、
-    AI panel に cancel button + 部分表示。HTTP contract 無変更。
-- **Group C**: `history.jsonl` への AI 記録、v:2 schema bump、**web 側
-  fresh brief 必要** (= 0NNN-web-*.md を新規に書く工程込み)
-  - **規模感**: 大。schema v:1 → v:2 migration、web 側の `desktop-history.jsonl`
-    fixture 再生成 (PR #29 の `emit_history_fixture` を使う)、web 側に
-    対応する `0008-web-*.md` ブリーフ。**唯一の cross-repo coordination**。
-- **Group D**: full DDL extraction + function-calling
-  - **規模感**: 中〜大。`AdapterCapabilities::extract_full_ddl()` 追加
-    (Turso / Postgres flavors すべてに実装)、`AiProvider::suggest_sql` の
-    schema 引数を `Vec<TableInfo>` から full DDL string に拡張。
-- **キックオフの一言例**:
-  > 「Group B から着手したい、streaming の trait 設計を検討して」
-  > 「Group C の v:2 schema bump を設計するところから」
+- マージ後、`docs/architecture.md` などに ADR-0026 への参照を追記する
+  pattern を継続する場合の chore PR。
+  過去パターン (PR #38 / #40 / #42 / #44) を踏襲。
+- 規模感: 極小。
 
-### 選択肢 2: 実利用の摩擦報告
+### 選択肢 2: 次の Group に着手
 
-- **何**: dbboard を実際に使っていて気になった点を口頭で渡す。
-- **なぜ**: 現モードでは roadmap 順より friction 駆動が優先。
-  Group A クローズで「AI Settings UI が初めて user の手に渡る」段階 =
-  friction 報告が来やすいタイミング。
-- **キックオフの一言例**:
-  > 「AI Providers Settings 画面で Anthropic 以外を追加できないのが辛い」
-  > 「Active subtitle が小さくて読みづらい」
-  > 「Turso 接続で〜〜が辛かった、対処したい」
-- **規模感**: 内容次第。issue / ADR を起こすかはこちらで提案。
+- Group C (history.jsonl AI records + v:2 schema bump + web side brief)
+  または Group D (full DDL extraction + function-calling)。
+- どちらも ADR-0023 §9 で deferred 済み。
+- Group C は web 側 mirror が必要 (history JSON schema 変更のため) =
+  cross-repo coordination の手筈を組む必要あり。
+- Group D は in-process のみ = web 影響なし。
 
-### 選択肢 3: dbboard-web 側からの依頼を反映
+### 選択肢 3: 実利用 friction 報告
 
-- **何**: web 側で発生した coordination ネタを desktop 側に反映。
-- **現時点で動いている web 側待ち**:
-  - `dbboard-web/apps/api/test/fixtures/desktop-history.jsonl` (PR #29
-    で渡した fixture) を使った `describe.skip` フリップ = **web 責務**、
-    desktop 側からは何もしない。
-  - ADR-0025 全体は web 側ミラー不要 (in-process AI 設計)。
-  - その他、web 側からの contract 変更要求があれば随時。
-- **キックオフの一言例**:
-  > 「web 側から `/views` endpoint を追加したいと依頼が来た」
-- **規模感**: 内容次第。HTTP contract に触る場合は ADR + 双方ミラー。
+- streaming + cancel + token meter を実際に触って気になった点があれば
+  Group C / D 着手より優先する余地あり (menu-not-sequence)。
+- キックオフの一言例:
+  > 「token meter の表示が見づらい、〜〜にしたい」
+  > 「Cancel ボタンの位置を変えたい」
 
 ---
 
@@ -93,23 +95,21 @@
 - PR #29 で渡した fixture 受領後、web 側で `describe.skip` をフリップする
   作業が残っている。完了通知が来たらこちらの memory
   ([[dbboard-web-state]]) を更新する。
-- ADR-0025 関連は in-process AI 設計のため web 側ミラー不要、明示的に
-  notified 済み (Group C で AI を `history.jsonl` に書く段階で初めて
-  web 側ブリーフが必要)。
+- ADR-0026 (Group B) は **web 側ミラー不要** = PR #33 の
+  `0007-web-ai-phase6-no-contract-mirror.md` brief で explicit-no-op
+  済み。追加 brief 不要。
 - 上記以外の coordination は現時点で pending なし。
 
 ---
 
 ## 私単独で進められる作業がない理由 (確認用)
 
-1. `chore/post-pr43-doc-sync` 1 コミットはローカルに居る = push は user 操作。
-2. push 前に Rust に手を入れると review が崩れる = 静止すべき。
-3. 現モードは menu-not-sequence。Group B/C/D は order が user 判断、
-   勝手に開始するのは過剰。
-4. web 側依頼は現時点で着信なし。
+1. push は user (CLAUDE.md mandate)。PR 作成も基本は user 主導。
+2. 次の Group 着手は user の優先順位選択 (Group C vs Group D vs friction)。
+3. friction 報告は user が実利用してこそ出てくる情報 = 私が先回りで
+   feature 追加するのは menu-not-sequence の原則に反する。
 
-→ どれを選ぶかは user 判断。上の選択肢 0〜3 のどれかを伝えてもらえれば
-即着手可能 (選択肢 0 = push & PR 化が最優先)。
+→ ブランチを push → PR 作成 → merge する段取りが user 側のボール。
 
 ---
 

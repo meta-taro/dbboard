@@ -15,10 +15,12 @@ use std::fmt::Write as _;
 
 use async_trait::async_trait;
 use dbboard_ai::{
-    AiCapabilities, AiError, AiProvider, AiResponse, AiResult, ExplainRequest, SuggestRequest,
-    TableInfo,
+    AiCapabilities, AiError, AiProvider, AiResponse, AiResult, AiStream, ExplainRequest,
+    SuggestRequest, TableInfo,
 };
 use serde::{Deserialize, Serialize};
+
+mod stream;
 
 const PROVIDER_ID: &str = "anthropic";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -144,6 +146,36 @@ impl AnthropicProvider {
             Err(error_from_status_and_body(status, &bytes))
         }
     }
+
+    /// Open an SSE stream against `POST /v1/messages` with
+    /// `"stream": true`. Per ADR-0026 Decision 4 the request uses
+    /// [`reqwest_eventsource`] with `RetryPolicy::Never` so a
+    /// token-billed POST is never silently retried.
+    ///
+    /// The pre-stream error path returns `Err(AiError)` on the outer
+    /// future (config / transport setup); wire-level errors after the
+    /// connection opens surface as `Ok(StreamEvent::Error)` chunks
+    /// inside the stream.
+    fn open_stream(&self, body: &MessagesRequest) -> AiResult<AiStream> {
+        use reqwest_eventsource::{retry, RequestBuilderExt};
+
+        let request = self
+            .client
+            .post(&self.messages_url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .json(body);
+
+        let mut es = request.eventsource().map_err(|e| {
+            AiError::Configuration(format!("anthropic streaming: cannot prepare request: {e}"))
+        })?;
+        // Never retry a token-billed POST — CLAUDE.md / ADR-0026
+        // Decision 4. The default policy is exponential back-off,
+        // which would silently double-charge on transient 5xx.
+        es.set_retry_policy(Box::new(retry::Never));
+
+        Ok(stream::anthropic_stream(es))
+    }
 }
 
 #[async_trait]
@@ -153,9 +185,13 @@ impl AiProvider for AnthropicProvider {
     }
 
     fn capabilities(&self) -> AiCapabilities {
-        // Stage 1 ships no optional capabilities; flags flip on as
-        // Stage 2 wiring (streaming, function calling) lands.
-        AiCapabilities::default()
+        // ADR-0026 Slice b flips `has_streaming` on — the trait's
+        // streaming methods are now backed by a real SSE provider.
+        // `has_function_calling` stays off; that's Group C.
+        AiCapabilities {
+            has_streaming: true,
+            has_function_calling: false,
+        }
     }
 
     async fn explain(&self, req: &ExplainRequest) -> AiResult<AiResponse> {
@@ -166,6 +202,18 @@ impl AiProvider for AnthropicProvider {
     async fn suggest_sql(&self, req: &SuggestRequest) -> AiResult<AiResponse> {
         self.call_messages(build_suggest_request(&self.model, req))
             .await
+    }
+
+    async fn stream_explain(&self, req: &ExplainRequest) -> AiResult<AiStream> {
+        let mut body = build_explain_request(&self.model, req);
+        body.stream = true;
+        self.open_stream(&body)
+    }
+
+    async fn stream_suggest_sql(&self, req: &SuggestRequest) -> AiResult<AiStream> {
+        let mut body = build_suggest_request(&self.model, req);
+        body.stream = true;
+        self.open_stream(&body)
     }
 }
 
@@ -194,6 +242,14 @@ struct MessagesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
     messages: Vec<RequestMessage>,
+    /// `true` when the request opens an SSE stream
+    /// (`Accept: text/event-stream` is added by `reqwest-eventsource`
+    /// automatically; the API also requires the body flag). Skipped
+    /// from serialization when `false` so non-streaming requests
+    /// produce the same body bytes as before (preserving the existing
+    /// round-trip tests).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -262,6 +318,7 @@ fn build_explain_request(model: &str, req: &ExplainRequest) -> MessagesRequest {
             role: "user",
             content: user_text,
         }],
+        stream: false,
     }
 }
 
@@ -291,6 +348,7 @@ fn build_suggest_request(model: &str, req: &SuggestRequest) -> MessagesRequest {
             role: "user",
             content: user_text,
         }],
+        stream: false,
     }
 }
 
@@ -385,9 +443,7 @@ mod tests {
         AnthropicProvider, MessagesResponse, DEFAULT_BASE_URL, DEFAULT_MODEL, MAX_ERROR_DETAIL,
         PROVIDER_ID,
     };
-    use dbboard_ai::{
-        AiCapabilities, AiError, AiProvider, ExplainRequest, SuggestRequest, TableInfo,
-    };
+    use dbboard_ai::{AiError, AiProvider, ExplainRequest, SuggestRequest, TableInfo};
     use serde_json::json;
 
     #[test]
@@ -405,7 +461,12 @@ mod tests {
         let provider = AnthropicProvider::with_default_model("test-key").expect("construct");
         assert_eq!(provider.model, DEFAULT_MODEL);
         assert_eq!(provider.id(), "anthropic");
-        assert_eq!(provider.capabilities(), AiCapabilities::default());
+        // ADR-0026 Slice b: `has_streaming` is now `true`. The trait
+        // continues to advertise `has_function_calling: false`
+        // (Group C).
+        let caps = provider.capabilities();
+        assert!(caps.has_streaming);
+        assert!(!caps.has_function_calling);
     }
 
     #[test]

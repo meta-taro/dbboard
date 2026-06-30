@@ -14,9 +14,15 @@ mod capabilities;
 mod error;
 mod provider;
 mod request;
+mod stream;
 
 pub use capabilities::AiCapabilities;
 pub use dbboard_core::TableInfo;
 pub use error::{AiError, AiResult};
 pub use provider::AiProvider;
 pub use request::{AiResponse, ExplainRequest, SuggestRequest};
+// ADR-0026: streaming surface. `AiStream` is the boxed stream type
+// returned by `AiProvider::stream_explain` / `stream_suggest_sql`;
+// `StreamEvent` is the normalized chunk variant; `StopReason` is the
+// end-of-stream tag.
+pub use stream::{AiStream, StopReason, StreamEvent};
