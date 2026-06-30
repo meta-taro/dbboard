@@ -8,85 +8,84 @@
 ## 最終更新
 
 - 日付: 2026-06-30
-- develop tip: `6e6eb83` (PR #42 merged = post-PR41 doc sync 着地後)
-- 作業ブランチ: `feature/ai-streaming-cancel-tokens`
-  (Phase 4 Stage 2 Group B = ADR-0026 / 4 slice 完了、未 push / 未 PR)
+- develop tip: `3bb82c4` (**PR #45 merged** =
+  `feat(ai): streaming + cooperative cancel + token meter
+  (ADR-0026 Phase 4 Stage 2 Group B)` 着地)
+- 作業ブランチ: `chore/post-pr45-doc-sync` (本 PR 作業中、未 push / 未 PR)
 - 直近ハイライト: **ADR-0026 (Phase 4 Stage 2 Group B = streaming +
-  cancel + token meter) 実装完了 / status を Accepted に切替 / push 待ち。**
-  4 commits 全部緑 (fmt / clippy / check / test pre-commit hook OK)。
-  - `3f16697` docs(adr): ADR-0026 draft
-  - `2cb012e` feat(ai) Slice a: dbboard-ai trait 拡張
-    (`stream_explain` / `stream_suggest_sql` + `StreamEvent` / `StopReason`
-    + `AiCapabilities::has_streaming` activate)
-  - `e5f49d0` feat(ai) Slice b: Anthropic SSE in dbboard-anthropic
-    (`reqwest-eventsource` 0.6 + `RetryPolicy::Never`)
-  - `e8f5fd5` feat(ai) Slice c: dbboard-ui worker 改造
-    (tokio async loop + std→tokio mpsc bridge + per-request
-    `CancellationToken` + `tokio::select!` cancel race)
-  - `fff669c` feat(ai) Slice d: `AiPanel` state machine
-    (`StreamingAcc` + Send↔Cancel toggle + token meter +
-    3 Fluent keys × 11 locales)
-- ワークスペース test count: 全 crate 緑、`dbboard-ui` のみで 145 件 pass
-  (Slice c+d で +20 件相当の streaming/cancel テスト追加)
-- ローカルブランチ状態: 5 commits ahead of `origin/feature/ai-streaming-cancel-tokens`
-  (Slice d + doc sweep ぶん、まだ push していない)
-- ドキュメント反映: `docs/decisions.md` ADR-0026 Accepted (2026-06-30) +
-  4 slice 着地 commit ID 列挙 / `docs/roadmap.md` Phase 4 Stage 2 Group B
-  項目を完了マーク / `README.md` AI セクションに streaming + cancel +
-  token meter 段落追加 / deferred リストから streaming 削除
+  cancel + token meter) `develop` 着地完了。** これで Phase 4 Stage 2 で
+  in-process スコープの 2 大 Group (A = ADR-0025 / B = ADR-0026) が両方
+  クローズ。残りは Group C (history.jsonl AI 記録 + v:2 schema bump =
+  web mirror 必要) と Group D (full DDL + function-calling = in-process
+  完結)、いずれも独立 ADR で順不同 = menu-not-sequence。
+  - PR #45 6 commits 内訳: `3f16697` ADR draft + `2cb012e` Slice a +
+    `e5f49d0` Slice b + `e8f5fd5` Slice c + `fff669c` Slice d + `806b04a`
+    docs close-out。
+  - ワークスペース test count: 全 crate 緑、`dbboard-ui` のみで 145 件 pass
+    (Slice c+d で +22 件の streaming/cancel テスト追加)。
+  - ドキュメント反映済 (PR #45 内 `806b04a`): `docs/decisions.md`
+    ADR-0026 Accepted (2026-06-30) + 4 slice 着地 commit ID 列挙 /
+    `docs/roadmap.md` Phase 4 Stage 2 Group B 項目を完了マーク /
+    `README.md` AI セクションに streaming + cancel + token meter 段落
+    追加 / deferred リストから streaming 削除 / issue 0009 closed。
 
 ## モード
 
 **in-use / continuous-improvement (menu-not-sequence)** — 2026-06-24 以降。
 ロードマップ順ではなく実利用の摩擦報告を優先。
-Group B が closed したので、次は **user が push + PR 作成** → merge 後に
-別 Group に進むか実利用 friction に切り替えるかの判断段階。
+Group A / Group B 両方クローズしたので、次は **本 chore PR を捌いた後、
+別 Group (C/D) に進むか実利用 friction に切り替えるかの判断段階**。
 
 ---
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### **★ 最優先: ブランチを push して PR を作成**
+### **★ 最優先: 本 chore/post-pr45-doc-sync を push → PR → merge**
 
-- **何**: `feature/ai-streaming-cancel-tokens` (5 commits 含む) を
-  origin に push し、`develop` への PR を作る。
-- **コミット範囲**: `3f16697` ADR draft → `2cb012e` Slice a → `e5f49d0`
-  Slice b → `e8f5fd5` Slice c → `fff669c` Slice d。
+- **何**: `chore/post-pr45-doc-sync` (現在 1 commit 程度の予定) を
+  origin に push し、`develop` への chore PR を作る。
 - **手順 (CLAUDE.md ルール: 私はコミット、push は user)**:
   ```sh
-  git push -u origin feature/ai-streaming-cancel-tokens
-  gh pr create --title "feat(ai): streaming + cooperative cancel + token meter (ADR-0026)" \
-               --base develop \
-               --body-file <(echo "...")
+  git push -u origin chore/post-pr45-doc-sync
+  gh pr create --base develop \
+    --title "chore(status): record PR #45 close-out for ADR-0026 Phase 4 Stage 2 Group B" \
+    --body "..."
   ```
-  PR body 雛形が欲しければ「ADR-0026 の PR 文書いて」と一言下さい。
-- **キックオフの一言例**:
-  > 「push して PR 作っといて」 (= PR body 私が下書き)
-  > 「push は俺がやるから body だけ書いて」
+  PR body 雛形が欲しければ「post-PR45 doc-sync の PR 文書いて」と一言下さい。
+- **過去パターン**: PR #38 (post-PR37) / #40 (post-PR39) / #42 (post-PR41) /
+  #44 (post-PR43) と完全同型 = `.claude/*` のみ触る極小 chore PR。
 
-### 選択肢 1: マージ後 doc-sync chore PR
+### 選択肢 1: 次の Group に着手 (chore マージ後)
 
-- マージ後、`docs/architecture.md` などに ADR-0026 への参照を追記する
-  pattern を継続する場合の chore PR。
-  過去パターン (PR #38 / #40 / #42 / #44) を踏襲。
-- 規模感: 極小。
+- **Group C** (history.jsonl AI records + v:2 schema bump):
+  - web 側 mirror **必要** (history JSON schema 変更のため) =
+    cross-repo coordination の手筈 (まず `0NNN-web-history-v2-mirror.md`
+    fresh brief を起こす) が前段。
+  - desktop 側は `dbboard-core::history::Record` に `Ai { … }` variant 追加、
+    `emit_history_fixture` 更新、AiPanel から worker 経由で記録投入。
+- **Group D** (full DDL extraction + function-calling):
+  - in-process のみ = web 影響なし = 即着手可能。
+  - 範囲広め (function-calling は ADR が別途必要そう、まず planner agent に
+    投げて分解するのが筋)。
+- どちらも ADR-0023 §9 + ADR-0026 Out-of-scope で deferred 済み。
 
-### 選択肢 2: 次の Group に着手
-
-- Group C (history.jsonl AI records + v:2 schema bump + web side brief)
-  または Group D (full DDL extraction + function-calling)。
-- どちらも ADR-0023 §9 で deferred 済み。
-- Group C は web 側 mirror が必要 (history JSON schema 変更のため) =
-  cross-repo coordination の手筈を組む必要あり。
-- Group D は in-process のみ = web 影響なし。
-
-### 選択肢 3: 実利用 friction 報告
+### 選択肢 2: 実利用 friction 報告
 
 - streaming + cancel + token meter を実際に触って気になった点があれば
   Group C / D 着手より優先する余地あり (menu-not-sequence)。
 - キックオフの一言例:
   > 「token meter の表示が見づらい、〜〜にしたい」
   > 「Cancel ボタンの位置を変えたい」
+  > 「Anthropic key 入れてないと streaming トグル出ないけど、もうちょい
+  >  分かりやすくしてほしい」
+
+### 選択肢 3: web 側状態の確認
+
+- PR #29 で渡した fixture 受領後、web 側で `describe.skip` をフリップする
+  作業が残っている。完了通知が来たら memory ([[dbboard-web-state]]) を
+  更新する。
+- もし「web 側どうなってる？」と訊かれたら、まず memory を読み、必要なら
+  `gh repo view meta-taro/dbboard-web --json updatedAt` 等で fresh 確認。
 
 ---
 
@@ -99,6 +98,8 @@ Group B が closed したので、次は **user が push + PR 作成** → merge
   `0007-web-ai-phase6-no-contract-mirror.md` brief で explicit-no-op
   済み。追加 brief 不要。
 - 上記以外の coordination は現時点で pending なし。
+- **Group C 着手時には新しい explicit-mirror brief が必要** (history
+  JSON schema の v:2 bump = HTTP contract 影響)。
 
 ---
 
@@ -109,7 +110,8 @@ Group B が closed したので、次は **user が push + PR 作成** → merge
 3. friction 報告は user が実利用してこそ出てくる情報 = 私が先回りで
    feature 追加するのは menu-not-sequence の原則に反する。
 
-→ ブランチを push → PR 作成 → merge する段取りが user 側のボール。
+→ 本 chore PR を push → merge する段取りが user 側のボール。
+   その後の選択 (次 Group / friction / web 側コーディネーション) も同様。
 
 ---
 
