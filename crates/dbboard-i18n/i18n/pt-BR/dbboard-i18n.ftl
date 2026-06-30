@@ -59,6 +59,12 @@ ai-error-prefix-provider = Erro do provedor de IA
 ai-error-prefix-quota = Cota de IA excedida
 ai-error-prefix-cancelled = Solicitação de IA cancelada
 
+# ADR-0026 Phase 4 Stage 2 Group B: streaming + cancelamento
+# cooperativo + medidor de tokens.
+ai-cancel-button = Cancelar
+ai-cancelled-message = Cancelado.
+ai-tokens-meter = Tokens: { $tin } entrada / { $tout } saída
+
 # ADR-0025 Phase 4 Stage 2 Group A slice (b): janela de configurações dos provedores de IA.
 ai-settings-menu-button = Provedores de IA
 ai-settings-window-title = Provedores de IA

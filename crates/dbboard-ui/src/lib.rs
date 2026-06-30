@@ -540,6 +540,22 @@ impl DbboardApp {
             .is_some()
     }
 
+    /// `true` when the currently-bound AI provider advertises
+    /// [`AiCapabilities::has_streaming`](dbboard_ai::AiCapabilities::has_streaming)
+    /// (ADR-0026 Decision 6). The AI panel reads this on Send to pick
+    /// between the streaming and atomic command variants. Returns
+    /// `false` when no provider is wired — the panel is hidden in that
+    /// case so the value is moot, but the function stays total to keep
+    /// the `ui()` call site branch-free.
+    #[must_use]
+    pub fn ai_has_streaming(&self) -> bool {
+        self.ai_provider_slot
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|p| p.capabilities().has_streaming)
+    }
+
     /// True when the AI panel window is currently open. Always false
     /// when no provider is wired (the menu button that flips this is
     /// suppressed by [`Self::has_ai_provider`]).
@@ -680,9 +696,14 @@ impl eframe::App for DbboardApp {
             // and the Suggest arm fires.
             let schema_slice: &[TableInfo] = self.tables.as_ref().map_or(&[], Vec::as_slice);
             let active_label = self.active_ai_provider_label.as_deref();
-            if let Some(cmd) = self
-                .ai_panel
-                .ui(ui.ctx(), dialect, schema_slice, active_label)
+            // ADR-0026 Decision 6: pick streaming over atomic at Send
+            // time iff the active provider declares the capability. The
+            // slot read happens here, not in the panel, so the panel
+            // stays a pure presentation layer over its passed-in flags.
+            let has_streaming = self.ai_has_streaming();
+            if let Some(cmd) =
+                self.ai_panel
+                    .ui(ui.ctx(), dialect, schema_slice, active_label, has_streaming)
             {
                 if self.cmd_tx.send(cmd).is_err() {
                     // Worker hung up — surface a synthetic failure so
