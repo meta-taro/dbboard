@@ -3046,9 +3046,30 @@ NestJS-side persistence; this ADR adds nothing for web to mirror.
 
 ## ADR-0026 — Phase 4 Stage 2 Group B: AI streaming, cooperative cancel, and token meter
 
-**Status:** Proposed (2026-06-29). Implementation tracker:
+**Status:** Accepted (2026-06-30). Implementation tracker:
 `.claude/issues/0009-ai-streaming-cancel-tokens.md`. Lands on
-`feature/ai-streaming-cancel-tokens`.
+`feature/ai-streaming-cancel-tokens` across four commits:
+
+- Slice (a) `2cb012e` — `dbboard-ai` trait extension with
+  `stream_explain` / `stream_suggest_sql` returning
+  `BoxStream<'static, AiResult<StreamEvent>>`, plus normalized
+  `StreamEvent` / `StopReason` enums and the previously-unused
+  `AiCapabilities::has_streaming` flag.
+- Slice (b) `e5f49d0` — Anthropic SSE wired through
+  `dbboard-anthropic` via `reqwest-eventsource` 0.6 with
+  `RetryPolicy::Never` (Decision 4 — token-billed POSTs must not
+  silently retry).
+- Slice (c) `e8f5fd5` — `dbboard-ui` worker rewired with a tokio
+  async loop + std-to-tokio mpsc bridge thread + per-request
+  `CancellationToken`. `tokio::select!` races the stream against
+  the token; the cancel arm emits `Reply::AiCancelled` directly
+  rather than synthesising `AiError::Cancelled` (Decision 12).
+- Slice (d) `fff669c` — `AiPanel` state machine extended with
+  `StreamingAcc` + `streaming` + `cancelled` fields, real
+  `on_stream_chunk` / `on_stream_complete` / `on_cancelled`,
+  Send↔Cancel button toggle, token meter, and 3 new Fluent keys
+  (`ai-cancel-button`, `ai-cancelled-message`, `ai-tokens-meter`)
+  in all 11 locales.
 
 Opens Phase 4 Stage 2 Group B by extending the `dbboard-ai`
 `AiProvider` trait with **additive** streaming methods, wiring SSE

@@ -293,11 +293,37 @@ work without it. Trait + first-provider shape locked in
       in the worker too — `Command::Ai*` with `ai_provider == None`
       returns `Reply::AiFailed { AiError::Configuration }` so the
       panel never deadlocks on its busy flag.
+- [x] Streaming responses + cooperative cancel + token meter — _Stage 2
+      Group B, planned in [ADR-0026](decisions.md). Implementation
+      tracked in
+      [`.claude/issues/0009-ai-streaming-cancel-tokens.md`](../.claude/issues/0009-ai-streaming-cancel-tokens.md).
+      **Closed 2026-06-30 on `feature/ai-streaming-cancel-tokens`.**
+      Slice (a) `2cb012e` — `dbboard-ai` trait extension with
+      `stream_explain` / `stream_suggest_sql` returning
+      `BoxStream<'static, AiResult<StreamEvent>>`, normalized
+      `StreamEvent` / `StopReason` enums, and the
+      `AiCapabilities::has_streaming` flag activated. Slice (b)
+      `e5f49d0` — Anthropic SSE wired through `dbboard-anthropic` via
+      `reqwest-eventsource` 0.6 with `RetryPolicy::Never` (token-billed
+      POSTs must not silently retry). Slice (c) `e8f5fd5` —
+      `dbboard-ui` worker rewired with a tokio async loop + std-to-tokio
+      mpsc bridge thread + per-request `CancellationToken`;
+      `tokio::select!` races the stream against the token, with the
+      cancel arm emitting `Reply::AiCancelled` directly. Slice (d)
+      `fff669c` — `AiPanel` state machine extended with `StreamingAcc`,
+      lazy chunk accumulator, real `on_stream_chunk` /
+      `on_stream_complete` / `on_cancelled`, Send↔Cancel button toggle,
+      "Tokens: N in / M out" meter, and 3 new Fluent keys
+      (`ai-cancel-button`, `ai-cancelled-message`, `ai-tokens-meter`)
+      in all 11 locales._
 
 Exit criteria met for Stage 1: AI panel hidden cleanly when not
-configured; visible, two-mode, and usable when it is. Stage 2 (in-app
-settings, multi-provider switcher, streaming, history persistence,
-full-DDL schema snapshots) remains scoped to ADR-0023 §9.
+configured; visible, two-mode, and usable when it is. Stage 2 Groups
+A (in-app settings + multi-provider switcher) and B (streaming +
+cancel + token meter) are now closed. Remaining Stage 2 deferrals
+(Group C = AI calls recorded in `history.jsonl` with a v:2 schema
+bump, Group D = full-DDL schema snapshots + function-calling) stay
+scoped to ADR-0023 §9.
 
 ## Phase 5 — Quality of life
 

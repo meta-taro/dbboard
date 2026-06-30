@@ -227,6 +227,17 @@ identical to a successful empty response. AI calls do **not** travel
 the dbboard-web HTTP contract — they go directly from the desktop
 binary's worker thread to the provider over `reqwest`.
 
+Responses stream incrementally for providers that advertise the
+capability (the wired Anthropic provider does — ADR-0026). Text
+appears chunk by chunk as the model generates it, and a running
+**Tokens: N in / M out** meter updates from the cumulative usage
+chunks. While a request is in flight the Send button is replaced
+with **Cancel**: clicking it drops the in-flight stream (closing the
+HTTP connection so the server stops generating) while preserving any
+partial text already shown, and a quiet *Cancelled.* line marks the
+outcome. The same cancel button works on the atomic path used by
+providers without streaming support.
+
 A single provider (Anthropic Messages API) is wired today, configured
 via **either** of two paths. They are evaluated in the order below;
 the first to resolve wins.
@@ -284,9 +295,9 @@ continues without AI; the panel and menu entry are hidden. The key
 never appears in `Debug` output or in `history.jsonl`; it is held
 only in memory for the process lifetime.
 
-Remaining deferred Stage 2 capabilities (streaming, AI calls recorded
-in `history.jsonl`, full-DDL schema snapshots, function-calling) are
-tracked in ADR-0023 §9 and ADR-0025.
+Remaining deferred Stage 2 capabilities (AI calls recorded in
+`history.jsonl`, full-DDL schema snapshots, function-calling) are
+tracked in ADR-0023 §9, ADR-0025, and ADR-0026.
 
 ## Development
 

@@ -5,27 +5,72 @@
 
 ## 最終更新
 
-- 日付: 2026-06-29 (**PR #43 マージクローズ** = ADR-0025 Phase 4
-  Stage 2 Group A slice (b) が `develop` に着地 = `5124b00` (mergedAt
-  2026-06-29T05:59:26Z)。これで ADR-0025 全 4 slice (a-1 PR #37 /
-  a-2-α PR #39 / a-2-β PR #41 / b PR #43) が `develop` に着地完了 =
-  **Phase 4 Stage 2 Group A クローズ**。`ai-providers.toml` + Settings UI
-  + runtime in-process provider switcher の全体像完成。本 chore PR
-  (`chore/post-pr43-doc-sync`) は PR #40 / #42 と同じパターンで
-  post-PR doc sync を担当 = `.claude/project-status.md` の PR #43
-  クローズ記録 + `next-actions.md` を Group A 完了後の menu に再生成。)
-- ブランチ: `develop` (= `5124b00`)、ローカル `chore/post-pr43-doc-sync`
-  作業中 (`feature/ai-settings-ui` は merged 済 / origin auto-delete 判断は
-  maintainer)
+- 日付: 2026-06-30 (**ADR-0026 Phase 4 Stage 2 Group B = streaming +
+  cooperative cancel + token meter** 実装完了 / status を Accepted に
+  切替。`feature/ai-streaming-cancel-tokens` 上に 4 slice + ADR draft +
+  doc sweep の 5 commit、未 push / 未 PR。ローカル pre-commit hook
+  (fmt / clippy / check / test) 全 commit で緑、release build/test
+  も Slice c/d 着地後に通している。`develop` tip は依然 `6e6eb83`
+  (PR #42 post-PR41 doc-sync merged) で動いていない = Group B PR の
+  base もそこ。)
+- ブランチ: `feature/ai-streaming-cancel-tokens` (5 commit ahead of
+  origin / 未 push)。`develop` = `6e6eb83` 据え置き。
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  Phase 4 Stage 2 Group A クローズ = `ai-providers.toml` + Settings UI +
-  runtime provider switcher の全体像が in-process で完成。Stage 2 残り
-  Group B (streaming + cancel + token meter)、Group C (`history.jsonl`
-  への AI 記録、v:2 schema bump、web 側 fresh brief 必要)、Group D
-  (full DDL extraction + function-calling) は独立 ADR で順不同 = menu
-  方式で friction or user 指示待ち。Phase 2 ADR-0024 at-rest hardening
-  + ADR-0023 Stage 1 + ADR-0025 完全実装 (4 slice 全着地) の 3 本が
-  現状 Stage 2 残り (B/C/D) への足場として load-bearing。**
+  Phase 4 Stage 2 Group A (ADR-0025) 完全クローズ + Group B (ADR-0026)
+  ローカル実装完了 = `develop` merge 待ち。Stage 2 残り Group C
+  (`history.jsonl` への AI 記録、v:2 schema bump、web 側 fresh brief
+  必要) と Group D (full DDL extraction + function-calling) は独立
+  ADR で順不同 = menu 方式で friction or user 指示待ち。Phase 2
+  ADR-0024 at-rest hardening + ADR-0023 Stage 1 + ADR-0025 完全実装
+  (4 slice 全着地) + ADR-0026 完全実装 (4 slice ローカル完了) の 4 本が
+  現状 Stage 2 残り (C/D) への足場として load-bearing。**
+
+### ADR-0026 Phase 4 Stage 2 Group B (streaming + cancel + token meter) ローカル実装完了 (本セッション / 2026-06-30)
+
+- branch: `feature/ai-streaming-cancel-tokens` (5 commit, 未 push)。
+- ADR-0026 status: Proposed (2026-06-29) → **Accepted (2026-06-30)**
+  に切替、4 slice の着地 commit ID を ADR 本文 + roadmap + README +
+  next-actions に embed。
+- 5 コミット内訳 (`feature/ai-streaming-cancel-tokens` 上):
+
+| コミット | スコープ | 中身 |
+|---|---|---|
+| `3f16697` | `docs: ADR-0026 draft` | `docs/decisions.md` 末尾に ADR-0026 (11 Decision)。`.claude/issues/0009-ai-streaming-cancel-tokens.md` 実装トラッカ作成。 |
+| `2cb012e` | `feat(ai) Slice a: dbboard-ai trait 拡張` | `AiProvider::stream_explain` / `stream_suggest_sql` を additive 追加、戻り値 `BoxStream<'static, AiResult<StreamEvent>>`。`StreamEvent { MessageStart, TextDelta, Usage, MessageStop, Error }` + `StopReason { EndTurn, MaxTokens, StopSequence, ToolUse, Refusal, Other(String) }`。default impl で atomic `explain`/`suggest_sql` を 1-shot stream に wrap → 既存プロバイダ無改変で streaming 契約満たす。`AiCapabilities::has_streaming` の意味づけを「true = token-granularity chunks、false = default delegate」に正式化。 |
+| `e5f49d0` | `feat(ai) Slice b: Anthropic SSE` | `dbboard-anthropic` で `reqwest-eventsource` 0.6 + `RetryPolicy::Never` (token-billed POST は silent retry 厳禁)。SSE event を `StreamEvent` に変換、`message_delta.usage.output_tokens` の cumulative 性質を respect (sum せず last-write-wins)。`ping`/`error` event の正規化、`AnthropicCapabilities::has_streaming = true`。 |
+| `e8f5fd5` | `feat(ai) Slice c: worker channel 改造` | `dbboard-ui::worker` を tokio async loop 化 = std::mpsc → tokio::mpsc bridge thread で `Command` 受信、`run_command_loop` が per-request `Option<CancellationToken>` slot を保持。streaming/atomic 両方 `tokio::select!` で stream future vs `token.cancelled()` race、cancel arm が `Reply::AiCancelled` を直接 emit (`AiError::Cancelled` を絶対に作らない = ADR-0026 Decision 12)。`Command::{AiExplainStream, AiSuggestStream, CancelAiRequest}` + `Reply::{AiChunk, AiStreamComplete, AiCancelled}` 追加。11 件の worker tokio test (happy path / mid-stream error / outer stream Err / no terminator synthetic / streaming cancel mid-flight / atomic cancel mid-flight / atomic success short-circuit / no-provider gate × 2)。 |
+| `fff669c` | `feat(ai) Slice d: AiPanel state machine + UI + i18n` | `AiPanel` に `StreamingAcc { text, tokens_in, tokens_out }` + `streaming: Option<StreamingAcc>` + `cancelled: bool` 追加。lazy chunk accumulator (初回 chunk まで spinner 維持)、cumulative token replace (sum しない)、cancel-on-stream → 部分テキストを `last_response::Ok` に保全 (ユーザーが支払ったバイトを捨てない)、cancel-on-atomic → flag のみ反転。`prepare_send(dialect, schema, has_streaming)` で has_streaming に応じて `AiExplain`/`AiExplainStream` 切替、`prepare_cancel() -> Option<Command::CancelAiRequest>`。UI = Send ↔ Cancel toggle、token meter、cancelled message。3 Fluent keys × 11 locales (`ai-cancel-button` / `ai-cancelled-message` / `ai-tokens-meter`)。`DbboardApp::ai_has_streaming()` helper で slot snapshot から capability 読出 → ui() に thread。23 panel test (既存 13 + 新規 10)。 |
+
+### 検証コマンド (全 commit で pre-commit hook pass)
+
+- `cargo fmt --all -- --check` ✅
+- `cargo clippy --all-targets --all-features -- -D warnings` ✅
+- `cargo check --all-targets --all-features` ✅
+- `cargo test --all-features` ✅ — `dbboard-ui` 単体で **145 件 pass** (123 → +22 = Slice c worker tokio test + Slice d AiPanel streaming/cancel test)
+- `cargo build --release` ✅ (Slice c/d 着地時に手動実行)
+- `cargo test --all-features --release` ✅
+
+### 維持された設計原則 (review tick)
+
+- **ADR-0026 Decision 1 (additive trait)**: 既存 `explain`/`suggest_sql` 無変更、新 method は default impl で 1-shot stream wrap = 既存 provider 後方互換
+- **ADR-0026 Decision 4 (RetryPolicy::Never)**: token-billed POST は silent retry 禁止 = 5xx は `StreamEvent::Error` を 1 回だけ surface
+- **ADR-0026 Decision 5 (drop-the-stream cancel)**: trait に `CancellationToken` を取らない = worker layer で `tokio_util::sync::CancellationToken` + `tokio::select!` race、stream drop で `reqwest` の h2 close 連鎖
+- **ADR-0026 Decision 7 (cumulative token)**: chunk の token は sum せず replace = Anthropic `usage.output_tokens` は cumulative 仕様
+- **ADR-0026 Decision 10 (cancel works on atomic too)**: streaming/atomic で同じ select! race を組む = UX 一貫性
+- **ADR-0026 Decision 12 (AiError::Cancelled は reserved)**: cancel arm は `Reply::AiCancelled` を直接 emit、`AiError::Cancelled` も `AiError::Network`/`Provider` も絶対に作らない
+- **HTTP contract**: 完全無変更 = web side 影響ゼロ = cross-repo 通知不要 (PR #33 `0007-web-ai-phase6-no-contract-mirror.md` で explicit-no-op brief 済み = 追加 brief 不要)
+- **ADR-0022 (locale parity)**: 3 新 key を 11 locale 同 commit で同期 (Tier 1+2)
+
+#### 旧最終更新 (2026-06-29 / PR #43 マージクローズ — 参考保持)
+
+- 日付: 2026-06-29 = ADR-0025 Phase 4 Stage 2 Group A slice (b)
+  が `develop` に着地 = `5124b00` (mergedAt 2026-06-29T05:59:26Z)。
+  これで ADR-0025 全 4 slice (a-1 PR #37 / a-2-α PR #39 / a-2-β PR #41
+  / b PR #43) が `develop` に着地完了 = **Phase 4 Stage 2 Group A
+  クローズ**。`ai-providers.toml` + Settings UI + runtime in-process
+  provider switcher の全体像完成。post-PR43 chore (PR #44) で
+  `.claude/project-status.md` + `next-actions.md` を同期、
+  `develop` tip = `6e6eb83`。
 
 ### PR #43 (ADR-0025 Phase 4 Stage 2 Group A — slice (b) / `AiSettingsView` egui + 11-locale Fluent + `apps/dbboard` mount) マージクローズ (本セッション / 2026-06-29)
 
