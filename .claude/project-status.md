@@ -5,33 +5,54 @@
 
 ## 最終更新
 
-- 日付: 2026-06-30 (**ADR-0026 Phase 4 Stage 2 Group B = streaming +
-  cooperative cancel + token meter** 実装完了 / status を Accepted に
-  切替。`feature/ai-streaming-cancel-tokens` 上に 4 slice + ADR draft +
-  doc sweep の 5 commit、未 push / 未 PR。ローカル pre-commit hook
-  (fmt / clippy / check / test) 全 commit で緑、release build/test
-  も Slice c/d 着地後に通している。`develop` tip は依然 `6e6eb83`
-  (PR #42 post-PR41 doc-sync merged) で動いていない = Group B PR の
-  base もそこ。)
-- ブランチ: `feature/ai-streaming-cancel-tokens` (5 commit ahead of
-  origin / 未 push)。`develop` = `6e6eb83` 据え置き。
+- 日付: 2026-06-30 (**PR #45 マージクローズ** = ADR-0026 Phase 4
+  Stage 2 Group B = streaming + cooperative cancel + token meter
+  が `develop` に着地 = `3bb82c4` (mergedAt 2026-06-30T04:22:45Z)。
+  6 commit (`3f16697` ADR draft → `2cb012e` Slice a → `e5f49d0`
+  Slice b → `e8f5fd5` Slice c → `fff669c` Slice d → `806b04a` docs
+  close-out) 全部緑で merge。これで **Phase 4 Stage 2 で in-process
+  スコープの 2 大 Group (A = ADR-0025 / B = ADR-0026) が両方クローズ**。
+  本 chore PR (`chore/post-pr45-doc-sync`) は PR #38 / #40 / #42 /
+  #44 と同じ post-PR doc-sync パターンで `.claude/*` のみ触り、
+  next-actions.md を「Group B merged / 次の選択肢 = Group C / Group D /
+  friction」状態に再生成 + project-status.md に PR #45 close-out 記録。)
+- ブランチ: `develop` (= `3bb82c4`)、ローカル `chore/post-pr45-doc-sync`
+  作業中 (`feature/ai-streaming-cancel-tokens` は merged 済 / ローカルから
+  削除済 = `git branch -D` / origin auto-delete 判断は maintainer)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  Phase 4 Stage 2 Group A (ADR-0025) 完全クローズ + Group B (ADR-0026)
-  ローカル実装完了 = `develop` merge 待ち。Stage 2 残り Group C
+  Phase 4 Stage 2 Group A (ADR-0025) + Group B (ADR-0026) 両方 `develop`
+  着地完了 = in-process スコープ完結。Stage 2 残り Group C
   (`history.jsonl` への AI 記録、v:2 schema bump、web 側 fresh brief
-  必要) と Group D (full DDL extraction + function-calling) は独立
-  ADR で順不同 = menu 方式で friction or user 指示待ち。Phase 2
-  ADR-0024 at-rest hardening + ADR-0023 Stage 1 + ADR-0025 完全実装
-  (4 slice 全着地) + ADR-0026 完全実装 (4 slice ローカル完了) の 4 本が
+  必要) と Group D (full DDL extraction + function-calling = in-process
+  完結) は独立 ADR で順不同 = menu 方式で friction or user 指示待ち。
+  Phase 2 ADR-0024 at-rest hardening + ADR-0023 Stage 1 + ADR-0025 完全
+  実装 (4 slice 全着地) + ADR-0026 完全実装 (4 slice 全着地) の 4 本が
   現状 Stage 2 残り (C/D) への足場として load-bearing。**
 
-### ADR-0026 Phase 4 Stage 2 Group B (streaming + cancel + token meter) ローカル実装完了 (本セッション / 2026-06-30)
+### PR #45 (ADR-0026 Phase 4 Stage 2 Group B / streaming + cooperative cancel + token meter) マージクローズ (本セッション / 2026-06-30)
 
-- branch: `feature/ai-streaming-cancel-tokens` (5 commit, 未 push)。
+- PR #45 (`feature/ai-streaming-cancel-tokens` → `develop`) マージ済 =
+  `3bb82c4` (mergedAt 2026-06-30T04:22:45Z = JST 13:22)。ローカル
+  `develop` は `origin/develop` (= `3bb82c4`) と fast-forward sync 済、
+  feature ブランチはローカル削除済 (`git branch -D`)。
+- 着地した 6 commit はすべて PR #45 内で完結 = 下記「ADR-0026 Phase 4
+  Stage 2 Group B ローカル実装完了」セクション (本ファイル下部) に
+  詳細が残っている。本 chore は **新規実装ゼロ**、`.claude/next-actions.md`
+  + 本ファイル冒頭のみ更新。
+- post-PR doc-sync chore PR としての位置づけ: PR #38 (post-PR37) /
+  #40 (post-PR39) / #42 (post-PR41) / #44 (post-PR43) に続く 5 件目。
+  同パターン継続 = feat PR が code + ADR + user-facing docs を運び、
+  chore PR が internal status + next-actions を遅延 sync する役割分担。
+
+### ADR-0026 Phase 4 Stage 2 Group B (streaming + cancel + token meter) ローカル実装完了 → PR #45 で着地 (本セッション / 2026-06-30)
+
+- branch: `feature/ai-streaming-cancel-tokens` (PR #45 で 6 commit
+  着地後、ローカル削除済)。
 - ADR-0026 status: Proposed (2026-06-29) → **Accepted (2026-06-30)**
   に切替、4 slice の着地 commit ID を ADR 本文 + roadmap + README +
   next-actions に embed。
-- 5 コミット内訳 (`feature/ai-streaming-cancel-tokens` 上):
+- 6 コミット内訳 (`feature/ai-streaming-cancel-tokens` 上、すべて
+  PR #45 で着地):
 
 | コミット | スコープ | 中身 |
 |---|---|---|
@@ -40,6 +61,7 @@
 | `e5f49d0` | `feat(ai) Slice b: Anthropic SSE` | `dbboard-anthropic` で `reqwest-eventsource` 0.6 + `RetryPolicy::Never` (token-billed POST は silent retry 厳禁)。SSE event を `StreamEvent` に変換、`message_delta.usage.output_tokens` の cumulative 性質を respect (sum せず last-write-wins)。`ping`/`error` event の正規化、`AnthropicCapabilities::has_streaming = true`。 |
 | `e8f5fd5` | `feat(ai) Slice c: worker channel 改造` | `dbboard-ui::worker` を tokio async loop 化 = std::mpsc → tokio::mpsc bridge thread で `Command` 受信、`run_command_loop` が per-request `Option<CancellationToken>` slot を保持。streaming/atomic 両方 `tokio::select!` で stream future vs `token.cancelled()` race、cancel arm が `Reply::AiCancelled` を直接 emit (`AiError::Cancelled` を絶対に作らない = ADR-0026 Decision 12)。`Command::{AiExplainStream, AiSuggestStream, CancelAiRequest}` + `Reply::{AiChunk, AiStreamComplete, AiCancelled}` 追加。11 件の worker tokio test (happy path / mid-stream error / outer stream Err / no terminator synthetic / streaming cancel mid-flight / atomic cancel mid-flight / atomic success short-circuit / no-provider gate × 2)。 |
 | `fff669c` | `feat(ai) Slice d: AiPanel state machine + UI + i18n` | `AiPanel` に `StreamingAcc { text, tokens_in, tokens_out }` + `streaming: Option<StreamingAcc>` + `cancelled: bool` 追加。lazy chunk accumulator (初回 chunk まで spinner 維持)、cumulative token replace (sum しない)、cancel-on-stream → 部分テキストを `last_response::Ok` に保全 (ユーザーが支払ったバイトを捨てない)、cancel-on-atomic → flag のみ反転。`prepare_send(dialect, schema, has_streaming)` で has_streaming に応じて `AiExplain`/`AiExplainStream` 切替、`prepare_cancel() -> Option<Command::CancelAiRequest>`。UI = Send ↔ Cancel toggle、token meter、cancelled message。3 Fluent keys × 11 locales (`ai-cancel-button` / `ai-cancelled-message` / `ai-tokens-meter`)。`DbboardApp::ai_has_streaming()` helper で slot snapshot から capability 読出 → ui() に thread。23 panel test (既存 13 + 新規 10)。 |
+| `806b04a` | `docs: close ADR-0026` | ADR-0026 status を Proposed (2026-06-29) → **Accepted (2026-06-30)** に切替、4 slice 着地 commit ID embed。`docs/roadmap.md` Phase 4 Stage 2 Group B 完了マーク。`README.md` AI セクションに streaming + cancel + token meter 段落追加 + deferred list から streaming 削除。`.claude/issues/0009-ai-streaming-cancel-tokens.md` closed (2026-06-30)。同 PR 内で完結。|
 
 ### 検証コマンド (全 commit で pre-commit hook pass)
 
