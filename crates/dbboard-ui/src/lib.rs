@@ -26,7 +26,8 @@ pub use connections::{
     AddFormState, ConnectionsView, EditFormState, EditKindState, KindSelector, Mode,
 };
 pub use history::{
-    HistoryEntry, HistoryError, HistoryStatus, HistoryStore, PersistentHistoryStore,
+    AiEntry, AiIntent, AiStatus, HistoryEntry, HistoryError, HistoryStatus, HistoryStore,
+    PersistentHistoryStore, QueryEntry, AI_TEXT_CAP_BYTES, AI_TEXT_TRUNCATED_MARKER,
     CURRENT_VERSION, DEFAULT_CAPACITY, ROTATION_BYTES, ROTATION_LINES,
 };
 // Fixture-emission shim for the `dbboard-web` sibling's
@@ -646,7 +647,7 @@ fn build_completion_entry(
             } else {
                 (Some(q.rows.len() as u64), None)
             };
-            HistoryEntry {
+            HistoryEntry::Query(QueryEntry {
                 sql: pending.sql.clone(),
                 ts,
                 conn: conn.to_string(),
@@ -655,9 +656,9 @@ fn build_completion_entry(
                 rows,
                 rows_affected,
                 error: None,
-            }
+            })
         }
-        Err(e) => HistoryEntry {
+        Err(e) => HistoryEntry::Query(QueryEntry {
             sql: pending.sql.clone(),
             ts,
             conn: conn.to_string(),
@@ -669,7 +670,7 @@ fn build_completion_entry(
                 category: e.category().to_string(),
                 message: e.message().to_string(),
             }),
-        },
+        }),
     }
 }
 
@@ -775,12 +776,15 @@ impl eframe::App for DbboardApp {
                             egui::ScrollArea::vertical()
                                 .max_height(160.0)
                                 .show(ui, |ui| {
+                                    // Slice (a) only surfaces query entries
+                                    // in the legacy history panel; the AI
+                                    // record viewer lands in slice (c).
                                     for entry in history.iter() {
-                                        if ui
-                                            .small_button(history_button_label(&entry.sql))
-                                            .clicked()
-                                        {
-                                            restore = Some(entry.sql.clone());
+                                        let HistoryEntry::Query(q) = entry else {
+                                            continue;
+                                        };
+                                        if ui.small_button(history_button_label(&q.sql)).clicked() {
+                                            restore = Some(q.sql.clone());
                                         }
                                     }
                                 });
@@ -1017,7 +1021,11 @@ mod tests {
         app.run_sql();
 
         assert_eq!(app.history().len(), 1);
-        assert_eq!(app.history().iter().next().unwrap().sql, "SELECT 1");
+        let head = app.history().iter().next().unwrap();
+        let super::HistoryEntry::Query(q) = head else {
+            panic!("expected Query");
+        };
+        assert_eq!(q.sql, "SELECT 1");
     }
 
     #[test]
@@ -1103,7 +1111,11 @@ mod tests {
         app.sql = "SELECT 2".into();
         app.run_sql();
         assert_eq!(app.history().len(), 1);
-        assert_eq!(app.history().iter().next().unwrap().sql, "SELECT 1");
+        let head = app.history().iter().next().unwrap();
+        let super::HistoryEntry::Query(q) = head else {
+            panic!("expected Query");
+        };
+        assert_eq!(q.sql, "SELECT 1");
     }
 
     // --- ADR-0017 reply-time disk-append path ---
@@ -1153,7 +1165,8 @@ mod tests {
         let lines = read_history_jsonl(&path);
         assert_eq!(lines.len(), 1);
         let r = &lines[0];
-        assert_eq!(r["v"], 1);
+        assert_eq!(r["v"], 2);
+        assert_eq!(r["kind"], "query");
         assert_eq!(r["actor"], serde_json::Value::Null);
         assert_eq!(r["conn"], "prod-pg");
         assert_eq!(r["ts"], FIXED_TS);
@@ -1418,6 +1431,9 @@ mod tests {
             "prod-pg",
             FIXED_TS.to_string(),
         );
+        let super::HistoryEntry::Query(ok) = ok else {
+            panic!("expected Query variant");
+        };
         assert_eq!(ok.status, HistoryStatus::Ok);
         assert_eq!(ok.rows, Some(1));
         assert_eq!(ok.rows_affected, None);
@@ -1431,6 +1447,9 @@ mod tests {
             "prod-pg",
             FIXED_TS.to_string(),
         );
+        let super::HistoryEntry::Query(err) = err else {
+            panic!("expected Query variant");
+        };
         assert_eq!(err.status, HistoryStatus::Error);
         assert_eq!(err.error.as_ref().unwrap().category, "connection");
     }
