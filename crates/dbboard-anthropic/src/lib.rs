@@ -141,7 +141,7 @@ impl AnthropicProvider {
                     truncate_to_owned(&String::from_utf8_lossy(&bytes))
                 ))
             })?;
-            parsed_to_response(parsed)
+            parsed_to_response(parsed, &self.model)
         } else {
             Err(error_from_status_and_body(status, &bytes))
         }
@@ -192,6 +192,18 @@ impl AiProvider for AnthropicProvider {
             has_streaming: true,
             has_function_calling: false,
         }
+    }
+
+    // ADR-0027 Decision 4: `(provider_id, model_id)` for history
+    // stamping. `PROVIDER_ID` is a compile-time constant; `model` is a
+    // per-instance `String` (constructor-time), so we hand back a
+    // borrow into the provider. The `dbboard-ui` worker snapshots this
+    // tuple once at task spawn time (see `worker::spawn_ai_task`) and
+    // reuses the snapshot for every terminal reply — a mid-request
+    // provider swap changes the *next* request's identity, never the
+    // one already in flight.
+    fn identity(&self) -> (&'static str, &str) {
+        (PROVIDER_ID, &self.model)
     }
 
     async fn explain(&self, req: &ExplainRequest) -> AiResult<AiResponse> {
@@ -359,7 +371,7 @@ fn qualify(table: &TableInfo) -> String {
     }
 }
 
-fn parsed_to_response(parsed: MessagesResponse) -> AiResult<AiResponse> {
+fn parsed_to_response(parsed: MessagesResponse, model: &str) -> AiResult<AiResponse> {
     let mut combined = String::new();
     for block in parsed.content {
         if let ResponseBlock::Text { text } = block {
@@ -375,6 +387,12 @@ fn parsed_to_response(parsed: MessagesResponse) -> AiResult<AiResponse> {
         text: combined,
         tokens_in: parsed.usage.input_tokens,
         tokens_out: parsed.usage.output_tokens,
+        // ADR-0027 Decision 4: stamp the atomic response with the
+        // model that produced it. The provider id is the crate-level
+        // constant so out-of-band callers can pipe an `AiResponse`
+        // straight into a history record without a second trait call.
+        provider: PROVIDER_ID.to_string(),
+        model: model.to_string(),
     })
 }
 
@@ -467,6 +485,25 @@ mod tests {
         let caps = provider.capabilities();
         assert!(caps.has_streaming);
         assert!(!caps.has_function_calling);
+    }
+
+    #[test]
+    fn identity_returns_provider_id_and_configured_model() {
+        // ADR-0027 Decision 4: `identity()` is the source of truth
+        // the `dbboard-ui` worker snapshots at task-spawn time and
+        // stamps on every terminal reply. Anthropic must return its
+        // stable id and the model configured at construction — a
+        // custom model surfaces here without re-plumbing.
+        let provider = AnthropicProvider::new("test-key", "claude-x").expect("construct");
+        let (p, m) = provider.identity();
+        assert_eq!(p, PROVIDER_ID);
+        assert_eq!(m, "claude-x");
+
+        let default_provider =
+            AnthropicProvider::with_default_model("test-key").expect("construct");
+        let (p2, m2) = default_provider.identity();
+        assert_eq!(p2, PROVIDER_ID);
+        assert_eq!(m2, DEFAULT_MODEL);
     }
 
     #[test]
@@ -585,10 +622,27 @@ mod tests {
             "usage": {"input_tokens": 11, "output_tokens": 22}
         });
         let parsed: MessagesResponse = serde_json::from_value(raw).unwrap();
-        let response = parsed_to_response(parsed).unwrap();
+        let response = parsed_to_response(parsed, "claude-x").unwrap();
         assert_eq!(response.text, "Hello, world.");
         assert_eq!(response.tokens_in, 11);
         assert_eq!(response.tokens_out, 22);
+    }
+
+    #[test]
+    fn parsed_to_response_stamps_provider_and_model_identity() {
+        // ADR-0027 Decision 4: `AiResponse` gains provider/model so a
+        // caller holding only the response (not the trait object) can
+        // still stamp history without a second `identity()` call. This
+        // is the atomic-path witness — the streaming path stamps
+        // identity from the worker's spawn-time snapshot instead.
+        let raw = json!({
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        });
+        let parsed: MessagesResponse = serde_json::from_value(raw).unwrap();
+        let response = parsed_to_response(parsed, "claude-x").unwrap();
+        assert_eq!(response.provider, PROVIDER_ID);
+        assert_eq!(response.model, "claude-x");
     }
 
     #[test]
@@ -601,7 +655,7 @@ mod tests {
             "usage": {"input_tokens": 1, "output_tokens": 1}
         });
         let parsed: MessagesResponse = serde_json::from_value(raw).unwrap();
-        let response = parsed_to_response(parsed).unwrap();
+        let response = parsed_to_response(parsed, "claude-x").unwrap();
         assert_eq!(response.text, "real text");
     }
 
@@ -614,7 +668,7 @@ mod tests {
             "usage": {"input_tokens": 1, "output_tokens": 0}
         });
         let parsed: MessagesResponse = serde_json::from_value(raw).unwrap();
-        let err = parsed_to_response(parsed).unwrap_err();
+        let err = parsed_to_response(parsed, "claude-x").unwrap_err();
         assert!(matches!(err, AiError::Provider(_)));
     }
 
@@ -622,7 +676,7 @@ mod tests {
     fn parsed_to_response_with_empty_content_array_is_provider_error() {
         let raw = json!({ "content": [], "usage": {"input_tokens": 0, "output_tokens": 0} });
         let parsed: MessagesResponse = serde_json::from_value(raw).unwrap();
-        let err = parsed_to_response(parsed).unwrap_err();
+        let err = parsed_to_response(parsed, "claude-x").unwrap_err();
         assert!(matches!(err, AiError::Provider(_)));
     }
 
@@ -630,7 +684,7 @@ mod tests {
     fn parsed_to_response_defaults_usage_when_missing() {
         let raw = json!({"content": [{"type": "text", "text": "no usage"}]});
         let parsed: MessagesResponse = serde_json::from_value(raw).unwrap();
-        let response = parsed_to_response(parsed).unwrap();
+        let response = parsed_to_response(parsed, "claude-x").unwrap();
         assert_eq!(response.tokens_in, 0);
         assert_eq!(response.tokens_out, 0);
     }

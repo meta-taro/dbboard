@@ -26,7 +26,8 @@ pub use connections::{
     AddFormState, ConnectionsView, EditFormState, EditKindState, KindSelector, Mode,
 };
 pub use history::{
-    HistoryEntry, HistoryError, HistoryStatus, HistoryStore, PersistentHistoryStore,
+    AiEntry, AiIntent, AiStatus, HistoryEntry, HistoryError, HistoryStatus, HistoryStore,
+    PersistentHistoryStore, QueryEntry, AI_TEXT_CAP_BYTES, AI_TEXT_TRUNCATED_MARKER,
     CURRENT_VERSION, DEFAULT_CAPACITY, ROTATION_BYTES, ROTATION_LINES,
 };
 // Fixture-emission shim for the `dbboard-web` sibling's
@@ -133,16 +134,31 @@ pub enum Reply {
     /// AI provider returned a response (ADR-0023). The panel replaces
     /// any stale content with `text`; token counts are recorded for the
     /// future cost-meter wiring deferred to Stage 2.
+    ///
+    /// `provider`/`model` (ADR-0027 Decision 4) carry the spawn-time
+    /// identity the worker snapshotted for this request — same on every
+    /// terminal reply variant so a mid-flight `SwitchAiProvider` never
+    /// re-labels an in-flight response. `slice (c)` uses these to stamp
+    /// the AI history record.
     AiResponded {
         text: String,
         tokens_in: u32,
         tokens_out: u32,
+        provider: String,
+        model: String,
     },
     /// AI request failed (ADR-0023). The panel renders the error using
     /// its own translation table — the AI taxonomy is independent of
     /// the HTTP `DbError` taxonomy (ADR-0023 Decision 8).
+    ///
+    /// See [`Reply::AiResponded`] for the `provider`/`model` contract.
+    /// A no-provider failure surfaces here with `provider = "unknown"`
+    /// / `model = ""` — the identity is nominal, but the record stays
+    /// well-formed (ADR-0027 §Implementation Slice b).
     AiFailed {
         error: AiError,
+        provider: String,
+        model: String,
     },
     /// AI provider swap succeeded (ADR-0025). The Settings UI (slice b)
     /// uses this to update the active-row marker and dismiss any prior
@@ -175,17 +191,28 @@ pub enum Reply {
     /// Carries the final cumulative token counts and the provider's
     /// `stop_reason`. The panel clears its busy flag here and persists
     /// the final tokens to its visible meter.
+    ///
+    /// See [`Reply::AiResponded`] for the `provider`/`model` contract.
     AiStreamComplete {
         tokens_in: u32,
         tokens_out: u32,
         stop_reason: StopReason,
+        provider: String,
+        model: String,
     },
     /// The in-flight AI request was cancelled by the user (ADR-0026
     /// Decision 5). Reset the panel's busy flag and render "Cancelled."
     /// without surfacing an error banner (ADR-0026 Decision 12). Emitted
     /// for both the streaming and the atomic dispatch paths
     /// (Decision 10).
-    AiCancelled,
+    ///
+    /// See [`Reply::AiResponded`] for the `provider`/`model` contract.
+    /// Even a pre-first-chunk cancel carries the spawn-time identity so
+    /// the eventual history record (slice c) has a stable label.
+    AiCancelled {
+        provider: String,
+        model: String,
+    },
 }
 
 /// Captures everything we know at submit time about a query whose reply
@@ -195,6 +222,22 @@ pub enum Reply {
 struct PendingSubmit {
     started: Instant,
     sql: String,
+}
+
+/// Submit-time snapshot for an in-flight AI request (ADR-0027 slice c).
+/// Kept until a terminal AI reply lands, at which point it is combined
+/// with the reply's `provider` / `model` (the spawn-time identity from
+/// ADR-0027 slice b) to build the [`AiEntry`] recorded on disk.
+///
+/// `intent` and `prompt` are captured from the outgoing [`Command`]
+/// before it is sent to the worker; `conn` is the active connection id
+/// at that moment, or `None` for the in-memory-only path where the
+/// label is empty.
+struct PendingAiSubmit {
+    started: Instant,
+    intent: AiIntent,
+    prompt: String,
+    conn: Option<String>,
 }
 
 /// Wall-clock function used to stamp `ts` on every completion record.
@@ -211,6 +254,10 @@ pub struct DbboardApp {
     /// `Some` between submitting a query and consuming its reply; the
     /// `drain_replies` path uses this to compute `duration_ms`.
     pending: Option<PendingSubmit>,
+    /// `Some` between submitting an AI request and its terminal reply
+    /// (ADR-0027 slice c). Consumed by the `drain_replies` AI arms to
+    /// build the on-disk [`AiEntry`].
+    pending_ai: Option<PendingAiSubmit>,
     /// Connection id stamped on every completion record (ADR-0017
     /// `conn` field). Updated on every successful `ConnectionSwitched`
     /// reply (ADR-0020) so subsequent history records carry the new id.
@@ -350,6 +397,7 @@ impl DbboardApp {
             last_result: None,
             history,
             pending: None,
+            pending_ai: None,
             conn_label,
             last_switch_error: None,
             now_rfc3339,
@@ -401,20 +449,28 @@ impl DbboardApp {
                 Reply::SwitchFailed { id, error } => {
                     self.last_switch_error = Some((id, error));
                 }
-                // ADR-0023: AI round-trip reply. Route into the panel's
-                // state machine — both success and failure clear `busy`
-                // and replace any stale content (ai::tests cover the
-                // ordering invariants).
+                // ADR-0023: AI round-trip reply. Routed into the panel's
+                // state machine by the arm helper — both success and
+                // failure clear `busy` and replace any stale content
+                // (ai::tests cover the ordering invariants).
+                //
+                // ADR-0027 slice c: the helper also consumes the
+                // submit-time snapshot in [`Self::pending_ai`] and
+                // appends an AI history record using the spawn-time
+                // identity the worker stamped on the reply (ADR-0027
+                // slice b).
                 Reply::AiResponded {
                     text,
                     tokens_in,
                     tokens_out,
-                } => {
-                    self.ai_panel.on_response(text, tokens_in, tokens_out);
-                }
-                Reply::AiFailed { error } => {
-                    self.ai_panel.on_error(&error);
-                }
+                    provider,
+                    model,
+                } => self.on_ai_responded(text, tokens_in, tokens_out, (provider, model)),
+                Reply::AiFailed {
+                    error,
+                    provider,
+                    model,
+                } => self.on_ai_failed(&error, (provider, model)),
                 // ADR-0025 slice (b): AI provider swap outcomes. On
                 // success we just clear any prior error — the resolved
                 // *name* lands separately via
@@ -445,21 +501,158 @@ impl DbboardApp {
                     tokens_in,
                     tokens_out,
                     stop_reason,
-                } => {
-                    self.ai_panel
-                        .on_stream_complete(tokens_in, tokens_out, &stop_reason);
-                }
+                    provider,
+                    model,
+                } => self.on_ai_stream_complete(
+                    tokens_in,
+                    tokens_out,
+                    &stop_reason,
+                    (provider, model),
+                ),
                 // ADR-0026 Decision 12: a user-initiated cancel resets
                 // the panel without surfacing an error banner. Lives in
                 // its own arm because `AiError::Cancelled` is never the
                 // payload of `Reply::AiFailed` (the cancel arm of the
                 // `select!` short-circuits before `AiResult::Err` ever
                 // forms).
-                Reply::AiCancelled => {
-                    self.ai_panel.on_cancelled();
+                Reply::AiCancelled { provider, model } => {
+                    self.on_ai_cancelled((provider, model));
                 }
             }
         }
+    }
+
+    /// Best-effort AI history append. `record_ai` failures on disk are
+    /// logged to stderr (ADR-0017 §6) — never propagated, since the
+    /// panel state machine still needs the reply.
+    fn record_ai_history(&mut self, entry: AiEntry) {
+        if let Err(e) = self.history.record_ai(entry) {
+            eprintln!("dbboard: ai history append failed: {e}");
+        }
+    }
+
+    fn on_ai_responded(
+        &mut self,
+        text: String,
+        tokens_in: u32,
+        tokens_out: u32,
+        identity: (String, String),
+    ) {
+        if let Some(pending) = self.pending_ai.take() {
+            let entry = build_ai_ok_entry(
+                pending,
+                text.clone(),
+                tokens_in,
+                tokens_out,
+                identity,
+                None,
+                (self.now_rfc3339)(),
+            );
+            self.record_ai_history(entry);
+        }
+        self.ai_panel.on_response(text, tokens_in, tokens_out);
+    }
+
+    fn on_ai_failed(&mut self, error: &AiError, identity: (String, String)) {
+        if let Some(pending) = self.pending_ai.take() {
+            let entry = build_ai_failed_entry(pending, error, identity, (self.now_rfc3339)());
+            self.record_ai_history(entry);
+        }
+        self.ai_panel.on_error(error);
+    }
+
+    fn on_ai_stream_complete(
+        &mut self,
+        tokens_in: u32,
+        tokens_out: u32,
+        stop_reason: &StopReason,
+        identity: (String, String),
+    ) {
+        // Peek the accumulator BEFORE the panel drains it — ADR-0027
+        // slice c wants the full streamed body in the history record,
+        // and `on_stream_complete` consumes it.
+        let response = self
+            .ai_panel
+            .streaming()
+            .map(|acc| acc.text.clone())
+            .unwrap_or_default();
+        if let Some(pending) = self.pending_ai.take() {
+            let entry = build_ai_ok_entry(
+                pending,
+                response,
+                tokens_in,
+                tokens_out,
+                identity,
+                Some(stop_reason_wire(stop_reason)),
+                (self.now_rfc3339)(),
+            );
+            self.record_ai_history(entry);
+        }
+        self.ai_panel
+            .on_stream_complete(tokens_in, tokens_out, stop_reason);
+    }
+
+    /// Draw the AI panel and forward any Send-click command to the
+    /// worker, snapshotting the submit-time context (ADR-0027 slice c).
+    /// A `Cancel` command MUST NOT overwrite `pending_ai` — the pending
+    /// record belongs to the request the cancel is targeting, and its
+    /// terminal reply will consume it.
+    fn render_ai_panel(&mut self, ctx: &egui::Context) {
+        // `dialect` is the active adapter id (e.g. "postgres", "neon").
+        // The UI does not currently reach the loopback server's adapter
+        // id — bridging that requires either a `Command::GetCapabilities`
+        // round-trip or a dedicated binary-side accessor. Slice (b)
+        // ships without the hint; Stage 2 wires it once the adapter-id
+        // surface is decided.
+        let dialect: Option<&str> = None;
+        // Borrow the cached tables rather than cloning them every frame;
+        // the panel only allocates a Vec when Send is clicked and the
+        // Suggest arm fires.
+        let schema_slice: &[TableInfo] = self.tables.as_ref().map_or(&[], Vec::as_slice);
+        let active_label = self.active_ai_provider_label.as_deref();
+        // ADR-0026 Decision 6: pick streaming over atomic at Send time
+        // iff the active provider declares the capability. The slot
+        // read happens here, not in the panel, so the panel stays a
+        // pure presentation layer over its passed-in flags.
+        let has_streaming = self.ai_has_streaming();
+        if let Some(cmd) = self
+            .ai_panel
+            .ui(ctx, dialect, schema_slice, active_label, has_streaming)
+        {
+            if let Some(pending) = pending_ai_from_command(&cmd, &self.conn_label) {
+                self.pending_ai = Some(pending);
+            }
+            if self.cmd_tx.send(cmd).is_err() {
+                // Worker hung up — surface a synthetic failure so the
+                // panel exits the busy state immediately rather than
+                // waiting forever for a reply that will never arrive.
+                // Drop the just-set pending: without a worker there is
+                // no terminal reply that would consume it.
+                self.pending_ai = None;
+                self.ai_panel
+                    .on_error(&AiError::Network("ai worker channel closed".into()));
+            }
+        }
+        // Drive a follow-up frame while the AI request is in flight so
+        // the reply drains promptly without a user gesture.
+        if self.ai_panel.is_busy() {
+            ctx.request_repaint();
+        }
+    }
+
+    fn on_ai_cancelled(&mut self, identity: (String, String)) {
+        // Peek the accumulator before `on_cancelled` moves it into
+        // `last_response`. ADR-0027 §Decision 5: cancelled records
+        // preserve any partial content the user has already paid tokens
+        // for, and use `Some(tokens)` only when a usage event actually
+        // arrived (typed as "atomic cancel or cancel before first chunk
+        // => None").
+        let partial = self.ai_panel.streaming().cloned();
+        if let Some(pending) = self.pending_ai.take() {
+            let entry = build_ai_cancelled_entry(pending, partial, identity, (self.now_rfc3339)());
+            self.record_ai_history(entry);
+        }
+        self.ai_panel.on_cancelled();
     }
 
     fn run_sql(&mut self) {
@@ -646,7 +839,7 @@ fn build_completion_entry(
             } else {
                 (Some(q.rows.len() as u64), None)
             };
-            HistoryEntry {
+            HistoryEntry::Query(QueryEntry {
                 sql: pending.sql.clone(),
                 ts,
                 conn: conn.to_string(),
@@ -655,9 +848,9 @@ fn build_completion_entry(
                 rows,
                 rows_affected,
                 error: None,
-            }
+            })
         }
-        Err(e) => HistoryEntry {
+        Err(e) => HistoryEntry::Query(QueryEntry {
             sql: pending.sql.clone(),
             ts,
             conn: conn.to_string(),
@@ -669,7 +862,181 @@ fn build_completion_entry(
                 category: e.category().to_string(),
                 message: e.message().to_string(),
             }),
-        },
+        }),
+    }
+}
+
+/// Extract a submit-time snapshot from an outgoing AI [`Command`]
+/// (ADR-0027 slice c). Returns `None` for non-AI commands and for
+/// [`Command::CancelAiRequest`] — a cancel must not overwrite the
+/// pending record that belongs to the request it is cancelling.
+///
+/// The panel already gated the send on non-empty input, so the
+/// `prompt` field carries the trimmed user intent verbatim (the
+/// panel does not trim, so we do not trim either — keeping the
+/// history text byte-identical to what the provider saw).
+fn pending_ai_from_command(cmd: &Command, conn_label: &str) -> Option<PendingAiSubmit> {
+    let (intent, prompt) = match cmd {
+        Command::AiExplain { sql, .. } | Command::AiExplainStream { sql, .. } => {
+            (AiIntent::Explain, sql.clone())
+        }
+        Command::AiSuggest { prompt, .. } | Command::AiSuggestStream { prompt, .. } => {
+            (AiIntent::SuggestSql, prompt.clone())
+        }
+        Command::CancelAiRequest
+        | Command::ListTables
+        | Command::Query(_)
+        | Command::SwitchConnection { .. }
+        | Command::SwitchAiProvider { .. } => return None,
+    };
+    let conn = if conn_label.is_empty() {
+        None
+    } else {
+        Some(conn_label.to_string())
+    };
+    Some(PendingAiSubmit {
+        started: Instant::now(),
+        intent,
+        prompt,
+        conn,
+    })
+}
+
+/// Build the success record for an atomic [`Reply::AiResponded`] or a
+/// streaming [`Reply::AiStreamComplete`]. `response` is the full text
+/// (accumulated by the panel for the streaming path). `identity` is the
+/// spawn-time `(provider, model)` pair the worker stamped on the reply
+/// (ADR-0027 slice b). `stop_reason` is `None` for the atomic path —
+/// the provider does not surface one there — and `Some(wire)` for the
+/// streaming path.
+fn build_ai_ok_entry(
+    pending: PendingAiSubmit,
+    response: String,
+    tokens_in: u32,
+    tokens_out: u32,
+    identity: (String, String),
+    stop_reason: Option<String>,
+    ts: String,
+) -> AiEntry {
+    let duration_ms = u64::try_from(pending.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (provider, model) = identity;
+    AiEntry {
+        ts,
+        conn: pending.conn,
+        intent: pending.intent,
+        prompt: pending.prompt,
+        response,
+        status: AiStatus::Ok,
+        duration_ms,
+        tokens_in: Some(u64::from(tokens_in)),
+        tokens_out: Some(u64::from(tokens_out)),
+        provider,
+        model,
+        stop_reason,
+        error: None,
+    }
+}
+
+/// Build the error record for [`Reply::AiFailed`]. Response text is
+/// empty (the provider never produced one) and token counts are
+/// `None` since the failure taxonomy is orthogonal to usage — a
+/// mid-stream error may follow a usage event, but preserving that
+/// partial count against a failure is out of scope for slice c.
+fn build_ai_failed_entry(
+    pending: PendingAiSubmit,
+    error: &AiError,
+    identity: (String, String),
+    ts: String,
+) -> AiEntry {
+    let duration_ms = u64::try_from(pending.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (category, message) = ai_error_history_parts(error);
+    let (provider, model) = identity;
+    AiEntry {
+        ts,
+        conn: pending.conn,
+        intent: pending.intent,
+        prompt: pending.prompt,
+        response: String::new(),
+        status: AiStatus::Error,
+        duration_ms,
+        tokens_in: None,
+        tokens_out: None,
+        provider,
+        model,
+        stop_reason: None,
+        error: Some(HistoryError { category, message }),
+    }
+}
+
+/// Build the cancelled record for [`Reply::AiCancelled`]. `partial` is
+/// the streaming accumulator peeked just before `on_cancelled` drains
+/// it: `Some` for cancels after the first streaming chunk, `None` for
+/// the atomic / pre-first-chunk paths. Token counts are surfaced when
+/// a usage event actually landed (any non-zero count is treated as a
+/// real observation — mirrors the ADR-0027 §Decision 5 note that
+/// atomic / pre-usage cancels use `None`).
+fn build_ai_cancelled_entry(
+    pending: PendingAiSubmit,
+    partial: Option<ai::StreamingAcc>,
+    identity: (String, String),
+    ts: String,
+) -> AiEntry {
+    let duration_ms = u64::try_from(pending.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (provider, model) = identity;
+    let (response, tokens_in, tokens_out) = match partial {
+        Some(acc) => {
+            let tin =
+                (acc.tokens_in != 0 || acc.tokens_out != 0).then_some(u64::from(acc.tokens_in));
+            let tout =
+                (acc.tokens_in != 0 || acc.tokens_out != 0).then_some(u64::from(acc.tokens_out));
+            (acc.text, tin, tout)
+        }
+        None => (String::new(), None, None),
+    };
+    AiEntry {
+        ts,
+        conn: pending.conn,
+        intent: pending.intent,
+        prompt: pending.prompt,
+        response,
+        status: AiStatus::Cancelled,
+        duration_ms,
+        tokens_in,
+        tokens_out,
+        provider,
+        model,
+        stop_reason: None,
+        error: None,
+    }
+}
+
+/// Wire string for the `stop_reason` field on a v:2 AI record
+/// (ADR-0027). Free-form on read (`Option<String>`), so this is the
+/// only place that pins the serialization — an unknown future
+/// `StopReason::Other` value flows through verbatim.
+fn stop_reason_wire(reason: &StopReason) -> String {
+    match reason {
+        StopReason::EndTurn => "end_turn".into(),
+        StopReason::MaxTokens => "max_tokens".into(),
+        StopReason::StopSequence => "stop_sequence".into(),
+        StopReason::ToolUse => "tool_use".into(),
+        StopReason::Refusal => "refusal".into(),
+        StopReason::Other(s) => s.clone(),
+    }
+}
+
+/// Split an [`AiError`] into the `(category, message)` pair the v:2
+/// wire uses (ADR-0027 §Decision 4 mirrors ADR-0023 §5). `Cancelled`
+/// is not expected here — cancels flow through [`Reply::AiCancelled`],
+/// not [`Reply::AiFailed`] — but we map it defensively so a stray
+/// variant does not corrupt the record.
+fn ai_error_history_parts(error: &AiError) -> (String, String) {
+    match error {
+        AiError::Configuration(m) => ("configuration".into(), m.clone()),
+        AiError::Network(m) => ("network".into(), m.clone()),
+        AiError::Provider(m) => ("provider".into(), m.clone()),
+        AiError::Quota(m) => ("quota".into(), m.clone()),
+        AiError::Cancelled => ("cancelled".into(), String::new()),
     }
 }
 
@@ -679,46 +1046,9 @@ impl eframe::App for DbboardApp {
 
         // ADR-0023: AI panel as a free-floating egui::Window. Only
         // register it when a provider was wired in at startup; the panel
-        // itself trusts the gate. Send-clicks return a Command that we
-        // forward to the worker — failure to send (worker hung up)
-        // becomes the user's next Reply::AiFailed, not a silent drop,
-        // because the panel's `busy` flag would otherwise stick.
+        // itself trusts the gate.
         if self.has_ai_provider() {
-            // `dialect` is the active adapter id (e.g. "postgres", "neon").
-            // The UI does not currently reach the loopback server's
-            // adapter id — bridging that requires either a
-            // `Command::GetCapabilities` round-trip or a dedicated binary-
-            // side accessor. Slice (b) ships without the hint; Stage 2
-            // wires it once the adapter-id surface is decided.
-            let dialect: Option<&str> = None;
-            // Borrow the cached tables rather than cloning them every
-            // frame; the panel only allocates a Vec when Send is clicked
-            // and the Suggest arm fires.
-            let schema_slice: &[TableInfo] = self.tables.as_ref().map_or(&[], Vec::as_slice);
-            let active_label = self.active_ai_provider_label.as_deref();
-            // ADR-0026 Decision 6: pick streaming over atomic at Send
-            // time iff the active provider declares the capability. The
-            // slot read happens here, not in the panel, so the panel
-            // stays a pure presentation layer over its passed-in flags.
-            let has_streaming = self.ai_has_streaming();
-            if let Some(cmd) =
-                self.ai_panel
-                    .ui(ui.ctx(), dialect, schema_slice, active_label, has_streaming)
-            {
-                if self.cmd_tx.send(cmd).is_err() {
-                    // Worker hung up — surface a synthetic failure so
-                    // the panel exits the busy state immediately rather
-                    // than waiting forever for a reply that will never
-                    // arrive.
-                    self.ai_panel
-                        .on_error(&AiError::Network("ai worker channel closed".into()));
-                }
-            }
-            // Drive a follow-up frame while the AI request is in flight
-            // so the reply drains promptly without a user gesture.
-            if self.ai_panel.is_busy() {
-                ui.ctx().request_repaint();
-            }
+            self.render_ai_panel(ui.ctx());
         }
 
         egui::Panel::left("tables").show_inside(ui, |ui| {
@@ -775,12 +1105,15 @@ impl eframe::App for DbboardApp {
                             egui::ScrollArea::vertical()
                                 .max_height(160.0)
                                 .show(ui, |ui| {
+                                    // Slice (a) only surfaces query entries
+                                    // in the legacy history panel; the AI
+                                    // record viewer lands in slice (c).
                                     for entry in history.iter() {
-                                        if ui
-                                            .small_button(history_button_label(&entry.sql))
-                                            .clicked()
-                                        {
-                                            restore = Some(entry.sql.clone());
+                                        let HistoryEntry::Query(q) = entry else {
+                                            continue;
+                                        };
+                                        if ui.small_button(history_button_label(&q.sql)).clicked() {
+                                            restore = Some(q.sql.clone());
                                         }
                                     }
                                 });
@@ -1017,7 +1350,11 @@ mod tests {
         app.run_sql();
 
         assert_eq!(app.history().len(), 1);
-        assert_eq!(app.history().iter().next().unwrap().sql, "SELECT 1");
+        let head = app.history().iter().next().unwrap();
+        let super::HistoryEntry::Query(q) = head else {
+            panic!("expected Query");
+        };
+        assert_eq!(q.sql, "SELECT 1");
     }
 
     #[test]
@@ -1103,7 +1440,11 @@ mod tests {
         app.sql = "SELECT 2".into();
         app.run_sql();
         assert_eq!(app.history().len(), 1);
-        assert_eq!(app.history().iter().next().unwrap().sql, "SELECT 1");
+        let head = app.history().iter().next().unwrap();
+        let super::HistoryEntry::Query(q) = head else {
+            panic!("expected Query");
+        };
+        assert_eq!(q.sql, "SELECT 1");
     }
 
     // --- ADR-0017 reply-time disk-append path ---
@@ -1153,7 +1494,8 @@ mod tests {
         let lines = read_history_jsonl(&path);
         assert_eq!(lines.len(), 1);
         let r = &lines[0];
-        assert_eq!(r["v"], 1);
+        assert_eq!(r["v"], 2);
+        assert_eq!(r["kind"], "query");
         assert_eq!(r["actor"], serde_json::Value::Null);
         assert_eq!(r["conn"], "prod-pg");
         assert_eq!(r["ts"], FIXED_TS);
@@ -1418,6 +1760,9 @@ mod tests {
             "prod-pg",
             FIXED_TS.to_string(),
         );
+        let super::HistoryEntry::Query(ok) = ok else {
+            panic!("expected Query variant");
+        };
         assert_eq!(ok.status, HistoryStatus::Ok);
         assert_eq!(ok.rows, Some(1));
         assert_eq!(ok.rows_affected, None);
@@ -1431,7 +1776,415 @@ mod tests {
             "prod-pg",
             FIXED_TS.to_string(),
         );
+        let super::HistoryEntry::Query(err) = err else {
+            panic!("expected Query variant");
+        };
         assert_eq!(err.status, HistoryStatus::Error);
         assert_eq!(err.error.as_ref().unwrap().category, "connection");
+    }
+
+    // --- ADR-0027 slice c: AI history write point ---
+
+    use super::{
+        ai_error_history_parts, build_ai_cancelled_entry, build_ai_failed_entry, build_ai_ok_entry,
+        pending_ai_from_command, stop_reason_wire, AiEntry, AiError, AiIntent, AiStatus,
+        HistoryEntry, PendingAiSubmit, StopReason, TableInfo as UiTableInfo,
+    };
+    use std::time::Instant;
+
+    fn ai_pending(intent: AiIntent, prompt: &str, conn: Option<&str>) -> PendingAiSubmit {
+        PendingAiSubmit {
+            started: Instant::now(),
+            intent,
+            prompt: prompt.into(),
+            conn: conn.map(str::to_string),
+        }
+    }
+
+    fn only_ai_entry(app: &DbboardApp) -> AiEntry {
+        let mut ai = None;
+        for e in app.history().iter() {
+            if let HistoryEntry::Ai(entry) = e {
+                assert!(ai.is_none(), "expected exactly one AI entry");
+                ai = Some(entry.clone());
+            }
+        }
+        ai.expect("history must contain an AI entry")
+    }
+
+    #[test]
+    fn pending_ai_from_command_maps_ai_explain_to_explain_intent() {
+        let cmd = Command::AiExplain {
+            sql: "SELECT 1".into(),
+            dialect: Some("postgres".into()),
+        };
+        let p = pending_ai_from_command(&cmd, "prod-pg").expect("some");
+        assert_eq!(p.intent, AiIntent::Explain);
+        assert_eq!(p.prompt, "SELECT 1");
+        assert_eq!(p.conn.as_deref(), Some("prod-pg"));
+    }
+
+    #[test]
+    fn pending_ai_from_command_maps_ai_suggest_to_suggest_sql_intent() {
+        let cmd = Command::AiSuggest {
+            prompt: "top 10 users by MRR".into(),
+            dialect: None,
+            schema: vec![UiTableInfo::unqualified("users")],
+        };
+        let p = pending_ai_from_command(&cmd, "prod-pg").expect("some");
+        assert_eq!(p.intent, AiIntent::SuggestSql);
+        assert_eq!(p.prompt, "top 10 users by MRR");
+    }
+
+    #[test]
+    fn pending_ai_from_command_maps_streaming_variants() {
+        let cmd = Command::AiExplainStream {
+            sql: "SELECT 1".into(),
+            dialect: None,
+        };
+        let p = pending_ai_from_command(&cmd, "prod-pg").expect("some");
+        assert_eq!(p.intent, AiIntent::Explain);
+        assert_eq!(p.prompt, "SELECT 1");
+
+        let cmd = Command::AiSuggestStream {
+            prompt: "monthly active users".into(),
+            dialect: None,
+            schema: vec![],
+        };
+        let p = pending_ai_from_command(&cmd, "prod-pg").expect("some");
+        assert_eq!(p.intent, AiIntent::SuggestSql);
+        assert_eq!(p.prompt, "monthly active users");
+    }
+
+    #[test]
+    fn pending_ai_from_command_returns_none_for_cancel_and_non_ai_commands() {
+        // Cancel MUST NOT overwrite the pending snapshot belonging to the
+        // request it is cancelling.
+        assert!(pending_ai_from_command(&Command::CancelAiRequest, "prod-pg").is_none());
+        assert!(pending_ai_from_command(&Command::ListTables, "prod-pg").is_none());
+        assert!(pending_ai_from_command(&Command::Query("SELECT 1".into()), "prod-pg").is_none());
+        assert!(
+            pending_ai_from_command(&Command::SwitchConnection { id: "x".into() }, "prod-pg")
+                .is_none()
+        );
+        assert!(
+            pending_ai_from_command(&Command::SwitchAiProvider { id: "x".into() }, "prod-pg")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_ai_from_command_empty_conn_label_maps_to_none() {
+        let cmd = Command::AiExplain {
+            sql: "SELECT 1".into(),
+            dialect: None,
+        };
+        let p = pending_ai_from_command(&cmd, "").expect("some");
+        assert!(p.conn.is_none());
+    }
+
+    #[test]
+    fn build_ai_ok_entry_atomic_path_records_no_stop_reason() {
+        let p = ai_pending(AiIntent::Explain, "SELECT 1", Some("prod-pg"));
+        let e = build_ai_ok_entry(
+            p,
+            "this query returns one row".into(),
+            42,
+            7,
+            ("anthropic".into(), "claude-sonnet-4-6".into()),
+            None,
+            FIXED_TS.to_string(),
+        );
+        assert_eq!(e.status, AiStatus::Ok);
+        assert_eq!(e.intent, AiIntent::Explain);
+        assert_eq!(e.prompt, "SELECT 1");
+        assert_eq!(e.response, "this query returns one row");
+        assert_eq!(e.tokens_in, Some(42));
+        assert_eq!(e.tokens_out, Some(7));
+        assert_eq!(e.provider, "anthropic");
+        assert_eq!(e.model, "claude-sonnet-4-6");
+        assert_eq!(e.stop_reason, None);
+        assert_eq!(e.conn.as_deref(), Some("prod-pg"));
+        assert!(e.error.is_none());
+    }
+
+    #[test]
+    fn build_ai_ok_entry_streaming_path_records_stop_reason() {
+        let p = ai_pending(AiIntent::SuggestSql, "prompt", Some("prod-pg"));
+        let e = build_ai_ok_entry(
+            p,
+            "SELECT 1".into(),
+            10,
+            3,
+            ("anthropic".into(), "claude-sonnet-4-6".into()),
+            Some("end_turn".into()),
+            FIXED_TS.to_string(),
+        );
+        assert_eq!(e.status, AiStatus::Ok);
+        assert_eq!(e.stop_reason.as_deref(), Some("end_turn"));
+    }
+
+    #[test]
+    fn build_ai_failed_entry_records_error_category_and_message() {
+        let p = ai_pending(AiIntent::Explain, "SELECT 1", None);
+        let e = build_ai_failed_entry(
+            p,
+            &AiError::Quota("monthly cap hit".into()),
+            ("anthropic".into(), "claude-sonnet-4-6".into()),
+            FIXED_TS.to_string(),
+        );
+        assert_eq!(e.status, AiStatus::Error);
+        assert_eq!(e.response, "");
+        assert_eq!(e.tokens_in, None);
+        assert_eq!(e.tokens_out, None);
+        let err = e.error.expect("error present");
+        assert_eq!(err.category, "quota");
+        assert_eq!(err.message, "monthly cap hit");
+    }
+
+    #[test]
+    fn build_ai_cancelled_entry_without_partial_records_empty_response_and_none_tokens() {
+        let p = ai_pending(AiIntent::Explain, "SELECT 1", Some("prod-pg"));
+        let e = build_ai_cancelled_entry(
+            p,
+            None,
+            ("anthropic".into(), "claude-sonnet-4-6".into()),
+            FIXED_TS.to_string(),
+        );
+        assert_eq!(e.status, AiStatus::Cancelled);
+        assert_eq!(e.response, "");
+        assert_eq!(e.tokens_in, None);
+        assert_eq!(e.tokens_out, None);
+        assert_eq!(e.stop_reason, None);
+        assert!(e.error.is_none());
+    }
+
+    #[test]
+    fn build_ai_cancelled_entry_with_partial_records_partial_response_and_tokens() {
+        use super::ai::StreamingAcc;
+
+        let p = ai_pending(AiIntent::Explain, "SELECT 1", Some("prod-pg"));
+        let acc = StreamingAcc {
+            text: "partial answer".into(),
+            tokens_in: 15,
+            tokens_out: 5,
+        };
+        let e = build_ai_cancelled_entry(
+            p,
+            Some(acc),
+            ("anthropic".into(), "claude-sonnet-4-6".into()),
+            FIXED_TS.to_string(),
+        );
+        assert_eq!(e.status, AiStatus::Cancelled);
+        assert_eq!(e.response, "partial answer");
+        assert_eq!(e.tokens_in, Some(15));
+        assert_eq!(e.tokens_out, Some(5));
+    }
+
+    #[test]
+    fn build_ai_cancelled_entry_with_zero_token_partial_omits_tokens() {
+        // ADR-0027 §Decision 5: no usage event yet ⇒ tokens `None`.
+        use super::ai::StreamingAcc;
+
+        let p = ai_pending(AiIntent::Explain, "SELECT 1", Some("prod-pg"));
+        let acc = StreamingAcc {
+            text: "hi".into(),
+            tokens_in: 0,
+            tokens_out: 0,
+        };
+        let e = build_ai_cancelled_entry(
+            p,
+            Some(acc),
+            ("anthropic".into(), "claude-sonnet-4-6".into()),
+            FIXED_TS.to_string(),
+        );
+        assert_eq!(e.response, "hi");
+        assert_eq!(e.tokens_in, None);
+        assert_eq!(e.tokens_out, None);
+    }
+
+    #[test]
+    fn stop_reason_wire_maps_all_known_variants_and_other() {
+        assert_eq!(stop_reason_wire(&StopReason::EndTurn), "end_turn");
+        assert_eq!(stop_reason_wire(&StopReason::MaxTokens), "max_tokens");
+        assert_eq!(stop_reason_wire(&StopReason::StopSequence), "stop_sequence");
+        assert_eq!(stop_reason_wire(&StopReason::ToolUse), "tool_use");
+        assert_eq!(stop_reason_wire(&StopReason::Refusal), "refusal");
+        assert_eq!(
+            stop_reason_wire(&StopReason::Other("mystery".into())),
+            "mystery"
+        );
+    }
+
+    #[test]
+    fn ai_error_history_parts_maps_all_variants_to_wire_category() {
+        assert_eq!(
+            ai_error_history_parts(&AiError::Configuration("k".into())),
+            ("configuration".into(), "k".into())
+        );
+        assert_eq!(
+            ai_error_history_parts(&AiError::Network("x".into())),
+            ("network".into(), "x".into())
+        );
+        assert_eq!(
+            ai_error_history_parts(&AiError::Provider("p".into())),
+            ("provider".into(), "p".into())
+        );
+        assert_eq!(
+            ai_error_history_parts(&AiError::Quota("q".into())),
+            ("quota".into(), "q".into())
+        );
+        assert_eq!(
+            ai_error_history_parts(&AiError::Cancelled),
+            ("cancelled".into(), String::new())
+        );
+    }
+
+    #[test]
+    fn ai_responded_reply_appends_ok_ai_entry_to_history() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        app.pending_ai = Some(ai_pending(AiIntent::Explain, "SELECT 1", None));
+
+        reply_tx
+            .send(Reply::AiResponded {
+                text: "this query returns one row".into(),
+                tokens_in: 42,
+                tokens_out: 7,
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-6".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        let entry = only_ai_entry(&app);
+        assert_eq!(entry.status, AiStatus::Ok);
+        assert_eq!(entry.intent, AiIntent::Explain);
+        assert_eq!(entry.prompt, "SELECT 1");
+        assert_eq!(entry.response, "this query returns one row");
+        assert_eq!(entry.tokens_in, Some(42));
+        assert_eq!(entry.tokens_out, Some(7));
+        assert_eq!(entry.provider, "anthropic");
+        assert_eq!(entry.model, "claude-sonnet-4-6");
+        assert_eq!(entry.stop_reason, None);
+        assert_eq!(entry.ts, FIXED_TS);
+        assert!(app.pending_ai.is_none());
+    }
+
+    #[test]
+    fn ai_failed_reply_appends_error_ai_entry_to_history() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        app.pending_ai = Some(ai_pending(AiIntent::SuggestSql, "monthly MRR", None));
+
+        reply_tx
+            .send(Reply::AiFailed {
+                error: AiError::Network("conn reset".into()),
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-6".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        let entry = only_ai_entry(&app);
+        assert_eq!(entry.status, AiStatus::Error);
+        assert_eq!(entry.intent, AiIntent::SuggestSql);
+        assert_eq!(entry.response, "");
+        assert_eq!(entry.tokens_in, None);
+        let err = entry.error.expect("error present");
+        assert_eq!(err.category, "network");
+        assert_eq!(err.message, "conn reset");
+        assert!(app.pending_ai.is_none());
+    }
+
+    #[test]
+    fn ai_stream_complete_reply_appends_ok_entry_with_stop_reason_and_streamed_body() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        // Prime the streaming accumulator so the drain arm can peek the
+        // full body before the panel drains it.
+        app.ai_panel.on_stream_chunk("SELECT 1;", Some(10), Some(3));
+        app.pending_ai = Some(ai_pending(AiIntent::SuggestSql, "prompt", None));
+
+        reply_tx
+            .send(Reply::AiStreamComplete {
+                tokens_in: 10,
+                tokens_out: 3,
+                stop_reason: StopReason::EndTurn,
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-6".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        let entry = only_ai_entry(&app);
+        assert_eq!(entry.status, AiStatus::Ok);
+        assert_eq!(entry.response, "SELECT 1;");
+        assert_eq!(entry.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(entry.tokens_in, Some(10));
+        assert_eq!(entry.tokens_out, Some(3));
+    }
+
+    #[test]
+    fn ai_cancelled_reply_after_partial_stream_records_partial_body() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        app.ai_panel.on_stream_chunk("SELECT ", Some(10), Some(2));
+        app.pending_ai = Some(ai_pending(AiIntent::SuggestSql, "prompt", None));
+
+        reply_tx
+            .send(Reply::AiCancelled {
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-6".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        let entry = only_ai_entry(&app);
+        assert_eq!(entry.status, AiStatus::Cancelled);
+        assert_eq!(entry.response, "SELECT ");
+        assert_eq!(entry.tokens_in, Some(10));
+        assert_eq!(entry.tokens_out, Some(2));
+        assert!(entry.error.is_none());
+    }
+
+    #[test]
+    fn ai_cancelled_reply_without_stream_records_empty_body() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        // No streaming chunks arrived — atomic-path cancel.
+        app.pending_ai = Some(ai_pending(AiIntent::Explain, "SELECT 1", None));
+
+        reply_tx
+            .send(Reply::AiCancelled {
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-6".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        let entry = only_ai_entry(&app);
+        assert_eq!(entry.status, AiStatus::Cancelled);
+        assert_eq!(entry.response, "");
+        assert_eq!(entry.tokens_in, None);
+        assert_eq!(entry.tokens_out, None);
+    }
+
+    #[test]
+    fn ai_reply_without_pending_snapshot_does_not_record_history() {
+        // Defensive: a stray terminal reply (e.g. from a leftover cancel
+        // race) with no `pending_ai` set must be a no-op on the history
+        // ring, not a panic.
+        let (mut app, _cmd_rx, reply_tx) = build();
+        assert!(app.pending_ai.is_none());
+
+        reply_tx
+            .send(Reply::AiFailed {
+                error: AiError::Cancelled,
+                provider: "unknown".into(),
+                model: String::new(),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        // No AI entry recorded.
+        for e in app.history().iter() {
+            assert!(!matches!(e, HistoryEntry::Ai(_)));
+        }
     }
 }

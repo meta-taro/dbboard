@@ -1,6 +1,7 @@
 //! Emit a `history.jsonl` fixture for the `dbboard-web` sibling's
 //! cross-implementation round-trip test (see web's handoff brief
-//! `2026-06-23-history-fixture-emit-outgoing.md` and ADR-0017 §6).
+//! `2026-06-23-history-fixture-emit-outgoing.md`, ADR-0017 §6, and
+//! ADR-0027 for the v:2 / `kind` discriminator extension).
 //!
 //! Run from the workspace root. Two modes:
 //!
@@ -18,29 +19,36 @@
 //! bytewise-safe shells (Git Bash, `cmd /c "... > file"`) and for the
 //! in-memory smoke test.
 //!
-//! The output bytes go through the production [`RecordWire`] serialiser
-//! via [`dbboard_ui::history::fixture`] so they are byte-identical to
-//! what `PersistentHistoryStore::record_completion` would append on
-//! disk. Field order matches the `RecordWire` declaration:
-//! `v, ts, conn, actor, sql, status, duration_ms, rows, rows_affected,
-//! error`.
+//! The output bytes go through the production wire serialisers via
+//! [`dbboard_ui::history::fixture`] so they are byte-identical to what
+//! `PersistentHistoryStore::record_completion` / `record_ai` would
+//! append on disk. Field order matches the declaration order of each
+//! wire struct (see `history.rs`):
+//!
+//! * **query** records (v:2 `kind="query"`):
+//!   `v, kind, ts, conn, actor, sql, status, duration_ms, rows,
+//!   rows_affected, error`.
+//! * **ai** records (v:2 `kind="ai"`):
+//!   `v, kind, ts, conn, actor, intent, prompt, response, status,
+//!   duration_ms, tokens_in, tokens_out, provider, model, stop_reason,
+//!   error`.
 //!
 //! Output conventions (per web's brief):
 //!
 //! * One JSON object per line, terminated with `\n` (LF, never CRLF).
 //! * File ends with a trailing `\n` after the last record.
 //! * No whitespace inside the JSON objects.
-//! * `actor` / `rows` / `rows_affected` / `error` are emitted as `null`
-//!   when not applicable — keys are never omitted, because web's byte
-//!   equivalence check requires the same key set on both sides.
+//! * Per-`kind` keys are emitted as `null` when not applicable — keys
+//!   are never omitted, because web's byte equivalence check requires
+//!   the same key set on both sides for the same `kind`.
 //!
 //! Coverage:
 //!
-//! 1. `status="ok"` with `rows` (SELECT-shaped success).
-//! 2. `status="ok"` with `rows_affected` (DML-shaped success).
-//! 3. `status="ok"` with both `null` (EXPLAIN / SET / BEGIN — legitimate
-//!    per ADR-0017 §2).
-//! 4. One `status="error"` line per [`CategorizedError`] category:
+//! 1. `status="ok"` query with `rows` (SELECT-shaped success).
+//! 2. `status="ok"` query with `rows_affected` (DML-shaped success).
+//! 3. `status="ok"` query with both `null` (EXPLAIN / SET / BEGIN —
+//!    legitimate per ADR-0017 §2).
+//! 4. One `status="error"` query per [`CategorizedError`] category:
 //!    `query`, `connection`, `schema`, `type_conversion`, `capability`.
 //! 5. A forward-compat record carrying an unknown top-level field
 //!    (`"unknown_field":"value-from-the-future"`) — web's Zod schema
@@ -50,9 +58,13 @@
 //!    round-trips).
 //! 7. A `duration_ms` range (`0`, `42`, `1234`) so number-formatting
 //!    edge cases are covered.
+//! 8. One v:2 AI record (`kind="ai"`, `intent="explain"`,
+//!    `status="ok"`, populated `tokens_in` / `tokens_out` / `provider`
+//!    / `model` / `stop_reason`) — the AI shape from ADR-0027 §Decision
+//!    4. web's brief 0008 expects at least one AI line so its
+//!    discriminated-union parser exercises the dispatch in CI.
 //!
 //! [`CategorizedError`]: dbboard_core
-//! [`RecordWire`]: dbboard_ui::history
 
 use std::env;
 use std::fs::File;
@@ -60,12 +72,15 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use dbboard_ui::{fixture, HistoryEntry, HistoryError, HistoryStatus};
+use dbboard_ui::{
+    fixture, AiEntry, AiIntent, AiStatus, HistoryEntry, HistoryError, HistoryStatus, QueryEntry,
+};
 
 const USAGE: &str = "\
 usage: emit_history_fixture [--output PATH | -o PATH]
 
-Emit the dbboard ADR-0017 cross-implementation round-trip fixture.
+Emit the dbboard ADR-0017 + ADR-0027 cross-implementation round-trip
+fixture.
 
 With --output PATH the bytes are written to PATH via File::create + \
 write_all, bypassing any shell re-encoding. Without it, the bytes are \
@@ -116,7 +131,7 @@ where
 }
 
 fn ok_with_rows(ts: &str, sql: &str, duration_ms: u64, rows: u64) -> HistoryEntry {
-    HistoryEntry {
+    HistoryEntry::Query(QueryEntry {
         sql: sql.to_string(),
         ts: ts.to_string(),
         conn: "prod-pg".to_string(),
@@ -125,11 +140,11 @@ fn ok_with_rows(ts: &str, sql: &str, duration_ms: u64, rows: u64) -> HistoryEntr
         rows: Some(rows),
         rows_affected: None,
         error: None,
-    }
+    })
 }
 
 fn ok_with_rows_affected(ts: &str, sql: &str, duration_ms: u64, affected: u64) -> HistoryEntry {
-    HistoryEntry {
+    HistoryEntry::Query(QueryEntry {
         sql: sql.to_string(),
         ts: ts.to_string(),
         conn: "prod-pg".to_string(),
@@ -138,11 +153,11 @@ fn ok_with_rows_affected(ts: &str, sql: &str, duration_ms: u64, affected: u64) -
         rows: None,
         rows_affected: Some(affected),
         error: None,
-    }
+    })
 }
 
 fn ok_with_both_null(ts: &str, sql: &str, duration_ms: u64) -> HistoryEntry {
-    HistoryEntry {
+    HistoryEntry::Query(QueryEntry {
         sql: sql.to_string(),
         ts: ts.to_string(),
         conn: "prod-pg".to_string(),
@@ -151,11 +166,11 @@ fn ok_with_both_null(ts: &str, sql: &str, duration_ms: u64) -> HistoryEntry {
         rows: None,
         rows_affected: None,
         error: None,
-    }
+    })
 }
 
 fn error_for(ts: &str, sql: &str, duration_ms: u64, category: &str, message: &str) -> HistoryEntry {
-    HistoryEntry {
+    HistoryEntry::Query(QueryEntry {
         sql: sql.to_string(),
         ts: ts.to_string(),
         conn: "prod-pg".to_string(),
@@ -167,7 +182,27 @@ fn error_for(ts: &str, sql: &str, duration_ms: u64, category: &str, message: &st
             category: category.to_string(),
             message: message.to_string(),
         }),
-    }
+    })
+}
+
+fn ai_explain_ok(ts: &str) -> HistoryEntry {
+    HistoryEntry::Ai(AiEntry {
+        ts: ts.to_string(),
+        conn: Some("prod-pg".to_string()),
+        intent: AiIntent::Explain,
+        prompt: "SELECT id, email FROM users WHERE created_at > NOW() - INTERVAL '7 days'"
+            .to_string(),
+        response: "This query returns id and email of users created in the last 7 days."
+            .to_string(),
+        status: AiStatus::Ok,
+        duration_ms: 4231,
+        tokens_in: Some(412),
+        tokens_out: Some(218),
+        provider: "anthropic".to_string(),
+        model: "claude-sonnet-4-6".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        error: None,
+    })
 }
 
 fn emit_line(out: &mut impl Write, line: &str) -> io::Result<()> {
@@ -266,7 +301,7 @@ fn emit_special_cases(out: &mut impl Write) -> io::Result<()> {
     // Forward-compat record with an unknown top-level field. The
     // fixture appends this *after* the standard envelope so a future
     // reader that drops unknown keys still recovers the known payload
-    // (ADR-0017 §6).
+    // (ADR-0017 §6 / ADR-0027 forward-compat).
     emit_line(
         out,
         &fixture::serialize_with_extra(
@@ -288,10 +323,23 @@ fn emit_special_cases(out: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
+fn emit_ai_cases(out: &mut impl Write) -> io::Result<()> {
+    // One v:2 `kind="ai"` record so web's discriminated-union parser
+    // (brief 0008) exercises the dispatch in CI. Covers a full happy-
+    // path explain: populated tokens_in / tokens_out / provider /
+    // model / stop_reason, conn = Some, no error.
+    emit_line(
+        out,
+        &fixture::serialize(&ai_explain_ok("2026-06-30T05:12:01.456Z"), None),
+    )?;
+    Ok(())
+}
+
 fn run(out: &mut impl Write) -> io::Result<()> {
     emit_ok_cases(out)?;
     emit_error_cases(out)?;
     emit_special_cases(out)?;
+    emit_ai_cases(out)?;
     out.flush()
 }
 
@@ -364,34 +412,75 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines.len(),
-            10,
-            "fixture must emit 10 lines (3 ok + 5 error + 1 forward-compat + 1 actor)"
+            11,
+            "fixture must emit 11 lines (3 ok + 5 error + 1 forward-compat + 1 actor + 1 ai)"
         );
 
+        let mut query_count = 0usize;
+        let mut ai_count = 0usize;
         for line in &lines {
             let parsed: serde_json::Value =
                 serde_json::from_str(line).expect("every line must be valid JSON");
-            // Envelope shape guard — these keys must always be present
-            // (web's byte-equivalence check depends on the key set).
-            for required in [
-                "v",
-                "ts",
-                "conn",
-                "actor",
-                "sql",
-                "status",
-                "duration_ms",
-                "rows",
-                "rows_affected",
-                "error",
-            ] {
-                assert!(
-                    parsed.get(required).is_some(),
-                    "{required} key missing in line: {line}"
-                );
+            assert_eq!(parsed["v"], 2);
+            // Envelope shape guard: every line carries the discriminator.
+            let kind = parsed["kind"]
+                .as_str()
+                .expect("every v:2 line must carry a `kind` string");
+            match kind {
+                "query" => {
+                    // Web's byte-equivalence check requires the same
+                    // key set on both sides per `kind`.
+                    for required in [
+                        "v",
+                        "kind",
+                        "ts",
+                        "conn",
+                        "actor",
+                        "sql",
+                        "status",
+                        "duration_ms",
+                        "rows",
+                        "rows_affected",
+                        "error",
+                    ] {
+                        assert!(
+                            parsed.get(required).is_some(),
+                            "query record missing {required}: {line}"
+                        );
+                    }
+                    query_count += 1;
+                }
+                "ai" => {
+                    for required in [
+                        "v",
+                        "kind",
+                        "ts",
+                        "conn",
+                        "actor",
+                        "intent",
+                        "prompt",
+                        "response",
+                        "status",
+                        "duration_ms",
+                        "tokens_in",
+                        "tokens_out",
+                        "provider",
+                        "model",
+                        "stop_reason",
+                        "error",
+                    ] {
+                        assert!(
+                            parsed.get(required).is_some(),
+                            "ai record missing {required}: {line}"
+                        );
+                    }
+                    ai_count += 1;
+                }
+                other => panic!("unexpected kind {other}: {line}"),
             }
-            assert_eq!(parsed["v"], 1);
         }
+        assert_eq!(query_count, 10, "10 query records expected");
+        assert_eq!(ai_count, 1, "1 ai record expected");
 
         // Categorical coverage: one line per error category.
         for category in [
@@ -431,6 +520,14 @@ mod tests {
         ] {
             assert!(text.contains(duration), "fixture must exercise {duration}");
         }
+
+        // AI shape coverage (intent / provider / model / tokens / stop_reason).
+        assert!(text.contains(r#""intent":"explain""#));
+        assert!(text.contains(r#""provider":"anthropic""#));
+        assert!(text.contains(r#""model":"claude-sonnet-4-6""#));
+        assert!(text.contains(r#""tokens_in":412"#));
+        assert!(text.contains(r#""tokens_out":218"#));
+        assert!(text.contains(r#""stop_reason":"end_turn""#));
     }
 
     /// `run_to_path` must produce byte-identical output to the
