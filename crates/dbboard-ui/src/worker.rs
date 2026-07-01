@@ -278,17 +278,21 @@ async fn handle_command(
         }
         // ADR-0026 streaming arms: spawn per-request and continue the
         // main loop so subsequent commands (including CancelAiRequest)
-        // are still drained.
+        // are still drained. ADR-0027 Slice b: `identity` snapshotted
+        // at spawn time by `spawn_ai_task` and stamped on every
+        // terminal reply — spawn-time identity is the contract because
+        // the AI provider slot can swap mid-request.
         Command::AiExplainStream { sql, dialect } => {
             spawn_ai_task(
                 in_flight,
                 ai_provider_slot,
                 reply_tx,
                 egui_ctx,
-                |p, t, tx, c| {
+                |p, id, t, tx, c| {
                     Box::pin(run_explain_stream(
                         p,
                         ExplainRequest { sql, dialect },
+                        id,
                         t,
                         tx,
                         c,
@@ -306,7 +310,7 @@ async fn handle_command(
                 ai_provider_slot,
                 reply_tx,
                 egui_ctx,
-                |p, t, tx, c| {
+                |p, id, t, tx, c| {
                     Box::pin(run_suggest_stream(
                         p,
                         SuggestRequest {
@@ -314,6 +318,7 @@ async fn handle_command(
                             dialect,
                             schema,
                         },
+                        id,
                         t,
                         tx,
                         c,
@@ -330,10 +335,11 @@ async fn handle_command(
                 ai_provider_slot,
                 reply_tx,
                 egui_ctx,
-                |p, t, tx, c| {
+                |p, id, t, tx, c| {
                     Box::pin(run_explain_atomic(
                         p,
                         ExplainRequest { sql, dialect },
+                        id,
                         t,
                         tx,
                         c,
@@ -351,7 +357,7 @@ async fn handle_command(
                 ai_provider_slot,
                 reply_tx,
                 egui_ctx,
-                |p, t, tx, c| {
+                |p, id, t, tx, c| {
                     Box::pin(run_suggest_atomic(
                         p,
                         SuggestRequest {
@@ -359,6 +365,7 @@ async fn handle_command(
                             dialect,
                             schema,
                         },
+                        id,
                         t,
                         tx,
                         c,
@@ -397,10 +404,17 @@ async fn handle_command(
     }
 }
 
-/// Wire up an AI task: snapshot the provider, install a fresh cancel
-/// token in `in_flight`, and `tokio::spawn` the runner the caller
-/// builds. The runner is built lazily via the closure so each variant
-/// can own its request payload.
+/// Wire up an AI task: snapshot the provider AND its identity, install
+/// a fresh cancel token in `in_flight`, and `tokio::spawn` the runner
+/// the caller builds. The runner is built lazily via the closure so
+/// each variant can own its request payload.
+///
+/// ADR-0027 Slice b: `identity` is snapshotted here — the exact same
+/// tuple gets stamped onto every terminal reply the runner emits
+/// (`AiResponded` / `AiStreamComplete` / `AiFailed` / `AiCancelled`).
+/// A `SwitchAiProvider` command reaching the main loop after this
+/// spawn changes the *next* request's identity, not this one — that's
+/// the spawn-time-identity contract from ADR-0027 §Implementation.
 fn spawn_ai_task<F>(
     in_flight: &mut Option<CancellationToken>,
     ai_provider_slot: &AiProviderSlot,
@@ -410,6 +424,7 @@ fn spawn_ai_task<F>(
 ) where
     F: FnOnce(
         Option<Arc<dyn AiProvider>>,
+        (String, String),
         CancellationToken,
         Sender<Reply>,
         egui::Context,
@@ -418,9 +433,10 @@ fn spawn_ai_task<F>(
     let token = CancellationToken::new();
     *in_flight = Some(token.clone());
     let provider = snapshot_provider(ai_provider_slot);
+    let identity = snapshot_identity(provider.as_deref());
     let reply_tx = reply_tx.clone();
     let ctx = egui_ctx.clone();
-    let fut = runner(provider, token, reply_tx, ctx);
+    let fut = runner(provider, identity, token, reply_tx, ctx);
     tokio::spawn(fut);
 }
 
@@ -432,23 +448,42 @@ fn snapshot_provider(slot: &AiProviderSlot) -> Option<Arc<dyn AiProvider>> {
     slot.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+/// Snapshot `(provider_id, model_id)` from the provider, or the default
+/// `("unknown", "")` when the slot is empty. Returned as owned strings
+/// so the tuple can travel through `tokio::spawn` (the `AiProvider`
+/// trait's `identity()` returns a borrow into the provider — fine to
+/// hold in the same task, but we clone at the boundary so no lifetime
+/// leaks into the spawned future's signature).
+fn snapshot_identity(provider: Option<&(dyn AiProvider + '_)>) -> (String, String) {
+    match provider {
+        Some(p) => {
+            let (id, model) = p.identity();
+            (id.to_string(), model.to_string())
+        }
+        None => ("unknown".into(), String::new()),
+    }
+}
+
 /// ADR-0026 Decision 10: atomic explain through the cancel race.
+/// ADR-0027 Slice b: `identity` is the spawn-time snapshot; every
+/// terminal reply carries it verbatim.
 pub(crate) async fn run_explain_atomic(
     provider: Option<Arc<dyn AiProvider>>,
     req: ExplainRequest,
+    identity: (String, String),
     token: CancellationToken,
     reply_tx: Sender<Reply>,
     egui_ctx: egui::Context,
 ) {
     let Some(provider) = provider else {
-        let _ = reply_tx.send(no_provider_failure());
+        let _ = reply_tx.send(no_provider_failure(&identity));
         egui_ctx.request_repaint();
         return;
     };
     let reply = tokio::select! {
         biased;
-        () = token.cancelled() => Reply::AiCancelled,
-        result = provider.explain(&req) => ai_reply(result),
+        () = token.cancelled() => cancelled_reply(&identity),
+        result = provider.explain(&req) => ai_reply(result, &identity),
     };
     let _ = reply_tx.send(reply);
     egui_ctx.request_repaint();
@@ -458,19 +493,20 @@ pub(crate) async fn run_explain_atomic(
 pub(crate) async fn run_suggest_atomic(
     provider: Option<Arc<dyn AiProvider>>,
     req: SuggestRequest,
+    identity: (String, String),
     token: CancellationToken,
     reply_tx: Sender<Reply>,
     egui_ctx: egui::Context,
 ) {
     let Some(provider) = provider else {
-        let _ = reply_tx.send(no_provider_failure());
+        let _ = reply_tx.send(no_provider_failure(&identity));
         egui_ctx.request_repaint();
         return;
     };
     let reply = tokio::select! {
         biased;
-        () = token.cancelled() => Reply::AiCancelled,
-        result = provider.suggest_sql(&req) => ai_reply(result),
+        () = token.cancelled() => cancelled_reply(&identity),
+        result = provider.suggest_sql(&req) => ai_reply(result, &identity),
     };
     let _ = reply_tx.send(reply);
     egui_ctx.request_repaint();
@@ -478,29 +514,31 @@ pub(crate) async fn run_suggest_atomic(
 
 /// ADR-0026 Decisions 5/6/12: open a streaming explain, race the
 /// per-chunk `next()` against the cancel token, and forward each
-/// chunk over the reply channel.
+/// chunk over the reply channel. ADR-0027 Slice b: `identity` stamps
+/// every terminal reply.
 pub(crate) async fn run_explain_stream(
     provider: Option<Arc<dyn AiProvider>>,
     req: ExplainRequest,
+    identity: (String, String),
     token: CancellationToken,
     reply_tx: Sender<Reply>,
     egui_ctx: egui::Context,
 ) {
     let Some(provider) = provider else {
-        let _ = reply_tx.send(no_provider_failure());
+        let _ = reply_tx.send(no_provider_failure(&identity));
         egui_ctx.request_repaint();
         return;
     };
     let open = tokio::select! {
         biased;
         () = token.cancelled() => {
-            let _ = reply_tx.send(Reply::AiCancelled);
+            let _ = reply_tx.send(cancelled_reply(&identity));
             egui_ctx.request_repaint();
             return;
         }
         result = provider.stream_explain(&req) => result,
     };
-    forward_stream(open, token, reply_tx, egui_ctx).await;
+    forward_stream(open, identity, token, reply_tx, egui_ctx).await;
 }
 
 /// ADR-0026 Decisions 5/6/12: streaming `suggest_sql`, same shape as
@@ -508,25 +546,26 @@ pub(crate) async fn run_explain_stream(
 pub(crate) async fn run_suggest_stream(
     provider: Option<Arc<dyn AiProvider>>,
     req: SuggestRequest,
+    identity: (String, String),
     token: CancellationToken,
     reply_tx: Sender<Reply>,
     egui_ctx: egui::Context,
 ) {
     let Some(provider) = provider else {
-        let _ = reply_tx.send(no_provider_failure());
+        let _ = reply_tx.send(no_provider_failure(&identity));
         egui_ctx.request_repaint();
         return;
     };
     let open = tokio::select! {
         biased;
         () = token.cancelled() => {
-            let _ = reply_tx.send(Reply::AiCancelled);
+            let _ = reply_tx.send(cancelled_reply(&identity));
             egui_ctx.request_repaint();
             return;
         }
         result = provider.stream_suggest_sql(&req) => result,
     };
-    forward_stream(open, token, reply_tx, egui_ctx).await;
+    forward_stream(open, identity, token, reply_tx, egui_ctx).await;
 }
 
 /// Drive an opened [`AiStream`] to completion, forwarding each event
@@ -536,6 +575,7 @@ pub(crate) async fn run_suggest_stream(
 /// the final `message_delta` does not repeat them.
 async fn forward_stream(
     opened: dbboard_ai::AiResult<AiStream>,
+    identity: (String, String),
     token: CancellationToken,
     reply_tx: Sender<Reply>,
     egui_ctx: egui::Context,
@@ -543,7 +583,7 @@ async fn forward_stream(
     let mut stream = match opened {
         Ok(s) => s,
         Err(error) => {
-            let _ = reply_tx.send(Reply::AiFailed { error });
+            let _ = reply_tx.send(failed_reply(error, &identity));
             egui_ctx.request_repaint();
             return;
         }
@@ -555,7 +595,7 @@ async fn forward_stream(
             biased;
             () = token.cancelled() => {
                 drop(stream);
-                let _ = reply_tx.send(Reply::AiCancelled);
+                let _ = reply_tx.send(cancelled_reply(&identity));
                 egui_ctx.request_repaint();
                 return;
             }
@@ -569,16 +609,17 @@ async fn forward_stream(
                 // but a non-Anthropic provider using the default
                 // delegate might still end here; emit a synthetic
                 // EndTurn so the panel always sees a terminator.
-                let _ = reply_tx.send(Reply::AiStreamComplete {
-                    tokens_in: last_tokens_in,
-                    tokens_out: last_tokens_out,
-                    stop_reason: StopReason::EndTurn,
-                });
+                let _ = reply_tx.send(complete_reply(
+                    last_tokens_in,
+                    last_tokens_out,
+                    StopReason::EndTurn,
+                    &identity,
+                ));
                 egui_ctx.request_repaint();
                 return;
             }
             Some(Err(error)) => {
-                let _ = reply_tx.send(Reply::AiFailed { error });
+                let _ = reply_tx.send(failed_reply(error, &identity));
                 egui_ctx.request_repaint();
                 return;
             }
@@ -614,16 +655,17 @@ async fn forward_stream(
                     egui_ctx.request_repaint();
                 }
                 StreamEvent::MessageStop { stop_reason } => {
-                    let _ = reply_tx.send(Reply::AiStreamComplete {
-                        tokens_in: last_tokens_in,
-                        tokens_out: last_tokens_out,
+                    let _ = reply_tx.send(complete_reply(
+                        last_tokens_in,
+                        last_tokens_out,
                         stop_reason,
-                    });
+                        &identity,
+                    ));
                     egui_ctx.request_repaint();
                     return;
                 }
                 StreamEvent::Error(error) => {
-                    let _ = reply_tx.send(Reply::AiFailed { error });
+                    let _ = reply_tx.send(failed_reply(error, &identity));
                     egui_ctx.request_repaint();
                     return;
                 }
@@ -632,23 +674,57 @@ async fn forward_stream(
     }
 }
 
-fn ai_reply(result: dbboard_ai::AiResult<dbboard_ai::AiResponse>) -> Reply {
+fn complete_reply(
+    tokens_in: u32,
+    tokens_out: u32,
+    stop_reason: StopReason,
+    identity: &(String, String),
+) -> Reply {
+    Reply::AiStreamComplete {
+        tokens_in,
+        tokens_out,
+        stop_reason,
+        provider: identity.0.clone(),
+        model: identity.1.clone(),
+    }
+}
+
+fn failed_reply(error: AiError, identity: &(String, String)) -> Reply {
+    Reply::AiFailed {
+        error,
+        provider: identity.0.clone(),
+        model: identity.1.clone(),
+    }
+}
+
+fn ai_reply(
+    result: dbboard_ai::AiResult<dbboard_ai::AiResponse>,
+    identity: &(String, String),
+) -> Reply {
     match result {
         Ok(resp) => Reply::AiResponded {
             text: resp.text,
             tokens_in: resp.tokens_in,
             tokens_out: resp.tokens_out,
+            provider: identity.0.clone(),
+            model: identity.1.clone(),
         },
-        Err(error) => Reply::AiFailed { error },
+        Err(error) => failed_reply(error, identity),
     }
 }
 
-fn no_provider_failure() -> Reply {
-    Reply::AiFailed {
-        error: AiError::Configuration(
-            "no AI provider configured; set DBBOARD_ANTHROPIC_API_KEY".into(),
-        ),
+fn cancelled_reply(identity: &(String, String)) -> Reply {
+    Reply::AiCancelled {
+        provider: identity.0.clone(),
+        model: identity.1.clone(),
     }
+}
+
+fn no_provider_failure(identity: &(String, String)) -> Reply {
+    failed_reply(
+        AiError::Configuration("no AI provider configured; set DBBOARD_ANTHROPIC_API_KEY".into()),
+        identity,
+    )
 }
 
 async fn execute(http: &reqwest::Client, base_url: &str, request: &HttpRequest) -> Reply {
@@ -716,12 +792,20 @@ fn report_fatal(
             | Command::AiExplainStream { .. }
             | Command::AiSuggestStream { .. } => Reply::AiFailed {
                 error: AiError::Configuration(format!("ai worker unavailable: {}", err.message())),
+                // Worker never came up — no provider was ever snapshotted.
+                // Stamp with the sentinel identity so slice (c)'s history
+                // record path treats it like any other AiFailed.
+                provider: "unknown".into(),
+                model: String::new(),
             },
             // ADR-0026 Decision 5: a cancel arriving on the fatal path
             // is acknowledged with AiCancelled so the panel exits busy
             // — the request the user wanted to cancel was never
             // dispatched in the first place.
-            Command::CancelAiRequest => Reply::AiCancelled,
+            Command::CancelAiRequest => Reply::AiCancelled {
+                provider: "unknown".into(),
+                model: String::new(),
+            },
             Command::SwitchAiProvider { .. } => Reply::AiProviderSwitchFailed {
                 reason: format!("ai worker unavailable: {}", err.message()),
             },
@@ -788,11 +872,15 @@ mod tests {
                     text: "unused".into(),
                     tokens_in: 0,
                     tokens_out: 0,
+                    provider: "stub".into(),
+                    model: "stub-model".into(),
                 }),
                 suggest_response: Ok(AiResponse {
                     text: "unused".into(),
                     tokens_in: 0,
                     tokens_out: 0,
+                    provider: "stub".into(),
+                    model: "stub-model".into(),
                 }),
                 calls: AtomicUsize::new(0),
             }
@@ -805,11 +893,15 @@ mod tests {
                     text: text.into(),
                     tokens_in,
                     tokens_out,
+                    provider: "stub".into(),
+                    model: "stub-model".into(),
                 }),
                 suggest_response: Ok(AiResponse {
                     text: text.into(),
                     tokens_in,
                     tokens_out,
+                    provider: "stub".into(),
+                    model: "stub-model".into(),
                 }),
                 calls: AtomicUsize::new(0),
             }
@@ -845,6 +937,8 @@ mod tests {
                     text: resp.text.clone(),
                     tokens_in: resp.tokens_in,
                     tokens_out: resp.tokens_out,
+                    provider: resp.provider.clone(),
+                    model: resp.model.clone(),
                 }),
                 Err(e) => Err(reclone_error(e)),
             }
@@ -872,6 +966,9 @@ mod tests {
                 has_function_calling: false,
             }
         }
+        fn identity(&self) -> (&'static str, &str) {
+            ("stub", "stub-model")
+        }
         async fn explain(&self, _req: &ExplainRequest) -> AiResult<AiResponse> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             StubProvider::clone_response(&self.explain_response)
@@ -892,6 +989,19 @@ mod tests {
 
     fn ctx() -> egui::Context {
         egui::Context::default()
+    }
+
+    /// ADR-0027 Slice b: mirrors the `snapshot_identity` result the
+    /// worker takes at spawn time from `StubProvider::identity()`.
+    fn stub_identity() -> (String, String) {
+        ("stub".into(), "stub-model".into())
+    }
+
+    /// Identity sentinel used by `spawn_ai_task` when the AI slot is
+    /// empty. Tests exercising the no-provider gate use this so the
+    /// terminal `AiFailed` still carries a well-formed identity.
+    fn sentinel_identity() -> (String, String) {
+        ("unknown".into(), String::new())
     }
 
     fn explain_req() -> ExplainRequest {
@@ -935,7 +1045,15 @@ mod tests {
         ]));
         let (tx, rx) = mpsc::channel::<Reply>();
         let token = CancellationToken::new();
-        run_explain_stream(Some(provider), explain_req(), token, tx, ctx()).await;
+        run_explain_stream(
+            Some(provider),
+            explain_req(),
+            stub_identity(),
+            token,
+            tx,
+            ctx(),
+        )
+        .await;
         let replies = drain(&rx);
         assert_eq!(replies.len(), 5, "5 replies: 4 chunks + complete");
         // First chunk = MessageStart with tokens_in only
@@ -967,16 +1085,21 @@ mod tests {
             }
             other => panic!("expected AiChunk for Usage, got {other:?}"),
         }
-        // Terminal complete with the last-known cumulative counts
+        // Terminal complete with the last-known cumulative counts +
+        // spawn-time identity (ADR-0027 Slice b).
         match &replies[4] {
             Reply::AiStreamComplete {
                 tokens_in,
                 tokens_out,
                 stop_reason,
+                provider,
+                model,
             } => {
                 assert_eq!(*tokens_in, 11);
                 assert_eq!(*tokens_out, 7);
                 assert!(matches!(stop_reason, StopReason::EndTurn));
+                assert_eq!(provider, "stub");
+                assert_eq!(model, "stub-model");
             }
             other => panic!("expected AiStreamComplete, got {other:?}"),
         }
@@ -996,6 +1119,7 @@ mod tests {
         run_suggest_stream(
             Some(provider),
             suggest_req(),
+            stub_identity(),
             CancellationToken::new(),
             tx,
             ctx(),
@@ -1024,6 +1148,7 @@ mod tests {
         run_explain_stream(
             Some(provider),
             explain_req(),
+            stub_identity(),
             CancellationToken::new(),
             tx,
             ctx(),
@@ -1032,7 +1157,9 @@ mod tests {
         let replies = drain(&rx);
         assert_eq!(replies.len(), 3, "MessageStart + TextDelta + AiFailed");
         assert!(
-            matches!(&replies[2], Reply::AiFailed { error } if matches!(error, AiError::Provider(s) if s == "overloaded"))
+            matches!(&replies[2], Reply::AiFailed { error, provider, model }
+                if matches!(error, AiError::Provider(s) if s == "overloaded")
+                && provider == "stub" && model == "stub-model")
         );
     }
 
@@ -1047,6 +1174,7 @@ mod tests {
         run_explain_stream(
             Some(provider),
             explain_req(),
+            stub_identity(),
             CancellationToken::new(),
             tx,
             ctx(),
@@ -1055,7 +1183,7 @@ mod tests {
         let replies = drain(&rx);
         assert_eq!(replies.len(), 2);
         assert!(
-            matches!(&replies[1], Reply::AiFailed { error } if matches!(error, AiError::Network(s) if s == "conn reset"))
+            matches!(&replies[1], Reply::AiFailed { error, .. } if matches!(error, AiError::Network(s) if s == "conn reset"))
         );
     }
 
@@ -1069,6 +1197,7 @@ mod tests {
         run_explain_stream(
             Some(provider),
             explain_req(),
+            stub_identity(),
             CancellationToken::new(),
             tx,
             ctx(),
@@ -1127,10 +1256,22 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             token_clone.cancel();
         });
-        run_explain_stream(Some(provider), explain_req(), token, tx, ctx()).await;
+        run_explain_stream(
+            Some(provider),
+            explain_req(),
+            ("pending".into(), String::new()),
+            token,
+            tx,
+            ctx(),
+        )
+        .await;
         let replies = drain(&rx);
         assert_eq!(replies.len(), 1);
-        assert!(matches!(&replies[0], Reply::AiCancelled));
+        assert!(matches!(
+            &replies[0],
+            Reply::AiCancelled { provider, model }
+                if provider == "pending" && model.is_empty()
+        ));
     }
 
     #[tokio::test]
@@ -1161,10 +1302,22 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             token_clone.cancel();
         });
-        run_explain_atomic(Some(provider), explain_req(), token, tx, ctx()).await;
+        run_explain_atomic(
+            Some(provider),
+            explain_req(),
+            ("pending-atomic".into(), String::new()),
+            token,
+            tx,
+            ctx(),
+        )
+        .await;
         let replies = drain(&rx);
         assert_eq!(replies.len(), 1);
-        assert!(matches!(&replies[0], Reply::AiCancelled));
+        assert!(matches!(
+            &replies[0],
+            Reply::AiCancelled { provider, model }
+                if provider == "pending-atomic" && model.is_empty()
+        ));
     }
 
     #[tokio::test]
@@ -1174,6 +1327,7 @@ mod tests {
         run_explain_atomic(
             Some(provider),
             explain_req(),
+            stub_identity(),
             CancellationToken::new(),
             tx,
             ctx(),
@@ -1186,10 +1340,14 @@ mod tests {
                 text,
                 tokens_in,
                 tokens_out,
+                provider,
+                model,
             } => {
                 assert_eq!(text, "ok");
                 assert_eq!(*tokens_in, 1);
                 assert_eq!(*tokens_out, 2);
+                assert_eq!(provider, "stub");
+                assert_eq!(model, "stub-model");
             }
             other => panic!("expected AiResponded, got {other:?}"),
         }
@@ -1202,6 +1360,7 @@ mod tests {
         run_suggest_atomic(
             Some(provider),
             suggest_req(),
+            stub_identity(),
             CancellationToken::new(),
             tx,
             ctx(),
@@ -1219,27 +1378,47 @@ mod tests {
     #[tokio::test]
     async fn streaming_without_provider_surfaces_configuration_failure() {
         let (tx, rx) = mpsc::channel::<Reply>();
-        run_explain_stream(None, explain_req(), CancellationToken::new(), tx, ctx()).await;
+        run_explain_stream(
+            None,
+            explain_req(),
+            sentinel_identity(),
+            CancellationToken::new(),
+            tx,
+            ctx(),
+        )
+        .await;
         let replies = drain(&rx);
         assert_eq!(replies.len(), 1);
         assert!(matches!(
             &replies[0],
             Reply::AiFailed {
-                error: AiError::Configuration(_)
-            }
+                error: AiError::Configuration(_),
+                provider,
+                model,
+            } if provider == "unknown" && model.is_empty()
         ));
     }
 
     #[tokio::test]
     async fn atomic_without_provider_surfaces_configuration_failure() {
         let (tx, rx) = mpsc::channel::<Reply>();
-        run_explain_atomic(None, explain_req(), CancellationToken::new(), tx, ctx()).await;
+        run_explain_atomic(
+            None,
+            explain_req(),
+            sentinel_identity(),
+            CancellationToken::new(),
+            tx,
+            ctx(),
+        )
+        .await;
         let replies = drain(&rx);
         assert!(matches!(
             &replies[0],
             Reply::AiFailed {
-                error: AiError::Configuration(_)
-            }
+                error: AiError::Configuration(_),
+                provider,
+                model,
+            } if provider == "unknown" && model.is_empty()
         ));
     }
 }

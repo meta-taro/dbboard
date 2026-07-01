@@ -34,6 +34,19 @@ pub struct AiResponse {
     /// `AiError::Quota` wiring.
     pub tokens_in: u32,
     pub tokens_out: u32,
+    /// Stable provider identifier that produced this response
+    /// (ADR-0027). Mirrors [`super::AiProvider::identity`]'s first
+    /// tuple element. Populated so callers holding only an `AiResponse`
+    /// can stamp history without a second trait call. The `dbboard-ui`
+    /// worker uses its spawn-time `identity()` snapshot rather than
+    /// this field when composing terminal replies (spawn-time identity
+    /// is the contract, per ADR-0027 §Implementation Slice b), but the
+    /// value here is the same for the atomic path.
+    pub provider: String,
+    /// Model identifier that produced this response (e.g.
+    /// `"claude-sonnet-4-6"`). Mirrors `identity()`'s second tuple
+    /// element. See [`Self::provider`] for the rationale.
+    pub model: String,
 }
 
 #[cfg(test)]
@@ -77,10 +90,25 @@ mod tests {
             text: "this query selects one row".into(),
             tokens_in: 42,
             tokens_out: 7,
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
         };
         assert_eq!(resp.text, "this query selects one row");
         assert_eq!(resp.tokens_in, 42);
         assert_eq!(resp.tokens_out, 7);
+    }
+
+    #[test]
+    fn ai_response_carries_provider_and_model_identity() {
+        let resp = AiResponse {
+            text: "hi".into(),
+            tokens_in: 0,
+            tokens_out: 0,
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+        };
+        assert_eq!(resp.provider, "anthropic");
+        assert_eq!(resp.model, "claude-sonnet-4-6");
     }
 
     #[test]
@@ -96,6 +124,8 @@ mod tests {
             text: "ok".into(),
             tokens_in: 1,
             tokens_out: 1,
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
         };
         let resp2 = resp.clone();
         assert_eq!(resp, resp2);

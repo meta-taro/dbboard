@@ -134,16 +134,31 @@ pub enum Reply {
     /// AI provider returned a response (ADR-0023). The panel replaces
     /// any stale content with `text`; token counts are recorded for the
     /// future cost-meter wiring deferred to Stage 2.
+    ///
+    /// `provider`/`model` (ADR-0027 Decision 4) carry the spawn-time
+    /// identity the worker snapshotted for this request — same on every
+    /// terminal reply variant so a mid-flight `SwitchAiProvider` never
+    /// re-labels an in-flight response. `slice (c)` uses these to stamp
+    /// the AI history record.
     AiResponded {
         text: String,
         tokens_in: u32,
         tokens_out: u32,
+        provider: String,
+        model: String,
     },
     /// AI request failed (ADR-0023). The panel renders the error using
     /// its own translation table — the AI taxonomy is independent of
     /// the HTTP `DbError` taxonomy (ADR-0023 Decision 8).
+    ///
+    /// See [`Reply::AiResponded`] for the `provider`/`model` contract.
+    /// A no-provider failure surfaces here with `provider = "unknown"`
+    /// / `model = ""` — the identity is nominal, but the record stays
+    /// well-formed (ADR-0027 §Implementation Slice b).
     AiFailed {
         error: AiError,
+        provider: String,
+        model: String,
     },
     /// AI provider swap succeeded (ADR-0025). The Settings UI (slice b)
     /// uses this to update the active-row marker and dismiss any prior
@@ -176,17 +191,28 @@ pub enum Reply {
     /// Carries the final cumulative token counts and the provider's
     /// `stop_reason`. The panel clears its busy flag here and persists
     /// the final tokens to its visible meter.
+    ///
+    /// See [`Reply::AiResponded`] for the `provider`/`model` contract.
     AiStreamComplete {
         tokens_in: u32,
         tokens_out: u32,
         stop_reason: StopReason,
+        provider: String,
+        model: String,
     },
     /// The in-flight AI request was cancelled by the user (ADR-0026
     /// Decision 5). Reset the panel's busy flag and render "Cancelled."
     /// without surfacing an error banner (ADR-0026 Decision 12). Emitted
     /// for both the streaming and the atomic dispatch paths
     /// (Decision 10).
-    AiCancelled,
+    ///
+    /// See [`Reply::AiResponded`] for the `provider`/`model` contract.
+    /// Even a pre-first-chunk cancel carries the spawn-time identity so
+    /// the eventual history record (slice c) has a stable label.
+    AiCancelled {
+        provider: String,
+        model: String,
+    },
 }
 
 /// Captures everything we know at submit time about a query whose reply
@@ -406,14 +432,21 @@ impl DbboardApp {
                 // state machine — both success and failure clear `busy`
                 // and replace any stale content (ai::tests cover the
                 // ordering invariants).
+                //
+                // ADR-0027 Slice b: `provider` / `model` land on the
+                // reply so slice (c) can stamp them onto the AI history
+                // record without an extra `identity()` round-trip. The
+                // panel itself is identity-agnostic — we swallow them
+                // here with `..` until slice (c) wires the write point.
                 Reply::AiResponded {
                     text,
                     tokens_in,
                     tokens_out,
+                    ..
                 } => {
                     self.ai_panel.on_response(text, tokens_in, tokens_out);
                 }
-                Reply::AiFailed { error } => {
+                Reply::AiFailed { error, .. } => {
                     self.ai_panel.on_error(&error);
                 }
                 // ADR-0025 slice (b): AI provider swap outcomes. On
@@ -446,6 +479,7 @@ impl DbboardApp {
                     tokens_in,
                     tokens_out,
                     stop_reason,
+                    ..
                 } => {
                     self.ai_panel
                         .on_stream_complete(tokens_in, tokens_out, &stop_reason);
@@ -456,7 +490,7 @@ impl DbboardApp {
                 // payload of `Reply::AiFailed` (the cancel arm of the
                 // `select!` short-circuits before `AiResult::Err` ever
                 // forms).
-                Reply::AiCancelled => {
+                Reply::AiCancelled { .. } => {
                     self.ai_panel.on_cancelled();
                 }
             }
