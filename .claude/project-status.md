@@ -5,35 +5,52 @@
 
 ## 最終更新
 
-- 日付: 2026-07-01 (**ADR-0027 Phase 4 Stage 2 Group C = `history.jsonl`
-  への AI 記録 + v:2 schema bump をローカル 4 slice 着地完了 + Slice d
-  で docs sweep 実施**。`feature/ai-history-v2` 上に 5 commit
-  (`958c117` ADR-0027 draft → `b16537f` Slice a = `dbboard-ui::history`
-  v:2 reader + writer + `HistoryEntry::{Query, Ai}` split + 64 KiB
-  truncation + fixture example 拡張 → `13f7736` Slice b =
-  `AiProvider::identity()` + `AiResponse { provider, model }` + 4
-  terminal AI reply variants に spawn-time identity stamp → `0e76223`
-  Slice c = `dbboard-ui::lib` UI-thread AI history write point =
-  `PendingAiSubmit` snapshot + 4 terminal reply dispatch + streaming
-  accumulator peek + 18 新規 unit test → 本 commit = Slice d docs
-  sweep) が積み上がった状態で PR 未 open。これで **Phase 4 Stage 2
-  Group A (ADR-0025) / B (ADR-0026) / C (ADR-0027) 3 グループが
-  in-process 実装として `feature/ai-history-v2` にてローカル完結**。
-  残り Stage 2 は Group D (full DDL extraction + function-calling =
-  in-process 完結、web 影響なし) のみ、独立 ADR で任意タイミング。)
-- ブランチ: `develop` (= `8082706` = PR #46 post-PR45 chore merged tip)、
-  ローカル `feature/ai-history-v2` 作業中 (4 実装 commit + 1 slice d
-  docs commit の予定 = user 側 push → PR open → merge 待ち)
+- 日付: 2026-07-01 (**PR #47 マージクローズ** = ADR-0027 Phase 4 Stage 2
+  Group C = `history.jsonl` への AI 記録 + v:2 schema bump が `develop`
+  に着地 = `768e009` (mergedAt 2026-07-01T05:02:24Z)。5 commit
+  (`958c117` ADR draft → `b16537f` Slice a = v:2 reader + writer →
+  `13f7736` Slice b = `AiProvider::identity()` + `provider/model`
+  plumbing → `0e76223` Slice c = UI-thread write point + 18 unit test →
+  `34ad0eb` Slice d = docs sweep) 全部緑で merge。これで **Phase 4
+  Stage 2 で in-process スコープの 3 大 Group (A = ADR-0025 / B =
+  ADR-0026 / C = ADR-0027) 全部クローズ**。本 chore PR
+  (`chore/post-pr47-doc-sync`) は PR #38 / #40 / #42 / #44 / #46 と
+  同じ post-PR doc-sync パターンで `.claude/*` + docs/decisions.md の
+  ADR-0027 slice (d) hash placeholder 埋め + brief 0008 Anchors の
+  desktop merge commit ID 埋めのみ触り、next-actions.md を「Group C
+  merged / 次の選択肢 = Group D or friction」状態に再生成 +
+  project-status.md に PR #47 close-out 記録。)
+- ブランチ: `develop` (= `768e009`)、ローカル `chore/post-pr47-doc-sync`
+  作業中 (`feature/ai-history-v2` は merged 済 / ローカルから削除済 =
+  `git branch -D`)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  Phase 4 Stage 2 Group A (ADR-0025) + Group B (ADR-0026) `develop`
-  着地完了。Group C (ADR-0027) ローカル完了、PR open 待ち = 本 slice d
-  commit を最後に user 側 push + PR create。Stage 2 残り Group D
-  (full DDL extraction + function-calling = in-process 完結) は
-  独立 ADR で順不同 = menu 方式で friction or user 指示待ち。
-  Phase 2 ADR-0024 at-rest hardening + ADR-0023 Stage 1 + ADR-0025 完全
-  実装 (4 slice 全着地) + ADR-0026 完全実装 (4 slice 全着地) の 4 本 +
-  今回の ADR-0027 (4 slice ローカル完了) が現状 Stage 2 残り (D) への
-  足場として load-bearing。**
+  Phase 4 Stage 2 Group A (ADR-0025) + Group B (ADR-0026) + Group C
+  (ADR-0027) 3 グループが `develop` 着地完了 = in-process スコープ
+  完結。Stage 2 残り Group D (full DDL extraction + function-calling =
+  in-process 完結、web 影響なし) のみ、独立 ADR で任意タイミング =
+  menu 方式で friction or user 指示待ち。Phase 2 ADR-0024 at-rest
+  hardening + ADR-0023 Stage 1 + ADR-0025 完全実装 (4 slice 全着地) +
+  ADR-0026 完全実装 (4 slice 全着地) + ADR-0027 完全実装 (4 slice
+  全着地) の 5 本が現状 Stage 2 残り (D) への足場として load-bearing。**
+
+### PR #47 (ADR-0027 Phase 4 Stage 2 Group C / AI history.jsonl v:2) マージクローズ (本セッション / 2026-07-01)
+
+- PR #47 (`feature/ai-history-v2` → `develop`) マージ済 = `768e009`
+  (mergedAt 2026-07-01T05:02:24Z)。ローカル `develop` は
+  `origin/develop` (= `768e009`) と fast-forward sync 済、feature
+  ブランチはローカル削除済 (`git branch -D`)、origin 側も merge 時に
+  auto-delete。
+- 着地した 5 commit はすべて PR #47 内で完結 = 下記「ADR-0027 Phase 4
+  Stage 2 Group C ローカル実装完了」セクション (本ファイル下部) に
+  詳細が残っている。本 chore は **新規実装ゼロ**、`.claude/next-actions.md`
+  + 本ファイル冒頭 + `docs/decisions.md` の ADR-0027 slice (d)
+  placeholder (TBD → `34ad0eb`) + `.claude/issues/0008-web-history-v2-mirror.md`
+  Anchors の "desktop merge commit ID" フィルイン (→ `768e009`) のみ更新。
+- post-PR doc-sync chore PR としての位置づけ: PR #38 (post-PR37) /
+  #40 (post-PR39) / #42 (post-PR41) / #44 (post-PR43) / #46 (post-PR45)
+  に続く 6 件目。同パターン継続 = feat PR が code + ADR + user-facing
+  docs を運び、chore PR が internal status + next-actions を遅延 sync
+  する役割分担。
 
 ### ADR-0027 Phase 4 Stage 2 Group C (AI history.jsonl v:2) ローカル実装完了 (本セッション / 2026-07-01)
 
