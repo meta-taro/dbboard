@@ -3447,3 +3447,347 @@ coupling in the trait).
   variants. No removed surface. No HTTP contract changes. No
   `dbboard-core` changes.
 
+## ADR-0027 — Phase 4 Stage 2 Group C: AI calls recorded in `history.jsonl` (schema v:2)
+
+- **Status:** Accepted (2026-07-01). Implementation tracker:
+  [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
+  Lands on `feature/ai-history-v2` across four commits:
+  - Slice (a) `b16537f` — `dbboard-ui::history` v:2 reader + writer
+    (`RecordWire` flattened, `kind: "query" | "ai"` discriminator,
+    `HistoryEntry::{Query, Ai}` split, 64 KiB write-side truncation,
+    v:1 records read transparently as `kind: "query"`, unknown `kind`
+    / `intent` drop + counter tick). `emit_history_fixture` extended
+    to emit `kind: "ai"` alongside `kind: "query"`.
+  - Slice (b) `13f7736` — `dbboard-ai::AiProvider::identity()` +
+    `AiResponse { provider, model }` additive fields +
+    `dbboard-anthropic` implementation + `dbboard-ui::worker`
+    spawn-time identity snapshot stamped on every terminal reply
+    (`Reply::AiResponded` / `AiStreamComplete` / `AiFailed` /
+    `AiCancelled` gain `provider, model`).
+  - Slice (c) `0e76223` — `dbboard-ui::lib` UI-thread AI history
+    write point. `PendingAiSubmit` snapshot at Send, terminal-reply
+    dispatch composes `HistoryEntry::Ai { … }` from the pending
+    record + reply payload + spawn-time identity + streaming
+    accumulator peek (peeked before `AiPanel::on_stream_complete`
+    drains it). 18 new unit tests covering all four terminal reply
+    arms + helper round-trips.
+  - Slice (d) `TBD` — docs sweep (this ADR flipped to Accepted,
+    `docs/roadmap.md` Phase 4 Stage 2 Group C ticked, `README.md`
+    AI section gains the verbatim-logging warning,
+    `.claude/issues/0010` closed, brief 0008 Anchors filled in,
+    `.claude/project-status.md` records the slice landing).
+- **Cross-repo brief:** [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md) (issued same PR)
+- **Supersedes:** ADR-0017 §1 record shape (the v:1 schema). ADR-0017's §3
+  storage / §4 rotation / §6 forward-compat / §7 secret-handling stances
+  carry over unchanged.
+- **Activates:** ADR-0023 §9 deferred "AI calls in history" + ADR-0026
+  Out-of-scope item (Group C).
+
+### Context
+
+Three observations after Group A (ADR-0025 provider config) and Group B
+(ADR-0026 streaming + cancel + token meter) landed:
+
+1. **No durable record of AI activity exists.** A user can run an
+   `explain` against a 200-line SQL block, get a 30-second streamed
+   response, and the moment they navigate away the response is gone.
+   Token spend was real; the artefact is not.
+2. **The existing history surface is exactly the right place to put
+   AI activity.** `history.jsonl` is already the project's canonical
+   "what happened in this session" record. It already round-trips
+   through `jq`. It already has ADR-0024 at-rest hardening. It already
+   has rotation, forward-compat, and a cross-repo mirror contract
+   (ADR-0017 §1 + brief 0003). Building a parallel `ai-history.jsonl`
+   would duplicate all of that and split the user's mental model.
+3. **The Group C surface forces a schema bump.** AI records do not
+   have `sql`, `rows`, or `rows_affected`. A v:1 reader that
+   encountered one would either reject it outright or interpret it as
+   a query with an empty SQL string. Adding new top-level fields
+   without a discriminator silently breaks the existing schema's
+   semantic invariants. The v:1 → v:2 jump is the cheapest forward-
+   compatible move because ADR-0017's reader already drops records
+   with an unknown `v` (`history.rs:255`) and counts the skip.
+
+The cost of doing nothing is a steady drip of forgotten AI artefacts
+and an open `git blame` question every time someone asks "wait, what
+did the AI say about that query yesterday?" The cost of bumping
+schema versions is well-understood — ADR-0017's forward-compat policy
+was designed for this exact moment, and brief 0003 explicitly reserved
+v:2 for a "multi-statement results, query plan, etc." class of
+extension (multi-record-type is the same shape of change).
+
+### Decisions
+
+**Decision 1 — Discriminator field, not parallel schemas.**
+
+One record shape with a top-level `"kind"` string. `"kind": "query"`
+records carry the v:1 fields. `"kind": "ai"` records carry the AI
+fields. Reader dispatches on `kind` after the v gate.
+
+Rejected: two parallel files (`history.jsonl` + `ai-history.jsonl`).
+Doubles the rotation / permission / cross-repo coordination surface
+for no UX win — `jq 'select(.kind == "ai")'` is already the right
+filter, and the user wants one chronological feed.
+
+Rejected: serde internally-tagged enum on `RecordWire`. Discriminator
+serialisation works, but reader-side back-compat with v:1 (which has
+no `kind` field) becomes awkward and the `Option<...>` per-variant
+field collisions force a flat struct anyway. Hand-rolled dispatch on
+the string is clearer and matches how the existing
+`HistoryStatus::from_wire` already handles enum-on-the-wire.
+
+**Decision 2 — Bump `CURRENT_VERSION` from 1 to 2; writers always emit v:2.**
+
+No "stay on v:1 if no AI activity" config switch. A user opening a
+mixed v:1 / v:2 file should see one consistent shape after the upgrade
+date, not a flag-dependent format.
+
+The writer emits `"v": 2, "kind": "query"` for SQL records (was
+`"v": 1` with no kind) and `"v": 2, "kind": "ai"` for AI records.
+
+**Decision 3 — v:2 reader accepts v:1 records as `kind: "query"`
+implicitly; v:1 reader skips v:2 records via the existing gate.**
+
+This is the migration path. The desktop binary upgrades first and
+becomes a v:2 reader/writer; the web sibling stays on v:1 and skips
+v:2 records (counter increments — already wired in ADR-0017 §6).
+Web mirrors v:2 at its own pace.
+
+A v:2 reader treats a v:1 record (no `kind`, has `sql`) as a
+`Query` variant. A v:2 record with no `kind` is malformed — drop +
+counter (same path as unknown `status`).
+
+**Decision 4 — AI record fields (the wire shape).**
+
+```jsonc
+{
+  "v": 2,
+  "kind": "ai",
+  "ts": "2026-06-30T05:12:01.456Z",       // RFC 3339 UTC ms (same constraint as v:1)
+  "conn": null,                            // optional for AI; null when no DB context
+  "actor": null,                           // desktop always null; web populates
+  "intent": "explain",                     // "explain" | "suggest_sql"
+  "prompt": "SELECT * FROM users …",       // user input verbatim (the `sql` for explain, the prompt for suggest)
+  "response": "This query …",              // AI text verbatim; partial-on-cancel is preserved
+  "status": "ok",                          // "ok" | "error" | "cancelled"
+  "duration_ms": 4231,                     // submit → terminal reply wall-clock
+  "tokens_in": 412,                        // null for default-impl 1-shot atomic + unknown
+  "tokens_out": 218,                       // null for cancelled-before-first-Usage-event
+  "provider": "anthropic",                 // provider id (resolved from AiProviderSlot)
+  "model": "claude-sonnet-4-6",            // model id
+  "stop_reason": "end_turn",               // "end_turn" | "max_tokens" | "stop_sequence" | "tool_use" | "refusal" | "other:<text>" | null
+  "error": null                            // {category, message} when status="error"
+}
+```
+
+Field constraints specific to AI:
+
+- **`conn`**: `Option<String>` on the wire. Null when the panel was
+  used without a connection context (the bind-to-current-connection
+  affordance lives in ADR-0023, not here). Populated when the user's
+  active connection is the one the AI was asked about.
+- **`intent`**: enum on the wire. `"explain"` (AI explains SQL) /
+  `"suggest_sql"` (AI generates SQL). Forward-compat: an unknown
+  value triggers the skip-with-counter path (same gate as unknown
+  `status`).
+- **`prompt`**: verbatim user input. For `explain`, this is the SQL
+  the user pasted. For `suggest_sql`, this is the natural-language
+  request. **Not the schema TableInfo** — that goes into the optional
+  `schema_summary` field if logged (deferred to a future ADR).
+- **`response`**: verbatim AI text. On cancel, this is the
+  accumulator state at cancel time (ADR-0026 Decision 12 — the user
+  paid for those bytes, the history record preserves them).
+- **`status`**: `"ok"` / `"error"` / `"cancelled"`. `cancelled`
+  carries `error: null`. `error` carries an error envelope (see below).
+- **`duration_ms`**: submit-time to terminal-reply wall-clock. On
+  cancel, the duration up to the cancel signal.
+- **`tokens_in` / `tokens_out`**: `Option<u32>`. Null when the
+  provider didn't surface them (default-impl 1-shot atomic paths) or
+  when cancel landed before the first `Usage` event. Cumulative at
+  terminal time (ADR-0026 Decision 7 — replace-not-sum).
+- **`provider`**: provider id resolved from the active
+  `AiProviderSlot`. Lowercase short name ("anthropic", "ollama" when
+  added). Stable identifier suitable for `jq 'select(.provider ==
+  "anthropic")'`.
+- **`model`**: model id string as the provider reports it
+  ("claude-sonnet-4-6", etc.). The writer copies it verbatim.
+- **`stop_reason`**: the `StreamEvent::MessageStop` reason string
+  (mapped from `StopReason` enum). Null for atomic paths that don't
+  surface one. `"other:<text>"` for the `StopReason::Other(String)`
+  forward-compat variant.
+
+**Decision 5 — Error envelope reuses v:1's `{category, message}` shape,
+new categories for AI.**
+
+```jsonc
+"error": { "category": "provider", "message": "401 invalid API key" }
+```
+
+Categories for `kind: "ai"` records: `"network"` | `"provider"` |
+`"configuration"`. Mirrors the `AiError` variants from ADR-0023 §5.
+**`AiError::Cancelled` is NOT an error category** — cancel is a
+top-level `status`, not an error (ADR-0026 Decision 12 carries
+through to the persisted record).
+
+The web mirror brief (0008) will document that web's AI taxonomy must
+match this set. A new web-only category is a contract violation, same
+rule as the v:1 DbError taxonomy in brief 0003.
+
+**Decision 6 — Write point is the UI thread, symmetric to SQL records.**
+
+The worker emits per-reply data (provider / model / tokens / stop /
+error) as part of the existing terminal reply variants (no new Reply
+type). The UI thread composes the `HistoryEntry::Ai { … }` from the
+prompt it already holds (`AiPanel::input` snapshot at submit time),
+the submit timestamp + duration, the reply payload, and appends to
+the `PersistentHistoryStore` exactly the way SQL records flow today
+(`record_submit` → `record_completion`).
+
+Rejected: worker emits the record directly. The worker is stateless
+wrt the persistent store today and Group A's slot/admin design
+deliberately kept it that way. Routing through the UI thread also
+keeps the in-memory ring and disk write in lockstep (which is the
+ADR-0017 invariant — a disk write failure must not block the
+in-memory update).
+
+**Decision 7 — `AiResponse` and the streaming-terminal reply variants
+gain provider/model fields.**
+
+`AiResponse` (atomic path) and `Reply::AiStreamComplete` (streaming
+path) each pick up `provider: String` + `model: String`. The
+provider implements `AiProvider::identity()` returning `(provider,
+model)` so the worker can stamp the reply without holding the slot
+across the await.
+
+`Reply::AiFailed` and `Reply::AiCancelled` also need
+`(provider, model)` so the cancel/error history record can name what
+*would* have answered. They become struct variants if they weren't
+already.
+
+This is the only change to ADR-0023's trait surface. It is additive
+with a default impl (`Unknown` / empty string) so existing tests
+compile.
+
+**Decision 8 — Privacy. Verbatim logging. ADR-0024 permissions cover it.**
+
+Same stance as v:1's `sql` field (ADR-0017 §7). AI prompts and
+responses are logged byte-verbatim. A redactor would be a
+perpetually-wrong heuristic with worse failure modes than verbatim
+(redacting a SELECT's password column is harder than just
+acknowledging the file's at-rest threat model).
+
+ADR-0024's 0700 directory + 0600 file mode covers the at-rest
+protection on Unix. Windows DACL stays the existing fallback.
+README's AI section gains a one-sentence warning that AI history is
+logged verbatim and lives under the same trust boundary as the rest
+of `history.jsonl`.
+
+**Decision 9 — Fixture regeneration is part of the same PR; web brief
+is issued in the same PR.**
+
+The `emit_history_fixture` example writes v:2 records once this lands
+(at least one `kind: "query"` + one `kind: "ai"` line). The fixture
+file delivered to web (`dbboard-web/apps/api/test/fixtures/desktop-history.jsonl`
+per the 2026-06-23 handoff) needs a v:2 successor — the brief
+documents the handoff procedure mirroring PR #29 + PR #31.
+
+The web mirror brief (0008) lands in the same PR as this ADR so the
+cross-repo coordination starts the moment desktop ships, not after
+merge — same lead-time rule that made PR #33's explicit-no-op briefs
+work for ADR-0021 and ADR-0023.
+
+**Decision 10 — Bounded write size.**
+
+Cap `prompt` and `response` at 64 KiB each at the writer (truncate
+with `… [truncated at 64 KiB]` marker text appended). A 30-minute
+multi-turn streaming session can in principle produce hundreds of
+KiB; that wastes rotation budget for a record nobody reads back
+in full anyway. The cap is on the persisted record only — the UI's
+live view (`AiPanel::streaming.text`) is unbounded.
+
+64 KiB matches the `dbboard-core::limits` text cap (see ADR-0008).
+Future tuning is a config knob, not an ADR.
+
+### Slice plan (suggested, not prescribed)
+
+- **Slice a**: `dbboard-ui::history` v:2 reader + writer
+  (`RecordWire` becomes a flat struct with optional fields, `kind`
+  discriminator, v:1 back-compat read). Pure refactor with tests.
+- **Slice b**: `dbboard-ai` `AiProvider::identity()` + `AiResponse`
+  provider/model fields + the four terminal `Reply` variants gain
+  `provider, model`. `dbboard-anthropic` impl + worker plumbing.
+- **Slice c**: `dbboard-ui::ai` panel + `lib.rs` history write
+  point: AI history record composed on terminal reply, appended to
+  `PersistentHistoryStore`, in-memory ring updated.
+- **Slice d**: docs sweep + `emit_history_fixture` v:2 update +
+  README warning + roadmap tick + ADR-0027 status flipped to
+  Accepted + brief 0008 status updated to "ready for web pickup".
+
+### Out of scope (intentionally)
+
+- **Schema field for the suggest-mode TableInfo schema.** Logging
+  the schema-context blob would be useful and is the natural Group D
+  / DDL-extraction follow-up. Skipped here to keep the v:2 surface
+  narrow.
+- **AI history viewer UI.** The egui history panel already lists
+  entries; rendering AI records is a follow-up — Group C ships the
+  *record*, not the rich viewer. A future PR adds an icon + a
+  collapsible response body.
+- **Multi-turn conversation linking.** Each AI call is a standalone
+  record; threading is a future ADR.
+- **Cost calculation.** `tokens_in * input_price + tokens_out *
+  output_price` could be derived but lives outside this ADR — pricing
+  tables change without notice and belong in a separate config-driven
+  module if at all.
+- **Server-side admin view.** Web's "tenant analytics over the AI
+  history" is web-side, future, and explicitly out of brief 0008's
+  Phase-2 scope.
+
+### Open questions (TBD before slice c)
+
+- For `suggest_sql`, the `prompt` field stores the natural-language
+  request; should the `dialect` hint also be persisted? Leaning yes,
+  as a separate optional top-level string. Cheap to add; cheap to
+  read back.
+- Should `intent` carry a `"streamed": bool` flag for grep-ability?
+  Leaning no — streaming vs atomic is a transport detail, not a user-
+  visible intent.
+
+### Risks
+
+- **Web's v:1 readers see a counter tick on every desktop session
+  after the upgrade.** Expected, documented in brief 0008. Mitigation:
+  brief 0008 sets a "by date X" target for web to mirror.
+- **A user who downgrades desktop after a v:2 record is written
+  loses access to that record's content** (v:1 reader skips it).
+  Acceptable — desktop downgrades are not a supported flow, the
+  upgrade direction is one-way per ADR-0017 §6.
+- **Verbatim logging of AI prompts/responses raises the at-rest
+  threat surface marginally.** Same mitigation as v:1's `sql` field
+  (ADR-0024 permissions + the README warning).
+- **`provider`/`model` exposure in the file is intentional but worth
+  flagging.** It does not leak credentials; it does name the model
+  used. README warning covers it.
+
+### Implementation slicing impact
+
+- `dbboard-ui::history` becomes the load-bearing module (the v:2
+  enum / dispatch).
+- `dbboard-ai` trait surface gains one method (`identity()`).
+- `dbboard-anthropic` implements the new method.
+- `dbboard-ui::worker` plumbs provider/model through the four
+  terminal reply variants.
+- `dbboard-ui::lib` adds the AI write point.
+- `dbboard-ui::ai` is unchanged in behaviour but gains snapshot
+  helpers for the UI thread to read what it needs to compose the
+  record (prompt + intent + start time).
+
+### SemVer impact (ADR-0011)
+
+Additive on the trait + types. The on-disk schema bump (v:1 → v:2)
+is a *forward-compatible* change in the reader direction (v:1
+records still readable by v:2) and a *backward-incompatible* change
+in the writer direction (v:1 readers skip new records, counter
+ticks). The HTTP contract is unchanged. The cross-repo coordination
+moves through brief 0008.
+

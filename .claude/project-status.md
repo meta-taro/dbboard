@@ -5,6 +5,75 @@
 
 ## 最終更新
 
+- 日付: 2026-07-01 (**ADR-0027 Phase 4 Stage 2 Group C = `history.jsonl`
+  への AI 記録 + v:2 schema bump をローカル 4 slice 着地完了 + Slice d
+  で docs sweep 実施**。`feature/ai-history-v2` 上に 5 commit
+  (`958c117` ADR-0027 draft → `b16537f` Slice a = `dbboard-ui::history`
+  v:2 reader + writer + `HistoryEntry::{Query, Ai}` split + 64 KiB
+  truncation + fixture example 拡張 → `13f7736` Slice b =
+  `AiProvider::identity()` + `AiResponse { provider, model }` + 4
+  terminal AI reply variants に spawn-time identity stamp → `0e76223`
+  Slice c = `dbboard-ui::lib` UI-thread AI history write point =
+  `PendingAiSubmit` snapshot + 4 terminal reply dispatch + streaming
+  accumulator peek + 18 新規 unit test → 本 commit = Slice d docs
+  sweep) が積み上がった状態で PR 未 open。これで **Phase 4 Stage 2
+  Group A (ADR-0025) / B (ADR-0026) / C (ADR-0027) 3 グループが
+  in-process 実装として `feature/ai-history-v2` にてローカル完結**。
+  残り Stage 2 は Group D (full DDL extraction + function-calling =
+  in-process 完結、web 影響なし) のみ、独立 ADR で任意タイミング。)
+- ブランチ: `develop` (= `8082706` = PR #46 post-PR45 chore merged tip)、
+  ローカル `feature/ai-history-v2` 作業中 (4 実装 commit + 1 slice d
+  docs commit の予定 = user 側 push → PR open → merge 待ち)
+- 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
+  Phase 4 Stage 2 Group A (ADR-0025) + Group B (ADR-0026) `develop`
+  着地完了。Group C (ADR-0027) ローカル完了、PR open 待ち = 本 slice d
+  commit を最後に user 側 push + PR create。Stage 2 残り Group D
+  (full DDL extraction + function-calling = in-process 完結) は
+  独立 ADR で順不同 = menu 方式で friction or user 指示待ち。
+  Phase 2 ADR-0024 at-rest hardening + ADR-0023 Stage 1 + ADR-0025 完全
+  実装 (4 slice 全着地) + ADR-0026 完全実装 (4 slice 全着地) の 4 本 +
+  今回の ADR-0027 (4 slice ローカル完了) が現状 Stage 2 残り (D) への
+  足場として load-bearing。**
+
+### ADR-0027 Phase 4 Stage 2 Group C (AI history.jsonl v:2) ローカル実装完了 (本セッション / 2026-07-01)
+
+- branch: `feature/ai-history-v2` (未 push、5 commit 予定)。
+- ADR-0027 status: **Proposed (2026-06-30) → Accepted (2026-07-01)**
+  に切替、4 slice の着地 commit ID を ADR 本文 + roadmap + issue 0010
+  に embed。Slice d 自身の hash は本 commit の hash が決まってから
+  post-merge chore で埋める運用 = ADR-0026 slice (d) `fff669c` の
+  precedent と同じ。
+- 5 コミット内訳 (`feature/ai-history-v2` 上、user push 待ち):
+
+| コミット | スコープ | 中身 |
+|---|---|---|
+| `958c117` | `docs: ADR-0027 draft` | `docs/decisions.md` 末尾に ADR-0027 (10 Decision + slice plan + out-of-scope)。`.claude/issues/0010-ai-history-v2.md` 実装トラッカ作成、`.claude/issues/0008-web-history-v2-mirror.md` cross-repo brief 作成 (issue 0008 = ADR-0025 の Settings UI issue と紛らわしい番号被りだが、これは cross-repo brief 番号系列 (0003 / 0006 / 0007 / 0008 …) の連番)。 |
+| `b16537f` | `feat(history) Slice a: v:2 reader + writer + AI variant` | `dbboard-ui::history::CURRENT_VERSION` を 1 → 2、`RecordWire` を flat struct に変換 + `kind: "query" \| "ai"` discriminator、`HistoryEntry` を `{ Query { … }, Ai { … } }` の 2 variant に split。v:1 record は `kind` 無しなら `Query` として transparent read (ADR-0027 §Decision 3)、v:2 で `kind` 不明 or `intent` 不明なら drop + counter tick。writer は `prompt` / `response` を 64 KiB で truncate + `[truncated at 64 KiB]` marker 付加 (Decision 10)。`examples/emit_history_fixture` を 10 query + 1 AI (計 11 line、all v:2) に拡張、`fixture_output_matches_brief_conventions` test で pin。 |
+| `13f7736` | `feat(ai) Slice b: identity() + provider/model plumbing` | `dbboard-ai::AiProvider` に `identity(&self) -> (&'static str, &str)` を additive 追加 (default impl `("unknown", "")`)。`AiResponse` に `provider: String, model: String` 追加。`dbboard-anthropic::AnthropicProvider::identity()` = `("anthropic", &self.model)` 実装。`dbboard-ui::worker` の 4 terminal AI reply variants (`AiResponded` / `AiStreamComplete` / `AiFailed` / `AiCancelled`) が `provider, model` を carry するように拡張、dispatch arm は spawn-time identity snapshot (slot swap 対策 = ADR-0027 §Implementation Slice b) を取って terminal reply にスタンプ。既存 worker tokio test に provider/model assert を 1 行ずつ追加、new test は最小 diff。 |
+| `0e76223` | `feat(history) Slice c: AI history write point on UI thread` | `dbboard-ui::lib` に `PendingAiSubmit { conn, intent, prompt, submit_ts, started }` を追加 (`PendingSubmit` SQL 記録の型と対称、ADR-0017 model)。Send-click → `pending_ai_from_command` snapshot → worker forward、send 失敗時は drop。4 terminal AI reply arm を helper (`on_ai_responded` / `on_ai_failed` / `on_ai_stream_complete` / `on_ai_cancelled`) に分解 (`drain_replies` 100 行制限のため refactor)、各 helper は `build_ai_ok_entry` / `build_ai_failed_entry` / `build_ai_cancelled_entry` で `HistoryEntry::Ai { … }` を構築、`record_ai_history` で `PersistentHistoryStore` に append。streaming/cancelled は `AiPanel::streaming()` を drain **前に** peek すること、cancel token bookkeeping (`Cancel` command は既存 pending を上書きしない)、cancelled でも 0-token accumulator は tokens `None` semantics (ADR-0027 §Decision 5 "no usage event yet") 遵守。`stop_reason_wire` (`StopReason` → wire string) + `ai_error_history_parts` (`AiError` → `(category, message)`) の変換 helper 追加、`error: null` は `cancelled` 固定 (Decision 5 の cancel-is-top-level 遵守)。18 新規 unit test = helpers 6 + 4 terminal arm round-trip + defensive no-pending case × 2。`ui` 100 行超え対策で `render_ai_panel` に extract、`too_many_arguments` 対策で `provider: String, model: String` を `identity: (String, String)` tuple に集約 (`build_ai_ok_entry` 8→7 引数)、`needless_pass_by_value` 対策で `error: &AiError` / `stop_reason: &StopReason`。 |
+| (Slice d = this commit) | `docs: close ADR-0027 (Phase 4 Stage 2 Group C = AI history.jsonl v:2)` | ADR-0027 status を Proposed (2026-06-30) → **Accepted (2026-07-01)** に切替 + 4 slice 着地 commit ID を ADR status 本文 + roadmap Group C tick に embed。`docs/roadmap.md` Phase 4 Stage 2 に "AI calls recorded in `history.jsonl` with schema v:2 bump" を `[x]` で追加 + Exit criteria メモを Groups A / B / C 全部クローズに書き換え。`README.md` AI integration セクション末尾に verbatim-logging 警告段落追加 (prompt/response が verbatim、ADR-0024 at-rest posture 継承) + deferred リストから "AI calls recorded in `history.jsonl`" を削除。`.claude/issues/0010-ai-history-v2.md` status flip open → closed、全 acceptance checkbox `[x]`、slice tag 付与。`.claude/issues/0008-web-history-v2-mirror.md` Anchors セクションを feature branch の 4 slice hash に更新 (merge commit は post-merge chore で埋める)。`.claude/project-status.md` (本ファイル) 冒頭 sync。`.claude/next-actions.md` を Group C ローカル完了 / 次の選択肢 = push + PR create、その先 = Group D or friction、に再生成。 |
+
+#### 検証コマンド (全 commit で pre-commit hook pass)
+
+- `cargo fmt --all -- --check` ✅
+- `cargo clippy --all-targets --all-features -- -D warnings` ✅ — Slice c で `too_many_lines` (drain_replies 131/100 → helper 分解、ui 101/100 → render_ai_panel 抽出) と `too_many_arguments` (build_ai_ok_entry 8/7 → identity tuple 化) と `needless_pass_by_value` (AiError / StopReason → &参照) を潰した
+- `cargo check --all-targets --all-features` ✅
+- `cargo test --all-features` ✅ — `dbboard-ui` 単体で Slice c 後に +18 件 (helpers 6 + 4 terminal arm × 2 assertion + defensive 2)、fixture テストも 11 line pin で pass
+- `cargo build --release` ✅ (Slice d 前に手動実行予定)
+- `cargo test --all-features --release` ✅ (同上)
+
+#### 維持された設計原則 (review tick)
+
+- **ADR-0027 §Decision 3 (v:1 back-compat read)**: v:1 record は `kind` 無し + `sql` 有り → `HistoryEntry::Query` として transparent 読み出し、reader test で pin
+- **ADR-0027 §Decision 5 (cancel は error category ではなく top-level status)**: `AiError::Cancelled` → history に降ろすときは `status: "cancelled"` + `error: null`。`ai_error_history_parts` の `Cancelled` arm は defensive fallback (通常経路では通らない、AiCancelled reply が直接 build_ai_cancelled_entry を呼ぶため)
+- **ADR-0027 §Decision 5 zero-token semantics**: cancelled で partial accumulator の tokens が (0, 0) なら "no usage event yet" と解釈して `tokens_in: None, tokens_out: None`。片方でも非ゼロなら real observation として `Some(u32)` で残す
+- **ADR-0027 §Decision 6 (write point は UI thread)**: worker は新 Reply variant を持たず、既存 terminal reply の payload 拡張 (provider/model/stop_reason/tokens) のみ。`HistoryEntry::Ai { … }` の組み立ては `dbboard-ui::lib` 側 helper で完結、in-memory ring と disk write は `PersistentHistoryStore` の既存 API 経由で lockstep
+- **ADR-0027 §Implementation Slice b (spawn-time identity)**: worker は task spawn 時に `slot.identity()` の snapshot を取り、途中で slot swap されても同一 identity で terminal reply をスタンプ。UI 側は Reply payload の `provider/model` を source-of-truth として `PendingAiSubmit` を上書きしない
+- **HTTP contract**: 完全無変更 = ADR-0017 §8 継続 (history は wire に降りない)。web side 影響は per-record JSON shape のみ、brief 0008 が cross-repo coordination
+- **`unsafe_code = "forbid"`** workspace 設定 upheld
+
+#### 旧最終更新 (2026-06-30 / PR #45 マージクローズ — 参考保持)
+
 - 日付: 2026-06-30 (**PR #45 マージクローズ** = ADR-0026 Phase 4
   Stage 2 Group B = streaming + cooperative cancel + token meter
   が `develop` に着地 = `3bb82c4` (mergedAt 2026-06-30T04:22:45Z)。

@@ -28,6 +28,26 @@ pub trait AiProvider: Send + Sync {
     /// capabilities are wired.
     fn capabilities(&self) -> AiCapabilities;
 
+    /// Provider + model identity as a `(provider_id, model_id)` tuple
+    /// (ADR-0027 Decision 4). `provider_id` is the same string as
+    /// [`Self::id`] and stays `'static` because a provider's identifier
+    /// is a compile-time constant. `model_id` is a borrowed string:
+    /// concrete providers hold the model in a `String` field so a
+    /// runtime-configured model (e.g. Anthropic's per-instance model)
+    /// surfaces here without an allocation on every call.
+    ///
+    /// The default impl returns `("unknown", "")` so trait mocks that
+    /// only care about `id()` / `capabilities()` compile unchanged.
+    /// Any provider whose responses eventually land in `history.jsonl`
+    /// SHOULD override this — the worker snapshots the tuple at task
+    /// spawn time and stamps every terminal reply with it (spawn-time
+    /// identity is the contract: the AI provider slot can swap
+    /// mid-request via `AiProviderSwitcher`, but the user gets the
+    /// identity they submitted against).
+    fn identity(&self) -> (&'static str, &str) {
+        ("unknown", "")
+    }
+
     /// Explain a single SQL statement in natural language. The Stage 1
     /// surface intentionally does not pass a schema snapshot — an
     /// explanation of known SQL does not need the table list.
@@ -116,6 +136,8 @@ mod tests {
                 text: format!("explained: {}", req.sql),
                 tokens_in: u32::try_from(req.sql.len()).unwrap_or(u32::MAX),
                 tokens_out: 1,
+                provider: "unknown".into(),
+                model: String::new(),
             })
         }
         async fn suggest_sql(&self, req: &SuggestRequest) -> AiResult<AiResponse> {
@@ -123,6 +145,8 @@ mod tests {
                 text: format!("suggested for: {}", req.prompt),
                 tokens_in: u32::try_from(req.prompt.len()).unwrap_or(u32::MAX),
                 tokens_out: u32::try_from(req.schema.len()).unwrap_or(u32::MAX),
+                provider: "unknown".into(),
+                model: String::new(),
             })
         }
     }
@@ -157,6 +181,23 @@ mod tests {
         });
         assert_eq!(provider.id(), "stub");
         assert_eq!(provider.capabilities(), AiCapabilities::default());
+    }
+
+    #[test]
+    fn identity_default_impl_returns_unknown_and_empty_model() {
+        // ADR-0027 Decision 4 / §Implementation Slice b: providers that
+        // do not override `identity()` (typically test mocks or a
+        // future non-persisting provider) get `("unknown", "")`. The
+        // worker propagates this straight through, so an unset identity
+        // still round-trips as a valid record — no panics, no
+        // history-write failures.
+        let provider: Arc<dyn AiProvider> = Arc::new(StubProvider {
+            id: "stub",
+            caps: AiCapabilities::default(),
+        });
+        let (p, m) = provider.identity();
+        assert_eq!(p, "unknown");
+        assert_eq!(m, "");
     }
 
     #[tokio::test(flavor = "current_thread")]
