@@ -13,9 +13,9 @@
   implementation in `crates/dbboard-ui/src/history.rs` on
   `feature/ai-history-v2` at the four-slice landing (slice a
   `b16537f` = reader + writer, slice b `13f7736` = provider identity,
-  slice c `0e76223` = UI write point, slice d = this docs sweep).
-  The desktop merge commit ID lands here in the post-merge doc-sync
-  chore PR — see "Handoff procedure" §2 below.
+  slice c `0e76223` = UI write point, slice d `34ad0eb` = docs sweep).
+  All five commits landed on `develop` via PR #47 at merge commit
+  `768e009` on 2026-07-01.
 
 ## What this is
 
