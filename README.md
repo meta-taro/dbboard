@@ -295,9 +295,19 @@ continues without AI; the panel and menu entry are hidden. The key
 never appears in `Debug` output or in `history.jsonl`; it is held
 only in memory for the process lifetime.
 
-Remaining deferred Stage 2 capabilities (AI calls recorded in
-`history.jsonl`, full-DDL schema snapshots, function-calling) are
-tracked in ADR-0023 §9, ADR-0025, and ADR-0026.
+Every completed AI call (streamed or atomic, `ok` / `error` /
+`cancelled`) is recorded to `history.jsonl` as a `kind: "ai"` record
+alongside SQL history (schema v:2 per ADR-0027). The prompt and
+response are written **verbatim** — same stance as the SQL text in
+v:1 query records. The at-rest protection is the same too: `0o600`
+on Unix / user-only DACL on Windows, per ADR-0024. On a shared
+machine, be aware that anything typed into the AI panel — including
+schema-context in follow-ups and any secrets pasted into an
+`Explain` request — lands unredacted on disk under your user account.
+
+Remaining deferred Stage 2 capability (full-DDL schema snapshots +
+function-calling — Group D) is tracked in ADR-0023 §9. Groups A / B
+/ C are closed (ADR-0025 / ADR-0026 / ADR-0027).
 
 ## Development
 

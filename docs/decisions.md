@@ -3449,8 +3449,33 @@ coupling in the trait).
 
 ## ADR-0027 — Phase 4 Stage 2 Group C: AI calls recorded in `history.jsonl` (schema v:2)
 
-- **Status:** Proposed (2026-06-30)
-- **Tracks:** [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md)
+- **Status:** Accepted (2026-07-01). Implementation tracker:
+  [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
+  Lands on `feature/ai-history-v2` across four commits:
+  - Slice (a) `b16537f` — `dbboard-ui::history` v:2 reader + writer
+    (`RecordWire` flattened, `kind: "query" | "ai"` discriminator,
+    `HistoryEntry::{Query, Ai}` split, 64 KiB write-side truncation,
+    v:1 records read transparently as `kind: "query"`, unknown `kind`
+    / `intent` drop + counter tick). `emit_history_fixture` extended
+    to emit `kind: "ai"` alongside `kind: "query"`.
+  - Slice (b) `13f7736` — `dbboard-ai::AiProvider::identity()` +
+    `AiResponse { provider, model }` additive fields +
+    `dbboard-anthropic` implementation + `dbboard-ui::worker`
+    spawn-time identity snapshot stamped on every terminal reply
+    (`Reply::AiResponded` / `AiStreamComplete` / `AiFailed` /
+    `AiCancelled` gain `provider, model`).
+  - Slice (c) `0e76223` — `dbboard-ui::lib` UI-thread AI history
+    write point. `PendingAiSubmit` snapshot at Send, terminal-reply
+    dispatch composes `HistoryEntry::Ai { … }` from the pending
+    record + reply payload + spawn-time identity + streaming
+    accumulator peek (peeked before `AiPanel::on_stream_complete`
+    drains it). 18 new unit tests covering all four terminal reply
+    arms + helper round-trips.
+  - Slice (d) `TBD` — docs sweep (this ADR flipped to Accepted,
+    `docs/roadmap.md` Phase 4 Stage 2 Group C ticked, `README.md`
+    AI section gains the verbatim-logging warning,
+    `.claude/issues/0010` closed, brief 0008 Anchors filled in,
+    `.claude/project-status.md` records the slice landing).
 - **Cross-repo brief:** [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md) (issued same PR)
 - **Supersedes:** ADR-0017 §1 record shape (the v:1 schema). ADR-0017's §3
   storage / §4 rotation / §6 forward-compat / §7 secret-handling stances
