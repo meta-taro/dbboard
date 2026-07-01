@@ -3471,11 +3471,13 @@ coupling in the trait).
     accumulator peek (peeked before `AiPanel::on_stream_complete`
     drains it). 18 new unit tests covering all four terminal reply
     arms + helper round-trips.
-  - Slice (d) `TBD` — docs sweep (this ADR flipped to Accepted,
+  - Slice (d) `34ad0eb` — docs sweep (this ADR flipped to Accepted,
     `docs/roadmap.md` Phase 4 Stage 2 Group C ticked, `README.md`
     AI section gains the verbatim-logging warning,
     `.claude/issues/0010` closed, brief 0008 Anchors filled in,
     `.claude/project-status.md` records the slice landing).
+    All five commits shipped via PR #47, merged to `develop` at
+    `768e009` on 2026-07-01.
 - **Cross-repo brief:** [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md) (issued same PR)
 - **Supersedes:** ADR-0017 §1 record shape (the v:1 schema). ADR-0017's §3
   storage / §4 rotation / §6 forward-compat / §7 secret-handling stances
