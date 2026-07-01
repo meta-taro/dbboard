@@ -1,6 +1,6 @@
 # 0010: AI calls recorded in `history.jsonl` (Phase 4 Stage 2 Group C, schema v:2)
 
-- **Status**: open 2026-06-30
+- **Status**: closed 2026-07-01 (landed on `feature/ai-history-v2` across four commits: slice a `b16537f` + slice b `13f7736` + slice c `0e76223` + slice d = this commit)
 - **Phase**: 4 Stage 2 Group C. Phase 4 Stage 2 Group A (issue 0008
   closed via PR #43) and Group B (issue 0009 closed via PR #45) are
   both closed and on `develop`.
@@ -38,115 +38,124 @@ ADR-0027 §Context):
 
 ## Acceptance
 
-### `dbboard-ui::history` (the v:2 module)
+### `dbboard-ui::history` (the v:2 module) — slice (a) `b16537f`
 
-- [ ] `CURRENT_VERSION` bumped from `1` to `2`.
-- [ ] `RecordWire` becomes a flat struct with optional fields and a
+- [x] `CURRENT_VERSION` bumped from `1` to `2`.
+- [x] `RecordWire` becomes a flat struct with optional fields and a
       `kind: "query" | "ai"` discriminator. v:1 records (no `kind`,
       `sql` present) read transparently as `kind: "query"`.
-- [ ] New `HistoryEntry::Ai { … }` variant. The existing
+- [x] New `HistoryEntry::Ai { … }` variant. The existing
       `HistoryEntry` (the v:1 SQL shape) becomes
       `HistoryEntry::Query { … }`. Public API renames are part of
       slice (a) and ripple into call sites in slice (c).
-- [ ] Reader unit tests: v:2 query record round-trips, v:2 AI
+- [x] Reader unit tests: v:2 query record round-trips, v:2 AI
       record round-trips, v:1 record reads as `Query`, v:2 record
       with unknown `kind` skips + counter ticks, v:2 record with
       unknown `intent` skips + counter ticks.
-- [ ] Writer unit tests: query write produces v:2 + kind="query",
+- [x] Writer unit tests: query write produces v:2 + kind="query",
       AI write produces v:2 + kind="ai" with every documented
       field present (nulls preserved per ADR-0027 §Decision 4).
-- [ ] Truncation: prompt and response capped at 64 KiB at write
+- [x] Truncation: prompt and response capped at 64 KiB at write
       time with the `[truncated at 64 KiB]` marker appended
       (Decision 10). Unit test asserts the cap.
-- [ ] `fixture::serialize` (the doc-hidden shim) extends to AI
+- [x] `fixture::serialize` (the doc-hidden shim) extends to AI
       records.
 
-### `dbboard-ai` (trait + value types)
+### `dbboard-ai` (trait + value types) — slice (b) `13f7736`
 
-- [ ] New `AiProvider::identity(&self) -> (&'static str, &str)`
+- [x] New `AiProvider::identity(&self) -> (&'static str, &str)`
       returning `(provider_id, model_id)`. Default impl returns
       `("unknown", "")` so existing in-tree mocks compile.
-- [ ] `AiResponse` gains `provider: String, model: String` fields.
-- [ ] `StreamEvent::MessageStop` already carries `stop_reason`;
+- [x] `AiResponse` gains `provider: String, model: String` fields.
+- [x] `StreamEvent::MessageStop` already carries `stop_reason`;
       the worker copies it through to the new `Reply` fields.
-- [ ] No new dependency.
+- [x] No new dependency.
 
-### `dbboard-anthropic`
+### `dbboard-anthropic` — slice (b) `13f7736`
 
-- [ ] `AnthropicProvider::identity()` returns
+- [x] `AnthropicProvider::identity()` returns
       `("anthropic", &self.model)`.
-- [ ] `AiResponse` construction populates provider/model.
-- [ ] All existing tests pass unchanged (the new fields are
+- [x] `AiResponse` construction populates provider/model.
+- [x] All existing tests pass unchanged (the new fields are
       populated; assertions ignore them).
 
-### `dbboard-ui::worker` (terminal reply plumbing)
+### `dbboard-ui::worker` (terminal reply plumbing) — slice (b) `13f7736`
 
-- [ ] `Reply::AiResponded` / `AiStreamComplete` / `AiFailed` /
+- [x] `Reply::AiResponded` / `AiStreamComplete` / `AiFailed` /
       `AiCancelled` each gain `provider: String, model: String`
       fields.
-- [ ] The dispatch arms snapshot the slot's `identity()` once at
+- [x] The dispatch arms snapshot the slot's `identity()` once at
       spawn time and stamp it on every terminal reply (the slot
       can swap mid-request — the *spawn-time* identity is what
       the user actually got).
-- [ ] Worker tests updated to assert provider/model land on the
+- [x] Worker tests updated to assert provider/model land on the
       reply (the existing 11 tokio tests grow by one assertion
       each — minimal churn).
 
-### `dbboard-ui::ai` + `dbboard-ui::lib` (the write point)
+### `dbboard-ui::ai` + `dbboard-ui::lib` (the write point) — slice (c) `0e76223`
 
-- [ ] `AiPanel` exposes the in-flight submit snapshot (the prompt
+- [x] `AiPanel` exposes the in-flight submit snapshot (the prompt
       + intent + start instant) so `lib.rs` can compose the AI
-      `HistoryEntry` when a terminal reply lands. Either via a
-      `submit_snapshot() -> Option<&AiSubmitSnapshot>` accessor or
-      via the existing `streaming()` accessor extended with the
-      submit metadata — slice (c) picks the smaller diff.
-- [ ] `lib.rs` Reply dispatch arms for the four AI terminal
+      `HistoryEntry` when a terminal reply lands. Chose the
+      `PendingAiSubmit` shape on `DbboardApp` (mirroring
+      `PendingSubmit` for SQL, ADR-0017 model) over an
+      `AiPanel::submit_snapshot()` accessor — the write point is
+      already a `DbboardApp` responsibility and the pending record
+      never needs to survive an AI panel state reset.
+- [x] `lib.rs` Reply dispatch arms for the four AI terminal
       variants build the `HistoryEntry::Ai { … }` and call
       `self.history.record_ai(entry)`. The ring + disk are updated
-      symmetrically to the SQL path (`record_submit` →
-      `record_completion`).
-- [ ] No new `Reply` variant for AI history — the composition
+      symmetrically to the SQL path via the existing
+      `PersistentHistoryStore` API.
+- [x] No new `Reply` variant for AI history — the composition
       lives on the UI thread per ADR-0027 §Decision 6.
 
-### Fixture + cross-repo
+### Fixture + cross-repo — slice (a) + slice (d)
 
-- [ ] `examples/emit_history_fixture` emits one `kind: "query"` +
-      one `kind: "ai"` line minimum, both v:2.
-- [ ] Brief 0008 lands in this PR with status `open` and the
+- [x] `examples/emit_history_fixture` emits one `kind: "query"` +
+      one `kind: "ai"` line minimum, both v:2. Delivered as part of
+      slice (a) `b16537f` — the fixture example now emits 11 lines
+      (10 query + 1 AI, all v:2) with a pinned assertion in
+      `fixture_output_matches_brief_conventions`.
+- [x] Brief 0008 lands in this PR with status `open` and the
       handoff procedure mirroring PR #29 / PR #31 (UTF-8 LF
       only, `--output PATH` flag to bypass PowerShell re-encoding).
-- [ ] The fixture handoff itself (delivery to
-      `dbboard-web/apps/api/test/fixtures/desktop-history.jsonl`)
+- [x] The fixture handoff itself (delivery to
+      `dbboard-web/apps/api/test/fixtures/desktop-history-v2.jsonl`)
       is **deferred** to a follow-up PR once the desktop side has
-      merged — same pattern as the 2026-06-23 handoff.
+      merged — same pattern as the 2026-06-23 handoff. Tracked on
+      brief 0008 Handoff procedure §3.
 
-### Docs
+### Docs — slice (d)
 
-- [ ] `README.md` AI section gains a one-sentence warning: AI
-      prompts and responses are logged verbatim in `history.jsonl`;
-      ADR-0024 file permissions cover the at-rest threat model.
-- [ ] `docs/roadmap.md` Phase 4 Stage 2 Group C tick to `[x]` with
-      the PR number.
-- [ ] `docs/decisions.md` ADR-0027 status flipped from `Proposed` to
-      `Accepted` with the landing date and PR number on slice (d).
-- [ ] `.claude/project-status.md` records the slice landing.
-- [ ] `.claude/next-actions.md` updated post-slice-d to reflect
+- [x] `README.md` AI section gains a warning: AI prompts and
+      responses are logged verbatim in `history.jsonl` as
+      `kind: "ai"` records; ADR-0024 file permissions cover the
+      at-rest threat model.
+- [x] `docs/roadmap.md` Phase 4 Stage 2 Group C ticked to `[x]`
+      with the four-slice commit ID rollup.
+- [x] `docs/decisions.md` ADR-0027 status flipped from `Proposed`
+      to `Accepted` (2026-07-01) with the four-slice commit ID
+      rollup embedded in the status body.
+- [x] `.claude/project-status.md` records the slice landing.
+- [x] `.claude/next-actions.md` updated post-slice-d to reflect
       Group C closure (Group D becomes the next standing option).
-- [ ] This issue's status flipped to `closed` with the landing
-      PR + date.
+- [x] This issue's status flipped to `closed` with the landing
+      slice trail.
 
 ### Verification
 
-- [ ] `cargo fmt --all -- --check` clean.
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
+- [x] `cargo fmt --all -- --check` clean.
+- [x] `cargo clippy --all-targets --all-features -- -D warnings`
       clean.
-- [ ] `cargo check --all-targets --all-features` clean.
-- [ ] `cargo test --all-features` clean. Test count grows from 474
-      + Group B's +22 to approximately +15 (≈8 history v:2 tests,
-      ≈4 worker provider/model tests, ≈3 AiPanel snapshot tests).
-- [ ] `cargo build --release` and `cargo test --all-features
-      --release` clean (pre-push hook).
-- [ ] No `unsafe` code introduced. Workspace `unsafe_code =
+- [x] `cargo check --all-targets --all-features` clean.
+- [x] `cargo test --all-features` clean. Test count grew per slice;
+      `dbboard-ui` alone picked up 18 new unit tests on slice (c)
+      covering the AI history helpers and all four terminal-reply
+      arms.
+- [x] `cargo build --release` and `cargo test --all-features
+      --release` clean (pre-push hook, re-run at slice-d).
+- [x] No `unsafe` code introduced. Workspace `unsafe_code =
       "forbid"` upheld.
 
 ## Implementation slicing (suggested)

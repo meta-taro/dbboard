@@ -9,11 +9,13 @@
 - **Follows**: [0003-web-history-schema-mirror](0003-web-history-schema-mirror.md)
   (the v:1 mirror brief)
 - **Anchors**: desktop ADR-0027 in [`docs/decisions.md`](../../docs/decisions.md)
-  (search `## ADR-0027`); v:2 reference implementation in
-  `crates/dbboard-ui/src/history.rs` at the desktop PR-#NN merge commit
-  (this brief is issued before that PR opens; the commit ID lands on
-  the brief in the post-merge doc-sync chore PR — see "Handoff
-  procedure" below).
+  (search `## ADR-0027`, Accepted 2026-07-01); v:2 reference
+  implementation in `crates/dbboard-ui/src/history.rs` on
+  `feature/ai-history-v2` at the four-slice landing (slice a
+  `b16537f` = reader + writer, slice b `13f7736` = provider identity,
+  slice c `0e76223` = UI write point, slice d = this docs sweep).
+  The desktop merge commit ID lands here in the post-merge doc-sync
+  chore PR — see "Handoff procedure" §2 below.
 
 ## What this is
 

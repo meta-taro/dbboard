@@ -317,13 +317,35 @@ work without it. Trait + first-provider shape locked in
       (`ai-cancel-button`, `ai-cancelled-message`, `ai-tokens-meter`)
       in all 11 locales._
 
+- [x] AI calls recorded in `history.jsonl` with schema v:2 bump —
+      _Stage 2 Group C, planned in [ADR-0027](decisions.md).
+      Implementation tracked in
+      [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
+      **Closed 2026-07-01 on `feature/ai-history-v2`.** Slice (a)
+      `b16537f` — `dbboard-ui::history` v:2 reader + writer with a
+      `kind: "query" | "ai"` discriminator, `HistoryEntry::{Query, Ai}`
+      variant split, 64 KiB write-side truncation, and transparent
+      v:1 read-through as `kind: "query"`. Slice (b) `13f7736` —
+      `dbboard-ai::AiProvider::identity()` additive method +
+      `AiResponse { provider, model }` fields + `dbboard-anthropic`
+      impl + `dbboard-ui::worker` spawn-time identity snapshot
+      stamped on all four terminal AI reply variants. Slice (c)
+      `0e76223` — `dbboard-ui::lib` UI-thread AI history write point
+      (`PendingAiSubmit` submit-time snapshot, terminal-reply
+      dispatch composing `HistoryEntry::Ai { … }` from the pending
+      record + spawn-time identity + streaming accumulator peek,
+      18 new unit tests). Slice (d) — docs sweep + `.claude/issues/0010`
+      closed + brief 0008 anchors filled + ADR-0027 flipped to
+      Accepted. The cross-repo mirror (web-side v:2 pickup) is
+      tracked separately in [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md)._
+
 Exit criteria met for Stage 1: AI panel hidden cleanly when not
 configured; visible, two-mode, and usable when it is. Stage 2 Groups
-A (in-app settings + multi-provider switcher) and B (streaming +
-cancel + token meter) are now closed. Remaining Stage 2 deferrals
-(Group C = AI calls recorded in `history.jsonl` with a v:2 schema
-bump, Group D = full-DDL schema snapshots + function-calling) stay
-scoped to ADR-0023 §9.
+A (in-app settings + multi-provider switcher), B (streaming + cancel
++ token meter), and C (AI calls recorded in `history.jsonl` with a
+v:2 schema bump) are now closed. The remaining Stage 2 deferral
+(Group D = full-DDL schema snapshots + function-calling) stays
+scoped to ADR-0023 §9 and can land on its own ADR at any time.
 
 ## Phase 5 — Quality of life
 
