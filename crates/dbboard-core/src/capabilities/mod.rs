@@ -36,6 +36,11 @@ pub struct Capabilities {
     pub has_auth: bool,
     pub has_storage: bool,
     pub has_realtime: bool,
+    /// The adapter implements `DatabaseAdapter::describe_table`
+    /// (ADR-0028). `#[serde(default)]` keeps pre-ADR-0028
+    /// `/capabilities` payloads parseable — the flag reads as `false`.
+    #[serde(default)]
+    pub has_describe_table: bool,
 }
 
 #[cfg(test)]
@@ -50,6 +55,7 @@ mod tests {
         assert!(!caps.has_auth);
         assert!(!caps.has_storage);
         assert!(!caps.has_realtime);
+        assert!(!caps.has_describe_table);
     }
 
     #[test]
@@ -87,7 +93,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false}"#
         );
     }
 
@@ -99,9 +105,19 @@ mod tests {
             has_auth: true,
             has_storage: false,
             has_realtime: true,
+            has_describe_table: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();
         assert_eq!(back, caps);
+    }
+
+    #[test]
+    fn legacy_json_without_describe_table_flag_deserializes_as_false() {
+        // Pre-ADR-0028 `/capabilities` payloads do not carry the flag;
+        // they must keep parsing (additive wire contract, ADR-0012).
+        let json = r#"{"has_views":false,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":false}"#;
+        let caps: Capabilities = serde_json::from_str(json).unwrap();
+        assert!(!caps.has_describe_table);
     }
 }
