@@ -5,39 +5,72 @@
 
 ## 最終更新
 
-- 日付: 2026-07-02 (**ADR-0028 draft コミット済 (`00ac1b8`, docs-only) /
-  slice (a) 着手前に user review 待ち**。前セッションで PR #47
-  (ADR-0027 Group C) + PR #48 (post-PR47 chore) が着地 = `develop` =
-  `5cc01e3`。今セッションで maintainer から Group D 着手指示 → Group D
-  を 2 本の独立 ADR に分割する方針を提示 (ADR-0028 = full DDL extraction
-  = DB adapter 側 / ADR-0029 = function-calling / tool-use = AI provider
-  側)、ADR-0028 先行で合意。Explore agent で現状把握
-  (`DatabaseAdapter::list_tables` + `TableInfo` + 既存だが未使用の
-  `ColumnInfo` + 3 adapter 各 SQL + `SuggestRequest.schema` の使い方 +
-  `Capabilities` フラグ棚卸し) → ADR-0028 draft を `docs/decisions.md`
-  末尾に追記 (10 Decision + 4 slice plan + Out of scope / Open questions
-  / Risks 完備、351 行) + `.claude/issues/0011-ddl-extraction.md` トラッカ
-  新設。**3 論点を maintainer review へ提出済**: (1) Method 名は
-  `describe_table` (single-table primitive) vs `dump_schema` (whole-DB)、
-  (2) v1 scope は columns + composite PK のみで indexes / FK は将来
-  ADR、(3) UI 部分失敗時は warning banner + 続行。合意が取れ次第 slice
-  (a) = `dbboard-core` 拡張から着手。)
+- 日付: 2026-07-02 (**ADR-0028 全 4 slice 完了 = ADR Accepted、
+  `feature/ddl-extraction` 未 push で user の push + PR create 待ち**。
+  maintainer が 3 論点に「全部OKです。」+「GO」→ slice (a) `a42a27c`
+  (+review-fix `bba4072`) → slice (b) `b509a36` → slice (c) `dfdaaca`
+  → slice (d) docs sweep を一気通貫で実施。詳細は下の本セッション
+  セクション参照。)
 - ブランチ: `develop` (= `5cc01e3`)、ローカル `feature/ddl-extraction`
-  作業中 (1 commit = `00ac1b8` ADR-0028 draft + tracker issue 0011)。
-  未 push、review 合意後に slice (a) → (b) → (c) → (d) を積み上げてから
-  一括 push + PR create する運用予定 (ADR-0026/0027 の 4-slice-single-PR
-  pattern 踏襲)。
-- 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
-  Phase 4 Stage 2 Group A (ADR-0025) + Group B (ADR-0026) + Group C
-  (ADR-0027) 3 グループが `develop` 着地完了 = in-process スコープ
-  完結。Stage 2 残り Group D は 2 本の独立 ADR に分割 = D-1 (ADR-0028
-  = full DDL extraction) が今セッションで draft、D-2 (ADR-0029 =
-  function-calling / tool-use) は D-1 の primitive を tool として
-  expose する構造なので D-1 完了後に着手。in-process 完結、web 影響
-  なし。Phase 2 ADR-0024 at-rest hardening + ADR-0023 Stage 1 +
-  ADR-0025 完全実装 (4 slice 全着地) + ADR-0026 完全実装 (4 slice
-  全着地) + ADR-0027 完全実装 (4 slice 全着地) の 5 本が現状 D-1 /
-  D-2 への足場として load-bearing。**
+  作業完了 (ADR draft `00ac1b8` + slice 4 本 + docs sweep)。
+  **push + feat PR create が user 側のボール** (`.claude/next-actions.md`
+  参照)。merge 後に `chore/post-prNN-doc-sync` (roadmap tick +
+  project-status) を別 PR で出す = PR #47/#48 doc-split パターン。
+- 現在の Phase: **Phase 4 Stage 2 Group A (ADR-0025) + Group B
+  (ADR-0026) + Group C (ADR-0027) + Group D-1 (ADR-0028、本セッション
+  実装完了・PR 待ち) = in-process スコープ完結。Stage 2 残りは D-2
+  (ADR-0029 = function-calling / tool-use) のみ — D-1 の
+  `describe_table` を最初の tool として expose する構造で、前提が
+  今回すべて揃った。in-process 完結、web 影響なし。**
+
+### ADR-0028 slice (a)〜(d) 実装完了 (本セッション / 2026-07-02)
+
+- branch: `feature/ddl-extraction`、commit 積み上げ:
+  - `a42a27c` slice (a) = `dbboard-core`: `describe_table`
+    trait method (default = `DbError::Capability`)、`TableSchema`、
+    `ColumnInfo.ordinal` + `default_value` additive、
+    `Capabilities::has_describe_table` (JSON round-trip test 付き)。
+    review notes は `bba4072` で解消。
+  - `b509a36` slice (b) = turso (`PRAGMA table_info`) / d1 (同 PRAGMA
+    を HTTP envelope 経由) / postgres (`information_schema` 2 クエリ)
+    の 3 実装 + 各 `has_describe_table = true`。postgres 統合テストは
+    crate 既存の `DBBOARD_PG_URL` env-var self-skip パターン
+    (issue 0011 の当初記述「testcontainers」は実態に合わせ訂正済)。
+  - `dfdaaca` slice (c) = `SuggestRequest.full_schema:
+    Option<Vec<TableSchema>>` (additive) + Anthropic の compact
+    CREATE TABLE 風 rendering + worker `Command::PrefetchSchema` /
+    `Reply::SchemaPrefetched` fan-out (`tokio::sync::Semaphore` cap 8、
+    join_all で入力順保持、部分失敗は `(TableInfo, String)` で収集) +
+    `AiPanel`「Include column details」checkbox (Suggest モード +
+    `has_describe_table` 時のみ描画、session-local、default off) +
+    prefetch 中 spinner (cancel なし) + 部分失敗黄色 warning banner +
+    11 locale i18n (`ai-include-details` / `ai-prefetching` /
+    `ai-prefetch-warning`)。
+  - slice (d) = ADR-0028 Proposed → Accepted (2026-07-02、slice hash
+    埋め込み)、README AI 節に toggle + token コスト注意の 1 段落、
+    issue 0011 close、本ファイル + next-actions 更新。roadmap tick は
+    post-merge chore PR に送る (doc-split パターン)。
+- **計画からの逸脱 1 点 (ADR status block に記録済)**: ADR の
+  「`apps/dbboard` untouched」想定は成立しなかった。UI worker が
+  live adapter に到達する in-process 経路が存在しないため、narrow trait
+  `SchemaSource { current_adapter() -> Arc<dyn DatabaseAdapter> }` を
+  `dbboard-ui::worker` に新設し、binary が `DesktopSchemaSource`
+  (server `AppState` の `current_adapter()` を pub 化して委譲) で実装。
+  `ConnectionSwitcher` / `AiProviderSwitcher` と同じ injection パターン。
+  HTTP contract は不変。
+- Open questions の決着: prompt-size cap は v1 見送り (toggle opt-in +
+  ADR-0026 token meter で可視、friction 到来時に再訪)。prefetch 中の
+  cancel も見送り (fan-out は短時間で有界、後続 Suggest は従来通り
+  cancel 可)。
+- 検証: fmt / clippy -D warnings (pedantic) / check / test 全グリーン。
+  クリップ 1 件 (`struct_excessive_bools` on `AiPanel`) は
+  `Capabilities` の precedent に倣い理由コメント付き allow で解消。
+
+### 旧記録: ADR-0028 draft コミット時点の Phase メモ (2026-07-02 前半)
+
+- Phase 2 ADR-0024 at-rest hardening + ADR-0023 Stage 1 + ADR-0025 /
+  0026 / 0027 完全実装 (各 4 slice 全着地) の 5 本が D-1 / D-2 への
+  足場として load-bearing。
 
 ### ADR-0028 (Phase 4 Stage 2 Group D-1 = full DDL extraction) draft コミット (本セッション / 2026-07-02)
 
