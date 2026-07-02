@@ -40,10 +40,11 @@ use std::thread;
 use dbboard_ai::{
     AiError, AiProvider, AiStream, ExplainRequest, StopReason, StreamEvent, SuggestRequest,
 };
-use dbboard_core::DbError;
+use dbboard_core::{DatabaseAdapter, DbError, TableInfo, TableSchema};
 use eframe::egui;
 use futures_util::StreamExt;
 use tokio::sync::mpsc as tmpsc;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 /// Shared, atomically-swappable slot for the active AI provider
@@ -117,6 +118,27 @@ pub trait AiProviderSwitcher: Send + Sync + 'static {
     fn switch(&self, id: &str) -> Result<(), AiError>;
 }
 
+/// Live-adapter view for `Command::PrefetchSchema` (ADR-0028
+/// Decision 9). Same injection pattern as [`ConnectionSwitcher`] /
+/// [`AiProviderSwitcher`]: the desktop binary implements it over the
+/// server's `AppState` (whose `current_adapter()` is the same
+/// per-request snapshot the HTTP handlers use), so the fan-out sees the
+/// adapter that is live *at dispatch time* — a connection switch
+/// between commands is picked up on the next prefetch. Kept narrow on
+/// purpose: the worker only ever needs a snapshot, never the slot.
+pub trait SchemaSource: Send + Sync + 'static {
+    /// Snapshot the currently-live adapter. The returned `Arc` is
+    /// stable for the duration of one fan-out; a concurrent swap
+    /// affects the *next* snapshot, mirroring ADR-0020's per-request
+    /// capture.
+    fn current_adapter(&self) -> Arc<dyn DatabaseAdapter>;
+}
+
+/// Concurrency cap for the `describe_table` fan-out (ADR-0028
+/// Decision 9): bounded so a 200-table schema cannot exhaust the
+/// adapter's connection pool or hammer a serverless endpoint.
+const MAX_CONCURRENT_DESCRIBES: usize = 8;
+
 /// Spawn the worker thread. `base_url` is the loopback server root the
 /// binary just started (e.g. `http://127.0.0.1:54123`). `switcher` is
 /// the in-process bridge used to handle `SwitchConnection` commands.
@@ -128,6 +150,11 @@ pub trait AiProviderSwitcher: Send + Sync + 'static {
 /// to surface immediately as `Reply::AiFailed { AiError::Configuration }`
 /// — defence-in-depth, since the UI panel is already gated on
 /// `has_ai_provider()`.
+// Same rationale as `connect`: one more injected handle per in-process
+// concern (ADR-0020 switcher, ADR-0025 ai_switcher, ADR-0028
+// schema_source); the queued struct-builder refactor will collapse
+// these together.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_worker(
     base_url: String,
     cmd_rx: Receiver<Command>,
@@ -136,6 +163,7 @@ pub(crate) fn spawn_worker(
     switcher: Arc<dyn ConnectionSwitcher>,
     ai_switcher: Arc<dyn AiProviderSwitcher>,
     ai_provider_slot: AiProviderSlot,
+    schema_source: Option<Arc<dyn SchemaSource>>,
 ) {
     thread::Builder::new()
         .name("dbboard-http-worker".into())
@@ -148,11 +176,13 @@ pub(crate) fn spawn_worker(
                 switcher,
                 ai_switcher,
                 ai_provider_slot,
+                schema_source,
             );
         })
         .expect("spawn dbboard-http-worker thread");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_worker(
     base_url: &str,
     cmd_rx: Receiver<Command>,
@@ -161,6 +191,7 @@ fn run_worker(
     switcher: Arc<dyn ConnectionSwitcher>,
     ai_switcher: Arc<dyn AiProviderSwitcher>,
     ai_provider_slot: AiProviderSlot,
+    schema_source: Option<Arc<dyn SchemaSource>>,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -214,6 +245,7 @@ fn run_worker(
         switcher,
         ai_switcher,
         ai_provider_slot,
+        schema_source,
     ));
 }
 
@@ -227,6 +259,7 @@ async fn run_command_loop(
     switcher: Arc<dyn ConnectionSwitcher>,
     ai_switcher: Arc<dyn AiProviderSwitcher>,
     ai_provider_slot: AiProviderSlot,
+    schema_source: Option<Arc<dyn SchemaSource>>,
 ) {
     // Single-slot in-flight AI cancel handle. ADR-0026's UI gates every
     // AI command on `busy`, so at most one AI request is in flight at
@@ -246,6 +279,7 @@ async fn run_command_loop(
             switcher.as_ref(),
             ai_switcher.as_ref(),
             &ai_provider_slot,
+            schema_source.as_deref(),
         )
         .await;
     }
@@ -266,6 +300,7 @@ async fn handle_command(
     switcher: &dyn ConnectionSwitcher,
     ai_switcher: &dyn AiProviderSwitcher,
     ai_provider_slot: &AiProviderSlot,
+    schema_source: Option<&dyn SchemaSource>,
 ) {
     match cmd {
         // ADR-0026 Decision 5/10/12: cancel the in-flight AI request,
@@ -304,6 +339,7 @@ async fn handle_command(
             prompt,
             dialect,
             schema,
+            full_schema,
         } => {
             spawn_ai_task(
                 in_flight,
@@ -317,6 +353,7 @@ async fn handle_command(
                             prompt,
                             dialect,
                             schema,
+                            full_schema,
                         },
                         id,
                         t,
@@ -351,6 +388,7 @@ async fn handle_command(
             prompt,
             dialect,
             schema,
+            full_schema,
         } => {
             spawn_ai_task(
                 in_flight,
@@ -364,6 +402,7 @@ async fn handle_command(
                             prompt,
                             dialect,
                             schema,
+                            full_schema,
                         },
                         id,
                         t,
@@ -394,6 +433,32 @@ async fn handle_command(
             let _ = reply_tx.send(reply);
             egui_ctx.request_repaint();
         }
+        // ADR-0028 Decision 9: describe_table fan-out. Awaited inline —
+        // the panel keeps its Send gate up (busy) while the prefetch is
+        // in flight, so no other AI command competes for the loop, and
+        // individual describes are short. In-process, never HTTP.
+        Command::PrefetchSchema { tables } => {
+            let reply = match schema_source {
+                Some(source) => {
+                    let adapter = source.current_adapter();
+                    let (schemas, errors) = prefetch_schemas(adapter, tables).await;
+                    Reply::SchemaPrefetched { schemas, errors }
+                }
+                // Defence-in-depth: the panel only issues PrefetchSchema
+                // when db_has_describe_table() said yes, which requires
+                // a wired source. Answer totally anyway so a stray
+                // command cannot strand the panel in its busy state.
+                None => Reply::SchemaPrefetched {
+                    schemas: Vec::new(),
+                    errors: tables
+                        .into_iter()
+                        .map(|t| (t, "no schema source wired".to_string()))
+                        .collect(),
+                },
+            };
+            let _ = reply_tx.send(reply);
+            egui_ctx.request_repaint();
+        }
         // HTTP arms — short round-trips, awaited inline.
         cmd @ (Command::ListTables | Command::Query(_)) => {
             let request = client::request_for(&cmd);
@@ -402,6 +467,45 @@ async fn handle_command(
             egui_ctx.request_repaint();
         }
     }
+}
+
+/// Fan out `describe_table` over `tables`, at most
+/// [`MAX_CONCURRENT_DESCRIBES`] in flight at once (ADR-0028
+/// Decision 9). `join_all` preserves input order on both the success
+/// and the error side, so the downstream prompt rendering is
+/// deterministic regardless of per-table completion timing.
+pub(crate) async fn prefetch_schemas(
+    adapter: Arc<dyn DatabaseAdapter>,
+    tables: Vec<TableInfo>,
+) -> (Vec<TableSchema>, Vec<(TableInfo, String)>) {
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_DESCRIBES));
+    let describes = tables.into_iter().map(|table| {
+        let adapter = Arc::clone(&adapter);
+        let semaphore = Arc::clone(&semaphore);
+        async move {
+            // `acquire_owned` fails only when the semaphore is closed,
+            // which never happens here (we never call `close`). Mapped
+            // to a per-table error rather than unwrapped so the fan-out
+            // stays total even if that invariant ever breaks.
+            let result = match semaphore.acquire_owned().await {
+                Ok(_permit) => adapter
+                    .describe_table(&table)
+                    .await
+                    .map_err(|e| e.message().to_string()),
+                Err(_) => Err("describe_table scheduling failed".to_string()),
+            };
+            (table, result)
+        }
+    });
+    let mut schemas = Vec::new();
+    let mut errors = Vec::new();
+    for (table, result) in futures_util::future::join_all(describes).await {
+        match result {
+            Ok(schema) => schemas.push(schema),
+            Err(message) => errors.push((table, message)),
+        }
+    }
+    (schemas, errors)
 }
 
 /// Wire up an AI task: snapshot the provider AND its identity, install
@@ -809,6 +913,17 @@ fn report_fatal(
             Command::SwitchAiProvider { .. } => Reply::AiProviderSwitchFailed {
                 reason: format!("ai worker unavailable: {}", err.message()),
             },
+            // All-errors reply keeps the panel's prefetch state machine
+            // moving: it fires the pending Suggest with an empty
+            // full_schema, whose AiFailed terminal (also produced here)
+            // then resets the panel.
+            Command::PrefetchSchema { tables } => Reply::SchemaPrefetched {
+                schemas: Vec::new(),
+                errors: tables
+                    .into_iter()
+                    .map(|t| (t, err.message().to_string()))
+                    .collect(),
+            },
         };
         if reply_tx.send(reply).is_err() {
             break;
@@ -820,15 +935,18 @@ fn report_fatal(
 #[cfg(test)]
 mod tests {
     use super::{
-        run_explain_atomic, run_explain_stream, run_suggest_atomic, run_suggest_stream,
-        AiProviderSwitcher, ConnectionSwitcher,
+        prefetch_schemas, run_explain_atomic, run_explain_stream, run_suggest_atomic,
+        run_suggest_stream, AiProviderSwitcher, ConnectionSwitcher, MAX_CONCURRENT_DESCRIBES,
     };
     use crate::Reply;
     use dbboard_ai::{
         AiCapabilities, AiError, AiProvider, AiResponse, AiResult, AiStream, ExplainRequest,
         StopReason, StreamEvent, SuggestRequest,
     };
-    use dbboard_core::DbError;
+    use dbboard_core::{
+        Capabilities, ColumnInfo, DatabaseAdapter, DbError, DbResult, QueryResult, TableInfo,
+        TableSchema,
+    };
     use eframe::egui;
     use futures_util::stream;
     use std::sync::mpsc;
@@ -1016,6 +1134,7 @@ mod tests {
             prompt: "active users".into(),
             dialect: None,
             schema: Vec::new(),
+            full_schema: None,
         }
     }
 
@@ -1397,6 +1516,129 @@ mod tests {
                 model,
             } if provider == "unknown" && model.is_empty()
         ));
+    }
+
+    // ---- ADR-0028: PrefetchSchema fan-out ------------------------------
+
+    /// Adapter stub for the describe fan-out: succeeds with a one-column
+    /// schema unless the table name starts with `bad`, and tracks the
+    /// high-water mark of concurrent `describe_table` calls.
+    struct DescribeAdapter {
+        current: AtomicUsize,
+        max_seen: AtomicUsize,
+        delay: Duration,
+    }
+
+    impl DescribeAdapter {
+        fn new(delay: Duration) -> Self {
+            Self {
+                current: AtomicUsize::new(0),
+                max_seen: AtomicUsize::new(0),
+                delay,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DatabaseAdapter for DescribeAdapter {
+        fn id(&self) -> &'static str {
+            "describe-stub"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                has_describe_table: true,
+                ..Capabilities::default()
+            }
+        }
+        async fn ping(&self) -> DbResult<()> {
+            Ok(())
+        }
+        async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+            Ok(Vec::new())
+        }
+        async fn query(&self, _sql: &str) -> DbResult<QueryResult> {
+            Ok(QueryResult::empty())
+        }
+        async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+            let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_seen.fetch_max(now, Ordering::SeqCst);
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            self.current.fetch_sub(1, Ordering::SeqCst);
+            if table.name.starts_with("bad") {
+                return Err(DbError::Schema(format!("no such table: {}", table.name)));
+            }
+            Ok(TableSchema {
+                table: table.clone(),
+                columns: vec![ColumnInfo {
+                    name: "id".into(),
+                    declared_type: Some("INTEGER".into()),
+                    nullable: false,
+                    primary_key: true,
+                    ordinal: 1,
+                    default_value: None,
+                }],
+                primary_key: vec!["id".into()],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn prefetch_schemas_partitions_successes_and_errors_in_input_order() {
+        let adapter: Arc<dyn DatabaseAdapter> = Arc::new(DescribeAdapter::new(Duration::ZERO));
+        let tables = vec![
+            TableInfo::unqualified("alpha"),
+            TableInfo::unqualified("bad_one"),
+            TableInfo::unqualified("beta"),
+            TableInfo::unqualified("bad_two"),
+            TableInfo::unqualified("gamma"),
+        ];
+        let (schemas, errors) = prefetch_schemas(adapter, tables).await;
+
+        let names: Vec<&str> = schemas.iter().map(|s| s.table.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "beta", "gamma"], "input order preserved");
+        let failed: Vec<&str> = errors.iter().map(|(t, _)| t.name.as_str()).collect();
+        assert_eq!(failed, ["bad_one", "bad_two"]);
+        assert!(
+            errors[0].1.contains("no such table: bad_one"),
+            "error message travels with the table: {}",
+            errors[0].1
+        );
+    }
+
+    #[tokio::test]
+    async fn prefetch_schemas_with_no_tables_returns_empty_partitions() {
+        let adapter: Arc<dyn DatabaseAdapter> = Arc::new(DescribeAdapter::new(Duration::ZERO));
+        let (schemas, errors) = prefetch_schemas(adapter, Vec::new()).await;
+        assert!(schemas.is_empty());
+        assert!(errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prefetch_schemas_caps_concurrent_describes_at_the_semaphore_limit() {
+        // 3x the cap worth of tables, each holding its permit across a
+        // sleep, so an uncapped join_all would show ~24 concurrent
+        // calls. The high-water mark must never exceed the cap.
+        let adapter = Arc::new(DescribeAdapter::new(Duration::from_millis(10)));
+        let tables: Vec<TableInfo> = (0..MAX_CONCURRENT_DESCRIBES * 3)
+            .map(|i| TableInfo::unqualified(format!("t{i}")))
+            .collect();
+        let expected = tables.len();
+        let (schemas, errors) =
+            prefetch_schemas(Arc::clone(&adapter) as Arc<dyn DatabaseAdapter>, tables).await;
+
+        assert_eq!(schemas.len(), expected);
+        assert!(errors.is_empty());
+        let max_seen = adapter.max_seen.load(Ordering::SeqCst);
+        assert!(
+            max_seen <= MAX_CONCURRENT_DESCRIBES,
+            "semaphore must cap concurrency: saw {max_seen}, cap {MAX_CONCURRENT_DESCRIBES}"
+        );
+        assert!(
+            max_seen > 1,
+            "fan-out must actually run describes concurrently, saw {max_seen}"
+        );
     }
 
     #[tokio::test]

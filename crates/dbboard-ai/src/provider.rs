@@ -232,6 +232,7 @@ mod tests {
                     dbboard_core::TableInfo::qualified("public", "users"),
                     dbboard_core::TableInfo::qualified("public", "sessions"),
                 ],
+                full_schema: None,
             })
             .await
             .unwrap();
@@ -289,6 +290,7 @@ mod tests {
                 prompt: "active users".into(),
                 dialect: None,
                 schema: vec![dbboard_core::TableInfo::qualified("public", "users")],
+                full_schema: None,
             })
             .await
             .unwrap();
@@ -347,6 +349,7 @@ mod tests {
                 prompt: String::new(),
                 dialect: None,
                 schema: Vec::new(),
+                full_schema: None,
             })
             .await
         else {
@@ -372,6 +375,7 @@ mod tests {
                 prompt: String::new(),
                 dialect: None,
                 schema: Vec::new(),
+                full_schema: None,
             })
             .await
             .unwrap_err();

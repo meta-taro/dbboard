@@ -84,3 +84,7 @@ ai-settings-field-api-key = API 金鑰
 ai-settings-replace-api-key = 取代 API 金鑰
 ai-settings-kind-anthropic = Anthropic
 ai-active-with-name = 使用中：{ $name }
+
+ai-include-details = 包含欄位詳細資訊
+ai-prefetching = 正在取得資料表結構…
+ai-prefetch-warning = 有 { $count } 個資料表無法取得結構，將略過並繼續。

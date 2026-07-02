@@ -85,3 +85,7 @@ ai-settings-field-api-key = API-Schlüssel
 ai-settings-replace-api-key = API-Schlüssel ersetzen
 ai-settings-kind-anthropic = Anthropic
 ai-active-with-name = Aktiv: { $name }
+
+ai-include-details = Spaltendetails einbeziehen
+ai-prefetching = Tabellenschemata werden abgerufen…
+ai-prefetch-warning = { $count } Tabelle(n) konnten nicht beschrieben werden; es wird ohne sie fortgefahren.

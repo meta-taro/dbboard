@@ -48,7 +48,7 @@ use dbboard_server::{
 };
 use dbboard_ui::{
     AiProviderSlot, AiProviderSwitcher, AiSettingsView, ConnectionSwitcher, ConnectionsView,
-    DbError, DbboardApp, PersistentHistoryStore, DEFAULT_CAPACITY,
+    DatabaseAdapter, DbError, DbboardApp, PersistentHistoryStore, SchemaSource, DEFAULT_CAPACITY,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -185,6 +185,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // file the switcher reads from.
     let (ai_provider_slot, ai_switcher, ai_admin) = bootstrap_ai(&secrets);
 
+    // ADR-0028 slice (c): hand the UI worker the same live-adapter
+    // snapshot the HTTP router reads, so the `describe_table` fan-out
+    // behind "Include column details" stays in-process and follows
+    // connection switches automatically.
+    let schema_source: Arc<dyn SchemaSource> = Arc::new(DesktopSchemaSource {
+        state: server.state(),
+    });
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
         ..Default::default()
@@ -204,6 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 switcher,
                 ai_switcher,
                 ai_provider_slot,
+                Some(schema_source),
             );
             Ok(Box::new(DesktopApp::new(inner, admin, ai_admin)))
         }),
@@ -372,6 +381,21 @@ impl ConnectionSwitcher for DesktopSwitcher {
             })?;
         swap_backend(&self.state, adapter);
         Ok(())
+    }
+}
+
+/// Production [`SchemaSource`] impl (ADR-0028 slice (c)). One-method
+/// pass-through to the server's `AppState`: the worker's
+/// `PrefetchSchema` fan-out snapshots the same adapter the HTTP
+/// handlers capture per request, so a connection switch between
+/// commands is picked up on the next prefetch without extra plumbing.
+struct DesktopSchemaSource {
+    state: AppState,
+}
+
+impl SchemaSource for DesktopSchemaSource {
+    fn current_adapter(&self) -> Arc<dyn DatabaseAdapter> {
+        self.state.current_adapter()
     }
 }
 

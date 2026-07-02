@@ -68,6 +68,7 @@ async fn suggest_sql_round_trips_through_the_mock_server() {
             prompt: "all users".into(),
             dialect: Some("postgres".into()),
             schema: vec![TableInfo::qualified("public", "users")],
+            full_schema: None,
         })
         .await
         .expect("suggest ok");

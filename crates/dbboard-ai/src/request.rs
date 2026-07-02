@@ -8,10 +8,11 @@
 //! `dialect` is an optional hint (`"postgres"`, `"sqlite"`, `"d1-sql"`,
 //! …) derived from the active adapter's `id()` so the provider can
 //! tailor its output. `schema` on `SuggestRequest` carries the current
-//! `list_tables()` result; full DDL extraction is a Stage 2 concern
-//! requiring a `DatabaseAdapter::dump_schema` extension.
+//! `list_tables()` result; `full_schema` (ADR-0028 Decision 8) carries
+//! the per-table `describe_table` results when the UI's
+//! "Include column details" toggle is on.
 
-use dbboard_core::TableInfo;
+use dbboard_core::{TableInfo, TableSchema};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExplainRequest {
@@ -24,6 +25,13 @@ pub struct SuggestRequest {
     pub prompt: String,
     pub dialect: Option<String>,
     pub schema: Vec<TableInfo>,
+    /// Full per-table column + primary-key descriptions (ADR-0028
+    /// Decision 8). `None` (or `Some` with an empty vec) means the
+    /// caller only has table names — providers fall back to rendering
+    /// [`Self::schema`]. When non-empty, providers prefer this over
+    /// `schema`. Additive: existing callers pass `None` and behave
+    /// exactly as before.
+    pub full_schema: Option<Vec<TableSchema>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +60,7 @@ pub struct AiResponse {
 #[cfg(test)]
 mod tests {
     use super::{AiResponse, ExplainRequest, SuggestRequest};
-    use dbboard_core::TableInfo;
+    use dbboard_core::{ColumnInfo, TableInfo, TableSchema};
 
     #[test]
     fn explain_request_holds_sql_and_optional_dialect() {
@@ -78,10 +86,43 @@ mod tests {
                 TableInfo::qualified("public", "users"),
                 TableInfo::qualified("public", "sessions"),
             ],
+            full_schema: None,
         };
         assert_eq!(req.schema.len(), 2);
         assert_eq!(req.schema[0].name, "users");
         assert_eq!(req.schema[1].schema.as_deref(), Some("public"));
+        assert!(req.full_schema.is_none());
+    }
+
+    #[test]
+    fn suggest_request_carries_optional_full_schema_descriptions() {
+        // ADR-0028 Decision 8: `full_schema` rides alongside the
+        // names-only `schema` list; both may be present and the
+        // provider prefers `full_schema` when non-empty.
+        let table = TableInfo::qualified("public", "users");
+        let req = SuggestRequest {
+            prompt: "monthly active users".into(),
+            dialect: Some("postgres".into()),
+            schema: vec![table.clone()],
+            full_schema: Some(vec![TableSchema {
+                table,
+                columns: vec![ColumnInfo {
+                    name: "id".into(),
+                    declared_type: Some("integer".into()),
+                    nullable: false,
+                    primary_key: true,
+                    ordinal: 1,
+                    default_value: Some("nextval('users_id_seq'::regclass)".into()),
+                }],
+                primary_key: vec!["id".into()],
+            }]),
+        };
+        let full = req.full_schema.as_ref().expect("full schema present");
+        assert_eq!(full.len(), 1);
+        assert_eq!(full[0].columns[0].name, "id");
+        assert_eq!(full[0].primary_key, vec!["id".to_owned()]);
+        // Clone still works for channel dispatch with the new field.
+        assert_eq!(req.clone(), req);
     }
 
     #[test]
