@@ -9,132 +9,112 @@
 
 - 日付: 2026-07-02
 - develop tip: `5cc01e3` (PR #48 = post-PR47 chore doc-sync merged)
-- 作業ブランチ: `feature/ddl-extraction` (未 push、1 commit =
-  `00ac1b8` ADR-0028 draft + tracker issue 0011)
+- 作業ブランチ: `feature/ddl-extraction` (**未 push、全 slice 完了**)
 - 直近ハイライト: **ADR-0028 (Phase 4 Stage 2 Group D-1 = full DDL
-  extraction via `DatabaseAdapter::describe_table`) draft を
-  `docs/decisions.md` 末尾に追記 + `.claude/issues/0011-ddl-extraction.md`
-  トラッカ新設**。Group D は 2 本の独立 ADR に分割 = D-1 (ADR-0028 = DB
-  adapter 側、今 draft) と D-2 (ADR-0029 = AI provider 側の
-  function-calling / tool-use、D-1 完了後着手)。10 Decision + 4 slice
-  plan (a: core 拡張 / b: 3 adapter 実装 / c: dbboard-ai + UI plumbing /
-  d: docs sweep)。3 論点 (method 名 / v1 scope narrow / UI 部分失敗
-  挙動) を maintainer review 待ち = **本セッション末時点で slice
-  未着手**。
+  extraction) 全 4 slice 完了、ADR Accepted (2026-07-02)**。
+  - slice (a) `a42a27c` + review-fix `bba4072` = core 拡張
+    (`describe_table` trait method / `TableSchema` /
+    `ColumnInfo.ordinal`+`default_value` / `has_describe_table`)
+  - slice (b) `b509a36` = turso / d1 / postgres の 3 adapter 実装
+  - slice (c) `dfdaaca` = `SuggestRequest.full_schema` + Anthropic
+    prompt rendering + worker `PrefetchSchema` fan-out (Semaphore 8) +
+    `AiPanel`「Include column details」checkbox + 部分失敗 warning
+    banner + 11 locale i18n。計画からの逸脱 1 点: `apps/dbboard` に
+    `DesktopSchemaSource` (新 narrow trait `SchemaSource` の impl) を
+    配線 (ADR status block に記録済)。
+  - slice (d) = docs sweep (ADR Accepted 化 / README AI 節 /
+    issue 0011 close / 本ファイル + project-status)
+- 検証: fmt / clippy -D warnings / check / test 全グリーン
+  (pre-commit hook でも再検証済)。
 
 ## モード
 
 **in-use / continuous-improvement (menu-not-sequence)** — 2026-06-24 以降。
 ロードマップ順ではなく実利用の摩擦報告を優先。
-Group A / B / C 3 グループ完了。Group D は 2 分割で D-1 が今 draft、
-D-2 は D-1 の primitive を tool として expose する構造なので D-1
-完了後に着手予定。
+Group A / B / C / **D-1** 完了。残りは D-2 (ADR-0029 =
+function-calling / tool-use、`describe_table` を最初の tool として
+expose) のみ。
 
 ---
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### **★ 最優先: ADR-0028 draft の review + 3 論点への回答**
+### **★ 最優先: `feature/ddl-extraction` の push + PR 作成**
 
-- **何**: `feature/ddl-extraction` の `00ac1b8` に含まれる ADR-0028
-  draft を読み、3 論点への OK/NG を返す。
-  1. Method 名 = `describe_table(&TableInfo)` (single-table primitive)
-     vs `dump_schema` (whole-DB, ADR-0023 §7 queued name) — draft 側は
-     前者採用 (function-calling 用途 + 大規模 schema の効率)。
-  2. v1 scope = columns + composite PK のみ、indexes / FK は将来 ADR。
-     narrow first pattern (ADR-0026/0027 継承)。FK を初回から含める
-     案あり得るが、hallucination pattern 実データを見てから追加方針。
-  3. UI 部分失敗挙動 = M 個中 N 個 describe 失敗時 = warning banner
-     "N tables could not be described" + 残りで Suggest 続行、全失敗
-     のみ block。cancel token 中断は open question として明記済。
-- **確認方法**: `docs/decisions.md` の ADR-0028 セクション (末尾) +
-  `.claude/issues/0011-ddl-extraction.md`。
-- **合意が取れたら**: 私が slice (a) = `dbboard-core` 拡張から順に
-  積み上げる (ADR-0026/0027 の 4-slice-single-branch pattern)。
-  push + PR create は全 slice 完了後 = user 側のボールに戻る。
-- **論点への修正が入る場合**: ADR-0028 draft を amend (別 commit)。
-  slice 着手前に確定させたい。
+- **何**: 全 slice 完了済みのブランチを push し、develop に対して
+  feat PR を 1 本立てる (PR #45/#47 パターン)。
+  ```
+  git push -u origin feature/ddl-extraction
+  ```
+  PR 本文は commit 5 本 (`00ac1b8` ADR draft → `a42a27c` → `bba4072`
+  → `b509a36` → `dfdaaca` → docs sweep commit) の積み上げを要約。
+  希望があれば私が PR 本文ドラフトを用意する。
+- **動作確認の観点** (Pre-Push Checklist):
+  1. AI provider 設定済みの状態で Suggest モードを開くと
+     「Include column details」checkbox が出る (describe 可能な
+     adapter = 3 種すべて)。
+  2. checkbox ON で Send → 「Fetching table schemas…」表示 →
+     Suggest が実 column 名を使った SQL を返す。
+  3. 存在しない/権限のない table が混じると黄色 warning
+     「Could not describe N table(s)…」が出るが Suggest は続行。
+  4. token meter が names-only 時より増える (= full schema が
+     prompt に載っている証拠)。
+- **merge 後**: 私が `chore/post-prNN-doc-sync` を作る
+  (roadmap Group D-1 tick + project-status + memory 更新。
+  README/ADR は feat PR 側に同梱済 = PR #47/#48 doc-split パターン)。
 
-### 選択肢 1: ADR-0028 slice (a) 着手 (review 通過後)
+### 選択肢 1: ADR-0029 (Group D-2 = function-calling) draft 着手
 
-- Slice (a) スコープ:
-  - `crates/dbboard-core/src/schema.rs` に `TableSchema` struct 追加
-    (fields: `table: TableInfo`, `columns: Vec<ColumnInfo>`,
-    `primary_key: Vec<String>`)。
-  - `ColumnInfo` に `ordinal: u32` + `default_value: Option<String>` を
-    additive で追加。
-  - `crates/dbboard-core/src/adapter.rs` の `DatabaseAdapter` trait に
-    `async fn describe_table(&self, table: &TableInfo) ->
-    DbResult<TableSchema>` を **default impl 付き** で追加、default は
-    `DbError::Capability("describe_table not supported by this
-    adapter")` を返す。
-  - `Capabilities::has_describe_table: bool` を additive で追加、default
-    `false`、JSON round-trip test を追加。
-  - unit test: capability flag round-trip / default trait impl の
-    Capability error / TableSchema 構築 round-trip / Postgres / Turso / D1
-    が既存の default impl を継承していることの smoke test。
-  - 検証: fmt / clippy -D warnings / check / test / release build / release test。
-- adapter 実装は slice (a) には入らず、slice (b) で 3 adapter まとめて。
+- D-1 の `describe_table` primitive が landed = D-2 の前提が揃った。
+- 内容: AI provider 側に tool-use surface を追加し、`describe_table`
+  を最初の callable tool として expose。Anthropic Messages API の
+  `tools` パラメータ + `tool_use`/`tool_result` content block 対応。
+- in-process only の見込み (HTTP contract 変更なし) だが、確定は
+  ADR 起票時に判断。
+- feat PR (D-1) の merge を待たずに draft だけ先行することも可能。
 
 ### 選択肢 2: 現状 friction 報告
 
-- ADR-0028 の 3 論点を横に置き、実利用で困っていることがあれば
-  優先。例:
-  > 「AI history の record を history panel に描画してほしい」
-    (ADR-0027 out-of-scope で意図的に deferred = rich viewer は
-    次 PR で拾える)
-  > 「Suggest が column 名を hallucinate する件、v1 scope に FK 入れて
-    もっと精度上げてほしい」→ ADR-0028 論点 2 の修正扱い
-  > 「Include column details toggle は default ON でよくない？」
-    → ADR-0028 Decision 9 の修正扱い
-- friction 由来の修正は ADR-0028 amend か、まったく別の feat PR に
-  なる (どちらかは内容次第)。
+- 実利用で困っていることがあれば優先。例:
+  > 「AI history record を history panel に描画してほしい」
+    (ADR-0027 で意図的に deferred = rich viewer)
+  > 「Include column details を session 跨ぎで記憶してほしい」
+    → ADR-0028 out-of-scope 明記済、`ui-preferences.toml` 系の
+    小 ADR で拾える
+  > 「大規模 schema で prompt が重い」→ ADR-0028 open question
+    (prompt-size cap) の再訪 = 実測 friction が来たら着手の約束
+- schema browser UI (tables → columns tree) も `describe_table` の
+  自然な consumer として今なら安く作れる。
 
-### 選択肢 3: ADR-0028 を一旦棚上げ、別作業
+### 選択肢 3: web 側状態の確認
 
-- `feature/ddl-extraction` を `git stash` 相当で寝かせて別 feat/chore
-  を並行できる (ローカル branch なので origin へ影響なし)。
-- 復帰時は本ファイルと `docs/decisions.md` の ADR-0028 status
-  (Proposed) を read するだけで context 復旧可能。
-
-### 選択肢 4: web 側状態の確認
-
-- brief 0008 (`0008-web-history-v2-mirror.md`) は Anchors 埋め済
-  (desktop 側 merge commit `768e009` 反映済)。web 側で v:2 schema mirror
-  + v:1 back-compat test + `describe.skip` flip (v:1 fixture 分) が
-  pending。desktop 側 v:2 fixture handoff は brief §Handoff §3 の通り、
-  今後の follow-up で提供予定 (ADR-0028 とは独立、任意タイミング)。
-- ADR-0028 は **HTTP contract 変更なし + `history.jsonl` schema 変更
-  なし** = web 側に新規ミラー作業は発生しない。brief も不要。
-  ADR-0029 (function-calling) も同じ posture (in-process のみ) の見込み
-  だが確定は D-2 の ADR 起票時。
+- brief 0008 (`0008-web-history-v2-mirror.md`) = v:2 schema mirror が
+  web 側 pending。desktop 側 v:2 fixture handoff は follow-up のまま。
+- ADR-0028 は **HTTP contract 変更なし + `history.jsonl` 変更なし** =
+  web ミラー不要、brief 不要 (ADR 冒頭に明記済)。
 - 完了通知が来たら memory ([[dbboard-web-state]]) を更新する。
 
 ---
 
 ## web 側 (情報のみ・ボールは web 側)
 
-- brief 0008 = v:2 schema mirror が web 側 pending (前セッション末で
-  Anchors 埋め済)。desktop 側 v:2 fixture handoff は follow-up。
-- ADR-0028 (D-1) / ADR-0029 (D-2) はいずれも **in-process only、web 側
-  ミラー不要**。ADR-0025 (Group A) / ADR-0026 (Group B) と同じ posture。
+- brief 0008 = v:2 schema mirror が web 側 pending。
+- ADR-0028 (D-1) は in-process only、web ミラー不要 (確定)。
+  ADR-0029 (D-2) も同 posture の見込み、確定は起票時。
 - 上記以外の coordination は現時点で pending なし。
 
 ---
 
 ## 私単独で進められる作業がない理由 (確認用)
 
-1. ADR-0028 draft の 3 論点は maintainer の設計判断領域 = review
-   通過が slice (a) 着手の前提。
-2. 論点 (2) の scope 判断 (FK 含める / 含めない) は実利用の hallucination
-   pattern 情報が maintainer 側にある。
-3. 論点 (3) の UI 挙動 (部分失敗時の block vs 続行) は UX judgment、
-   私が単独で決めるべきでない。
-4. push は user (CLAUDE.md mandate)。全 slice 完了後の push + PR
-   create も同様。
+1. push + PR create は user (CLAUDE.md mandate)。全 slice 完了済み
+   なので、これが唯一のブロッカー。
+2. ADR-0029 draft は着手可能だが、D-1 の PR review で設計 feedback が
+   入る可能性を考えると merge 待ちが安全 (先行 draft は user 判断)。
+3. friction 報告は実利用者 = maintainer からしか来ない。
 
-→ 3 論点への OK/NG 返答 → slice 着手が user 側のボール。棚上げして
-   別作業を優先するのも menu-not-sequence の範囲で OK。
+→ **push + PR 作成が user 側のボール**。並行で ADR-0029 draft 指示 /
+   friction 報告も menu-not-sequence の範囲で OK。
 
 ---
 
