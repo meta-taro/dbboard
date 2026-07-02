@@ -3795,8 +3795,31 @@ moves through brief 0008.
 
 ## ADR-0028 — Phase 4 Stage 2 Group D-1: Full DDL extraction via `DatabaseAdapter::describe_table`
 
-- **Status:** Proposed (2026-07-01). Implementation tracker:
-  [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md).
+- **Status:** Accepted (2026-07-02). Implementation tracker:
+  [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md)
+  (closed). Lands on `feature/ddl-extraction` across four commits:
+  - Slice (a) `a42a27c` — `dbboard-core` trait method + `TableSchema` +
+    `ColumnInfo` extension + `Capabilities::has_describe_table`
+    (review notes addressed in `bba4072`).
+  - Slice (b) `b509a36` — `describe_table` in the turso, d1, and
+    postgres adapters with `has_describe_table = true` each.
+  - Slice (c) `dfdaaca` — `SuggestRequest.full_schema` +
+    Anthropic prompt rendering + worker `PrefetchSchema` fan-out
+    (semaphore cap 8) + `AiPanel` "Include column details" checkbox +
+    warning banner + 11-locale i18n keys. One deviation from the plan
+    below: `apps/dbboard` **was** touched after all — the worker
+    reaches the live adapter through a new narrow `SchemaSource`
+    trait (same injection pattern as `ConnectionSwitcher`), which the
+    binary implements over the server's `AppState`
+    (`current_adapter()` made `pub`). Chosen over the "no binary
+    wiring" assumption because the UI worker has no other in-process
+    path to the live adapter; the HTTP contract stays untouched.
+  - Slice (d) — this docs sweep.
+  - Open questions above resolved as: no prompt-size cap in v1 (the
+    toggle is opt-in per session and the ADR-0026 token meter makes
+    cost visible; revisit if a friction report lands), and no cancel
+    during the prefetch leg (the fan-out is short and bounded; the
+    deferred Suggest that follows remains cancellable as before).
 - **Activates:** ADR-0023 §9 deferred "Full DDL extraction on
   `DatabaseAdapter`" (Decision 7 said the queued method would be
   called `dump_schema`; this ADR names it `describe_table` for the
