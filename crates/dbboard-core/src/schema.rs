@@ -61,7 +61,9 @@ pub struct ColumnInfo {
 /// [`DatabaseAdapter::describe_table`]: crate::DatabaseAdapter::describe_table
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableSchema {
-    /// The qualified identifier the caller passed to `describe_table`.
+    /// The `TableInfo` the caller passed to `describe_table` — echoed
+    /// back verbatim, schema-qualified only where the engine has
+    /// schemas (SQLite/libSQL tables stay unqualified).
     pub table: TableInfo,
     /// Columns ordered by ordinal position (each adapter's native order).
     pub columns: Vec<ColumnInfo>,

@@ -69,6 +69,7 @@ mod tests {
         assert!(!caps.has_auth);
         assert!(!caps.has_storage);
         assert!(!caps.has_realtime);
+        assert!(!caps.has_describe_table);
     }
 
     #[test]
