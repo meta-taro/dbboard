@@ -17,7 +17,7 @@ use crate::capabilities::{
     AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
     ViewIntrospection,
 };
-use crate::{DbResult, QueryResult, TableInfo};
+use crate::{DbError, DbResult, QueryResult, TableInfo, TableSchema};
 
 #[async_trait]
 pub trait DatabaseAdapter: Send + Sync {
@@ -36,6 +36,20 @@ pub trait DatabaseAdapter: Send + Sync {
     async fn list_tables(&self) -> DbResult<Vec<TableInfo>>;
 
     async fn query(&self, sql: &str) -> DbResult<QueryResult>;
+
+    /// Full column + primary-key description for one table (ADR-0028).
+    ///
+    /// The default returns [`DbError::Capability`] so adapters that
+    /// pre-date ADR-0028 compile unchanged and miss at runtime rather
+    /// than at build time. Implementors must also flip
+    /// [`Capabilities::has_describe_table`] — the UI greys out
+    /// schema-dependent features on adapters that only ship names.
+    async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+        let _ = table;
+        Err(DbError::Capability(
+            "describe_table not supported by this adapter".into(),
+        ))
+    }
 
     fn views(&self) -> Option<&dyn ViewIntrospection> {
         None
@@ -69,7 +83,7 @@ mod tests {
         AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
         ViewIntrospection,
     };
-    use crate::{DbResult, QueryResult, TableInfo};
+    use crate::{ColumnInfo, DbError, DbResult, QueryResult, TableInfo, TableSchema};
 
     struct NoopAdapter;
 
@@ -112,6 +126,7 @@ mod tests {
                 has_auth: true,
                 has_storage: true,
                 has_realtime: true,
+                has_describe_table: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -122,6 +137,20 @@ mod tests {
         }
         async fn query(&self, _sql: &str) -> DbResult<QueryResult> {
             Ok(QueryResult::empty())
+        }
+        async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+            Ok(TableSchema {
+                table: table.clone(),
+                columns: vec![ColumnInfo {
+                    name: "id".into(),
+                    declared_type: Some("INTEGER".into()),
+                    nullable: false,
+                    primary_key: true,
+                    ordinal: 1,
+                    default_value: None,
+                }],
+                primary_key: vec!["id".into()],
+            })
         }
         fn views(&self) -> Option<&dyn ViewIntrospection> {
             Some(self)
@@ -180,6 +209,34 @@ mod tests {
         assert!(adapter.auth().is_some());
         assert!(adapter.storage().is_some());
         assert!(adapter.realtime().is_some());
+    }
+
+    #[tokio::test]
+    async fn default_describe_table_surfaces_capability_error() {
+        let err = NoopAdapter
+            .describe_table(&TableInfo::unqualified("users"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(
+            err.message(),
+            "describe_table not supported by this adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn overridden_describe_table_echoes_the_requested_table() {
+        let table = TableInfo::qualified("public", "users");
+        let schema = FullAdapter.describe_table(&table).await.unwrap();
+        assert_eq!(schema.table, table);
+        assert_eq!(schema.columns.len(), 1);
+        assert_eq!(schema.primary_key, vec!["id".to_owned()]);
+    }
+
+    #[test]
+    fn describe_table_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_describe_table);
+        assert!(FullAdapter.capabilities().has_describe_table);
     }
 
     #[test]
