@@ -42,8 +42,9 @@ pub trait DatabaseAdapter: Send + Sync {
     /// The default returns [`DbError::Capability`] so adapters that
     /// pre-date ADR-0028 compile unchanged and miss at runtime rather
     /// than at build time. Implementors must also flip
-    /// [`Capabilities::has_describe_table`] — the UI greys out
-    /// schema-dependent features on adapters that only ship names.
+    /// [`Capabilities::has_describe_table`] — the UI will grey out
+    /// schema-dependent features (ADR-0028 slice c) on adapters that
+    /// only ship names.
     async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
         let _ = table;
         Err(DbError::Capability(
