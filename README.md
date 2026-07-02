@@ -238,6 +238,18 @@ partial text already shown, and a quiet *Cancelled.* line marks the
 outcome. The same cancel button works on the atomic path used by
 providers without streaming support.
 
+In Suggest mode, an **Include column details** checkbox appears when
+the active database adapter can describe tables (all three bundled
+adapters can — ADR-0028). Ticking it makes Send first fetch each
+table's columns and primary key from the live connection, then embed
+that schema in the prompt, which largely eliminates hallucinated
+column names in the drafts. The trade-off is prompt size: the full
+schema counts against the provider's context window and your token
+bill — watch the token meter, and leave the box off (its default,
+reset each session) for large schemas or metered keys. If some tables
+fail to describe, a warning shows the count and the suggestion
+proceeds with the rest.
+
 A single provider (Anthropic Messages API) is wired today, configured
 via **either** of two paths. They are evaluated in the order below;
 the first to resolve wins.
