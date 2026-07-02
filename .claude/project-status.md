@@ -5,35 +5,120 @@
 
 ## 最終更新
 
-- 日付: 2026-07-01 (**PR #47 マージクローズ** = ADR-0027 Phase 4 Stage 2
-  Group C = `history.jsonl` への AI 記録 + v:2 schema bump が `develop`
-  に着地 = `768e009` (mergedAt 2026-07-01T05:02:24Z)。5 commit
-  (`958c117` ADR draft → `b16537f` Slice a = v:2 reader + writer →
-  `13f7736` Slice b = `AiProvider::identity()` + `provider/model`
-  plumbing → `0e76223` Slice c = UI-thread write point + 18 unit test →
-  `34ad0eb` Slice d = docs sweep) 全部緑で merge。これで **Phase 4
-  Stage 2 で in-process スコープの 3 大 Group (A = ADR-0025 / B =
-  ADR-0026 / C = ADR-0027) 全部クローズ**。本 chore PR
-  (`chore/post-pr47-doc-sync`) は PR #38 / #40 / #42 / #44 / #46 と
-  同じ post-PR doc-sync パターンで `.claude/*` + docs/decisions.md の
-  ADR-0027 slice (d) hash placeholder 埋め + brief 0008 Anchors の
-  desktop merge commit ID 埋めのみ触り、next-actions.md を「Group C
-  merged / 次の選択肢 = Group D or friction」状態に再生成 +
-  project-status.md に PR #47 close-out 記録。)
-- ブランチ: `develop` (= `768e009`)、ローカル `chore/post-pr47-doc-sync`
-  作業中 (`feature/ai-history-v2` は merged 済 / ローカルから削除済 =
-  `git branch -D`)
+- 日付: 2026-07-02 (**ADR-0028 draft コミット済 (`00ac1b8`, docs-only) /
+  slice (a) 着手前に user review 待ち**。前セッションで PR #47
+  (ADR-0027 Group C) + PR #48 (post-PR47 chore) が着地 = `develop` =
+  `5cc01e3`。今セッションで maintainer から Group D 着手指示 → Group D
+  を 2 本の独立 ADR に分割する方針を提示 (ADR-0028 = full DDL extraction
+  = DB adapter 側 / ADR-0029 = function-calling / tool-use = AI provider
+  側)、ADR-0028 先行で合意。Explore agent で現状把握
+  (`DatabaseAdapter::list_tables` + `TableInfo` + 既存だが未使用の
+  `ColumnInfo` + 3 adapter 各 SQL + `SuggestRequest.schema` の使い方 +
+  `Capabilities` フラグ棚卸し) → ADR-0028 draft を `docs/decisions.md`
+  末尾に追記 (10 Decision + 4 slice plan + Out of scope / Open questions
+  / Risks 完備、351 行) + `.claude/issues/0011-ddl-extraction.md` トラッカ
+  新設。**3 論点を maintainer review へ提出済**: (1) Method 名は
+  `describe_table` (single-table primitive) vs `dump_schema` (whole-DB)、
+  (2) v1 scope は columns + composite PK のみで indexes / FK は将来
+  ADR、(3) UI 部分失敗時は warning banner + 続行。合意が取れ次第 slice
+  (a) = `dbboard-core` 拡張から着手。)
+- ブランチ: `develop` (= `5cc01e3`)、ローカル `feature/ddl-extraction`
+  作業中 (1 commit = `00ac1b8` ADR-0028 draft + tracker issue 0011)。
+  未 push、review 合意後に slice (a) → (b) → (c) → (d) を積み上げてから
+  一括 push + PR create する運用予定 (ADR-0026/0027 の 4-slice-single-PR
+  pattern 踏襲)。
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
   Phase 4 Stage 2 Group A (ADR-0025) + Group B (ADR-0026) + Group C
   (ADR-0027) 3 グループが `develop` 着地完了 = in-process スコープ
-  完結。Stage 2 残り Group D (full DDL extraction + function-calling =
-  in-process 完結、web 影響なし) のみ、独立 ADR で任意タイミング =
-  menu 方式で friction or user 指示待ち。Phase 2 ADR-0024 at-rest
-  hardening + ADR-0023 Stage 1 + ADR-0025 完全実装 (4 slice 全着地) +
-  ADR-0026 完全実装 (4 slice 全着地) + ADR-0027 完全実装 (4 slice
-  全着地) の 5 本が現状 Stage 2 残り (D) への足場として load-bearing。**
+  完結。Stage 2 残り Group D は 2 本の独立 ADR に分割 = D-1 (ADR-0028
+  = full DDL extraction) が今セッションで draft、D-2 (ADR-0029 =
+  function-calling / tool-use) は D-1 の primitive を tool として
+  expose する構造なので D-1 完了後に着手。in-process 完結、web 影響
+  なし。Phase 2 ADR-0024 at-rest hardening + ADR-0023 Stage 1 +
+  ADR-0025 完全実装 (4 slice 全着地) + ADR-0026 完全実装 (4 slice
+  全着地) + ADR-0027 完全実装 (4 slice 全着地) の 5 本が現状 D-1 /
+  D-2 への足場として load-bearing。**
 
-### PR #47 (ADR-0027 Phase 4 Stage 2 Group C / AI history.jsonl v:2) マージクローズ (本セッション / 2026-07-01)
+### ADR-0028 (Phase 4 Stage 2 Group D-1 = full DDL extraction) draft コミット (本セッション / 2026-07-02)
+
+- branch: `feature/ddl-extraction` (未 push、1 commit = `00ac1b8`)。
+- ADR-0028 status: **Proposed (2026-07-01)**。全 slice hash は将来の
+  Slice (d) 前に本文に埋め込み予定 = ADR-0026 slice (d) `fff669c` /
+  ADR-0027 slice (d) `34ad0eb` の埋め込み precedent 継承。
+- Group D の分割理由 (再掲): DDL extraction は DB adapter 側 (Postgres /
+  Turso / D1 各実装 + trait 拡張)、function-calling は AI provider 側
+  (Anthropic tool_use API + StreamEvent variant + worker round-trip)。
+  性質が完全に別。ADR-0029 は ADR-0028 の `describe_table` を tool として
+  expose するので、順序も自然。単一 ADR は Decision 数が跳ね上がり
+  ADR-0026/0027 の 10-Decision ペースを崩す。
+- Explore agent 経由の現状把握 (前提共有用):
+  - `DatabaseAdapter::list_tables()` は `TableInfo { schema, name }` のみ、
+    columns は返さない。
+  - `ColumnInfo { name, declared_type, nullable, primary_key }` は
+    `crates/dbboard-core/src/schema.rs` に **既に存在するが未使用**。
+    ADR-0028 で `ordinal` + `default_value` を additive 追加 + 3 adapter
+    が populate 開始。
+  - `SuggestRequest.schema: Vec<TableInfo>` は 15 テーブル名だけを AI に
+    渡す → column 名を hallucinate する頻度が高い (report driven)。
+  - `Capabilities` 現状 5 flags (views/functions/auth/storage/realtime)、
+    `has_describe_table` を additive 追加。
+- ADR-0028 の主要 Decision 10 個 (要旨):
+  1. `describe_table(&TableInfo) -> DbResult<TableSchema>` trait method
+     with default `DbError::Capability` impl (old adapter が compile 通る)。
+  2. 新 `TableSchema { table, columns: Vec<ColumnInfo>, primary_key:
+     Vec<String> }`。composite PK は Vec 保持、`ColumnInfo.primary_key:
+     bool` は既存互換のため retain。
+  3. `ColumnInfo` additive: `ordinal: u32` + `default_value:
+     Option<String>` (engine の raw literal を保持、typed enum は
+     lossy なので却下)。
+  4. `Capabilities::has_describe_table: bool` additive、default false、
+     UI toggle の gating。
+  5. Per-adapter SQL: Postgres = `information_schema.columns` +
+     `table_constraints/key_column_usage` (2 round-trip)、Turso/D1 =
+     `PRAGMA table_info('<name>')` (1 round-trip)。
+  6. Missing table は engine error → `DbError::Query` そのまま伝搬。
+  7. In-adapter cache **なし**。UI 側 caller が memoise してよい。
+  8. `SuggestRequest.full_schema: Option<Vec<TableSchema>>` additive。
+     provider は present なら full_schema 優先、既存 `schema` は残す
+     (Cargo consumer back-compat)。
+  9. AiPanel "Include column details" checkbox (default off、
+     `has_describe_table` で gate)。ON 時は `Command::PrefetchSchema` /
+     `Reply::SchemaPrefetched` を worker に発行、`Semaphore` cap 8 で
+     fan-out、部分失敗は warning banner + 続行。session-local (未 persist)。
+  10. HTTP contract 変更なし、`history.jsonl` schema 変更なし。
+      full_schema 内容は prompt に組み込まれ、既存の verbatim logging
+      (ADR-0027 §Decision 8) で自然にログされる。
+- Slice plan (4 slice、single branch = ADR-0026/0027 型):
+  - Slice (a): `dbboard-core` 拡張 (TableSchema + describe_table trait
+    method + has_describe_table + ColumnInfo 拡張 + unit test)。
+    **adapter に手を入れず、default impl が Capability error を返す
+    ことを test で pin**。
+  - Slice (b): Postgres / Turso / D1 3 adapter 実装 + `has_describe_table
+    = true` 反転 + adapter test (Postgres は testcontainers、Turso は
+    in-memory libsql、D1 は mocked HTTP)。
+  - Slice (c): `dbboard-ai::SuggestRequest.full_schema` + Anthropic の
+    prompt formatter + `dbboard-ui::worker` PrefetchSchema plumbing +
+    AiPanel checkbox + fan-out semaphore + warning banner。
+  - Slice (d): docs sweep + ADR status flip + roadmap tick + README
+    warning + issue 0011 close + project-status + next-actions 更新。
+- 検証コマンド (本 commit で pre-commit hook pass): `cargo fmt` /
+  `cargo clippy -D warnings` / `cargo check` / `cargo test --all-features`
+  全緑。docs-only なので release build/test は Slice (a) 着手時にまとめて。
+- **maintainer review 論点** (合意後 slice a 着手):
+  1. Method 名 `describe_table` (single-table primitive) vs `dump_schema`
+     (whole-DB) — ADR-0023 §7 の queued 名は後者だが、ADR-0028 では
+     function-calling 用途と大規模 schema での効率のため前者を選択。
+  2. v1 scope: columns + composite PK のみ、indexes / FK は将来 ADR。
+     ADR-0026/0027 の "narrow first" pattern 継承。JOIN suggest で FK
+     があった方が効くかもしれないという反論あり得るが、実利用の
+     hallucination pattern を見てから追加する方針。
+  3. UI 挙動: 部分失敗 (M 個中 N 個失敗) = warning banner + 残り N-M で
+     Suggest 続行。全失敗のみ block。cancel token による中断は open
+     question として ADR に記載済 (ADR-0026 の cancel path 継承見込み)。
+
+#### 旧最終更新 (2026-07-01 / PR #47 マージクローズ — 参考保持)
+
+### PR #47 (ADR-0027 Phase 4 Stage 2 Group C / AI history.jsonl v:2) マージクローズ (前セッション / 2026-07-01)
 
 - PR #47 (`feature/ai-history-v2` → `develop`) マージ済 = `768e009`
   (mergedAt 2026-07-01T05:02:24Z)。ローカル `develop` は
