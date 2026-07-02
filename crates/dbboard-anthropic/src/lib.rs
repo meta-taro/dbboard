@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 use async_trait::async_trait;
 use dbboard_ai::{
     AiCapabilities, AiError, AiProvider, AiResponse, AiResult, AiStream, ExplainRequest,
-    SuggestRequest, TableInfo,
+    SuggestRequest, TableInfo, TableSchema,
 };
 use serde::{Deserialize, Serialize};
 
@@ -336,14 +336,25 @@ fn build_explain_request(model: &str, req: &ExplainRequest) -> MessagesRequest {
 
 fn build_suggest_request(model: &str, req: &SuggestRequest) -> MessagesRequest {
     let mut user_text = String::from("Tables:\n");
-    if req.schema.is_empty() {
-        user_text.push_str("(no tables introspected)\n");
-    } else {
-        for table in &req.schema {
-            // `writeln!` to String is infallible; the discard is to
-            // satisfy `#[must_use]` on `Result` without a noisy
-            // `.unwrap()` chain.
-            let _ = writeln!(user_text, "- {}", qualify(table));
+    match req.full_schema.as_deref() {
+        // ADR-0028 Decision 8: prefer the full per-table descriptions
+        // when the caller prefetched them; an empty vec means the
+        // prefetch produced nothing usable, so fall back to names.
+        Some(full) if !full.is_empty() => {
+            for schema in full {
+                render_table_schema(&mut user_text, schema);
+            }
+        }
+        _ if req.schema.is_empty() => {
+            user_text.push_str("(no tables introspected)\n");
+        }
+        _ => {
+            for table in &req.schema {
+                // `writeln!` to String is infallible; the discard is to
+                // satisfy `#[must_use]` on `Result` without a noisy
+                // `.unwrap()` chain.
+                let _ = writeln!(user_text, "- {}", qualify(table));
+            }
         }
     }
     if let Some(dialect) = req.dialect.as_deref() {
@@ -362,6 +373,40 @@ fn build_suggest_request(model: &str, req: &SuggestRequest) -> MessagesRequest {
         }],
         stream: false,
     }
+}
+
+/// Compact `CREATE TABLE`-ish rendering of one [`TableSchema`]
+/// (ADR-0028 Decision 8). This is a prompt hint, not valid DDL —
+/// fidelity beats parseability, so `declared_type` / `default_value`
+/// are passed through as the engine's raw text and a missing type is
+/// simply omitted rather than guessed.
+fn render_table_schema(out: &mut String, schema: &TableSchema) {
+    let mut lines: Vec<String> = schema
+        .columns
+        .iter()
+        .map(|column| {
+            let mut line = format!("  {}", column.name);
+            if let Some(declared) = column.declared_type.as_deref() {
+                let _ = write!(line, " {declared}");
+            }
+            if !column.nullable {
+                line.push_str(" NOT NULL");
+            }
+            if let Some(default) = column.default_value.as_deref() {
+                let _ = write!(line, " DEFAULT {default}");
+            }
+            line
+        })
+        .collect();
+    if !schema.primary_key.is_empty() {
+        lines.push(format!("  PRIMARY KEY ({})", schema.primary_key.join(", ")));
+    }
+    let _ = writeln!(
+        out,
+        "CREATE TABLE {} (\n{}\n);",
+        qualify(&schema.table),
+        lines.join(",\n")
+    );
 }
 
 fn qualify(table: &TableInfo) -> String {
@@ -585,6 +630,7 @@ mod tests {
                     TableInfo::qualified("public", "users"),
                     TableInfo::unqualified("orders"),
                 ],
+                full_schema: None,
             },
         );
         let body = serde_json::to_value(&payload).unwrap();
@@ -596,6 +642,105 @@ mod tests {
         assert!(body["system"].as_str().unwrap().contains("SQL expert"));
     }
 
+    fn users_table_schema() -> dbboard_ai::TableSchema {
+        dbboard_ai::TableSchema {
+            table: TableInfo::qualified("public", "users"),
+            columns: vec![
+                column(
+                    "id",
+                    Some("integer"),
+                    false,
+                    true,
+                    1,
+                    Some("nextval('users_id_seq'::regclass)"),
+                ),
+                column("email", Some("text"), false, false, 2, None),
+                column("note", None, true, false, 3, None),
+            ],
+            primary_key: vec!["id".into(), "email".into()],
+        }
+    }
+
+    fn column(
+        name: &str,
+        declared: Option<&str>,
+        nullable: bool,
+        primary_key: bool,
+        ordinal: u32,
+        default_value: Option<&str>,
+    ) -> dbboard_ai::ColumnInfo {
+        dbboard_ai::ColumnInfo {
+            name: name.into(),
+            declared_type: declared.map(Into::into),
+            nullable,
+            primary_key,
+            ordinal,
+            default_value: default_value.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn suggest_payload_prefers_full_schema_create_table_rendering() {
+        // ADR-0028 Decision 8: when `full_schema` is non-empty the
+        // provider renders the compact CREATE TABLE-ish form and skips
+        // the names-only bullet list entirely.
+        let payload = build_suggest_request(
+            "claude-x",
+            &SuggestRequest {
+                prompt: "active users this week".into(),
+                dialect: Some("postgres".into()),
+                schema: vec![TableInfo::qualified("public", "users")],
+                full_schema: Some(vec![users_table_schema()]),
+            },
+        );
+        let body = serde_json::to_value(&payload).unwrap();
+        let content = body["messages"][0]["content"].as_str().unwrap();
+        assert!(content.contains("CREATE TABLE public.users ("));
+        assert!(content.contains("id integer NOT NULL DEFAULT nextval('users_id_seq'::regclass)"));
+        assert!(content.contains("email text NOT NULL"));
+        // A column without a declared type renders as the bare name
+        // (nullable, no NOT NULL marker).
+        assert!(content.contains("\n  note,") || content.contains("\n  note\n"));
+        assert!(content.contains("PRIMARY KEY (id, email)"));
+        // The names-only bullet must not appear alongside the DDL form.
+        assert!(!content.contains("- public.users"));
+        assert!(content.contains("active users this week"));
+    }
+
+    #[test]
+    fn suggest_payload_with_empty_full_schema_falls_back_to_names() {
+        // `Some(vec![])` = the prefetch ran but produced nothing usable
+        // (e.g. every describe failed); the provider falls back to the
+        // names-only list rather than sending an empty Tables block.
+        let payload = build_suggest_request(
+            "claude-x",
+            &SuggestRequest {
+                prompt: "anything".into(),
+                dialect: None,
+                schema: vec![TableInfo::qualified("public", "users")],
+                full_schema: Some(Vec::new()),
+            },
+        );
+        let body = serde_json::to_value(&payload).unwrap();
+        let content = body["messages"][0]["content"].as_str().unwrap();
+        assert!(content.contains("- public.users"));
+        assert!(!content.contains("CREATE TABLE"));
+    }
+
+    #[test]
+    fn render_table_schema_omits_primary_key_line_when_table_has_none() {
+        let mut out = String::new();
+        super::render_table_schema(
+            &mut out,
+            &dbboard_ai::TableSchema {
+                table: TableInfo::unqualified("audit_log"),
+                columns: vec![column("entry", Some("TEXT"), true, false, 1, None)],
+                primary_key: Vec::new(),
+            },
+        );
+        assert_eq!(out, "CREATE TABLE audit_log (\n  entry TEXT\n);\n");
+    }
+
     #[test]
     fn suggest_payload_with_empty_schema_states_no_tables() {
         let payload = build_suggest_request(
@@ -604,6 +749,7 @@ mod tests {
                 prompt: "anything".into(),
                 dialect: None,
                 schema: Vec::new(),
+                full_schema: None,
             },
         );
         let body = serde_json::to_value(&payload).unwrap();

@@ -87,3 +87,7 @@ ai-settings-field-api-key = API キー
 ai-settings-replace-api-key = API キーを置換
 ai-settings-kind-anthropic = Anthropic
 ai-active-with-name = 使用中：{ $name }
+
+ai-include-details = カラム詳細を含める
+ai-prefetching = テーブルスキーマを取得中…
+ai-prefetch-warning = { $count } 個のテーブルの詳細を取得できませんでした。取得できた分のみで続行します。

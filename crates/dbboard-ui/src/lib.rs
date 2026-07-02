@@ -36,19 +36,20 @@ pub use history::{
 // from production code.
 #[doc(hidden)]
 pub use history::fixture;
-pub use worker::{AiProviderSlot, AiProviderSwitcher, ConnectionSwitcher};
+pub use worker::{AiProviderSlot, AiProviderSwitcher, ConnectionSwitcher, SchemaSource};
 // Re-export so the desktop binary can implement [`ConnectionSwitcher`]
-// (return type `Result<(), DbError>`) without taking a direct dep on
+// (return type `Result<(), DbError>`) and [`SchemaSource`] (return type
+// `Arc<dyn DatabaseAdapter>`) without taking a direct dep on
 // `dbboard-core` — the architecture rule is that only the server and
 // adapters link to `dbboard-core` (see CLAUDE.md).
 pub use dbboard_ai::{AiError, AiProvider, StopReason};
-pub use dbboard_core::DbError;
+pub use dbboard_core::{DatabaseAdapter, DbError};
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
-use dbboard_core::{DbResult, QueryResult, TableInfo};
+use dbboard_core::{DbResult, QueryResult, TableInfo, TableSchema};
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
@@ -74,11 +75,16 @@ pub enum Command {
     },
     /// AI: suggest SQL for the given prompt via the injected provider
     /// (ADR-0023). `schema` is the active connection's `list_tables()`
-    /// snapshot, used as the provider's schema hint.
+    /// snapshot, used as the provider's schema hint. `full_schema`
+    /// (ADR-0028 Decision 8) carries the per-table `describe_table`
+    /// results when the panel's "Include column details" toggle was on
+    /// and a [`Reply::SchemaPrefetched`] round-trip preceded this send;
+    /// `None` preserves the names-only behaviour.
     AiSuggest {
         prompt: String,
         dialect: Option<String>,
         schema: Vec<TableInfo>,
+        full_schema: Option<Vec<TableSchema>>,
     },
     /// Swap the active AI provider to the entry named `id` from
     /// `ai-providers.toml` (ADR-0025). In-process, not HTTP — the swap
@@ -99,11 +105,13 @@ pub enum Command {
     },
     /// Streaming counterpart to [`Command::AiSuggest`] (ADR-0026
     /// Decision 6). Same dispatch / reply semantics as
-    /// [`Command::AiExplainStream`].
+    /// [`Command::AiExplainStream`]; `full_schema` follows the
+    /// [`Command::AiSuggest`] contract (ADR-0028 Decision 8).
     AiSuggestStream {
         prompt: String,
         dialect: Option<String>,
         schema: Vec<TableInfo>,
+        full_schema: Option<Vec<TableSchema>>,
     },
     /// Cancel the in-flight AI request, if any (ADR-0026 Decision 5).
     /// The worker drops the active stream / one-shot future and emits
@@ -111,6 +119,14 @@ pub enum Command {
     /// The cancel button surfaces this in both streaming and atomic
     /// paths per ADR-0026 Decision 10.
     CancelAiRequest,
+    /// Fan out `describe_table` over the listed tables before a Suggest
+    /// fires (ADR-0028 Decision 9). In-process, not HTTP — the worker
+    /// snapshots the live adapter through the injected
+    /// [`worker::SchemaSource`] and answers with
+    /// [`Reply::SchemaPrefetched`]. Issued by the AI panel only when
+    /// the "Include column details" toggle is on and the adapter
+    /// advertises `has_describe_table`.
+    PrefetchSchema { tables: Vec<TableInfo> },
 }
 
 /// Result flowing worker → UI.
@@ -213,6 +229,16 @@ pub enum Reply {
         provider: String,
         model: String,
     },
+    /// Result of a [`Command::PrefetchSchema`] fan-out (ADR-0028
+    /// Decision 9). `schemas` holds the successful `describe_table`
+    /// results in the input's table order; `errors` pairs each failed
+    /// table with its error message. Partial failure is non-blocking:
+    /// the panel surfaces a warning banner and fires the pending
+    /// Suggest with whatever `schemas` carries.
+    SchemaPrefetched {
+        schemas: Vec<TableSchema>,
+        errors: Vec<(TableInfo, String)>,
+    },
 }
 
 /// Captures everything we know at submit time about a query whose reply
@@ -296,6 +322,12 @@ pub struct DbboardApp {
     /// switch. Kept distinct from [`Self::last_switch_error`] so the
     /// connection-side and AI-side errors do not overwrite each other.
     last_ai_switch_error: Option<String>,
+    /// Live-adapter view injected by the binary (ADR-0028). Read each
+    /// frame by [`Self::db_has_describe_table`] to gate the AI panel's
+    /// "Include column details" toggle; the same handle drives the
+    /// worker's `PrefetchSchema` fan-out. `None` (tests / in-memory
+    /// flows) simply hides the toggle.
+    schema_source: Option<Arc<dyn SchemaSource>>,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -335,11 +367,17 @@ impl DbboardApp {
     /// provider, `None` otherwise) and the Stage 2 AI panel registers
     /// itself only when [`Self::has_ai_provider`] returns true, which
     /// reads the slot directly so it tracks live swaps.
+    ///
+    /// `schema_source` is the live-adapter view for ADR-0028's
+    /// `PrefetchSchema` fan-out and the per-frame capability gate on
+    /// the "Include column details" toggle. `None` (tests / flows
+    /// without a local server) hides the toggle and makes any stray
+    /// `PrefetchSchema` command degrade into an all-errors reply.
     // Arg count grows by one with each in-process switcher we wire
     // through the worker (ADR-0020 ConnectionSwitcher, ADR-0025
-    // AiProviderSwitcher). A struct-builder refactor is queued for
-    // slice (b) of issue 0008 when the AI panel adds yet another
-    // handle; until then, allowing here keeps the slice focused.
+    // AiProviderSwitcher, ADR-0028 SchemaSource). A struct-builder
+    // refactor is queued for the next slice that adds a handle;
+    // until then, allowing here keeps the slice focused.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn connect(
@@ -351,6 +389,7 @@ impl DbboardApp {
         switcher: Arc<dyn ConnectionSwitcher>,
         ai_switcher: Arc<dyn AiProviderSwitcher>,
         ai_provider_slot: AiProviderSlot,
+        schema_source: Option<Arc<dyn SchemaSource>>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
         let (reply_tx, reply_rx) = mpsc::channel::<Reply>();
@@ -362,6 +401,7 @@ impl DbboardApp {
             switcher,
             ai_switcher,
             Arc::clone(&ai_provider_slot),
+            schema_source.clone(),
         );
         Self::new(
             cmd_tx,
@@ -370,6 +410,7 @@ impl DbboardApp {
             conn_label,
             now_rfc3339,
             ai_provider_slot,
+            schema_source,
         )
     }
 
@@ -389,6 +430,7 @@ impl DbboardApp {
         conn_label: String,
         now_rfc3339: RfcClock,
         ai_provider_slot: AiProviderSlot,
+        schema_source: Option<Arc<dyn SchemaSource>>,
     ) -> Self {
         let _ = cmd_tx.send(Command::ListTables);
         Self {
@@ -405,6 +447,7 @@ impl DbboardApp {
             ai_panel: AiPanel::new(),
             active_ai_provider_label: None,
             last_ai_switch_error: None,
+            schema_source,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -518,7 +561,38 @@ impl DbboardApp {
                 Reply::AiCancelled { provider, model } => {
                     self.on_ai_cancelled((provider, model));
                 }
+                // ADR-0028 Decision 9: the describe_table fan-out came
+                // back. The panel converts it into the deferred Suggest
+                // command (carrying `full_schema`), which we forward
+                // exactly like a Send click — including the pending-ai
+                // snapshot and the channel-closed fallback.
+                Reply::SchemaPrefetched { schemas, errors } => {
+                    if let Some(cmd) = self.ai_panel.on_schema_prefetched(schemas, &errors) {
+                        self.send_ai_command(cmd);
+                    }
+                }
             }
+        }
+    }
+
+    /// Forward an AI command to the worker, snapshotting the submit-time
+    /// context first (ADR-0027 slice c). Shared by the Send-click path
+    /// in [`Self::render_ai_panel`] and the deferred-Suggest path in
+    /// `drain_replies`' `SchemaPrefetched` arm so both get the same
+    /// channel-closed fallback.
+    fn send_ai_command(&mut self, cmd: Command) {
+        if let Some(pending) = pending_ai_from_command(&cmd, &self.conn_label) {
+            self.pending_ai = Some(pending);
+        }
+        if self.cmd_tx.send(cmd).is_err() {
+            // Worker hung up — surface a synthetic failure so the
+            // panel exits the busy state immediately rather than
+            // waiting forever for a reply that will never arrive.
+            // Drop the just-set pending: without a worker there is
+            // no terminal reply that would consume it.
+            self.pending_ai = None;
+            self.ai_panel
+                .on_error(&AiError::Network("ai worker channel closed".into()));
         }
     }
 
@@ -615,23 +689,19 @@ impl DbboardApp {
         // read happens here, not in the panel, so the panel stays a
         // pure presentation layer over its passed-in flags.
         let has_streaming = self.ai_has_streaming();
-        if let Some(cmd) = self
-            .ai_panel
-            .ui(ctx, dialect, schema_slice, active_label, has_streaming)
-        {
-            if let Some(pending) = pending_ai_from_command(&cmd, &self.conn_label) {
-                self.pending_ai = Some(pending);
-            }
-            if self.cmd_tx.send(cmd).is_err() {
-                // Worker hung up — surface a synthetic failure so the
-                // panel exits the busy state immediately rather than
-                // waiting forever for a reply that will never arrive.
-                // Drop the just-set pending: without a worker there is
-                // no terminal reply that would consume it.
-                self.pending_ai = None;
-                self.ai_panel
-                    .on_error(&AiError::Network("ai worker channel closed".into()));
-            }
+        // ADR-0028: per-frame capability read, mirroring has_streaming —
+        // a connection switch flips the toggle's visibility on the next
+        // render tick without extra plumbing.
+        let has_describe_table = self.db_has_describe_table();
+        if let Some(cmd) = self.ai_panel.ui(
+            ctx,
+            dialect,
+            schema_slice,
+            active_label,
+            has_streaming,
+            has_describe_table,
+        ) {
+            self.send_ai_command(cmd);
         }
         // Drive a follow-up frame while the AI request is in flight so
         // the reply drains promptly without a user gesture.
@@ -747,6 +817,20 @@ impl DbboardApp {
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .is_some_and(|p| p.capabilities().has_streaming)
+    }
+
+    /// `true` when the live adapter advertises
+    /// [`has_describe_table`](dbboard_core::AdapterCapabilities::has_describe_table)
+    /// (ADR-0028). Gates the AI panel's "Include column details"
+    /// toggle. Read per frame off the injected [`SchemaSource`] —
+    /// mirrors [`Self::ai_has_streaming`], so a connection switch is
+    /// reflected on the next render tick. `false` when no source is
+    /// wired (tests / in-memory flows), which hides the toggle.
+    #[must_use]
+    pub fn db_has_describe_table(&self) -> bool {
+        self.schema_source
+            .as_ref()
+            .is_some_and(|s| s.current_adapter().capabilities().has_describe_table)
     }
 
     /// True when the AI panel window is currently open. Always false
@@ -883,11 +967,15 @@ fn pending_ai_from_command(cmd: &Command, conn_label: &str) -> Option<PendingAiS
         Command::AiSuggest { prompt, .. } | Command::AiSuggestStream { prompt, .. } => {
             (AiIntent::SuggestSql, prompt.clone())
         }
+        // PrefetchSchema is a *precursor* to a Suggest, not the AI
+        // request itself — the deferred AiSuggest[Stream] built by
+        // `on_schema_prefetched` is what snapshots the pending record.
         Command::CancelAiRequest
         | Command::ListTables
         | Command::Query(_)
         | Command::SwitchConnection { .. }
-        | Command::SwitchAiProvider { .. } => return None,
+        | Command::SwitchAiProvider { .. }
+        | Command::PrefetchSchema { .. } => return None,
     };
     let conn = if conn_label.is_empty() {
         None
@@ -1231,6 +1319,7 @@ mod tests {
             String::new(),
             stub_clock as super::RfcClock,
             empty_ai_slot(),
+            None,
         );
         (app, cmd_rx, reply_tx)
     }
@@ -1248,6 +1337,7 @@ mod tests {
             conn_label.to_string(),
             stub_clock as super::RfcClock,
             empty_ai_slot(),
+            None,
         );
         (app, cmd_rx, reply_tx)
     }
@@ -1725,6 +1815,7 @@ mod tests {
             String::new(),
             stub_clock as super::RfcClock,
             slot,
+            None,
         );
         (app, cmd_rx, reply_tx)
     }
@@ -1830,6 +1921,7 @@ mod tests {
             prompt: "top 10 users by MRR".into(),
             dialect: None,
             schema: vec![UiTableInfo::unqualified("users")],
+            full_schema: None,
         };
         let p = pending_ai_from_command(&cmd, "prod-pg").expect("some");
         assert_eq!(p.intent, AiIntent::SuggestSql);
@@ -1850,6 +1942,7 @@ mod tests {
             prompt: "monthly active users".into(),
             dialect: None,
             schema: vec![],
+            full_schema: None,
         };
         let p = pending_ai_from_command(&cmd, "prod-pg").expect("some");
         assert_eq!(p.intent, AiIntent::SuggestSql);
@@ -1869,6 +1962,12 @@ mod tests {
         );
         assert!(
             pending_ai_from_command(&Command::SwitchAiProvider { id: "x".into() }, "prod-pg")
+                .is_none()
+        );
+        // The prefetch precursor is not the AI request itself — the
+        // deferred AiSuggest[Stream] snapshots pending_ai instead.
+        assert!(
+            pending_ai_from_command(&Command::PrefetchSchema { tables: vec![] }, "prod-pg")
                 .is_none()
         );
     }

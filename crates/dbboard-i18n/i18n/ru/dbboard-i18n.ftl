@@ -85,3 +85,7 @@ ai-settings-field-api-key = API-ключ
 ai-settings-replace-api-key = Заменить API-ключ
 ai-settings-kind-anthropic = Anthropic
 ai-active-with-name = Активный: { $name }
+
+ai-include-details = Включить сведения о столбцах
+ai-prefetching = Получение схем таблиц…
+ai-prefetch-warning = Не удалось описать { $count } табл.; продолжаем без них.
