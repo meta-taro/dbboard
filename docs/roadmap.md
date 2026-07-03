@@ -255,9 +255,10 @@ work without it. Trait + first-provider shape locked in
       `Command::AiExplain { sql, dialect }` routed through the worker
       to `AiProvider::explain`, response rendered in the egui panel.
 - [x] "Suggest SQL from prompt" command using current schema snapshot
-      (`list_tables` result; full DDL extraction deferred) — slice (b)
-      of issue 0005: `Command::AiSuggest { prompt, dialect, schema }`
-      carries the current `Vec<TableInfo>` to `AiProvider::suggest_sql`.
+      (`list_tables` result; full DDL extraction later shipped as
+      Stage 2 Group D-1 / ADR-0028) — slice (b) of issue 0005:
+      `Command::AiSuggest { prompt, dialect, schema }` carries the
+      current `Vec<TableInfo>` to `AiProvider::suggest_sql`.
 - [x] Settings UI for API key, provider choice — _Stage 2 Group A,
       planned in ADR-0025 (`ai-providers.toml` + multi-provider
       switcher + Settings UI). Implementation tracked in
@@ -339,13 +340,41 @@ work without it. Trait + first-provider shape locked in
       Accepted. The cross-repo mirror (web-side v:2 pickup) is
       tracked separately in [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md)._
 
+- [x] Full DDL extraction via `DatabaseAdapter::describe_table` —
+      _Stage 2 Group D-1, planned in [ADR-0028](decisions.md).
+      Implementation tracked in
+      [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md).
+      **Closed 2026-07-03 on `feature/ddl-extraction` (PR #49, merge
+      `6c34ee3`).** Slice (a) `a42a27c` (+ review-fix `bba4072`) —
+      `dbboard-core` `TableSchema` struct, additive `ColumnInfo.ordinal`
+      + `default_value`, `describe_table` trait method with a default
+      `Capability`-error impl, and the `Capabilities::has_describe_table`
+      flag. Slice (b) `b509a36` — Postgres (`information_schema` +
+      composite PK), Turso, and D1 (`PRAGMA table_info`) implementations,
+      each flipping `has_describe_table = true`; Postgres integration
+      test gated by the `DBBOARD_PG_URL` env-var self-skip. Slice (c)
+      `dfdaaca` — additive `SuggestRequest.full_schema`, Anthropic
+      prompt rendering, worker `Command::PrefetchSchema` /
+      `Reply::SchemaPrefetched` with a Semaphore-8 fan-out, the AiPanel
+      "Include column details" checkbox (session-local, gated on
+      `has_describe_table`) with a non-blocking partial-failure warning,
+      and 11-locale i18n. A narrow `SchemaSource` trait (impl
+      `DesktopSchemaSource` in `apps/dbboard`) gives the worker its
+      in-process path to the live adapter — the one deviation from the
+      ADR, recorded in the ADR status block. Slice (d) `3c3e3d8` —
+      docs sweep + `.claude/issues/0011` closed + ADR-0028 flipped to
+      Accepted. HTTP contract and `history.jsonl` unchanged, so no
+      web mirror is needed._
+
 Exit criteria met for Stage 1: AI panel hidden cleanly when not
 configured; visible, two-mode, and usable when it is. Stage 2 Groups
 A (in-app settings + multi-provider switcher), B (streaming + cancel
-+ token meter), and C (AI calls recorded in `history.jsonl` with a
-v:2 schema bump) are now closed. The remaining Stage 2 deferral
-(Group D = full-DDL schema snapshots + function-calling) stays
-scoped to ADR-0023 §9 and can land on its own ADR at any time.
++ token meter), C (AI calls recorded in `history.jsonl` with a
+v:2 schema bump), and D-1 (full-DDL schema snapshots via
+`describe_table`) are now closed. The remaining Stage 2 deferral
+(Group D-2 = function-calling / tool-use, which exposes
+`describe_table` as the first callable tool) stays scoped to
+ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 
 ## Phase 5 — Quality of life
 
