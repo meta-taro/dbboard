@@ -84,3 +84,7 @@ ai-settings-field-api-key = API 密钥
 ai-settings-replace-api-key = 替换 API 密钥
 ai-settings-kind-anthropic = Anthropic
 ai-active-with-name = 活动：{ $name }
+
+ai-include-details = 包含列详细信息
+ai-prefetching = 正在获取表结构…
+ai-prefetch-warning = 有 { $count } 个表无法获取结构，将忽略并继续。

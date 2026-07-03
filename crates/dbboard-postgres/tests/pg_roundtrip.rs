@@ -88,6 +88,69 @@ async fn dml_and_select_round_trip() {
     adapter.query(&drop_sql).await.expect("cleanup drop");
 }
 
+/// `describe_table` round-trip: columns arrive in ordinal order with
+/// nullability, defaults, and the composite primary key in key order
+/// (ADR-0028). Missing tables surface as `DbError::Query`.
+#[tokio::test]
+async fn describe_table_round_trips_columns_and_composite_pk() {
+    use dbboard_core::TableInfo;
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+
+    let table = format!("dbboard_pg_describe_{}", std::process::id());
+    let drop_sql = format!("DROP TABLE IF EXISTS {table}");
+    adapter.query(&drop_sql).await.expect("pre-drop");
+    adapter
+        .query(&format!(
+            "CREATE TABLE {table} (\
+             order_id INT, \
+             line_no INT, \
+             sku TEXT NOT NULL DEFAULT 'unknown', \
+             PRIMARY KEY (order_id, line_no))"
+        ))
+        .await
+        .expect("create");
+
+    let info = TableInfo::qualified("public", &table);
+    let schema = adapter.describe_table(&info).await.expect("describe");
+
+    assert_eq!(schema.table, info);
+    let names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["order_id", "line_no", "sku"]);
+    let ordinals: Vec<u32> = schema.columns.iter().map(|c| c.ordinal).collect();
+    assert_eq!(ordinals, vec![1, 2, 3]);
+    assert_eq!(
+        schema.primary_key,
+        vec!["order_id".to_owned(), "line_no".to_owned()]
+    );
+
+    let sku = &schema.columns[2];
+    assert!(!sku.nullable);
+    assert!(!sku.primary_key);
+    assert!(
+        sku.default_value
+            .as_deref()
+            .is_some_and(|d| d.contains("unknown")),
+        "expected a default mentioning 'unknown', got {:?}",
+        sku.default_value
+    );
+
+    adapter.query(&drop_sql).await.expect("cleanup drop");
+
+    let err = adapter
+        .describe_table(&TableInfo::qualified("public", &table))
+        .await
+        .expect_err("describing a dropped table should fail");
+    assert!(
+        matches!(err, dbboard_core::DbError::Query(_)),
+        "expected DbError::Query, got {err:?}"
+    );
+}
+
 /// Exactly at the row cap: `generate_series(1, MAX_RESULT_ROWS)` returns
 /// `MAX_RESULT_ROWS` rows and must succeed.
 #[tokio::test]

@@ -4,7 +4,8 @@
 //! reaches it with an ordinary `postgresql://…` connection string and a
 //! Postgres driver. This adapter uses `sqlx` over a `PgPool` and
 //! implements the workspace-wide [`DatabaseAdapter`] contract
-//! (ADR-0012); Phase 2 advertises no optional capabilities.
+//! (ADR-0012); the only optional capability advertised is
+//! `describe_table` (ADR-0028).
 //!
 //! The crate is deliberately generic: `CockroachDB` is the first target,
 //! but Neon and any other PostgreSQL-wire database connect the same way
@@ -24,8 +25,8 @@
 
 use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Capabilities, Column, DatabaseAdapter, DbError, DbResult, QueryResult,
-    Row, TableInfo, Value, MAX_RESULT_ROWS,
+    too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter, DbError, DbResult,
+    QueryResult, Row, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
@@ -46,6 +47,29 @@ const LIST_TABLES_SQL: &str = "SELECT table_schema, table_name FROM information_
      WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'crdb_internal') \
      AND table_type = 'BASE TABLE' \
      ORDER BY table_schema, table_name";
+
+/// Columns of one table in ordinal order (ADR-0028). Each text column is
+/// cast to `TEXT` so the `information_schema` domain types
+/// (`sql_identifier`, `character_data`, ...) decode as plain strings
+/// under the extended protocol, and `ordinal_position` is cast to `INT4`
+/// because `CockroachDB` reports it as `INT8`.
+const DESCRIBE_COLUMNS_SQL: &str = "SELECT column_name::TEXT, data_type::TEXT, \
+     is_nullable::TEXT, column_default::TEXT, ordinal_position::INT4 \
+     FROM information_schema.columns \
+     WHERE table_schema = $1 AND table_name = $2 \
+     ORDER BY ordinal_position";
+
+/// Primary-key column names of one table in key order (ADR-0028).
+const DESCRIBE_PK_SQL: &str = "SELECT kcu.column_name::TEXT \
+     FROM information_schema.table_constraints tc \
+     JOIN information_schema.key_column_usage kcu \
+       ON kcu.constraint_name = tc.constraint_name \
+      AND kcu.constraint_schema = tc.constraint_schema \
+      AND kcu.table_schema = tc.table_schema \
+      AND kcu.table_name = tc.table_name \
+     WHERE tc.constraint_type = 'PRIMARY KEY' \
+       AND tc.table_schema = $1 AND tc.table_name = $2 \
+     ORDER BY kcu.ordinal_position";
 
 /// Connection parameters for a PostgreSQL-wire database.
 ///
@@ -192,7 +216,10 @@ impl DatabaseAdapter for PostgresAdapter {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities {
+            has_describe_table: true,
+            ..Capabilities::default()
+        }
     }
 
     async fn ping(&self) -> DbResult<()> {
@@ -222,6 +249,68 @@ impl DatabaseAdapter for PostgresAdapter {
                 ))),
             })
             .collect()
+    }
+
+    async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+        // Unqualified `TableInfo` defaults to `public` — where
+        // unqualified DDL lands on both Postgres and CockroachDB.
+        let schema = table.schema.as_deref().unwrap_or("public");
+
+        // Unlike `query`, this path uses the extended protocol
+        // (`sqlx::query` + binds): schema/table names come from
+        // introspection data, and binding keeps them out of the SQL text.
+        let column_rows = sqlx::query(DESCRIBE_COLUMNS_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        // information_schema returns an empty set (not an error) for an
+        // unknown table; surface it as a query error like the SQLite
+        // adapters do.
+        if column_rows.is_empty() {
+            return Err(DbError::Query(format!(
+                "relation \"{schema}.{}\" does not exist",
+                table.name
+            )));
+        }
+
+        let pk_rows = sqlx::query(DESCRIBE_PK_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        let primary_key = pk_rows
+            .iter()
+            .map(|row| row.try_get(0).map_err(|e| classify_error(&e)))
+            .collect::<DbResult<Vec<String>>>()?;
+
+        let columns = column_rows
+            .iter()
+            .map(|row| -> DbResult<ColumnInfo> {
+                let name: String = row.try_get(0).map_err(|e| classify_error(&e))?;
+                let data_type: String = row.try_get(1).map_err(|e| classify_error(&e))?;
+                let is_nullable: String = row.try_get(2).map_err(|e| classify_error(&e))?;
+                let default_value: Option<String> =
+                    row.try_get(3).map_err(|e| classify_error(&e))?;
+                let ordinal: i32 = row.try_get(4).map_err(|e| classify_error(&e))?;
+                column_from_parts(
+                    name,
+                    data_type,
+                    &is_nullable,
+                    default_value,
+                    ordinal,
+                    &primary_key,
+                )
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+
+        Ok(TableSchema {
+            table: table.clone(),
+            columns,
+            primary_key,
+        })
     }
 
     async fn query(&self, sql: &str) -> DbResult<QueryResult> {
@@ -318,6 +407,40 @@ fn tuple_to_table(schema: String, name: String) -> TableInfo {
     TableInfo::qualified(schema, name)
 }
 
+/// Assemble a [`ColumnInfo`] from one `information_schema.columns` row.
+///
+/// `is_nullable` is the SQL-standard `"YES"`/`"NO"` string, compared
+/// case-insensitively. `ordinal` must be positive —
+/// `information_schema` guarantees a 1-based `ordinal_position`, so
+/// anything else means a broken catalog and is rejected instead of
+/// silently cast (ADR-0028 Decision 3).
+fn column_from_parts(
+    name: String,
+    data_type: String,
+    is_nullable: &str,
+    default_value: Option<String>,
+    ordinal: i32,
+    primary_key: &[String],
+) -> DbResult<ColumnInfo> {
+    let ordinal = u32::try_from(ordinal)
+        .ok()
+        .filter(|o| *o > 0)
+        .ok_or_else(|| {
+            DbError::TypeConversion(format!(
+                "non-positive ordinal_position {ordinal} for column {name}"
+            ))
+        })?;
+    let in_primary_key = primary_key.iter().any(|k| k == &name);
+    Ok(ColumnInfo {
+        name,
+        declared_type: Some(data_type),
+        nullable: is_nullable.eq_ignore_ascii_case("YES"),
+        primary_key: in_primary_key,
+        ordinal,
+        default_value,
+    })
+}
+
 /// Harden the connection's TLS policy.
 ///
 /// sqlx defaults an unspecified `sslmode` to [`PgSslMode::Prefer`], which
@@ -397,11 +520,11 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_error, harden_ssl_mode, reclassify_schema, truncate, tuple_to_table,
-        FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        classify_error, column_from_parts, harden_ssl_mode, reclassify_schema, truncate,
+        tuple_to_table, FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
-    use dbboard_core::DbError;
-    use sqlx::postgres::{PgConnectOptions, PgSslMode};
+    use dbboard_core::{DatabaseAdapter, DbError};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 
     /// `id()` is part of the public contract documented in
     /// `docs/architecture.md` (adapter identifiers `turso`, `neon`,
@@ -455,6 +578,59 @@ mod tests {
             harden_ssl_mode(verified).get_ssl_mode(),
             PgSslMode::VerifyFull
         ));
+    }
+
+    /// `connect_lazy_with` builds a pool without any network I/O, which
+    /// is enough to read the adapter's static capability flags. It still
+    /// needs a Tokio context to spawn the pool's background worker,
+    /// hence `#[tokio::test]`.
+    #[tokio::test]
+    async fn capabilities_advertise_describe_table() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        let adapter = super::PostgresAdapter {
+            pool,
+            flavor: FLAVOR_POSTGRES,
+        };
+        assert!(adapter.capabilities().has_describe_table);
+    }
+
+    #[test]
+    fn column_from_parts_parses_nullability_and_pk_membership() {
+        let pk = vec!["id".to_owned()];
+        let id = column_from_parts(
+            "id".into(),
+            "integer".into(),
+            "NO",
+            Some("nextval('users_id_seq'::regclass)".into()),
+            1,
+            &pk,
+        )
+        .expect("id column");
+        assert!(!id.nullable);
+        assert!(id.primary_key);
+        assert_eq!(id.ordinal, 1);
+        assert_eq!(
+            id.default_value.as_deref(),
+            Some("nextval('users_id_seq'::regclass)")
+        );
+
+        let note = column_from_parts("note".into(), "text".into(), "YES", None, 2, &pk)
+            .expect("note column");
+        assert!(note.nullable);
+        assert!(!note.primary_key);
+        assert_eq!(note.declared_type.as_deref(), Some("text"));
+    }
+
+    #[test]
+    fn column_from_parts_rejects_a_non_positive_ordinal() {
+        // information_schema.ordinal_position is 1-based; anything else
+        // indicates a broken catalog and must not be silently cast.
+        let err = column_from_parts("x".into(), "text".into(), "YES", None, 0, &[])
+            .expect_err("ordinal 0 should fail");
+        assert!(matches!(err, DbError::TypeConversion(_)));
+        let err = column_from_parts("x".into(), "text".into(), "YES", None, -1, &[])
+            .expect_err("negative ordinal should fail");
+        assert!(matches!(err, DbError::TypeConversion(_)));
     }
 
     #[test]

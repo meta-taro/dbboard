@@ -84,3 +84,7 @@ ai-settings-field-api-key = API 키
 ai-settings-replace-api-key = API 키 교체
 ai-settings-kind-anthropic = Anthropic
 ai-active-with-name = 사용 중: { $name }
+
+ai-include-details = 컬럼 상세 정보 포함
+ai-prefetching = 테이블 스키마를 가져오는 중…
+ai-prefetch-warning = 테이블 { $count }개의 스키마를 가져오지 못했습니다. 가져온 것만으로 계속합니다.
