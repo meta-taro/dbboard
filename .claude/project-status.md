@@ -5,20 +5,18 @@
 
 ## 最終更新
 
-- 日付: 2026-07-02 (**ADR-0028 全 4 slice 完了 = ADR Accepted、
-  `feature/ddl-extraction` 未 push で user の push + PR create 待ち**。
-  maintainer が 3 論点に「全部OKです。」+「GO」→ slice (a) `a42a27c`
-  (+review-fix `bba4072`) → slice (b) `b509a36` → slice (c) `dfdaaca`
-  → slice (d) docs sweep を一気通貫で実施。詳細は下の本セッション
-  セクション参照。)
-- ブランチ: `develop` (= `5cc01e3`)、ローカル `feature/ddl-extraction`
-  作業完了 (ADR draft `00ac1b8` + slice 4 本 + docs sweep)。
-  **push + feat PR create が user 側のボール** (`.claude/next-actions.md`
-  参照)。merge 後に `chore/post-prNN-doc-sync` (roadmap tick +
-  project-status) を別 PR で出す = PR #47/#48 doc-split パターン。
+- 日付: 2026-07-03 (**ADR-0028 = PR #49 で develop に merge 済
+  (merge commit `6c34ee3`)。post-merge の doc-sync chore
+  (`chore/post-pr49-doc-sync`) を作成中 = roadmap Group D-1 tick +
+  本ファイル + next-actions + memory 整合。PR #47/#48 doc-split
+  パターン。**)
+- ブランチ: `develop` (= `6c34ee3`、PR #49 merge 済)。
+  `feature/ddl-extraction` は役目を終えた (ADR draft `00ac1b8` +
+  slice 4 本 + docs sweep が全部 develop 入り)。doc-sync chore は
+  `chore/post-pr49-doc-sync` で develop 宛に別 PR。
 - 現在の Phase: **Phase 4 Stage 2 Group A (ADR-0025) + Group B
-  (ADR-0026) + Group C (ADR-0027) + Group D-1 (ADR-0028、本セッション
-  実装完了・PR 待ち) = in-process スコープ完結。Stage 2 残りは D-2
+  (ADR-0026) + Group C (ADR-0027) + Group D-1 (ADR-0028、PR #49 で
+  CLOSED) = in-process スコープ完結。Stage 2 残りは D-2
   (ADR-0029 = function-calling / tool-use) のみ — D-1 の
   `describe_table` を最初の tool として expose する構造で、前提が
   今回すべて揃った。in-process 完結、web 影響なし。**
