@@ -33,9 +33,19 @@
 //! [`on_stream_complete`](AiPanel::on_stream_complete) /
 //! [`on_cancelled`](AiPanel::on_cancelled)) are invoked from
 //! `drain_replies`.
+//!
+//! ADR-0028 adds a fifth presentation state, **prefetching**: when the
+//! "Include column details" toggle is on and the adapter advertises
+//! `has_describe_table`, a Suggest send first issues
+//! [`Command::PrefetchSchema`] and stashes the request as
+//! [`PendingSuggest`]. The [`Reply::SchemaPrefetched`](crate::Reply::SchemaPrefetched)
+//! round-trip ([`on_schema_prefetched`](AiPanel::on_schema_prefetched))
+//! then fires the real Suggest carrying `full_schema`. Partial describe
+//! failure is non-blocking — a warning banner counts the missed tables
+//! and the Suggest proceeds with what arrived (Decision 9).
 
 use dbboard_ai::{AiError, StopReason};
-use dbboard_core::TableInfo;
+use dbboard_core::{TableInfo, TableSchema};
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
@@ -79,6 +89,12 @@ pub struct StreamingAcc {
 /// to AI replies drained from the reply channel; the desktop binary's
 /// menu bar only flips [`is_open`](Self::is_open) through a thin
 /// accessor.
+// The struct_excessive_bools lint suggests a state machine, but these
+// flags are independent axes (window visibility, request in flight,
+// last-outcome-was-cancel, details toggle, prefetch leg) that combine
+// freely — collapsing them into enums would manufacture invalid-state
+// variants instead of removing them.
+#[allow(clippy::struct_excessive_bools)]
 pub struct AiPanel {
     is_open: bool,
     mode: AiMode,
@@ -99,6 +115,35 @@ pub struct AiPanel {
     /// [`Self::prepare_send`] so the marker only flags the most recent
     /// outcome.
     cancelled: bool,
+    /// "Include column details" toggle (ADR-0028 Decision 9). Session-
+    /// local, default off — never persisted, so the token-heavier
+    /// prompt is always an explicit per-session opt-in.
+    include_details: bool,
+    /// True between issuing [`Command::PrefetchSchema`] and consuming
+    /// its [`Reply::SchemaPrefetched`](crate::Reply::SchemaPrefetched).
+    /// While set, the busy row shows a "fetching column details" label
+    /// instead of the Cancel button — the fan-out always terminates, so
+    /// cancel is deliberately not offered during this short window.
+    prefetching: bool,
+    /// Number of tables the last prefetch failed to describe, when any.
+    /// Rendered as a non-blocking warning banner (Decision 9). Cleared
+    /// on the next [`Self::prepare_send`].
+    prefetch_failed: Option<usize>,
+    /// The Suggest deferred behind an in-flight prefetch. `Some` only
+    /// while [`Self::prefetching`]; consumed by
+    /// [`Self::on_schema_prefetched`] to build the final command.
+    pending_suggest: Option<PendingSuggest>,
+}
+
+/// Everything needed to fire the deferred Suggest once the schema
+/// prefetch completes (ADR-0028). Captured at Send-click time so a
+/// concurrent UI change (mode flip, input edit) cannot alter the
+/// request the user actually submitted.
+struct PendingSuggest {
+    prompt: String,
+    dialect: Option<String>,
+    schema: Vec<TableInfo>,
+    has_streaming: bool,
 }
 
 impl AiPanel {
@@ -112,6 +157,10 @@ impl AiPanel {
             last_response: None,
             streaming: None,
             cancelled: false,
+            include_details: false,
+            prefetching: false,
+            prefetch_failed: None,
+            pending_suggest: None,
         }
     }
 
@@ -167,6 +216,34 @@ impl AiPanel {
         self.cancelled
     }
 
+    /// State of the "Include column details" toggle (ADR-0028).
+    #[must_use]
+    pub fn include_details(&self) -> bool {
+        self.include_details
+    }
+
+    /// Flip the "Include column details" toggle. The checkbox writes
+    /// the field directly during rendering; this setter exists for
+    /// tests and binary-side observers.
+    pub fn set_include_details(&mut self, on: bool) {
+        self.include_details = on;
+    }
+
+    /// `true` between issuing a `PrefetchSchema` and consuming its
+    /// reply (ADR-0028). The panel is also [`Self::is_busy`] for that
+    /// whole window.
+    #[must_use]
+    pub fn prefetching(&self) -> bool {
+        self.prefetching
+    }
+
+    /// Number of tables the last prefetch could not describe, if any
+    /// (ADR-0028 Decision 9). Drives the non-blocking warning banner.
+    #[must_use]
+    pub fn prefetch_failed(&self) -> Option<usize> {
+        self.prefetch_failed
+    }
+
     /// Compose the command to send for the current mode + input.
     /// Returns `None` when the panel is already busy or the input is
     /// blank; in both cases the caller drops the result and nothing is
@@ -180,21 +257,51 @@ impl AiPanel {
     /// active provider supports). The binary reads
     /// [`AiCapabilities::has_streaming`](dbboard_ai::AiCapabilities::has_streaming)
     /// off the slot's snapshot and passes it through.
+    ///
+    /// `has_describe_table` gates the ADR-0028 prefetch detour: when it
+    /// is true, the toggle is on, the mode is Suggest, and the schema
+    /// snapshot is non-empty, the returned command is
+    /// [`Command::PrefetchSchema`] and the real Suggest is deferred
+    /// until [`Self::on_schema_prefetched`]. In every other case the
+    /// behaviour is unchanged (`full_schema: None`).
     pub fn prepare_send(
         &mut self,
         dialect: Option<String>,
         schema: &[TableInfo],
         has_streaming: bool,
+        has_describe_table: bool,
     ) -> Option<Command> {
         if self.busy || self.input.trim().is_empty() {
             return None;
         }
-        // Clear the cancel marker — the *previous* outcome was a
-        // cancel; this new send is its own outcome. Leave
-        // `last_response` alone so the body does not blink to empty
-        // between Send click and first chunk / atomic reply (the new
-        // streaming view / response overwrites it once a chunk lands).
+        // Clear the per-outcome markers — the *previous* outcome was a
+        // cancel / partial prefetch; this new send is its own outcome.
+        // Leave `last_response` alone so the body does not blink to
+        // empty between Send click and first chunk / atomic reply (the
+        // new streaming view / response overwrites it once a chunk
+        // lands).
         self.cancelled = false;
+        self.prefetch_failed = None;
+        // ADR-0028 detour: describe the tables before suggesting. An
+        // empty schema snapshot skips the round-trip — there is nothing
+        // to describe, so the names-only prompt is equivalent.
+        if self.mode == AiMode::Suggest
+            && self.include_details
+            && has_describe_table
+            && !schema.is_empty()
+        {
+            self.busy = true;
+            self.prefetching = true;
+            self.pending_suggest = Some(PendingSuggest {
+                prompt: self.input.clone(),
+                dialect,
+                schema: schema.to_vec(),
+                has_streaming,
+            });
+            return Some(Command::PrefetchSchema {
+                tables: schema.to_vec(),
+            });
+        }
         // Only the Suggest arm consumes the schema, so the clone lives
         // there — Explain skips the allocation entirely.
         let cmd = match (self.mode, has_streaming) {
@@ -210,15 +317,60 @@ impl AiPanel {
                 prompt: self.input.clone(),
                 dialect,
                 schema: schema.to_vec(),
+                full_schema: None,
             },
             (AiMode::Suggest, false) => Command::AiSuggest {
                 prompt: self.input.clone(),
                 dialect,
                 schema: schema.to_vec(),
+                full_schema: None,
             },
         };
         self.busy = true;
         Some(cmd)
+    }
+
+    /// Consume a [`Reply::SchemaPrefetched`](crate::Reply::SchemaPrefetched)
+    /// and fire the deferred Suggest (ADR-0028 Decision 9). Partial
+    /// failure is non-blocking: `errors` sets the warning-banner count
+    /// and the Suggest proceeds with whatever `schemas` carries (even
+    /// empty — the provider then falls back to names-only rendering).
+    ///
+    /// A stray reply with no pending Suggest (e.g. after the send-side
+    /// channel error already reset the panel) clears the busy state and
+    /// returns `None` — defence-in-depth so the panel can never be
+    /// stranded on its spinner.
+    pub fn on_schema_prefetched(
+        &mut self,
+        schemas: Vec<TableSchema>,
+        errors: &[(TableInfo, String)],
+    ) -> Option<Command> {
+        self.prefetching = false;
+        if !errors.is_empty() {
+            self.prefetch_failed = Some(errors.len());
+        }
+        let Some(pending) = self.pending_suggest.take() else {
+            self.busy = false;
+            return None;
+        };
+        // Busy stays true — the deferred Suggest goes out right now and
+        // its own terminal reply clears the flag.
+        let full_schema = Some(schemas);
+        Some(if pending.has_streaming {
+            Command::AiSuggestStream {
+                prompt: pending.prompt,
+                dialect: pending.dialect,
+                schema: pending.schema,
+                full_schema,
+            }
+        } else {
+            Command::AiSuggest {
+                prompt: pending.prompt,
+                dialect: pending.dialect,
+                schema: pending.schema,
+                full_schema,
+            }
+        })
     }
 
     /// Compose a [`Command::CancelAiRequest`] when the panel is busy
@@ -340,6 +492,11 @@ impl AiPanel {
     /// variants on Send (ADR-0026 Decision 6). The binary reads the
     /// active provider's capability off the slot snapshot and passes it
     /// through unchanged.
+    ///
+    /// `has_describe_table` gates the ADR-0028 "include column details"
+    /// checkbox: it only renders in Suggest mode when the active DB
+    /// adapter can describe tables, so the toggle never dangles on
+    /// adapters that would reject the prefetch anyway.
     pub fn ui(
         &mut self,
         ctx: &egui::Context,
@@ -347,6 +504,7 @@ impl AiPanel {
         schema: &[TableInfo],
         active_provider_label: Option<&str>,
         has_streaming: bool,
+        has_describe_table: bool,
     ) -> Option<Command> {
         let mut pending: Option<Command> = None;
         let mut is_open = self.is_open;
@@ -375,8 +533,19 @@ impl AiPanel {
                         .desired_width(f32::INFINITY)
                         .font(egui::TextStyle::Monospace),
                 );
+                if self.mode == AiMode::Suggest && has_describe_table {
+                    ui.checkbox(&mut self.include_details, t!("ai-include-details"));
+                }
                 ui.horizontal(|ui| {
-                    if self.busy {
+                    if self.prefetching {
+                        // No Cancel during the prefetch leg (ADR-0028
+                        // Decision 9): describe_table calls are short
+                        // and the cancel plumbing only covers provider
+                        // requests. The Suggest that follows is
+                        // cancellable as usual.
+                        ui.spinner();
+                        ui.label(t!("ai-prefetching"));
+                    } else if self.busy {
                         // Cancel replaces Send while a request is in
                         // flight. Both streaming and atomic paths route
                         // through the same select! cancel race in the
@@ -388,10 +557,20 @@ impl AiPanel {
                         ui.spinner();
                         ui.label(t!("ai-busy"));
                     } else if ui.button(t!("ai-send-button")).clicked() {
-                        pending =
-                            self.prepare_send(dialect.map(str::to_owned), schema, has_streaming);
+                        pending = self.prepare_send(
+                            dialect.map(str::to_owned),
+                            schema,
+                            has_streaming,
+                            has_describe_table,
+                        );
                     }
                 });
+                if let Some(count) = self.prefetch_failed {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        t_args!("ai-prefetch-warning", count = count),
+                    );
+                }
                 ui.separator();
                 self.render_body(ui);
                 if self.cancelled {
@@ -467,13 +646,21 @@ mod tests {
     use super::{ai_error_display, AiMode, AiPanel};
     use crate::Command;
     use dbboard_ai::{AiError, StopReason};
-    use dbboard_core::TableInfo;
+    use dbboard_core::{TableInfo, TableSchema};
 
     fn schema_two() -> Vec<TableInfo> {
         vec![
             TableInfo::qualified("public", "users"),
             TableInfo::qualified("public", "sessions"),
         ]
+    }
+
+    fn described(name: &str) -> TableSchema {
+        TableSchema {
+            table: TableInfo::qualified("public", name),
+            columns: Vec::new(),
+            primary_key: Vec::new(),
+        }
     }
 
     #[test]
@@ -512,7 +699,7 @@ mod tests {
     #[test]
     fn prepare_send_with_empty_input_is_noop_and_stays_idle() {
         let mut panel = AiPanel::new();
-        let cmd = panel.prepare_send(None, &[], false);
+        let cmd = panel.prepare_send(None, &[], false, false);
         assert!(cmd.is_none());
         assert!(!panel.is_busy());
     }
@@ -521,7 +708,7 @@ mod tests {
     fn prepare_send_with_whitespace_only_input_is_noop() {
         let mut panel = AiPanel::new();
         panel.input = "   \n\t  ".into();
-        let cmd = panel.prepare_send(None, &[], false);
+        let cmd = panel.prepare_send(None, &[], false, false);
         assert!(cmd.is_none());
         assert!(!panel.is_busy());
     }
@@ -530,7 +717,7 @@ mod tests {
     fn prepare_send_explain_atomic_produces_ai_explain_command_with_dialect() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), false);
+        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), false, false);
         assert!(panel.is_busy());
         match cmd {
             Some(Command::AiExplain { sql, dialect }) => {
@@ -545,7 +732,7 @@ mod tests {
     fn prepare_send_explain_streaming_produces_ai_explain_stream_command() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), true);
+        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), true, false);
         assert!(panel.is_busy());
         match cmd {
             Some(Command::AiExplainStream { sql, dialect }) => {
@@ -561,18 +748,20 @@ mod tests {
         let mut panel = AiPanel::new();
         panel.set_mode(AiMode::Suggest);
         panel.input = "monthly active users".into();
-        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), false);
+        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), false, false);
         assert!(panel.is_busy());
         match cmd {
             Some(Command::AiSuggest {
                 prompt,
                 dialect,
                 schema,
+                full_schema,
             }) => {
                 assert_eq!(prompt, "monthly active users");
                 assert_eq!(dialect.as_deref(), Some("postgres"));
                 assert_eq!(schema.len(), 2);
                 assert_eq!(schema[0].name, "users");
+                assert!(full_schema.is_none(), "toggle off means names only");
             }
             other => panic!("expected AiSuggest, got {other:?}"),
         }
@@ -583,17 +772,19 @@ mod tests {
         let mut panel = AiPanel::new();
         panel.set_mode(AiMode::Suggest);
         panel.input = "monthly active users".into();
-        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), true);
+        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), true, false);
         assert!(panel.is_busy());
         match cmd {
             Some(Command::AiSuggestStream {
                 prompt,
                 dialect,
                 schema,
+                full_schema,
             }) => {
                 assert_eq!(prompt, "monthly active users");
                 assert_eq!(dialect.as_deref(), Some("postgres"));
                 assert_eq!(schema.len(), 2);
+                assert!(full_schema.is_none(), "toggle off means names only");
             }
             other => panic!("expected AiSuggestStream, got {other:?}"),
         }
@@ -603,9 +794,9 @@ mod tests {
     fn prepare_send_while_busy_is_noop() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], false);
+        let _ = panel.prepare_send(None, &[], false, false);
         assert!(panel.is_busy());
-        let cmd = panel.prepare_send(None, &[], false);
+        let cmd = panel.prepare_send(None, &[], false, false);
         assert!(cmd.is_none(), "second send while busy must be a noop");
     }
 
@@ -613,7 +804,7 @@ mod tests {
     fn on_response_clears_busy_and_records_success() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], false);
+        let _ = panel.prepare_send(None, &[], false, false);
         panel.on_response("explained".into(), 12, 34);
         assert!(!panel.is_busy());
         match panel.last_response() {
@@ -630,7 +821,7 @@ mod tests {
     fn on_error_clears_busy_and_records_translated_message() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], false);
+        let _ = panel.prepare_send(None, &[], false, false);
         panel.on_error(&AiError::Provider("rate_limit".into()));
         assert!(!panel.is_busy());
         match panel.last_response() {
@@ -648,13 +839,13 @@ mod tests {
     fn fresh_response_replaces_stale_error() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], false);
+        let _ = panel.prepare_send(None, &[], false, false);
         panel.on_error(&AiError::Network("timeout".into()));
         assert!(matches!(panel.last_response(), Some(Err(_))));
 
         // Second round-trip: success replaces the prior error.
         panel.input = "SELECT 2".into();
-        let _ = panel.prepare_send(None, &[], false);
+        let _ = panel.prepare_send(None, &[], false, false);
         panel.on_response("ok".into(), 1, 1);
         assert!(matches!(panel.last_response(), Some(Ok(_))));
     }
@@ -663,12 +854,12 @@ mod tests {
     fn fresh_error_replaces_stale_response() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], false);
+        let _ = panel.prepare_send(None, &[], false, false);
         panel.on_response("first".into(), 0, 0);
         assert!(matches!(panel.last_response(), Some(Ok(_))));
 
         panel.input = "SELECT 2".into();
-        let _ = panel.prepare_send(None, &[], false);
+        let _ = panel.prepare_send(None, &[], false, false);
         panel.on_error(&AiError::Cancelled);
         assert!(matches!(panel.last_response(), Some(Err(_))));
     }
@@ -723,7 +914,7 @@ mod tests {
         // the cancel is acknowledged.
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], true);
+        let _ = panel.prepare_send(None, &[], true, false);
         assert!(panel.is_busy());
         let cancel = panel.prepare_cancel();
         assert!(matches!(cancel, Some(Command::CancelAiRequest)));
@@ -760,7 +951,7 @@ mod tests {
     fn on_stream_complete_moves_accumulator_into_last_response_and_clears_busy() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], true);
+        let _ = panel.prepare_send(None, &[], true, false);
         panel.on_stream_chunk("Hello", Some(11), None);
         panel.on_stream_chunk(" world", None, Some(7));
         panel.on_stream_complete(11, 7, &StopReason::EndTurn);
@@ -786,7 +977,7 @@ mod tests {
         // surfaces an empty success view with the final token counts.
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], true);
+        let _ = panel.prepare_send(None, &[], true, false);
         panel.on_stream_complete(11, 0, &StopReason::EndTurn);
         match panel.last_response() {
             Some(Ok(view)) => {
@@ -804,7 +995,7 @@ mod tests {
         // already saw — wiping them on a cancel click would be hostile.
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], true);
+        let _ = panel.prepare_send(None, &[], true, false);
         panel.on_stream_chunk("partial", Some(11), Some(3));
         panel.on_cancelled();
 
@@ -828,7 +1019,7 @@ mod tests {
         // so the panel renders "Cancelled." under whatever was there.
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], false);
+        let _ = panel.prepare_send(None, &[], false, false);
         assert!(panel.is_busy());
         panel.on_cancelled();
         assert!(!panel.is_busy());
@@ -843,12 +1034,12 @@ mod tests {
     fn fresh_send_clears_a_prior_cancelled_marker() {
         let mut panel = AiPanel::new();
         panel.input = "SELECT 1".into();
-        let _ = panel.prepare_send(None, &[], true);
+        let _ = panel.prepare_send(None, &[], true, false);
         panel.on_cancelled();
         assert!(panel.cancelled());
 
         panel.input = "SELECT 2".into();
-        let _ = panel.prepare_send(None, &[], true);
+        let _ = panel.prepare_send(None, &[], true, false);
         assert!(
             !panel.cancelled(),
             "the cancelled marker tracks the *most recent* outcome"
@@ -879,5 +1070,170 @@ mod tests {
             Some(Ok(view)) => assert_eq!(view.text, ""),
             other => panic!("expected Ok response, got {other:?}"),
         }
+    }
+
+    // --- ADR-0028 slice (c): column-details prefetch state machine ---
+
+    fn suggest_panel_with_details() -> AiPanel {
+        let mut panel = AiPanel::new();
+        panel.set_mode(AiMode::Suggest);
+        panel.set_include_details(true);
+        panel.input = "monthly active users".into();
+        panel
+    }
+
+    #[test]
+    fn new_panel_has_details_toggle_off_and_no_prefetch_state() {
+        let panel = AiPanel::new();
+        assert!(!panel.include_details());
+        assert!(!panel.prefetching());
+        assert!(panel.prefetch_failed().is_none());
+    }
+
+    #[test]
+    fn prepare_send_with_details_on_defers_suggest_behind_a_prefetch() {
+        let mut panel = suggest_panel_with_details();
+        let cmd = panel.prepare_send(Some("postgres".into()), &schema_two(), true, true);
+        assert!(panel.is_busy());
+        assert!(panel.prefetching());
+        match cmd {
+            Some(Command::PrefetchSchema { tables }) => {
+                assert_eq!(tables.len(), 2);
+                assert_eq!(tables[0].name, "users");
+            }
+            other => panic!("expected PrefetchSchema, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepare_send_with_details_but_no_describe_capability_sends_plain_suggest() {
+        let mut panel = suggest_panel_with_details();
+        let cmd = panel.prepare_send(None, &schema_two(), false, false);
+        assert!(!panel.prefetching());
+        assert!(matches!(
+            cmd,
+            Some(Command::AiSuggest {
+                full_schema: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn prepare_send_with_details_and_empty_schema_skips_the_prefetch() {
+        // Nothing to describe — the names-only prompt is equivalent, so
+        // the round-trip would only add latency.
+        let mut panel = suggest_panel_with_details();
+        let cmd = panel.prepare_send(None, &[], false, true);
+        assert!(!panel.prefetching());
+        assert!(matches!(
+            cmd,
+            Some(Command::AiSuggest {
+                full_schema: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn prepare_send_in_explain_mode_ignores_the_details_toggle() {
+        let mut panel = AiPanel::new();
+        panel.set_include_details(true);
+        panel.input = "SELECT 1".into();
+        let cmd = panel.prepare_send(None, &schema_two(), false, true);
+        assert!(matches!(cmd, Some(Command::AiExplain { .. })));
+        assert!(!panel.prefetching());
+    }
+
+    #[test]
+    fn on_schema_prefetched_fires_the_deferred_suggest_with_full_schema() {
+        let mut panel = suggest_panel_with_details();
+        let _ = panel.prepare_send(Some("postgres".into()), &schema_two(), true, true);
+        let cmd = panel.on_schema_prefetched(vec![described("users"), described("sessions")], &[]);
+        assert!(!panel.prefetching());
+        assert!(panel.is_busy(), "the deferred Suggest is now in flight");
+        assert!(panel.prefetch_failed().is_none());
+        match cmd {
+            Some(Command::AiSuggestStream {
+                prompt,
+                dialect,
+                schema,
+                full_schema,
+            }) => {
+                assert_eq!(prompt, "monthly active users");
+                assert_eq!(dialect.as_deref(), Some("postgres"));
+                assert_eq!(schema.len(), 2);
+                let full = full_schema.expect("full schema attached");
+                assert_eq!(full.len(), 2);
+                assert_eq!(full[0].table.name, "users");
+            }
+            other => panic!("expected AiSuggestStream with full_schema, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn on_schema_prefetched_respects_the_atomic_path_when_streaming_is_off() {
+        let mut panel = suggest_panel_with_details();
+        let _ = panel.prepare_send(None, &schema_two(), false, true);
+        let cmd = panel.on_schema_prefetched(vec![described("users")], &[]);
+        assert!(matches!(
+            cmd,
+            Some(Command::AiSuggest {
+                full_schema: Some(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn on_schema_prefetched_with_partial_failure_warns_but_still_suggests() {
+        // ADR-0028 Decision 9: partial failure is non-blocking. The
+        // Suggest fires with whatever described successfully and the
+        // panel shows a warning count.
+        let mut panel = suggest_panel_with_details();
+        let _ = panel.prepare_send(None, &schema_two(), false, true);
+        let errors = vec![(
+            TableInfo::qualified("public", "sessions"),
+            "permission denied".to_string(),
+        )];
+        let cmd = panel.on_schema_prefetched(vec![described("users")], &errors);
+        assert_eq!(panel.prefetch_failed(), Some(1));
+        match cmd {
+            Some(Command::AiSuggest { full_schema, .. }) => {
+                assert_eq!(full_schema.expect("partial schema").len(), 1);
+            }
+            other => panic!("expected AiSuggest despite partial failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stray_schema_prefetched_reply_resets_busy_without_a_command() {
+        // Defence-in-depth: a reply landing with no pending Suggest
+        // (e.g. the send-side channel error already reset the panel)
+        // must not strand the spinner or synthesise a request.
+        let mut panel = AiPanel::new();
+        let cmd = panel.on_schema_prefetched(vec![described("users")], &[]);
+        assert!(cmd.is_none());
+        assert!(!panel.is_busy());
+        assert!(!panel.prefetching());
+    }
+
+    #[test]
+    fn fresh_send_clears_a_prior_prefetch_warning() {
+        let mut panel = suggest_panel_with_details();
+        let _ = panel.prepare_send(None, &schema_two(), false, true);
+        let errors = vec![(
+            TableInfo::qualified("public", "sessions"),
+            "boom".to_string(),
+        )];
+        let _ = panel.on_schema_prefetched(Vec::new(), &errors);
+        assert_eq!(panel.prefetch_failed(), Some(1));
+        panel.on_response("done".into(), 1, 1);
+
+        // The warning tracks the most recent outcome, like `cancelled`.
+        panel.input = "second ask".into();
+        panel.set_include_details(false);
+        let _ = panel.prepare_send(None, &schema_two(), false, true);
+        assert!(panel.prefetch_failed().is_none());
     }
 }

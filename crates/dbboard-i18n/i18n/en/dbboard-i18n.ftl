@@ -119,3 +119,15 @@ ai-settings-kind-anthropic = Anthropic
 # to the in-process slot right now. Rendered only when a provider is
 # active (i.e. the panel is visible).
 ai-active-with-name = Active: { $name }
+
+# ADR-0028 Phase 4 Stage 2 Group D-1: full-DDL prompt enrichment. The
+# checkbox only renders in Suggest mode when the active DB adapter
+# reports `has_describe_table`; while the pre-Suggest describe fan-out
+# is in flight the panel shows `ai-prefetching` (no Cancel — the
+# describes are short and only the provider leg is cancellable). A
+# partial describe failure is non-blocking: the warning renders with
+# the failed-table count and the suggestion proceeds with whatever
+# schemas arrived.
+ai-include-details = Include column details
+ai-prefetching = Fetching table schemas…
+ai-prefetch-warning = Could not describe { $count } table(s); continuing without them.

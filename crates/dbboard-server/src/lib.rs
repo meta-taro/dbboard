@@ -73,7 +73,12 @@ impl AppState {
     /// calls — this is the per-request capture ADR-0020 relies on. The
     /// read guard is dropped before this function returns, so no lock
     /// is held across the handler's `.await`.
-    pub(crate) fn current_adapter(&self) -> Arc<dyn DatabaseAdapter> {
+    ///
+    /// Public since ADR-0028 slice (c): the desktop binary implements
+    /// `dbboard-ui`'s `SchemaSource` over this snapshot so the UI
+    /// worker can fan out `describe_table` in-process — the HTTP
+    /// contract shared with dbboard-web stays untouched.
+    pub fn current_adapter(&self) -> Arc<dyn DatabaseAdapter> {
         // A poisoned lock means a prior writer panicked mid-swap. The
         // inner `Arc<dyn DatabaseAdapter>` is still a valid handle —
         // either the pre-swap adapter or the new one — so unwrap the

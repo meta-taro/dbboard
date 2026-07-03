@@ -66,6 +66,9 @@ pub(crate) fn request_for(command: &Command) -> HttpRequest {
         Command::SwitchAiProvider { .. } => {
             unreachable!("SwitchAiProvider is handled by AiProviderSwitcher before request_for")
         }
+        Command::PrefetchSchema { .. } => {
+            unreachable!("PrefetchSchema is handled via SchemaSource before request_for")
+        }
     }
 }
 

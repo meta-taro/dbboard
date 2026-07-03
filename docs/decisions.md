@@ -3793,3 +3793,377 @@ in the writer direction (v:1 readers skip new records, counter
 ticks). The HTTP contract is unchanged. The cross-repo coordination
 moves through brief 0008.
 
+## ADR-0028 — Phase 4 Stage 2 Group D-1: Full DDL extraction via `DatabaseAdapter::describe_table`
+
+- **Status:** Accepted (2026-07-02). Implementation tracker:
+  [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md)
+  (closed). Lands on `feature/ddl-extraction` across four commits:
+  - Slice (a) `a42a27c` — `dbboard-core` trait method + `TableSchema` +
+    `ColumnInfo` extension + `Capabilities::has_describe_table`
+    (review notes addressed in `bba4072`).
+  - Slice (b) `b509a36` — `describe_table` in the turso, d1, and
+    postgres adapters with `has_describe_table = true` each.
+  - Slice (c) `dfdaaca` — `SuggestRequest.full_schema` +
+    Anthropic prompt rendering + worker `PrefetchSchema` fan-out
+    (semaphore cap 8) + `AiPanel` "Include column details" checkbox +
+    warning banner + 11-locale i18n keys. One deviation from the plan
+    below: `apps/dbboard` **was** touched after all — the worker
+    reaches the live adapter through a new narrow `SchemaSource`
+    trait (same injection pattern as `ConnectionSwitcher`), which the
+    binary implements over the server's `AppState`
+    (`current_adapter()` made `pub`). Chosen over the "no binary
+    wiring" assumption because the UI worker has no other in-process
+    path to the live adapter; the HTTP contract stays untouched.
+  - Slice (d) — this docs sweep.
+  - Open questions above resolved as: no prompt-size cap in v1 (the
+    toggle is opt-in per session and the ADR-0026 token meter makes
+    cost visible; revisit if a friction report lands), and no cancel
+    during the prefetch leg (the fan-out is short and bounded; the
+    deferred Suggest that follows remains cancellable as before).
+- **Activates:** ADR-0023 §9 deferred "Full DDL extraction on
+  `DatabaseAdapter`" (Decision 7 said the queued method would be
+  called `dump_schema`; this ADR names it `describe_table` for the
+  reasons in Decision 1).
+- **Prerequisite for:** ADR-0029 (function-calling), which will expose
+  `describe_table` as a callable tool. `describe_table` is the concrete
+  primitive that makes function-calling worth turning on.
+- **No cross-repo brief.** `describe_table` is a desktop-side
+  `DatabaseAdapter` trait extension. No HTTP contract change, no
+  `history.jsonl` schema bump. Web has its own connection-management
+  story (`POST /connections/:id/query`) and would decide its own
+  DDL-fetching shape independently.
+
+### Context
+
+Three observations after Group A (ADR-0025 provider config) + Group B
+(ADR-0026 streaming + cancel + tokens) + Group C (ADR-0027 AI history
+v:2) motivate lifting the `list_tables()` surface:
+
+1. **`list_tables()` returns only `TableInfo { schema, name }`** —
+   just table names. When the user hits Suggest in the AI panel with
+   a natural-language prompt like "list the top 10 recent orders by
+   customer", the AI provider gets 15 table names and hallucinates
+   column names half the time. The suggestions read plausibly but do
+   not compile against the real schema. The friction is real and
+   reported.
+
+2. **`ColumnInfo` already exists in `dbboard-core::schema`** (fields:
+   `name`, `declared_type`, `nullable`, `primary_key`) but is
+   currently unused by any adapter. Half the type surface is already
+   drawn — this ADR closes the loop by adding one required trait
+   method that populates it and one new sibling struct
+   (`TableSchema`) that carries the per-table result.
+
+3. **Function-calling (ADR-0029, deferred) needs a real tool to
+   expose.** The natural first tool for a database AI companion is
+   "describe this specific table on demand." Without a
+   `describe_table` primitive, ADR-0029 would have to invent one; with
+   it, ADR-0029 collapses to trait plumbing + provider mapping. Ship
+   `describe_table` first so the primitive is proven before the tool
+   surface wraps it.
+
+The scope is narrow on purpose: **columns + primary-key composition
+only**. Indexes and foreign keys are deliberately out of scope
+(see §Out of scope) — the intent is to close 80% of AI hallucination
+with the smallest change, not to build a general-purpose schema
+introspection API.
+
+### Decisions
+
+1. **New required trait method:** `async fn describe_table(&self,
+   table: &TableInfo) -> DbResult<TableSchema>` on `DatabaseAdapter`.
+   Takes the existing `TableInfo` (schema-qualified pair) so callers
+   pass what `list_tables()` returned — no new naming ambiguity for
+   `"public.users"` vs `"users"`. Returns a rich `TableSchema` (see
+   Decision 2). **Default impl returns
+   `DbError::Capability("describe_table not supported by this
+   adapter")`** so pre-existing adapters compile unchanged and
+   signal capability miss at runtime rather than a build break.
+
+   Rejected: `describe_table(name: &str)` — cross-schema ambiguity.
+   Rejected: `dump_schema() -> Vec<TableSchema>` (the ADR-0023 §7
+   name) — dumps the whole DB in one call, wasteful for large
+   schemas and awkward for the function-calling case (ADR-0029)
+   which needs single-table lookups. `dump_schema` can be added as
+   a batch helper in a future ADR if fan-out becomes a friction
+   point.
+
+2. **New `TableSchema` struct in `dbboard-core::schema`:**
+
+   ```rust
+   pub struct TableSchema {
+       pub table: TableInfo,
+       pub columns: Vec<ColumnInfo>,
+       pub primary_key: Vec<String>,
+   }
+   ```
+
+   `table` is the qualified identifier the caller passed. `columns`
+   is ordered by ordinal position (each adapter's native ordering).
+   `primary_key` is the *composite* primary-key column names in key
+   order, empty when the table has no primary key. `ColumnInfo`'s
+   existing `primary_key: bool` flag is retained (it stays convenient
+   for single-column PKs and never disagrees with the composite
+   list — invariant enforced by the adapter and the reader trusts it).
+
+3. **`ColumnInfo` gains `ordinal: u32` and `default_value:
+   Option<String>` as additive fields.** `ordinal` matches
+   `information_schema.columns.ordinal_position` (Postgres, 1-based)
+   / `PRAGMA table_info.cid` (SQLite, 0-based → +1 normalised).
+   `default_value` is the raw DDL default expression as the engine
+   reports it (e.g. `"nextval('users_id_seq'::regclass)"` on
+   Postgres, `"0"` or `"CURRENT_TIMESTAMP"` on SQLite). `NULL`
+   default (i.e. no default clause) → `None`. Retained for AI
+   prompt fidelity — a column with `DEFAULT CURRENT_TIMESTAMP`
+   suggests different SQL than one with no default.
+
+   Rejected: parsing `default_value` into a typed enum. The value is
+   engine-specific literal text and typed parsing would be lossy for
+   sequence calls, expressions, and `CURRENT_TIMESTAMP` variants.
+   The AI reads it as a hint, not as a value.
+
+4. **`Capabilities::has_describe_table: bool` additive flag.**
+   Default `false`. Adapters override in `capabilities()`. The UI
+   uses the flag to decide whether the "Include column details"
+   toggle is available (Decision 8) — greying it out on adapters
+   that only ship names is honest, versus letting the user check the
+   box and then surfacing `Capability` errors after each Suggest.
+
+5. **Per-adapter SQL:**
+   - **`dbboard-postgres`**: one SELECT against
+     `information_schema.columns` (schema + name filter, ordered by
+     `ordinal_position`) for columns, and one SELECT against
+     `information_schema.table_constraints` JOIN
+     `information_schema.key_column_usage` filtered on
+     `constraint_type = 'PRIMARY KEY'` for the composite PK. Two
+     round-trips per `describe_table` call. Ordering the second by
+     `ordinal_position` gives the composite key in declaration
+     order.
+   - **`dbboard-turso`** and **`dbboard-d1`** (both SQLite): one
+     `PRAGMA table_info('<name>')` call. That single result carries
+     column name, type, nullability, default, ordinal (as `cid`),
+     and the per-column `pk` flag (`0` = not PK, `n>0` = position
+     in composite PK — we materialise the composite list by
+     collecting columns with `pk > 0` sorted by `pk`). One round-trip
+     per call. D1's HTTP transport re-uses the existing raw-query
+     path (same envelope as `list_tables`).
+
+6. **Missing tables are `DbError::Query`** ("table not found" / "no
+   such table") — the natural engine response. This is not a new
+   error category; the adapter propagates whatever the engine says.
+   The UI reads it as a stale schema situation (user renamed a table
+   between `list_tables()` and `describe_table()`) and can prompt a
+   refresh.
+
+7. **No caching in `dbboard-core` or the adapters.** Every
+   `describe_table` call round-trips to the DB. Callers (the AI
+   panel is the only caller for now) may cache above the trait if
+   they want to, but the trait itself is transport-only. Rejected an
+   in-adapter cache to keep the trait pure and to avoid staleness
+   surprises: a schema change on the server should reflect on the
+   next Suggest immediately.
+
+8. **`SuggestRequest` gains `full_schema: Option<Vec<TableSchema>>`
+   additive field.** When present, the AI provider serialises
+   `full_schema` into the prompt (via a formatter the provider
+   owns — Anthropic uses a compact `CREATE TABLE`-ish rendering)
+   instead of the terse `schema: Vec<TableInfo>`. Both fields may
+   be present on the wire; the provider always prefers
+   `full_schema` when non-empty. `schema` remains for the
+   names-only default and for tests. The existing `schema` field is
+   not renamed or removed for one release (Cargo consumer
+   back-compat).
+
+9. **AI panel UI: "Include column details" checkbox.** In Suggest
+   mode, when `has_describe_table` is true, the panel renders a
+   checkbox (default off). When checked, the panel:
+   - fans out `describe_table` calls in parallel for every entry in
+     `list_tables()` before the Suggest fires (via a new
+     `Command::PrefetchSchema { tables: Vec<TableInfo> }` /
+     `Reply::SchemaPrefetched { schemas: Vec<TableSchema>, errors:
+     Vec<(TableInfo, String)> }` round-trip),
+   - shows an indeterminate progress spinner during fan-out,
+   - populates `SuggestRequest.full_schema` with the successful
+     results,
+   - if any table fails, shows a non-blocking warning banner
+     (`"3 tables could not be described — Suggest will use partial
+     schema"`) but still fires the Suggest with what it got.
+
+   Fan-out is capped at 8 concurrent `describe_table` calls via a
+   `tokio::sync::Semaphore` (matches the AI worker's cancel-token
+   budget from ADR-0026) so a 200-table Postgres schema does not
+   hammer the connection pool. The checkbox state is not persisted
+   across sessions (session-local egui state — same treatment as
+   the Suggest/Explain radio).
+
+10. **No HTTP contract change and no `history.jsonl` schema
+    change.** `describe_table` is desktop-side. `history.jsonl`
+    already carries the AI prompt verbatim (ADR-0027 §Decision 8);
+    when `full_schema` is used the rendered schema appears inside
+    the `prompt` field, which is the correct place for it. No
+    schema-context blob is added as a top-level history field
+    (would be Group D-2 or later territory if a rich viewer wants
+    it structured).
+
+### Alternatives considered
+
+- **`dump_schema() -> Vec<TableSchema>` as the primitive** — see
+  Decision 1 rejection. Awkward for function-calling, wasteful for
+  large schemas. Adding it as a *batch helper* on top of
+  `describe_table` is left to a future ADR if profiling shows
+  per-table fan-out is the bottleneck.
+
+- **Include indexes and foreign keys in v1.** Deferred to a future
+  ADR. Indexes matter for query-planning suggestions; foreign keys
+  matter for JOIN suggestions. Both are worth having but each adds
+  a per-adapter SQL query, more struct fields to keep consistent
+  across three adapters, and more prompt-formatting decisions on
+  the provider side. Ship columns + PK first, watch for
+  hallucination patterns that survive, then decide.
+
+- **`ColumnInfo::default_value` as a typed enum** — rejected in
+  Decision 3. Engine-specific literal text is the honest
+  representation.
+
+- **Cache `describe_table` results in the adapter for N seconds** —
+  rejected in Decision 7. Adds a staleness knob for questionable
+  benefit; the UI-side caller can memoise if needed.
+
+- **A single trait method returning `Result<TableSchema,
+  DbError>` per Some(TableInfo) but batch when input is
+  `None`** — rejected as too clever. Two shapes on one method make
+  every implementation harder to test and the docstring
+  confusing.
+
+- **Emit rendered `CREATE TABLE` DDL text directly (skip
+  `TableSchema` struct entirely)** — rejected. AI consumption is
+  the near-term use case but the struct is more useful for other
+  future callers (schema browser UI, migration diff tooling,
+  export). Formatting to CREATE TABLE is a rendering choice, not
+  a data-model choice.
+
+### Implementation slicing
+
+Four slices on a single feature branch, one PR (ADR-0026 / ADR-0027
+precedent). Each slice green through the pre-commit hook.
+
+- **Slice (a)** — `dbboard-core`: add `TableSchema` struct
+  (`schema.rs`), extend `ColumnInfo` with `ordinal` + `default_value`,
+  add `describe_table` trait method with default `Capability` impl,
+  add `Capabilities::has_describe_table`. Unit tests for the
+  `has_describe_table` capability round-trip through JSON and the
+  default trait impl surfacing the capability error. **No adapter
+  touches yet** (default impl handles them).
+
+- **Slice (b)** — per-adapter `describe_table` implementations plus
+  the capability flip:
+  - `dbboard-postgres`: `describe_table` + `has_describe_table =
+    true`. Integration test against `postgres:16-alpine` via
+    testcontainers (Docker-skip guard).
+  - `dbboard-turso`: `describe_table` + `has_describe_table = true`.
+    Uses `PRAGMA table_info`. Unit test against an in-memory libsql
+    DB.
+  - `dbboard-d1`: `describe_table` + `has_describe_table = true`.
+    Reuses the existing HTTP envelope path with the `PRAGMA` query.
+    Test via the mocked-HTTP layer.
+
+- **Slice (c)** — `dbboard-ai` + `dbboard-ui`:
+  - `SuggestRequest.full_schema: Option<Vec<TableSchema>>` additive
+    field, `AnthropicProvider` renders it into the prompt when
+    present (existing `schema` path stays for the names-only case).
+  - `Command::PrefetchSchema` + `Reply::SchemaPrefetched` worker
+    variants + fan-out with semaphore cap of 8.
+  - `AiPanel` "Include column details" checkbox gated on
+    `has_describe_table`, prefetch on Send, warning banner on
+    partial failure. State machine tests for the toggle-on /
+    toggle-off / partial-failure paths.
+
+- **Slice (d)** — docs sweep: ADR-0028 status Proposed →
+  Accepted, `docs/roadmap.md` Phase 4 Stage 2 Group D-1 tick,
+  `README.md` AI section gains a one-paragraph note about the
+  Include-column-details toggle (schema context bytes go into
+  the AI provider's context window, cost implications), tracker
+  issue `.claude/issues/0011` closed, `.claude/project-status.md`
+  slice landing record. `.claude/next-actions.md` regenerated
+  for the post-Group-D-1 state.
+
+### Out of scope (intentionally)
+
+- **Function-calling / tool-use.** ADR-0029, sibling ADR under
+  Group D. `describe_table` becomes the first exposed tool there.
+- **Indexes and foreign keys.** Future ADR when hallucination
+  patterns identify the specific gap. Adds one query per adapter
+  and prompt-shape decisions.
+- **`describe_view()` / `describe_function()`.** The existing
+  optional trait accessors (`views()`, `functions()`) can grow
+  their own describe methods when there is a use case; the AI
+  panel does not currently need them.
+- **Batch `describe_tables(&[TableInfo])`.** See Decision 1.
+  Fan-out from the UI is enough for the caller sizes we ship
+  today (< 100 tables typical).
+- **Schema browser UI.** A tree view of tables → columns is a
+  natural follow-up that consumes `describe_table` but is not
+  gating for the AI use case. Deferred.
+- **Persisting the "Include column details" toggle across
+  sessions.** Session-local for v1. If the toggle becomes an
+  always-on preference for a given user, a future ADR can lift it
+  into `ai-providers.toml` or a sibling `ui-preferences.toml`.
+- **`CREATE TABLE` text generation.** `TableSchema` is the
+  structural primitive; rendering it as SQL is a viewer / exporter
+  concern for a later ADR.
+- **Caching.** Every call round-trips (Decision 7).
+
+### Open questions (TBD before slice c)
+
+- Should the prefetched schema block be trimmed when it exceeds a
+  budget (e.g. 32 KiB of rendered prompt)? Leaning yes with a
+  degrade-and-warn path, but the exact cap is worth setting from a
+  measured Anthropic context-window cost rather than a guess.
+- Should `Command::PrefetchSchema` accept a cancel token so the
+  user can back out during a slow fan-out? Leaning yes — the
+  existing cancel path from ADR-0026 gives us the machinery
+  cheaply.
+
+### Risks
+
+- **Prompt cost.** Full schema for a 200-table DB blows the
+  Anthropic context budget. Mitigation: the toggle is off by
+  default and the UI shows the raw token count in the meter
+  (already shipped in ADR-0026); Decision 9 caps the fan-out for
+  DB-side pressure, and the open question above covers a
+  prompt-side cap.
+- **Fan-out load.** 200 tables × 1-2 queries each is a lot for a
+  shared Postgres. Semaphore cap of 8 is Decision 9's mitigation;
+  if that is still too much for a shared prod DB, the user can
+  keep the toggle off and rely on names-only Suggest.
+- **Cross-adapter type drift.** Postgres reports `text` /
+  `character varying(N)` / `numeric(p, s)`; SQLite reports
+  affinity strings (`INTEGER` / `TEXT` / `REAL` / `BLOB`). We do
+  not normalise across adapters — `declared_type` is raw. The AI
+  reads dialect via `SuggestRequest.dialect`, so mixed
+  interpretations should not surface. Called out here so we
+  notice if it does.
+- **Stale `TableInfo` between `list_tables` and `describe_table`.**
+  Covered by Decision 6 (`DbError::Query` → UI prompts refresh).
+  Nothing structurally can prevent this race in a live DB; the
+  fallback is graceful.
+
+### Implementation slicing impact
+
+- `dbboard-core` gets one new required-with-default trait method
+  (compiles for existing adapters — `Capability` error at runtime
+  is the "please implement me" signal, matched by ADR-0028 shipping
+  all three adapters in slice (b)).
+- `dbboard-ai` `SuggestRequest` gains an `Option` field. Provider
+  crates that ignore it keep working (existing tests pass).
+- `dbboard-ui` grows the checkbox + prefetch worker plumbing.
+- `apps/dbboard` is untouched (no new binary wiring).
+
+### SemVer impact (ADR-0011)
+
+Additive on the trait + types. Existing adapters compile unchanged
+(the trait method has a default impl). `SuggestRequest` gains an
+optional field. `Capabilities` gains a boolean with a `false`
+default. No HTTP contract change. No `history.jsonl` schema
+change.
+
