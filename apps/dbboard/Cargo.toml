@@ -12,6 +12,12 @@ description = "dbboard desktop binary: wires adapters and UI together."
 name = "dbboard"
 path = "src/main.rs"
 
+# Embeds the icon + version/product metadata into the Windows binary and
+# suppresses the console window at link time (ADR-0032). Windows-only via
+# a target cfg so non-Windows builds pull in nothing.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 # The binary wires the in-process server to the UI and links neither
 # adapters nor dbboard-core directly: the server owns backend selection
@@ -50,3 +56,14 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+# cargo-wix settings (ADR-0032). The hand-authored `wix/main.wxs` is the
+# source of truth for the installer; these keys let `cargo wix init
+# --force` regenerate a template with the SAME fixed GUIDs, and point the
+# license dialog at the MIT RTF. Changing the GUIDs breaks in-place
+# upgrades — keep them in lockstep with `wix/main.wxs`.
+[package.metadata.wix]
+upgrade-guid = "A8AED330-48F5-4C84-89AD-C1303DF5543F"
+path-guid = "B008E00A-3525-4A0F-AF0E-DF2045D814B2"
+eula = "wix/License.rtf"
+name = "dbboard"

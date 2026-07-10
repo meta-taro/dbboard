@@ -4297,3 +4297,86 @@ None on the published surface. The new `Command` / `Reply` variants
 are internal to `dbboard-ui`. No adapter trait, HTTP envelope, or
 on-disk schema changes.
 
+
+## ADR-0032 — Windows packaging: console suppression, exe metadata, CRT-static, MSI via cargo-wix
+
+- **Status:** Accepted (2026-07-10). Lands on `feature/windows-packaging`.
+  Build/packaging only — no source-behaviour, crate-contract, HTTP-contract,
+  or `history.jsonl` change. Windows-only; a no-op on macOS/Linux builds.
+
+### Context
+
+The maintainer wants to hand `dbboard` to internal users on **Windows
+only, for now**. A release binary already builds and runs with no config
+(`target/release/dbboard.exe`, ~15 MB; libsql/ring statically linked;
+falls back to in-memory Turso and configures connections/AI from the UI
+with secrets in Windows Credential Manager). But it was not
+distribution-ready:
+
+1. **A console window flashed behind the GUI** — no
+   `#![windows_subsystem]` anywhere.
+2. **Default blank Rust icon, no version/product metadata** — the exe
+   looked anonymous in Explorer, the taskbar, and the Details tab.
+3. **Dynamic MSVC CRT** — recipients without the Visual C++
+   Redistributable would hit a `vcruntime140.dll`-missing error.
+4. **No installer** — only a loose exe, no packaging, no
+   `.github/workflows/` release automation.
+
+### Decision
+
+Adopt four changes, gated so non-Windows builds are unaffected.
+
+1. **Suppress the console on release builds.**
+   `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
+   at the crate root of `apps/dbboard/src/main.rs`. Debug builds keep the
+   console so `println!`/panic traces stay visible during development.
+
+2. **Embed icon + metadata via `winresource`.** A new `apps/dbboard/build.rs`
+   (Windows-only `build-dependency`) sets the icon and the ProductName /
+   FileDescription / CompanyName / LegalCopyright / OriginalFilename
+   strings; FileVersion / ProductVersion default from `CARGO_PKG_VERSION`.
+   The icon `apps/dbboard/assets/dbboard.ico` is a hand-built
+   multi-resolution (16–256 px) PNG-based ICO — an indigo rounded square
+   with a white database-cylinder glyph. It was generated with a
+   throwaway PowerShell + GDI+ script (checked into scratch, not the
+   repo) because no image tooling or brand asset existed; the `.ico`
+   itself is committed.
+
+3. **Statically link the CRT.** `.cargo/config.toml` sets
+   `-C target-feature=+crt-static` for
+   `cfg(all(windows, target_env = "msvc"))`, so the exe is self-contained
+   and needs no VC++ Redistributable. Cargo drops the flag for
+   proc-macro crates automatically, so the workspace still builds. Verified
+   on the release exe: **zero** `vcruntime`/`msvcp`/`ucrtbase`/`api-ms-win-crt`
+   references in the import table.
+
+4. **MSI installer via `cargo-wix`.** `apps/dbboard/wix/main.wxs`
+   (WiX v3, hand-authored to match cargo-wix's `$(var.Version)` /
+   `$(var.CargoTargetBinDir)` variables) + `apps/dbboard/wix/License.rtf`
+   (MIT) + a `[package.metadata.wix]` block. It installs to
+   `%ProgramFiles%\dbboard`, offers an opt-out PATH sub-feature, wires the
+   Add/Remove-Programs icon, and shows the MIT license. The UpgradeCode and
+   the PATH component GUID are **fixed** (baked in both `main.wxs` and the
+   metadata) so in-place upgrades and uninstall PATH-cleanup work.
+
+MSI was chosen over a bare zip or `cargo-bundle` because internal IT can
+push an MSI via GPO/Intune, it registers a clean uninstall entry, and it
+is the least surprising format for Windows recipients.
+
+### Consequences
+
+- **New tooling the human must install to *build* the MSI** (not to build
+  the exe): the WiX Toolset v3 (candle/light) and `cargo install cargo-wix`.
+  Neither is on the maintainer's machine yet, so `cargo wix` is a
+  human-run step. The exe hardening (1–3) needs no new tools and is
+  verified working here.
+- The `.cargo/config.toml` `crt-static` flag invalidates the build cache
+  once (full rebuild) and applies workspace-wide on the MSVC target.
+- No CI yet: this ADR sets up local packaging only. A release workflow
+  (`cargo wix` on a tagged push) is a later, optional follow-up.
+- Desktop-only; the dbboard-web sibling is unaffected. No cross-repo brief.
+
+### SemVer impact (ADR-0011)
+
+None. No public surface changes — this is build configuration, a build
+script, an icon asset, and installer source.
