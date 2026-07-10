@@ -94,3 +94,7 @@ ai-prefetch-warning = Impossible de décrire { $count } table(s) ; la suggestion
 cell-expand-hint = Afficher la valeur complète
 cell-full-text-title = Valeur de la cellule
 cell-copy = Copier
+
+# ADR-0030 auto-limit guard for bare SELECTs.
+auto-limit-checkbox = LIMIT { $count }
+auto-limit-hint = Ajoute un LIMIT aux SELECT sans limite pour éviter quun balayage illimité ne fige linterface. Écrivez votre propre LIMIT ou décochez pour passer outre.

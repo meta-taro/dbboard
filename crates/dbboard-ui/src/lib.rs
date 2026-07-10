@@ -328,6 +328,12 @@ pub struct DbboardApp {
     /// worker's `PrefetchSchema` fan-out. `None` (tests / in-memory
     /// flows) simply hides the toggle.
     schema_source: Option<Arc<dyn SchemaSource>>,
+    /// Safety net for bare `SELECT`s (ADR-0030). When on, running a plain
+    /// `SELECT` with no `LIMIT` appends `LIMIT {DEFAULT_AUTO_LIMIT}` to the
+    /// executed statement so an unbounded scan can't freeze the UI. Visible
+    /// as a toolbar checkbox and overridable: the user can uncheck it or
+    /// write their own `LIMIT`, in which case the guard backs off.
+    auto_limit: bool,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -448,6 +454,7 @@ impl DbboardApp {
             active_ai_provider_label: None,
             last_ai_switch_error: None,
             schema_source,
+            auto_limit: true,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -729,16 +736,21 @@ impl DbboardApp {
         if self.busy || self.sql.trim().is_empty() {
             return;
         }
-        // Submit-time: push the bare SQL into the in-memory ring so the
+        // Apply the bare-SELECT guard once, up front, so history, the
+        // pending record, and the executed statement all agree on exactly
+        // what ran (ADR-0030). A no-op unless auto_limit is on and the
+        // statement is a plain unbounded SELECT.
+        let effective = apply_auto_limit(&self.sql, self.auto_limit, DEFAULT_AUTO_LIMIT);
+        // Submit-time: push the executed SQL into the in-memory ring so the
         // history panel updates instantly; disk append happens at reply
         // time, once we know duration / rows / status (ADR-0017).
-        self.history.record_submit(self.sql.clone());
+        self.history.record_submit(effective.clone());
         self.pending = Some(PendingSubmit {
             started: Instant::now(),
-            sql: self.sql.clone(),
+            sql: effective.clone(),
         });
         self.busy = true;
-        let _ = self.cmd_tx.send(Command::Query(self.sql.clone()));
+        let _ = self.cmd_tx.send(Command::Query(effective));
         // Tables may have changed as a side effect (CREATE/DROP), so
         // refresh the sidebar after every run.
         let _ = self.cmd_tx.send(Command::ListTables);
@@ -1198,6 +1210,12 @@ impl DbboardApp {
                 {
                     self.run_sql();
                 }
+                // Visible, overridable bare-SELECT guard (ADR-0030).
+                ui.checkbox(
+                    &mut self.auto_limit,
+                    t_args!("auto-limit-checkbox", count = DEFAULT_AUTO_LIMIT),
+                )
+                .on_hover_text(t!("auto-limit-hint"));
                 if self.busy {
                     ui.spinner();
                 }
@@ -1317,6 +1335,50 @@ fn error_display(e: &DbError) -> String {
 /// Kept pure so the trigger rules are testable without an egui frame.
 fn should_run_from_keys(f5_pressed: bool, cmd_held: bool, enter_pressed: bool) -> bool {
     f5_pressed || (cmd_held && enter_pressed)
+}
+
+/// Row cap appended to unbounded bare `SELECT`s (ADR-0030). A safety net,
+/// not a hard limit: the user can raise it by writing their own `LIMIT` or
+/// disable it with the toolbar checkbox.
+const DEFAULT_AUTO_LIMIT: u32 = 100;
+
+/// True when `sql` is a single plain `SELECT` with no `LIMIT` — the only
+/// shape the auto-limit guard touches. CTEs (`WITH …`), multi-statement
+/// input, and anything already carrying a `LIMIT` are left alone so the
+/// guard never changes a query's meaning.
+fn is_bare_select(sql: &str) -> bool {
+    let stripped = sql.trim().trim_end_matches(';').trim();
+    // Internal `;` means multiple statements; appending a LIMIT would bind
+    // to the wrong one, so bail.
+    if stripped.contains(';') {
+        return false;
+    }
+    let lower = stripped.to_ascii_lowercase();
+    let starts_select = lower == "select"
+        || lower
+            .strip_prefix("select")
+            .is_some_and(|rest| rest.starts_with([' ', '\n', '\t', '\r']));
+    starts_select && !has_limit_token(&lower)
+}
+
+/// Whether a `limit` keyword appears as a standalone token (not as a
+/// substring of an identifier like `limits`).
+fn has_limit_token(lower: &str) -> bool {
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| tok == "limit")
+}
+
+/// The statement to actually execute: `sql` unchanged, or with
+/// ` LIMIT {limit}` appended when the guard is on and `sql` is a bare
+/// `SELECT`. A trailing semicolon is dropped so the result stays valid.
+fn apply_auto_limit(sql: &str, enabled: bool, limit: u32) -> String {
+    if !enabled || !is_bare_select(sql) {
+        return sql.to_owned();
+    }
+    let trimmed = sql.trim_end();
+    let body = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
+    format!("{body} LIMIT {limit}")
 }
 
 /// Longest single-line cell rendered inline before the expand affordance
@@ -1454,9 +1516,9 @@ fn render_expanded_cell_popup(ui: &mut egui::Ui, expand_id: egui::Id) {
 #[cfg(test)]
 mod tests {
     use super::{
-        cell_preview, error_display, is_long_cell, should_run_from_keys, AiProviderSlot, Command,
-        DbboardApp, HistoryStatus, PersistentHistoryStore, Reply, CELL_PREVIEW_CHARS,
-        DEFAULT_CAPACITY,
+        apply_auto_limit, cell_preview, error_display, is_bare_select, is_long_cell,
+        should_run_from_keys, AiProviderSlot, Command, DbboardApp, HistoryStatus,
+        PersistentHistoryStore, Reply, CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
     };
     use dbboard_core::{Column, DbError, QueryResult, Row, TableInfo, Value};
     use std::sync::mpsc;
@@ -1532,6 +1594,7 @@ mod tests {
     fn run_sql_sends_query_and_table_refresh_then_marks_busy() {
         let (mut app, cmd_rx, _reply_tx) = build();
         let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.auto_limit = false; // isolate plumbing from the ADR-0030 guard
         app.sql = "SELECT 1".into();
         app.run_sql();
 
@@ -1540,6 +1603,25 @@ mod tests {
         let second = cmd_rx.try_recv().expect("ListTables command emitted");
         assert!(matches!(first, Command::Query(sql) if sql == "SELECT 1"));
         assert!(matches!(second, Command::ListTables));
+    }
+
+    #[test]
+    fn run_sql_appends_auto_limit_to_a_bare_select() {
+        // End-to-end: with the guard on (default), a bare SELECT reaches
+        // the worker and history already carrying LIMIT 100.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        assert!(app.auto_limit, "guard defaults on");
+        app.sql = "SELECT * FROM t".into();
+        app.run_sql();
+
+        let first = cmd_rx.try_recv().expect("Query command emitted");
+        assert!(matches!(first, Command::Query(sql) if sql == "SELECT * FROM t LIMIT 100"));
+        let head = app.history().iter().next().unwrap();
+        let super::HistoryEntry::Query(q) = head else {
+            panic!("expected Query");
+        };
+        assert_eq!(q.sql, "SELECT * FROM t LIMIT 100");
     }
 
     #[test]
@@ -1600,6 +1682,7 @@ mod tests {
     #[test]
     fn run_sql_pushes_to_history() {
         let (mut app, _cmd_rx, _reply_tx) = build();
+        app.auto_limit = false; // isolate plumbing from the ADR-0030 guard
         app.sql = "SELECT 1".into();
         app.run_sql();
 
@@ -1685,6 +1768,7 @@ mod tests {
     #[test]
     fn run_sql_while_busy_does_not_push_to_history() {
         let (mut app, _cmd_rx, _reply_tx) = build();
+        app.auto_limit = false; // isolate plumbing from the ADR-0030 guard
         app.sql = "SELECT 1".into();
         app.run_sql();
         assert_eq!(app.history().len(), 1);
@@ -1738,6 +1822,7 @@ mod tests {
         let history = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
         let (mut app, _cmd_rx, reply_tx) = build_with_persistent(history, "prod-pg");
 
+        app.auto_limit = false; // isolate plumbing from the ADR-0030 guard
         app.sql = "SELECT 1".into();
         app.run_sql();
         reply_tx
@@ -2509,5 +2594,58 @@ mod tests {
         let preview = cell_preview(&text);
         assert_eq!(preview.chars().count(), CELL_PREVIEW_CHARS + 1); // + ellipsis
         assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn bare_select_is_detected_case_insensitively() {
+        assert!(is_bare_select("select * from t"));
+        assert!(is_bare_select("  SELECT a, b FROM t  "));
+        assert!(is_bare_select("select * from t;"));
+        assert!(is_bare_select("SELECT\n  *\nFROM t"));
+    }
+
+    #[test]
+    fn non_select_and_limited_select_are_not_bare() {
+        assert!(!is_bare_select("select * from t limit 5"));
+        assert!(!is_bare_select("SELECT * FROM t LIMIT 10;"));
+        assert!(!is_bare_select("update t set a = 1"));
+        assert!(!is_bare_select("with x as (select 1) select * from x"));
+        // Multi-statement input must be left alone.
+        assert!(!is_bare_select("select 1; select 2"));
+    }
+
+    #[test]
+    fn limit_substring_in_identifier_does_not_count_as_a_limit_clause() {
+        // A column literally named `limits` must not suppress the guard.
+        assert!(is_bare_select("select limits from t"));
+    }
+
+    #[test]
+    fn apply_auto_limit_appends_only_to_bare_selects() {
+        assert_eq!(
+            apply_auto_limit("select * from t", true, 100),
+            "select * from t LIMIT 100"
+        );
+        // Trailing semicolon is dropped so the result stays valid.
+        assert_eq!(
+            apply_auto_limit("select * from t;", true, 100),
+            "select * from t LIMIT 100"
+        );
+    }
+
+    #[test]
+    fn apply_auto_limit_is_a_noop_when_disabled_or_not_needed() {
+        assert_eq!(
+            apply_auto_limit("select * from t", false, 100),
+            "select * from t"
+        );
+        assert_eq!(
+            apply_auto_limit("select * from t limit 5", true, 100),
+            "select * from t limit 5"
+        );
+        assert_eq!(
+            apply_auto_limit("update t set a = 1", true, 100),
+            "update t set a = 1"
+        );
     }
 }
