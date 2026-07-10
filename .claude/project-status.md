@@ -5,17 +5,50 @@
 
 ## 最終更新
 
-- 日付: 2026-07-10 (**query-UX 摩擦バッチ完了。実利用で出た 4 件の
-  UI 摩擦を `feature/query-ux` に 4 commit で実装。ADR-0030 / ADR-0031
-  追記。push + feat PR create が user 側のボール。**)
-- ブランチ: `feature/query-ux` (develop `c343b8f` = PR #50 merge 済から
-  分岐)。**旧 doc-sync chore (`chore/post-pr49-doc-sync`) は PR #50 で
-  develop に merge 済 = ADR-0028 完全クローズ。**
+- 日付: 2026-07-10 (**Windows 内々配布パッケージング完了。PR #52
+  (ADR-0032) が develop に merge 済 = `1cec10f`。exe 整備 3 点 +
+  cargo-wix MSI ソース。この doc-sync chore が最後の tick。**)
+- ブランチ: `chore/post-pr52-doc-sync` (develop `1cec10f` = PR #52
+  merge 済から分岐)。**query-UX バッチは PR #51 で merge 済 =
+  `3baee89`。ADR-0030 / ADR-0031 クローズ。**
 - Phase 4 Stage 2 (ADR-0025/0026/0027/0028) は in-process スコープ完結。
   Stage 2 残りは D-2 (ADR-0029 = function-calling) のみで、これは
   `feature/adr-0029-function-calling` ブランチに planning ball あり
-  (別ストリーム)。今回の query-UX は menu-not-sequence モードの
-  実利用摩擦報告 = ロードマップ順とは独立。
+  (別ストリーム)。query-UX / Windows 配布はいずれも menu-not-sequence
+  モードの実利用ドリブン = ロードマップ順とは独立。
+
+### Windows 内々配布パッケージング (本セッション / 2026-07-10、PR #52 = `1cec10f`)
+
+maintainer の「内内に配布したい。一旦 win のみで OK」に対応
+(**ADR-0032**、`feature/windows-packaging` → PR #52 merge)。build /
+packaging のみ = ソース挙動・crate/HTTP contract・`history.jsonl` 不変、
+非 Windows では no-op。commit 2 本 (`2281726` code + `bb064f7` docs)、
+pre-commit フック完走・全テスト green (29 result blocks)。
+
+- **コンソール窓抑止**: `main.rs` に
+  `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`。
+  release exe の PE subsystem = GUI(2) を確認。debug はコンソール維持。
+- **アイコン + 製品情報**: `apps/dbboard/build.rs` (Windows 限定
+  `winresource` build-dep) + 手製マルチ解像度 PNG-ICO
+  `apps/dbboard/assets/dbboard.ico` (藍色角丸 + DB シリンダー、画像
+  ツール不在のため PowerShell+GDI+ で自作)。ProductName /
+  FileDescription / CompanyName / FileVersion 0.1.0 埋め込み確認。
+- **CRT 静的リンク**: `.cargo/config.toml` の `+crt-static`
+  (`cfg(all(windows, target_env="msvc"))`)。import table に
+  vcruntime/msvcp/ucrtbase/api-ms-win-crt 参照ゼロ = VC++ 再頒布不要を
+  確認。proc-macro には Cargo が自動で flag を外すため workspace は
+  従来どおりビルド可。
+- **MSI**: `apps/dbboard/wix/main.wxs` (WiX v3、cargo-wix 変数) +
+  `wix/License.rtf` (MIT) + `[package.metadata.wix]`。固定 UpgradeCode
+  `A8AED330-…` / PATH GUID `B008E00A-…`。%ProgramFiles%\dbboard へ
+  インストール、PATH 追加はオプトアウト可、ARP アイコン。
+- `.gitattributes` に `*.ico binary` 追加。README に「Windows
+  distribution (internal)」節。新規依存 `winresource` は build-time /
+  Windows のみ (winres の維持フォーク)。
+- **user 側の残**: (1) MSI 実ビルドは human 手順 = WiX Toolset v3 +
+  `cargo install cargo-wix` を入れて `cd apps/dbboard && cargo wix`
+  (WiX/cargo-wix は未インストール)。exe 単体配布なら不要。
+  (2) release CI (`cargo wix` on tag) は未着手 = 任意の follow-up。
 
 ### query-UX 摩擦バッチ (本セッション / 2026-07-10、`feature/query-ux`)
 
