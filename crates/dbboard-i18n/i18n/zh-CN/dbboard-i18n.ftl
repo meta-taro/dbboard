@@ -88,3 +88,8 @@ ai-active-with-name = 活动：{ $name }
 ai-include-details = 包含列详细信息
 ai-prefetching = 正在获取表结构…
 ai-prefetch-warning = 有 { $count } 个表无法获取结构，将忽略并继续。
+
+# ADR-0030 result grid: truncated long / multi-line cell values.
+cell-expand-hint = 显示完整值
+cell-full-text-title = 单元格值
+cell-copy = 复制
