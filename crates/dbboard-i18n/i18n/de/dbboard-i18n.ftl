@@ -89,3 +89,25 @@ ai-active-with-name = Aktiv: { $name }
 ai-include-details = Spaltendetails einbeziehen
 ai-prefetching = Tabellenschemata werden abgerufen…
 ai-prefetch-warning = { $count } Tabelle(n) konnten nicht beschrieben werden; es wird ohne sie fortgefahren.
+
+# ADR-0030 result grid: truncated long / multi-line cell values.
+cell-expand-hint = Vollständigen Wert anzeigen
+cell-full-text-title = Zellenwert
+cell-copy = Kopieren
+
+# ADR-0030 auto-limit guard for bare SELECTs.
+auto-limit-checkbox = LIMIT { $count }
+auto-limit-hint = Fügt bloßen SELECTs ein LIMIT hinzu, damit ein unbegrenzter Scan die UI nicht einfriert. Eigenes LIMIT schreiben oder abwählen zum Überschreiben.
+
+# ADR-0031 structure tab.
+tab-results = Ergebnis
+tab-structure = Struktur
+structure-empty = (Tabelle anklicken, um die Struktur zu sehen)
+structure-loading = Tabelle wird beschrieben…
+structure-no-columns = (keine Spalten)
+structure-col-ordinal = #
+structure-col-name = Name
+structure-col-type = Typ
+structure-col-nullable = Null
+structure-col-pk = Schlüssel
+structure-col-default = Standard

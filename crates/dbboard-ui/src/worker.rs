@@ -459,6 +459,19 @@ async fn handle_command(
             let _ = reply_tx.send(reply);
             egui_ctx.request_repaint();
         }
+        // ADR-0031: single-table describe for the structure tab. Same
+        // in-process describe_table path as PrefetchSchema, scoped to one
+        // table and awaited inline (a single describe is short).
+        Command::DescribeTable { table } => {
+            let result = match schema_source {
+                Some(source) => source.current_adapter().describe_table(&table).await,
+                None => Err(DbError::Capability(
+                    "describe_table unavailable on this connection".to_string(),
+                )),
+            };
+            let _ = reply_tx.send(Reply::TableDescribed { table, result });
+            egui_ctx.request_repaint();
+        }
         // HTTP arms — short round-trips, awaited inline.
         cmd @ (Command::ListTables | Command::Query(_)) => {
             let request = client::request_for(&cmd);
@@ -923,6 +936,12 @@ fn report_fatal(
                     .into_iter()
                     .map(|t| (t, err.message().to_string()))
                     .collect(),
+            },
+            // ADR-0031: the structure tab gets the fatal error verbatim so
+            // it renders the failure instead of spinning forever.
+            Command::DescribeTable { table } => Reply::TableDescribed {
+                table,
+                result: Err(err.clone()),
             },
         };
         if reply_tx.send(reply).is_err() {

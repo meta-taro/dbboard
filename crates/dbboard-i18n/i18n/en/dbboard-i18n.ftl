@@ -9,6 +9,10 @@ tables-empty = (no tables)
 
 sql-heading = SQL
 sql-run-button = Run
+# ADR-0030 auto-limit guard: appended to bare SELECTs so an unbounded scan
+# cannot freeze the UI. Overridable — write your own LIMIT or uncheck.
+auto-limit-checkbox = LIMIT { $count }
+auto-limit-hint = Cap bare SELECTs with LIMIT so an unbounded scan can't freeze the UI. Write your own LIMIT or uncheck to override.
 
 history-title = History ({ $count })
 history-empty = (no recent queries)
@@ -16,6 +20,26 @@ history-empty = (no recent queries)
 result-heading = Result
 result-empty = (run a query)
 result-affected = OK ({ $rows } rows affected)
+
+# ADR-0031 structure tab: clicking a sidebar table describes it and shows
+# its columns here, next to the query result.
+tab-results = Result
+tab-structure = Structure
+structure-empty = (click a table to inspect its structure)
+structure-loading = Describing table…
+structure-no-columns = (no columns)
+structure-col-ordinal = #
+structure-col-name = Name
+structure-col-type = Type
+structure-col-nullable = Null
+structure-col-pk = Key
+structure-col-default = Default
+
+# ADR-0030 result grid: long / multi-line cell values are truncated with
+# an ellipsis and an expand button that opens the full text in a popup.
+cell-expand-hint = Show full value
+cell-full-text-title = Cell value
+cell-copy = Copy
 
 # DbError category prefixes. The error *body* is the server-returned
 # English string (ADR-0009 / ADR-0015); only the prefix is translated.

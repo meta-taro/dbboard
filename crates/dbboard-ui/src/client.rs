@@ -69,6 +69,9 @@ pub(crate) fn request_for(command: &Command) -> HttpRequest {
         Command::PrefetchSchema { .. } => {
             unreachable!("PrefetchSchema is handled via SchemaSource before request_for")
         }
+        Command::DescribeTable { .. } => {
+            unreachable!("DescribeTable is handled via SchemaSource before request_for")
+        }
     }
 }
 

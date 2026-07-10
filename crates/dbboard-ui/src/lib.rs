@@ -127,6 +127,12 @@ pub enum Command {
     /// the "Include column details" toggle is on and the adapter
     /// advertises `has_describe_table`.
     PrefetchSchema { tables: Vec<TableInfo> },
+    /// Describe a single table for the structure tab (ADR-0031). Same
+    /// in-process `describe_table` path as [`Command::PrefetchSchema`],
+    /// but scoped to one table and answered with [`Reply::TableDescribed`]
+    /// so the structure view stays independent of the AI prefetch flow.
+    /// Issued when the user clicks a table in the sidebar.
+    DescribeTable { table: TableInfo },
 }
 
 /// Result flowing worker → UI.
@@ -239,6 +245,13 @@ pub enum Reply {
         schemas: Vec<TableSchema>,
         errors: Vec<(TableInfo, String)>,
     },
+    /// Result of a [`Command::DescribeTable`] (ADR-0031). Carries the
+    /// requested table so a stale reply for a since-reselected table can
+    /// be ignored, and the `describe_table` outcome for the structure tab.
+    TableDescribed {
+        table: TableInfo,
+        result: DbResult<TableSchema>,
+    },
 }
 
 /// Captures everything we know at submit time about a query whose reply
@@ -271,6 +284,23 @@ struct PendingAiSubmit {
 /// `dbboard-ui` stays free of any date-formatting crate dependency and
 /// so tests can pass a deterministic stub.
 pub type RfcClock = fn() -> String;
+
+/// Which tab the lower panel shows (ADR-0031). Defaults to `Results`;
+/// clicking a sidebar table switches to `Structure`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResultTab {
+    Results,
+    Structure,
+}
+
+/// Structure-tab state (ADR-0031): the table whose schema is on screen and
+/// the latest `describe_table` outcome. `schema == None` means the describe
+/// is still in flight.
+#[derive(Debug)]
+struct StructureView {
+    table: TableInfo,
+    schema: Option<DbResult<TableSchema>>,
+}
 
 pub struct DbboardApp {
     sql: String,
@@ -328,6 +358,16 @@ pub struct DbboardApp {
     /// worker's `PrefetchSchema` fan-out. `None` (tests / in-memory
     /// flows) simply hides the toggle.
     schema_source: Option<Arc<dyn SchemaSource>>,
+    /// Safety net for bare `SELECT`s (ADR-0030). When on, running a plain
+    /// `SELECT` with no `LIMIT` appends `LIMIT {DEFAULT_AUTO_LIMIT}` to the
+    /// executed statement so an unbounded scan can't freeze the UI. Visible
+    /// as a toolbar checkbox and overridable: the user can uncheck it or
+    /// write their own `LIMIT`, in which case the guard backs off.
+    auto_limit: bool,
+    /// Which lower-panel tab is active (ADR-0031).
+    active_tab: ResultTab,
+    /// Structure-tab state, `Some` once a table has been clicked.
+    structure: Option<StructureView>,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -448,10 +488,27 @@ impl DbboardApp {
             active_ai_provider_label: None,
             last_ai_switch_error: None,
             schema_source,
+            auto_limit: true,
+            active_tab: ResultTab::Results,
+            structure: None,
             busy: false,
             cmd_tx,
             reply_rx,
         }
+    }
+
+    /// Open the structure tab for `table` and kick off its describe
+    /// (ADR-0031). The reply lands on the next `drain_replies` pass and is
+    /// matched back to this table so a stale describe is ignored.
+    fn open_structure(&mut self, table: TableInfo) {
+        self.active_tab = ResultTab::Structure;
+        let _ = self.cmd_tx.send(Command::DescribeTable {
+            table: table.clone(),
+        });
+        self.structure = Some(StructureView {
+            table,
+            schema: None,
+        });
     }
 
     fn drain_replies(&mut self) {
@@ -569,6 +626,16 @@ impl DbboardApp {
                 Reply::SchemaPrefetched { schemas, errors } => {
                     if let Some(cmd) = self.ai_panel.on_schema_prefetched(schemas, &errors) {
                         self.send_ai_command(cmd);
+                    }
+                }
+                // ADR-0031: structure-tab describe came back. Apply it only
+                // if it still matches the table on screen — the user may
+                // have clicked another table while this one was in flight.
+                Reply::TableDescribed { table, result } => {
+                    if let Some(view) = self.structure.as_mut() {
+                        if view.table == table {
+                            view.schema = Some(result);
+                        }
                     }
                 }
             }
@@ -729,16 +796,21 @@ impl DbboardApp {
         if self.busy || self.sql.trim().is_empty() {
             return;
         }
-        // Submit-time: push the bare SQL into the in-memory ring so the
+        // Apply the bare-SELECT guard once, up front, so history, the
+        // pending record, and the executed statement all agree on exactly
+        // what ran (ADR-0030). A no-op unless auto_limit is on and the
+        // statement is a plain unbounded SELECT.
+        let effective = apply_auto_limit(&self.sql, self.auto_limit, DEFAULT_AUTO_LIMIT);
+        // Submit-time: push the executed SQL into the in-memory ring so the
         // history panel updates instantly; disk append happens at reply
         // time, once we know duration / rows / status (ADR-0017).
-        self.history.record_submit(self.sql.clone());
+        self.history.record_submit(effective.clone());
         self.pending = Some(PendingSubmit {
             started: Instant::now(),
-            sql: self.sql.clone(),
+            sql: effective.clone(),
         });
         self.busy = true;
-        let _ = self.cmd_tx.send(Command::Query(self.sql.clone()));
+        let _ = self.cmd_tx.send(Command::Query(effective));
         // Tables may have changed as a side effect (CREATE/DROP), so
         // refresh the sidebar after every run.
         let _ = self.cmd_tx.send(Command::ListTables);
@@ -975,7 +1047,8 @@ fn pending_ai_from_command(cmd: &Command, conn_label: &str) -> Option<PendingAiS
         | Command::Query(_)
         | Command::SwitchConnection { .. }
         | Command::SwitchAiProvider { .. }
-        | Command::PrefetchSchema { .. } => return None,
+        | Command::PrefetchSchema { .. }
+        | Command::DescribeTable { .. } => return None,
     };
     let conn = if conn_label.is_empty() {
         None
@@ -1132,6 +1205,21 @@ impl eframe::App for DbboardApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_replies();
 
+        // Keyboard run triggers: F5 or the platform command modifier plus
+        // Enter run the current statement without reaching for the button.
+        // `run_sql` guards busy/empty, so a stray press mid-query is a
+        // no-op. Read once per frame to keep the trigger rule in one place.
+        let run_from_keys = ui.input(|i| {
+            should_run_from_keys(
+                i.key_pressed(egui::Key::F5),
+                i.modifiers.command,
+                i.key_pressed(egui::Key::Enter),
+            )
+        });
+        if run_from_keys {
+            self.run_sql();
+        }
+
         // ADR-0023: AI panel as a free-floating egui::Window. Only
         // register it when a provider was wired in at startup; the panel
         // itself trusts the gate.
@@ -1139,6 +1227,24 @@ impl eframe::App for DbboardApp {
             self.render_ai_panel(ui.ctx());
         }
 
+        self.render_tables_panel(ui);
+        self.render_query_panel(ui);
+
+        // Egui is event-driven, so request a follow-up frame while a
+        // query is in flight to keep draining the reply channel.
+        if self.busy {
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+impl DbboardApp {
+    /// Left sidebar: the list of user tables (ADR-0014). Clicking a table
+    /// opens its structure tab (ADR-0031). The click is captured here and
+    /// acted on after the `&self.tables` borrow ends.
+    fn render_tables_panel(&mut self, ui: &mut egui::Ui) {
+        let active = self.structure.as_ref().map(|s| s.table.clone());
+        let mut clicked: Option<TableInfo> = None;
         egui::Panel::left("tables").show_inside(ui, |ui| {
             ui.heading(t!("tables-heading"));
             ui.separator();
@@ -1148,7 +1254,10 @@ impl eframe::App for DbboardApp {
                 }
                 Ok(tables) => {
                     for table in tables {
-                        ui.label(&table.name);
+                        let selected = active.as_ref() == Some(table);
+                        if ui.selectable_label(selected, &table.name).clicked() {
+                            clicked = Some(table.clone());
+                        }
                     }
                 }
                 Err(e) => {
@@ -1156,7 +1265,13 @@ impl eframe::App for DbboardApp {
                 }
             }
         });
+        if let Some(table) = clicked {
+            self.open_structure(table);
+        }
+    }
 
+    /// Central panel: the SQL editor, run controls, history, and result.
+    fn render_query_panel(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(t!("sql-heading"));
@@ -1166,16 +1281,39 @@ impl eframe::App for DbboardApp {
                 {
                     self.run_sql();
                 }
+                // Visible, overridable bare-SELECT guard (ADR-0030).
+                ui.checkbox(
+                    &mut self.auto_limit,
+                    t_args!("auto-limit-checkbox", count = DEFAULT_AUTO_LIMIT),
+                )
+                .on_hover_text(t!("auto-limit-hint"));
                 if self.busy {
                     ui.spinner();
                 }
             });
-            ui.add(
+            let editor = ui.add(
                 egui::TextEdit::multiline(&mut self.sql)
                     .desired_rows(6)
                     .desired_width(f32::INFINITY)
                     .font(egui::TextStyle::Monospace),
             );
+            // Right-click the editor to run without leaving the keyboard's
+            // home for the toolbar button. Disabled while a query is in
+            // flight, matching the Run button's gate.
+            let busy = self.busy;
+            let mut run_from_menu = false;
+            editor.context_menu(|ui| {
+                if ui
+                    .add_enabled(!busy, egui::Button::new(t!("sql-run-button")))
+                    .clicked()
+                {
+                    run_from_menu = true;
+                    ui.close();
+                }
+            });
+            if run_from_menu {
+                self.run_sql();
+            }
 
             // Recently-run statements; click one to refill the editor
             // (ADR-0014). Restore is captured here and applied after the
@@ -1213,22 +1351,51 @@ impl eframe::App for DbboardApp {
             }
 
             ui.separator();
-            ui.heading(t!("result-heading"));
-            match &self.last_result {
-                None => {
-                    ui.label(t!("result-empty"));
-                }
-                Some(Ok(result)) => render_result(ui, result),
-                Some(Err(e)) => {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
-                }
+            // ADR-0031: tab between the query result and the clicked
+            // table's structure.
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.active_tab, ResultTab::Results, t!("tab-results"));
+                ui.selectable_value(
+                    &mut self.active_tab,
+                    ResultTab::Structure,
+                    t!("tab-structure"),
+                );
+            });
+            match self.active_tab {
+                ResultTab::Results => match &self.last_result {
+                    None => {
+                        ui.label(t!("result-empty"));
+                    }
+                    Some(Ok(result)) => render_result(ui, result),
+                    Some(Err(e)) => {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
+                    }
+                },
+                ResultTab::Structure => self.render_structure(ui),
             }
         });
+    }
 
-        // Egui is event-driven, so request a follow-up frame while a
-        // query is in flight to keep draining the reply channel.
-        if self.busy {
-            ui.ctx().request_repaint();
+    /// Structure tab body (ADR-0031): the selected table's name and its
+    /// `describe_table` outcome rendered as a column grid.
+    fn render_structure(&self, ui: &mut egui::Ui) {
+        let Some(view) = &self.structure else {
+            ui.label(t!("structure-empty"));
+            return;
+        };
+        ui.strong(&view.table.name);
+        ui.separator();
+        match &view.schema {
+            None => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(t!("structure-loading"));
+                });
+            }
+            Some(Err(e)) => {
+                ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
+            }
+            Some(Ok(schema)) => render_table_schema(ui, schema),
         }
     }
 }
@@ -1266,35 +1433,277 @@ fn error_display(e: &DbError) -> String {
     format!("{prefix}: {}", e.message())
 }
 
+/// Whether the current frame's keyboard state should trigger a run.
+///
+/// The editor is a multiline field, so a bare Enter must insert a
+/// newline — only `F5` or the platform command modifier plus Enter
+/// (Ctrl+Enter on Windows/Linux, Cmd+Enter on macOS) count as "run".
+/// Kept pure so the trigger rules are testable without an egui frame.
+fn should_run_from_keys(f5_pressed: bool, cmd_held: bool, enter_pressed: bool) -> bool {
+    f5_pressed || (cmd_held && enter_pressed)
+}
+
+/// Row cap appended to unbounded bare `SELECT`s (ADR-0030). A safety net,
+/// not a hard limit: the user can raise it by writing their own `LIMIT` or
+/// disable it with the toolbar checkbox.
+const DEFAULT_AUTO_LIMIT: u32 = 100;
+
+/// True when `sql` is a single plain `SELECT` with no `LIMIT` — the only
+/// shape the auto-limit guard touches. CTEs (`WITH …`), multi-statement
+/// input, and anything already carrying a `LIMIT` are left alone so the
+/// guard never changes a query's meaning.
+fn is_bare_select(sql: &str) -> bool {
+    let stripped = sql.trim().trim_end_matches(';').trim();
+    // Internal `;` means multiple statements; appending a LIMIT would bind
+    // to the wrong one, so bail.
+    if stripped.contains(';') {
+        return false;
+    }
+    let lower = stripped.to_ascii_lowercase();
+    let starts_select = lower == "select"
+        || lower
+            .strip_prefix("select")
+            .is_some_and(|rest| rest.starts_with([' ', '\n', '\t', '\r']));
+    starts_select && !has_limit_token(&lower)
+}
+
+/// Whether a `limit` keyword appears as a standalone token (not as a
+/// substring of an identifier like `limits`).
+fn has_limit_token(lower: &str) -> bool {
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| tok == "limit")
+}
+
+/// The statement to actually execute: `sql` unchanged, or with
+/// ` LIMIT {limit}` appended when the guard is on and `sql` is a bare
+/// `SELECT`. A trailing semicolon is dropped so the result stays valid.
+fn apply_auto_limit(sql: &str, enabled: bool, limit: u32) -> String {
+    if !enabled || !is_bare_select(sql) {
+        return sql.to_owned();
+    }
+    let trimmed = sql.trim_end();
+    let body = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
+    format!("{body} LIMIT {limit}")
+}
+
+/// Longest single-line cell rendered inline before the expand affordance
+/// appears. Tuned to keep wide tables scannable, not to any exact pixel
+/// width.
+const CELL_PREVIEW_CHARS: usize = 80;
+
+/// egui memory key for the single full-text popup. One result grid is ever
+/// on screen, so a fixed id is enough and keeps `render_result` a free
+/// function (no popup state threaded through `DbboardApp`).
+fn expanded_cell_id() -> egui::Id {
+    egui::Id::new("dbboard-result-expanded-cell")
+}
+
+/// A cell earns the "expand" affordance when it spans multiple lines or is
+/// longer than the inline preview budget — the cases where truncation
+/// actually hides something.
+fn is_long_cell(text: &str) -> bool {
+    text.contains('\n') || text.chars().count() > CELL_PREVIEW_CHARS
+}
+
+/// Single-line, length-capped preview of a cell value. Newlines collapse to
+/// spaces so every row keeps a uniform height; a trailing ellipsis marks
+/// that content was elided.
+fn cell_preview(text: &str) -> String {
+    let single_line = text.replace(['\r', '\n'], " ");
+    if !is_long_cell(text) {
+        return single_line;
+    }
+    let head: String = single_line.chars().take(CELL_PREVIEW_CHARS).collect();
+    format!("{head}…")
+}
+
 fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
+    use egui_extras::{Column, TableBuilder};
+
     if result.rows.is_empty() {
         ui.label(t_args!("result-affected", rows = result.rows_affected));
         return;
     }
 
-    egui::ScrollArea::both().show(ui, |ui| {
-        egui::Grid::new("result").striped(true).show(ui, |ui| {
-            for col in &result.columns {
-                ui.strong(&col.name);
+    // Row height sized to one line of body text plus a little breathing
+    // room; the virtualized body relies on a uniform height.
+    let row_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
+    let expand_id = expanded_cell_id();
+
+    // Outer horizontal scroll: egui_extras' TableBuilder only scrolls
+    // vertically (its internal ScrollArea is hard-coded to `[false, vscroll]`),
+    // so a wide result set overflows the panel and the rightmost columns clip
+    // at the window edge with no way to reach them. Wrapping the table in a
+    // horizontal ScrollArea lets it keep its full content width and pan to the
+    // hidden columns, while the table's own vscroll still virtualizes rows.
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let mut table = TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .auto_shrink([false, false]);
+            // One resizable column per result column. Resizable columns draw
+            // the faint vertical separators the striping alone could not, and
+            // clipping stops a stray wide value from ballooning the column.
+            for _ in &result.columns {
+                table = table.column(Column::auto().at_least(48.0).clip(true).resizable(true));
             }
-            ui.end_row();
-            for row in &result.rows {
-                for v in row.values() {
-                    ui.label(v.to_string());
-                }
-                ui.end_row();
+
+            table
+                .header(row_height, |mut header| {
+                    for col in &result.columns {
+                        header.col(|ui| {
+                            ui.strong(&col.name);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(row_height, result.rows.len(), |mut row| {
+                        let values: Vec<String> = result.rows[row.index()]
+                            .values()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect();
+                        for value in &values {
+                            row.col(|ui| {
+                                render_cell(ui, value, expand_id);
+                            });
+                        }
+                    });
+                });
+        });
+
+    render_expanded_cell_popup(ui, expand_id);
+}
+
+/// Column grid for the structure tab (ADR-0031): one row per column with
+/// ordinal, name, declared type, nullability, primary-key flag, and the
+/// raw default expression. Not virtualized — a table has few columns.
+fn render_table_schema(ui: &mut egui::Ui, schema: &TableSchema) {
+    use egui_extras::{Column, TableBuilder};
+
+    if schema.columns.is_empty() {
+        ui.label(t!("structure-no-columns"));
+        return;
+    }
+
+    let row_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
+    let headers: [String; 6] = [
+        t!("structure-col-ordinal"),
+        t!("structure-col-name"),
+        t!("structure-col-type"),
+        t!("structure-col-nullable"),
+        t!("structure-col-pk"),
+        t!("structure-col-default"),
+    ];
+
+    let mut table = TableBuilder::new(ui)
+        .striped(true)
+        .resizable(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .auto_shrink([false, false]);
+    for _ in &headers {
+        table = table.column(Column::auto().at_least(48.0).clip(true).resizable(true));
+    }
+    table
+        .header(row_height, |mut header| {
+            for h in &headers {
+                header.col(|ui| {
+                    ui.strong(h.as_str());
+                });
+            }
+        })
+        .body(|mut body| {
+            for col in &schema.columns {
+                body.row(row_height, |mut row| {
+                    row.col(|ui| {
+                        ui.label(col.ordinal.to_string());
+                    });
+                    row.col(|ui| {
+                        ui.label(&col.name);
+                    });
+                    row.col(|ui| {
+                        ui.label(col.declared_type.as_deref().unwrap_or(""));
+                    });
+                    // A checkmark reads the same in every locale, so the
+                    // nullable / PK cells stay text-key-free.
+                    row.col(|ui| {
+                        ui.label(if col.nullable { "✓" } else { "" });
+                    });
+                    row.col(|ui| {
+                        ui.label(if col.primary_key { "PK" } else { "" });
+                    });
+                    row.col(|ui| {
+                        ui.label(col.default_value.as_deref().unwrap_or(""));
+                    });
+                });
             }
         });
+}
+
+/// One result-grid cell: a plain label for short values, or a truncated
+/// preview plus an expand button that parks the full text in egui memory
+/// for the popup to pick up.
+fn render_cell(ui: &mut egui::Ui, text: &str, expand_id: egui::Id) {
+    if !is_long_cell(text) {
+        ui.label(text);
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(cell_preview(text));
+        if ui
+            .small_button("⋯")
+            .on_hover_text(t!("cell-expand-hint"))
+            .clicked()
+        {
+            ui.data_mut(|d| d.insert_temp(expand_id, text.to_owned()));
+        }
     });
+}
+
+/// Full-text viewer for a truncated cell. Renders only while a value is
+/// parked under `expand_id`; closing the window clears it.
+fn render_expanded_cell_popup(ui: &mut egui::Ui, expand_id: egui::Id) {
+    let Some(text) = ui.data(|d| d.get_temp::<String>(expand_id)) else {
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(t!("cell-full-text-title"))
+        .id(expand_id.with("window"))
+        .collapsible(false)
+        .resizable(true)
+        .default_size([520.0, 360.0])
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            if ui.button(t!("cell-copy")).clicked() {
+                ui.ctx().copy_text(text.clone());
+            }
+            ui.separator();
+            egui::ScrollArea::both().show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(text.as_str()).monospace())
+                        .selectable(true),
+                );
+            });
+        });
+    if !open {
+        ui.data_mut(|d| d.remove::<String>(expand_id));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        error_display, AiProviderSlot, Command, DbboardApp, HistoryStatus, PersistentHistoryStore,
-        Reply, DEFAULT_CAPACITY,
+        apply_auto_limit, cell_preview, error_display, is_bare_select, is_long_cell,
+        should_run_from_keys, AiProviderSlot, Command, DbboardApp, HistoryStatus,
+        PersistentHistoryStore, Reply, ResultTab, CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
     };
-    use dbboard_core::{Column, DbError, QueryResult, Row, TableInfo, Value};
+    use dbboard_core::{
+        Column, ColumnInfo, DbError, QueryResult, Row, TableInfo, TableSchema, Value,
+    };
     use std::sync::mpsc;
     use std::sync::{Arc, RwLock};
 
@@ -1368,6 +1777,7 @@ mod tests {
     fn run_sql_sends_query_and_table_refresh_then_marks_busy() {
         let (mut app, cmd_rx, _reply_tx) = build();
         let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.auto_limit = false; // isolate plumbing from the ADR-0030 guard
         app.sql = "SELECT 1".into();
         app.run_sql();
 
@@ -1376,6 +1786,25 @@ mod tests {
         let second = cmd_rx.try_recv().expect("ListTables command emitted");
         assert!(matches!(first, Command::Query(sql) if sql == "SELECT 1"));
         assert!(matches!(second, Command::ListTables));
+    }
+
+    #[test]
+    fn run_sql_appends_auto_limit_to_a_bare_select() {
+        // End-to-end: with the guard on (default), a bare SELECT reaches
+        // the worker and history already carrying LIMIT 100.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        assert!(app.auto_limit, "guard defaults on");
+        app.sql = "SELECT * FROM t".into();
+        app.run_sql();
+
+        let first = cmd_rx.try_recv().expect("Query command emitted");
+        assert!(matches!(first, Command::Query(sql) if sql == "SELECT * FROM t LIMIT 100"));
+        let head = app.history().iter().next().unwrap();
+        let super::HistoryEntry::Query(q) = head else {
+            panic!("expected Query");
+        };
+        assert_eq!(q.sql, "SELECT * FROM t LIMIT 100");
     }
 
     #[test]
@@ -1436,6 +1865,7 @@ mod tests {
     #[test]
     fn run_sql_pushes_to_history() {
         let (mut app, _cmd_rx, _reply_tx) = build();
+        app.auto_limit = false; // isolate plumbing from the ADR-0030 guard
         app.sql = "SELECT 1".into();
         app.run_sql();
 
@@ -1521,6 +1951,7 @@ mod tests {
     #[test]
     fn run_sql_while_busy_does_not_push_to_history() {
         let (mut app, _cmd_rx, _reply_tx) = build();
+        app.auto_limit = false; // isolate plumbing from the ADR-0030 guard
         app.sql = "SELECT 1".into();
         app.run_sql();
         assert_eq!(app.history().len(), 1);
@@ -1574,6 +2005,7 @@ mod tests {
         let history = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
         let (mut app, _cmd_rx, reply_tx) = build_with_persistent(history, "prod-pg");
 
+        app.auto_limit = false; // isolate plumbing from the ADR-0030 guard
         app.sql = "SELECT 1".into();
         app.run_sql();
         reply_tx
@@ -2285,5 +2717,188 @@ mod tests {
         for e in app.history().iter() {
             assert!(!matches!(e, HistoryEntry::Ai(_)));
         }
+    }
+
+    // --- Run keyboard shortcuts (F5 / Ctrl+Enter) ---
+
+    #[test]
+    fn f5_triggers_a_run() {
+        assert!(should_run_from_keys(true, false, false));
+    }
+
+    #[test]
+    fn command_modifier_plus_enter_triggers_a_run() {
+        assert!(should_run_from_keys(false, true, true));
+    }
+
+    #[test]
+    fn bare_enter_does_not_trigger_a_run() {
+        // A newline in the multiline editor must not submit.
+        assert!(!should_run_from_keys(false, false, true));
+    }
+
+    #[test]
+    fn command_modifier_alone_does_not_trigger_a_run() {
+        assert!(!should_run_from_keys(false, true, false));
+    }
+
+    #[test]
+    fn short_single_line_cell_is_not_long() {
+        assert!(!is_long_cell("hello"));
+        assert!(!is_long_cell(""));
+    }
+
+    #[test]
+    fn multiline_cell_is_long_even_when_short() {
+        assert!(is_long_cell("a\nb"));
+    }
+
+    #[test]
+    fn overlong_single_line_cell_is_long() {
+        let text = "x".repeat(CELL_PREVIEW_CHARS + 1);
+        assert!(is_long_cell(&text));
+    }
+
+    #[test]
+    fn preview_leaves_short_values_untouched() {
+        assert_eq!(cell_preview("hello"), "hello");
+    }
+
+    #[test]
+    fn preview_collapses_newlines_to_spaces() {
+        // A short multi-line value still gets an ellipsis because it hides
+        // its line structure once flattened.
+        assert_eq!(cell_preview("a\nb"), "a b…");
+    }
+
+    #[test]
+    fn preview_caps_length_and_marks_elision() {
+        let text = "y".repeat(CELL_PREVIEW_CHARS + 20);
+        let preview = cell_preview(&text);
+        assert_eq!(preview.chars().count(), CELL_PREVIEW_CHARS + 1); // + ellipsis
+        assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn bare_select_is_detected_case_insensitively() {
+        assert!(is_bare_select("select * from t"));
+        assert!(is_bare_select("  SELECT a, b FROM t  "));
+        assert!(is_bare_select("select * from t;"));
+        assert!(is_bare_select("SELECT\n  *\nFROM t"));
+    }
+
+    #[test]
+    fn non_select_and_limited_select_are_not_bare() {
+        assert!(!is_bare_select("select * from t limit 5"));
+        assert!(!is_bare_select("SELECT * FROM t LIMIT 10;"));
+        assert!(!is_bare_select("update t set a = 1"));
+        assert!(!is_bare_select("with x as (select 1) select * from x"));
+        // Multi-statement input must be left alone.
+        assert!(!is_bare_select("select 1; select 2"));
+    }
+
+    #[test]
+    fn limit_substring_in_identifier_does_not_count_as_a_limit_clause() {
+        // A column literally named `limits` must not suppress the guard.
+        assert!(is_bare_select("select limits from t"));
+    }
+
+    #[test]
+    fn apply_auto_limit_appends_only_to_bare_selects() {
+        assert_eq!(
+            apply_auto_limit("select * from t", true, 100),
+            "select * from t LIMIT 100"
+        );
+        // Trailing semicolon is dropped so the result stays valid.
+        assert_eq!(
+            apply_auto_limit("select * from t;", true, 100),
+            "select * from t LIMIT 100"
+        );
+    }
+
+    #[test]
+    fn apply_auto_limit_is_a_noop_when_disabled_or_not_needed() {
+        assert_eq!(
+            apply_auto_limit("select * from t", false, 100),
+            "select * from t"
+        );
+        assert_eq!(
+            apply_auto_limit("select * from t limit 5", true, 100),
+            "select * from t limit 5"
+        );
+        assert_eq!(
+            apply_auto_limit("update t set a = 1", true, 100),
+            "update t set a = 1"
+        );
+    }
+
+    // --- ADR-0031 structure tab ------------------------------------------
+
+    fn one_column_schema(table: &str) -> TableSchema {
+        TableSchema {
+            table: TableInfo::unqualified(table),
+            columns: vec![ColumnInfo {
+                name: "id".into(),
+                declared_type: Some("INTEGER".into()),
+                nullable: false,
+                primary_key: true,
+                ordinal: 1,
+                default_value: None,
+            }],
+            primary_key: vec!["id".into()],
+        }
+    }
+
+    #[test]
+    fn clicking_a_table_opens_structure_and_requests_describe() {
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+        app.open_structure(TableInfo::unqualified("stores"));
+
+        assert_eq!(app.active_tab, ResultTab::Structure);
+        let cmd = cmd_rx.try_recv().expect("DescribeTable emitted");
+        assert!(matches!(cmd, Command::DescribeTable { table } if table.name == "stores"));
+        // Schema stays in flight until the reply lands.
+        assert!(app.structure.as_ref().unwrap().schema.is_none());
+    }
+
+    #[test]
+    fn table_described_reply_populates_the_matching_structure_view() {
+        let (mut app, cmd_rx, reply_tx) = build();
+        let _ = cmd_rx.try_recv();
+        app.open_structure(TableInfo::unqualified("stores"));
+        let _ = cmd_rx.try_recv();
+
+        reply_tx
+            .send(Reply::TableDescribed {
+                table: TableInfo::unqualified("stores"),
+                result: Ok(one_column_schema("stores")),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        let view = app.structure.as_ref().unwrap();
+        let schema = view.schema.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(schema.columns[0].name, "id");
+    }
+
+    #[test]
+    fn stale_table_described_reply_is_ignored() {
+        let (mut app, cmd_rx, reply_tx) = build();
+        let _ = cmd_rx.try_recv();
+        app.open_structure(TableInfo::unqualified("stores"));
+        let _ = cmd_rx.try_recv();
+
+        // A describe for a table the user already navigated away from must
+        // not overwrite the in-flight view.
+        reply_tx
+            .send(Reply::TableDescribed {
+                table: TableInfo::unqualified("orders"),
+                result: Ok(one_column_schema("orders")),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        assert!(app.structure.as_ref().unwrap().schema.is_none());
     }
 }

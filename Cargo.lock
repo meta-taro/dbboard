@@ -731,6 +731,7 @@ dependencies = [
  "dbboard-i18n",
  "eframe",
  "egui",
+ "egui_extras",
  "futures-util",
  "reqwest",
  "serde",
@@ -946,6 +947,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_extras"
+version = "0.34.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c609fc87f6c70ffd3afd679cbb294985096d2fc0be33e762ad5614bde4925bc"
+dependencies = [
+ "ahash",
+ "egui",
+ "enum-map",
+ "log",
+ "profiling",
+]
+
+[[package]]
 name = "egui_glow"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -977,6 +991,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a74fbbf7501c430b89df62d102b6bfa02162faaf3e155512c677c9d20f5708d1"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "enum-map"
+version = "2.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6866f3bfdf8207509a033af1a75a7b08abda06bbaaeae6669323fd5a097df2e9"
+dependencies = [
+ "enum-map-derive",
+]
+
+[[package]]
+name = "enum-map-derive"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f282cfdfe92516eb26c2af8589c274c7c17681f5ecc03c18255fe741c6aa64eb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
