@@ -1132,6 +1132,21 @@ impl eframe::App for DbboardApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_replies();
 
+        // Keyboard run triggers: F5 or the platform command modifier plus
+        // Enter run the current statement without reaching for the button.
+        // `run_sql` guards busy/empty, so a stray press mid-query is a
+        // no-op. Read once per frame to keep the trigger rule in one place.
+        let run_from_keys = ui.input(|i| {
+            should_run_from_keys(
+                i.key_pressed(egui::Key::F5),
+                i.modifiers.command,
+                i.key_pressed(egui::Key::Enter),
+            )
+        });
+        if run_from_keys {
+            self.run_sql();
+        }
+
         // ADR-0023: AI panel as a free-floating egui::Window. Only
         // register it when a provider was wired in at startup; the panel
         // itself trusts the gate.
@@ -1139,6 +1154,20 @@ impl eframe::App for DbboardApp {
             self.render_ai_panel(ui.ctx());
         }
 
+        self.render_tables_panel(ui);
+        self.render_query_panel(ui);
+
+        // Egui is event-driven, so request a follow-up frame while a
+        // query is in flight to keep draining the reply channel.
+        if self.busy {
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+impl DbboardApp {
+    /// Left sidebar: the list of user tables (ADR-0014).
+    fn render_tables_panel(&mut self, ui: &mut egui::Ui) {
         egui::Panel::left("tables").show_inside(ui, |ui| {
             ui.heading(t!("tables-heading"));
             ui.separator();
@@ -1156,7 +1185,10 @@ impl eframe::App for DbboardApp {
                 }
             }
         });
+    }
 
+    /// Central panel: the SQL editor, run controls, history, and result.
+    fn render_query_panel(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(t!("sql-heading"));
@@ -1170,12 +1202,29 @@ impl eframe::App for DbboardApp {
                     ui.spinner();
                 }
             });
-            ui.add(
+            let editor = ui.add(
                 egui::TextEdit::multiline(&mut self.sql)
                     .desired_rows(6)
                     .desired_width(f32::INFINITY)
                     .font(egui::TextStyle::Monospace),
             );
+            // Right-click the editor to run without leaving the keyboard's
+            // home for the toolbar button. Disabled while a query is in
+            // flight, matching the Run button's gate.
+            let busy = self.busy;
+            let mut run_from_menu = false;
+            editor.context_menu(|ui| {
+                if ui
+                    .add_enabled(!busy, egui::Button::new(t!("sql-run-button")))
+                    .clicked()
+                {
+                    run_from_menu = true;
+                    ui.close();
+                }
+            });
+            if run_from_menu {
+                self.run_sql();
+            }
 
             // Recently-run statements; click one to refill the editor
             // (ADR-0014). Restore is captured here and applied after the
@@ -1224,12 +1273,6 @@ impl eframe::App for DbboardApp {
                 }
             }
         });
-
-        // Egui is event-driven, so request a follow-up frame while a
-        // query is in flight to keep draining the reply channel.
-        if self.busy {
-            ui.ctx().request_repaint();
-        }
     }
 }
 
@@ -1266,6 +1309,16 @@ fn error_display(e: &DbError) -> String {
     format!("{prefix}: {}", e.message())
 }
 
+/// Whether the current frame's keyboard state should trigger a run.
+///
+/// The editor is a multiline field, so a bare Enter must insert a
+/// newline — only `F5` or the platform command modifier plus Enter
+/// (Ctrl+Enter on Windows/Linux, Cmd+Enter on macOS) count as "run".
+/// Kept pure so the trigger rules are testable without an egui frame.
+fn should_run_from_keys(f5_pressed: bool, cmd_held: bool, enter_pressed: bool) -> bool {
+    f5_pressed || (cmd_held && enter_pressed)
+}
+
 fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
     if result.rows.is_empty() {
         ui.label(t_args!("result-affected", rows = result.rows_affected));
@@ -1291,8 +1344,8 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
 #[cfg(test)]
 mod tests {
     use super::{
-        error_display, AiProviderSlot, Command, DbboardApp, HistoryStatus, PersistentHistoryStore,
-        Reply, DEFAULT_CAPACITY,
+        error_display, should_run_from_keys, AiProviderSlot, Command, DbboardApp, HistoryStatus,
+        PersistentHistoryStore, Reply, DEFAULT_CAPACITY,
     };
     use dbboard_core::{Column, DbError, QueryResult, Row, TableInfo, Value};
     use std::sync::mpsc;
@@ -2285,5 +2338,28 @@ mod tests {
         for e in app.history().iter() {
             assert!(!matches!(e, HistoryEntry::Ai(_)));
         }
+    }
+
+    // --- Run keyboard shortcuts (F5 / Ctrl+Enter) ---
+
+    #[test]
+    fn f5_triggers_a_run() {
+        assert!(should_run_from_keys(true, false, false));
+    }
+
+    #[test]
+    fn command_modifier_plus_enter_triggers_a_run() {
+        assert!(should_run_from_keys(false, true, true));
+    }
+
+    #[test]
+    fn bare_enter_does_not_trigger_a_run() {
+        // A newline in the multiline editor must not submit.
+        assert!(!should_run_from_keys(false, false, true));
+    }
+
+    #[test]
+    fn command_modifier_alone_does_not_trigger_a_run() {
+        assert!(!should_run_from_keys(false, true, false));
     }
 }
