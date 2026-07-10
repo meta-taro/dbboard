@@ -5,21 +5,46 @@
 
 ## 最終更新
 
-- 日付: 2026-07-03 (**ADR-0028 = PR #49 で develop に merge 済
-  (merge commit `6c34ee3`)。post-merge の doc-sync chore
-  (`chore/post-pr49-doc-sync`) を作成中 = roadmap Group D-1 tick +
-  本ファイル + next-actions + memory 整合。PR #47/#48 doc-split
-  パターン。**)
-- ブランチ: `develop` (= `6c34ee3`、PR #49 merge 済)。
-  `feature/ddl-extraction` は役目を終えた (ADR draft `00ac1b8` +
-  slice 4 本 + docs sweep が全部 develop 入り)。doc-sync chore は
-  `chore/post-pr49-doc-sync` で develop 宛に別 PR。
-- 現在の Phase: **Phase 4 Stage 2 Group A (ADR-0025) + Group B
-  (ADR-0026) + Group C (ADR-0027) + Group D-1 (ADR-0028、PR #49 で
-  CLOSED) = in-process スコープ完結。Stage 2 残りは D-2
-  (ADR-0029 = function-calling / tool-use) のみ — D-1 の
-  `describe_table` を最初の tool として expose する構造で、前提が
-  今回すべて揃った。in-process 完結、web 影響なし。**
+- 日付: 2026-07-10 (**query-UX 摩擦バッチ完了。実利用で出た 4 件の
+  UI 摩擦を `feature/query-ux` に 4 commit で実装。ADR-0030 / ADR-0031
+  追記。push + feat PR create が user 側のボール。**)
+- ブランチ: `feature/query-ux` (develop `c343b8f` = PR #50 merge 済から
+  分岐)。**旧 doc-sync chore (`chore/post-pr49-doc-sync`) は PR #50 で
+  develop に merge 済 = ADR-0028 完全クローズ。**
+- Phase 4 Stage 2 (ADR-0025/0026/0027/0028) は in-process スコープ完結。
+  Stage 2 残りは D-2 (ADR-0029 = function-calling) のみで、これは
+  `feature/adr-0029-function-calling` ブランチに planning ball あり
+  (別ストリーム)。今回の query-UX は menu-not-sequence モードの
+  実利用摩擦報告 = ロードマップ順とは独立。
+
+### query-UX 摩擦バッチ (本セッション / 2026-07-10、`feature/query-ux`)
+
+実利用者 (maintainer) から挙がった 4 件の UI 摩擦に対応。全 commit で
+cargo-husky pre-commit フック (fmt/clippy/check/test) 完走、dbboard-ui
+lib test = 215 passed、全ワークスペーステスト green。
+
+- `76f7520` **run trigger UX**: Run ボタンだけでなく F5 /
+  Ctrl(Cmd)+Enter / エディタ右クリックメニューから SQL 実行。
+  純関数 `should_run_from_keys` + 4 test。
+- `874ab8e` **result grid 刷新 (ADR-0030)**: egui_extras `TableBuilder`
+  へ載せ替え。sticky header (スクロール追従) + 縦罫線付き resizable
+  カラム + striping + `body.rows()` 仮想化。長文/複数行セルは省略表示
+  + `⋯` ボタンで full-text popup (Copy 付き)。egui_extras 0.34 を
+  workspace 依存に追加。
+- `2a1d446` **auto-LIMIT ガード (ADR-0030)**: 裸の SELECT に既定
+  `LIMIT 100` を付与し無制限スキャンでの UI フリーズを防止。ツールバー
+  チェックボックスで可視 + off 可、ユーザーが自分で LIMIT を書けば
+  無干渉 (`is_bare_select` / `apply_auto_limit`)。
+- `8ccc1f6` **structure タブ (ADR-0031)**: サイドバーのテーブルクリックで
+  結果ペイン横に「構造」タブを開き列情報 (ordinal/name/type/nullable/
+  key/default) を表示。SQLite 固有 PRAGMA ではなく cross-adapter の
+  `describe_table` (ADR-0028) 経由なので D1/Turso/Postgres で共通動作。
+  `Command::DescribeTable` / `Reply::TableDescribed` を SchemaSource
+  経由で worker 配線 + stale-reply ガード。
+- i18n: 上記の新規キー (`auto-limit-*` / `tab-*` / `structure-*` /
+  `cell-*`) を全 11 locale に伝播済。
+- 未実施 (user 側): push + feat PR create、pre-push
+  (`cargo build --release` / `cargo test --release`)。
 
 ### ADR-0028 slice (a)〜(d) 実装完了 (本セッション / 2026-07-02)
 

@@ -91,3 +91,25 @@ ai-active-with-name = 使用中：{ $name }
 ai-include-details = カラム詳細を含める
 ai-prefetching = テーブルスキーマを取得中…
 ai-prefetch-warning = { $count } 個のテーブルの詳細を取得できませんでした。取得できた分のみで続行します。
+
+# ADR-0030 result grid: truncated long / multi-line cell values.
+cell-expand-hint = 全文を表示
+cell-full-text-title = セルの値
+cell-copy = コピー
+
+# ADR-0030 auto-limit guard for bare SELECTs.
+auto-limit-checkbox = LIMIT { $count }
+auto-limit-hint = LIMIT なしの SELECT に LIMIT を付けて、無制限スキャンで UI が固まるのを防ぎます。自分で LIMIT を書くかチェックを外せば上書きできます。
+
+# ADR-0031 structure tab.
+tab-results = 結果
+tab-structure = 構造
+structure-empty = (テーブルをクリックして構造を表示)
+structure-loading = テーブルを取得中…
+structure-no-columns = (列なし)
+structure-col-ordinal = #
+structure-col-name = 名前
+structure-col-type = 型
+structure-col-nullable = Null
+structure-col-pk = キー
+structure-col-default = 既定値

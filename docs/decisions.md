@@ -4167,3 +4167,133 @@ optional field. `Capabilities` gains a boolean with a `false`
 default. No HTTP contract change. No `history.jsonl` schema
 change.
 
+## ADR-0030 — Result grid: `egui_extras::TableBuilder` (sticky header, virtualized rows, column separators)
+
+- **Status:** Accepted (2026-07-10). Lands on `feature/query-ux`
+  alongside the query-UX batch (run triggers, auto-LIMIT guard,
+  structure tab, long-text popup). UI-only; no crate contract, no
+  HTTP contract, no `history.jsonl` change.
+
+### Context
+
+The result table was drawn with `egui::Grid` inside a
+`ScrollArea::both()`: every row and every cell was laid out each
+frame, the header row scrolled away with the body, and there were
+no vertical separators between columns. Three concrete failures
+drove this ADR, all reported from real use against a Cloudflare D1
+store:
+
+1. **Freeze on large result sets.** A bare `SELECT` with no `LIMIT`
+   materialised thousands of rows; `egui::Grid` lays out *all* of
+   them per frame, hanging the UI. (The row *count* is separately
+   capped by the auto-LIMIT guard, but the grid must not be the
+   bottleneck.)
+2. **Header scrolls out of view.** Scroll down through a wide table
+   full of `NULL`s and you lose track of which column is which.
+3. **No column boundaries.** Row striping alone is not enough to
+   track a value across a wide row; the user asked for faint
+   vertical lines.
+
+`egui::Grid` structurally cannot fix (1) or (2): it has no
+virtualization and no frozen header. `egui_extras::TableBuilder` —
+egui's official companion crate, same maintainer, same version
+cadence — is purpose-built for exactly this and gives all three for
+free.
+
+### Decision
+
+Add `egui_extras` (0.34, pinned to the egui version, default
+features off) and rebuild `render_result` on `TableBuilder`:
+
+1. **Sticky header** via `.header(height, |h| …)` — the header band
+   stays fixed while the body scrolls.
+2. **Virtualized body** via `.body(|body| body.rows(row_h, n, …))`
+   — only visible rows are laid out, so wall-clock is independent of
+   result size.
+3. **Column separators** via resizable columns
+   (`Column::auto().resizable(true)`), which draw a faint vertical
+   line at each boundary and, as a bonus, let the user drag column
+   widths.
+4. **Striping** retained via `.striped(true)`.
+
+### Consequences
+
+- New workspace dependency. Justified per CLAUDE.md ("non-trivial
+  crate → ADR"): it is the first-party companion to a dependency we
+  already ship, so maintenance/version risk is minimal.
+- `render_result`'s signature is unchanged (`&mut egui::Ui,
+  &QueryResult`); the rewrite is internal. Existing behavioural
+  tests over `QueryResult` shaping are unaffected.
+- Long-text cells (the truncation-with-popup feature) render inside
+  the same `TableBuilder` body cell, so the two features share one
+  grid rewrite rather than fighting `egui::Grid`.
+
+### SemVer impact (ADR-0011)
+
+None. Presentation-only change inside `dbboard-ui`. No public type,
+trait, HTTP envelope, or on-disk schema is touched.
+
+## ADR-0031 — Structure tab: click a table to inspect its columns
+
+- **Status:** Accepted (2026-07-10). Lands on `feature/query-ux`
+  with the rest of the query-UX batch. UI + worker-plumbing only;
+  reuses the ADR-0028 `describe_table` primitive. No crate contract,
+  HTTP contract, or `history.jsonl` change.
+
+### Context
+
+The sidebar listed tables but clicking one did nothing — there was
+no way to see a table's columns without hand-writing `PRAGMA
+table_info(...)` (SQLite-only) or the Postgres `information_schema`
+equivalent. HeidiSQL and every desktop client answers this with a
+structure view. ADR-0028 already shipped a cross-adapter
+`DatabaseAdapter::describe_table` returning a `TableSchema`
+(columns, types, nullability, PK, defaults), used so far only by the
+AI prefetch path. The data is already there; only the surfacing is
+missing.
+
+### Decision
+
+1. **Tab the lower panel.** A `ResultTab { Results, Structure }`
+   toggle sits above the result area. Running a query does not force
+   a tab switch; clicking a table does.
+2. **Click a sidebar table → describe it.** Sidebar entries become
+   `selectable_label`s. A click calls `open_structure`, which flips
+   to the Structure tab and sends a new `Command::DescribeTable {
+   table }`.
+3. **Dedicated command/reply pair.** `Command::DescribeTable` →
+   `Reply::TableDescribed { table, result }`, handled by the worker
+   through the same injected `SchemaSource` as `PrefetchSchema` but
+   scoped to one table. Kept separate from `SchemaPrefetched` so the
+   structure view and the AI prefetch flow never contend for one
+   reply.
+4. **Stale-reply guard.** `TableDescribed` is applied only when its
+   `table` still matches the on-screen `StructureView`; a describe
+   for a since-reselected table is dropped.
+5. **Render via `TableBuilder`** (ADR-0030): ordinal / name / type /
+   nullable / key / default, one row per column.
+
+Cross-adapter `describe_table` is used rather than emitting
+SQLite-specific `PRAGMA` / `sqlite_master` SQL from the UI, so the
+structure tab works uniformly on D1, Turso, and Postgres. The raw
+`CREATE TABLE` DDL (a HeidiSQL nicety, and SQLite-specific) is left
+for a later slice; the column grid covers the primary need.
+
+### Consequences
+
+- `Command` / `Reply` each gain one variant. Both are `dbboard-ui`
+  internal enums (the worker channel), not the public HTTP contract,
+  so this is not a SemVer event. Every exhaustive match on them (the
+  worker dispatch, the fatal-error dispatcher, `request_for`,
+  `pending_ai_from_command`) gains an arm.
+- Connections whose adapter lacks `describe_table` surface a
+  `DbError::Capability` in the tab rather than silently doing
+  nothing.
+- `structure-*` / `tab-*` keys added across all 11 locales.
+
+### SemVer impact (ADR-0011)
+
+None on the published surface. The new `Command` / `Reply` variants
+are internal to `dbboard-ui`. No adapter trait, HTTP envelope, or
+on-disk schema changes.
+

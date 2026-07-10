@@ -25,6 +25,9 @@ dbboard-core = { workspace = true }
 dbboard-i18n = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+# Result-grid widget (ADR-0030): sticky header + virtualized rows +
+# per-column separators for the query result table.
+egui_extras = { workspace = true }
 # The UI is an HTTP client of the in-process loopback server (ADR-0009);
 # it never links a database adapter directly. reqwest drives the calls,
 # tokio gives the worker thread its own single-threaded runtime, and

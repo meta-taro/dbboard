@@ -88,3 +88,25 @@ ai-active-with-name = 사용 중: { $name }
 ai-include-details = 컬럼 상세 정보 포함
 ai-prefetching = 테이블 스키마를 가져오는 중…
 ai-prefetch-warning = 테이블 { $count }개의 스키마를 가져오지 못했습니다. 가져온 것만으로 계속합니다.
+
+# ADR-0030 result grid: truncated long / multi-line cell values.
+cell-expand-hint = 전체 값 표시
+cell-full-text-title = 셀 값
+cell-copy = 복사
+
+# ADR-0030 auto-limit guard for bare SELECTs.
+auto-limit-checkbox = LIMIT { $count }
+auto-limit-hint = LIMIT 없는 SELECT에 LIMIT를 붙여 무제한 스캔으로 UI가 멈추는 것을 방지합니다. 직접 LIMIT를 쓰거나 체크를 해제하면 재정의됩니다.
+
+# ADR-0031 structure tab.
+tab-results = 결과
+tab-structure = 구조
+structure-empty = (테이블을 클릭하여 구조 보기)
+structure-loading = 테이블 정보 가져오는 중…
+structure-no-columns = (열 없음)
+structure-col-ordinal = #
+structure-col-name = 이름
+structure-col-type = 유형
+structure-col-nullable = Null
+structure-col-pk = 키
+structure-col-default = 기본값
