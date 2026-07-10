@@ -97,3 +97,16 @@ cell-copy = 복사
 # ADR-0030 auto-limit guard for bare SELECTs.
 auto-limit-checkbox = LIMIT { $count }
 auto-limit-hint = LIMIT 없는 SELECT에 LIMIT를 붙여 무제한 스캔으로 UI가 멈추는 것을 방지합니다. 직접 LIMIT를 쓰거나 체크를 해제하면 재정의됩니다.
+
+# ADR-0031 structure tab.
+tab-results = 결과
+tab-structure = 구조
+structure-empty = (테이블을 클릭하여 구조 보기)
+structure-loading = 테이블 정보 가져오는 중…
+structure-no-columns = (열 없음)
+structure-col-ordinal = #
+structure-col-name = 이름
+structure-col-type = 유형
+structure-col-nullable = Null
+structure-col-pk = 키
+structure-col-default = 기본값
