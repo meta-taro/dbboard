@@ -378,11 +378,33 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 
 ## Phase 5 — Quality of life
 
-- [ ] Result table virtualisation for large result sets
+- [x] Result table virtualisation for large result sets — delivered by
+      the `egui_extras::TableBuilder` grid rebuild (sticky header,
+      resizable columns, `body.rows()` virtualisation, long-cell popup)
+      ([ADR-0030](decisions.md), PR #51).
+- [x] Query-run ergonomics — F5 / Ctrl·Cmd+Enter / editor right-click all
+      run the current SQL, not just the Run button (PR #51).
+- [x] Bare-`SELECT` auto-`LIMIT` guard — a visible, opt-out default
+      `LIMIT 100` stops unbounded scans from freezing the UI
+      ([ADR-0030](decisions.md), PR #51).
+- [x] Table structure browser — click a sidebar table to inspect its
+      columns via the cross-adapter `describe_table`
+      ([ADR-0031](decisions.md), PR #51).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
 - [ ] Performance: cold-start under 1s on a modern laptop
+
+## Packaging & Distribution
+
+- [x] Windows internal distribution — hardened release exe (console
+      suppressed, embedded icon + version metadata, statically-linked
+      MSVC CRT so no VC++ Redistributable is needed) plus cargo-wix MSI
+      installer sources ([ADR-0032](decisions.md), PR #52). Building the
+      MSI is a maintainer step (`cargo wix`); the plain exe needs no
+      extra tooling.
+- [ ] Release CI (build + `cargo wix` on a tagged push)
+- [ ] macOS / Linux packaging
 
 ## Phase 6+ — Stretch
 
