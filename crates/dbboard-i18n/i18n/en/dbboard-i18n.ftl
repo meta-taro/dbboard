@@ -21,6 +21,20 @@ result-heading = Result
 result-empty = (run a query)
 result-affected = OK ({ $rows } rows affected)
 
+# ADR-0031 structure tab: clicking a sidebar table describes it and shows
+# its columns here, next to the query result.
+tab-results = Result
+tab-structure = Structure
+structure-empty = (click a table to inspect its structure)
+structure-loading = Describing table…
+structure-no-columns = (no columns)
+structure-col-ordinal = #
+structure-col-name = Name
+structure-col-type = Type
+structure-col-nullable = Null
+structure-col-pk = Key
+structure-col-default = Default
+
 # ADR-0030 result grid: long / multi-line cell values are truncated with
 # an ellipsis and an expand button that opens the full text in a popup.
 cell-expand-hint = Show full value

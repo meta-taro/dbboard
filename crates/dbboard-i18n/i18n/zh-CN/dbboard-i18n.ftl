@@ -97,3 +97,16 @@ cell-copy = 复制
 # ADR-0030 auto-limit guard for bare SELECTs.
 auto-limit-checkbox = LIMIT { $count }
 auto-limit-hint = 为没有 LIMIT 的 SELECT 追加 LIMIT，避免无限扫描冻结界面。可自行写 LIMIT 或取消勾选以覆盖。
+
+# ADR-0031 structure tab.
+tab-results = 结果
+tab-structure = 结构
+structure-empty = (点击表以查看其结构)
+structure-loading = 正在获取表结构…
+structure-no-columns = (无列)
+structure-col-ordinal = #
+structure-col-name = 名称
+structure-col-type = 类型
+structure-col-nullable = 空
+structure-col-pk = 键
+structure-col-default = 默认值

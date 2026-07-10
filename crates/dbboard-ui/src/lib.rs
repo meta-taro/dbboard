@@ -127,6 +127,12 @@ pub enum Command {
     /// the "Include column details" toggle is on and the adapter
     /// advertises `has_describe_table`.
     PrefetchSchema { tables: Vec<TableInfo> },
+    /// Describe a single table for the structure tab (ADR-0031). Same
+    /// in-process `describe_table` path as [`Command::PrefetchSchema`],
+    /// but scoped to one table and answered with [`Reply::TableDescribed`]
+    /// so the structure view stays independent of the AI prefetch flow.
+    /// Issued when the user clicks a table in the sidebar.
+    DescribeTable { table: TableInfo },
 }
 
 /// Result flowing worker → UI.
@@ -239,6 +245,13 @@ pub enum Reply {
         schemas: Vec<TableSchema>,
         errors: Vec<(TableInfo, String)>,
     },
+    /// Result of a [`Command::DescribeTable`] (ADR-0031). Carries the
+    /// requested table so a stale reply for a since-reselected table can
+    /// be ignored, and the `describe_table` outcome for the structure tab.
+    TableDescribed {
+        table: TableInfo,
+        result: DbResult<TableSchema>,
+    },
 }
 
 /// Captures everything we know at submit time about a query whose reply
@@ -271,6 +284,23 @@ struct PendingAiSubmit {
 /// `dbboard-ui` stays free of any date-formatting crate dependency and
 /// so tests can pass a deterministic stub.
 pub type RfcClock = fn() -> String;
+
+/// Which tab the lower panel shows (ADR-0031). Defaults to `Results`;
+/// clicking a sidebar table switches to `Structure`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResultTab {
+    Results,
+    Structure,
+}
+
+/// Structure-tab state (ADR-0031): the table whose schema is on screen and
+/// the latest `describe_table` outcome. `schema == None` means the describe
+/// is still in flight.
+#[derive(Debug)]
+struct StructureView {
+    table: TableInfo,
+    schema: Option<DbResult<TableSchema>>,
+}
 
 pub struct DbboardApp {
     sql: String,
@@ -334,6 +364,10 @@ pub struct DbboardApp {
     /// as a toolbar checkbox and overridable: the user can uncheck it or
     /// write their own `LIMIT`, in which case the guard backs off.
     auto_limit: bool,
+    /// Which lower-panel tab is active (ADR-0031).
+    active_tab: ResultTab,
+    /// Structure-tab state, `Some` once a table has been clicked.
+    structure: Option<StructureView>,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -455,10 +489,26 @@ impl DbboardApp {
             last_ai_switch_error: None,
             schema_source,
             auto_limit: true,
+            active_tab: ResultTab::Results,
+            structure: None,
             busy: false,
             cmd_tx,
             reply_rx,
         }
+    }
+
+    /// Open the structure tab for `table` and kick off its describe
+    /// (ADR-0031). The reply lands on the next `drain_replies` pass and is
+    /// matched back to this table so a stale describe is ignored.
+    fn open_structure(&mut self, table: TableInfo) {
+        self.active_tab = ResultTab::Structure;
+        let _ = self.cmd_tx.send(Command::DescribeTable {
+            table: table.clone(),
+        });
+        self.structure = Some(StructureView {
+            table,
+            schema: None,
+        });
     }
 
     fn drain_replies(&mut self) {
@@ -576,6 +626,16 @@ impl DbboardApp {
                 Reply::SchemaPrefetched { schemas, errors } => {
                     if let Some(cmd) = self.ai_panel.on_schema_prefetched(schemas, &errors) {
                         self.send_ai_command(cmd);
+                    }
+                }
+                // ADR-0031: structure-tab describe came back. Apply it only
+                // if it still matches the table on screen — the user may
+                // have clicked another table while this one was in flight.
+                Reply::TableDescribed { table, result } => {
+                    if let Some(view) = self.structure.as_mut() {
+                        if view.table == table {
+                            view.schema = Some(result);
+                        }
                     }
                 }
             }
@@ -987,7 +1047,8 @@ fn pending_ai_from_command(cmd: &Command, conn_label: &str) -> Option<PendingAiS
         | Command::Query(_)
         | Command::SwitchConnection { .. }
         | Command::SwitchAiProvider { .. }
-        | Command::PrefetchSchema { .. } => return None,
+        | Command::PrefetchSchema { .. }
+        | Command::DescribeTable { .. } => return None,
     };
     let conn = if conn_label.is_empty() {
         None
@@ -1178,8 +1239,12 @@ impl eframe::App for DbboardApp {
 }
 
 impl DbboardApp {
-    /// Left sidebar: the list of user tables (ADR-0014).
+    /// Left sidebar: the list of user tables (ADR-0014). Clicking a table
+    /// opens its structure tab (ADR-0031). The click is captured here and
+    /// acted on after the `&self.tables` borrow ends.
     fn render_tables_panel(&mut self, ui: &mut egui::Ui) {
+        let active = self.structure.as_ref().map(|s| s.table.clone());
+        let mut clicked: Option<TableInfo> = None;
         egui::Panel::left("tables").show_inside(ui, |ui| {
             ui.heading(t!("tables-heading"));
             ui.separator();
@@ -1189,7 +1254,10 @@ impl DbboardApp {
                 }
                 Ok(tables) => {
                     for table in tables {
-                        ui.label(&table.name);
+                        let selected = active.as_ref() == Some(table);
+                        if ui.selectable_label(selected, &table.name).clicked() {
+                            clicked = Some(table.clone());
+                        }
                     }
                 }
                 Err(e) => {
@@ -1197,6 +1265,9 @@ impl DbboardApp {
                 }
             }
         });
+        if let Some(table) = clicked {
+            self.open_structure(table);
+        }
     }
 
     /// Central panel: the SQL editor, run controls, history, and result.
@@ -1280,17 +1351,52 @@ impl DbboardApp {
             }
 
             ui.separator();
-            ui.heading(t!("result-heading"));
-            match &self.last_result {
-                None => {
-                    ui.label(t!("result-empty"));
-                }
-                Some(Ok(result)) => render_result(ui, result),
-                Some(Err(e)) => {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
-                }
+            // ADR-0031: tab between the query result and the clicked
+            // table's structure.
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.active_tab, ResultTab::Results, t!("tab-results"));
+                ui.selectable_value(
+                    &mut self.active_tab,
+                    ResultTab::Structure,
+                    t!("tab-structure"),
+                );
+            });
+            match self.active_tab {
+                ResultTab::Results => match &self.last_result {
+                    None => {
+                        ui.label(t!("result-empty"));
+                    }
+                    Some(Ok(result)) => render_result(ui, result),
+                    Some(Err(e)) => {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
+                    }
+                },
+                ResultTab::Structure => self.render_structure(ui),
             }
         });
+    }
+
+    /// Structure tab body (ADR-0031): the selected table's name and its
+    /// `describe_table` outcome rendered as a column grid.
+    fn render_structure(&self, ui: &mut egui::Ui) {
+        let Some(view) = &self.structure else {
+            ui.label(t!("structure-empty"));
+            return;
+        };
+        ui.strong(&view.table.name);
+        ui.separator();
+        match &view.schema {
+            None => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(t!("structure-loading"));
+                });
+            }
+            Some(Err(e)) => {
+                ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
+            }
+            Some(Ok(schema)) => render_table_schema(ui, schema),
+        }
     }
 }
 
@@ -1463,6 +1569,71 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
     render_expanded_cell_popup(ui, expand_id);
 }
 
+/// Column grid for the structure tab (ADR-0031): one row per column with
+/// ordinal, name, declared type, nullability, primary-key flag, and the
+/// raw default expression. Not virtualized — a table has few columns.
+fn render_table_schema(ui: &mut egui::Ui, schema: &TableSchema) {
+    use egui_extras::{Column, TableBuilder};
+
+    if schema.columns.is_empty() {
+        ui.label(t!("structure-no-columns"));
+        return;
+    }
+
+    let row_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
+    let headers: [String; 6] = [
+        t!("structure-col-ordinal"),
+        t!("structure-col-name"),
+        t!("structure-col-type"),
+        t!("structure-col-nullable"),
+        t!("structure-col-pk"),
+        t!("structure-col-default"),
+    ];
+
+    let mut table = TableBuilder::new(ui)
+        .striped(true)
+        .resizable(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .auto_shrink([false, false]);
+    for _ in &headers {
+        table = table.column(Column::auto().at_least(48.0).clip(true).resizable(true));
+    }
+    table
+        .header(row_height, |mut header| {
+            for h in &headers {
+                header.col(|ui| {
+                    ui.strong(h.as_str());
+                });
+            }
+        })
+        .body(|mut body| {
+            for col in &schema.columns {
+                body.row(row_height, |mut row| {
+                    row.col(|ui| {
+                        ui.label(col.ordinal.to_string());
+                    });
+                    row.col(|ui| {
+                        ui.label(&col.name);
+                    });
+                    row.col(|ui| {
+                        ui.label(col.declared_type.as_deref().unwrap_or(""));
+                    });
+                    // A checkmark reads the same in every locale, so the
+                    // nullable / PK cells stay text-key-free.
+                    row.col(|ui| {
+                        ui.label(if col.nullable { "✓" } else { "" });
+                    });
+                    row.col(|ui| {
+                        ui.label(if col.primary_key { "PK" } else { "" });
+                    });
+                    row.col(|ui| {
+                        ui.label(col.default_value.as_deref().unwrap_or(""));
+                    });
+                });
+            }
+        });
+}
+
 /// One result-grid cell: a plain label for short values, or a truncated
 /// preview plus an expand button that parks the full text in egui memory
 /// for the popup to pick up.
@@ -1518,9 +1689,11 @@ mod tests {
     use super::{
         apply_auto_limit, cell_preview, error_display, is_bare_select, is_long_cell,
         should_run_from_keys, AiProviderSlot, Command, DbboardApp, HistoryStatus,
-        PersistentHistoryStore, Reply, CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
+        PersistentHistoryStore, Reply, ResultTab, CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
     };
-    use dbboard_core::{Column, DbError, QueryResult, Row, TableInfo, Value};
+    use dbboard_core::{
+        Column, ColumnInfo, DbError, QueryResult, Row, TableInfo, TableSchema, Value,
+    };
     use std::sync::mpsc;
     use std::sync::{Arc, RwLock};
 
@@ -2647,5 +2820,75 @@ mod tests {
             apply_auto_limit("update t set a = 1", true, 100),
             "update t set a = 1"
         );
+    }
+
+    // --- ADR-0031 structure tab ------------------------------------------
+
+    fn one_column_schema(table: &str) -> TableSchema {
+        TableSchema {
+            table: TableInfo::unqualified(table),
+            columns: vec![ColumnInfo {
+                name: "id".into(),
+                declared_type: Some("INTEGER".into()),
+                nullable: false,
+                primary_key: true,
+                ordinal: 1,
+                default_value: None,
+            }],
+            primary_key: vec!["id".into()],
+        }
+    }
+
+    #[test]
+    fn clicking_a_table_opens_structure_and_requests_describe() {
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+        app.open_structure(TableInfo::unqualified("stores"));
+
+        assert_eq!(app.active_tab, ResultTab::Structure);
+        let cmd = cmd_rx.try_recv().expect("DescribeTable emitted");
+        assert!(matches!(cmd, Command::DescribeTable { table } if table.name == "stores"));
+        // Schema stays in flight until the reply lands.
+        assert!(app.structure.as_ref().unwrap().schema.is_none());
+    }
+
+    #[test]
+    fn table_described_reply_populates_the_matching_structure_view() {
+        let (mut app, cmd_rx, reply_tx) = build();
+        let _ = cmd_rx.try_recv();
+        app.open_structure(TableInfo::unqualified("stores"));
+        let _ = cmd_rx.try_recv();
+
+        reply_tx
+            .send(Reply::TableDescribed {
+                table: TableInfo::unqualified("stores"),
+                result: Ok(one_column_schema("stores")),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        let view = app.structure.as_ref().unwrap();
+        let schema = view.schema.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(schema.columns[0].name, "id");
+    }
+
+    #[test]
+    fn stale_table_described_reply_is_ignored() {
+        let (mut app, cmd_rx, reply_tx) = build();
+        let _ = cmd_rx.try_recv();
+        app.open_structure(TableInfo::unqualified("stores"));
+        let _ = cmd_rx.try_recv();
+
+        // A describe for a table the user already navigated away from must
+        // not overwrite the in-flight view.
+        reply_tx
+            .send(Reply::TableDescribed {
+                table: TableInfo::unqualified("orders"),
+                result: Ok(one_column_schema("orders")),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        assert!(app.structure.as_ref().unwrap().schema.is_none());
     }
 }

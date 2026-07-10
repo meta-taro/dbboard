@@ -98,3 +98,16 @@ cell-copy = Copier
 # ADR-0030 auto-limit guard for bare SELECTs.
 auto-limit-checkbox = LIMIT { $count }
 auto-limit-hint = Ajoute un LIMIT aux SELECT sans limite pour éviter quun balayage illimité ne fige linterface. Écrivez votre propre LIMIT ou décochez pour passer outre.
+
+# ADR-0031 structure tab.
+tab-results = Résultat
+tab-structure = Structure
+structure-empty = (cliquez sur une table pour voir sa structure)
+structure-loading = Description de la table…
+structure-no-columns = (aucune colonne)
+structure-col-ordinal = #
+structure-col-name = Nom
+structure-col-type = Type
+structure-col-nullable = Null
+structure-col-pk = Clé
+structure-col-default = Défaut

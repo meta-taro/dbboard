@@ -97,3 +97,16 @@ cell-copy = 複製
 # ADR-0030 auto-limit guard for bare SELECTs.
 auto-limit-checkbox = LIMIT { $count }
 auto-limit-hint = 為沒有 LIMIT 的 SELECT 追加 LIMIT，避免無限掃描凍結介面。可自行寫 LIMIT 或取消勾選以覆寫。
+
+# ADR-0031 structure tab.
+tab-results = 結果
+tab-structure = 結構
+structure-empty = (點擊資料表以檢視其結構)
+structure-loading = 正在取得資料表結構…
+structure-no-columns = (無欄位)
+structure-col-ordinal = #
+structure-col-name = 名稱
+structure-col-type = 型別
+structure-col-nullable = 空
+structure-col-pk = 鍵
+structure-col-default = 預設值
