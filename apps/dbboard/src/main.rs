@@ -32,6 +32,12 @@
 //! tofu — egui's bundled Ubuntu-Light covers Latin + Cyrillic but no
 //! CJK ranges.
 
+// Suppress the console window on Windows release builds: this is a GUI
+// app, so a flashing terminal behind it is pure noise for end users.
+// Debug builds keep the console so `println!`/panic traces stay visible
+// during development. No-op on non-Windows targets.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use dbboard_ai::{AiError, AiProvider};
