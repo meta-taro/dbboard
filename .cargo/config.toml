@@ -1,0 +1,10 @@
+# Statically link the MSVC C runtime into the Windows binary (ADR-0032).
+#
+# By default MSVC dynamically links `vcruntime140.dll` / `msvcp140.dll`,
+# so a handed-off `dbboard.exe` fails on machines that lack the Visual
+# C++ Redistributable. `+crt-static` folds the CRT into the binary,
+# making it self-contained for internal Windows distribution. Cargo
+# automatically drops this flag for proc-macro crates (which must stay
+# dynamically linked), so the workspace still builds cleanly.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
