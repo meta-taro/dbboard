@@ -370,6 +370,47 @@ CI does not run this yet; run it locally when adding or upgrading a
 dependency. New license expressions surfaced by the check go into
 `deny.toml`'s `licenses.allow` list with a one-line rationale.
 
+## Windows distribution (internal)
+
+The release binary is a self-contained GUI app: no console window, an
+embedded icon + version metadata, and a statically-linked MSVC CRT (no
+Visual C++ Redistributable required on the target machine). See
+[ADR-0032](docs/decisions.md).
+
+### Just the executable
+
+```sh
+cargo build --release
+# → target\release\dbboard.exe  (single self-contained file, ~15 MB)
+```
+
+Copy `dbboard.exe` anywhere and run it. It needs no `.env`: it starts on
+an in-memory Turso database, and connections + AI providers are added
+from the UI, with secrets stored in Windows Credential Manager.
+
+### MSI installer
+
+The installer is built with [cargo-wix](https://github.com/volks73/cargo-wix)
+and the [WiX Toolset v3](https://wixtoolset.org/) (both are one-time
+installs, not required for the plain exe):
+
+```sh
+# one-time prerequisites
+#   1. Install WiX Toolset v3 (candle.exe / light.exe on PATH)
+#   2. cargo install cargo-wix
+
+# build the MSI (run from the binary package)
+cd apps/dbboard
+cargo wix --nocapture
+# → target\wix\dbboard-<version>-x86_64.msi
+```
+
+The installer sources live in [`apps/dbboard/wix/`](apps/dbboard/wix/).
+The MSI installs to `%ProgramFiles%\dbboard`, registers a clean uninstall
+entry with the app icon, shows the MIT license, and offers an opt-out
+"add to PATH" feature. The UpgradeCode is fixed, so installing a newer
+version upgrades an existing install in place.
+
 ## Contributing
 
 This project follows the rules in [`CLAUDE.md`](CLAUDE.md). In short:
