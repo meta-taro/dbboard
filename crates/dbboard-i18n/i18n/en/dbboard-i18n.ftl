@@ -9,6 +9,10 @@ tables-empty = (no tables)
 
 sql-heading = SQL
 sql-run-button = Run
+# ADR-0030 auto-limit guard: appended to bare SELECTs so an unbounded scan
+# cannot freeze the UI. Overridable — write your own LIMIT or uncheck.
+auto-limit-checkbox = LIMIT { $count }
+auto-limit-hint = Cap bare SELECTs with LIMIT so an unbounded scan can't freeze the UI. Write your own LIMIT or uncheck to override.
 
 history-title = History ({ $count })
 history-empty = (no recent queries)

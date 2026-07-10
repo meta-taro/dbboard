@@ -94,3 +94,7 @@ ai-prefetch-warning = { $count } Tabelle(n) konnten nicht beschrieben werden; es
 cell-expand-hint = Vollständigen Wert anzeigen
 cell-full-text-title = Zellenwert
 cell-copy = Kopieren
+
+# ADR-0030 auto-limit guard for bare SELECTs.
+auto-limit-checkbox = LIMIT { $count }
+auto-limit-hint = Fügt bloßen SELECTs ein LIMIT hinzu, damit ein unbegrenzter Scan die UI nicht einfriert. Eigenes LIMIT schreiben oder abwählen zum Überschreiben.
