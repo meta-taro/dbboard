@@ -1531,39 +1531,49 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
     let row_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
     let expand_id = expanded_cell_id();
 
-    let mut table = TableBuilder::new(ui)
-        .striped(true)
-        .resizable(true)
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .auto_shrink([false, false]);
-    // One resizable column per result column. Resizable columns draw the
-    // faint vertical separators the striping alone could not, and clipping
-    // stops a stray wide value from ballooning the column.
-    for _ in &result.columns {
-        table = table.column(Column::auto().at_least(48.0).clip(true).resizable(true));
-    }
-
-    table
-        .header(row_height, |mut header| {
-            for col in &result.columns {
-                header.col(|ui| {
-                    ui.strong(&col.name);
-                });
+    // Outer horizontal scroll: egui_extras' TableBuilder only scrolls
+    // vertically (its internal ScrollArea is hard-coded to `[false, vscroll]`),
+    // so a wide result set overflows the panel and the rightmost columns clip
+    // at the window edge with no way to reach them. Wrapping the table in a
+    // horizontal ScrollArea lets it keep its full content width and pan to the
+    // hidden columns, while the table's own vscroll still virtualizes rows.
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let mut table = TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .auto_shrink([false, false]);
+            // One resizable column per result column. Resizable columns draw
+            // the faint vertical separators the striping alone could not, and
+            // clipping stops a stray wide value from ballooning the column.
+            for _ in &result.columns {
+                table = table.column(Column::auto().at_least(48.0).clip(true).resizable(true));
             }
-        })
-        .body(|body| {
-            body.rows(row_height, result.rows.len(), |mut row| {
-                let values: Vec<String> = result.rows[row.index()]
-                    .values()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect();
-                for value in &values {
-                    row.col(|ui| {
-                        render_cell(ui, value, expand_id);
+
+            table
+                .header(row_height, |mut header| {
+                    for col in &result.columns {
+                        header.col(|ui| {
+                            ui.strong(&col.name);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(row_height, result.rows.len(), |mut row| {
+                        let values: Vec<String> = result.rows[row.index()]
+                            .values()
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect();
+                        for value in &values {
+                            row.col(|ui| {
+                                render_cell(ui, value, expand_id);
+                            });
+                        }
                     });
-                }
-            });
+                });
         });
 
     render_expanded_cell_popup(ui, expand_id);
