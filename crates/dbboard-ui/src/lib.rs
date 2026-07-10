@@ -1319,33 +1319,144 @@ fn should_run_from_keys(f5_pressed: bool, cmd_held: bool, enter_pressed: bool) -
     f5_pressed || (cmd_held && enter_pressed)
 }
 
+/// Longest single-line cell rendered inline before the expand affordance
+/// appears. Tuned to keep wide tables scannable, not to any exact pixel
+/// width.
+const CELL_PREVIEW_CHARS: usize = 80;
+
+/// egui memory key for the single full-text popup. One result grid is ever
+/// on screen, so a fixed id is enough and keeps `render_result` a free
+/// function (no popup state threaded through `DbboardApp`).
+fn expanded_cell_id() -> egui::Id {
+    egui::Id::new("dbboard-result-expanded-cell")
+}
+
+/// A cell earns the "expand" affordance when it spans multiple lines or is
+/// longer than the inline preview budget — the cases where truncation
+/// actually hides something.
+fn is_long_cell(text: &str) -> bool {
+    text.contains('\n') || text.chars().count() > CELL_PREVIEW_CHARS
+}
+
+/// Single-line, length-capped preview of a cell value. Newlines collapse to
+/// spaces so every row keeps a uniform height; a trailing ellipsis marks
+/// that content was elided.
+fn cell_preview(text: &str) -> String {
+    let single_line = text.replace(['\r', '\n'], " ");
+    if !is_long_cell(text) {
+        return single_line;
+    }
+    let head: String = single_line.chars().take(CELL_PREVIEW_CHARS).collect();
+    format!("{head}…")
+}
+
 fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
+    use egui_extras::{Column, TableBuilder};
+
     if result.rows.is_empty() {
         ui.label(t_args!("result-affected", rows = result.rows_affected));
         return;
     }
 
-    egui::ScrollArea::both().show(ui, |ui| {
-        egui::Grid::new("result").striped(true).show(ui, |ui| {
+    // Row height sized to one line of body text plus a little breathing
+    // room; the virtualized body relies on a uniform height.
+    let row_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
+    let expand_id = expanded_cell_id();
+
+    let mut table = TableBuilder::new(ui)
+        .striped(true)
+        .resizable(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .auto_shrink([false, false]);
+    // One resizable column per result column. Resizable columns draw the
+    // faint vertical separators the striping alone could not, and clipping
+    // stops a stray wide value from ballooning the column.
+    for _ in &result.columns {
+        table = table.column(Column::auto().at_least(48.0).clip(true).resizable(true));
+    }
+
+    table
+        .header(row_height, |mut header| {
             for col in &result.columns {
-                ui.strong(&col.name);
+                header.col(|ui| {
+                    ui.strong(&col.name);
+                });
             }
-            ui.end_row();
-            for row in &result.rows {
-                for v in row.values() {
-                    ui.label(v.to_string());
+        })
+        .body(|body| {
+            body.rows(row_height, result.rows.len(), |mut row| {
+                let values: Vec<String> = result.rows[row.index()]
+                    .values()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                for value in &values {
+                    row.col(|ui| {
+                        render_cell(ui, value, expand_id);
+                    });
                 }
-                ui.end_row();
-            }
+            });
         });
+
+    render_expanded_cell_popup(ui, expand_id);
+}
+
+/// One result-grid cell: a plain label for short values, or a truncated
+/// preview plus an expand button that parks the full text in egui memory
+/// for the popup to pick up.
+fn render_cell(ui: &mut egui::Ui, text: &str, expand_id: egui::Id) {
+    if !is_long_cell(text) {
+        ui.label(text);
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(cell_preview(text));
+        if ui
+            .small_button("⋯")
+            .on_hover_text(t!("cell-expand-hint"))
+            .clicked()
+        {
+            ui.data_mut(|d| d.insert_temp(expand_id, text.to_owned()));
+        }
     });
+}
+
+/// Full-text viewer for a truncated cell. Renders only while a value is
+/// parked under `expand_id`; closing the window clears it.
+fn render_expanded_cell_popup(ui: &mut egui::Ui, expand_id: egui::Id) {
+    let Some(text) = ui.data(|d| d.get_temp::<String>(expand_id)) else {
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(t!("cell-full-text-title"))
+        .id(expand_id.with("window"))
+        .collapsible(false)
+        .resizable(true)
+        .default_size([520.0, 360.0])
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            if ui.button(t!("cell-copy")).clicked() {
+                ui.ctx().copy_text(text.clone());
+            }
+            ui.separator();
+            egui::ScrollArea::both().show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(text.as_str()).monospace())
+                        .selectable(true),
+                );
+            });
+        });
+    if !open {
+        ui.data_mut(|d| d.remove::<String>(expand_id));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        error_display, should_run_from_keys, AiProviderSlot, Command, DbboardApp, HistoryStatus,
-        PersistentHistoryStore, Reply, DEFAULT_CAPACITY,
+        cell_preview, error_display, is_long_cell, should_run_from_keys, AiProviderSlot, Command,
+        DbboardApp, HistoryStatus, PersistentHistoryStore, Reply, CELL_PREVIEW_CHARS,
+        DEFAULT_CAPACITY,
     };
     use dbboard_core::{Column, DbError, QueryResult, Row, TableInfo, Value};
     use std::sync::mpsc;
@@ -2361,5 +2472,42 @@ mod tests {
     #[test]
     fn command_modifier_alone_does_not_trigger_a_run() {
         assert!(!should_run_from_keys(false, true, false));
+    }
+
+    #[test]
+    fn short_single_line_cell_is_not_long() {
+        assert!(!is_long_cell("hello"));
+        assert!(!is_long_cell(""));
+    }
+
+    #[test]
+    fn multiline_cell_is_long_even_when_short() {
+        assert!(is_long_cell("a\nb"));
+    }
+
+    #[test]
+    fn overlong_single_line_cell_is_long() {
+        let text = "x".repeat(CELL_PREVIEW_CHARS + 1);
+        assert!(is_long_cell(&text));
+    }
+
+    #[test]
+    fn preview_leaves_short_values_untouched() {
+        assert_eq!(cell_preview("hello"), "hello");
+    }
+
+    #[test]
+    fn preview_collapses_newlines_to_spaces() {
+        // A short multi-line value still gets an ellipsis because it hides
+        // its line structure once flattened.
+        assert_eq!(cell_preview("a\nb"), "a b…");
+    }
+
+    #[test]
+    fn preview_caps_length_and_marks_elision() {
+        let text = "y".repeat(CELL_PREVIEW_CHARS + 20);
+        let preview = cell_preview(&text);
+        assert_eq!(preview.chars().count(), CELL_PREVIEW_CHARS + 1); // + ellipsis
+        assert!(preview.ends_with('…'));
     }
 }

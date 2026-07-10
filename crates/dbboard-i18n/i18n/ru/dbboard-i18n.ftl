@@ -89,3 +89,8 @@ ai-active-with-name = Активный: { $name }
 ai-include-details = Включить сведения о столбцах
 ai-prefetching = Получение схем таблиц…
 ai-prefetch-warning = Не удалось описать { $count } табл.; продолжаем без них.
+
+# ADR-0030 result grid: truncated long / multi-line cell values.
+cell-expand-hint = Показать полное значение
+cell-full-text-title = Значение ячейки
+cell-copy = Копировать

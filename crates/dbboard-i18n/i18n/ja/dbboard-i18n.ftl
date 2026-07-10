@@ -91,3 +91,8 @@ ai-active-with-name = 使用中：{ $name }
 ai-include-details = カラム詳細を含める
 ai-prefetching = テーブルスキーマを取得中…
 ai-prefetch-warning = { $count } 個のテーブルの詳細を取得できませんでした。取得できた分のみで続行します。
+
+# ADR-0030 result grid: truncated long / multi-line cell values.
+cell-expand-hint = 全文を表示
+cell-full-text-title = セルの値
+cell-copy = コピー

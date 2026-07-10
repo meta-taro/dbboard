@@ -88,3 +88,8 @@ ai-active-with-name = 使用中：{ $name }
 ai-include-details = 包含欄位詳細資訊
 ai-prefetching = 正在取得資料表結構…
 ai-prefetch-warning = 有 { $count } 個資料表無法取得結構，將略過並繼續。
+
+# ADR-0030 result grid: truncated long / multi-line cell values.
+cell-expand-hint = 顯示完整值
+cell-full-text-title = 儲存格值
+cell-copy = 複製

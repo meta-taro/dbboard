@@ -89,3 +89,8 @@ ai-active-with-name = Aktiv: { $name }
 ai-include-details = Spaltendetails einbeziehen
 ai-prefetching = Tabellenschemata werden abgerufen…
 ai-prefetch-warning = { $count } Tabelle(n) konnten nicht beschrieben werden; es wird ohne sie fortgefahren.
+
+# ADR-0030 result grid: truncated long / multi-line cell values.
+cell-expand-hint = Vollständigen Wert anzeigen
+cell-full-text-title = Zellenwert
+cell-copy = Kopieren

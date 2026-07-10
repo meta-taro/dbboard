@@ -4167,3 +4167,69 @@ optional field. `Capabilities` gains a boolean with a `false`
 default. No HTTP contract change. No `history.jsonl` schema
 change.
 
+## ADR-0030 — Result grid: `egui_extras::TableBuilder` (sticky header, virtualized rows, column separators)
+
+- **Status:** Accepted (2026-07-10). Lands on `feature/query-ux`
+  alongside the query-UX batch (run triggers, auto-LIMIT guard,
+  structure tab, long-text popup). UI-only; no crate contract, no
+  HTTP contract, no `history.jsonl` change.
+
+### Context
+
+The result table was drawn with `egui::Grid` inside a
+`ScrollArea::both()`: every row and every cell was laid out each
+frame, the header row scrolled away with the body, and there were
+no vertical separators between columns. Three concrete failures
+drove this ADR, all reported from real use against a Cloudflare D1
+store:
+
+1. **Freeze on large result sets.** A bare `SELECT` with no `LIMIT`
+   materialised thousands of rows; `egui::Grid` lays out *all* of
+   them per frame, hanging the UI. (The row *count* is separately
+   capped by the auto-LIMIT guard, but the grid must not be the
+   bottleneck.)
+2. **Header scrolls out of view.** Scroll down through a wide table
+   full of `NULL`s and you lose track of which column is which.
+3. **No column boundaries.** Row striping alone is not enough to
+   track a value across a wide row; the user asked for faint
+   vertical lines.
+
+`egui::Grid` structurally cannot fix (1) or (2): it has no
+virtualization and no frozen header. `egui_extras::TableBuilder` —
+egui's official companion crate, same maintainer, same version
+cadence — is purpose-built for exactly this and gives all three for
+free.
+
+### Decision
+
+Add `egui_extras` (0.34, pinned to the egui version, default
+features off) and rebuild `render_result` on `TableBuilder`:
+
+1. **Sticky header** via `.header(height, |h| …)` — the header band
+   stays fixed while the body scrolls.
+2. **Virtualized body** via `.body(|body| body.rows(row_h, n, …))`
+   — only visible rows are laid out, so wall-clock is independent of
+   result size.
+3. **Column separators** via resizable columns
+   (`Column::auto().resizable(true)`), which draw a faint vertical
+   line at each boundary and, as a bonus, let the user drag column
+   widths.
+4. **Striping** retained via `.striped(true)`.
+
+### Consequences
+
+- New workspace dependency. Justified per CLAUDE.md ("non-trivial
+  crate → ADR"): it is the first-party companion to a dependency we
+  already ship, so maintenance/version risk is minimal.
+- `render_result`'s signature is unchanged (`&mut egui::Ui,
+  &QueryResult`); the rewrite is internal. Existing behavioural
+  tests over `QueryResult` shaping are unaffected.
+- Long-text cells (the truncation-with-popup feature) render inside
+  the same `TableBuilder` body cell, so the two features share one
+  grid rewrite rather than fighting `egui::Grid`.
+
+### SemVer impact (ADR-0011)
+
+None. Presentation-only change inside `dbboard-ui`. No public type,
+trait, HTTP envelope, or on-disk schema is touched.
+

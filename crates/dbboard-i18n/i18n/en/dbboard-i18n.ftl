@@ -17,6 +17,12 @@ result-heading = Result
 result-empty = (run a query)
 result-affected = OK ({ $rows } rows affected)
 
+# ADR-0030 result grid: long / multi-line cell values are truncated with
+# an ellipsis and an expand button that opens the full text in a popup.
+cell-expand-hint = Show full value
+cell-full-text-title = Cell value
+cell-copy = Copy
+
 # DbError category prefixes. The error *body* is the server-returned
 # English string (ADR-0009 / ADR-0015); only the prefix is translated.
 error-prefix-connection = Connection error
