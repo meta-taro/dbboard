@@ -12,6 +12,10 @@ history-empty = (keine letzten Abfragen)
 result-heading = Ergebnis
 result-empty = (Abfrage ausführen)
 result-affected = OK ({ $rows } Zeilen betroffen)
+result-copy-all = Kopieren
+result-copy-all-hint = Das gesamte Ergebnis als TSV in die Zwischenablage kopieren (in eine Tabelle einfügbar)
+result-export-csv = CSV speichern…
+result-export-error = Die CSV-Datei konnte nicht gespeichert werden
 
 error-prefix-connection = Verbindungsfehler
 error-prefix-query = Abfragefehler
@@ -41,6 +45,7 @@ connections-replace-token = Token ersetzen
 connections-replace-url = URL ersetzen
 connections-connect-button = Verbinden
 connections-active-marker = (aktiv)
+connections-switch-error = Verbindung fehlgeschlagen
 
 language-menu = Sprache
 

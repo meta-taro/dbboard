@@ -20,6 +20,10 @@ history-empty = (no recent queries)
 result-heading = Result
 result-empty = (run a query)
 result-affected = OK ({ $rows } rows affected)
+result-copy-all = Copy
+result-copy-all-hint = Copy the whole result to the clipboard as TSV (paste into a spreadsheet)
+result-export-csv = Save CSV…
+result-export-error = Could not save the CSV file
 
 # ADR-0031 structure tab: clicking a sidebar table describes it and shows
 # its columns here, next to the query result.
@@ -77,6 +81,7 @@ connections-replace-url = Replace URL
 # and its Connect button is disabled.
 connections-connect-button = Connect
 connections-active-marker = (active)
+connections-switch-error = Could not connect
 
 # ADR-0022: runtime locale switcher. The menu-bar label itself is
 # translated so a user who landed in the wrong locale still finds the

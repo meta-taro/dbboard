@@ -319,7 +319,19 @@ impl ConnectionsView {
     /// server (ADR-0020). The active row is marked and its Connect
     /// button disabled so the user does not re-trigger a swap to a
     /// connection they are already on.
-    pub fn ui(&mut self, ctx: &egui::Context, admin: &mut ConnectionAdmin, active_id: &str) {
+    /// `switch_error` is the display-ready message for the last failed
+    /// in-process connection switch (ADR-0020), or `None` when the last
+    /// switch succeeded. Rendered inline in List mode next to the Connect
+    /// buttons so a failed "Connect" click is visible rather than silently
+    /// swallowed — the switcher runs off-thread and its `SwitchFailed`
+    /// reply otherwise has no on-screen home.
+    pub fn ui(
+        &mut self,
+        ctx: &egui::Context,
+        admin: &mut ConnectionAdmin,
+        active_id: &str,
+        switch_error: Option<&str>,
+    ) {
         if !self.is_open {
             return;
         }
@@ -329,12 +341,18 @@ impl ConnectionsView {
             .resizable(true)
             .default_width(420.0)
             .show(ctx, |ui| {
-                self.render(ui, admin, active_id);
+                self.render(ui, admin, active_id, switch_error);
             });
         self.is_open = is_open;
     }
 
-    fn render(&mut self, ui: &mut egui::Ui, admin: &mut ConnectionAdmin, active_id: &str) {
+    fn render(
+        &mut self,
+        ui: &mut egui::Ui,
+        admin: &mut ConnectionAdmin,
+        active_id: &str,
+        switch_error: Option<&str>,
+    ) {
         // The restart hint is always visible at the top so the user
         // can never mistake an Add for an in-process switch (ADR-0016).
         ui.label(t!("connections-restart-hint"));
@@ -348,6 +366,7 @@ impl ConnectionsView {
                     &mut self.mode,
                     &mut self.pending_connect,
                     active_id,
+                    switch_error,
                 );
             }
             Mode::Add(form) => {
@@ -394,7 +413,12 @@ impl ConnectionsView {
         mode: &mut Mode,
         pending_connect: &mut Option<String>,
         active_id: &str,
+        switch_error: Option<&str>,
     ) {
+        // A failed Connect leaves the previous adapter live and lands a
+        // SwitchFailed reply off-thread; surface it here (red, above the
+        // list) so the click is never silently swallowed (ADR-0020).
+        render_error(ui, switch_error);
         if ui.button(t!("connections-add-button")).clicked() {
             *mode = Mode::Add(AddFormState::default());
             return;

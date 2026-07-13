@@ -17,6 +17,7 @@ mod ai;
 mod ai_settings;
 mod client;
 mod connections;
+mod export;
 mod history;
 mod worker;
 
@@ -826,7 +827,13 @@ impl DbboardApp {
     /// [`worker::ConnectionSwitcher`] the binary injected at startup;
     /// the UI just signals intent here. A `ConnectionSwitched` /
     /// `SwitchFailed` reply lands on the next `drain_replies` pass.
+    ///
+    /// Clears any prior [`Self::last_switch_error`] up front: a new
+    /// attempt supersedes the old failure, and the Connections window's
+    /// auto-close poll would otherwise read the stale error as an
+    /// immediate failure of the in-flight switch.
     pub fn switch_connection(&mut self, id: String) {
+        self.last_switch_error = None;
         let _ = self.cmd_tx.send(Command::SwitchConnection { id });
     }
 
@@ -847,6 +854,20 @@ impl DbboardApp {
         self.last_switch_error
             .as_ref()
             .map(|(id, err)| (id.as_str(), err))
+    }
+
+    /// Localized, display-ready message for the last connection-switch
+    /// failure, or `None` when the last switch succeeded / none was
+    /// attempted. Threaded into the Connections window so a failed
+    /// "Connect" click is visible instead of silently swallowed — before
+    /// this was wired the only signal a switch failed was that nothing
+    /// happened (ADR-0020). Matches the `ai.rs` error-prefix house style:
+    /// a localized prefix followed by the target id and the wire error.
+    #[must_use]
+    pub fn switch_error_message(&self) -> Option<String> {
+        self.last_switch_error
+            .as_ref()
+            .map(|(id, err)| format!("{}: {id}: {err}", t!("connections-switch-error")))
     }
 
     /// Read-only view of the recently-run SQL statements (ADR-0014 /
@@ -1253,12 +1274,19 @@ impl DbboardApp {
                     ui.label(t!("tables-empty"));
                 }
                 Ok(tables) => {
-                    for table in tables {
-                        let selected = active.as_ref() == Some(table);
-                        if ui.selectable_label(selected, &table.name).clicked() {
-                            clicked = Some(table.clone());
+                    // Justified top-down layout stretches each row to the
+                    // panel's full width so the whole row is the click
+                    // target, not just the text glyphs. A short table name
+                    // was a tiny hit area before; now the empty space to
+                    // its right selects it too. Text stays left-aligned.
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                        for table in tables {
+                            let selected = active.as_ref() == Some(table);
+                            if ui.selectable_label(selected, &table.name).clicked() {
+                                clicked = Some(table.clone());
+                            }
                         }
-                    }
+                    });
                 }
                 Err(e) => {
                     ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
@@ -1518,6 +1546,66 @@ fn cell_preview(text: &str) -> String {
     format!("{head}…")
 }
 
+/// Copy / save controls above the result grid (ADR-0035 slice 1).
+/// "Copy" puts the whole result on the clipboard as TSV; "Save CSV"
+/// opens a native "Save As" dialog and writes RFC 4180 CSV to the chosen
+/// path. A failed write surfaces through a native error dialog — kept
+/// out of the egui frame so this stays a stateless free function like
+/// its `render_result` caller.
+fn render_export_toolbar(ui: &mut egui::Ui, result: &QueryResult) {
+    ui.horizontal(|ui| {
+        if ui
+            .button(t!("result-copy-all"))
+            .on_hover_text(t!("result-copy-all-hint"))
+            .clicked()
+        {
+            ui.ctx()
+                .copy_text(export::to_tsv(&result.columns, &result.rows));
+        }
+        if ui.button(t!("result-export-csv")).clicked() {
+            save_csv_via_dialog(&result.columns, &result.rows);
+        }
+    });
+}
+
+/// Blocking "Save As" flow for the CSV export (ADR-0035). Returns early
+/// if the user cancels the dialog. A write failure is reported with a
+/// native message box rather than swallowed, so a full disk or a
+/// read-only target is not silently lost. `rfd`'s dialogs are native and
+/// synchronous; the brief frame stall while the OS dialog is open is the
+/// expected desktop behaviour.
+///
+/// The dialog opens in the user's Downloads folder with an
+/// Explorer/browser-style non-colliding default name (`dbboard-result
+/// (2).csv`, …), so repeated exports do not pre-fill a name that would
+/// overwrite the previous file.
+fn save_csv_via_dialog(columns: &[dbboard_core::Column], rows: &[dbboard_core::Row]) {
+    let download_dir = directories::UserDirs::new()
+        .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf));
+    let file_name = match &download_dir {
+        Some(dir) => {
+            export::next_available_name("dbboard-result", "csv", |name| dir.join(name).exists())
+        }
+        None => "dbboard-result.csv".to_string(),
+    };
+    let mut dialog = rfd::FileDialog::new()
+        .add_filter("CSV", &["csv"])
+        .set_file_name(file_name);
+    if let Some(dir) = download_dir {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(path) = dialog.save_file() else {
+        return;
+    };
+    if let Err(e) = std::fs::write(&path, export::to_csv_with_bom(columns, rows)) {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title(t!("result-export-error"))
+            .set_description(e.to_string())
+            .show();
+    }
+}
+
 fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
     use egui_extras::{Column, TableBuilder};
 
@@ -1525,6 +1613,12 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
         ui.label(t_args!("result-affected", rows = result.rows_affected));
         return;
     }
+
+    // Export toolbar (ADR-0035 slice 1): copy the whole grid as TSV
+    // (pastes into a spreadsheet with columns intact) or save it as a
+    // `.csv` via the OS "Save As" dialog. Row-subset export lands in
+    // slice 2 once row selection exists.
+    render_export_toolbar(ui, result);
 
     // Row height sized to one line of body text plus a little breathing
     // room; the virtualized body relies on a uniform height.
@@ -2201,6 +2295,67 @@ mod tests {
             app.last_switch_error().is_none(),
             "successful switch clears the prior failure"
         );
+    }
+
+    #[test]
+    fn dispatching_a_new_switch_clears_a_prior_switch_failure() {
+        // Guards the Connections window auto-close poll: a fresh Connect
+        // click must wipe the previous failure so the in-flight switch
+        // is not misread as an immediate failure before its reply lands.
+        let (mut app, cmd_rx, reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        reply_tx
+            .send(Reply::SwitchFailed {
+                id: "prod-pg".into(),
+                error: DbError::Connection("first try".into()),
+            })
+            .unwrap();
+        app.drain_replies();
+        assert!(app.last_switch_error().is_some());
+
+        app.switch_connection("store-cabaret".into());
+        assert!(
+            app.last_switch_error().is_none(),
+            "dispatching a new switch clears the stale failure up front"
+        );
+    }
+
+    #[test]
+    fn switch_error_message_surfaces_id_and_wire_error_for_the_ui() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        // No attempt yet: nothing to render in the Connections window.
+        assert!(app.switch_error_message().is_none());
+
+        reply_tx
+            .send(Reply::SwitchFailed {
+                id: "store-cabaret".into(),
+                error: DbError::Connection("host unreachable".into()),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        // The message the Connections window renders must name the target
+        // the user clicked and carry the underlying wire error so a silent
+        // failure becomes a diagnosable one. The localized prefix is not
+        // asserted (locale-dependent); the id + error always appear.
+        let msg = app
+            .switch_error_message()
+            .expect("failed switch produces a display message");
+        assert!(msg.contains("store-cabaret"), "message names target: {msg}");
+        assert!(
+            msg.contains("host unreachable"),
+            "message carries the wire error: {msg}"
+        );
+
+        // Cleared once a later switch succeeds, so a stale error never
+        // lingers next to the now-active connection.
+        reply_tx
+            .send(Reply::ConnectionSwitched {
+                id: "store-cabaret".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+        assert!(app.switch_error_message().is_none());
     }
 
     // --- ADR-0023 optional AI provider injection ---

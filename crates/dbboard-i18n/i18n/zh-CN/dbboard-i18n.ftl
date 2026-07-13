@@ -12,6 +12,10 @@ history-empty = (无最近查询)
 result-heading = 结果
 result-empty = (请运行查询)
 result-affected = OK (受影响行数: { $rows })
+result-copy-all = 复制
+result-copy-all-hint = 将整个结果以 TSV 复制到剪贴板（可粘贴到电子表格）
+result-export-csv = 保存 CSV…
+result-export-error = 无法保存 CSV 文件
 
 error-prefix-connection = 连接错误
 error-prefix-query = 查询错误
@@ -41,6 +45,7 @@ connections-replace-token = 替换令牌
 connections-replace-url = 替换 URL
 connections-connect-button = 连接
 connections-active-marker = （当前）
+connections-switch-error = 无法连接
 
 language-menu = 语言
 

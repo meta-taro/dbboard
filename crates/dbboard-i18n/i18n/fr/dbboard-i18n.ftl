@@ -12,6 +12,10 @@ history-empty = (aucune requête récente)
 result-heading = Résultat
 result-empty = (exécutez une requête)
 result-affected = OK ({ $rows } lignes affectées)
+result-copy-all = Copier
+result-copy-all-hint = Copier tout le résultat dans le presse-papiers au format TSV (collez-le dans un tableur)
+result-export-csv = Enregistrer CSV…
+result-export-error = Impossible d'enregistrer le fichier CSV
 
 error-prefix-connection = Erreur de connexion
 error-prefix-query = Erreur de requête
@@ -41,6 +45,7 @@ connections-replace-token = Remplacer le jeton
 connections-replace-url = Remplacer l'URL
 connections-connect-button = Connecter
 connections-active-marker = (active)
+connections-switch-error = Échec de la connexion
 
 language-menu = Langue
 
