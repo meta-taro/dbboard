@@ -50,7 +50,7 @@ use dbboard_config::{
 use dbboard_i18n::t;
 use dbboard_server::{
     backend_config_for_entry, backend_config_from_env_and_store, build_adapter,
-    resolved_connection_label, serve, swap_backend, AppState, ServerError,
+    resolved_connection_label, serve, swap_backend, AppState, BackendConfig, ServerError,
 };
 use dbboard_ui::{
     AiProviderSlot, AiProviderSwitcher, AiSettingsView, ConnectionSwitcher, ConnectionsView,
@@ -255,6 +255,14 @@ struct DesktopApp {
     /// [`DesktopAiSwitcher`] so a swap performed by either side is
     /// visible to the other on the next frame.
     ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>,
+    /// Id of a "Connect" click that has been dispatched but whose
+    /// `ConnectionSwitched` / `SwitchFailed` reply has not yet landed
+    /// (ADR-0020). Drives the Connections window auto-close: the window
+    /// stays open while this is `Some` and closes the frame the switch
+    /// succeeds. Users read a lingering window as "still connecting" and
+    /// wait, so closing it is the clear "done" signal; a failure keeps
+    /// it open so the error stays visible.
+    pending_switch: Option<String>,
 }
 
 impl DesktopApp {
@@ -269,7 +277,44 @@ impl DesktopApp {
             admin,
             ai_settings: AiSettingsView::new(),
             ai_admin,
+            pending_switch: None,
         }
+    }
+}
+
+/// Outcome of polling a dispatched-but-unresolved connection switch
+/// (ADR-0020) so the Connections window can auto-close on success.
+/// A free function, not a method, so it is unit-testable without an
+/// egui context or a live worker.
+#[derive(Debug, PartialEq, Eq)]
+enum PendingSwitchPoll {
+    /// Reply not in yet — keep the window open and keep polling.
+    Waiting,
+    /// The active connection now matches the request — close the window.
+    Succeeded,
+    /// The switch failed — keep the window open so the error is visible.
+    Failed,
+}
+
+/// Decide what to do with a pending "Connect" click given the current
+/// active-connection id and the last switch-error message.
+///
+/// Success is authoritative: the active id flipping to the requested one
+/// means the worker rebuilt and swapped the adapter. A non-empty error is
+/// only trusted once success has been ruled out, and [`switch_connection`]
+/// clears the prior error at dispatch time so a stale failure can't be
+/// read as this switch failing.
+fn poll_pending_switch(
+    pending: &str,
+    active_id: &str,
+    switch_error: Option<&str>,
+) -> PendingSwitchPoll {
+    if active_id == pending {
+        PendingSwitchPoll::Succeeded
+    } else if switch_error.is_some() {
+        PendingSwitchPoll::Failed
+    } else {
+        PendingSwitchPoll::Waiting
     }
 }
 
@@ -304,8 +349,31 @@ impl eframe::App for DesktopApp {
             // (ADR-0020): a panicked writer leaves the inner state valid,
             // so unwrap the poison and keep going rather than aborting.
             let mut guard = admin.lock().unwrap_or_else(PoisonError::into_inner);
-            self.connections
-                .ui(ui.ctx(), &mut guard, self.inner.active_connection_id());
+            // Owned first: switch_error_message() borrows self.inner, but
+            // the ui() call below needs a &mut borrow of self.connections,
+            // so materialize the message before handing it over.
+            let switch_error = self.inner.switch_error_message();
+            // Auto-close the Connections window once a dispatched Connect
+            // click resolves (ADR-0020). Polled before the window renders
+            // so a successful switch closes it this frame instead of
+            // flashing it open once more.
+            if let Some(pending) = self.pending_switch.take() {
+                match poll_pending_switch(
+                    &pending,
+                    self.inner.active_connection_id(),
+                    switch_error.as_deref(),
+                ) {
+                    PendingSwitchPoll::Succeeded => self.connections.close(),
+                    PendingSwitchPoll::Failed => {}
+                    PendingSwitchPoll::Waiting => self.pending_switch = Some(pending),
+                }
+            }
+            self.connections.ui(
+                ui.ctx(),
+                &mut guard,
+                self.inner.active_connection_id(),
+                switch_error.as_deref(),
+            );
         }
         // ADR-0025 slice (b): render the AI Settings window and push the
         // currently-active provider's display name down to the panel.
@@ -334,6 +402,9 @@ impl eframe::App for DesktopApp {
         // inner UI renders so the active-id marker on the next frame
         // already reflects the request (if it succeeds).
         if let Some(id) = self.connections.take_pending_connect() {
+            // Remember the target so the next frames can poll for the
+            // switch result and auto-close the window on success.
+            self.pending_switch = Some(id.clone());
             self.inner.switch_connection(id);
         }
         // ADR-0025 slice (b): drain a "Use" click from the Settings
@@ -378,15 +449,51 @@ impl ConnectionSwitcher for DesktopSwitcher {
             backend_config_for_entry(&entry, &*self.secrets)
                 .map_err(|e| DbError::Connection(e.to_string()))?
         };
-        let adapter = self
-            .rt
-            .block_on(build_adapter(config))
-            .map_err(|e| match e {
-                ServerError::Backend(db) => db,
-                other => DbError::Connection(other.to_string()),
-            })?;
+        let adapter = build_adapter_on(&self.rt, config)?;
         swap_backend(&self.state, adapter);
         Ok(())
+    }
+}
+
+/// Build an adapter on the server runtime from a thread that is *itself*
+/// already inside a Tokio runtime.
+///
+/// [`DesktopSwitcher::switch`] runs on the worker's `current_thread`
+/// runtime: it is invoked from `run_command_loop`, which the worker
+/// drives with its own `block_on`. Calling `self.rt.block_on(..)` from
+/// there panics with "Cannot block the current thread from within a
+/// runtime" and silently kills the command-loop thread, after which
+/// every later `Connect` click is a no-op — the "unresponsive Connect"
+/// bug. It only surfaced once a connection's secret actually resolved,
+/// because before that `backend_config_for_entry` returned `Err` *ahead*
+/// of the `block_on`, so the switch failed cleanly instead of reaching
+/// the panic.
+///
+/// The fix keeps the switch inline/blocking but crosses runtimes safely:
+/// `spawn` the build onto the multi-thread server runtime (which owns
+/// worker threads to drive it) and park this thread on a plain channel
+/// until it completes. Parking is not a runtime operation, so it never
+/// panics; the separate runtime makes progress independently, so there
+/// is no deadlock.
+fn build_adapter_on(
+    rt: &tokio::runtime::Handle,
+    config: BackendConfig,
+) -> Result<Arc<dyn DatabaseAdapter>, DbError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    rt.spawn(async move {
+        // The receiver is gone only if the worker is tearing down; then
+        // dropping the built adapter here is the correct outcome.
+        let _ = tx.send(build_adapter(config).await);
+    });
+    match rx.recv() {
+        Ok(Ok(adapter)) => Ok(adapter),
+        Ok(Err(ServerError::Backend(db))) => Err(db),
+        Ok(Err(other)) => Err(DbError::Connection(other.to_string())),
+        // The runtime dropped the task before it answered (e.g. the app
+        // is shutting down). Surface a connection error rather than hang.
+        Err(_) => Err(DbError::Connection(
+            "adapter build task was cancelled".to_string(),
+        )),
     }
 }
 
@@ -1040,6 +1147,84 @@ mod tests {
         assert!(
             admin.lock().unwrap().active_id().is_none(),
             "active_id must stay None when the keyring lookup fails"
+        );
+    }
+
+    #[test]
+    fn build_adapter_on_does_not_panic_inside_the_worker_runtime() {
+        use super::{build_adapter_on, BackendConfig};
+
+        // Reproduce the exact thread topology that broke Connect: a
+        // multi-thread *server* runtime (as `main` builds via
+        // `Runtime::new`) whose `Handle` lives in `DesktopSwitcher`, and
+        // the worker's `current_thread` runtime that drives the command
+        // loop. `switch` runs inside the latter. Before the fix it called
+        // `Handle::block_on` there, which panics with "Cannot block the
+        // current thread from within a runtime" and killed the command
+        // loop — after which every Connect click was a silent no-op.
+        // `build_adapter_on` must complete without panicking from this
+        // context; `:memory:` Turso is the standard offline test backend.
+        let server = tokio::runtime::Runtime::new().expect("server runtime");
+        let handle = server.handle().clone();
+        let worker = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("worker runtime");
+
+        let result =
+            worker.block_on(async { build_adapter_on(&handle, BackendConfig::turso(":memory:")) });
+
+        assert!(
+            result.is_ok(),
+            "switch must build the adapter without panicking inside the worker runtime; got err: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn poll_pending_switch_waits_until_a_reply_lands() {
+        use super::{poll_pending_switch, PendingSwitchPoll};
+        // Just dispatched: active id still the old one, error cleared at
+        // dispatch. The window must stay open (no premature close/fail).
+        assert_eq!(
+            poll_pending_switch("store-cabaret", "", None),
+            PendingSwitchPoll::Waiting
+        );
+        assert_eq!(
+            poll_pending_switch("store-cabaret", "prod-pg", None),
+            PendingSwitchPoll::Waiting
+        );
+    }
+
+    #[test]
+    fn poll_pending_switch_closes_on_success() {
+        use super::{poll_pending_switch, PendingSwitchPoll};
+        // Active id flipped to the requested target: adapter swapped.
+        assert_eq!(
+            poll_pending_switch("store-cabaret", "store-cabaret", None),
+            PendingSwitchPoll::Succeeded
+        );
+    }
+
+    #[test]
+    fn poll_pending_switch_keeps_window_open_on_failure() {
+        use super::{poll_pending_switch, PendingSwitchPoll};
+        // Error present and active id unchanged: the switch failed, so the
+        // window stays open to show it.
+        assert_eq!(
+            poll_pending_switch("store-cabaret", "prod-pg", Some("could not connect")),
+            PendingSwitchPoll::Failed
+        );
+    }
+
+    #[test]
+    fn poll_pending_switch_prefers_success_over_a_lingering_error() {
+        use super::{poll_pending_switch, PendingSwitchPoll};
+        // Belt-and-braces: even if an error string is somehow still set,
+        // an active id matching the request means the switch landed.
+        assert_eq!(
+            poll_pending_switch("store-cabaret", "store-cabaret", Some("stale")),
+            PendingSwitchPoll::Succeeded
         );
     }
 }

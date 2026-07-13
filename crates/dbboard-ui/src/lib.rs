@@ -826,7 +826,13 @@ impl DbboardApp {
     /// [`worker::ConnectionSwitcher`] the binary injected at startup;
     /// the UI just signals intent here. A `ConnectionSwitched` /
     /// `SwitchFailed` reply lands on the next `drain_replies` pass.
+    ///
+    /// Clears any prior [`Self::last_switch_error`] up front: a new
+    /// attempt supersedes the old failure, and the Connections window's
+    /// auto-close poll would otherwise read the stale error as an
+    /// immediate failure of the in-flight switch.
     pub fn switch_connection(&mut self, id: String) {
+        self.last_switch_error = None;
         let _ = self.cmd_tx.send(Command::SwitchConnection { id });
     }
 
@@ -847,6 +853,20 @@ impl DbboardApp {
         self.last_switch_error
             .as_ref()
             .map(|(id, err)| (id.as_str(), err))
+    }
+
+    /// Localized, display-ready message for the last connection-switch
+    /// failure, or `None` when the last switch succeeded / none was
+    /// attempted. Threaded into the Connections window so a failed
+    /// "Connect" click is visible instead of silently swallowed — before
+    /// this was wired the only signal a switch failed was that nothing
+    /// happened (ADR-0020). Matches the `ai.rs` error-prefix house style:
+    /// a localized prefix followed by the target id and the wire error.
+    #[must_use]
+    pub fn switch_error_message(&self) -> Option<String> {
+        self.last_switch_error
+            .as_ref()
+            .map(|(id, err)| format!("{}: {id}: {err}", t!("connections-switch-error")))
     }
 
     /// Read-only view of the recently-run SQL statements (ADR-0014 /
@@ -1253,12 +1273,19 @@ impl DbboardApp {
                     ui.label(t!("tables-empty"));
                 }
                 Ok(tables) => {
-                    for table in tables {
-                        let selected = active.as_ref() == Some(table);
-                        if ui.selectable_label(selected, &table.name).clicked() {
-                            clicked = Some(table.clone());
+                    // Justified top-down layout stretches each row to the
+                    // panel's full width so the whole row is the click
+                    // target, not just the text glyphs. A short table name
+                    // was a tiny hit area before; now the empty space to
+                    // its right selects it too. Text stays left-aligned.
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                        for table in tables {
+                            let selected = active.as_ref() == Some(table);
+                            if ui.selectable_label(selected, &table.name).clicked() {
+                                clicked = Some(table.clone());
+                            }
                         }
-                    }
+                    });
                 }
                 Err(e) => {
                     ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
@@ -2201,6 +2228,67 @@ mod tests {
             app.last_switch_error().is_none(),
             "successful switch clears the prior failure"
         );
+    }
+
+    #[test]
+    fn dispatching_a_new_switch_clears_a_prior_switch_failure() {
+        // Guards the Connections window auto-close poll: a fresh Connect
+        // click must wipe the previous failure so the in-flight switch
+        // is not misread as an immediate failure before its reply lands.
+        let (mut app, cmd_rx, reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        reply_tx
+            .send(Reply::SwitchFailed {
+                id: "prod-pg".into(),
+                error: DbError::Connection("first try".into()),
+            })
+            .unwrap();
+        app.drain_replies();
+        assert!(app.last_switch_error().is_some());
+
+        app.switch_connection("store-cabaret".into());
+        assert!(
+            app.last_switch_error().is_none(),
+            "dispatching a new switch clears the stale failure up front"
+        );
+    }
+
+    #[test]
+    fn switch_error_message_surfaces_id_and_wire_error_for_the_ui() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        // No attempt yet: nothing to render in the Connections window.
+        assert!(app.switch_error_message().is_none());
+
+        reply_tx
+            .send(Reply::SwitchFailed {
+                id: "store-cabaret".into(),
+                error: DbError::Connection("host unreachable".into()),
+            })
+            .unwrap();
+        app.drain_replies();
+
+        // The message the Connections window renders must name the target
+        // the user clicked and carry the underlying wire error so a silent
+        // failure becomes a diagnosable one. The localized prefix is not
+        // asserted (locale-dependent); the id + error always appear.
+        let msg = app
+            .switch_error_message()
+            .expect("failed switch produces a display message");
+        assert!(msg.contains("store-cabaret"), "message names target: {msg}");
+        assert!(
+            msg.contains("host unreachable"),
+            "message carries the wire error: {msg}"
+        );
+
+        // Cleared once a later switch succeeds, so a stale error never
+        // lingers next to the now-active connection.
+        reply_tx
+            .send(Reply::ConnectionSwitched {
+                id: "store-cabaret".into(),
+            })
+            .unwrap();
+        app.drain_replies();
+        assert!(app.switch_error_message().is_none());
     }
 
     // --- ADR-0023 optional AI provider injection ---
