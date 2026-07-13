@@ -12,6 +12,10 @@ history-empty = (無近期查詢)
 result-heading = 結果
 result-empty = (請執行查詢)
 result-affected = OK (影響列數：{ $rows })
+result-copy-all = 複製
+result-copy-all-hint = 將整個結果以 TSV 複製到剪貼簿（可貼到試算表）
+result-export-csv = 儲存 CSV…
+result-export-error = 無法儲存 CSV 檔案
 
 error-prefix-connection = 連線錯誤
 error-prefix-query = 查詢錯誤

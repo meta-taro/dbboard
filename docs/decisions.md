@@ -4553,3 +4553,72 @@ native-roots, where webpki roots gave `error sending request`.
 
 None. Two dependency feature-flag changes plus one internal helper
 (`build_adapter_on`) on the binary. No public API surface change.
+
+## ADR-0035 — Export a result set to CSV / TSV (copy to clipboard, save via native dialog)
+
+**Status:** Accepted 2026-07-13
+
+### Context
+
+A query result is often something the operator wants to share or hand
+off — the same need HeidiSQL serves with its grid export. Until now the
+only way out of dbboard's result grid was a mouse drag-select of the
+rendered text, which is fragile over the virtualized `egui_extras`
+table (only the on-screen rows exist as widgets) and loses column
+structure. Users asked for first-class "copy" and "download" of results.
+
+### Decision
+
+Add a result-export toolbar above the grid (`render_export_toolbar`),
+delivered in two slices:
+
+- **Slice 1 (this ADR):** whole-result export.
+  - **Copy** → the entire result on the clipboard as **TSV**
+    (`ui.ctx().copy_text`), which pastes into Excel / Google Sheets with
+    columns intact.
+  - **Save CSV…** → a native OS "Save As" dialog (`rfd`) that writes
+    **RFC 4180 CSV** to the chosen path.
+- **Slice 2 (follow-up):** row selection (click / Ctrl-click /
+  Shift-click) plus "copy selected" / "save selected", reusing the same
+  serializer over a row subset.
+
+The serialization lives in a pure, I/O-free `export` module
+(`to_csv` / `to_tsv` over `&[Column]` + `&[Row]`) so the wire format is
+unit-tested without a grid, clipboard, or file dialog. Both formats share
+RFC 4180 quoting (quote only when a field carries the delimiter, a quote,
+or a line break; double embedded quotes). `NULL` serializes as an empty
+field — what a spreadsheet expects — rather than the literal "NULL" the
+grid shows. Records are separated, not terminated (no trailing newline),
+so pasting TSV does not leave a dangling empty row.
+
+### Consequences
+
+- New dependency **`rfd`** (Rusty File Dialog, MIT/Apache-2.0) for the
+  native save + error dialogs. Pure-Rust bindings over the OS pickers
+  (Win32 `IFileDialog` / macOS `NSSavePanel` / Linux GTK or xdg-portal).
+  On Linux the default backend needs GTK3 dev libraries at build time;
+  the maintainer builds on Windows, where no extra system libs are
+  required. `rfd`'s dialogs are synchronous — the brief frame stall while
+  the OS dialog is open is normal desktop behaviour.
+- A failed file write is reported via a native `rfd::MessageDialog`
+  rather than swallowed, keeping `render_result` a stateless free
+  function (no new app-state field for a transient error).
+- The saved `.csv` is written **UTF-8 with a BOM** (`to_csv_with_bom`).
+  Excel on Windows assumes the system ANSI code page (Shift-JIS on
+  Japanese Windows) for a BOM-less CSV and shows UTF-8 text as mojibake;
+  the BOM makes it auto-detect UTF-8. The clipboard TSV stays BOM-less
+  (the clipboard carries Unicode natively). Known limit: pasting TSV into
+  Excel does not parse RFC 4180 quotes, so a cell with an embedded
+  newline spills across rows on paste — opening the CSV file (which is
+  quote-parsed) keeps such cells intact.
+- Blob cells are exported using their `<blob: N bytes>` display
+  placeholder, not their bytes — round-tripping binary through CSV is out
+  of scope for slice 1.
+- Desktop-only presentation feature; no wire-contract change, so the
+  dbboard-web sibling is unaffected and no cross-repo brief is needed.
+
+### SemVer impact (ADR-0011)
+
+None. Additive UI feature plus one new internal `export` module and one
+new dependency. No change to any published API surface (the workspace is
+unpublished; `dbboard-core`'s contract is untouched).

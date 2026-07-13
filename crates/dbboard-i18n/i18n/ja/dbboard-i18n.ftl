@@ -12,6 +12,10 @@ history-empty = （実行履歴なし）
 result-heading = 結果
 result-empty = （クエリを実行してください）
 result-affected = OK ({ $rows } 行に影響)
+result-copy-all = コピー
+result-copy-all-hint = 結果全体を TSV でクリップボードにコピー（スプレッドシートに貼り付け可）
+result-export-csv = CSV 保存…
+result-export-error = CSV ファイルを保存できませんでした
 
 error-prefix-connection = 接続エラー
 error-prefix-query = クエリエラー

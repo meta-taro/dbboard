@@ -100,6 +100,13 @@ directories = "5"
 # Maps to Windows Credential Manager / macOS Keychain / Linux Secret
 # Service uniformly; no system OpenSSL dependency.
 keyring = "3"
+# Native "Save As" / message dialogs for exporting a result set to CSV
+# (ADR-0035). Wraps the OS file picker (Win32 IFileDialog on Windows,
+# NSSavePanel on macOS, GTK/xdg-portal on Linux) so the export UX matches
+# a normal desktop app. Pure-Rust bindings, MIT/Apache-2.0. On Linux the
+# default backend needs GTK3 dev libraries at build time; the maintainer
+# builds on Windows where no extra system libs are required.
+rfd = "0.17"
 # tempfile-based integration tests for dbboard-config's filesystem layer.
 tempfile = "3"
 # Pure-Rust mock HTTP server for dbboard-anthropic's round-trip tests.

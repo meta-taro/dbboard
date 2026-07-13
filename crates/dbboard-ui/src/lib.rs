@@ -17,6 +17,7 @@ mod ai;
 mod ai_settings;
 mod client;
 mod connections;
+mod export;
 mod history;
 mod worker;
 
@@ -1545,6 +1546,66 @@ fn cell_preview(text: &str) -> String {
     format!("{head}…")
 }
 
+/// Copy / save controls above the result grid (ADR-0035 slice 1).
+/// "Copy" puts the whole result on the clipboard as TSV; "Save CSV"
+/// opens a native "Save As" dialog and writes RFC 4180 CSV to the chosen
+/// path. A failed write surfaces through a native error dialog — kept
+/// out of the egui frame so this stays a stateless free function like
+/// its `render_result` caller.
+fn render_export_toolbar(ui: &mut egui::Ui, result: &QueryResult) {
+    ui.horizontal(|ui| {
+        if ui
+            .button(t!("result-copy-all"))
+            .on_hover_text(t!("result-copy-all-hint"))
+            .clicked()
+        {
+            ui.ctx()
+                .copy_text(export::to_tsv(&result.columns, &result.rows));
+        }
+        if ui.button(t!("result-export-csv")).clicked() {
+            save_csv_via_dialog(&result.columns, &result.rows);
+        }
+    });
+}
+
+/// Blocking "Save As" flow for the CSV export (ADR-0035). Returns early
+/// if the user cancels the dialog. A write failure is reported with a
+/// native message box rather than swallowed, so a full disk or a
+/// read-only target is not silently lost. `rfd`'s dialogs are native and
+/// synchronous; the brief frame stall while the OS dialog is open is the
+/// expected desktop behaviour.
+///
+/// The dialog opens in the user's Downloads folder with an
+/// Explorer/browser-style non-colliding default name (`dbboard-result
+/// (2).csv`, …), so repeated exports do not pre-fill a name that would
+/// overwrite the previous file.
+fn save_csv_via_dialog(columns: &[dbboard_core::Column], rows: &[dbboard_core::Row]) {
+    let download_dir = directories::UserDirs::new()
+        .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf));
+    let file_name = match &download_dir {
+        Some(dir) => {
+            export::next_available_name("dbboard-result", "csv", |name| dir.join(name).exists())
+        }
+        None => "dbboard-result.csv".to_string(),
+    };
+    let mut dialog = rfd::FileDialog::new()
+        .add_filter("CSV", &["csv"])
+        .set_file_name(file_name);
+    if let Some(dir) = download_dir {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(path) = dialog.save_file() else {
+        return;
+    };
+    if let Err(e) = std::fs::write(&path, export::to_csv_with_bom(columns, rows)) {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title(t!("result-export-error"))
+            .set_description(e.to_string())
+            .show();
+    }
+}
+
 fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
     use egui_extras::{Column, TableBuilder};
 
@@ -1552,6 +1613,12 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
         ui.label(t_args!("result-affected", rows = result.rows_affected));
         return;
     }
+
+    // Export toolbar (ADR-0035 slice 1): copy the whole grid as TSV
+    // (pastes into a spreadsheet with columns intact) or save it as a
+    // `.csv` via the OS "Save As" dialog. Row-subset export lands in
+    // slice 2 once row selection exists.
+    render_export_toolbar(ui, result);
 
     // Row height sized to one line of body text plus a little breathing
     // room; the virtualized body relies on a uniform height.
