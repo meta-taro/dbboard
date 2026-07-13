@@ -16,6 +16,12 @@ result-copy-all = Copiar
 result-copy-all-hint = Copiar todo o resultado para a área de transferência como TSV (cole em uma planilha)
 result-export-csv = Salvar CSV…
 result-export-error = Não foi possível salvar o arquivo CSV
+result-copy-selected = Copiar seleção
+result-copy-selected-hint = Copiar as linhas selecionadas para a área de transferência como TSV
+result-export-selected-csv = Salvar seleção como CSV…
+result-clear-selection = Limpar seleção
+result-selected-count = { $count } selecionadas
+result-select-row-hint = Clique para selecionar a linha (Ctrl / Shift para várias)
 
 error-prefix-connection = Erro de conexão
 error-prefix-query = Erro de consulta

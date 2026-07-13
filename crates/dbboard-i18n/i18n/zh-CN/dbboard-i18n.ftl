@@ -16,6 +16,12 @@ result-copy-all = 复制
 result-copy-all-hint = 将整个结果以 TSV 复制到剪贴板（可粘贴到电子表格）
 result-export-csv = 保存 CSV…
 result-export-error = 无法保存 CSV 文件
+result-copy-selected = 复制选中行
+result-copy-selected-hint = 将选中的行以 TSV 格式复制到剪贴板
+result-export-selected-csv = 保存选中行为 CSV…
+result-clear-selection = 清除选择
+result-selected-count = 已选 { $count } 行
+result-select-row-hint = 点击选择该行（Ctrl / Shift 多选）
 
 error-prefix-connection = 连接错误
 error-prefix-query = 查询错误
