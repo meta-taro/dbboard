@@ -10,10 +10,31 @@ description = "Local TOML connection store and OS keychain backed secrets for db
 
 [dependencies]
 directories = { workspace = true }
+# keyring 3.x ships NO default credential-store backend: `keyring = "3"`
+# alone silently resolves to the in-memory *mock* store, so every secret
+# write returns Ok but never persists — a fresh `Entry` for the same key
+# reads back "no entry" (ADR-0033). That made every secret-bearing
+# connection unusable: Add succeeded, Connect failed with
+# "no secret stored for reference". The real per-OS store must be opted
+# into explicitly, per target, below. This base entry keeps keyring
+# available (mock fallback) on any target not covered by the three
+# cfg blocks so the crate still compiles there.
 keyring = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+
+# Enable the real OS keychain backend per platform. Kept target-scoped
+# because the Linux secret-service backend pulls a dbus C binding that
+# must not be built on Windows/macOS.
+[target.'cfg(windows)'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["linux-native-sync-persistent", "crypto-rust"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

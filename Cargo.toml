@@ -53,14 +53,27 @@ eframe = { version = "0.34", default-features = false, features = ["default_font
 # sticky header, virtualized rows, and per-column separators — none of
 # which egui::Grid offers. See ADR-0030.
 egui_extras = { version = "0.34", default-features = false }
-# D1 talks to Cloudflare's REST API over HTTPS. rustls avoids a system
-# OpenSSL dependency, keeping the Windows build self-contained.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# D1 (and the Anthropic AI provider) talk to REST APIs over HTTPS.
+# rustls avoids a system OpenSSL dependency, keeping the Windows build
+# self-contained. Roots come from the OS trust store (`*-native-roots`),
+# NOT the webpki-bundled Mozilla set: a Windows desktop routinely sits
+# behind a TLS-inspecting middlebox (AV like Norton, or a corporate
+# proxy) that re-signs every HTTPS connection with a locally-installed
+# CA. webpki roots don't include that CA, so the handshake fails with a
+# bare "error sending request" and every DB connection breaks. The OS
+# store *does* include it (browsers and curl/schannel trust it), so
+# native roots make dbboard behave like a normal desktop client. Still
+# pure-Rust rustls — rustls-native-certs only reads the store, it does
+# not pull in OpenSSL. See ADR-0034.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# CockroachDB / Neon talk the PostgreSQL wire protocol. rustls (ring)
-# keeps TLS pure-Rust, matching reqwest above and avoiding system OpenSSL.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres"] }
+# Neon / Supabase / Aurora DSQL talk the PostgreSQL wire protocol.
+# rustls (ring) keeps TLS pure-Rust, matching reqwest above and avoiding
+# system OpenSSL. `-native-roots` (not the default `-webpki`) so the
+# Postgres-family adapters trust the OS store and survive the same
+# TLS-inspecting middleboxes described on `reqwest` above. See ADR-0034.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres"] }
 # Consumes the `raw_sql(...).fetch_many(...)` result stream. Also drives
 # the dbboard-anthropic SSE stream wrapper (ADR-0026 Decision 4).
 futures-util = "0.3"

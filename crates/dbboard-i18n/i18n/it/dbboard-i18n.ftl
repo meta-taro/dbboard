@@ -41,6 +41,7 @@ connections-replace-token = Sostituisci token
 connections-replace-url = Sostituisci URL
 connections-connect-button = Connetti
 connections-active-marker = (attiva)
+connections-switch-error = Connessione non riuscita
 
 language-menu = Lingua
 
