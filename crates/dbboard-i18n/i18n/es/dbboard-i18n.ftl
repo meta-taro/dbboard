@@ -16,6 +16,12 @@ result-copy-all = Copiar
 result-copy-all-hint = Copiar todo el resultado al portapapeles como TSV (pégalo en una hoja de cálculo)
 result-export-csv = Guardar CSV…
 result-export-error = No se pudo guardar el archivo CSV
+result-copy-selected = Copiar selección
+result-copy-selected-hint = Copiar las filas seleccionadas al portapapeles como TSV
+result-export-selected-csv = Guardar selección como CSV…
+result-clear-selection = Borrar selección
+result-selected-count = { $count } seleccionadas
+result-select-row-hint = Clic para seleccionar la fila (Ctrl / Mayús para varias)
 
 error-prefix-connection = Error de conexión
 error-prefix-query = Error de consulta

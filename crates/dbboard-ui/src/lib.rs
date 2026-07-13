@@ -19,6 +19,7 @@ mod client;
 mod connections;
 mod export;
 mod history;
+mod selection;
 mod worker;
 
 pub use ai::{AiMode, AiPanel, AiResponseView};
@@ -307,6 +308,10 @@ pub struct DbboardApp {
     sql: String,
     tables: DbResult<Vec<TableInfo>>,
     last_result: Option<DbResult<QueryResult>>,
+    /// Which result-grid rows are selected (ADR-0035 slice 2). Reset
+    /// whenever a new result replaces [`Self::last_result`] — the old
+    /// indices no longer point at the same rows.
+    result_selection: selection::ResultSelection,
     history: PersistentHistoryStore,
     /// `Some` between submitting a query and consuming its reply; the
     /// `drain_replies` path uses this to compute `duration_ms`.
@@ -478,6 +483,7 @@ impl DbboardApp {
             sql: String::new(),
             tables: Ok(Vec::new()),
             last_result: None,
+            result_selection: selection::ResultSelection::default(),
             history,
             pending: None,
             pending_ai: None,
@@ -533,6 +539,9 @@ impl DbboardApp {
                         }
                     }
                     self.last_result = Some(r);
+                    // A fresh result invalidates any row selection carried
+                    // over from the previous one (ADR-0035 slice 2).
+                    self.result_selection.clear();
                     self.busy = false;
                 }
                 // ADR-0020: swap completed. Treat the new id as the
@@ -1394,7 +1403,9 @@ impl DbboardApp {
                     None => {
                         ui.label(t!("result-empty"));
                     }
-                    Some(Ok(result)) => render_result(ui, result),
+                    Some(Ok(result)) => {
+                        render_result(ui, result, &mut self.result_selection);
+                    }
                     Some(Err(e)) => {
                         ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
                     }
@@ -1546,13 +1557,18 @@ fn cell_preview(text: &str) -> String {
     format!("{head}…")
 }
 
-/// Copy / save controls above the result grid (ADR-0035 slice 1).
-/// "Copy" puts the whole result on the clipboard as TSV; "Save CSV"
-/// opens a native "Save As" dialog and writes RFC 4180 CSV to the chosen
-/// path. A failed write surfaces through a native error dialog — kept
-/// out of the egui frame so this stays a stateless free function like
-/// its `render_result` caller.
-fn render_export_toolbar(ui: &mut egui::Ui, result: &QueryResult) {
+/// Copy / save controls above the result grid (ADR-0035). The always-on
+/// actions cover the whole result: "Copy" puts it on the clipboard as
+/// TSV, "Save CSV" writes RFC 4180 CSV through a native "Save As" dialog.
+/// Once rows are selected (slice 2) a second group appears with the same
+/// two actions scoped to just the selection, a count, and a clear button.
+/// A failed save surfaces through a native error dialog — kept out of the
+/// egui frame so the export path never blocks a repaint.
+fn render_export_toolbar(
+    ui: &mut egui::Ui,
+    result: &QueryResult,
+    selection: &mut selection::ResultSelection,
+) {
     ui.horizontal(|ui| {
         if ui
             .button(t!("result-copy-all"))
@@ -1565,7 +1581,46 @@ fn render_export_toolbar(ui: &mut egui::Ui, result: &QueryResult) {
         if ui.button(t!("result-export-csv")).clicked() {
             save_csv_via_dialog(&result.columns, &result.rows);
         }
+
+        // Selected-row actions only make sense once something is selected;
+        // hiding them keeps the toolbar quiet on the common whole-result
+        // path (ADR-0035 slice 2).
+        if selection.is_empty() {
+            return;
+        }
+        ui.separator();
+        ui.label(t_args!("result-selected-count", count = selection.len()));
+        if ui
+            .button(t!("result-copy-selected"))
+            .on_hover_text(t!("result-copy-selected-hint"))
+            .clicked()
+        {
+            let subset = selected_rows(result, selection);
+            ui.ctx().copy_text(export::to_tsv(&result.columns, &subset));
+        }
+        if ui.button(t!("result-export-selected-csv")).clicked() {
+            let subset = selected_rows(result, selection);
+            save_csv_via_dialog(&result.columns, &subset);
+        }
+        if ui.button(t!("result-clear-selection")).clicked() {
+            selection.clear();
+        }
     });
+}
+
+/// Materialize the selected rows as an owned slice for export. Cloning is
+/// bounded by the selection size and only happens on a copy/save click
+/// (not per frame); ascending [`selection::ResultSelection::iter`] order
+/// preserves the grid's top-to-bottom order. Indices are bounds-checked
+/// so a selection that somehow outlives its result cannot panic.
+fn selected_rows(
+    result: &QueryResult,
+    selection: &selection::ResultSelection,
+) -> Vec<dbboard_core::Row> {
+    selection
+        .iter()
+        .filter_map(|i| result.rows.get(i).cloned())
+        .collect()
 }
 
 /// Blocking "Save As" flow for the CSV export (ADR-0035). Returns early
@@ -1606,7 +1661,11 @@ fn save_csv_via_dialog(columns: &[dbboard_core::Column], rows: &[dbboard_core::R
     }
 }
 
-fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
+fn render_result(
+    ui: &mut egui::Ui,
+    result: &QueryResult,
+    selection: &mut selection::ResultSelection,
+) {
     use egui_extras::{Column, TableBuilder};
 
     if result.rows.is_empty() {
@@ -1614,11 +1673,9 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
         return;
     }
 
-    // Export toolbar (ADR-0035 slice 1): copy the whole grid as TSV
-    // (pastes into a spreadsheet with columns intact) or save it as a
-    // `.csv` via the OS "Save As" dialog. Row-subset export lands in
-    // slice 2 once row selection exists.
-    render_export_toolbar(ui, result);
+    // Export toolbar (ADR-0035): copy/save the whole grid, plus — once
+    // rows are selected — copy/save just the selection.
+    render_export_toolbar(ui, result, selection);
 
     // Row height sized to one line of body text plus a little breathing
     // room; the virtualized body relies on a uniform height.
@@ -1631,6 +1688,12 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
     // at the window edge with no way to reach them. Wrapping the table in a
     // horizontal ScrollArea lets it keep its full content width and pan to the
     // hidden columns, while the table's own vscroll still virtualizes rows.
+    // A click lands on at most one row per frame; capture it here and
+    // apply it after the table so the selection can't shift mid-iteration
+    // (which would make virtualized rows below the click read a stale
+    // highlight). ADR-0035 slice 2.
+    let mut pending_click: Option<(usize, selection::ClickModifiers)> = None;
+
     egui::ScrollArea::horizontal()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -1639,6 +1702,14 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .auto_shrink([false, false]);
+            // Leading selector gutter (ADR-0035 slice 2): a narrow
+            // row-number column that is the *only* click target for row
+            // selection. Keeping selection off the data cells leaves them
+            // free for future in-cell interaction (edit, text-select for a
+            // partial copy) without fighting the row picker — and it fixes
+            // the sluggish feel of sensing clicks across the whole row,
+            // which competed with the cells' own expand affordance.
+            table = table.column(Column::auto().at_least(40.0).clip(true));
             // One resizable column per result column. Resizable columns draw
             // the faint vertical separators the striping alone could not, and
             // clipping stops a stray wide value from ballooning the column.
@@ -1648,6 +1719,8 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
 
             table
                 .header(row_height, |mut header| {
+                    // Empty gutter header above the row-number column.
+                    header.col(|_ui| {});
                     for col in &result.columns {
                         header.col(|ui| {
                             ui.strong(&col.name);
@@ -1656,7 +1729,39 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
                 })
                 .body(|body| {
                     body.rows(row_height, result.rows.len(), |mut row| {
-                        let values: Vec<String> = result.rows[row.index()]
+                        let index = row.index();
+                        // Highlight the whole row even though only the
+                        // gutter is clickable, so the selection reads
+                        // across all columns.
+                        row.set_selected(selection.is_selected(index));
+                        row.col(|ui| {
+                            ui.with_layout(
+                                egui::Layout::top_down_justified(egui::Align::Center),
+                                |ui| {
+                                    // 1-based row number, like a spreadsheet
+                                    // row header. The justified layout makes
+                                    // the whole gutter cell the click target,
+                                    // not just the digits.
+                                    let response = ui
+                                        .selectable_label(
+                                            selection.is_selected(index),
+                                            (index + 1).to_string(),
+                                        )
+                                        .on_hover_text(t!("result-select-row-hint"));
+                                    if response.clicked() {
+                                        let mods = ui.input(|i| i.modifiers);
+                                        pending_click = Some((
+                                            index,
+                                            selection::ClickModifiers {
+                                                ctrl: mods.command,
+                                                shift: mods.shift,
+                                            },
+                                        ));
+                                    }
+                                },
+                            );
+                        });
+                        let values: Vec<String> = result.rows[index]
                             .values()
                             .iter()
                             .map(ToString::to_string)
@@ -1669,6 +1774,10 @@ fn render_result(ui: &mut egui::Ui, result: &QueryResult) {
                     });
                 });
         });
+
+    if let Some((index, mods)) = pending_click {
+        selection.click(index, mods);
+    }
 
     render_expanded_cell_popup(ui, expand_id);
 }

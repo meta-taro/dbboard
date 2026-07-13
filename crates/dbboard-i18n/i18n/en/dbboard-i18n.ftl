@@ -24,6 +24,12 @@ result-copy-all = Copy
 result-copy-all-hint = Copy the whole result to the clipboard as TSV (paste into a spreadsheet)
 result-export-csv = Save CSV…
 result-export-error = Could not save the CSV file
+result-copy-selected = Copy selected
+result-copy-selected-hint = Copy the selected rows to the clipboard as TSV
+result-export-selected-csv = Save selected as CSV…
+result-clear-selection = Clear selection
+result-selected-count = { $count } selected
+result-select-row-hint = Click to select the row (Ctrl / Shift for multiple)
 
 # ADR-0031 structure tab: clicking a sidebar table describes it and shows
 # its columns here, next to the query result.

@@ -16,6 +16,12 @@ result-copy-all = Kopieren
 result-copy-all-hint = Das gesamte Ergebnis als TSV in die Zwischenablage kopieren (in eine Tabelle einfügbar)
 result-export-csv = CSV speichern…
 result-export-error = Die CSV-Datei konnte nicht gespeichert werden
+result-copy-selected = Auswahl kopieren
+result-copy-selected-hint = Ausgewählte Zeilen als TSV in die Zwischenablage kopieren
+result-export-selected-csv = Auswahl als CSV speichern…
+result-clear-selection = Auswahl aufheben
+result-selected-count = { $count } ausgewählt
+result-select-row-hint = Klicken, um die Zeile auszuwählen (Strg / Umschalt für Mehrfachauswahl)
 
 error-prefix-connection = Verbindungsfehler
 error-prefix-query = Abfragefehler
