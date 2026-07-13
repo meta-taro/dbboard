@@ -4622,3 +4622,45 @@ so pasting TSV does not leave a dangling empty row.
 None. Additive UI feature plus one new internal `export` module and one
 new dependency. No change to any published API surface (the workspace is
 unpublished; `dbboard-core`'s contract is untouched).
+
+### Addendum — Slice 2: row selection (2026-07-13)
+
+Row selection ships as designed, with one refinement learned from
+hands-on use. The first cut sensed clicks across the **whole row**
+(`TableBuilder::sense(Sense::click())`); in practice it felt sluggish and
+unreliable because the row-level sense competed with the cells' own
+interactive widgets (the expand-affordance from ADR-0030), and it would
+also foreclose the cells for future in-cell interaction (edit,
+drag-select for a partial copy).
+
+Decision: put row selection behind a dedicated **leading gutter column**
+(1-based row numbers, like a spreadsheet row header). Only the gutter
+cell is a click target; the data cells stay non-sensing and free for
+later use. The gutter uses a full-width `top_down_justified`
+`selectable_label` so the whole cell — not just the digits — is
+clickable. The whole row still highlights via `TableRow::set_selected`,
+so the selection reads across all columns.
+
+The selection state machine is a pure, egui-free `selection` module
+(`ResultSelection` + `ClickModifiers`) so the click / Ctrl / Shift rules
+are unit-tested without a UI:
+
+- **plain** click → select only that row (anchor there);
+- **Ctrl** click → toggle that row (anchor there);
+- **Shift** click → inclusive range from the anchor (plain Shift
+  replaces, Ctrl+Shift extends); anchor stays put so the range
+  re-drags from the same origin.
+
+`ClickModifiers.ctrl` maps to egui's `Modifiers::command`, so the toggle
+gesture is ⌘ on macOS and Ctrl elsewhere. `command`/`shift` are read from
+`ui.input` at click time. The click is captured into a local and applied
+**after** the table body so the selection can't shift mid-iteration and
+leave virtualized rows below the click reading a stale highlight.
+`DbboardApp::result_selection` is cleared whenever a new `QueryResult`
+replaces the grid — the old indices no longer point at the same rows.
+
+Selected-row export reuses slice 1's serializer: `selected_rows` collects
+the chosen rows (bounds-checked, ascending order) into an owned `Vec<Row>`
+on the copy/save click only (not per frame), then hands it to the same
+`to_tsv` / `to_csv_with_bom` path. No new serialization surface. Still a
+desktop-only presentation feature; no wire-contract change.

@@ -16,6 +16,12 @@ result-copy-all = Copia
 result-copy-all-hint = Copia l'intero risultato negli appunti come TSV (incollalo in un foglio di calcolo)
 result-export-csv = Salva CSV…
 result-export-error = Impossibile salvare il file CSV
+result-copy-selected = Copia selezione
+result-copy-selected-hint = Copia le righe selezionate negli appunti come TSV
+result-export-selected-csv = Salva selezione come CSV…
+result-clear-selection = Cancella selezione
+result-selected-count = { $count } selezionate
+result-select-row-hint = Clic per selezionare la riga (Ctrl / Maiusc per selezione multipla)
 
 error-prefix-connection = Errore di connessione
 error-prefix-query = Errore di query
