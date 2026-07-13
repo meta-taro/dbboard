@@ -16,6 +16,12 @@ result-copy-all = Copier
 result-copy-all-hint = Copier tout le résultat dans le presse-papiers au format TSV (collez-le dans un tableur)
 result-export-csv = Enregistrer CSV…
 result-export-error = Impossible d'enregistrer le fichier CSV
+result-copy-selected = Copier la sélection
+result-copy-selected-hint = Copier les lignes sélectionnées dans le presse-papiers au format TSV
+result-export-selected-csv = Enregistrer la sélection en CSV…
+result-clear-selection = Effacer la sélection
+result-selected-count = { $count } sélectionnée(s)
+result-select-row-hint = Cliquer pour sélectionner la ligne (Ctrl / Maj pour plusieurs)
 
 error-prefix-connection = Erreur de connexion
 error-prefix-query = Erreur de requête

@@ -16,6 +16,12 @@ result-copy-all = Копировать
 result-copy-all-hint = Скопировать весь результат в буфер обмена как TSV (вставьте в таблицу)
 result-export-csv = Сохранить CSV…
 result-export-error = Не удалось сохранить файл CSV
+result-copy-selected = Копировать выбранное
+result-copy-selected-hint = Скопировать выбранные строки в буфер обмена как TSV
+result-export-selected-csv = Сохранить выбранное в CSV…
+result-clear-selection = Снять выделение
+result-selected-count = Выбрано: { $count }
+result-select-row-hint = Клик для выбора строки (Ctrl / Shift для нескольких)
 
 error-prefix-connection = Ошибка подключения
 error-prefix-query = Ошибка запроса

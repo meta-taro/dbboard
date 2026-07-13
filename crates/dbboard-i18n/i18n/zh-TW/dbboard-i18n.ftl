@@ -16,6 +16,12 @@ result-copy-all = 複製
 result-copy-all-hint = 將整個結果以 TSV 複製到剪貼簿（可貼到試算表）
 result-export-csv = 儲存 CSV…
 result-export-error = 無法儲存 CSV 檔案
+result-copy-selected = 複製選取列
+result-copy-selected-hint = 將選取的列以 TSV 格式複製到剪貼簿
+result-export-selected-csv = 儲存選取列為 CSV…
+result-clear-selection = 清除選取
+result-selected-count = 已選取 { $count } 列
+result-select-row-hint = 點擊選取該列（Ctrl / Shift 多選）
 
 error-prefix-connection = 連線錯誤
 error-prefix-query = 查詢錯誤

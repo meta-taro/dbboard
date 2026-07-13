@@ -16,6 +16,12 @@ result-copy-all = 복사
 result-copy-all-hint = 전체 결과를 TSV로 클립보드에 복사(스프레드시트에 붙여넣기 가능)
 result-export-csv = CSV 저장…
 result-export-error = CSV 파일을 저장할 수 없습니다
+result-copy-selected = 선택 행 복사
+result-copy-selected-hint = 선택한 행을 TSV로 클립보드에 복사
+result-export-selected-csv = 선택 행 CSV 저장…
+result-clear-selection = 선택 해제
+result-selected-count = { $count }행 선택됨
+result-select-row-hint = 클릭하여 행 선택 (Ctrl / Shift 로 다중 선택)
 
 error-prefix-connection = 연결 오류
 error-prefix-query = 쿼리 오류
