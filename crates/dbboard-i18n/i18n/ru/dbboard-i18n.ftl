@@ -12,6 +12,10 @@ history-empty = (нет недавних запросов)
 result-heading = Результат
 result-empty = (выполните запрос)
 result-affected = OK (затронуто строк: { $rows })
+result-copy-all = Копировать
+result-copy-all-hint = Скопировать весь результат в буфер обмена как TSV (вставьте в таблицу)
+result-export-csv = Сохранить CSV…
+result-export-error = Не удалось сохранить файл CSV
 
 error-prefix-connection = Ошибка подключения
 error-prefix-query = Ошибка запроса
@@ -41,6 +45,7 @@ connections-replace-token = Заменить токен
 connections-replace-url = Заменить URL
 connections-connect-button = Подключиться
 connections-active-marker = (активно)
+connections-switch-error = Не удалось подключиться
 
 language-menu = Язык
 

@@ -12,6 +12,10 @@ history-empty = (최근 쿼리 없음)
 result-heading = 결과
 result-empty = (쿼리를 실행하세요)
 result-affected = OK ({ $rows }행 영향받음)
+result-copy-all = 복사
+result-copy-all-hint = 전체 결과를 TSV로 클립보드에 복사(스프레드시트에 붙여넣기 가능)
+result-export-csv = CSV 저장…
+result-export-error = CSV 파일을 저장할 수 없습니다
 
 error-prefix-connection = 연결 오류
 error-prefix-query = 쿼리 오류
@@ -41,6 +45,7 @@ connections-replace-token = 토큰 교체
 connections-replace-url = URL 교체
 connections-connect-button = 연결
 connections-active-marker = (활성)
+connections-switch-error = 연결하지 못했습니다
 
 language-menu = 언어
 

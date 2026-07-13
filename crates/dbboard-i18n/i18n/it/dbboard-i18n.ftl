@@ -12,6 +12,10 @@ history-empty = (nessuna query recente)
 result-heading = Risultato
 result-empty = (esegui una query)
 result-affected = OK ({ $rows } righe modificate)
+result-copy-all = Copia
+result-copy-all-hint = Copia l'intero risultato negli appunti come TSV (incollalo in un foglio di calcolo)
+result-export-csv = Salva CSV…
+result-export-error = Impossibile salvare il file CSV
 
 error-prefix-connection = Errore di connessione
 error-prefix-query = Errore di query
@@ -41,6 +45,7 @@ connections-replace-token = Sostituisci token
 connections-replace-url = Sostituisci URL
 connections-connect-button = Connetti
 connections-active-marker = (attiva)
+connections-switch-error = Connessione non riuscita
 
 language-menu = Lingua
 

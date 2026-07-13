@@ -4380,3 +4380,245 @@ is the least surprising format for Windows recipients.
 
 None. No public surface changes — this is build configuration, a build
 script, an icon asset, and installer source.
+
+## ADR-0033 — Enable the keyring OS credential-store backend (secrets were silently non-persistent)
+
+- **Status:** Accepted (2026-07-13). Fixes a runtime defect found during
+  the first internal Windows run (ADR-0032). Dependency-feature +
+  UI-visibility change; no HTTP-contract, `history.jsonl`, or public-API
+  change. Affects every platform, not just Windows.
+
+### Context
+
+The first user to run the packaged Windows exe reported that **no
+registered connection could connect, and clicking "Connect" did nothing**.
+Two independent defects were behind the single symptom:
+
+1. **Silent switch failures (UI gap).** The in-process connection switch
+   (ADR-0020) reports failure via `Reply::SwitchFailed`, which
+   `DbboardApp` stored in `last_switch_error` — but *no render path ever
+   read it*. A failed Connect updated no marker and showed no message, so
+   the click looked inert ("無反応"). The getter's own doc comment
+   ("so the UI can render 'could not connect to <id>'") described wiring
+   that was never done.
+
+2. **Root cause — the keyring never persisted anything.** `keyring 3.x`
+   ships **no `default` feature**, and therefore **no credential-store
+   backend** unless one is opted into explicitly. dbboard depended on
+   `keyring = "3"` with default features, so on *every* platform it
+   silently resolved to the in-memory **mock** store. Every
+   `SecretStore::set` returned `Ok` (the mock accepted the write) but the
+   value lived only on that one `Entry` object; a fresh `Entry` for the
+   same key — which is exactly what the runtime switcher constructs —
+   read back `NoEntry`. Net effect: `ConnectionAdmin::add` succeeded and
+   wrote the TOML, but `backend_config_for_entry` later failed with
+   `config secret failed: no secret stored for reference:
+   dbboard.<id>.token`. Windows Credential Manager held zero dbboard
+   entries (`cmdkey /list` empty), confirming nothing was ever stored.
+
+   A standalone round-trip reproduced it precisely: with default features,
+   `set_password` → `Ok`, then `get_password` on a new `Entry` →
+   `No matching entry found`. With `windows-native` enabled, the same
+   round-trip returned the stored value. The crate already had a live
+   round-trip test (`keyring_store_round_trips_through_the_os_keychain`)
+   but it is `#[ignore]`d (it touches the real keychain), so CI and the
+   pre-commit hook never exercised the real backend and the mock slipped
+   through.
+
+### Decision
+
+1. **Opt into the real OS keychain backend, per target**, in
+   `crates/dbboard-config/Cargo.toml`:
+   - `cfg(windows)` → `windows-native`
+   - `cfg(target_os = "macos")` → `apple-native`
+   - `cfg(target_os = "linux")` → `linux-native-sync-persistent` +
+     `crypto-rust`
+
+   Target-scoped on purpose: the Linux secret-service backend pulls a
+   dbus C binding that must not be built on Windows/macOS. The base
+   `[dependencies] keyring` entry is kept so the crate still compiles
+   (mock fallback) on any target outside the three cfg blocks.
+
+2. **Surface switch failures in the UI.** `DbboardApp::switch_error_message()`
+   formats a localized, display-ready message (localized prefix
+   `connections-switch-error` in all 11 locales + the target id + the wire
+   error, matching the `ai.rs` error-prefix house style). The Connections
+   window renders it red, above the list, next to the Connect buttons.
+
+### Consequences
+
+- **Existing broken entries need their secret re-entered once.** Values
+  "stored" before this fix never reached the keychain, so after upgrading
+  the user must Edit each secret-bearing connection, tick
+  "Replace token"/"Replace URL", paste the secret, and Save. Subsequent
+  runs persist correctly.
+- `Cargo.lock` gains `windows-sys` + `byteorder` (keyring's Windows
+  backend deps). Binary project → lockfile committed.
+- The `#[ignore]`d live round-trip test now passes with the backend
+  enabled; it would have failed (mock store) before this change. It stays
+  `#[ignore]`d for CI but is the manual regression guard
+  (`cargo test -p dbboard-config -- --ignored`).
+- Desktop-only; the dbboard-web sibling is unaffected. No cross-repo brief.
+
+### SemVer impact (ADR-0011)
+
+None. No public API surface changes — a dependency feature flag, one new
+public getter (`switch_error_message`) on the binary's app type, and UI
+wiring.
+
+## ADR-0034 — Trust the OS certificate store (rustls native roots) so TLS-inspecting middleboxes don't break DB connections
+
+- **Status:** Accepted (2026-07-13). Fixes a runtime defect found during
+  the first internal Windows run, on the same machine as ADR-0032/0033.
+  Dependency-feature change only; no HTTP-contract, `history.jsonl`, or
+  public-API change. Affects every platform, most visibly Windows.
+
+### Context
+
+With the keyring backend fixed (ADR-0033) and the worker-runtime panic
+fixed (see below), the first real D1 Connect finally reached the network
+— and failed with `connection failed: error sending request`. The
+Postgres-family adapters (Neon / Supabase / Aurora DSQL) would fail the
+same way.
+
+`error sending request` is reqwest's bare transport error: DNS resolved
+and TCP connected, but the **TLS handshake was rejected**. The machine
+runs Norton, which performs HTTPS interception: an
+`SSLKEYLOGFILE=\.\nllMonFltProxy\…` env var (Norton LifeLock Monitor
+Filter Proxy) was present, and `curl` to `api.cloudflare.com` failed with
+`CRYPT_E_NO_REVOCATION_CHECK` unless `--ssl-no-revoke` was passed — proof
+that a local middlebox re-signs every HTTPS connection with its own CA.
+
+That CA is installed in the **Windows certificate store** (so browsers
+and `curl`/schannel trust it), but dbboard's TLS stack did **not** consult
+it:
+
+- `reqwest` used `rustls-tls` → **webpki-bundled Mozilla roots** only.
+- `sqlx` used `tls-rustls-ring`, which aliases `tls-rustls-ring-webpki` →
+  same webpki-only roots.
+
+rustls therefore saw a certificate chaining to Norton's CA — absent from
+the webpki set — and aborted the handshake, surfaced as the contentless
+`error sending request`. A webpki-only client is broken behind *any*
+TLS-inspecting AV or corporate proxy, which is the common case on a
+managed Windows desktop.
+
+A third defect sat between the keyring fix and this one: the ADR-0020
+`DesktopSwitcher::switch` built the adapter with
+`self.rt.block_on(build_adapter(..))`, but `switch` runs inside the
+worker's `current_thread` runtime (it is called from `run_command_loop`).
+`Handle::block_on` from within a runtime **panics** ("Cannot block the
+current thread from within a runtime"), which silently killed the
+command-loop thread and made every later Connect a no-op ("無反応"). It
+had been masked because `backend_config_for_entry` previously failed
+*ahead* of the `block_on`; once the secret resolved (ADR-0033), the panic
+became reachable. Fixed by `build_adapter_on`: spawn the build onto the
+multi-thread server runtime and park the worker thread on a channel — no
+`block_on`, no panic, switch stays inline. Covered by
+`build_adapter_on_does_not_panic_inside_the_worker_runtime`.
+
+### Decision
+
+Trust the **OS certificate store** for all outbound HTTPS, staying on
+pure-Rust rustls:
+
+1. `reqwest` → `rustls-tls-native-roots` (was `rustls-tls`). Applies to
+   the D1 adapter and the Anthropic AI provider.
+2. `sqlx` → `tls-rustls-ring-native-roots` (was `tls-rustls-ring`).
+   Applies to Neon / Supabase / Aurora DSQL.
+
+`rustls-native-certs` only *reads* the OS trust store; it pulls in no
+OpenSSL, so the "pure-Rust, self-contained Windows build" property from
+ADR-0018/0019 is preserved. Verified on the affected machine: a reqwest
+client with the exact D1 builder config (`use_rustls_tls().https_only(true)`)
+reaches `api.cloudflare.com` and gets a real HTTP status under
+native-roots, where webpki roots gave `error sending request`.
+
+### Consequences
+
+- **Security posture:** dbboard now trusts every CA the OS trusts,
+  including AV/corporate interception CAs. This matches browser and
+  system-tool behavior on the same host and is the expected default for a
+  desktop client; it is a deliberate move away from the stricter
+  webpki-only pin. A future ADR may add an opt-in "pin to webpki roots"
+  toggle for users who want to refuse interception.
+- No online revocation checks: rustls does not do OCSP/CRL, so it does not
+  hit the `CRYPT_E_NO_REVOCATION_CHECK` that stopped schannel.
+- `Cargo.lock` gains `rustls-native-certs` (+ the OS bridge, e.g.
+  `schannel` on Windows). Binary project → lockfile committed.
+- Desktop-only; the dbboard-web sibling (its own Node TLS stack) is
+  unaffected. No cross-repo brief.
+
+### SemVer impact (ADR-0011)
+
+None. Two dependency feature-flag changes plus one internal helper
+(`build_adapter_on`) on the binary. No public API surface change.
+
+## ADR-0035 — Export a result set to CSV / TSV (copy to clipboard, save via native dialog)
+
+**Status:** Accepted 2026-07-13
+
+### Context
+
+A query result is often something the operator wants to share or hand
+off — the same need HeidiSQL serves with its grid export. Until now the
+only way out of dbboard's result grid was a mouse drag-select of the
+rendered text, which is fragile over the virtualized `egui_extras`
+table (only the on-screen rows exist as widgets) and loses column
+structure. Users asked for first-class "copy" and "download" of results.
+
+### Decision
+
+Add a result-export toolbar above the grid (`render_export_toolbar`),
+delivered in two slices:
+
+- **Slice 1 (this ADR):** whole-result export.
+  - **Copy** → the entire result on the clipboard as **TSV**
+    (`ui.ctx().copy_text`), which pastes into Excel / Google Sheets with
+    columns intact.
+  - **Save CSV…** → a native OS "Save As" dialog (`rfd`) that writes
+    **RFC 4180 CSV** to the chosen path.
+- **Slice 2 (follow-up):** row selection (click / Ctrl-click /
+  Shift-click) plus "copy selected" / "save selected", reusing the same
+  serializer over a row subset.
+
+The serialization lives in a pure, I/O-free `export` module
+(`to_csv` / `to_tsv` over `&[Column]` + `&[Row]`) so the wire format is
+unit-tested without a grid, clipboard, or file dialog. Both formats share
+RFC 4180 quoting (quote only when a field carries the delimiter, a quote,
+or a line break; double embedded quotes). `NULL` serializes as an empty
+field — what a spreadsheet expects — rather than the literal "NULL" the
+grid shows. Records are separated, not terminated (no trailing newline),
+so pasting TSV does not leave a dangling empty row.
+
+### Consequences
+
+- New dependency **`rfd`** (Rusty File Dialog, MIT/Apache-2.0) for the
+  native save + error dialogs. Pure-Rust bindings over the OS pickers
+  (Win32 `IFileDialog` / macOS `NSSavePanel` / Linux GTK or xdg-portal).
+  On Linux the default backend needs GTK3 dev libraries at build time;
+  the maintainer builds on Windows, where no extra system libs are
+  required. `rfd`'s dialogs are synchronous — the brief frame stall while
+  the OS dialog is open is normal desktop behaviour.
+- A failed file write is reported via a native `rfd::MessageDialog`
+  rather than swallowed, keeping `render_result` a stateless free
+  function (no new app-state field for a transient error).
+- The saved `.csv` is written **UTF-8 with a BOM** (`to_csv_with_bom`).
+  Excel on Windows assumes the system ANSI code page (Shift-JIS on
+  Japanese Windows) for a BOM-less CSV and shows UTF-8 text as mojibake;
+  the BOM makes it auto-detect UTF-8. The clipboard TSV stays BOM-less
+  (the clipboard carries Unicode natively). Known limit: pasting TSV into
+  Excel does not parse RFC 4180 quotes, so a cell with an embedded
+  newline spills across rows on paste — opening the CSV file (which is
+  quote-parsed) keeps such cells intact.
+- Blob cells are exported using their `<blob: N bytes>` display
+  placeholder, not their bytes — round-tripping binary through CSV is out
+  of scope for slice 1.
+- Desktop-only presentation feature; no wire-contract change, so the
+  dbboard-web sibling is unaffected and no cross-repo brief is needed.
+
+### SemVer impact (ADR-0011)
+
+None. Additive UI feature plus one new internal `export` module and one
+new dependency. No change to any published API surface (the workspace is
+unpublished; `dbboard-core`'s contract is untouched).

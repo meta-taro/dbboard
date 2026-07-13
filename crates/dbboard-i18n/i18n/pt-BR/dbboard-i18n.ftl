@@ -12,6 +12,10 @@ history-empty = (sem consultas recentes)
 result-heading = Resultado
 result-empty = (execute uma consulta)
 result-affected = OK ({ $rows } linhas afetadas)
+result-copy-all = Copiar
+result-copy-all-hint = Copiar todo o resultado para a área de transferência como TSV (cole em uma planilha)
+result-export-csv = Salvar CSV…
+result-export-error = Não foi possível salvar o arquivo CSV
 
 error-prefix-connection = Erro de conexão
 error-prefix-query = Erro de consulta
@@ -41,6 +45,7 @@ connections-replace-token = Substituir token
 connections-replace-url = Substituir URL
 connections-connect-button = Conectar
 connections-active-marker = (ativa)
+connections-switch-error = Falha na conexão
 
 language-menu = Idioma
 
