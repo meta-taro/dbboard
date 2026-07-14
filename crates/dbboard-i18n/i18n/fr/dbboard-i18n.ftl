@@ -4,6 +4,9 @@ tables-heading = Tables
 tables-empty = (aucune table)
 tables-filter-hint = Filtrer les tables…
 tables-filter-no-match = Aucune table correspondante
+table-menu-select-100 = 100 premières lignes
+table-menu-count = Nombre de lignes
+table-menu-structure = Ouvrir la structure
 
 sql-heading = SQL
 sql-run-button = Exécuter

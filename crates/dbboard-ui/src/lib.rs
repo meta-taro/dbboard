@@ -840,6 +840,15 @@ impl DbboardApp {
         let _ = self.cmd_tx.send(Command::ListTables);
     }
 
+    /// Load a generated statement into the editor and run it (ADR-0038).
+    /// Writing to the editor (rather than firing a hidden query) keeps the
+    /// SQL visible so the user can read, copy, or tweak what the right-click
+    /// menu produced.
+    fn run_table_query(&mut self, sql: String) {
+        self.sql = sql;
+        self.run_sql();
+    }
+
     #[must_use]
     pub fn is_busy(&self) -> bool {
         self.busy
@@ -1289,6 +1298,7 @@ impl DbboardApp {
     fn render_tables_panel(&mut self, ui: &mut egui::Ui) {
         let active = self.structure.as_ref().map(|s| s.table.clone());
         let mut clicked: Option<TableInfo> = None;
+        let mut menu_action: Option<(TableInfo, TableMenuAction)> = None;
         egui::Panel::left("tables").show_inside(ui, |ui| {
             ui.heading(t!("tables-heading"));
             ui.separator();
@@ -1321,9 +1331,13 @@ impl DbboardApp {
                                 |ui| {
                                     for table in visible {
                                         let selected = active.as_ref() == Some(table);
-                                        if ui.selectable_label(selected, &table.name).clicked() {
+                                        let response = ui.selectable_label(selected, &table.name);
+                                        if response.clicked() {
                                             clicked = Some(table.clone());
                                         }
+                                        response.context_menu(|ui| {
+                                            table_context_menu(ui, table, &mut menu_action);
+                                        });
                                     }
                                 },
                             );
@@ -1337,6 +1351,22 @@ impl DbboardApp {
         });
         if let Some(table) = clicked {
             self.open_structure(table);
+        }
+        if let Some((table, action)) = menu_action {
+            self.apply_table_menu_action(table, action);
+        }
+    }
+
+    /// Dispatch a right-click table-menu choice (ADR-0038). `Select100`
+    /// and `Count` generate SQL into the editor and run it; `Structure`
+    /// reuses the existing describe-table path.
+    fn apply_table_menu_action(&mut self, table: TableInfo, action: TableMenuAction) {
+        match action {
+            TableMenuAction::Select100 => {
+                self.run_table_query(select_top_sql(&table, DEFAULT_AUTO_LIMIT));
+            }
+            TableMenuAction::Count => self.run_table_query(count_rows_sql(&table)),
+            TableMenuAction::Structure => self.open_structure(table),
         }
     }
 
@@ -1554,6 +1584,67 @@ fn filter_and_sort_tables<'a>(tables: &'a [TableInfo], filter: &str) -> Vec<&'a 
         .collect();
     visible.sort_by_key(|t| t.name.to_lowercase());
     visible
+}
+
+/// A choice from the sidebar's right-click table menu (ADR-0038).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TableMenuAction {
+    /// Run `SELECT * FROM <table> LIMIT <default>`.
+    Select100,
+    /// Run `SELECT COUNT(*) FROM <table>`.
+    Count,
+    /// Open the Structure tab (DESC equivalent).
+    Structure,
+}
+
+/// Render the right-click menu for one sidebar table (ADR-0038). The
+/// picked action is written into `action` and applied by the caller once
+/// the table-list borrow has ended.
+fn table_context_menu(
+    ui: &mut egui::Ui,
+    table: &TableInfo,
+    action: &mut Option<(TableInfo, TableMenuAction)>,
+) {
+    if ui.button(t!("table-menu-select-100")).clicked() {
+        *action = Some((table.clone(), TableMenuAction::Select100));
+        ui.close();
+    }
+    if ui.button(t!("table-menu-count")).clicked() {
+        *action = Some((table.clone(), TableMenuAction::Count));
+        ui.close();
+    }
+    if ui.button(t!("table-menu-structure")).clicked() {
+        *action = Some((table.clone(), TableMenuAction::Structure));
+        ui.close();
+    }
+}
+
+/// Wrap a single SQL identifier in double quotes, doubling any embedded
+/// quote. Double-quoting is standard SQL understood by both PostgreSQL
+/// and SQLite/libSQL, so one generator serves every adapter (ADR-0038).
+fn quote_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
+/// A schema-qualified, quoted table reference — `"public"."users"`, or
+/// just `"users"` where the engine has no schema concept (ADR-0038).
+fn quote_qualified(table: &TableInfo) -> String {
+    match &table.schema {
+        Some(schema) => format!("{}.{}", quote_ident(schema), quote_ident(&table.name)),
+        None => quote_ident(&table.name),
+    }
+}
+
+/// `SELECT * FROM <table> LIMIT <n>` for the right-click "top N rows"
+/// menu item (ADR-0038).
+fn select_top_sql(table: &TableInfo, limit: u32) -> String {
+    format!("SELECT * FROM {} LIMIT {limit}", quote_qualified(table))
+}
+
+/// `SELECT COUNT(*) FROM <table>` for the right-click "row count" item
+/// (ADR-0038).
+fn count_rows_sql(table: &TableInfo) -> String {
+    format!("SELECT COUNT(*) FROM {}", quote_qualified(table))
 }
 
 /// Render a `DbError` as `<translated prefix>: <wire message>`. The
@@ -2140,6 +2231,79 @@ mod tests {
     fn filter_and_sort_returns_empty_when_nothing_matches() {
         let tables = tbls(&["users", "orders"]);
         assert!(super::filter_and_sort_tables(&tables, "zzz").is_empty());
+    }
+
+    #[test]
+    fn quote_qualified_wraps_schema_and_name() {
+        let t = TableInfo::qualified("public", "users");
+        assert_eq!(super::quote_qualified(&t), "\"public\".\"users\"");
+    }
+
+    #[test]
+    fn quote_qualified_omits_schema_when_absent() {
+        let t = TableInfo::unqualified("users");
+        assert_eq!(super::quote_qualified(&t), "\"users\"");
+    }
+
+    #[test]
+    fn quote_ident_doubles_embedded_quotes() {
+        assert_eq!(super::quote_ident("we\"ird"), "\"we\"\"ird\"");
+    }
+
+    #[test]
+    fn select_top_sql_builds_a_limited_select() {
+        let t = TableInfo::qualified("public", "orders");
+        assert_eq!(
+            super::select_top_sql(&t, 100),
+            "SELECT * FROM \"public\".\"orders\" LIMIT 100"
+        );
+    }
+
+    #[test]
+    fn count_rows_sql_builds_a_count() {
+        let t = TableInfo::unqualified("orders");
+        assert_eq!(super::count_rows_sql(&t), "SELECT COUNT(*) FROM \"orders\"");
+    }
+
+    #[test]
+    fn run_table_query_loads_editor_and_dispatches() {
+        // ADR-0038: a right-click SELECT/count writes into the editor
+        // (so it stays visible) and runs through the normal query path.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.auto_limit = false;
+        app.run_table_query("SELECT COUNT(*) FROM \"t\"".into());
+        assert_eq!(app.sql, "SELECT COUNT(*) FROM \"t\"");
+        let first = cmd_rx.try_recv().expect("Query command emitted");
+        assert!(matches!(first, Command::Query(s) if s == "SELECT COUNT(*) FROM \"t\""));
+    }
+
+    #[test]
+    fn table_menu_count_action_runs_a_count_query() {
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.auto_limit = false;
+        app.apply_table_menu_action(
+            TableInfo::qualified("public", "orders"),
+            super::TableMenuAction::Count,
+        );
+        let first = cmd_rx.try_recv().expect("Query command emitted");
+        assert!(
+            matches!(first, Command::Query(s) if s == "SELECT COUNT(*) FROM \"public\".\"orders\"")
+        );
+    }
+
+    #[test]
+    fn table_menu_structure_action_opens_the_structure_tab() {
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.apply_table_menu_action(
+            TableInfo::unqualified("orders"),
+            super::TableMenuAction::Structure,
+        );
+        assert_eq!(app.active_tab, ResultTab::Structure);
+        let first = cmd_rx.try_recv().expect("DescribeTable command emitted");
+        assert!(matches!(first, Command::DescribeTable { table } if table.name == "orders"));
     }
 
     #[test]

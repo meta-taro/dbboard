@@ -4722,3 +4722,91 @@ constructs the struct through adapter code updated in the same change.
 Schema introspection is not part of the shared history/record contract
 (ADR-0017/0027) that the sibling mirrors, and the change is desktop-local
 and purely additive. No web mirror or brief is needed.
+
+## ADR-0038 — Right-click table menu: quick SQL (top rows, count, structure, CREATE)
+
+**Status:** Accepted 2026-07-14
+
+### Context
+
+Live use against a real Aurora DSQL / PostgreSQL project surfaced a
+recurring friction: the most common first actions on a table — "show me
+some rows", "how many rows", "what's the shape", "what's the DDL" — each
+required hand-typing SQL or clicking through to the Structure tab. A
+right-click menu on the sidebar table list removes that friction, matching
+the affordance every desktop DB client offers. The operator specifically
+called out CREATE-statement retrieval as important because they work with
+**views** and **PostgreSQL**, where the exact definition is not obvious
+from the column list alone.
+
+### Decision
+
+Add a `.context_menu()` to each sidebar table row with four items:
+
+1. **Top 100 rows** — generates `SELECT * FROM <table> LIMIT 100` into the
+   editor and runs it.
+2. **Row count** — generates `SELECT COUNT(*) FROM <table>` and runs it.
+3. **Open structure** — reuses the existing `describe_table` path
+   (ADR-0028/0031), i.e. the DESC equivalent.
+4. **CREATE statement** — retrieves the object's DDL (see slice b).
+
+Generated statements are written **into the editor** (not fired as hidden
+queries) so the SQL stays visible and the operator can read, copy, or tweak
+it. Identifiers are double-quoted (`"schema"."name"`) — standard SQL that
+both PostgreSQL and SQLite/libSQL accept — so the same generator serves
+every adapter without the UI needing to know the engine dialect. The
+bare-`SELECT` auto-limit guard (ADR-0030) backs off for the top-rows item
+because it already carries a `LIMIT`.
+
+The work lands in two slices:
+
+- **Slice a (this commit):** the menu framework plus the three portable
+  items (top rows, count, structure). Pure SQL-generation helpers
+  (`quote_qualified`, `select_top_sql`, `count_rows_sql`) are unit-tested
+  independently of egui. Menu labels are translated across all 11 locales
+  (`table-menu-*`).
+- **Slice b (follow-up):** CREATE-statement retrieval. Unlike the portable
+  items, DDL retrieval is engine-specific and the UI is engine-agnostic
+  (it talks to the in-process server over HTTP), so this needs a new
+  adapter capability rather than client-side SQL generation:
+  - **Core:** add `async fn create_statement(&self, table) -> DbResult<String>`
+    to `DatabaseAdapter` with a default `DbError::Capability` body (the same
+    forward-compatible pattern as `describe_table`), plus a
+    `has_create_statement` capability flag.
+  - **SQLite/libSQL (turso, d1):** `SELECT sql FROM sqlite_master WHERE
+    name = ?1 AND type IN ('table','view')` returns the exact stored DDL for
+    both tables and views.
+  - **PostgreSQL/Neon/DSQL:** branch on `pg_class.relkind`. Views and
+    materialized views use `pg_get_viewdef(oid, true)` wrapped as
+    `CREATE [OR REPLACE] VIEW <qualified> AS …`; plain tables reconstruct
+    `CREATE TABLE` from the already-available column metadata (name, type,
+    `NOT NULL`, `DEFAULT`) plus the primary-key clause.
+  - **Server/worker/UI:** a new route mirroring `describe_table`, a
+    `Command::GetCreateStatement` / `Reply::CreateStatement` pair, and a
+    read-only, copyable modal to display the returned DDL.
+
+### Consequences
+
+- The three portable items add no server round-trip beyond the query they
+  already run; they are pure client-side SQL generation.
+- CREATE-statement retrieval (slice b) is engine-specific and therefore an
+  adapter capability, not portable SQL. Adapters that do not implement it
+  degrade at runtime via the `Capability` error and grey out the menu item,
+  exactly like `describe_table`.
+- Writing generated SQL into the editor overwrites whatever the operator
+  was drafting. This is the intended trade-off — the menu items are quick
+  scaffolds, and keeping the SQL visible is more valuable than preserving an
+  unrun draft. A future slice could stash/restore the prior editor buffer if
+  this proves annoying.
+
+### SemVer impact (ADR-0011)
+
+None for slice a (UI-only). Slice b grows the `DatabaseAdapter` trait with
+one defaulted method and `Capabilities` with one additive flag; the
+workspace is unpublished and every adapter is updated in the same change.
+
+### Cross-repo (dbboard-web)
+
+Desktop-local UI/adapter behaviour. The generated SQL is standard and the
+CREATE capability is not part of the shared history/record contract
+(ADR-0017/0027). No web mirror or brief is needed.
