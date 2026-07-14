@@ -52,6 +52,7 @@ connections-field-pg-url = URL подключения
 connections-replace-token = Заменить токен
 connections-replace-url = Заменить URL
 connections-connect-button = Подключиться
+connections-reconnect-button = Переподключиться
 connections-active-marker = (активно)
 connections-switch-error = Не удалось подключиться
 

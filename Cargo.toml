@@ -77,6 +77,18 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # Consumes the `raw_sql(...).fetch_many(...)` result stream. Also drives
 # the dbboard-anthropic SSE stream wrapper (ADR-0026 Decision 4).
 futures-util = "0.3"
+# Pure-Rust SigV4 primitives for Aurora DSQL IAM token generation
+# (ADR-0036). Hand-rolled SigV4 keeps auth off the AWS SDK, which would
+# otherwise pull in aws-lc-rs and break the rustls-ring / no-aws-lc-rs
+# TLS constraint (ADR-0034). Versions pinned to what Cargo.lock already
+# resolves transitively, so no new dependency tree is introduced.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+percent-encoding = "2"
+# now_utc() + compile-time format descriptions for the SigV4 amz-date
+# and credential-scope datestamp. `macros` for `format_description!`.
+time = { version = "0.3", features = ["formatting", "macros"] }
 # `CancellationToken` for cooperative cancel on the dbboard-ui worker's
 # streaming AI dispatch (ADR-0026 Decision 5). Lightweight Arc handle
 # whose `.cancelled()` future can be raced against the stream future via
