@@ -806,6 +806,11 @@ impl DbboardApp {
         if self.busy || self.sql.trim().is_empty() {
             return;
         }
+        // Bring the result forward: a query run while the user is on the
+        // Structure tab (ADR-0031) would otherwise leave its output hidden
+        // behind the table inspector. Switch at submit time so the busy
+        // spinner shows on the Results tab the output will land on.
+        self.active_tab = ResultTab::Results;
         // Apply the bare-SELECT guard once, up front, so history, the
         // pending record, and the executed statement all agree on exactly
         // what ran (ADR-0030). A no-op unless auto_limit is on and the
@@ -1989,6 +1994,41 @@ mod tests {
         let second = cmd_rx.try_recv().expect("ListTables command emitted");
         assert!(matches!(first, Command::Query(sql) if sql == "SELECT 1"));
         assert!(matches!(second, Command::ListTables));
+    }
+
+    #[test]
+    fn run_sql_from_structure_tab_switches_to_results() {
+        // Running a query while inspecting a table's structure must bring
+        // the result forward — otherwise the freshly-run query's output is
+        // hidden behind the Structure tab the user was last on (ADR-0031).
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.active_tab = ResultTab::Structure;
+        app.sql = "SELECT 1".into();
+        app.run_sql();
+        assert_eq!(
+            app.active_tab,
+            ResultTab::Results,
+            "a submitted query must switch the lower panel to the Results tab"
+        );
+    }
+
+    #[test]
+    fn run_sql_while_busy_does_not_switch_tab() {
+        // The busy guard short-circuits before any state change, so a
+        // second run while a query is in flight must not yank the user off
+        // the Structure tab they navigated to.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.sql = "SELECT 1".into();
+        app.run_sql(); // marks busy, switches to Results
+        app.active_tab = ResultTab::Structure; // user navigates away mid-flight
+        app.run_sql(); // no-op: still busy
+        assert_eq!(
+            app.active_tab,
+            ResultTab::Structure,
+            "a busy no-op run must not switch tabs"
+        );
     }
 
     #[test]
