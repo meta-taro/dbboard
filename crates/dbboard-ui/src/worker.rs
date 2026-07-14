@@ -472,6 +472,18 @@ async fn handle_command(
             let _ = reply_tx.send(Reply::TableDescribed { table, result });
             egui_ctx.request_repaint();
         }
+        // ADR-0038 slice b: fetch a table/view's CREATE DDL. Same
+        // in-process live-adapter path as DescribeTable, awaited inline.
+        Command::GetCreateStatement { table } => {
+            let result = match schema_source {
+                Some(source) => source.current_adapter().create_statement(&table).await,
+                None => Err(DbError::Capability(
+                    "create_statement unavailable on this connection".to_string(),
+                )),
+            };
+            let _ = reply_tx.send(Reply::CreateStatement { table, result });
+            egui_ctx.request_repaint();
+        }
         // HTTP arms — short round-trips, awaited inline.
         cmd @ (Command::ListTables | Command::Query(_)) => {
             let request = client::request_for(&cmd);
@@ -940,6 +952,12 @@ fn report_fatal(
             // ADR-0031: the structure tab gets the fatal error verbatim so
             // it renders the failure instead of spinning forever.
             Command::DescribeTable { table } => Reply::TableDescribed {
+                table,
+                result: Err(err.clone()),
+            },
+            // ADR-0038 slice b: the CREATE dialog gets the fatal error
+            // verbatim so it renders the failure instead of spinning.
+            Command::GetCreateStatement { table } => Reply::CreateStatement {
                 table,
                 result: Err(err.clone()),
             },

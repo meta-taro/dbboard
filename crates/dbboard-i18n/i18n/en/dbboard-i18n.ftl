@@ -11,6 +11,10 @@ tables-filter-no-match = No tables match
 table-menu-select-100 = Top 100 rows
 table-menu-count = Row count
 table-menu-structure = Open structure
+table-menu-create = CREATE statement
+create-dialog-title = CREATE statement — { $table }
+create-dialog-loading = Loading…
+create-dialog-copy = Copy
 
 sql-heading = SQL
 sql-run-button = Run

@@ -57,6 +57,7 @@ impl DatabaseAdapter for TursoAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_describe_table: true,
+            has_create_statement: true,
             ..Capabilities::default()
         }
     }
@@ -150,6 +151,37 @@ impl DatabaseAdapter for TursoAdapter {
             columns,
             primary_key: pk_parts.into_iter().map(|(_, name)| name).collect(),
         })
+    }
+
+    async fn create_statement(&self, table: &TableInfo) -> DbResult<String> {
+        // `sqlite_master.sql` holds the exact stored DDL for both tables
+        // and views, so no reconstruction is needed. Same single-quote
+        // escaping as describe_table — the name usually comes from
+        // list_tables but a hostile schema could put anything in it.
+        let escaped = table.name.replace('\'', "''");
+        let mut rows = self
+            .conn
+            .query(
+                &format!(
+                    "SELECT sql FROM sqlite_master \
+                     WHERE name = '{escaped}' AND type IN ('table', 'view')"
+                ),
+                (),
+            )
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?
+            .ok_or_else(|| DbError::Query(format!("no such table: {}", table.name)))?;
+        // `sql` is NULL for internally-created objects (e.g. auto indexes);
+        // treat a NULL as "no DDL available" rather than an empty string.
+        let sql: Option<String> = row
+            .get(0)
+            .map_err(|e| DbError::TypeConversion(e.to_string()))?;
+        sql.ok_or_else(|| DbError::Query(format!("no DDL recorded for {}", table.name)))
     }
 }
 

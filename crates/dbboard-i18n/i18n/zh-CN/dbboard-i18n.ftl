@@ -7,6 +7,10 @@ tables-filter-no-match = 没有匹配的表
 table-menu-select-100 = 前 100 行
 table-menu-count = 行数统计
 table-menu-structure = 打开结构
+table-menu-create = CREATE 语句
+create-dialog-title = CREATE 语句 — { $table }
+create-dialog-loading = 加载中…
+create-dialog-copy = 复制
 
 sql-heading = SQL
 sql-run-button = 运行

@@ -7,6 +7,10 @@ tables-filter-no-match = Нет подходящих таблиц
 table-menu-select-100 = Первые 100 строк
 table-menu-count = Количество строк
 table-menu-structure = Открыть структуру
+table-menu-create = Оператор CREATE
+create-dialog-title = Оператор CREATE — { $table }
+create-dialog-loading = Загрузка…
+create-dialog-copy = Копировать
 
 sql-heading = SQL
 sql-run-button = Выполнить

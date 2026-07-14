@@ -7,6 +7,10 @@ tables-filter-no-match = Keine passenden Tabellen
 table-menu-select-100 = Erste 100 Zeilen
 table-menu-count = Zeilenanzahl
 table-menu-structure = Struktur öffnen
+table-menu-create = CREATE-Anweisung
+create-dialog-title = CREATE-Anweisung — { $table }
+create-dialog-loading = Wird geladen…
+create-dialog-copy = Kopieren
 
 sql-heading = SQL
 sql-run-button = Ausführen

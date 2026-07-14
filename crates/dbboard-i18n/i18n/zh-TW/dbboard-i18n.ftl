@@ -7,6 +7,10 @@ tables-filter-no-match = 沒有符合的資料表
 table-menu-select-100 = 前 100 列
 table-menu-count = 列數統計
 table-menu-structure = 開啟結構
+table-menu-create = CREATE 陳述式
+create-dialog-title = CREATE 陳述式 — { $table }
+create-dialog-loading = 載入中…
+create-dialog-copy = 複製
 
 sql-heading = SQL
 sql-run-button = 執行

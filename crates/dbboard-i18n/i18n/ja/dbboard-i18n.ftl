@@ -7,6 +7,10 @@ tables-filter-no-match = 一致するテーブルがありません
 table-menu-select-100 = 先頭100行
 table-menu-count = 件数を数える
 table-menu-structure = 構造を開く
+table-menu-create = CREATE文
+create-dialog-title = CREATE文 — { $table }
+create-dialog-loading = 読み込み中…
+create-dialog-copy = コピー
 
 sql-heading = SQL
 sql-run-button = 実行

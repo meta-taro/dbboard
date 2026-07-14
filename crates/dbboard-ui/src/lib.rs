@@ -135,6 +135,11 @@ pub enum Command {
     /// so the structure view stays independent of the AI prefetch flow.
     /// Issued when the user clicks a table in the sidebar.
     DescribeTable { table: TableInfo },
+    /// Fetch the `CREATE TABLE` / `CREATE VIEW` DDL for one object
+    /// (ADR-0038 slice b). Same in-process live-adapter path as
+    /// [`Command::DescribeTable`]; answered with [`Reply::CreateStatement`].
+    /// Issued by the sidebar's right-click "CREATE statement" item.
+    GetCreateStatement { table: TableInfo },
 }
 
 /// Result flowing worker → UI.
@@ -254,6 +259,13 @@ pub enum Reply {
         table: TableInfo,
         result: DbResult<TableSchema>,
     },
+    /// Result of a [`Command::GetCreateStatement`] (ADR-0038 slice b).
+    /// Carries the requested table so a stale reply can be matched, and
+    /// the DDL text (or a fatal error) to show in the CREATE dialog.
+    CreateStatement {
+        table: TableInfo,
+        result: DbResult<String>,
+    },
 }
 
 /// Captures everything we know at submit time about a query whose reply
@@ -302,6 +314,15 @@ enum ResultTab {
 struct StructureView {
     table: TableInfo,
     schema: Option<DbResult<TableSchema>>,
+}
+
+/// CREATE-statement dialog state (ADR-0038 slice b): the object whose DDL
+/// was requested and the latest `create_statement` outcome. `result ==
+/// None` means the fetch is still in flight; `Some` once the reply lands.
+#[derive(Debug)]
+struct CreateStatementDialog {
+    table: TableInfo,
+    result: Option<DbResult<String>>,
 }
 
 pub struct DbboardApp {
@@ -382,6 +403,10 @@ pub struct DbboardApp {
     /// history entry awaiting delete confirmation (friction 2026-07-14).
     /// `Some` while the confirm dialog is open; cleared on confirm/cancel.
     pending_history_delete: Option<usize>,
+    /// `Some` while the right-click "CREATE statement" dialog is open
+    /// (ADR-0038 slice b). Holds the requested object and, once the reply
+    /// lands, its DDL or a fatal error. `None` when the dialog is closed.
+    create_dialog: Option<CreateStatementDialog>,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -508,6 +533,7 @@ impl DbboardApp {
             structure: None,
             table_filter: String::new(),
             pending_history_delete: None,
+            create_dialog: None,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -655,6 +681,16 @@ impl DbboardApp {
                     if let Some(view) = self.structure.as_mut() {
                         if view.table == table {
                             view.schema = Some(result);
+                        }
+                    }
+                }
+                // ADR-0038 slice b: CREATE DDL came back. Apply it only if
+                // the dialog is still open for the same object — the user
+                // may have closed it or asked for another while in flight.
+                Reply::CreateStatement { table, result } => {
+                    if let Some(dialog) = self.create_dialog.as_mut() {
+                        if dialog.table == table {
+                            dialog.result = Some(result);
                         }
                     }
                 }
@@ -1101,7 +1137,8 @@ fn pending_ai_from_command(cmd: &Command, conn_label: &str) -> Option<PendingAiS
         | Command::SwitchConnection { .. }
         | Command::SwitchAiProvider { .. }
         | Command::PrefetchSchema { .. }
-        | Command::DescribeTable { .. } => return None,
+        | Command::DescribeTable { .. }
+        | Command::GetCreateStatement { .. } => return None,
     };
     let conn = if conn_label.is_empty() {
         None
@@ -1282,6 +1319,9 @@ impl eframe::App for DbboardApp {
 
         self.render_tables_panel(ui);
         self.render_query_panel(ui);
+        // ADR-0038 slice b: CREATE dialog floats above the panels; a no-op
+        // frame unless a right-click "CREATE statement" is pending/open.
+        self.render_create_dialog(ui.ctx());
 
         // Egui is event-driven, so request a follow-up frame while a
         // query is in flight to keep draining the reply channel.
@@ -1367,7 +1407,21 @@ impl DbboardApp {
             }
             TableMenuAction::Count => self.run_table_query(count_rows_sql(&table)),
             TableMenuAction::Structure => self.open_structure(table),
+            TableMenuAction::CreateStatement => self.open_create_statement(table),
         }
+    }
+
+    /// Open the CREATE-statement dialog for `table` and request its DDL
+    /// (ADR-0038 slice b). The reply lands as [`Reply::CreateStatement`]
+    /// and fills the pending dialog.
+    fn open_create_statement(&mut self, table: TableInfo) {
+        let _ = self.cmd_tx.send(Command::GetCreateStatement {
+            table: table.clone(),
+        });
+        self.create_dialog = Some(CreateStatementDialog {
+            table,
+            result: None,
+        });
     }
 
     /// Central panel: the SQL editor, run controls, history, and result.
@@ -1533,6 +1587,56 @@ impl DbboardApp {
         }
     }
 
+    /// Modal showing an object's CREATE DDL (ADR-0038 slice b). No-op
+    /// unless [`Self::create_dialog`] is set. While the fetch is in flight
+    /// it spins; on success it shows the DDL in a read-only, copyable text
+    /// area with a Copy button; on failure it shows the error. Closing the
+    /// window (×/Esc) or the Close button clears the dialog.
+    fn render_create_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.create_dialog.as_ref() else {
+            return;
+        };
+        let mut open = true;
+        let title = t_args!("create-dialog-title", table = dialog.table.name.clone());
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| match &dialog.result {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t!("create-dialog-loading"));
+                    });
+                }
+                Some(Ok(ddl)) => {
+                    if ui.button(t!("create-dialog-copy")).clicked() {
+                        ui.ctx().copy_text(ddl.clone());
+                    }
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height(400.0)
+                        .show(ui, |ui| {
+                            // Read-only: `&mut &str` keeps the text selectable and
+                            // copyable while rejecting edits.
+                            let mut text = ddl.as_str();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut text)
+                                    .code_editor()
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+                }
+                Some(Err(e)) => {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
+                }
+            });
+        if !open {
+            self.create_dialog = None;
+        }
+    }
+
     /// Structure tab body (ADR-0031): the selected table's name and its
     /// `describe_table` outcome rendered as a column grid.
     fn render_structure(&self, ui: &mut egui::Ui) {
@@ -1595,6 +1699,8 @@ enum TableMenuAction {
     Count,
     /// Open the Structure tab (DESC equivalent).
     Structure,
+    /// Fetch and show the object's `CREATE` DDL (ADR-0038 slice b).
+    CreateStatement,
 }
 
 /// Render the right-click menu for one sidebar table (ADR-0038). The
@@ -1615,6 +1721,10 @@ fn table_context_menu(
     }
     if ui.button(t!("table-menu-structure")).clicked() {
         *action = Some((table.clone(), TableMenuAction::Structure));
+        ui.close();
+    }
+    if ui.button(t!("table-menu-create")).clicked() {
+        *action = Some((table.clone(), TableMenuAction::CreateStatement));
         ui.close();
     }
 }
@@ -2304,6 +2414,69 @@ mod tests {
         assert_eq!(app.active_tab, ResultTab::Structure);
         let first = cmd_rx.try_recv().expect("DescribeTable command emitted");
         assert!(matches!(first, Command::DescribeTable { table } if table.name == "orders"));
+    }
+
+    #[test]
+    fn table_menu_create_action_requests_ddl_and_opens_pending_dialog() {
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.apply_table_menu_action(
+            TableInfo::qualified("public", "orders"),
+            super::TableMenuAction::CreateStatement,
+        );
+        let first = cmd_rx
+            .try_recv()
+            .expect("GetCreateStatement command emitted");
+        assert!(matches!(first, Command::GetCreateStatement { table } if table.name == "orders"));
+        let dialog = app.create_dialog.as_ref().expect("dialog opened");
+        assert_eq!(dialog.table.name, "orders");
+        assert!(
+            dialog.result.is_none(),
+            "dialog stays pending until the reply lands"
+        );
+    }
+
+    #[test]
+    fn create_statement_reply_fills_the_matching_dialog() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        app.apply_table_menu_action(
+            TableInfo::unqualified("orders"),
+            super::TableMenuAction::CreateStatement,
+        );
+        reply_tx
+            .send(Reply::CreateStatement {
+                table: TableInfo::unqualified("orders"),
+                result: Ok("CREATE TABLE orders (id INTEGER)".into()),
+            })
+            .unwrap();
+        app.drain_replies();
+        let dialog = app.create_dialog.as_ref().expect("dialog present");
+        assert!(
+            matches!(dialog.result.as_ref(), Some(Ok(ddl)) if ddl.contains("CREATE TABLE orders"))
+        );
+    }
+
+    #[test]
+    fn create_statement_reply_for_a_stale_table_is_ignored() {
+        let (mut app, _cmd_rx, reply_tx) = build();
+        app.apply_table_menu_action(
+            TableInfo::unqualified("orders"),
+            super::TableMenuAction::CreateStatement,
+        );
+        // A late reply for a since-superseded object must not overwrite the
+        // dialog the user is currently waiting on.
+        reply_tx
+            .send(Reply::CreateStatement {
+                table: TableInfo::unqualified("users"),
+                result: Ok("CREATE TABLE users (id INTEGER)".into()),
+            })
+            .unwrap();
+        app.drain_replies();
+        let dialog = app.create_dialog.as_ref().expect("dialog present");
+        assert!(
+            dialog.result.is_none(),
+            "stale reply ignored; still pending"
+        );
     }
 
     #[test]

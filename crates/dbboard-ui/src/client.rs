@@ -72,6 +72,9 @@ pub(crate) fn request_for(command: &Command) -> HttpRequest {
         Command::DescribeTable { .. } => {
             unreachable!("DescribeTable is handled via SchemaSource before request_for")
         }
+        Command::GetCreateStatement { .. } => {
+            unreachable!("GetCreateStatement is handled via SchemaSource before request_for")
+        }
     }
 }
 

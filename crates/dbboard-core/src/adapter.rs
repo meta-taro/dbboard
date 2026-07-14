@@ -52,6 +52,21 @@ pub trait DatabaseAdapter: Send + Sync {
         ))
     }
 
+    /// The DDL that (re)creates `table` — a `CREATE TABLE`/`CREATE VIEW`
+    /// statement as text (ADR-0038 slice b).
+    ///
+    /// Like [`Self::describe_table`], the default returns
+    /// [`DbError::Capability`] so adapters that do not implement it compile
+    /// unchanged and miss at runtime. Implementors must also flip
+    /// [`Capabilities::has_create_statement`] so the UI can grey out the
+    /// right-click "CREATE statement" item on adapters that lack it.
+    async fn create_statement(&self, table: &TableInfo) -> DbResult<String> {
+        let _ = table;
+        Err(DbError::Capability(
+            "create_statement not supported by this adapter".into(),
+        ))
+    }
+
     fn views(&self) -> Option<&dyn ViewIntrospection> {
         None
     }
@@ -128,6 +143,7 @@ mod tests {
                 has_storage: true,
                 has_realtime: true,
                 has_describe_table: true,
+                has_create_statement: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -153,6 +169,9 @@ mod tests {
                 }],
                 primary_key: vec!["id".into()],
             })
+        }
+        async fn create_statement(&self, table: &TableInfo) -> DbResult<String> {
+            Ok(format!("CREATE TABLE {} (id INTEGER)", table.name))
         }
         fn views(&self) -> Option<&dyn ViewIntrospection> {
             Some(self)
@@ -239,6 +258,34 @@ mod tests {
     fn describe_table_capability_flag_matches_support() {
         assert!(!NoopAdapter.capabilities().has_describe_table);
         assert!(FullAdapter.capabilities().has_describe_table);
+    }
+
+    #[tokio::test]
+    async fn default_create_statement_surfaces_capability_error() {
+        let err = NoopAdapter
+            .create_statement(&TableInfo::unqualified("users"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(
+            err.message(),
+            "create_statement not supported by this adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn overridden_create_statement_returns_ddl() {
+        let ddl = FullAdapter
+            .create_statement(&TableInfo::unqualified("users"))
+            .await
+            .unwrap();
+        assert_eq!(ddl, "CREATE TABLE users (id INTEGER)");
+    }
+
+    #[test]
+    fn create_statement_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_create_statement);
+        assert!(FullAdapter.capabilities().has_create_statement);
     }
 
     #[test]

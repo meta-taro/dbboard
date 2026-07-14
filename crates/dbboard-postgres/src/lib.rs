@@ -73,6 +73,20 @@ const DESCRIBE_PK_SQL: &str = "SELECT kcu.column_name::TEXT \
        AND tc.table_schema = $1 AND tc.table_name = $2 \
      ORDER BY kcu.ordinal_position";
 
+/// Relation kind (`r` table, `p` partitioned table, `v` view,
+/// `m` materialized view, …) for one object (ADR-0038 slice b). Used to
+/// pick the DDL source: views expose their definition via
+/// `pg_get_viewdef`, while tables are reconstructed from their columns.
+const RELKIND_SQL: &str = "SELECT c.relkind::TEXT \
+     FROM pg_catalog.pg_class c \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND c.relname = $2";
+
+/// The `SELECT` body of a view / materialized view, pretty-printed
+/// (ADR-0038 slice b). `format('%I.%I', …)` quotes the identifiers so
+/// mixed-case and reserved-word names resolve through the `regclass` cast.
+const VIEWDEF_SQL: &str = "SELECT pg_get_viewdef(format('%I.%I', $1, $2)::regclass, true)::TEXT";
+
 /// Connection parameters for a PostgreSQL-wire database.
 ///
 /// `url` is a secret: it embeds the password and is never logged, never
@@ -220,6 +234,7 @@ impl DatabaseAdapter for PostgresAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_describe_table: true,
+            has_create_statement: true,
             ..Capabilities::default()
         }
     }
@@ -315,6 +330,54 @@ impl DatabaseAdapter for PostgresAdapter {
             columns,
             primary_key,
         })
+    }
+
+    async fn create_statement(&self, table: &TableInfo) -> DbResult<String> {
+        let schema = table.schema.as_deref().unwrap_or("public");
+        // relkind decides the DDL source: Postgres has no single
+        // "CREATE TABLE text" function, but views expose their body via
+        // pg_get_viewdef. An empty result means the object is absent.
+        let kind_rows = sqlx::query(RELKIND_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        let Some(kind_row) = kind_rows.first() else {
+            return Err(DbError::Query(format!(
+                "relation \"{schema}.{}\" does not exist",
+                table.name
+            )));
+        };
+        let relkind: String = kind_row.try_get(0).map_err(|e| classify_error(&e))?;
+        let qualified = pg_qualified(schema, &table.name);
+
+        if relkind == "v" || relkind == "m" {
+            let rows = sqlx::query(VIEWDEF_SQL)
+                .bind(schema)
+                .bind(&table.name)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| classify_error(&e))?;
+            let body: String = rows
+                .first()
+                .ok_or_else(|| DbError::Query(format!("no view definition for {qualified}")))?
+                .try_get(0)
+                .map_err(|e| classify_error(&e))?;
+            let keyword = if relkind == "m" {
+                "CREATE MATERIALIZED VIEW"
+            } else {
+                "CREATE VIEW"
+            };
+            return Ok(format!("{keyword} {qualified} AS\n{}", body.trim_end()));
+        }
+
+        // Tables (ordinary/partitioned) and anything else column-shaped:
+        // reconstruct from the column list. Best-effort — the catalogs do
+        // not hand back the original CREATE TABLE verbatim, so types come
+        // from information_schema (e.g. "character varying" without length).
+        let described = self.describe_table(table).await?;
+        Ok(render_create_table(&qualified, &described))
     }
 
     async fn query(&self, sql: &str) -> DbResult<QueryResult> {
@@ -447,6 +510,51 @@ fn column_from_parts(
     })
 }
 
+/// Wrap a single SQL identifier in double quotes, doubling any embedded
+/// quote (ADR-0038 slice b).
+fn pg_quote_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
+/// A schema-qualified, double-quoted relation reference —
+/// `"public"."users"` (ADR-0038 slice b).
+fn pg_qualified(schema: &str, name: &str) -> String {
+    format!("{}.{}", pg_quote_ident(schema), pg_quote_ident(name))
+}
+
+/// Reconstruct a `CREATE TABLE` statement from a table's columns and
+/// primary key (ADR-0038 slice b). Best-effort: types come from
+/// `information_schema.data_type`, which drops length/precision
+/// modifiers, and non-primary-key constraints (foreign keys, uniques,
+/// checks) are not reproduced. `qualified` is the pre-quoted relation
+/// name from [`pg_qualified`].
+fn render_create_table(qualified: &str, schema: &TableSchema) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for col in &schema.columns {
+        let mut parts = vec![pg_quote_ident(&col.name)];
+        if let Some(ty) = &col.declared_type {
+            parts.push(ty.clone());
+        }
+        if !col.nullable {
+            parts.push("NOT NULL".to_string());
+        }
+        if let Some(default) = &col.default_value {
+            parts.push(format!("DEFAULT {default}"));
+        }
+        lines.push(format!("    {}", parts.join(" ")));
+    }
+    if !schema.primary_key.is_empty() {
+        let cols = schema
+            .primary_key
+            .iter()
+            .map(|c| pg_quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("    PRIMARY KEY ({cols})"));
+    }
+    format!("CREATE TABLE {qualified} (\n{}\n);", lines.join(",\n"))
+}
+
 /// Harden the connection's TLS policy.
 ///
 /// sqlx defaults an unspecified `sslmode` to [`PgSslMode::Prefer`], which
@@ -526,10 +634,11 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_error, column_from_parts, harden_ssl_mode, reclassify_schema, truncate,
-        tuple_to_table, FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        classify_error, column_from_parts, harden_ssl_mode, pg_qualified, reclassify_schema,
+        render_create_table, truncate, tuple_to_table, FLAVOR_AURORA_DSQL, FLAVOR_NEON,
+        FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
-    use dbboard_core::{DatabaseAdapter, DbError};
+    use dbboard_core::{ColumnInfo, DatabaseAdapter, DbError, TableInfo, TableSchema};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 
     /// `id()` is part of the public contract documented in
@@ -598,6 +707,70 @@ mod tests {
             flavor: FLAVOR_POSTGRES,
         };
         assert!(adapter.capabilities().has_describe_table);
+        assert!(adapter.capabilities().has_create_statement);
+    }
+
+    fn col(name: &str, ty: &str, nullable: bool, default: Option<&str>) -> ColumnInfo {
+        ColumnInfo {
+            name: name.into(),
+            declared_type: Some(ty.into()),
+            nullable,
+            primary_key: false,
+            ordinal: 1,
+            default_value: default.map(Into::into),
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn pg_qualified_double_quotes_schema_and_name() {
+        assert_eq!(pg_qualified("public", "users"), "\"public\".\"users\"");
+        // Embedded quotes are doubled so a hostile name can't break out.
+        assert_eq!(
+            pg_qualified("public", "we\"ird"),
+            "\"public\".\"we\"\"ird\""
+        );
+    }
+
+    #[test]
+    fn render_create_table_emits_columns_defaults_and_primary_key() {
+        let schema = TableSchema {
+            table: TableInfo::qualified("public", "users"),
+            columns: vec![
+                col(
+                    "id",
+                    "integer",
+                    false,
+                    Some("nextval('users_id_seq'::regclass)"),
+                ),
+                col("email", "text", false, None),
+                col("note", "text", true, None),
+            ],
+            primary_key: vec!["id".into()],
+        };
+        let ddl = render_create_table("\"public\".\"users\"", &schema);
+        assert_eq!(
+            ddl,
+            "CREATE TABLE \"public\".\"users\" (\n    \
+             \"id\" integer NOT NULL DEFAULT nextval('users_id_seq'::regclass),\n    \
+             \"email\" text NOT NULL,\n    \
+             \"note\" text,\n    \
+             PRIMARY KEY (\"id\")\n);"
+        );
+    }
+
+    #[test]
+    fn render_create_table_without_primary_key_omits_the_clause() {
+        let schema = TableSchema {
+            table: TableInfo::unqualified("logs"),
+            columns: vec![col("msg", "text", true, None)],
+            primary_key: vec![],
+        };
+        let ddl = render_create_table("\"public\".\"logs\"", &schema);
+        assert_eq!(
+            ddl,
+            "CREATE TABLE \"public\".\"logs\" (\n    \"msg\" text\n);"
+        );
     }
 
     #[test]
