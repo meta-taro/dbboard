@@ -10,6 +10,11 @@ sql-run-button = Выполнить
 
 history-title = История ({ $count })
 history-empty = (нет недавних запросов)
+history-delete-hover = Удалить эту запись
+history-delete-title = Удалить запись истории
+history-delete-confirm = Убрать эту запись из панели истории? (Журнал на диске сохраняется.)
+history-delete-yes = Удалить
+history-delete-no = Отмена
 
 result-heading = Результат
 result-empty = (выполните запрос)

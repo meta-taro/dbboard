@@ -10,6 +10,11 @@ sql-run-button = Esegui
 
 history-title = Cronologia ({ $count })
 history-empty = (nessuna query recente)
+history-delete-hover = Elimina questa voce
+history-delete-title = Elimina voce della cronologia
+history-delete-confirm = Rimuovere questa voce dal pannello della cronologia? (Il registro su disco viene mantenuto.)
+history-delete-yes = Elimina
+history-delete-no = Annulla
 
 result-heading = Risultato
 result-empty = (esegui una query)

@@ -10,6 +10,11 @@ sql-run-button = 运行
 
 history-title = 历史记录 ({ $count })
 history-empty = (无最近查询)
+history-delete-hover = 删除此条目
+history-delete-title = 删除历史条目
+history-delete-confirm = 从历史面板中移除此条目？（磁盘上的日志会保留。）
+history-delete-yes = 删除
+history-delete-no = 取消
 
 result-heading = 结果
 result-empty = (请运行查询)

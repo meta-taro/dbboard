@@ -10,6 +10,11 @@ sql-run-button = Exécuter
 
 history-title = Historique ({ $count })
 history-empty = (aucune requête récente)
+history-delete-hover = Supprimer cette entrée
+history-delete-title = Supprimer l'entrée d'historique
+history-delete-confirm = Retirer cette entrée du panneau d'historique ? (Le journal sur disque est conservé.)
+history-delete-yes = Supprimer
+history-delete-no = Annuler
 
 result-heading = Résultat
 result-empty = (exécutez une requête)

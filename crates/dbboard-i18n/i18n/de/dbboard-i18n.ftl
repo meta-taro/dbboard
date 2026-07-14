@@ -10,6 +10,11 @@ sql-run-button = Ausführen
 
 history-title = Verlauf ({ $count })
 history-empty = (keine letzten Abfragen)
+history-delete-hover = Diesen Eintrag löschen
+history-delete-title = Verlaufseintrag löschen
+history-delete-confirm = Diesen Eintrag aus dem Verlauf entfernen? (Das Protokoll auf der Festplatte bleibt erhalten.)
+history-delete-yes = Löschen
+history-delete-no = Abbrechen
 
 result-heading = Ergebnis
 result-empty = (Abfrage ausführen)

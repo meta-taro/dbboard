@@ -378,6 +378,10 @@ pub struct DbboardApp {
     /// (friction 2026-07-14). Empty string = show every table. The list
     /// is always rendered alphabetically regardless of adapter order.
     table_filter: String,
+    /// Index (newest-first, matching the panel's render order) of the
+    /// history entry awaiting delete confirmation (friction 2026-07-14).
+    /// `Some` while the confirm dialog is open; cleared on confirm/cancel.
+    pending_history_delete: Option<usize>,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -503,6 +507,7 @@ impl DbboardApp {
             active_tab: ResultTab::Results,
             structure: None,
             table_filter: String::new(),
+            pending_history_delete: None,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -1380,40 +1385,7 @@ impl DbboardApp {
                 self.run_sql();
             }
 
-            // Recently-run statements; click one to refill the editor
-            // (ADR-0014). Restore is captured here and applied after the
-            // immutable iter() borrow ends, sidestepping the borrow
-            // checker without cloning the whole store.
-            let mut restore: Option<String> = None;
-            {
-                let history = self.history.store();
-                egui::CollapsingHeader::new(t_args!("history-title", count = history.len()))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        if history.is_empty() {
-                            ui.label(t!("history-empty"));
-                        } else {
-                            egui::ScrollArea::vertical()
-                                .max_height(160.0)
-                                .show(ui, |ui| {
-                                    // Slice (a) only surfaces query entries
-                                    // in the legacy history panel; the AI
-                                    // record viewer lands in slice (c).
-                                    for entry in history.iter() {
-                                        let HistoryEntry::Query(q) = entry else {
-                                            continue;
-                                        };
-                                        if ui.small_button(history_button_label(&q.sql)).clicked() {
-                                            restore = Some(q.sql.clone());
-                                        }
-                                    }
-                                });
-                        }
-                    });
-            }
-            if let Some(sql) = restore {
-                self.sql = sql;
-            }
+            self.render_history_panel(ui);
 
             ui.separator();
             // ADR-0031: tab between the query result and the clicked
@@ -1441,6 +1413,94 @@ impl DbboardApp {
                 ResultTab::Structure => self.render_structure(ui),
             }
         });
+    }
+
+    /// Recently-run statements panel (ADR-0014): click an entry to refill
+    /// the editor, or its × to delete it (friction 2026-07-14). `restore`
+    /// and `delete_request` are captured inside the immutable `iter()`
+    /// borrow and applied after it ends, sidestepping the borrow checker
+    /// without cloning the whole store.
+    fn render_history_panel(&mut self, ui: &mut egui::Ui) {
+        let mut restore: Option<String> = None;
+        let mut delete_request: Option<usize> = None;
+        {
+            let history = self.history.store();
+            egui::CollapsingHeader::new(t_args!("history-title", count = history.len()))
+                .default_open(false)
+                .show(ui, |ui| {
+                    if history.is_empty() {
+                        ui.label(t!("history-empty"));
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(160.0)
+                            .show(ui, |ui| {
+                                // Only query entries surface in the legacy panel;
+                                // the AI record viewer lands separately. The
+                                // enumerate index matches the ring's newest-first
+                                // order so the × maps to the right entry.
+                                for (index, entry) in history.iter().enumerate() {
+                                    let HistoryEntry::Query(q) = entry else {
+                                        continue;
+                                    };
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .small_button("×")
+                                            .on_hover_text(t!("history-delete-hover"))
+                                            .clicked()
+                                        {
+                                            delete_request = Some(index);
+                                        }
+                                        if ui.small_button(history_button_label(&q.sql)).clicked() {
+                                            restore = Some(q.sql.clone());
+                                        }
+                                    });
+                                }
+                            });
+                    }
+                });
+        }
+        if let Some(sql) = restore {
+            self.sql = sql;
+        }
+        if let Some(index) = delete_request {
+            self.pending_history_delete = Some(index);
+        }
+        self.render_history_delete_confirm(ui);
+    }
+
+    /// Modal confirming a history-entry delete (friction 2026-07-14). No-op
+    /// unless [`Self::pending_history_delete`] is set. Confirming removes the
+    /// entry from the in-memory view only (the append-only log is preserved);
+    /// cancelling or closing the window clears the pending index.
+    fn render_history_delete_confirm(&mut self, ui: &mut egui::Ui) {
+        let Some(index) = self.pending_history_delete else {
+            return;
+        };
+        let mut open = true;
+        let mut confirmed = false;
+        egui::Window::new(t!("history-delete-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.label(t!("history-delete-confirm"));
+                ui.horizontal(|ui| {
+                    if ui.button(t!("history-delete-yes")).clicked() {
+                        confirmed = true;
+                    }
+                    if ui.button(t!("history-delete-no")).clicked() {
+                        self.pending_history_delete = None;
+                    }
+                });
+            });
+        if confirmed {
+            self.history.remove_from_view(index);
+            self.pending_history_delete = None;
+        } else if !open {
+            // Window close (×/Esc) is an implicit cancel.
+            self.pending_history_delete = None;
+        }
     }
 
     /// Structure tab body (ADR-0031): the selected table's name and its

@@ -339,6 +339,17 @@ impl HistoryStore {
         self.entries.iter()
     }
 
+    /// Remove the entry at `index` (0 = newest, matching [`iter`](Self::iter)
+    /// order) and return it, or `None` when `index` is out of range.
+    ///
+    /// This touches the in-memory ring only. The on-disk append-only log is
+    /// deliberately left untouched (friction 2026-07-14 decision: the × in
+    /// the history panel declutters the current view but preserves the audit
+    /// trail), so a removed entry re-hydrates on the next launch.
+    pub fn remove(&mut self, index: usize) -> Option<HistoryEntry> {
+        self.entries.remove(index)
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -710,6 +721,15 @@ impl PersistentHistoryStore {
         &self.inner
     }
 
+    /// Remove one entry from the in-memory view **only** (0 = newest),
+    /// returning it. The append-only `history.jsonl` is left untouched, so
+    /// the removed entry re-hydrates on the next launch — this backs the
+    /// history panel's per-entry × (friction 2026-07-14): it declutters the
+    /// current session without rewriting the shared audit log.
+    pub fn remove_from_view(&mut self, index: usize) -> Option<HistoryEntry> {
+        self.inner.remove(index)
+    }
+
     /// Append a fully-populated entry to disk and push it into the
     /// in-memory ring. Whitespace-only-SQL query entries are dropped,
     /// matching the Stage 1 behaviour of [`HistoryStore::push`]; AI
@@ -996,6 +1016,46 @@ mod tests {
         assert_eq!(h.len(), 1);
         let front = h.iter().next().unwrap();
         assert_eq!(query_sql(front), "second");
+    }
+
+    #[test]
+    fn remove_deletes_the_indexed_entry_newest_first() {
+        let mut h = HistoryStore::new(10);
+        h.push("first");
+        h.push("second");
+        h.push("third");
+        // iter() order is [third, second, first]; index 1 = "second".
+        let removed = h.remove(1).expect("index 1 is in range");
+        assert_eq!(query_sql(&removed), "second");
+        let collected: Vec<&str> = h.iter().map(query_sql).collect();
+        assert_eq!(collected, vec!["third", "first"]);
+    }
+
+    #[test]
+    fn remove_out_of_range_is_a_no_op_returning_none() {
+        let mut h = HistoryStore::new(10);
+        h.push("only");
+        assert!(h.remove(5).is_none());
+        assert_eq!(h.len(), 1);
+    }
+
+    #[test]
+    fn remove_from_view_leaves_the_disk_log_untouched() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("history.jsonl");
+        let mut store = PersistentHistoryStore::load_tail(path.clone(), 100).expect("load");
+        store.push_entry(sample_entry("SELECT 1")).expect("append");
+        store.push_entry(sample_entry("SELECT 2")).expect("append");
+
+        // Drop the newest in-memory entry (index 0 = "SELECT 2").
+        let removed = store.remove_from_view(0).expect("in range");
+        assert_eq!(query_sql(&removed), "SELECT 2");
+        assert_eq!(store.store().len(), 1);
+
+        // The append-only log still holds both records — deletion is a
+        // view-only operation, so a reload re-hydrates the removed entry.
+        let reloaded = PersistentHistoryStore::load_tail(path, 100).expect("reload");
+        assert_eq!(reloaded.store().len(), 2);
     }
 
     #[test]

@@ -18,6 +18,11 @@ auto-limit-hint = Cap bare SELECTs with LIMIT so an unbounded scan can't freeze 
 
 history-title = History ({ $count })
 history-empty = (no recent queries)
+history-delete-hover = Delete this entry
+history-delete-title = Delete history entry
+history-delete-confirm = Remove this entry from the history panel? (The on-disk log is kept.)
+history-delete-yes = Delete
+history-delete-no = Cancel
 
 result-heading = Result
 result-empty = (run a query)
