@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = 테이블
 tables-empty = (테이블 없음)
+tables-filter-hint = 테이블 필터…
+tables-filter-no-match = 일치하는 테이블 없음
 
 sql-heading = SQL
 sql-run-button = 실행
@@ -54,6 +56,9 @@ connections-active-marker = (활성)
 connections-switch-error = 연결하지 못했습니다
 
 language-menu = 언어
+help-menu = 도움말
+help-repository = 커뮤니티 저장소
+help-report-issue = 문제 신고
 
 ai-menu-button = AI 어시스턴트
 ai-panel-title = AI 어시스턴트

@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = 数据表
 tables-empty = (无数据表)
+tables-filter-hint = 筛选表…
+tables-filter-no-match = 没有匹配的表
 
 sql-heading = SQL
 sql-run-button = 运行
@@ -54,6 +56,9 @@ connections-active-marker = （当前）
 connections-switch-error = 无法连接
 
 language-menu = 语言
+help-menu = 帮助
+help-repository = 社区仓库
+help-report-issue = 报告问题
 
 ai-menu-button = AI 助手
 ai-panel-title = AI 助手

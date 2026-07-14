@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = テーブル
 tables-empty = （テーブルなし）
+tables-filter-hint = テーブルを絞り込み…
+tables-filter-no-match = 一致するテーブルがありません
 
 sql-heading = SQL
 sql-run-button = 実行
@@ -54,6 +56,9 @@ connections-active-marker = （接続済み）
 connections-switch-error = 接続できませんでした
 
 language-menu = 言語
+help-menu = ヘルプ
+help-repository = コミュニティリポジトリ
+help-report-issue = 問題を報告
 
 ai-menu-button = AI アシスタント
 ai-panel-title = AI アシスタント

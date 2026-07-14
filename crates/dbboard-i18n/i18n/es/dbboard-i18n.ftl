@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = Tablas
 tables-empty = (sin tablas)
+tables-filter-hint = Filtrar tablas…
+tables-filter-no-match = No hay tablas coincidentes
 
 sql-heading = SQL
 sql-run-button = Ejecutar
@@ -54,6 +56,9 @@ connections-active-marker = (activa)
 connections-switch-error = No se pudo conectar
 
 language-menu = Idioma
+help-menu = Ayuda
+help-repository = Repositorio de la comunidad
+help-report-issue = Informar de un problema
 
 ai-menu-button = Asistente de IA
 ai-panel-title = Asistente de IA

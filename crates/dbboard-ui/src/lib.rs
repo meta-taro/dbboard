@@ -374,6 +374,10 @@ pub struct DbboardApp {
     active_tab: ResultTab,
     /// Structure-tab state, `Some` once a table has been clicked.
     structure: Option<StructureView>,
+    /// Case-insensitive substring filter for the sidebar table list
+    /// (friction 2026-07-14). Empty string = show every table. The list
+    /// is always rendered alphabetically regardless of adapter order.
+    table_filter: String,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -498,6 +502,7 @@ impl DbboardApp {
             auto_limit: true,
             active_tab: ResultTab::Results,
             structure: None,
+            table_filter: String::new(),
             busy: false,
             cmd_tx,
             reply_rx,
@@ -806,6 +811,10 @@ impl DbboardApp {
         if self.busy || self.sql.trim().is_empty() {
             return;
         }
+        // Running a query surfaces its output in the Results tab. If the
+        // user was reading a table's Structure, snap back so the result
+        // they just triggered is actually on screen (friction 2026-07-14).
+        self.active_tab = ResultTab::Results;
         // Apply the bare-SELECT guard once, up front, so history, the
         // pending record, and the executed statement all agree on exactly
         // what ran (ADR-0030). A no-op unless auto_limit is on and the
@@ -1283,19 +1292,38 @@ impl DbboardApp {
                     ui.label(t!("tables-empty"));
                 }
                 Ok(tables) => {
-                    // Justified top-down layout stretches each row to the
-                    // panel's full width so the whole row is the click
-                    // target, not just the text glyphs. A short table name
-                    // was a tiny hit area before; now the empty space to
-                    // its right selects it too. Text stays left-aligned.
-                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-                        for table in tables {
-                            let selected = active.as_ref() == Some(table);
-                            if ui.selectable_label(selected, &table.name).clicked() {
-                                clicked = Some(table.clone());
-                            }
-                        }
-                    });
+                    // Substring filter box for projects with many tables
+                    // (friction 2026-07-14). It stays pinned above the list
+                    // while the results below scroll.
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.table_filter)
+                            .hint_text(t!("tables-filter-hint"))
+                            .desired_width(f32::INFINITY),
+                    );
+                    // Always alphabetical (case-insensitive), independent of
+                    // whatever order the adapter's list_tables() returned.
+                    let visible = filter_and_sort_tables(tables, &self.table_filter);
+                    if visible.is_empty() {
+                        ui.label(t!("tables-filter-no-match"));
+                    } else {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            // Justified top-down layout stretches each row to
+                            // the panel's full width so the whole row is the
+                            // click target, not just the text glyphs. Text
+                            // stays left-aligned.
+                            ui.with_layout(
+                                egui::Layout::top_down_justified(egui::Align::LEFT),
+                                |ui| {
+                                    for table in visible {
+                                        let selected = active.as_ref() == Some(table);
+                                        if ui.selectable_label(selected, &table.name).clicked() {
+                                            clicked = Some(table.clone());
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
                 }
                 Err(e) => {
                     ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
@@ -1452,6 +1480,20 @@ fn history_button_label(sql: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+/// Alphabetise the sidebar tables (case-insensitive) and keep only those
+/// whose name contains `filter` (case-insensitive). A blank/whitespace
+/// filter keeps everything. Returns borrowed references so the caller
+/// avoids cloning the whole list every frame (friction 2026-07-14).
+fn filter_and_sort_tables<'a>(tables: &'a [TableInfo], filter: &str) -> Vec<&'a TableInfo> {
+    let needle = filter.trim().to_lowercase();
+    let mut visible: Vec<&TableInfo> = tables
+        .iter()
+        .filter(|t| needle.is_empty() || t.name.to_lowercase().contains(&needle))
+        .collect();
+    visible.sort_by_key(|t| t.name.to_lowercase());
+    visible
 }
 
 /// Render a `DbError` as `<translated prefix>: <wire message>`. The
@@ -1989,6 +2031,51 @@ mod tests {
         let second = cmd_rx.try_recv().expect("ListTables command emitted");
         assert!(matches!(first, Command::Query(sql) if sql == "SELECT 1"));
         assert!(matches!(second, Command::ListTables));
+    }
+
+    #[test]
+    fn run_sql_snaps_back_to_the_results_tab() {
+        // Friction 2026-07-14: running a query while browsing a table's
+        // structure left the result invisible behind the Structure tab.
+        let (mut app, _cmd_rx, _reply_tx) = build();
+        app.auto_limit = false;
+        app.active_tab = ResultTab::Structure;
+        app.sql = "SELECT 1".into();
+        app.run_sql();
+        assert_eq!(app.active_tab, ResultTab::Results);
+    }
+
+    fn tbls(names: &[&str]) -> Vec<TableInfo> {
+        names.iter().map(|n| TableInfo::unqualified(*n)).collect()
+    }
+
+    #[test]
+    fn filter_and_sort_orders_case_insensitively_regardless_of_input() {
+        let tables = tbls(&["Zebra", "apple", "Mango"]);
+        let out = super::filter_and_sort_tables(&tables, "");
+        let names: Vec<&str> = out.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["apple", "Mango", "Zebra"]);
+    }
+
+    #[test]
+    fn filter_and_sort_keeps_case_insensitive_substring_matches() {
+        let tables = tbls(&["users", "user_roles", "orders", "AUDIT_user"]);
+        let out = super::filter_and_sort_tables(&tables, "USER");
+        let names: Vec<&str> = out.iter().map(|t| t.name.as_str()).collect();
+        // Alphabetised, and "orders" (no "user") is dropped.
+        assert_eq!(names, vec!["AUDIT_user", "user_roles", "users"]);
+    }
+
+    #[test]
+    fn filter_and_sort_blank_or_whitespace_filter_keeps_everything() {
+        let tables = tbls(&["b", "a"]);
+        assert_eq!(super::filter_and_sort_tables(&tables, "   ").len(), 2);
+    }
+
+    #[test]
+    fn filter_and_sort_returns_empty_when_nothing_matches() {
+        let tables = tbls(&["users", "orders"]);
+        assert!(super::filter_and_sort_tables(&tables, "zzz").is_empty());
     }
 
     #[test]

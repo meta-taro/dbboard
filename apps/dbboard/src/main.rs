@@ -342,6 +342,7 @@ impl eframe::App for DesktopApp {
                     self.ai_settings.open();
                 }
                 language_menu(ui);
+                help_menu(ui);
             });
         });
         if let Some(admin) = &self.admin {
@@ -794,6 +795,27 @@ fn language_menu(ui: &mut egui::Ui) {
                 ui.close();
             }
         }
+    });
+}
+
+/// Public home of the project, surfaced through the Help menu so users
+/// can find the source, docs, and issue tracker from inside the app.
+const REPOSITORY_URL: &str = "https://github.com/meta-taro/dbboard";
+
+/// Render the Help menu (friction 2026-07-14: no in-app way to see the
+/// version or reach the project home). Shows the running version, a link
+/// to the community repository, and an issue-tracker shortcut.
+fn help_menu(ui: &mut egui::Ui) {
+    ui.menu_button(t!("help-menu"), |ui| {
+        // Version is intentionally un-translated: it's an identifier, and
+        // `CARGO_PKG_VERSION` resolves to this binary's workspace version.
+        ui.label(format!("dbboard {}", env!("CARGO_PKG_VERSION")));
+        ui.separator();
+        ui.hyperlink_to(t!("help-repository"), REPOSITORY_URL);
+        ui.hyperlink_to(
+            t!("help-report-issue"),
+            "https://github.com/meta-taro/dbboard/issues",
+        );
     });
 }
 

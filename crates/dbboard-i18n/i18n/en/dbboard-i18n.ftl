@@ -6,6 +6,8 @@ app-title = dbboard
 
 tables-heading = Tables
 tables-empty = (no tables)
+tables-filter-hint = Filter tables…
+tables-filter-no-match = No tables match
 
 sql-heading = SQL
 sql-run-button = Run
@@ -95,6 +97,9 @@ connections-switch-error = Could not connect
 # name (`English`, `日本語`, `한국어`, …) which is hard-coded in
 # `apps/dbboard` rather than translated.
 language-menu = Language
+help-menu = Help
+help-repository = Community repository
+help-report-issue = Report an issue
 
 # ADR-0023: AI assistance panel (Phase 4 Stage 1). The menu entry and
 # the panel are both hidden when no provider is wired at startup, so

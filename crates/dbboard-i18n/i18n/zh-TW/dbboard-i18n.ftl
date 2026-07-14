@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = 資料表
 tables-empty = (無資料表)
+tables-filter-hint = 篩選資料表…
+tables-filter-no-match = 沒有符合的資料表
 
 sql-heading = SQL
 sql-run-button = 執行
@@ -54,6 +56,9 @@ connections-active-marker = （目前）
 connections-switch-error = 無法連線
 
 language-menu = 語言
+help-menu = 說明
+help-repository = 社群儲存庫
+help-report-issue = 回報問題
 
 ai-menu-button = AI 助理
 ai-panel-title = AI 助理
