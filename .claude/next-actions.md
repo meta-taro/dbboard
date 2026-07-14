@@ -7,67 +7,67 @@
 
 ## 最終更新
 
-- 日付: 2026-07-10
-- develop tip: `1cec10f` (**PR #52 = Windows 内々配布パッケージング
-  (ADR-0032) merged**)
-- 作業ブランチ: `chore/post-pr52-doc-sync` (develop `1cec10f` から分岐、
-  project-status / roadmap / next-actions の tick、**push + chore PR
-  create 待ち**)
-- 直近ハイライト:
-  - **PR #52 (2026-07-10): Windows 内々配布パッケージング完了
-    (ADR-0032)。** exe 整備 3 点 (コンソール窓抑止 / アイコン+製品情報 /
-    CRT 静的リンク) + cargo-wix MSI ソース。build/packaging のみ =
-    contract 不変、非 Windows は no-op。全検証 green。
-  - **PR #51 (2026-07-10): query-UX 摩擦バッチ完了 (ADR-0030/0031)。**
-    run trigger / result grid 刷新 / auto-LIMIT / structure タブ。
+- 日付: 2026-07-14
+- develop tip: `150c458` (PR #57 merged)
+- **進行中の目標: 収集担当への内々配布 (Windows-only)。** store-cabaret
+  (Cloudflare D1) / store-lovehotel (Aurora DSQL IAM) / Vegas Gift
+  (Supabase) の 3 接続を収集する担当に dbboard デスクトップを渡す。
+  ハンドオフ前に 4 項目を入れる方針: 段階B (トークン自動リフレッシュ) /
+  About・バージョン表示 / ヘルプメニュー / テーブル右クリック簡易SQL。
+- **未 push のローカルブランチ (すべて human の push + PR 待ち):**
+  - `feature/aurora-dsql-iam` @ `eaa0dfa` = **PR #56 OPEN** (段階A
+    aurora-dsql-iam feature `dd602b2` + reconnect ボタン `eaa0dfa`)。
+    ライブテストで段階A の idle 再接続失敗を確認済 → reconnect は暫定策。
+  - `feat/about-help-menu` @ `fa48490` = **About/バージョン + ヘルプ
+    メニュー** (2026-07-14, develop から分岐)。全検証 green・pre-commit 通過。
+  - `feat/table-quick-sql` @ `f03a0b2` = **テーブル右クリック簡易SQL**
+    (SELECT * / COUNT(*)、read-only、2026-07-14, develop から分岐)。
+    全検証 green・pre-commit 通過。
 
 ## モード
 
 **in-use / continuous-improvement (menu-not-sequence)** — 2026-06-24 以降。
-ロードマップ順ではなく実利用ドリブン。今回の query-UX (PR #51) と
-Windows 配布 (PR #52) がその典型。Phase 4 Stage 2 Group A/B/C/D-1 完了、
-残りは D-2 (ADR-0029 = function-calling) のみで
-`feature/adr-0029-function-calling` に planning ball あり (別ストリーム)。
+今は収集担当への配布に向けたハンドオフ準備が実利用ドリブンの主軸。
 
 ---
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### **★ 最優先: `chore/post-pr52-doc-sync` の push + chore PR 作成**
+### **★ 最優先: 3 ブランチの push + PR、そして PR #56 の develop マージ**
 
-- **何**: この doc-sync ブランチ (project-status / roadmap /
-  next-actions の tick) を push し、develop に対して chore PR を立てる。
+- `feature/aurora-dsql-iam` (PR #56)、`feat/about-help-menu`、
+  `feat/table-quick-sql` を push し PR を作成 → develop にマージ。
   ```
-  git push -u origin chore/post-pr52-doc-sync
+  git push -u origin feature/aurora-dsql-iam   # 既に PR #56
+  git push -u origin feat/about-help-menu
+  git push -u origin feat/table-quick-sql
   ```
-- doc-only なので pre-commit は `--no-verify` 済 (Windows libsql teardown
-  segfault flake 回避の常設慣例)。希望あれば PR 本文ドラフトを用意する。
+- **PR #56 のマージが以下のゲート:** 段階B (#13) と収集セットアップ pack の
+  Aurora 部分 (#9) は `aurora-dsql-iam` kind に依存するため、#56 が
+  develop に入ってから着手するのが筋。
 
-### 選択肢 1: Windows MSI の実ビルド (配布したくなったら)
+### ゲート後の残タスク (agent 側で着手可能)
 
-- PR #52 で MSI **ソース**は揃った。実ビルドは human 手順:
+- **#13 段階B = Aurora DSQL IAM トークンのプール内自動リフレッシュ。**
+  新規 ADR (番号は #56=ADR-0036 マージ後に確定、暫定 0037)。sqlx 0.8 は
+  per-connection password callback を持たないため custom connector /
+  bespoke pool が要る。ハンドオフの本命 (24/7 無人運用の要件)。
+- **#9 収集セットアップ pack** = connections.toml テンプレ (D1/Supabase/
+  aurora-dsql-iam の 3 kind) + Windows 資格情報マネージャーへの secret
+  シード手順 + クイックスタート。**secret は一切ファイルに書かない。**
+  D1/Supabase 部分は develop からでも書けるが、aurora-dsql-iam 部分は
+  #56 マージ後。
+- **#14 収集リリースのビルド & ハンドオフ** = 上記すべて + #10/#11/#12 が
+  develop に入った後、`cargo build --release` の exe (または `cargo wix`
+  の MSI) を担当に渡す。exe 単体で自己完結 (15MB)。
+
+### 参考: MSI 実ビルド手順 (配布したくなったら)
+
+- PR #52 で MSI **ソース**は揃済。human 手順:
   1. WiX Toolset v3 をインストール (candle.exe / light.exe を PATH に)
   2. `cargo install cargo-wix`
   3. `cd apps/dbboard && cargo wix` → `target\wix\dbboard-0.1.0-x86_64.msi`
-- **exe 単体配布なら不要** = `cargo build --release` の
-  `target\release\dbboard.exe` (自己完結・15MB) をそのまま渡せる。
-- release CI (`cargo wix` on tag) は未着手 = 任意の follow-up。
-
-### 選択肢 2: ADR-0029 (Group D-2 = function-calling) draft 着手
-
-- `feature/adr-0029-function-calling` ブランチに draft ball あり。
-- D-1 の `describe_table` primitive が landed = D-2 の前提が揃った。
-- AI provider 側に tool-use surface を追加し、`describe_table` を最初の
-  callable tool として expose。in-process only の見込み。
-
-### 選択肢 3: 現状 friction 報告
-
-- 実利用で困っていることがあれば優先。既知の deferred 候補:
-  > 「AI history record を history panel に描画してほしい」(ADR-0027 で
-    意図的に deferred = rich viewer)
-  > 「Include column details / auto-LIMIT を session 跨ぎで記憶」
-    → `ui-preferences.toml` 系の小 ADR で拾える
-  > 「大規模 schema で prompt が重い」→ ADR-0028 open question 再訪
+- **exe 単体配布なら不要** = `target\release\dbboard.exe` をそのまま渡せる。
 
 ---
 
