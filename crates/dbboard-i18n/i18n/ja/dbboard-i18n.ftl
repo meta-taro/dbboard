@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = テーブル
 tables-empty = （テーブルなし）
+tables-context-select = 全行を SELECT
+tables-context-count = 行数をカウント
 
 sql-heading = SQL
 sql-run-button = 実行
