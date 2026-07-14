@@ -806,6 +806,11 @@ impl DbboardApp {
         if self.busy || self.sql.trim().is_empty() {
             return;
         }
+        // Bring the result forward: a query run while the user is on the
+        // Structure tab (ADR-0031) would otherwise leave its output hidden
+        // behind the table inspector. Switch at submit time so the busy
+        // spinner shows on the Results tab the output will land on.
+        self.active_tab = ResultTab::Results;
         // Apply the bare-SELECT guard once, up front, so history, the
         // pending record, and the executed statement all agree on exactly
         // what ran (ADR-0030). A no-op unless auto_limit is on and the
@@ -1275,6 +1280,10 @@ impl DbboardApp {
     fn render_tables_panel(&mut self, ui: &mut egui::Ui) {
         let active = self.structure.as_ref().map(|s| s.table.clone());
         let mut clicked: Option<TableInfo> = None;
+        // A quick-SQL starter picked from a row's right-click menu. Applied
+        // to the editor after the `&self.tables` borrow ends, mirroring how
+        // `clicked` defers `open_structure`.
+        let mut quick_sql: Option<String> = None;
         egui::Panel::left("tables").show_inside(ui, |ui| {
             ui.heading(t!("tables-heading"));
             ui.separator();
@@ -1291,9 +1300,25 @@ impl DbboardApp {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                         for table in tables {
                             let selected = active.as_ref() == Some(table);
-                            if ui.selectable_label(selected, &table.name).clicked() {
+                            let row = ui.selectable_label(selected, &table.name);
+                            if row.clicked() {
                                 clicked = Some(table.clone());
                             }
+                            // Right-click a table for quick starter queries
+                            // dropped straight into the editor. Read-only by
+                            // design (no DELETE/DROP): this ships to a
+                            // data-collection user, and a mis-click should
+                            // never be destructive.
+                            row.context_menu(|ui| {
+                                if ui.button(t!("tables-context-select")).clicked() {
+                                    quick_sql = Some(quick_select_sql(table));
+                                    ui.close();
+                                }
+                                if ui.button(t!("tables-context-count")).clicked() {
+                                    quick_sql = Some(quick_count_sql(table));
+                                    ui.close();
+                                }
+                            });
                         }
                     });
                 }
@@ -1302,6 +1327,9 @@ impl DbboardApp {
                 }
             }
         });
+        if let Some(sql) = quick_sql {
+            self.sql = sql;
+        }
         if let Some(table) = clicked {
             self.open_structure(table);
         }
@@ -1555,6 +1583,40 @@ fn cell_preview(text: &str) -> String {
     }
     let head: String = single_line.chars().take(CELL_PREVIEW_CHARS).collect();
     format!("{head}…")
+}
+
+/// Quote a single SQL identifier by wrapping it in double quotes and
+/// doubling any embedded quote. Double-quoted identifiers are the SQL
+/// standard and are accepted by every backend dbboard targets (the
+/// Postgres wire family + SQLite/libSQL), so one quoting rule covers all
+/// of them. Doubling the inner quote keeps an awkward table name (or a
+/// quote-injection attempt) from breaking out of the literal.
+fn quote_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
+/// Fully-qualified, quoted table reference. Schema-qualified only where
+/// the engine has schemas — SQLite/libSQL tables keep `schema: None` and
+/// render unqualified.
+fn quoted_table_ref(table: &TableInfo) -> String {
+    match &table.schema {
+        Some(schema) => format!("{}.{}", quote_ident(schema), quote_ident(&table.name)),
+        None => quote_ident(&table.name),
+    }
+}
+
+/// `SELECT *` starter query for the table right-click menu. The bare
+/// SELECT is intentional: the ADR-0030 auto-limit guard wraps it with a
+/// LIMIT at run time unless the user overrides, so we do not hard-code a
+/// row cap here.
+fn quick_select_sql(table: &TableInfo) -> String {
+    format!("SELECT * FROM {};", quoted_table_ref(table))
+}
+
+/// `SELECT COUNT(*)` starter query for the table right-click menu — a
+/// cheap "how big is this table" the collector reaches for constantly.
+fn quick_count_sql(table: &TableInfo) -> String {
+    format!("SELECT COUNT(*) FROM {};", quoted_table_ref(table))
 }
 
 /// Copy / save controls above the result grid (ADR-0035). The always-on
@@ -1901,8 +1963,9 @@ fn render_expanded_cell_popup(ui: &mut egui::Ui, expand_id: egui::Id) {
 mod tests {
     use super::{
         apply_auto_limit, cell_preview, error_display, is_bare_select, is_long_cell,
-        should_run_from_keys, AiProviderSlot, Command, DbboardApp, HistoryStatus,
-        PersistentHistoryStore, Reply, ResultTab, CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
+        quick_count_sql, quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot,
+        Command, DbboardApp, HistoryStatus, PersistentHistoryStore, Reply, ResultTab,
+        CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
     };
     use dbboard_core::{
         Column, ColumnInfo, DbError, QueryResult, Row, TableInfo, TableSchema, Value,
@@ -1989,6 +2052,41 @@ mod tests {
         let second = cmd_rx.try_recv().expect("ListTables command emitted");
         assert!(matches!(first, Command::Query(sql) if sql == "SELECT 1"));
         assert!(matches!(second, Command::ListTables));
+    }
+
+    #[test]
+    fn run_sql_from_structure_tab_switches_to_results() {
+        // Running a query while inspecting a table's structure must bring
+        // the result forward — otherwise the freshly-run query's output is
+        // hidden behind the Structure tab the user was last on (ADR-0031).
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.active_tab = ResultTab::Structure;
+        app.sql = "SELECT 1".into();
+        app.run_sql();
+        assert_eq!(
+            app.active_tab,
+            ResultTab::Results,
+            "a submitted query must switch the lower panel to the Results tab"
+        );
+    }
+
+    #[test]
+    fn run_sql_while_busy_does_not_switch_tab() {
+        // The busy guard short-circuits before any state change, so a
+        // second run while a query is in flight must not yank the user off
+        // the Structure tab they navigated to.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.sql = "SELECT 1".into();
+        app.run_sql(); // marks busy, switches to Results
+        app.active_tab = ResultTab::Structure; // user navigates away mid-flight
+        app.run_sql(); // no-op: still busy
+        assert_eq!(
+            app.active_tab,
+            ResultTab::Structure,
+            "a busy no-op run must not switch tabs"
+        );
     }
 
     #[test]
@@ -3164,5 +3262,39 @@ mod tests {
         app.drain_replies();
 
         assert!(app.structure.as_ref().unwrap().schema.is_none());
+    }
+
+    #[test]
+    fn quote_ident_wraps_in_double_quotes() {
+        // Double-quoted identifiers are SQL-standard and accepted by every
+        // backend dbboard targets (Postgres wire + SQLite/libSQL).
+        assert_eq!(quote_ident("users"), "\"users\"");
+    }
+
+    #[test]
+    fn quote_ident_doubles_embedded_quotes() {
+        // A `"` inside an identifier must be escaped by doubling, or a
+        // maliciously/awkwardly named table could break out of the quotes.
+        assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");
+    }
+
+    #[test]
+    fn quick_select_sql_for_unqualified_table() {
+        let sql = quick_select_sql(&TableInfo::unqualified("orders"));
+        assert_eq!(sql, "SELECT * FROM \"orders\";");
+    }
+
+    #[test]
+    fn quick_select_sql_qualifies_schema_when_present() {
+        // Postgres-family tables carry a schema; both parts are quoted and
+        // dot-joined so `public.orders` becomes `"public"."orders"`.
+        let sql = quick_select_sql(&TableInfo::qualified("public", "orders"));
+        assert_eq!(sql, "SELECT * FROM \"public\".\"orders\";");
+    }
+
+    #[test]
+    fn quick_count_sql_counts_rows() {
+        let sql = quick_count_sql(&TableInfo::unqualified("orders"));
+        assert_eq!(sql, "SELECT COUNT(*) FROM \"orders\";");
     }
 }
