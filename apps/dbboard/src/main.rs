@@ -342,6 +342,7 @@ impl eframe::App for DesktopApp {
                     self.ai_settings.open();
                 }
                 language_menu(ui);
+                help_menu(ui);
             });
         });
         if let Some(admin) = &self.admin {
@@ -776,6 +777,29 @@ fn now_rfc3339() -> String {
 /// Swap failures (e.g. a malformed `.ftl` in a freshly added locale)
 /// are logged but non-fatal — the previous locale stays selected so
 /// the UI keeps painting.
+/// Product + version line shown at the top of the Help menu.
+///
+/// Built from the binary crate's own `CARGO_PKG_VERSION` so a handoff
+/// bug report from a (non-technical) collector user can be pinned to an
+/// exact build. Deliberately not translated — it is a product name plus
+/// a semantic version, identical in every locale.
+fn about_line() -> String {
+    format!("dbboard {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Help menu (internal distribution). Two read-only rows: the running
+/// version (`about_line`) and a one-line pointer at the setup docs. Kept
+/// intentionally tiny — the collector users this ships to need "what
+/// version am I on" and "where do I look" far more than a rich About
+/// window.
+fn help_menu(ui: &mut egui::Ui) {
+    ui.menu_button(t!("help-menu"), |ui| {
+        ui.label(about_line());
+        ui.separator();
+        ui.label(t!("help-docs-hint"));
+    });
+}
+
 fn language_menu(ui: &mut egui::Ui) {
     ui.menu_button(t!("language-menu"), |ui| {
         let current = dbboard_i18n::current_language().to_string();
@@ -1225,6 +1249,21 @@ mod tests {
         assert_eq!(
             poll_pending_switch("store-cabaret", "store-cabaret", Some("stale")),
             PendingSwitchPoll::Succeeded
+        );
+    }
+
+    #[test]
+    fn about_line_carries_the_crate_version() {
+        use super::about_line;
+        // The Help > About line shown to (non-technical) collector users
+        // must name the product and the exact running version, so a
+        // handoff bug report can be pinned to a build. The version is the
+        // binary crate's own `CARGO_PKG_VERSION`, not a hard-coded string.
+        let line = about_line();
+        assert!(line.starts_with("dbboard "), "got: {line}");
+        assert!(
+            line.contains(env!("CARGO_PKG_VERSION")),
+            "about line must embed the crate version, got: {line}"
         );
     }
 }

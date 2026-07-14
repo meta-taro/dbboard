@@ -54,6 +54,8 @@ connections-active-marker = （目前）
 connections-switch-error = 無法連線
 
 language-menu = 語言
+help-menu = 說明
+help-docs-hint = 設定與連線指南請參閱 README.md 與 docs/。
 
 ai-menu-button = AI 助理
 ai-panel-title = AI 助理

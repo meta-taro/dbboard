@@ -299,6 +299,27 @@ mod tests {
     }
 
     #[test]
+    fn help_menu_labels_resolve_and_localize() {
+        // The Help menu (internal distribution) surfaces two localized
+        // labels: the menu title and a one-line docs pointer. Both must
+        // resolve to a real translation in en, and localise in ja rather
+        // than falling back to the raw key id.
+        let _g = LOADER_GUARD.lock().unwrap();
+
+        let en = init(Some("en")).expect("init must succeed for en");
+        assert_eq!(en.get("help-menu"), "Help");
+        let en_hint = en.get("help-docs-hint");
+        assert!(!en_hint.is_empty());
+        assert_ne!(en_hint, "help-docs-hint", "en hint must be translated");
+
+        let ja = init(Some("ja")).expect("init must succeed for ja");
+        let ja_menu = ja.get("help-menu");
+        assert!(!ja_menu.is_empty());
+        assert_ne!(ja_menu, "help-menu", "ja must not fall back to the key id");
+        assert_ne!(ja_menu, "Help", "ja must differ from en");
+    }
+
+    #[test]
     fn set_language_swaps_active_bundle_at_runtime() {
         // ADR-0022: a runtime switch from ja → en → zh-CN must update
         // both `t!()` lookups and `current_language()` reporting on

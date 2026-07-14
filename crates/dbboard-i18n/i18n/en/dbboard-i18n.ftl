@@ -96,6 +96,13 @@ connections-switch-error = Could not connect
 # `apps/dbboard` rather than translated.
 language-menu = Language
 
+# Help menu (internal distribution). A small Help menu surfaces the
+# running version and points non-technical collector users at the setup
+# docs. The version line itself (`dbboard 0.1.0`) is assembled in
+# `apps/dbboard` from `CARGO_PKG_VERSION`, so it is not translated here.
+help-menu = Help
+help-docs-hint = See README.md and docs/ for setup and connection guides.
+
 # ADR-0023: AI assistance panel (Phase 4 Stage 1). The menu entry and
 # the panel are both hidden when no provider is wired at startup, so
 # these keys are only ever rendered behind that gate. Error prefixes
