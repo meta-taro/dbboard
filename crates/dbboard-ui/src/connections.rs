@@ -137,6 +137,11 @@ pub enum EditKindState {
         replace_url: bool,
         new_url: String,
     },
+    /// Aurora DSQL IAM (ADR-0036) is config-file-only in v1: the list
+    /// offers Connect and Delete but not Edit, so this variant is a
+    /// read-only marker with no editable buffers. It exists only to keep
+    /// [`EditFormState::from_entry`] total.
+    AuroraDsqlIam,
 }
 
 impl ConnectionsView {
@@ -461,7 +466,16 @@ impl ConnectionsView {
                     {
                         *pending_connect = Some(entry.id.clone());
                     }
-                    if ui.small_button(t!("connections-edit-button")).clicked() {
+                    // Edit is disabled for config-file-only kinds
+                    // (Aurora DSQL IAM, ADR-0036): their fields are
+                    // hand-authored in connections.toml.
+                    if ui
+                        .add_enabled(
+                            is_ui_editable(&entry.kind),
+                            egui::Button::new(t!("connections-edit-button")).small(),
+                        )
+                        .clicked()
+                    {
                         *mode = Mode::Edit {
                             id: entry.id.clone(),
                             form: EditFormState::from_entry(entry),
@@ -554,6 +568,9 @@ impl EditFormState {
                 replace_url: false,
                 new_url: String::new(),
             },
+            // Config-file-only in v1; the list gates its Edit button off,
+            // so this arm exists only for exhaustiveness (ADR-0036).
+            ConnectionKind::AuroraDsqlIam { .. } => EditKindState::AuroraDsqlIam,
         };
         Self {
             name: entry.name.clone(),
@@ -622,6 +639,10 @@ impl EditFormState {
                     SecretField::Keep
                 },
             },
+            // Unreachable in practice — the list gates Edit off for this
+            // kind — but if ever submitted, `update()` rejects it as a
+            // KindMismatch, which is the safe outcome (ADR-0036).
+            EditKindState::AuroraDsqlIam => ConnectionKindEditDraft::AuroraDsqlIam,
         };
         ConnectionEditDraft {
             name: self.name.clone(),
@@ -647,7 +668,16 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::Neon { .. } => "Neon",
         ConnectionKind::Supabase { .. } => "Supabase",
         ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
+        ConnectionKind::AuroraDsqlIam { .. } => "Aurora DSQL (IAM)",
     }
+}
+
+/// Whether the UI offers an Edit form for `kind`. The Aurora DSQL IAM
+/// kind (ADR-0036) is config-file-only in v1 — it stores hand-authored
+/// AWS credentials in `connections.toml` — so the list shows Connect and
+/// Delete for it but disables Edit.
+fn is_ui_editable(kind: &ConnectionKind) -> bool {
+    !matches!(kind, ConnectionKind::AuroraDsqlIam { .. })
 }
 
 fn render_error(ui: &mut egui::Ui, msg: Option<&str>) {
@@ -796,6 +826,9 @@ fn render_edit_form(ui: &mut egui::Ui, id: &str, form: &mut EditFormState) {
                 egui::TextEdit::singleline(new_url).password(true),
             );
         }
+        // Config-file-only (ADR-0036): the list gates Edit off for this
+        // kind, so this arm is never reached — no editable fields to show.
+        EditKindState::AuroraDsqlIam => {}
     }
 }
 

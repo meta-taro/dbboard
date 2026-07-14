@@ -846,7 +846,12 @@ dependencies = [
  "async-trait",
  "dbboard-core",
  "futures-util",
+ "hex",
+ "hmac",
+ "percent-encoding",
+ "sha2",
  "sqlx",
+ "time",
  "tokio",
 ]
 

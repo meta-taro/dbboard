@@ -113,6 +113,13 @@ pub enum ConnectionKindEditDraft {
     AuroraDsql {
         url: SecretField,
     },
+    /// Aurora DSQL IAM (ADR-0036). Carries no editable field: this kind
+    /// is config-file-only in v1, so the UI never offers an editable form
+    /// for it. The variant exists only so the edit state machine is
+    /// total; any `update()` targeting it falls through
+    /// [`ConnectionAdmin::apply_update_kind`]'s catch-all as a
+    /// [`ConfigError::KindMismatch`].
+    AuroraDsqlIam,
 }
 
 /// Whether an editable secret field should be left alone or rewritten.
@@ -441,8 +448,9 @@ fn keyring_ref(id: &str, field: &str) -> String {
 }
 
 /// Enumerate every keyring ref that a given [`ConnectionKind`] points
-/// at. `Turso` has none; `D1`, `Postgres`, `Neon`, and `Supabase` each
-/// carry exactly one.
+/// at. `Turso` has none; `D1`, `Postgres`, `Neon`, `Supabase`, and
+/// `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its AWS
+/// secret-key ref (its other fields are non-secret and live inline).
 fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
     match kind {
         ConnectionKind::Turso { .. } => Vec::new(),
@@ -455,6 +463,10 @@ fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
         | ConnectionKind::AuroraDsql { keyring_url_ref } => {
             vec![keyring_url_ref.clone()]
         }
+        ConnectionKind::AuroraDsqlIam {
+            keyring_secret_key_ref,
+            ..
+        } => vec![keyring_secret_key_ref.clone()],
     }
 }
 
@@ -857,6 +869,86 @@ mod tests {
             secrets.get("dbboard.dsql.url"),
             Err(SecretError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn delete_aurora_dsql_iam_purges_the_secret_key_ref() {
+        // The IAM kind is config-file-only in v1 (no add/edit draft), so
+        // seed it directly and verify delete still purges its secret-key
+        // keyring ref via `keyring_refs_in`.
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        secrets
+            .set("dbboard.dsql-iam.secret_key", "AWS_SECRET")
+            .expect("seed secret");
+        let file = ConnectionFile {
+            version: crate::store::CONFIG_VERSION,
+            connections: vec![ConnectionEntry {
+                id: "dsql-iam".to_string(),
+                name: "Aurora DSQL (IAM)".to_string(),
+                kind: ConnectionKind::AuroraDsqlIam {
+                    endpoint: "abc.dsql.ap-northeast-1.on.aws".to_string(),
+                    region: "ap-northeast-1".to_string(),
+                    database: "postgres".to_string(),
+                    username: "admin".to_string(),
+                    access_key_id: "AKIAEXAMPLE".to_string(),
+                    keyring_secret_key_ref: "dbboard.dsql-iam.secret_key".to_string(),
+                },
+            }],
+        };
+        let mut admin =
+            ConnectionAdmin::new_with_file(path, secrets.clone() as Arc<dyn SecretStore>, file);
+
+        admin.delete("dsql-iam").expect("delete");
+
+        assert!(admin.entries().is_empty());
+        assert!(matches!(
+            secrets.get("dbboard.dsql-iam.secret_key"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn update_aurora_dsql_iam_kind_is_rejected_as_mismatch() {
+        // There is no IAM edit-draft, so any update targeting an IAM entry
+        // falls through `apply_update_kind`'s catch-all as a KindMismatch
+        // — v1 requires delete + re-add (hand-edit the TOML) to change it.
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let file = ConnectionFile {
+            version: crate::store::CONFIG_VERSION,
+            connections: vec![ConnectionEntry {
+                id: "dsql-iam".to_string(),
+                name: "Aurora DSQL (IAM)".to_string(),
+                kind: ConnectionKind::AuroraDsqlIam {
+                    endpoint: "abc.dsql.ap-northeast-1.on.aws".to_string(),
+                    region: "ap-northeast-1".to_string(),
+                    database: "postgres".to_string(),
+                    username: "admin".to_string(),
+                    access_key_id: "AKIAEXAMPLE".to_string(),
+                    keyring_secret_key_ref: "dbboard.dsql-iam.secret_key".to_string(),
+                },
+            }],
+        };
+        let mut admin = ConnectionAdmin::new_with_file(path, secrets as Arc<dyn SecretStore>, file);
+
+        let err = admin
+            .update(
+                "dsql-iam",
+                ConnectionEditDraft {
+                    name: "renamed".to_string(),
+                    kind: ConnectionKindEditDraft::AuroraDsql {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect_err("IAM update must be rejected");
+        match &err {
+            ConfigError::KindMismatch { id } => assert_eq!(id, "dsql-iam"),
+            other => panic!("expected KindMismatch, got {other:?}"),
+        }
     }
 
     #[test]
