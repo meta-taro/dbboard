@@ -23,16 +23,49 @@
 //! `timestamptz`, `jsonb`, arrays, and user-defined types — without
 //! pulling in per-type decode features.
 
+use std::sync::{Arc, PoisonError, RwLock, Weak};
+
 use async_trait::async_trait;
 use dbboard_core::{
     too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter, DbError, DbResult,
     QueryResult, Row, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
 use sqlx::{Column as _, Either, Row as _, TypeInfo as _, ValueRef as _};
 
 mod dsql_auth;
+
+/// Where an adapter gets the `PgPool` to run the next statement.
+///
+/// Every flavor except `aurora-dsql-iam` holds a plain [`PgPool`] for the
+/// process lifetime ([`PoolHandle::Static`]). The IAM flavor's token
+/// expires (~15 min), and sqlx 0.8 has no per-connection password callback,
+/// so its pool is periodically rebuilt with a fresh token and swapped
+/// behind an `RwLock` by a background task ([`PoolHandle::Refreshing`],
+/// ADR-0037 段階B).
+enum PoolHandle {
+    Static(PgPool),
+    Refreshing(Arc<RwLock<PgPool>>),
+}
+
+impl PoolHandle {
+    /// The pool to use for the next statement. Cheap — [`PgPool`] is an
+    /// `Arc` internally, so this clones a handle, not the connections. For
+    /// the refreshing variant the read lock is held only long enough to
+    /// clone that handle and is released before the caller `.await`s, so a
+    /// mid-flight token swap never blocks a running query. A poisoned lock
+    /// (a panic in the refresh task) is recovered rather than propagated,
+    /// so a background hiccup cannot wedge the whole adapter.
+    fn current(&self) -> PgPool {
+        match self {
+            PoolHandle::Static(pool) => pool.clone(),
+            PoolHandle::Refreshing(lock) => {
+                lock.read().unwrap_or_else(PoisonError::into_inner).clone()
+            }
+        }
+    }
+}
 
 /// Small pool: a desktop client issues one statement at a time, so a
 /// handful of connections is plenty and keeps server-side resource use
@@ -132,8 +165,10 @@ pub const FLAVOR_AURORA_DSQL: &str = "aurora-dsql";
 
 pub struct PostgresAdapter {
     // Only the pool is retained; the connection URL (with its password)
-    // is intentionally not stored, so it cannot leak through Debug.
-    pool: sqlx::PgPool,
+    // is intentionally not stored, so it cannot leak through Debug. For
+    // `aurora-dsql-iam` this is a refreshing handle whose token is re-minted
+    // in the background (ADR-0037); every other flavor holds a static pool.
+    pool: PoolHandle,
     // Stable label reported by `id()`. See [`FLAVOR_POSTGRES`] /
     // [`FLAVOR_NEON`]. A `'static str` because the only flavors are
     // compile-time constants in this crate.
@@ -215,43 +250,35 @@ impl PostgresAdapter {
     /// stale token. Admin (`admin`) usernames get a `DbConnectAdmin`
     /// token; any other role gets `DbConnect`.
     ///
-    /// The token is short-lived (~15 min); this constructor mints one per
-    /// call. A cold reconnect long after the last connect will fail until
-    /// the next connect/switch mints a fresh token — automatic in-pool
-    /// refresh is a follow-up ADR (段階B), out of scope here.
+    /// The token is short-lived (~15 min). To keep an unattended 24/7
+    /// connection alive (段階B, ADR-0037), a background task re-mints the
+    /// token and swaps in a freshly authenticated pool every
+    /// [`dsql_auth::refresh_interval`] — so a new physical connection is
+    /// always dialled with a current token and Aurora DSQL's idle-recycle
+    /// `access denied` cannot occur. The task stops when this adapter is
+    /// dropped (process exit or a connection switch), because it only holds
+    /// a [`Weak`] handle to the shared pool.
     ///
     /// # Errors
     ///
     /// Same as [`connect`](Self::connect). A clock skew or wrong
     /// credentials surface as [`DbError::Connection`] (auth rejection)
-    /// from the underlying pool.
+    /// from the underlying pool. A later refresh failure is non-fatal: the
+    /// current pool is kept and the next tick retries.
     pub async fn connect_aurora_dsql_iam(params: AuroraDsqlIamParams) -> DbResult<Self> {
         // The `admin` role authenticates against the admin action; every
         // other role uses the plain connect action.
         let is_admin = params.username == "admin";
-        let token = dsql_auth::generate_dsql_token(&dsql_auth::DsqlTokenParams {
-            endpoint: &params.endpoint,
-            region: &params.region,
-            access_key_id: &params.access_key_id,
-            secret_key: &params.secret_key,
-            is_admin,
-            expires_secs: dsql_auth::DEFAULT_EXPIRES_SECS,
-        });
+        let pool = build_dsql_pool(&params, is_admin).await?;
 
-        // Build the options programmatically rather than via a URL string:
-        // the token is itself percent-encoded, and round-tripping it
-        // through URL parsing would double-decode `%2F` back to `/` and
-        // corrupt the signature. `.password()` takes the token verbatim.
-        // DSQL mandates TLS; `Require` encrypts without pinning the cert,
-        // matching the rest of the Postgres-family adapters.
-        let options = PgConnectOptions::new()
-            .host(&params.endpoint)
-            .port(5432)
-            .database(&params.database)
-            .username(&params.username)
-            .password(&token)
-            .ssl_mode(PgSslMode::Require);
-        Self::connect_options(options, FLAVOR_AURORA_DSQL).await
+        // Share the pool behind an RwLock so the refresh task can swap in a
+        // freshly authenticated one without disturbing in-flight queries.
+        let shared = Arc::new(RwLock::new(pool));
+        spawn_token_refresh(Arc::downgrade(&shared), params, is_admin);
+        Ok(Self {
+            pool: PoolHandle::Refreshing(shared),
+            flavor: FLAVOR_AURORA_DSQL,
+        })
     }
 
     async fn connect_with_flavor(config: PostgresConfig, flavor: &'static str) -> DbResult<Self> {
@@ -269,15 +296,101 @@ impl PostgresAdapter {
     }
 
     /// Build the pool from already-parsed options, hardening the TLS
-    /// policy first. Shared by the URL-based and IAM-token connect paths.
+    /// policy first. Shared by the URL-based connect paths (the IAM path
+    /// builds its pool through [`build_dsql_pool`] instead so it can be
+    /// re-run by the refresh task).
     async fn connect_options(options: PgConnectOptions, flavor: &'static str) -> DbResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(MAX_CONNECTIONS)
             .connect_with(harden_ssl_mode(options))
             .await
             .map_err(|e| classify_error(&e))?;
-        Ok(Self { pool, flavor })
+        Ok(Self {
+            pool: PoolHandle::Static(pool),
+            flavor,
+        })
     }
+}
+
+/// Mint a fresh Aurora DSQL IAM token from `params` and open a pool
+/// authenticated with it. Re-run by [`spawn_token_refresh`] on every
+/// refresh tick, so it must depend on nothing but its arguments and the
+/// clock.
+///
+/// The options are built programmatically rather than via a URL string:
+/// the token is itself percent-encoded, and round-tripping it through URL
+/// parsing would double-decode `%2F` back to `/` and corrupt the
+/// signature. `.password()` takes the token verbatim. DSQL mandates TLS;
+/// `Require` encrypts without pinning the cert, matching the rest of the
+/// Postgres-family adapters.
+async fn build_dsql_pool(params: &AuroraDsqlIamParams, is_admin: bool) -> DbResult<PgPool> {
+    let token = dsql_auth::generate_dsql_token(&dsql_auth::DsqlTokenParams {
+        endpoint: &params.endpoint,
+        region: &params.region,
+        access_key_id: &params.access_key_id,
+        secret_key: &params.secret_key,
+        is_admin,
+        expires_secs: dsql_auth::DEFAULT_EXPIRES_SECS,
+    });
+    let options = PgConnectOptions::new()
+        .host(&params.endpoint)
+        .port(5432)
+        .database(&params.database)
+        .username(&params.username)
+        .password(&token)
+        .ssl_mode(PgSslMode::Require);
+    PgPoolOptions::new()
+        .max_connections(MAX_CONNECTIONS)
+        .connect_with(options)
+        .await
+        .map_err(|e| classify_error(&e))
+}
+
+/// Spawn the background token-refresh loop for an `aurora-dsql-iam` pool
+/// (ADR-0037 段階B).
+///
+/// The task owns `params` (so it can re-sign forever) and holds only a
+/// [`Weak`] to the shared pool: once the adapter is dropped, the last
+/// strong `Arc` goes and the next `upgrade()` returns `None`, so the loop
+/// exits on its own — no shutdown channel, no task that outlives a
+/// connection switch. `params` carries the AWS secret key, so it lives in
+/// memory for the adapter's whole lifetime here; it is never logged and
+/// never in a `Debug`, matching the 段階A posture.
+fn spawn_token_refresh(pool: Weak<RwLock<PgPool>>, params: AuroraDsqlIamParams, is_admin: bool) {
+    let interval = dsql_auth::refresh_interval(dsql_auth::DEFAULT_EXPIRES_SECS);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            // Adapter gone while we slept → nothing left to refresh.
+            if pool.upgrade().is_none() {
+                return;
+            }
+
+            // A transient mint/connect failure is non-fatal: keep the
+            // current pool (its token may still be valid) and retry next
+            // tick rather than tearing down a working connection.
+            let Ok(fresh) = build_dsql_pool(&params, is_admin).await else {
+                continue;
+            };
+
+            // Re-check liveness after the (awaiting) build, then swap. The
+            // write lock is held only for the pointer swap, never across an
+            // await.
+            let Some(shared) = pool.upgrade() else {
+                return;
+            };
+            let old = {
+                let mut guard = shared.write().unwrap_or_else(PoisonError::into_inner);
+                std::mem::replace(&mut *guard, fresh)
+            };
+            drop(shared);
+
+            // Drain the retired pool off the refresh path: `close()` waits
+            // for in-flight connections to return, which must not hold up
+            // the next refresh tick.
+            tokio::spawn(async move { old.close().await });
+        }
+    });
 }
 
 #[async_trait]
@@ -294,8 +407,9 @@ impl DatabaseAdapter for PostgresAdapter {
     }
 
     async fn ping(&self) -> DbResult<()> {
+        let pool = self.pool.current();
         sqlx::raw_sql("SELECT 1")
-            .execute(&self.pool)
+            .execute(&pool)
             .await
             .map_err(|e| classify_error(&e))
             .map(|_| ())
@@ -327,13 +441,15 @@ impl DatabaseAdapter for PostgresAdapter {
         // unqualified DDL lands on both Postgres and CockroachDB.
         let schema = table.schema.as_deref().unwrap_or("public");
 
+        let pool = self.pool.current();
+
         // Unlike `query`, this path uses the extended protocol
         // (`sqlx::query` + binds): schema/table names come from
         // introspection data, and binding keeps them out of the SQL text.
         let column_rows = sqlx::query(DESCRIBE_COLUMNS_SQL)
             .bind(schema)
             .bind(&table.name)
-            .fetch_all(&self.pool)
+            .fetch_all(&pool)
             .await
             .map_err(|e| classify_error(&e))?;
         // information_schema returns an empty set (not an error) for an
@@ -349,7 +465,7 @@ impl DatabaseAdapter for PostgresAdapter {
         let pk_rows = sqlx::query(DESCRIBE_PK_SQL)
             .bind(schema)
             .bind(&table.name)
-            .fetch_all(&self.pool)
+            .fetch_all(&pool)
             .await
             .map_err(|e| classify_error(&e))?;
         let primary_key = pk_rows
@@ -392,7 +508,8 @@ impl DatabaseAdapter for PostgresAdapter {
         // `rows` empty and reports the affected count. Mixing both in
         // one call is not supported (`columns` would reflect the first
         // row-returning statement only).
-        let mut stream = sqlx::raw_sql(sql).fetch_many(&self.pool);
+        let pool = self.pool.current();
+        let mut stream = sqlx::raw_sql(sql).fetch_many(&pool);
 
         let mut columns: Option<Vec<Column>> = None;
         let mut rows: Vec<Row> = Vec::new();
@@ -659,10 +776,47 @@ mod tests {
     async fn capabilities_advertise_describe_table() {
         let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
         let adapter = super::PostgresAdapter {
-            pool,
+            pool: super::PoolHandle::Static(pool),
             flavor: FLAVOR_POSTGRES,
         };
         assert!(adapter.capabilities().has_describe_table);
+    }
+
+    /// A `Static` handle hands back exactly the pool it wraps. `max_connections`
+    /// is an observable, network-free property of a lazily-built pool, so it
+    /// stands in for pool identity here (`PgPool` exposes no identity of its
+    /// own).
+    #[tokio::test]
+    async fn static_pool_handle_returns_the_wrapped_pool() {
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .connect_lazy_with(PgConnectOptions::new());
+        let handle = super::PoolHandle::Static(pool);
+        assert_eq!(handle.current().options().get_max_connections(), 3);
+    }
+
+    /// The refreshing handle reads the *current* pool through the lock, so a
+    /// background swap is visible to the next `current()` — the exact
+    /// behaviour the token-refresh task (ADR-0037) relies on. Two lazy pools
+    /// with distinct `max_connections` stand in for a stale vs. fresh pool.
+    #[tokio::test]
+    async fn refreshing_pool_handle_reflects_a_swap() {
+        use std::sync::{Arc, RwLock};
+
+        let stale = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy_with(PgConnectOptions::new());
+        let shared = Arc::new(RwLock::new(stale));
+        let handle = super::PoolHandle::Refreshing(Arc::clone(&shared));
+        assert_eq!(handle.current().options().get_max_connections(), 1);
+
+        // Simulate the refresh task swapping a freshly authenticated pool in.
+        let fresh = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_lazy_with(PgConnectOptions::new());
+        *shared.write().unwrap() = fresh;
+
+        assert_eq!(handle.current().options().get_max_connections(), 2);
     }
 
     #[test]
