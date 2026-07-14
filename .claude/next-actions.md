@@ -8,21 +8,26 @@
 ## 最終更新
 
 - 日付: 2026-07-14
-- develop tip: `150c458` (PR #57 merged)
+- develop tip: `ced0941` (PR #56 aurora-dsql-iam 段階A merged)
 - **進行中の目標: 収集担当への内々配布 (Windows-only)。** store-cabaret
   (Cloudflare D1) / store-lovehotel (Aurora DSQL IAM) / Vegas Gift
   (Supabase) の 3 接続を収集する担当に dbboard デスクトップを渡す。
   ハンドオフ前に 4 項目を入れる方針: 段階B (トークン自動リフレッシュ) /
   About・バージョン表示 / ヘルプメニュー / テーブル右クリック簡易SQL。
-- **未 push のローカルブランチ (すべて human の push + PR 待ち):**
-  - `feature/aurora-dsql-iam` @ `eaa0dfa` = **PR #56 OPEN** (段階A
-    aurora-dsql-iam feature `dd602b2` + reconnect ボタン `eaa0dfa`)。
-    ライブテストで段階A の idle 再接続失敗を確認済 → reconnect は暫定策。
-  - `feat/about-help-menu` @ `fa48490` = **About/バージョン + ヘルプ
-    メニュー** (2026-07-14, develop から分岐)。全検証 green・pre-commit 通過。
-  - `feat/table-quick-sql` @ `f03a0b2` = **テーブル右クリック簡易SQL**
-    (SELECT * / COUNT(*)、read-only、2026-07-14, develop から分岐)。
-    全検証 green・pre-commit 通過。
+- **4 項目の進捗:**
+  - ✅ テーブル右クリック簡易SQL = develop マージ済。
+  - 🔲 About/バージョン + ヘルプメニュー = **PR #60 OPEN・MERGEABLE**
+    (`feat/about-help-menu`, 3 commits)。**human のマージ待ち。**
+  - 🔲 段階B = **実装完了・push 待ち**
+    (`feature/adr-0037-dsql-token-refresh`, 3 commits, 下記)。
+- **human のボール (push / merge 待ち):**
+  - **PR #60 (`feat/about-help-menu`)** = MERGEABLE。develop にマージするだけ。
+  - **`feature/adr-0037-dsql-token-refresh`** = 段階B 実装 (ADR-0037)。
+    未 push。3 commits: `90b2392` ADR-0037 + `1811fa5` 実装 + `38e556f`
+    README。pre-push ゲート (build --release / test --release) まで green。
+    ```
+    git push -u origin feature/adr-0037-dsql-token-refresh
+    ```
 
 ## モード
 
@@ -33,33 +38,31 @@
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### **★ 最優先: 3 ブランチの push + PR、そして PR #56 の develop マージ**
+### **★ 最優先: PR #60 マージ + 段階B ブランチ push**
 
-- `feature/aurora-dsql-iam` (PR #56)、`feat/about-help-menu`、
-  `feat/table-quick-sql` を push し PR を作成 → develop にマージ。
-  ```
-  git push -u origin feature/aurora-dsql-iam   # 既に PR #56
-  git push -u origin feat/about-help-menu
-  git push -u origin feat/table-quick-sql
-  ```
-- **PR #56 のマージが以下のゲート:** 段階B (#13) と収集セットアップ pack の
-  Aurora 部分 (#9) は `aurora-dsql-iam` kind に依存するため、#56 が
-  develop に入ってから着手するのが筋。
+1. **PR #60 (`feat/about-help-menu`) を develop にマージ** (MERGEABLE)。
+2. **段階B ブランチを push** して PR 作成 → develop にマージ:
+   ```
+   git push -u origin feature/adr-0037-dsql-token-refresh
+   ```
+- どちらも #56 マージで解消済。段階B は ADR-0037 として実装完了、
+  ゲート待ちは無い。
 
 ### ゲート後の残タスク (agent 側で着手可能)
 
-- **#13 段階B = Aurora DSQL IAM トークンのプール内自動リフレッシュ。**
-  新規 ADR (番号は #56=ADR-0036 マージ後に確定、暫定 0037)。sqlx 0.8 は
-  per-connection password callback を持たないため custom connector /
-  bespoke pool が要る。ハンドオフの本命 (24/7 無人運用の要件)。
 - **#9 収集セットアップ pack** = connections.toml テンプレ (D1/Supabase/
   aurora-dsql-iam の 3 kind) + Windows 資格情報マネージャーへの secret
   シード手順 + クイックスタート。**secret は一切ファイルに書かない。**
-  D1/Supabase 部分は develop からでも書けるが、aurora-dsql-iam 部分は
-  #56 マージ後。
-- **#14 収集リリースのビルド & ハンドオフ** = 上記すべて + #10/#11/#12 が
+  aurora-dsql-iam 部分の依存 (#56) は develop 入り済 → 今すぐ着手可。
+- **#14 収集リリースのビルド & ハンドオフ** = 上記すべて + #60 + 段階B が
   develop に入った後、`cargo build --release` の exe (または `cargo wix`
   の MSI) を担当に渡す。exe 単体で自己完結 (15MB)。
+
+### doc-sync (house パターン: 別 chore ブランチ)
+
+- 段階B / #56-merge / #60-merge の後追いで `docs/roadmap.md` の tick +
+  `.claude/project-status.md` を `chore/post-adr-0037-doc-sync` に載せる。
+  feat ブランチには載せない。
 
 ### 参考: MSI 実ビルド手順 (配布したくなったら)
 
