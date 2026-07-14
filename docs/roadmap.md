@@ -220,6 +220,19 @@ the UI or the core.
   password segment must carry a short-lived IAM authentication token
   (~15 min TTL); SDK-driven auto-refresh is deliberately deferred to a
   future ADR. Live test gated on `DBBOARD_AURORA_DSQL_URL`.)
+- [x] Aurora DSQL self-minted IAM tokens — `aurora-dsql-iam` kind
+  ([ADR-0036](decisions.md), PR #56): dbboard mints the ~15-min SigV4
+  IAM token itself from stored AWS credentials (hand-rolled SigV4, no
+  AWS SDK, preserving the rustls-ring posture), so no hand-refresh. Only
+  the AWS secret access key is a secret (keychain); access key id,
+  endpoint, region, database, username live inline. 段階A minted once
+  at build time with a **Reconnect** button as the stopgap.
+- [x] Aurora DSQL in-pool token auto-refresh (段階B) —
+  ([ADR-0037](decisions.md), PR #61): a timer-based pool-swap
+  (`PoolHandle::{Static,Refreshing}`, `Weak`-held background task
+  re-signing at 2/3 of TTL) keeps an `aurora-dsql-iam` connection alive
+  unattended around the clock, removing the manual-Reconnect need that
+  段階A left open.
 - [x] Adapter-specific quirks documented in each crate's README
 
 Exit criteria met: a user can switch between Neon, Supabase, Aurora
@@ -390,6 +403,13 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 - [x] Table structure browser — click a sidebar table to inspect its
       columns via the cross-adapter `describe_table`
       ([ADR-0031](decisions.md), PR #51).
+- [x] Table right-click quick-SQL — a sidebar-table context menu that
+      drops two read-only starter queries (`SELECT *` and `COUNT(*)`,
+      identifier-quoted and schema-qualified) into the editor; kept
+      non-destructive by design for the collector handoff (PR #59).
+- [x] Help menu with version + docs pointer — a menu-bar entry showing
+      the running build version (so a handoff bug report pins an exact
+      build) and a pointer at README/`docs/` (PR #60).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
@@ -403,6 +423,15 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       installer sources ([ADR-0032](decisions.md), PR #52). Building the
       MSI is a maintainer step (`cargo wix`); the plain exe needs no
       extra tooling.
+- [x] Collector setup pack — `docs/collector-setup/` ships a
+      secret-free `connections.template.toml` (D1 / aurora-dsql-iam /
+      supabase) plus a Windows `cmdkey` quickstart, so the
+      data-collection operator can seed the OS keychain and launch
+      without a secret ever touching a tracked file. A guard test
+      (`crates/dbboard-config/tests/collector_template.rs`) parses the
+      shipped template through the production schema so drift fails
+      `cargo test`, not the operator's launch (PR #63).
+- [ ] Build & hand off the collector release exe from develop
 - [ ] Release CI (build + `cargo wix` on a tagged push)
 - [ ] macOS / Linux packaging
 
