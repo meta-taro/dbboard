@@ -51,8 +51,10 @@ Aurora DSQL also has a second connection kind, `aurora-dsql-iam`
 ([ADR-0036](docs/decisions.md)): instead of a manually supplied URL
 whose token expires in ~15 minutes, dbboard mints the SigV4 IAM token
 itself from stored AWS credentials, for connections that need to stay
-up 24/7. The token is minted at connect time; continuous in-pool
-refresh is a planned follow-up.
+up 24/7. A background task re-mints the token and swaps in a freshly
+authenticated pool before it expires
+([ADR-0037](docs/decisions.md), 段階B), so an unattended connection
+survives Aurora DSQL's idle recycle without a manual reconnect.
 
 The Supabase REST/auth layer is deliberately deferred to a future ADR —
 at this stage all pg-wire flavors use the same `postgres://…` URL

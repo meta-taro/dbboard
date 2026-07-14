@@ -83,10 +83,12 @@ pub(crate) async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn D
         } => {
             // Aurora DSQL flavor (ADR-0021), but the adapter mints its own
             // SigV4 IAM token here from the AWS credentials rather than
-            // being handed a pre-signed URL (ADR-0036). The token is
-            // minted once at build; a cold reconnect >15 min later fails
-            // until the next connection switch re-mints. The secret_key
-            // came from the OS keychain and is dropped with `params`.
+            // being handed a pre-signed URL (ADR-0036). A background task
+            // re-mints the token and swaps in a freshly authenticated pool
+            // before expiry (ADR-0037 段階B), so an unattended 24/7
+            // connection survives Aurora DSQL's idle recycle. The secret_key
+            // came from the OS keychain; the refresh task retains it for the
+            // adapter's lifetime and it is never logged.
             let adapter = PostgresAdapter::connect_aurora_dsql_iam(AuroraDsqlIamParams {
                 endpoint,
                 region,
