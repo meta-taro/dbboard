@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = 테이블
 tables-empty = (테이블 없음)
+tables-context-select = 모든 행 선택
+tables-context-count = 행 수 세기
 
 sql-heading = SQL
 sql-run-button = 실행
