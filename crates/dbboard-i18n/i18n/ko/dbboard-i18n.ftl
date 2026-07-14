@@ -4,6 +4,9 @@ tables-heading = 테이블
 tables-empty = (테이블 없음)
 tables-filter-hint = 테이블 필터…
 tables-filter-no-match = 일치하는 테이블 없음
+table-menu-select-100 = 상위 100행
+table-menu-count = 행 수
+table-menu-structure = 구조 열기
 
 sql-heading = SQL
 sql-run-button = 실행

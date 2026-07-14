@@ -8,6 +8,9 @@ tables-heading = Tables
 tables-empty = (no tables)
 tables-filter-hint = Filter tables…
 tables-filter-no-match = No tables match
+table-menu-select-100 = Top 100 rows
+table-menu-count = Row count
+table-menu-structure = Open structure
 
 sql-heading = SQL
 sql-run-button = Run

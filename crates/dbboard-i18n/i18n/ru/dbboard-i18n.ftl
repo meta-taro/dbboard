@@ -4,6 +4,9 @@ tables-heading = Таблицы
 tables-empty = (нет таблиц)
 tables-filter-hint = Фильтр таблиц…
 tables-filter-no-match = Нет подходящих таблиц
+table-menu-select-100 = Первые 100 строк
+table-menu-count = Количество строк
+table-menu-structure = Открыть структуру
 
 sql-heading = SQL
 sql-run-button = Выполнить

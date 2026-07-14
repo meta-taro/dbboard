@@ -4,6 +4,9 @@ tables-heading = 資料表
 tables-empty = (無資料表)
 tables-filter-hint = 篩選資料表…
 tables-filter-no-match = 沒有符合的資料表
+table-menu-select-100 = 前 100 列
+table-menu-count = 列數統計
+table-menu-structure = 開啟結構
 
 sql-heading = SQL
 sql-run-button = 執行

@@ -4,6 +4,9 @@ tables-heading = 数据表
 tables-empty = (无数据表)
 tables-filter-hint = 筛选表…
 tables-filter-no-match = 没有匹配的表
+table-menu-select-100 = 前 100 行
+table-menu-count = 行数统计
+table-menu-structure = 打开结构
 
 sql-heading = SQL
 sql-run-button = 运行
