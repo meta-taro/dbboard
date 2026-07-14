@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = Таблицы
 tables-empty = (нет таблиц)
+tables-filter-hint = Фильтр таблиц…
+tables-filter-no-match = Нет подходящих таблиц
 
 sql-heading = SQL
 sql-run-button = Выполнить
@@ -54,6 +56,9 @@ connections-active-marker = (активно)
 connections-switch-error = Не удалось подключиться
 
 language-menu = Язык
+help-menu = Справка
+help-repository = Репозиторий сообщества
+help-report-issue = Сообщить о проблеме
 
 ai-menu-button = ИИ-ассистент
 ai-panel-title = ИИ-ассистент
