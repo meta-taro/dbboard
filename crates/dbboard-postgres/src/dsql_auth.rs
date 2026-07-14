@@ -22,6 +22,8 @@
 //! vector in the unit tests below, so a regression in the HMAC chain
 //! fails loudly offline rather than as an opaque auth rejection online.
 
+use std::time::Duration;
+
 use hmac::{Hmac, Mac};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use sha2::{Digest, Sha256};
@@ -45,6 +47,20 @@ const AWS4_REQUEST: &str = "aws4_request";
 /// ~15 minutes regardless of a larger value, so 900s is both the cap and
 /// a sensible default; a longer request just wastes signature headroom.
 pub const DEFAULT_EXPIRES_SECS: u32 = 900;
+
+/// How long a refreshing pool (段階B, ADR-0037) waits between token
+/// re-mints: two-thirds of the token TTL. At any instant the live pool's
+/// token is therefore no older than this, leaving at least the remaining
+/// third of the TTL for a fresh physical connection to dial before the
+/// token expires. The result is strictly greater than zero and — for any
+/// TTL of two seconds or more — strictly less than the TTL itself, which
+/// is the invariant that keeps a dial from racing expiry.
+#[must_use]
+pub fn refresh_interval(expires_secs: u32) -> Duration {
+    // `.max(1)` keeps the interval positive even for a degenerate 0/1s TTL,
+    // so a caller can never accidentally spin a zero-delay refresh loop.
+    Duration::from_secs((u64::from(expires_secs) * 2 / 3).max(1))
+}
 
 /// `YYYYMMDDTHHMMSSZ` — the `X-Amz-Date` and string-to-sign timestamp.
 const AMZ_DATE_FORMAT: &[FormatItem<'static>] =
@@ -300,5 +316,29 @@ mod tests {
         assert_eq!(encode("a/b"), "a%2Fb");
         assert_eq!(encode("A-Z_a.z~0"), "A-Z_a.z~0");
         assert_eq!(encode("+ "), "%2B%20");
+    }
+
+    #[test]
+    fn refresh_interval_is_two_thirds_of_ttl_and_stays_below_it() {
+        use super::{refresh_interval, DEFAULT_EXPIRES_SECS};
+        use std::time::Duration;
+
+        // The default 900s TTL refreshes every 600s.
+        assert_eq!(
+            refresh_interval(DEFAULT_EXPIRES_SECS),
+            Duration::from_secs(600)
+        );
+
+        // Invariant for every sane TTL: a positive interval that still
+        // leaves headroom before the token expires. A dial can never race
+        // expiry as long as this holds.
+        for ttl in [2u32, 30, 300, 900, 3600] {
+            let iv = refresh_interval(ttl);
+            assert!(iv > Duration::ZERO, "interval must be positive for {ttl}s");
+            assert!(
+                iv < Duration::from_secs(u64::from(ttl)),
+                "interval {iv:?} must stay below the {ttl}s TTL"
+            );
+        }
     }
 }
