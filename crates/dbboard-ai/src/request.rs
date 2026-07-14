@@ -113,6 +113,7 @@ mod tests {
                     primary_key: true,
                     ordinal: 1,
                     default_value: Some("nextval('users_id_seq'::regclass)".into()),
+                    comment: None,
                 }],
                 primary_key: vec!["id".into()],
             }]),

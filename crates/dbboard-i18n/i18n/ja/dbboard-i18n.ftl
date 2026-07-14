@@ -134,3 +134,4 @@ structure-col-type = 型
 structure-col-nullable = Null
 structure-col-pk = キー
 structure-col-default = 既定値
+structure-col-comment = コメント

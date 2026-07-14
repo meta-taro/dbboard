@@ -131,3 +131,4 @@ structure-col-type = 类型
 structure-col-nullable = 空
 structure-col-pk = 键
 structure-col-default = 默认值
+structure-col-comment = 注释

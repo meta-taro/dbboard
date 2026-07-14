@@ -132,3 +132,4 @@ structure-col-type = Tipo
 structure-col-nullable = Nulo
 structure-col-pk = Clave
 structure-col-default = Predet.
+structure-col-comment = Comentario

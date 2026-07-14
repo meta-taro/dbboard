@@ -132,3 +132,4 @@ structure-col-type = Type
 structure-col-nullable = Null
 structure-col-pk = Clé
 structure-col-default = Défaut
+structure-col-comment = Commentaire

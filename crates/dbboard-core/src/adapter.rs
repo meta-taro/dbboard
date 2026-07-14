@@ -149,6 +149,7 @@ mod tests {
                     primary_key: true,
                     ordinal: 1,
                     default_value: None,
+                    comment: None,
                 }],
                 primary_key: vec!["id".into()],
             })

@@ -53,6 +53,13 @@ pub struct ColumnInfo {
     /// engine-specific expressions (ADR-0028 Decision 3).
     #[serde(default)]
     pub default_value: Option<String>,
+    /// Column comment / description as the engine records it (Postgres
+    /// `col_description`), or `None` when the column carries no comment
+    /// or the engine has no comment concept (SQLite/libSQL). Additive
+    /// field (ADR-0037): `#[serde(default)]` keeps pre-ADR-0037 payloads
+    /// parseable — they deserialize as `None`.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// Full per-table description returned by
@@ -117,6 +124,7 @@ mod tests {
             primary_key: true,
             ordinal: 1,
             default_value: Some("nextval('users_id_seq'::regclass)".into()),
+            comment: Some("surrogate key".into()),
         };
         assert!(!c.nullable);
         assert!(c.primary_key);
@@ -125,15 +133,18 @@ mod tests {
             c.default_value.as_deref(),
             Some("nextval('users_id_seq'::regclass)")
         );
+        assert_eq!(c.comment.as_deref(), Some("surrogate key"));
     }
 
     #[test]
     fn column_info_without_new_fields_deserializes_with_defaults() {
-        // Pre-ADR-0028 wire shape: no `ordinal`, no `default_value`.
+        // Pre-ADR-0028 wire shape: no `ordinal`, `default_value`, or
+        // `comment` (the last added by ADR-0037). All default sensibly.
         let json = r#"{"name":"id","declared_type":"INTEGER","nullable":false,"primary_key":true}"#;
         let c: ColumnInfo = serde_json::from_str(json).unwrap();
         assert_eq!(c.ordinal, 0);
         assert_eq!(c.default_value, None);
+        assert_eq!(c.comment, None);
     }
 
     fn sample_column(name: &str, ordinal: u32, primary_key: bool) -> ColumnInfo {
@@ -144,6 +155,7 @@ mod tests {
             primary_key,
             ordinal,
             default_value: None,
+            comment: None,
         }
     }
 

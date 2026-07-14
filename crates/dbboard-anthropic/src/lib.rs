@@ -676,6 +676,7 @@ mod tests {
             primary_key,
             ordinal,
             default_value: default_value.map(Into::into),
+            comment: None,
         }
     }
 

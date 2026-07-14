@@ -4664,3 +4664,61 @@ the chosen rows (bounds-checked, ascending order) into an owned `Vec<Row>`
 on the copy/save click only (not per frame), then hands it to the same
 `to_tsv` / `to_csv_with_bom` path. No new serialization surface. Still a
 desktop-only presentation feature; no wire-contract change.
+
+## ADR-0037 — Surface column comments in the Structure tab
+
+**Status:** Accepted 2026-07-14
+
+### Context
+
+During live use against a real PostgreSQL/Aurora DSQL database, the
+operator noticed the Structure tab never showed column comments and could
+not tell whether dbboard was hiding them or the databases simply had none.
+It was the former: `describe_table` (ADR-0028) collected name, type,
+nullability, primary-key membership, ordinal, and default — but never the
+comment. Postgres records rich per-column documentation
+(`COMMENT ON COLUMN …`), and for an operator reading an unfamiliar schema
+those comments are often the fastest way to understand a table.
+
+### Decision
+
+Carry the column comment end-to-end and render it as a new Structure-tab
+column.
+
+- **Core:** add `comment: Option<String>` to `ColumnInfo`, marked
+  `#[serde(default)]` exactly like the ADR-0028 `ordinal` / `default_value`
+  additions. `None` means "no comment" or "engine has no comment concept."
+- **Postgres/Neon/DSQL adapter:** extend `DESCRIBE_COLUMNS_SQL` with
+  `col_description(format('%I.%I', table_schema, table_name)::regclass,
+  ordinal_position)`. `format('%I.%I', …)` quotes the identifiers so
+  mixed-case and reserved-word table names resolve correctly through the
+  `regclass` cast; the function returns `NULL` for uncommented columns.
+- **SQLite/libSQL adapters (turso, d1):** SQLite has no column-comment
+  concept, so they set `comment: None` unconditionally.
+- **UI:** `render_table_schema` gains a seventh "Comment" column
+  (`structure-col-comment`, translated across all 11 locales).
+
+### Consequences
+
+- The `ColumnInfo` wire shape gains one additive, defaulted field. A
+  pre-ADR-0037 payload (no `comment`) still deserializes — the field
+  defaults to `None` — so the in-process server↔UI HTTP contract stays
+  backward compatible, matching the ADR-0028 forward-compat stance.
+- One extra catalog lookup per column is folded into the existing single
+  `DESCRIBE_COLUMNS_SQL` round-trip (a correlated `col_description` call),
+  so there is no additional query per `describe_table`.
+- Table-level comments (`obj_description`) are intentionally **out of
+  scope**; this ADR covers per-column comments only. A follow-up can add
+  the table comment to `TableSchema` under the same additive pattern.
+
+### SemVer impact (ADR-0011)
+
+None in practice. `ColumnInfo` grows one additive `Option` field with a
+serde default; the workspace is unpublished and every existing caller
+constructs the struct through adapter code updated in the same change.
+
+### Cross-repo (dbboard-web)
+
+Schema introspection is not part of the shared history/record contract
+(ADR-0017/0027) that the sibling mirrors, and the change is desktop-local
+and purely additive. No web mirror or brief is needed.
