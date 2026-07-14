@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = Tabelas
 tables-empty = (sem tabelas)
+tables-context-select = Selecionar todas as linhas
+tables-context-count = Contar linhas
 
 sql-heading = SQL
 sql-run-button = Executar

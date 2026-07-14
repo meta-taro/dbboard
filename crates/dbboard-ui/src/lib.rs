@@ -1280,6 +1280,10 @@ impl DbboardApp {
     fn render_tables_panel(&mut self, ui: &mut egui::Ui) {
         let active = self.structure.as_ref().map(|s| s.table.clone());
         let mut clicked: Option<TableInfo> = None;
+        // A quick-SQL starter picked from a row's right-click menu. Applied
+        // to the editor after the `&self.tables` borrow ends, mirroring how
+        // `clicked` defers `open_structure`.
+        let mut quick_sql: Option<String> = None;
         egui::Panel::left("tables").show_inside(ui, |ui| {
             ui.heading(t!("tables-heading"));
             ui.separator();
@@ -1296,9 +1300,25 @@ impl DbboardApp {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                         for table in tables {
                             let selected = active.as_ref() == Some(table);
-                            if ui.selectable_label(selected, &table.name).clicked() {
+                            let row = ui.selectable_label(selected, &table.name);
+                            if row.clicked() {
                                 clicked = Some(table.clone());
                             }
+                            // Right-click a table for quick starter queries
+                            // dropped straight into the editor. Read-only by
+                            // design (no DELETE/DROP): this ships to a
+                            // data-collection user, and a mis-click should
+                            // never be destructive.
+                            row.context_menu(|ui| {
+                                if ui.button(t!("tables-context-select")).clicked() {
+                                    quick_sql = Some(quick_select_sql(table));
+                                    ui.close();
+                                }
+                                if ui.button(t!("tables-context-count")).clicked() {
+                                    quick_sql = Some(quick_count_sql(table));
+                                    ui.close();
+                                }
+                            });
                         }
                     });
                 }
@@ -1307,6 +1327,9 @@ impl DbboardApp {
                 }
             }
         });
+        if let Some(sql) = quick_sql {
+            self.sql = sql;
+        }
         if let Some(table) = clicked {
             self.open_structure(table);
         }
@@ -1560,6 +1583,40 @@ fn cell_preview(text: &str) -> String {
     }
     let head: String = single_line.chars().take(CELL_PREVIEW_CHARS).collect();
     format!("{head}…")
+}
+
+/// Quote a single SQL identifier by wrapping it in double quotes and
+/// doubling any embedded quote. Double-quoted identifiers are the SQL
+/// standard and are accepted by every backend dbboard targets (the
+/// Postgres wire family + SQLite/libSQL), so one quoting rule covers all
+/// of them. Doubling the inner quote keeps an awkward table name (or a
+/// quote-injection attempt) from breaking out of the literal.
+fn quote_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
+/// Fully-qualified, quoted table reference. Schema-qualified only where
+/// the engine has schemas — SQLite/libSQL tables keep `schema: None` and
+/// render unqualified.
+fn quoted_table_ref(table: &TableInfo) -> String {
+    match &table.schema {
+        Some(schema) => format!("{}.{}", quote_ident(schema), quote_ident(&table.name)),
+        None => quote_ident(&table.name),
+    }
+}
+
+/// `SELECT *` starter query for the table right-click menu. The bare
+/// SELECT is intentional: the ADR-0030 auto-limit guard wraps it with a
+/// LIMIT at run time unless the user overrides, so we do not hard-code a
+/// row cap here.
+fn quick_select_sql(table: &TableInfo) -> String {
+    format!("SELECT * FROM {};", quoted_table_ref(table))
+}
+
+/// `SELECT COUNT(*)` starter query for the table right-click menu — a
+/// cheap "how big is this table" the collector reaches for constantly.
+fn quick_count_sql(table: &TableInfo) -> String {
+    format!("SELECT COUNT(*) FROM {};", quoted_table_ref(table))
 }
 
 /// Copy / save controls above the result grid (ADR-0035). The always-on
@@ -1906,8 +1963,9 @@ fn render_expanded_cell_popup(ui: &mut egui::Ui, expand_id: egui::Id) {
 mod tests {
     use super::{
         apply_auto_limit, cell_preview, error_display, is_bare_select, is_long_cell,
-        should_run_from_keys, AiProviderSlot, Command, DbboardApp, HistoryStatus,
-        PersistentHistoryStore, Reply, ResultTab, CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
+        quick_count_sql, quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot,
+        Command, DbboardApp, HistoryStatus, PersistentHistoryStore, Reply, ResultTab,
+        CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
     };
     use dbboard_core::{
         Column, ColumnInfo, DbError, QueryResult, Row, TableInfo, TableSchema, Value,
@@ -3204,5 +3262,39 @@ mod tests {
         app.drain_replies();
 
         assert!(app.structure.as_ref().unwrap().schema.is_none());
+    }
+
+    #[test]
+    fn quote_ident_wraps_in_double_quotes() {
+        // Double-quoted identifiers are SQL-standard and accepted by every
+        // backend dbboard targets (Postgres wire + SQLite/libSQL).
+        assert_eq!(quote_ident("users"), "\"users\"");
+    }
+
+    #[test]
+    fn quote_ident_doubles_embedded_quotes() {
+        // A `"` inside an identifier must be escaped by doubling, or a
+        // maliciously/awkwardly named table could break out of the quotes.
+        assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");
+    }
+
+    #[test]
+    fn quick_select_sql_for_unqualified_table() {
+        let sql = quick_select_sql(&TableInfo::unqualified("orders"));
+        assert_eq!(sql, "SELECT * FROM \"orders\";");
+    }
+
+    #[test]
+    fn quick_select_sql_qualifies_schema_when_present() {
+        // Postgres-family tables carry a schema; both parts are quoted and
+        // dot-joined so `public.orders` becomes `"public"."orders"`.
+        let sql = quick_select_sql(&TableInfo::qualified("public", "orders"));
+        assert_eq!(sql, "SELECT * FROM \"public\".\"orders\";");
+    }
+
+    #[test]
+    fn quick_count_sql_counts_rows() {
+        let sql = quick_count_sql(&TableInfo::unqualified("orders"));
+        assert_eq!(sql, "SELECT COUNT(*) FROM \"orders\";");
     }
 }
