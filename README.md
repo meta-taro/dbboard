@@ -47,9 +47,17 @@ precisely. See [ADR-0018](docs/decisions.md) (Neon),
 [ADR-0019](docs/decisions.md) (Supabase), and
 [ADR-0021](docs/decisions.md) (Aurora DSQL).
 
-The Supabase REST/auth layer and Aurora DSQL's SDK-driven IAM token
-auto-refresh are deliberately deferred to a future ADR — at this
-stage all pg-wire flavors use the same `postgres://…` URL contract.
+Aurora DSQL also has a second connection kind, `aurora-dsql-iam`
+([ADR-0036](docs/decisions.md)): instead of a manually supplied URL
+whose token expires in ~15 minutes, dbboard mints the SigV4 IAM token
+itself from stored AWS credentials, for connections that need to stay
+up 24/7. The token is minted at connect time; continuous in-pool
+refresh is a planned follow-up.
+
+The Supabase REST/auth layer is deliberately deferred to a future ADR —
+at this stage all pg-wire flavors use the same `postgres://…` URL
+contract (the `aurora-dsql-iam` kind excepted, which stores AWS
+credentials rather than a URL).
 
 The authoritative per-version support matrix (Tier 1 / Tier 2 / best
 effort) lives in [`docs/compatibility.md`](docs/compatibility.md);
@@ -208,6 +216,14 @@ DBBOARD_SUPABASE_URL='postgres://user:pass@db.<ref>.supabase.co:5432/postgres?ss
 DBBOARD_AURORA_DSQL_URL='postgres://admin:<IAM-token>@<cluster>.dsql.<region>.on.aws:5432/postgres?sslmode=require' \
   cargo run -p dbboard
 ```
+
+Because the Aurora DSQL IAM token expires in ~15 minutes, the env-var
+form above suits short sessions. For a long-lived / 24/7 connection use
+the `aurora-dsql-iam` connection kind instead, which stores AWS
+credentials in `connections.toml` + the OS keychain and lets dbboard
+mint the token itself. It is configured in the connection store, not via
+an env var — see [docs/connections.md](docs/connections.md) and
+[ADR-0036](docs/decisions.md).
 
 ### AI integration (optional)
 

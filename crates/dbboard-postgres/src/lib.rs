@@ -32,6 +32,8 @@ use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
 use sqlx::{Column as _, Either, Row as _, TypeInfo as _, ValueRef as _};
 
+mod dsql_auth;
+
 /// Small pool: a desktop client issues one statement at a time, so a
 /// handful of connections is plenty and keeps server-side resource use
 /// (and `CockroachDB` Cloud connection limits) modest.
@@ -77,6 +79,22 @@ const DESCRIBE_PK_SQL: &str = "SELECT kcu.column_name::TEXT \
 /// echoed in a [`DbError`], and never derived into `Debug`.
 pub struct PostgresConfig {
     pub url: String,
+}
+
+/// Connection parameters for an Aurora DSQL IAM connection (ADR-0036).
+///
+/// Unlike [`PostgresConfig`], no token is supplied: it is minted from the
+/// AWS credentials at connect time. `secret_key` is a secret and is never
+/// logged, so this struct deliberately does not derive `Debug`.
+/// `endpoint` is the bare cluster host (no scheme, no port); `username`
+/// is typically `admin`.
+pub struct AuroraDsqlIamParams {
+    pub endpoint: String,
+    pub region: String,
+    pub database: String,
+    pub username: String,
+    pub access_key_id: String,
+    pub secret_key: String,
 }
 
 /// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
@@ -189,6 +207,53 @@ impl PostgresAdapter {
         Self::connect_with_flavor(config, FLAVOR_AURORA_DSQL).await
     }
 
+    /// Connect to an AWS Aurora DSQL database using IAM authentication
+    /// (ADR-0036). Unlike [`connect_aurora_dsql`](Self::connect_aurora_dsql),
+    /// which expects a pre-generated token embedded in the URL, this path
+    /// **mints a fresh IAM token at connect time** from the supplied AWS
+    /// access-key / secret-key pair, so the connection never carries a
+    /// stale token. Admin (`admin`) usernames get a `DbConnectAdmin`
+    /// token; any other role gets `DbConnect`.
+    ///
+    /// The token is short-lived (~15 min); this constructor mints one per
+    /// call. A cold reconnect long after the last connect will fail until
+    /// the next connect/switch mints a fresh token — automatic in-pool
+    /// refresh is a follow-up ADR (段階B), out of scope here.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`connect`](Self::connect). A clock skew or wrong
+    /// credentials surface as [`DbError::Connection`] (auth rejection)
+    /// from the underlying pool.
+    pub async fn connect_aurora_dsql_iam(params: AuroraDsqlIamParams) -> DbResult<Self> {
+        // The `admin` role authenticates against the admin action; every
+        // other role uses the plain connect action.
+        let is_admin = params.username == "admin";
+        let token = dsql_auth::generate_dsql_token(&dsql_auth::DsqlTokenParams {
+            endpoint: &params.endpoint,
+            region: &params.region,
+            access_key_id: &params.access_key_id,
+            secret_key: &params.secret_key,
+            is_admin,
+            expires_secs: dsql_auth::DEFAULT_EXPIRES_SECS,
+        });
+
+        // Build the options programmatically rather than via a URL string:
+        // the token is itself percent-encoded, and round-tripping it
+        // through URL parsing would double-decode `%2F` back to `/` and
+        // corrupt the signature. `.password()` takes the token verbatim.
+        // DSQL mandates TLS; `Require` encrypts without pinning the cert,
+        // matching the rest of the Postgres-family adapters.
+        let options = PgConnectOptions::new()
+            .host(&params.endpoint)
+            .port(5432)
+            .database(&params.database)
+            .username(&params.username)
+            .password(&token)
+            .ssl_mode(PgSslMode::Require);
+        Self::connect_options(options, FLAVOR_AURORA_DSQL).await
+    }
+
     async fn connect_with_flavor(config: PostgresConfig, flavor: &'static str) -> DbResult<Self> {
         if config.url.trim().is_empty() {
             return Err(DbError::Connection(
@@ -200,6 +265,12 @@ impl PostgresAdapter {
         // connecting; a parse failure is reduced to a fixed string by
         // `classify_error` so the password cannot leak.
         let options: PgConnectOptions = config.url.parse().map_err(|e| classify_error(&e))?;
+        Self::connect_options(options, flavor).await
+    }
+
+    /// Build the pool from already-parsed options, hardening the TLS
+    /// policy first. Shared by the URL-based and IAM-token connect paths.
+    async fn connect_options(options: PgConnectOptions, flavor: &'static str) -> DbResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(MAX_CONNECTIONS)
             .connect_with(harden_ssl_mode(options))

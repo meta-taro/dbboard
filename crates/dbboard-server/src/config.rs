@@ -67,6 +67,21 @@ pub enum BackendConfig {
     AuroraDsql {
         url: String,
     },
+    /// AWS Aurora DSQL with agent-minted IAM auth (ADR-0036). Unlike
+    /// [`BackendConfig::AuroraDsql`], the caller does not supply a
+    /// pre-signed URL; instead the adapter mints a fresh `SigV4` token at
+    /// build time from the AWS credentials carried here. `secret_key` is
+    /// the resolved AWS secret access key (from the OS keychain, never a
+    /// tracked file) and is redacted in `Debug`. v1 mints once at build;
+    /// 24/7 auto-refresh is deferred to a follow-up ADR.
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+        secret_key: String,
+    },
 }
 
 impl BackendConfig {
@@ -90,6 +105,10 @@ impl fmt::Debug for BackendConfig {
             Self::Neon { .. } => f.write_str("Neon(<redacted>)"),
             Self::Supabase { .. } => f.write_str("Supabase(<redacted>)"),
             Self::AuroraDsql { .. } => f.write_str("AuroraDsql(<redacted>)"),
+            // endpoint/region/username/access_key_id are non-secret, but
+            // secret_key must never surface — redact the whole struct to
+            // keep the Debug impl trivially safe against field reordering.
+            Self::AuroraDsqlIam { .. } => f.write_str("AuroraDsqlIam(<redacted>)"),
         }
     }
 }
@@ -394,6 +413,26 @@ fn entry_to_backend(
             let url = secrets.get(keyring_url_ref)?;
             Ok(BackendConfig::AuroraDsql { url })
         }
+        ConnectionKind::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            keyring_secret_key_ref,
+        } => {
+            // Only the AWS secret access key lives in the keychain; every
+            // other field is non-secret and stored inline in the config.
+            let secret_key = secrets.get(keyring_secret_key_ref)?;
+            Ok(BackendConfig::AuroraDsqlIam {
+                endpoint: endpoint.clone(),
+                region: region.clone(),
+                database: database.clone(),
+                username: username.clone(),
+                access_key_id: access_key_id.clone(),
+                secret_key,
+            })
+        }
     }
 }
 
@@ -476,6 +515,21 @@ mod tests {
             name: format!("aurora-dsql {id}"),
             kind: ConnectionKind::AuroraDsql {
                 keyring_url_ref: url_ref.to_string(),
+            },
+        }
+    }
+
+    fn aurora_dsql_iam_entry(id: &str, secret_ref: &str) -> ConnectionEntry {
+        ConnectionEntry {
+            id: id.to_string(),
+            name: format!("aurora-dsql-iam {id}"),
+            kind: ConnectionKind::AuroraDsqlIam {
+                endpoint: "abc123.dsql.ap-northeast-1.on.aws".to_string(),
+                region: "ap-northeast-1".to_string(),
+                database: "postgres".to_string(),
+                username: "admin".to_string(),
+                access_key_id: "AKIAEXAMPLE".to_string(),
+                keyring_secret_key_ref: secret_ref.to_string(),
             },
         }
     }
@@ -726,6 +780,52 @@ mod tests {
     }
 
     #[test]
+    fn aurora_dsql_iam_entry_resolves_secret_key_through_the_secret_store() {
+        let file = file_with(vec![aurora_dsql_iam_entry(
+            "dsql-iam",
+            "dbboard.dsql-iam.secret_key",
+        )]);
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set("dbboard.dsql-iam.secret_key", "live-aws-secret")
+            .expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::AuroraDsqlIam {
+                endpoint,
+                region,
+                database,
+                username,
+                access_key_id,
+                secret_key,
+            } => {
+                assert_eq!(endpoint, "abc123.dsql.ap-northeast-1.on.aws");
+                assert_eq!(region, "ap-northeast-1");
+                assert_eq!(database, "postgres");
+                assert_eq!(username, "admin");
+                assert_eq!(access_key_id, "AKIAEXAMPLE");
+                assert_eq!(secret_key, "live-aws-secret");
+            }
+            other => panic!("expected AuroraDsqlIam, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aurora_dsql_iam_entry_with_missing_secret_propagates_secret_error() {
+        let file = file_with(vec![aurora_dsql_iam_entry(
+            "dsql-iam",
+            "dbboard.dsql-iam.secret_key",
+        )]);
+        let secrets = InMemorySecretStore::new();
+        let err = resolve_backend(&empty_env(), &file, &secrets)
+            .expect_err("missing secret must surface");
+        assert!(
+            matches!(err, ConfigError::Secret(_)),
+            "expected ConfigError::Secret, got {err:?}"
+        );
+    }
+
+    #[test]
     fn supabase_entry_resolves_url_through_the_secret_store() {
         let file = file_with(vec![supabase_entry("supabase", "dbboard.supabase.url")]);
         let secrets = InMemorySecretStore::new();
@@ -937,6 +1037,20 @@ mod tests {
         assert!(
             !rendered_aurora_dsql.contains("dsql-iam-pw"),
             "{rendered_aurora_dsql}"
+        );
+
+        let aurora_dsql_iam = BackendConfig::AuroraDsqlIam {
+            endpoint: "abc123.dsql.ap-northeast-1.on.aws".to_string(),
+            region: "ap-northeast-1".to_string(),
+            database: "postgres".to_string(),
+            username: "admin".to_string(),
+            access_key_id: "AKIAEXAMPLE".to_string(),
+            secret_key: "super-secret-aws-key".to_string(),
+        };
+        let rendered_aurora_dsql_iam = format!("{aurora_dsql_iam:?}");
+        assert!(
+            !rendered_aurora_dsql_iam.contains("super-secret-aws-key"),
+            "{rendered_aurora_dsql_iam}"
         );
     }
 }

@@ -102,6 +102,26 @@ pub enum ConnectionKind {
     AuroraDsql {
         keyring_url_ref: String,
     },
+    /// An AWS Aurora DSQL connection that mints its own IAM auth token at
+    /// connect time (ADR-0036). Unlike [`ConnectionKind::AuroraDsql`],
+    /// which stores a pre-generated (and quickly-expiring) token URL under
+    /// `keyring_url_ref`, this kind stores only long-lived AWS credentials
+    /// and derives a fresh `SigV4` token on every connect — the path the
+    /// 24/7 team rollout needs. `endpoint`, `region`, `database`,
+    /// `username`, and `access_key_id` are non-secret and live inline;
+    /// only the AWS secret access key is a secret, referenced through
+    /// `keyring_secret_key_ref`. The TOML discriminator is
+    /// `kind = "aurora-dsql-iam"` (kebab-case). Automatic in-pool token
+    /// refresh (段階B) is a follow-up ADR; v1 mints at connect time only.
+    #[serde(rename = "aurora-dsql-iam")]
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+        keyring_secret_key_ref: String,
+    },
 }
 
 impl ConnectionFile {
@@ -403,6 +423,39 @@ keyring_url_ref = "dbboard.dsql-prod.url"
     }
 
     #[test]
+    fn parses_an_aurora_dsql_iam_entry() {
+        // The discriminator is the kebab-case literal "aurora-dsql-iam".
+        // All fields except the secret-key reference live inline; the
+        // AWS secret access key itself is never in the file.
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id                     = "store-lovehotel"
+name                   = "store-lovehotel"
+kind                   = "aurora-dsql-iam"
+endpoint               = "abc123.dsql.ap-northeast-1.on.aws"
+region                 = "ap-northeast-1"
+database               = "postgres"
+username               = "admin"
+access_key_id          = "AKIAEXAMPLE"
+keyring_secret_key_ref = "dbboard.store-lovehotel.secret_key"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("aurora-dsql-iam entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::AuroraDsqlIam {
+                endpoint: "abc123.dsql.ap-northeast-1.on.aws".to_string(),
+                region: "ap-northeast-1".to_string(),
+                database: "postgres".to_string(),
+                username: "admin".to_string(),
+                access_key_id: "AKIAEXAMPLE".to_string(),
+                keyring_secret_key_ref: "dbboard.store-lovehotel.secret_key".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn parses_a_postgres_entry() {
         let toml_src = r#"
 version = 1
@@ -539,6 +592,18 @@ path = ":memory:"
                     name: "Aurora DSQL (prod)".to_string(),
                     kind: ConnectionKind::AuroraDsql {
                         keyring_url_ref: "dbboard.dsql-prod.url".to_string(),
+                    },
+                },
+                ConnectionEntry {
+                    id: "dsql-iam".to_string(),
+                    name: "Aurora DSQL (IAM)".to_string(),
+                    kind: ConnectionKind::AuroraDsqlIam {
+                        endpoint: "abc123.dsql.ap-northeast-1.on.aws".to_string(),
+                        region: "ap-northeast-1".to_string(),
+                        database: "postgres".to_string(),
+                        username: "admin".to_string(),
+                        access_key_id: "AKIAEXAMPLE".to_string(),
+                        keyring_secret_key_ref: "dbboard.dsql-iam.secret_key".to_string(),
                     },
                 },
             ],
