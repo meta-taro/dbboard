@@ -105,6 +105,22 @@ kind            = "aurora-dsql"
 # (~15 min TTL); an expired token surfaces as a connection error at
 # startup. See ADR-0021.
 keyring_url_ref = "dbboard.aurora-dsql-prod.url"
+
+[[connections]]
+id                     = "aurora-dsql-iam-prod"
+name                   = "Aurora DSQL (IAM, prod)"
+kind                   = "aurora-dsql-iam"
+# Unlike "aurora-dsql", dbboard mints the ~15-min IAM token itself at
+# connect time from the AWS credentials below, so you never hand-refresh
+# a token. This is the kind to use for a 24/7 connection. The AWS access
+# key id is a public identifier (not a secret) and lives inline; only the
+# AWS secret access key is stored in the keychain. See ADR-0036.
+endpoint               = "abc123xyz.dsql.ap-northeast-1.on.aws"
+region                 = "ap-northeast-1"
+database               = "postgres"
+username               = "admin"
+access_key_id          = "AKIAEXAMPLE1234567890"
+keyring_secret_key_ref = "dbboard.aurora-dsql-iam-prod.secret_key"
 ```
 
 ### Fields
@@ -115,21 +131,59 @@ keyring_url_ref = "dbboard.aurora-dsql-prod.url"
   are a hard error at load time.
 - `name` — display label for the (future) connection picker.
 - `kind` — `"turso"`, `"d1"`, `"postgres"`, `"neon"`, `"supabase"`,
-  or `"aurora-dsql"`. `"neon"`, `"supabase"`, `"aurora-dsql"`, and
-  `"postgres"` share the same wire shape (the keyring carries a
-  `postgres://…` URL either way); the only difference is the runtime
-  adapter label, which the connection picker and history records read.
+  `"aurora-dsql"`, or `"aurora-dsql-iam"`. `"neon"`, `"supabase"`,
+  `"aurora-dsql"`, and `"postgres"` share the same wire shape (the
+  keyring carries a `postgres://…` URL either way); the only difference
+  is the runtime adapter label, which the connection picker and history
+  records read. `"aurora-dsql-iam"` is the exception: it carries its
+  fields inline (`endpoint`, `region`, `database`, `username`,
+  `access_key_id`) and stores only the AWS secret access key in the
+  keychain, because dbboard mints the IAM token itself (see below).
 - `keyring_*_ref` — opaque account string used to look up the secret
   in the OS keychain. Pick something stable and recognisable; the
   string is what shows in the OS UI alongside the constant service
   name `"dbboard"`.
 
+### Aurora DSQL: `aurora-dsql` vs `aurora-dsql-iam`
+
+Both connect to the same Postgres-wire Aurora DSQL endpoint; they differ
+only in where the ~15-minute IAM auth token comes from:
+
+- **`aurora-dsql`** — *you* pre-generate the token (e.g. with the AWS
+  CLI) and store the whole `postgres://…` URL, token embedded, under
+  `keyring_url_ref`. Simple, but the token expires in ~15 minutes, so
+  this suits short interactive sessions where you can re-seed the URL.
+- **`aurora-dsql-iam`** — *dbboard* mints a fresh token at connect time
+  from stored AWS credentials, so you never hand-refresh. Use this for a
+  long-lived / 24/7 connection. Only the AWS secret access key is a
+  secret (in the keychain); the access key id, endpoint, region,
+  database, and username are non-secret and live inline in the TOML.
+
+  Current limitation (v1): the token is minted when the connection is
+  first built (at startup and on each connection switch), not
+  continuously refreshed inside a live pool. Any physical connection
+  opened more than ~15 minutes after the last build fails — this includes
+  a cold reconnect after the app idles **and** a long-running pool, since
+  Aurora DSQL closes idle server-side connections and the pool then
+  re-opens them with the now-expired token, surfacing as
+  `unable to accept connection, access denied`. **Recovery:** click
+  **Reconnect** on the active row in the connections window (or restart)
+  to rebuild the adapter with a fresh token. Automatic in-pool refresh is
+  a planned follow-up so unattended 24/7 use needs no manual clicks. This
+  kind is created by hand-editing `connections.toml`; the in-app
+  connection list can connect/reconnect and delete it, but not yet edit
+  it.
+
 ### What the file never contains
 
 - D1 API tokens
 - Postgres connection URLs that embed a password
+- AWS secret access keys (for `aurora-dsql-iam`)
 
 These live only in the OS keychain. The TOML keeps the references.
+(An `aurora-dsql-iam` entry's AWS **access key id** is a public
+identifier and *is* kept inline — only the secret access key is a
+secret.)
 
 ## Seeding secrets
 

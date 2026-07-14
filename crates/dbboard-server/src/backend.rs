@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use dbboard_core::{DatabaseAdapter, DbResult};
 use dbboard_d1::D1Adapter;
-use dbboard_postgres::{PostgresAdapter, PostgresConfig};
+use dbboard_postgres::{AuroraDsqlIamParams, PostgresAdapter, PostgresConfig};
 use dbboard_turso::TursoAdapter;
 
 use crate::config::BackendConfig;
@@ -70,6 +70,32 @@ pub(crate) async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn D
             // authentication token (~15 min TTL); an expired token
             // surfaces here as a `DbError::Connection`.
             let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url }).await?;
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
+        }
+        BackendConfig::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_key,
+        } => {
+            // Aurora DSQL flavor (ADR-0021), but the adapter mints its own
+            // SigV4 IAM token here from the AWS credentials rather than
+            // being handed a pre-signed URL (ADR-0036). The token is
+            // minted once at build; a cold reconnect >15 min later fails
+            // until the next connection switch re-mints. The secret_key
+            // came from the OS keychain and is dropped with `params`.
+            let adapter = PostgresAdapter::connect_aurora_dsql_iam(AuroraDsqlIamParams {
+                endpoint,
+                region,
+                database,
+                username,
+                access_key_id,
+                secret_key,
+            })
+            .await?;
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }

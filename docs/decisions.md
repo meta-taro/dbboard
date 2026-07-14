@@ -4664,3 +4664,103 @@ the chosen rows (bounds-checked, ascending order) into an owned `Vec<Row>`
 on the copy/save click only (not per frame), then hands it to the same
 `to_tsv` / `to_csv_with_bom` path. No new serialization surface. Still a
 desktop-only presentation feature; no wire-contract change.
+
+## ADR-0036 — Aurora DSQL with self-minted IAM auth tokens (`aurora-dsql-iam`)
+
+**Status:** Accepted 2026-07-14
+
+### Context
+
+ADR-0021 shipped the `aurora-dsql` connection kind, which stores a
+**pre-generated** IAM authentication URL under `keyring_url_ref`. Aurora
+DSQL's IAM tokens have a ~15-minute TTL, so that kind only works if the
+operator re-pastes a fresh token every quarter hour. That is fine for an
+occasional interactive session but unusable for the near-term rollout: a
+team wants dbboard connected to several DSQL clusters **24/7** for
+continuous multi-database data collection (see project memory,
+"Aurora DSQL permanent connection required", 2026-07-13). They cannot
+hand-refresh a token every 15 minutes.
+
+The AWS SDK can mint DSQL tokens, but adopting it pulls in `aws-lc-rs` as
+a transitive crypto backend, which directly conflicts with ADR-0034's
+decision to standardise on rustls + `ring` (no `aws-lc-rs`). We need
+token minting **without** the AWS SDK.
+
+### Decision
+
+Add a new connection kind **`aurora-dsql-iam`** that stores long-lived
+AWS credentials and derives a fresh SigV4 presigned-URL token itself at
+connect time, rather than storing a short-lived token.
+
+- **Config shape** (`ConnectionKind::AuroraDsqlIam`): `endpoint`,
+  `region`, `database`, `username`, and `access_key_id` are non-secret
+  and live inline in `connections.toml`; only the AWS **secret access
+  key** is a secret, referenced through `keyring_secret_key_ref` and
+  resolved from the OS keychain. The TOML discriminator is
+  `kind = "aurora-dsql-iam"` (kebab-case). Because the AWS access key id
+  (`AKIA…`) is a public identifier, not a credential, storing it inline
+  keeps the file self-describing while leaking nothing.
+- **Hand-rolled SigV4** (`dbboard-postgres/src/dsql_auth.rs`): the token
+  is a `GET` presigned URL to `{endpoint}/?Action=DbConnectAdmin` (when
+  `username == "admin"`) or `?Action=DbConnect` (otherwise), service
+  `dsql`, `SignedHeaders=host`, payload hash `SHA256("")`, with the
+  leading `https://` stripped and the result used as the Postgres
+  password. It is built from pure-Rust `hmac` + `sha2` + `hex` +
+  `percent-encoding` + `time` — all already transitive in `Cargo.lock`,
+  so no new supply-chain surface and, crucially, **no `aws-lc-rs`**
+  (ADR-0034 stands). The HMAC signing-key chain is validated in-crate
+  against AWS's own published test vector.
+- **Mint-at-build (段階A)**: v1 mints one token when the adapter is built
+  — at startup and on every connection switch. sqlx 0.8 has no
+  per-connection password callback, so a live pool cannot re-sign
+  mid-flight. Programmatic `PgConnectOptions` construction (not a URL
+  string) is used so the token's `%2F` sequences are not double-decoded.
+- **Config-file-only in v1**: the kind is created by hand-editing
+  `connections.toml`. The connection list shows it and can Connect and
+  Delete it, but the Edit button is gated off (there is no Add/Edit form
+  yet), to bound scope and avoid an 11-locale i18n lift for a kind whose
+  primary operator hand-authors the file anyway.
+
+### Consequences
+
+- **Known v1 limitation (段階A)**: because the token is minted only at
+  build time, any *new physical connection* opened more than ~15 minutes
+  after the last adapter build fails until the adapter is rebuilt. This
+  bites a cold reconnect after the app has idled, **and — confirmed by a
+  live smoke test on 2026-07-14 — a long-running 24/7 pool too**: Aurora
+  DSQL closes idle server-side connections, and when `sqlx` re-opens one
+  it replays the *same* now-expired token as the password, so the server
+  answers `unable to accept connection, access denied`. So 段階A does not
+  by itself satisfy the unattended 24/7 goal; automatic in-pool token
+  refresh (段階B) — a background re-sign before expiry — is the real fix
+  and is deferred to a follow-up ADR.
+- **Manual recovery path (段階A stopgap)**: the connections window's
+  active-row button is relabelled **Reconnect** (previously a disabled
+  Connect under ADR-0020) so a single click rebuilds the adapter and
+  mints a fresh token when the pool has been rejected. This makes the
+  段階A limitation recoverable without an app restart; it does not remove
+  the need for 段階B under truly unattended operation.
+- **No new dependencies**: `hmac`, `sha2`, `hex`, `percent-encoding`, and
+  `time` were already in the lock file; they are promoted to explicit
+  `dbboard-postgres` dependencies. `Cargo.toml` gains a workspace entry
+  for each.
+- **Secret hygiene**: the AWS secret access key never touches a tracked
+  file or a `Debug` output. `BackendConfig::AuroraDsqlIam` has a
+  hand-written `Debug` that redacts the whole struct;
+  `ConnectionKind::AuroraDsqlIam` stores only a keyring *reference*; the
+  store's existing "no secret value in serialized TOML" test covers the
+  new kind.
+- **Reuses the Aurora DSQL flavor**: the adapter connects via
+  `FLAVOR_AURORA_DSQL`, so `id()`, capability output, and history records
+  label it identically to the ADR-0021 kind — the only difference is
+  where the token comes from.
+- **Web sibling**: desktop-only (this is a local credential-handling and
+  connection concern). No HTTP wire-contract change, so the dbboard-web
+  sibling is unaffected and no cross-repo brief is needed.
+
+### SemVer impact (ADR-0011)
+
+None to any published contract (the workspace is unpublished and
+`dbboard-core` is untouched). Additive: one new `ConnectionKind` variant,
+one new `BackendConfig` variant, one new `PostgresAdapter` constructor,
+and one new internal `dsql_auth` module.
