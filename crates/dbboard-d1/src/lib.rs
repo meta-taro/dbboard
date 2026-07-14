@@ -127,6 +127,7 @@ impl DatabaseAdapter for D1Adapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_describe_table: true,
+            has_create_statement: true,
             ..Capabilities::default()
         }
     }
@@ -163,6 +164,19 @@ impl DatabaseAdapter for D1Adapter {
             .post_raw(&format!("PRAGMA table_info('{escaped}')"))
             .await?;
         envelope_to_table_schema(table, envelope)
+    }
+
+    async fn create_statement(&self, table: &TableInfo) -> DbResult<String> {
+        // `sqlite_master.sql` holds the exact stored DDL for both tables
+        // and views. Same single-quote escaping as describe_table.
+        let escaped = table.name.replace('\'', "''");
+        let envelope = self
+            .post_raw(&format!(
+                "SELECT sql FROM sqlite_master \
+                 WHERE name = '{escaped}' AND type IN ('table', 'view')"
+            ))
+            .await?;
+        envelope_to_create_statement(table, envelope)
     }
 }
 
@@ -259,6 +273,25 @@ fn envelope_to_query_result(envelope: D1Envelope) -> DbResult<QueryResult> {
         rows,
         rows_affected: first.meta.changes,
     })
+}
+
+/// Extract the DDL text from a `SELECT sql FROM sqlite_master` result
+/// (ADR-0038 slice b). An empty result means the object does not exist; a
+/// `NULL` `sql` means it exists but carries no recorded DDL (e.g. an
+/// internally-created object).
+fn envelope_to_create_statement(table: &TableInfo, envelope: D1Envelope) -> DbResult<String> {
+    let result = envelope_to_query_result(envelope)?;
+    let Some(row) = result.rows.first() else {
+        return Err(DbError::Query(format!("no such table: {}", table.name)));
+    };
+    match row.get(0) {
+        Some(Value::Text(sql)) => Ok(sql.clone()),
+        Some(Value::Null) | None => Err(DbError::Query(format!(
+            "no DDL recorded for {}",
+            table.name
+        ))),
+        other => Err(DbError::Query(format!("expected DDL text, got {other:?}"))),
+    }
 }
 
 /// Extract table names from a `SELECT name FROM sqlite_master` result.

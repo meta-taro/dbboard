@@ -41,6 +41,11 @@ pub struct Capabilities {
     /// `/capabilities` payloads parseable — the flag reads as `false`.
     #[serde(default)]
     pub has_describe_table: bool,
+    /// The adapter implements `DatabaseAdapter::create_statement`
+    /// (ADR-0038 slice b). `#[serde(default)]` keeps older
+    /// `/capabilities` payloads parseable — the flag reads as `false`.
+    #[serde(default)]
+    pub has_create_statement: bool,
 }
 
 #[cfg(test)]
@@ -56,6 +61,7 @@ mod tests {
         assert!(!caps.has_storage);
         assert!(!caps.has_realtime);
         assert!(!caps.has_describe_table);
+        assert!(!caps.has_create_statement);
     }
 
     #[test]
@@ -94,7 +100,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_create_statement":false}"#
         );
     }
 
@@ -107,6 +113,7 @@ mod tests {
             has_storage: false,
             has_realtime: true,
             has_describe_table: true,
+            has_create_statement: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();
@@ -120,5 +127,6 @@ mod tests {
         let json = r#"{"has_views":false,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":false}"#;
         let caps: Capabilities = serde_json::from_str(json).unwrap();
         assert!(!caps.has_describe_table);
+        assert!(!caps.has_create_statement);
     }
 }

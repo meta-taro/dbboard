@@ -7,6 +7,10 @@ tables-filter-no-match = Nessuna tabella corrispondente
 table-menu-select-100 = Prime 100 righe
 table-menu-count = Conteggio righe
 table-menu-structure = Apri struttura
+table-menu-create = Istruzione CREATE
+create-dialog-title = Istruzione CREATE — { $table }
+create-dialog-loading = Caricamento…
+create-dialog-copy = Copia
 
 sql-heading = SQL
 sql-run-button = Esegui

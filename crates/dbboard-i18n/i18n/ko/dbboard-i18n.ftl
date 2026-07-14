@@ -7,6 +7,10 @@ tables-filter-no-match = 일치하는 테이블 없음
 table-menu-select-100 = 상위 100행
 table-menu-count = 행 수
 table-menu-structure = 구조 열기
+table-menu-create = CREATE 문
+create-dialog-title = CREATE 문 — { $table }
+create-dialog-loading = 불러오는 중…
+create-dialog-copy = 복사
 
 sql-heading = SQL
 sql-run-button = 실행
