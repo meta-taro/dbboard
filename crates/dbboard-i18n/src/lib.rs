@@ -319,6 +319,27 @@ mod tests {
     }
 
     #[test]
+    fn table_context_menu_labels_resolve_and_localize() {
+        // The sidebar table right-click menu adds two localized actions.
+        // Both must resolve in en and localise in ja rather than leaking
+        // the raw key id into the menu.
+        let _g = LOADER_GUARD.lock().unwrap();
+
+        let en = init(Some("en")).expect("init must succeed for en");
+        assert_eq!(en.get("tables-context-select"), "Select all rows");
+        assert_eq!(en.get("tables-context-count"), "Count rows");
+
+        let ja = init(Some("ja")).expect("init must succeed for ja");
+        let ja_count = ja.get("tables-context-count");
+        assert!(!ja_count.is_empty());
+        assert_ne!(
+            ja_count, "tables-context-count",
+            "ja must not fall back to the key id"
+        );
+        assert_ne!(ja_count, "Count rows", "ja must differ from en");
+    }
+
+    #[test]
     fn set_language_swaps_active_bundle_at_runtime() {
         // ADR-0022: a runtime switch from ja → en → zh-CN must update
         // both `t!()` lookups and `current_language()` reporting on

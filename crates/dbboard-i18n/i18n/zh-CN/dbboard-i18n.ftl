@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = 数据表
 tables-empty = (无数据表)
+tables-context-select = 选择所有行
+tables-context-count = 统计行数
 
 sql-heading = SQL
 sql-run-button = 运行
