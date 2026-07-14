@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = 資料表
 tables-empty = (無資料表)
+tables-context-select = 選取所有資料列
+tables-context-count = 計算資料列數
 
 sql-heading = SQL
 sql-run-button = 執行
