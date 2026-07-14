@@ -10,6 +10,11 @@ sql-run-button = 実行
 
 history-title = 履歴 ({ $count })
 history-empty = （実行履歴なし）
+history-delete-hover = このエントリを削除
+history-delete-title = 履歴エントリの削除
+history-delete-confirm = このエントリを履歴パネルから削除しますか？（ディスク上のログは保持されます）
+history-delete-yes = 削除
+history-delete-no = キャンセル
 
 result-heading = 結果
 result-empty = （クエリを実行してください）

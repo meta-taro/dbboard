@@ -10,6 +10,11 @@ sql-run-button = 실행
 
 history-title = 기록 ({ $count })
 history-empty = (최근 쿼리 없음)
+history-delete-hover = 이 항목 삭제
+history-delete-title = 기록 항목 삭제
+history-delete-confirm = 이 항목을 기록 패널에서 제거할까요? (디스크 로그는 유지됩니다.)
+history-delete-yes = 삭제
+history-delete-no = 취소
 
 result-heading = 결과
 result-empty = (쿼리를 실행하세요)
