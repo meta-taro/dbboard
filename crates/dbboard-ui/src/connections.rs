@@ -321,9 +321,10 @@ impl ConnectionsView {
     /// `Arc<Mutex<ConnectionAdmin>>` in the desktop binary).
     ///
     /// `active_id` is the connection id currently bound to the running
-    /// server (ADR-0020). The active row is marked and its Connect
-    /// button disabled so the user does not re-trigger a swap to a
-    /// connection they are already on.
+    /// server (ADR-0020). The active row is marked and its button
+    /// relabelled "Reconnect": clicking it rebuilds the live adapter,
+    /// which is the recovery path when a short-lived credential has
+    /// expired (ADR-0036) rather than a redundant swap.
     /// `switch_error` is the display-ready message for the last failed
     /// in-process connection switch (ADR-0020), or `None` when the last
     /// switch succeeded. Rendered inline in List mode next to the Connect
@@ -452,18 +453,23 @@ impl ConnectionsView {
                         format!("{} ({})", entry.name, kind_label(&entry.kind))
                     };
                     ui.label(label);
-                    // ADR-0020: the Connect button is the user-facing
-                    // entry point for an in-process adapter swap. The
-                    // active row's button is disabled — re-clicking it
-                    // would only rebuild the same adapter we already
-                    // have live.
-                    if ui
-                        .add_enabled(
-                            !is_active,
-                            egui::Button::new(t!("connections-connect-button")).small(),
-                        )
-                        .clicked()
-                    {
+                    // ADR-0020 + ADR-0036: the primary button drives an
+                    // in-process adapter swap. The active row shows an
+                    // *enabled* "Reconnect" rather than a disabled
+                    // "Connect": rebuilding the live adapter is the
+                    // recovery path when a short-lived credential (Aurora
+                    // DSQL IAM token) has expired and the server rejects
+                    // reconnects with "access denied". Both actions funnel
+                    // through the same `pending_connect` request.
+                    let button_clicked = match row_connect_action(is_active) {
+                        RowConnectAction::Reconnect => ui
+                            .add(egui::Button::new(t!("connections-reconnect-button")).small())
+                            .clicked(),
+                        RowConnectAction::Connect => ui
+                            .add(egui::Button::new(t!("connections-connect-button")).small())
+                            .clicked(),
+                    };
+                    if button_clicked {
                         *pending_connect = Some(entry.id.clone());
                     }
                     // Edit is disabled for config-file-only kinds
@@ -657,6 +663,38 @@ fn optional(s: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+/// The per-row primary button shown next to a connection (ADR-0020 +
+/// ADR-0036).
+///
+/// ADR-0020 originally rendered the active row's Connect button
+/// **disabled**, reasoning that re-selecting the live connection would
+/// "only rebuild the same adapter we already have live". ADR-0036 turns
+/// that rebuild into the recovery path: when a short-lived credential
+/// (e.g. an Aurora DSQL IAM token minted at build time, ~15 min TTL)
+/// expires out from under the pool, the server starts rejecting
+/// reconnects with `access denied` and the *only* way back is to rebuild
+/// the adapter — which mints a fresh token. So the active row now offers
+/// an **enabled Reconnect** button instead of a disabled Connect one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowConnectAction {
+    /// Switch to a connection that is not currently active.
+    Connect,
+    /// Rebuild the adapter for the already-active connection (recovery).
+    Reconnect,
+}
+
+/// Decide which primary button an entry row should render, given whether
+/// it is the currently-active connection. Both actions funnel through the
+/// same `pending_connect` request; only the label differs.
+#[must_use]
+pub fn row_connect_action(is_active: bool) -> RowConnectAction {
+    if is_active {
+        RowConnectAction::Reconnect
+    } else {
+        RowConnectAction::Connect
     }
 }
 
@@ -1455,6 +1493,30 @@ mod tests {
         assert_eq!(view.take_pending_connect().as_deref(), Some("prod-pg"));
         // Drained: a subsequent take returns None until the next request.
         assert!(view.take_pending_connect().is_none());
+    }
+
+    // --- ADR-0036 reconnect (recovery) button ---
+
+    #[test]
+    fn active_row_offers_reconnect_and_inactive_row_offers_connect() {
+        // Pins the ADR-0036 decision that reversed ADR-0020's disabled
+        // active button: the live connection must expose an enabled
+        // Reconnect so an expired-token adapter can be rebuilt in place.
+        assert_eq!(row_connect_action(true), RowConnectAction::Reconnect);
+        assert_eq!(row_connect_action(false), RowConnectAction::Connect);
+    }
+
+    #[test]
+    fn reconnecting_the_active_connection_records_its_id_for_the_host() {
+        // The Reconnect button funnels through the same request path as
+        // Connect, so re-selecting the active id reaches the worker and
+        // triggers a fresh adapter build (new IAM token).
+        let mut view = ConnectionsView::new();
+        view.request_connect("store-lovehotel");
+        assert_eq!(
+            view.take_pending_connect().as_deref(),
+            Some("store-lovehotel")
+        );
     }
 
     #[test]

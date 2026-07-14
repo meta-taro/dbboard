@@ -161,12 +161,18 @@ only in where the ~15-minute IAM auth token comes from:
 
   Current limitation (v1): the token is minted when the connection is
   first built (at startup and on each connection switch), not
-  continuously refreshed inside a live pool. A held-open connection stays
-  authenticated indefinitely, but a *cold reconnect* more than ~15
-  minutes after the last build fails until you switch connections (or
-  restart) to re-mint. Automatic in-pool refresh is a planned follow-up.
-  This kind is created by hand-editing `connections.toml`; the in-app
-  connection list can connect and delete it, but not yet edit it.
+  continuously refreshed inside a live pool. Any physical connection
+  opened more than ~15 minutes after the last build fails — this includes
+  a cold reconnect after the app idles **and** a long-running pool, since
+  Aurora DSQL closes idle server-side connections and the pool then
+  re-opens them with the now-expired token, surfacing as
+  `unable to accept connection, access denied`. **Recovery:** click
+  **Reconnect** on the active row in the connections window (or restart)
+  to rebuild the adapter with a fresh token. Automatic in-pool refresh is
+  a planned follow-up so unattended 24/7 use needs no manual clicks. This
+  kind is created by hand-editing `connections.toml`; the in-app
+  connection list can connect/reconnect and delete it, but not yet edit
+  it.
 
 ### What the file never contains
 
