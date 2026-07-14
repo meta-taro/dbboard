@@ -337,6 +337,8 @@ fn envelope_to_table_schema(table: &TableInfo, envelope: D1Envelope) -> DbResult
             primary_key: pk > 0,
             ordinal,
             default_value,
+            // SQLite has no column-comment concept (ADR-0037).
+            comment: None,
         });
     }
 

@@ -131,3 +131,4 @@ structure-col-type = 型別
 structure-col-nullable = 空
 structure-col-pk = 鍵
 structure-col-default = 預設值
+structure-col-comment = 註解

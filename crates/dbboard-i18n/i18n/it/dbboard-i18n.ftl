@@ -132,3 +132,4 @@ structure-col-type = Tipo
 structure-col-nullable = Null
 structure-col-pk = Chiave
 structure-col-default = Predef.
+structure-col-comment = Commento

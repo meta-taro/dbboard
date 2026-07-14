@@ -54,7 +54,9 @@ const LIST_TABLES_SQL: &str = "SELECT table_schema, table_name FROM information_
 /// under the extended protocol, and `ordinal_position` is cast to `INT4`
 /// because `CockroachDB` reports it as `INT8`.
 const DESCRIBE_COLUMNS_SQL: &str = "SELECT column_name::TEXT, data_type::TEXT, \
-     is_nullable::TEXT, column_default::TEXT, ordinal_position::INT4 \
+     is_nullable::TEXT, column_default::TEXT, ordinal_position::INT4, \
+     col_description(format('%I.%I', table_schema, table_name)::regclass, \
+     ordinal_position)::TEXT AS comment \
      FROM information_schema.columns \
      WHERE table_schema = $1 AND table_name = $2 \
      ORDER BY ordinal_position";
@@ -295,12 +297,14 @@ impl DatabaseAdapter for PostgresAdapter {
                 let default_value: Option<String> =
                     row.try_get(3).map_err(|e| classify_error(&e))?;
                 let ordinal: i32 = row.try_get(4).map_err(|e| classify_error(&e))?;
+                let comment: Option<String> = row.try_get(5).map_err(|e| classify_error(&e))?;
                 column_from_parts(
                     name,
                     data_type,
                     &is_nullable,
                     default_value,
                     ordinal,
+                    comment,
                     &primary_key,
                 )
             })
@@ -420,6 +424,7 @@ fn column_from_parts(
     is_nullable: &str,
     default_value: Option<String>,
     ordinal: i32,
+    comment: Option<String>,
     primary_key: &[String],
 ) -> DbResult<ColumnInfo> {
     let ordinal = u32::try_from(ordinal)
@@ -438,6 +443,7 @@ fn column_from_parts(
         primary_key: in_primary_key,
         ordinal,
         default_value,
+        comment,
     })
 }
 
@@ -603,6 +609,7 @@ mod tests {
             "NO",
             Some("nextval('users_id_seq'::regclass)".into()),
             1,
+            Some("surrogate key".into()),
             &pk,
         )
         .expect("id column");
@@ -613,22 +620,25 @@ mod tests {
             id.default_value.as_deref(),
             Some("nextval('users_id_seq'::regclass)")
         );
+        assert_eq!(id.comment.as_deref(), Some("surrogate key"));
 
-        let note = column_from_parts("note".into(), "text".into(), "YES", None, 2, &pk)
+        // A column with no comment carries `None` (ADR-0037).
+        let note = column_from_parts("note".into(), "text".into(), "YES", None, 2, None, &pk)
             .expect("note column");
         assert!(note.nullable);
         assert!(!note.primary_key);
         assert_eq!(note.declared_type.as_deref(), Some("text"));
+        assert_eq!(note.comment, None);
     }
 
     #[test]
     fn column_from_parts_rejects_a_non_positive_ordinal() {
         // information_schema.ordinal_position is 1-based; anything else
         // indicates a broken catalog and must not be silently cast.
-        let err = column_from_parts("x".into(), "text".into(), "YES", None, 0, &[])
+        let err = column_from_parts("x".into(), "text".into(), "YES", None, 0, None, &[])
             .expect_err("ordinal 0 should fail");
         assert!(matches!(err, DbError::TypeConversion(_)));
-        let err = column_from_parts("x".into(), "text".into(), "YES", None, -1, &[])
+        let err = column_from_parts("x".into(), "text".into(), "YES", None, -1, None, &[])
             .expect_err("negative ordinal should fail");
         assert!(matches!(err, DbError::TypeConversion(_)));
     }

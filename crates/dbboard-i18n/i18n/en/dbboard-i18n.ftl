@@ -51,6 +51,7 @@ structure-col-type = Type
 structure-col-nullable = Null
 structure-col-pk = Key
 structure-col-default = Default
+structure-col-comment = Comment
 
 # ADR-0030 result grid: long / multi-line cell values are truncated with
 # an ellipsis and an expand button that opens the full text in a popup.

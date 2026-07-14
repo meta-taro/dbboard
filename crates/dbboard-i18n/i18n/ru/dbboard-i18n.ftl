@@ -132,3 +132,4 @@ structure-col-type = Тип
 structure-col-nullable = Null
 structure-col-pk = Ключ
 structure-col-default = По умолч.
+structure-col-comment = Комментарий

@@ -131,3 +131,4 @@ structure-col-type = 유형
 structure-col-nullable = Null
 structure-col-pk = 키
 structure-col-default = 기본값
+structure-col-comment = 설명

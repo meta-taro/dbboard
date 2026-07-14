@@ -188,6 +188,8 @@ fn column_from_pragma_row(
         primary_key: pk > 0,
         ordinal,
         default_value,
+        // SQLite/libSQL has no column-comment concept (ADR-0037).
+        comment: None,
     })
 }
 

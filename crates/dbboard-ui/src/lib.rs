@@ -1896,13 +1896,14 @@ fn render_table_schema(ui: &mut egui::Ui, schema: &TableSchema) {
     }
 
     let row_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
-    let headers: [String; 6] = [
+    let headers: [String; 7] = [
         t!("structure-col-ordinal"),
         t!("structure-col-name"),
         t!("structure-col-type"),
         t!("structure-col-nullable"),
         t!("structure-col-pk"),
         t!("structure-col-default"),
+        t!("structure-col-comment"),
     ];
 
     let mut table = TableBuilder::new(ui)
@@ -1943,6 +1944,9 @@ fn render_table_schema(ui: &mut egui::Ui, schema: &TableSchema) {
                     });
                     row.col(|ui| {
                         ui.label(col.default_value.as_deref().unwrap_or(""));
+                    });
+                    row.col(|ui| {
+                        ui.label(col.comment.as_deref().unwrap_or(""));
                     });
                 });
             }
@@ -3255,6 +3259,7 @@ mod tests {
                 primary_key: true,
                 ordinal: 1,
                 default_value: None,
+                comment: None,
             }],
             primary_key: vec!["id".into()],
         }
