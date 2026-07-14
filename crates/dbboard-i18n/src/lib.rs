@@ -299,6 +299,27 @@ mod tests {
     }
 
     #[test]
+    fn help_menu_labels_resolve_and_localize() {
+        // The Help menu (internal distribution) surfaces two localized
+        // labels: the menu title and a one-line docs pointer. Both must
+        // resolve to a real translation in en, and localise in ja rather
+        // than falling back to the raw key id.
+        let _g = LOADER_GUARD.lock().unwrap();
+
+        let en = init(Some("en")).expect("init must succeed for en");
+        assert_eq!(en.get("help-menu"), "Help");
+        let en_hint = en.get("help-docs-hint");
+        assert!(!en_hint.is_empty());
+        assert_ne!(en_hint, "help-docs-hint", "en hint must be translated");
+
+        let ja = init(Some("ja")).expect("init must succeed for ja");
+        let ja_menu = ja.get("help-menu");
+        assert!(!ja_menu.is_empty());
+        assert_ne!(ja_menu, "help-menu", "ja must not fall back to the key id");
+        assert_ne!(ja_menu, "Help", "ja must differ from en");
+    }
+
+    #[test]
     fn reconnect_button_label_resolves_and_is_localized() {
         // ADR-0036: the active row's recovery button. en is the source;
         // ja must be a real translation, not the key echoed back (the
