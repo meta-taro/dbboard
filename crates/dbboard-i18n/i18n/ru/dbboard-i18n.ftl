@@ -2,6 +2,8 @@ app-title = dbboard
 
 tables-heading = Таблицы
 tables-empty = (нет таблиц)
+tables-context-select = Выбрать все строки
+tables-context-count = Подсчитать строки
 
 sql-heading = SQL
 sql-run-button = Выполнить

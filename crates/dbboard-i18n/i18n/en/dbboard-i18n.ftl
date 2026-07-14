@@ -6,6 +6,11 @@ app-title = dbboard
 
 tables-heading = Tables
 tables-empty = (no tables)
+# Right-click a sidebar table for quick starter queries dropped into the
+# editor. Read-only by design — no DELETE/DROP — since this ships to a
+# data-collection user where a mis-click must never be destructive.
+tables-context-select = Select all rows
+tables-context-count = Count rows
 
 sql-heading = SQL
 sql-run-button = Run
