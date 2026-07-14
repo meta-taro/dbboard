@@ -5,17 +5,46 @@
 
 ## 最終更新
 
-- 日付: 2026-07-10 (**Windows 内々配布パッケージング完了。PR #52
-  (ADR-0032) が develop に merge 済 = `1cec10f`。exe 整備 3 点 +
-  cargo-wix MSI ソース。この doc-sync chore が最後の tick。**)
-- ブランチ: `chore/post-pr52-doc-sync` (develop `1cec10f` = PR #52
-  merge 済から分岐)。**query-UX バッチは PR #51 で merge 済 =
-  `3baee89`。ADR-0030 / ADR-0031 クローズ。**
+- 日付: 2026-07-14 (**収集担当への Windows 内々配布ハンドオフ、コード
+  面ほぼ完了。develop tip = `b69d3a4` (PR #63 collector setup pack)。
+  ハンドオフ前 4 項目すべて develop 入り済、残るは #14 = リリース exe
+  ビルド & 引き渡しのみ。この doc-sync chore がその tick。**)
+- ブランチ: `chore/post-pr63-doc-sync` (develop `b69d3a4` から分岐)。
+- **収集ハンドオフ 4 項目 (すべて merged):** テーブル右クリック簡易SQL
+  (PR #59) / Help メニュー + バージョン表示 (PR #60) / 段階B トークン
+  自動リフレッシュ (ADR-0037, PR #61) / 収集セットアップ pack
+  (PR #63)。加えて先行して aurora-dsql-iam 段階A (ADR-0036, PR #56)。
 - Phase 4 Stage 2 (ADR-0025/0026/0027/0028) は in-process スコープ完結。
   Stage 2 残りは D-2 (ADR-0029 = function-calling) のみで、これは
   `feature/adr-0029-function-calling` ブランチに planning ball あり
-  (別ストリーム)。query-UX / Windows 配布はいずれも menu-not-sequence
-  モードの実利用ドリブン = ロードマップ順とは独立。
+  (別ストリーム)。収集配布はいずれも menu-not-sequence モードの実利用
+  ドリブン = ロードマップ順とは独立。
+
+### 収集セットアップ pack (#9 / 2026-07-14、PR #63 = `b69d3a4`)
+
+収集担当機に dbboard を立ち上げるための自己完結パック。build/docs のみ
+= ソース挙動不変、crate/HTTP contract 不変。commit 2 本 (`cc067e1` feat
++ `249f44b` docs)、リリースゲート (build --release / test --release) まで
+green。
+
+- **`docs/collector-setup/connections.template.toml`**: 3 接続
+  (store-cabaret/D1・store-lovehotel/aurora-dsql-iam・vegas-gift/supabase)
+  のテンプレ。**secret ゼロ** = `keyring_*_ref` 名のみ。実体は Windows
+  資格情報マネージャー。
+- **`docs/collector-setup/README.md`**: Windows クイックスタート
+  (config 配置 → `cmdkey` で 3 secret シード → 起動)。GUI Add 代替
+  (D1/Supabase のみ・aurora-dsql-iam 不可)、検証/ローテ/トラブルシュート。
+- **`crates/dbboard-config/tests/collector_template.rs`**: `include_str!`
+  でテンプレを本番 `ConnectionFile::parse` に通すガードテスト 3 本。
+  スキーマ drift は担当の起動時でなく `cargo test` で落ちる。
+- **バグ修正同梱**: `docs/connections.md` の Windows keychain ターゲット
+  名が裸の `<ref>` と誤記 → 実際は `<ref>.dbboard` (末尾付加)。keyring
+  3.6.3 ソース + 実 cmdkey 往復 (NUL なし) で実証し修正。旧手順のままだと
+  手動シード secret が接続時に見つからず、Windows-only ハンドオフでは致命。
+- **申し送り**: リポジトリ public + 実業務接続名が既存フィクスチャに存在
+  = pack は新規漏洩なしだが、リポ全体サニタイズは maintainer 判断待ち。
+- **残**: #14 = `cargo build --release` の exe を担当へ (exe 単体で
+  自己完結、ADR-0032)。
 
 ### Windows 内々配布パッケージング (本セッション / 2026-07-10、PR #52 = `1cec10f`)
 
