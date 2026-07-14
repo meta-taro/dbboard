@@ -4724,13 +4724,22 @@ connect time, rather than storing a short-lived token.
 ### Consequences
 
 - **Known v1 limitation (段階A)**: because the token is minted only at
-  build time, a *cold reconnect* attempted more than ~15 minutes after
-  the last adapter build fails with a connection error until the next
-  connection switch (or app restart) re-mints. For the 24/7 use case the
-  process holds one live pool, which stays authenticated; the gap only
-  bites a pool that was torn down and rebuilt late. Automatic in-pool
-  token refresh (段階B) — a background re-sign before expiry — is
-  deferred to a follow-up ADR.
+  build time, any *new physical connection* opened more than ~15 minutes
+  after the last adapter build fails until the adapter is rebuilt. This
+  bites a cold reconnect after the app has idled, **and — confirmed by a
+  live smoke test on 2026-07-14 — a long-running 24/7 pool too**: Aurora
+  DSQL closes idle server-side connections, and when `sqlx` re-opens one
+  it replays the *same* now-expired token as the password, so the server
+  answers `unable to accept connection, access denied`. So 段階A does not
+  by itself satisfy the unattended 24/7 goal; automatic in-pool token
+  refresh (段階B) — a background re-sign before expiry — is the real fix
+  and is deferred to a follow-up ADR.
+- **Manual recovery path (段階A stopgap)**: the connections window's
+  active-row button is relabelled **Reconnect** (previously a disabled
+  Connect under ADR-0020) so a single click rebuilds the adapter and
+  mints a fresh token when the pool has been rejected. This makes the
+  段階A limitation recoverable without an app restart; it does not remove
+  the need for 段階B under truly unattended operation.
 - **No new dependencies**: `hmac`, `sha2`, `hex`, `percent-encoding`, and
   `time` were already in the lock file; they are promoted to explicit
   `dbboard-postgres` dependencies. `Cargo.toml` gains a workspace entry

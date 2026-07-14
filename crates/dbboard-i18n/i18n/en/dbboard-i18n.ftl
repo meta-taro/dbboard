@@ -86,6 +86,7 @@ connections-replace-url = Replace URL
 # place; the active row is decorated with `connections-active-marker`
 # and its Connect button is disabled.
 connections-connect-button = Connect
+connections-reconnect-button = Reconnect
 connections-active-marker = (active)
 connections-switch-error = Could not connect
 

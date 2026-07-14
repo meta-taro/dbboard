@@ -299,6 +299,26 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_button_label_resolves_and_is_localized() {
+        // ADR-0036: the active row's recovery button. en is the source;
+        // ja must be a real translation, not the key echoed back (the
+        // Fluent fallback for a missing key).
+        let _g = LOADER_GUARD.lock().unwrap();
+
+        let en = init(Some("en")).expect("init en");
+        assert_eq!(en.get("connections-reconnect-button"), "Reconnect");
+
+        let ja = init(Some("ja")).expect("init ja");
+        let v = ja.get("connections-reconnect-button");
+        assert!(!v.is_empty());
+        assert_ne!(v, "Reconnect", "ja must differ from en");
+        assert_ne!(
+            v, "connections-reconnect-button",
+            "key must exist in ja, not fall back to the raw id"
+        );
+    }
+
+    #[test]
     fn set_language_swaps_active_bundle_at_runtime() {
         // ADR-0022: a runtime switch from ja → en → zh-CN must update
         // both `t!()` lookups and `current_language()` reporting on

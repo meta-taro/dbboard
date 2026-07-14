@@ -50,6 +50,7 @@ connections-field-pg-url = 接続 URL
 connections-replace-token = トークンを置換
 connections-replace-url = URL を置換
 connections-connect-button = 接続
+connections-reconnect-button = 再接続
 connections-active-marker = （接続済み）
 connections-switch-error = 接続できませんでした
 

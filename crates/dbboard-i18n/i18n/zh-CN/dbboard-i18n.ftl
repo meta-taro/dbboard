@@ -50,6 +50,7 @@ connections-field-pg-url = 连接 URL
 connections-replace-token = 替换令牌
 connections-replace-url = 替换 URL
 connections-connect-button = 连接
+connections-reconnect-button = 重新连接
 connections-active-marker = （当前）
 connections-switch-error = 无法连接
 

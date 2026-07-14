@@ -50,6 +50,7 @@ connections-field-pg-url = Verbindungs-URL
 connections-replace-token = Token ersetzen
 connections-replace-url = URL ersetzen
 connections-connect-button = Verbinden
+connections-reconnect-button = Erneut verbinden
 connections-active-marker = (aktiv)
 connections-switch-error = Verbindung fehlgeschlagen
 
