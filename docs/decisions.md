@@ -4764,3 +4764,112 @@ None to any published contract (the workspace is unpublished and
 `dbboard-core` is untouched). Additive: one new `ConnectionKind` variant,
 one new `BackendConfig` variant, one new `PostgresAdapter` constructor,
 and one new internal `dsql_auth` module.
+
+## ADR-0037 — Aurora DSQL IAM in-pool token auto-refresh (段階B)
+
+**Status:** Accepted 2026-07-14
+
+### Context
+
+ADR-0036 shipped the `aurora-dsql-iam` kind, which self-mints a SigV4 IAM
+token instead of storing a pre-generated one. But it mints the token
+**once, at adapter build time** (startup and connection switch). ADR-0036
+already recorded the consequence, which a live smoke test on 2026-07-14
+then confirmed: Aurora DSQL closes idle server-side connections, and when
+`sqlx` re-opens one it replays the *same* now-expired (~15 min TTL) token
+as the password, so the server answers
+`unable to accept connection, access denied`. The Reconnect button
+(ADR-0036 stopgap) recovers this with a manual click, but the near-term
+rollout needs several DSQL clusters connected **24/7 unattended** for
+continuous data collection (project memory "Aurora DSQL permanent
+connection required", 2026-07-13). A human is not present to click
+Reconnect. 段階A therefore does not meet the goal on its own; this ADR is
+the 段階B follow-up ADR-0036 deferred.
+
+Two constraints shape the mechanism:
+
+- **sqlx 0.8 has no per-connection password callback.** The
+  `PoolConnector` trait that would let a live pool re-sign each new
+  physical connection is a sqlx 0.9 feature, and 0.9 is unreleased. The
+  workspace is pinned to `sqlx = "0.8"` (0.8.6 resolved). So a running
+  `PgPool` cannot be told to use a fresh password for its next dial.
+- **No AWS SDK** (ADR-0034): the SDK's token minting pulls in `aws-lc-rs`,
+  which the workspace forbids. Token minting stays on the hand-rolled
+  `dsql_auth` SigV4 path from ADR-0036.
+
+### Decision
+
+Keep the token fresh by **rebuilding and atomically swapping the whole
+`PgPool` on a timer**, from a background task the adapter owns. New
+physical connections are always dialled by the *current* pool, whose
+token is never older than one refresh interval — well inside the TTL.
+
+- **Swappable pool handle.** `PostgresAdapter`'s `pool` field becomes a
+  small `PoolHandle` enum: `Static(PgPool)` for every existing flavor
+  (unchanged behaviour, no task, no lock) and `Refreshing(Arc<RwLock<PgPool>>)`
+  for `aurora-dsql-iam`. Every adapter method takes
+  `let pool = self.pool.current();` (a cheap `PgPool` clone — `PgPool` is
+  `Arc` inside) and uses `&pool`, so `ping` / `query` / `describe_table`
+  change at exactly one line each and no query logic moves. The read lock
+  is held only long enough to clone the `Arc`, never across an `.await`.
+- **Background refresh task.** `connect_aurora_dsql_iam` builds the first
+  pool as today, wraps it in `Arc<RwLock<PgPool>>`, and spawns a Tokio
+  task that loops: sleep `refresh_interval`, mint a fresh token from the
+  retained `AuroraDsqlIamParams`, build a new `PgPool`, and swap it into
+  the lock. The task holds a **`Weak`** to the lock, so when the adapter
+  is dropped (process exit or a connection switch under ADR-0020) the last
+  `Arc` goes and the task's next `upgrade()` returns `None` and it exits —
+  no explicit shutdown channel, no task leak across a switch.
+- **Refresh cadence is derived, not magic.** A pure
+  `refresh_interval(expires_secs) -> Duration` returns two-thirds of the
+  token TTL (600 s for the 900 s `DEFAULT_EXPIRES_SECS`). At any instant
+  the live pool's token age is 0–600 s, leaving ≥ 300 s of validity for a
+  fresh dial. The function is the unit-tested seam: it is strictly greater
+  than zero and strictly less than the TTL for every sane input, which is
+  the invariant that keeps a dial from ever racing expiry.
+- **Old pool drains, it is not killed.** Swapping overwrites the `Arc<…>`
+  the lock holds; an in-flight query that already cloned the previous
+  `PgPool` finishes on it, and the old pool closes when its last clone
+  drops. A best-effort `old.close().await` after a short grace runs in the
+  same task so idle sockets do not linger. Because the collector issues
+  one statement at a time, the swap is effectively invisible.
+- **Credential source and role are unchanged from 段階A** (maintainer
+  decision, 2026-07-14): the token is signed from the **static AWS access
+  key / secret key** already stored inline (`access_key_id`) and in the OS
+  keychain (`secret_key`) — no `~/.aws` profile or SSO source — and it is a
+  **`DbConnectAdmin`** token for the `admin` role. 段階B changes only the
+  refresh lifecycle; the `AuroraDsqlIamParams` shape, the
+  `connections.toml` schema, and the keychain reference are byte-identical
+  to ADR-0036, so no config migration and no setup-pack (#9) change.
+
+### Consequences
+
+- **24/7 unattended operation works**: a new dial after any idle period
+  uses a token minted ≤ 10 minutes ago, so the `access denied` recycle
+  failure cannot occur. The Reconnect button stays as a manual override
+  for the unexpected (e.g. rotated credentials) but is no longer required
+  for normal operation.
+- **The secret key now lives in memory for the adapter's whole lifetime**,
+  inside the refresh task (it must re-sign forever), rather than only
+  during a single connect. It is still never logged and never in `Debug`;
+  the `AuroraDsqlIamParams` retained by the task carries the same redaction
+  posture as 段階A. This is an accepted, documented trade of a longer
+  in-memory secret lifetime for unattended correctness.
+- **Brief connection churn every ~10 minutes**: the pool is rebuilt on
+  each refresh even when idle. For a one-statement-at-a-time collector this
+  is negligible; a busier workload would notice the periodic reconnect, and
+  a future optimisation could refresh lazily (only when a dial is imminent)
+  — out of scope here.
+- **`Static` flavors are untouched**: Postgres/Neon/Supabase/`aurora-dsql`
+  keep a plain `PgPool` with no lock and no task; the only cost is the
+  one-line `self.pool.current()` indirection, which is a move plus an `Arc`
+  clone.
+- **Web sibling**: desktop-only connection-lifecycle concern, no HTTP
+  wire-contract change, so dbboard-web is unaffected and no cross-repo
+  brief is needed (same posture as ADR-0036).
+
+### SemVer impact (ADR-0011)
+
+None to any published contract. Internal only: `PostgresAdapter` gains a
+private `PoolHandle` field shape and a background task; the public
+constructor signatures are unchanged. `dbboard-core` is untouched.
