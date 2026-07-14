@@ -187,8 +187,12 @@ secret.)
 
 ## Seeding secrets
 
-There is no in-app UI for editing the store yet (Phase 2 task). For now,
-seed the keychain by hand with your OS's tooling:
+The connection window can add most kinds for you (typing the secret into a
+masked field and seeding the keychain automatically), but the
+`aurora-dsql-iam` kind is config-file-only, and some setups seed secrets
+ahead of first launch. To seed the keychain by hand, use your OS's tooling.
+The service is always `dbboard`; the *account* is the `keyring_*_ref` value
+from the file (e.g. `dbboard.cf-d1-prod.token`).
 
 - **Linux** (Secret Service, GNOME Keyring / KWallet):
   ```sh
@@ -199,14 +203,26 @@ seed the keychain by hand with your OS's tooling:
   ```sh
   security add-generic-password -s dbboard -a dbboard.cf-d1-prod.token -w
   ```
-- **Windows**: Credential Manager → Windows Credentials → Add a generic
-  credential. *Internet or network address* = the account string
-  (e.g. `dbboard.cf-d1-prod.token`), *User name* = anything (ignored),
-  *Password* = the secret. The service `dbboard` is prefixed by the
-  `keyring` crate automatically.
+- **Windows** (`cmdkey`, PowerShell or cmd): the `keyring` crate maps
+  `(service, account)` to a **Generic** credential whose target name is
+  `<account>.dbboard` — the account first, with `.dbboard` **appended**
+  (not prefixed). The credential's *user* is ignored on read, but set it to
+  the account so the entry is self-describing:
+  ```powershell
+  cmdkey /generic:dbboard.cf-d1-prod.token.dbboard `
+         /user:dbboard.cf-d1-prod.token `
+         /pass:"THE_SECRET"
+  ```
+  The Credential Manager GUI works too: *Add a generic credential* →
+  *Internet or network address* = `dbboard.cf-d1-prod.token.dbboard` (the
+  `.dbboard` suffix is required — the GUI does not add it), *Password* =
+  the secret.
 
 A missing keychain entry surfaces as `ConfigError::Secret` at startup,
 naming the reference that could not be resolved.
+
+For a complete, worked Windows setup covering all three collector
+connections, see [`collector-setup/README.md`](collector-setup/README.md).
 
 ## File permissions and at-rest posture (ADR-0024)
 
