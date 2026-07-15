@@ -787,16 +787,24 @@ fn about_line() -> String {
     format!("dbboard {}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Help menu (internal distribution). Two read-only rows: the running
-/// version (`about_line`) and a one-line pointer at the setup docs. Kept
+/// Canonical public home of the project: latest builds, docs, and the
+/// place a handoff bug report should go. Surfaced as a clickable row in
+/// the Help menu so a collector user can always find their way back to
+/// the source. Not translated — it is a bare URL, identical everywhere.
+const REPO_URL: &str = "https://github.com/meta-taro/dbboard";
+
+/// Help menu (internal distribution). Read-only rows: the running
+/// version (`about_line`), a one-line pointer at the setup docs, and a
+/// clickable link to the public project repo (`REPO_URL`). Kept
 /// intentionally tiny — the collector users this ships to need "what
-/// version am I on" and "where do I look" far more than a rich About
-/// window.
+/// version am I on", "where do I look", and "where does this come from"
+/// far more than a rich About window.
 fn help_menu(ui: &mut egui::Ui) {
     ui.menu_button(t!("help-menu"), |ui| {
         ui.label(about_line());
         ui.separator();
         ui.label(t!("help-docs-hint"));
+        ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
     });
 }
 
@@ -1265,5 +1273,15 @@ mod tests {
             line.contains(env!("CARGO_PKG_VERSION")),
             "about line must embed the crate version, got: {line}"
         );
+    }
+
+    #[test]
+    fn repo_url_points_at_the_public_github_repo() {
+        use super::REPO_URL;
+        // The Help menu offers the collector user a way back to the
+        // canonical source: latest builds, docs, and where to file a
+        // handoff bug report. Must be the public https GitHub repo.
+        assert_eq!(REPO_URL, "https://github.com/meta-taro/dbboard");
+        assert!(REPO_URL.starts_with("https://"), "must be https");
     }
 }
