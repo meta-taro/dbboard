@@ -59,6 +59,7 @@ connections-switch-error = 无法连接
 language-menu = 语言
 help-menu = 帮助
 help-docs-hint = 有关设置和连接指南，请参阅 README.md 和 docs/。
+help-repo-link = GitHub 上的项目
 
 ai-menu-button = AI 助手
 ai-panel-title = AI 助手

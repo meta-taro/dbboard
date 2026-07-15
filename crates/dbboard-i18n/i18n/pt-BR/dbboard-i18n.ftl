@@ -59,6 +59,7 @@ connections-switch-error = Falha na conexão
 language-menu = Idioma
 help-menu = Ajuda
 help-docs-hint = Consulte README.md e docs/ para configuração e guias de conexão.
+help-repo-link = Projeto no GitHub
 
 ai-menu-button = Assistente de IA
 ai-panel-title = Assistente de IA
