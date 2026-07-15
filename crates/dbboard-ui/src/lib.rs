@@ -2520,7 +2520,7 @@ mod tests {
         app.drain_replies();
         assert!(app.last_switch_error().is_some());
 
-        app.switch_connection("store-cabaret".into());
+        app.switch_connection("store-a".into());
         assert!(
             app.last_switch_error().is_none(),
             "dispatching a new switch clears the stale failure up front"
@@ -2535,7 +2535,7 @@ mod tests {
 
         reply_tx
             .send(Reply::SwitchFailed {
-                id: "store-cabaret".into(),
+                id: "store-a".into(),
                 error: DbError::Connection("host unreachable".into()),
             })
             .unwrap();
@@ -2548,7 +2548,7 @@ mod tests {
         let msg = app
             .switch_error_message()
             .expect("failed switch produces a display message");
-        assert!(msg.contains("store-cabaret"), "message names target: {msg}");
+        assert!(msg.contains("store-a"), "message names target: {msg}");
         assert!(
             msg.contains("host unreachable"),
             "message carries the wire error: {msg}"
@@ -2558,7 +2558,7 @@ mod tests {
         // lingers next to the now-active connection.
         reply_tx
             .send(Reply::ConnectionSwitched {
-                id: "store-cabaret".into(),
+                id: "store-a".into(),
             })
             .unwrap();
         app.drain_replies();

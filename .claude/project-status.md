@@ -34,7 +34,7 @@
 green。
 
 - **`docs/collector-setup/connections.template.toml`**: 3 接続
-  (store-cabaret/D1・store-lovehotel/aurora-dsql-iam・vegas-gift/supabase)
+  (store-a/D1・store-b/aurora-dsql-iam・store-c/supabase)
   のテンプレ。**secret ゼロ** = `keyring_*_ref` 名のみ。実体は Windows
   資格情報マネージャー。
 - **`docs/collector-setup/README.md`**: Windows クイックスタート

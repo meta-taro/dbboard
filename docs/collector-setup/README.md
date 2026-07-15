@@ -5,9 +5,9 @@ machine. It targets one operator running three connections:
 
 | Connection id     | Database          | `kind`            |
 | ----------------- | ----------------- | ----------------- |
-| `store-cabaret`   | Cloudflare D1     | `d1`              |
-| `store-lovehotel` | Aurora DSQL (IAM) | `aurora-dsql-iam` |
-| `vegas-gift`      | Supabase          | `supabase`        |
+| `store-a`   | Cloudflare D1     | `d1`              |
+| `store-b` | Aurora DSQL (IAM) | `aurora-dsql-iam` |
+| `store-c`      | Supabase          | `supabase`        |
 
 **No secret ever goes in a file.** `connections.toml` holds only non-secret
 fields and *names* of secrets; the secret material (a Cloudflare API token,
@@ -54,11 +54,11 @@ notepad "$dir\connections.toml"
 
 Replace every `UPPER_CASE` placeholder with the real value:
 
-- `store-cabaret`: `account_id`, `database_id`.
-- `store-lovehotel`: `endpoint`, `region` (default `ap-northeast-1`),
+- `store-a`: `account_id`, `database_id`.
+- `store-b`: `endpoint`, `region` (default `ap-northeast-1`),
   `database` (default `postgres`), `username` (default `admin`),
   `access_key_id`.
-- `vegas-gift`: nothing — its only real value is the URL, and that is a
+- `store-c`: nothing — its only real value is the URL, and that is a
   secret seeded in Step 2.
 
 Leave every `keyring_*_ref` line exactly as shipped; those names are what
@@ -79,19 +79,19 @@ double-quoted placeholder. Keep the quotes — the Supabase URL and some tokens
 contain characters PowerShell would otherwise interpret.
 
 ```powershell
-# store-cabaret — Cloudflare API token
-cmdkey /generic:dbboard.store-cabaret.token.dbboard `
-       /user:dbboard.store-cabaret.token `
+# store-a — Cloudflare API token
+cmdkey /generic:dbboard.store-a.token.dbboard `
+       /user:dbboard.store-a.token `
        /pass:"PASTE_CLOUDFLARE_API_TOKEN"
 
-# store-lovehotel — AWS secret access key
-cmdkey /generic:dbboard.store-lovehotel.secret_key.dbboard `
-       /user:dbboard.store-lovehotel.secret_key `
+# store-b — AWS secret access key
+cmdkey /generic:dbboard.store-b.secret_key.dbboard `
+       /user:dbboard.store-b.secret_key `
        /pass:"PASTE_AWS_SECRET_ACCESS_KEY"
 
-# vegas-gift — full Supabase Postgres URL
-cmdkey /generic:dbboard.vegas-gift.url.dbboard `
-       /user:dbboard.vegas-gift.url `
+# store-c — full Supabase Postgres URL
+cmdkey /generic:dbboard.store-c.url.dbboard `
+       /user:dbboard.store-c.url `
        /pass:"postgresql://user:password@host:5432/postgres"
 ```
 
@@ -109,7 +109,7 @@ Remove-Item (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue
 > — no `cmdkey`, no editing TOML. If you use it, remove the matching
 > `[[connections]]` block from `connections.toml` first so you do not end up
 > with two entries sharing one `id`. The `aurora-dsql-iam` kind has **no**
-> Add form, so `store-lovehotel` must be configured in the file (Step 1) and
+> Add form, so `store-b` must be configured in the file (Step 1) and
 > seeded with `cmdkey` (above) regardless.
 
 ---
@@ -121,7 +121,7 @@ Remove-Item (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue
 ```
 
 Open the connection window, select one of the three connections, and connect.
-`store-lovehotel` will keep its IAM token fresh on its own; if credentials are
+`store-b` will keep its IAM token fresh on its own; if credentials are
 ever rotated out from under a live session, the connection window's
 **Reconnect** button rebuilds it with a freshly minted token.
 
@@ -129,7 +129,7 @@ To launch straight into a specific connection, set `DBBOARD_CONNECTION` to its
 `id` first:
 
 ```powershell
-$env:DBBOARD_CONNECTION = "store-lovehotel"
+$env:DBBOARD_CONNECTION = "store-b"
 .\dbboard.exe
 ```
 
@@ -147,9 +147,9 @@ cmdkey /list | Select-String "dbboard"
 You should see three targets:
 
 ```
-dbboard.store-cabaret.token.dbboard
-dbboard.store-lovehotel.secret_key.dbboard
-dbboard.vegas-gift.url.dbboard
+dbboard.store-a.token.dbboard
+dbboard.store-b.secret_key.dbboard
+dbboard.store-c.url.dbboard
 ```
 
 ## Updating or rotating a secret
@@ -158,7 +158,7 @@ Re-running the same `cmdkey /generic:...` command overwrites the stored value.
 To remove one entirely:
 
 ```powershell
-cmdkey /delete:dbboard.store-lovehotel.secret_key.dbboard
+cmdkey /delete:dbboard.store-b.secret_key.dbboard
 ```
 
 ## Troubleshooting
