@@ -38,10 +38,7 @@ fn collector_template_defines_the_three_expected_connections() {
         "template must define exactly three connections"
     );
 
-    assert!(matches!(
-        by_id[0],
-        ("store-a", ConnectionKind::D1 { .. })
-    ));
+    assert!(matches!(by_id[0], ("store-a", ConnectionKind::D1 { .. })));
     assert!(matches!(
         by_id[1],
         ("store-b", ConnectionKind::AuroraDsqlIam { .. })

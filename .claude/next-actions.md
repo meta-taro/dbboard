@@ -10,8 +10,9 @@
 - 日付: 2026-07-15
 - develop tip: `fc087ff` (PR #65 Help→GitHub リンク merged)
 - **進行中の目標: 収集担当への内々配布 (Windows-only)。** store-a
-  (Cloudflare D1) / store-b (Aurora DSQL IAM) / Store C
+  (Cloudflare D1) / store-b (Aurora DSQL IAM) / store-c
   (Supabase) の 3 接続を収集する担当に dbboard デスクトップを渡す。
+  ※ id は中立サンプル名。実際の店舗名との対応は非公開メモリ側にのみ保持。
 - **ハンドオフ前項目 = 全て develop 入り済:**
   - ✅ テーブル右クリック簡易SQL (PR #59)
   - ✅ About/バージョン + ヘルプメニュー (PR #60)
@@ -71,12 +72,19 @@ ADR-0032)。**残るは担当機への物理引き渡しと実 secret の受け�
 
 ---
 
-## ⚠️ 未判断の申し送り
+## ⚠️ 接続名サニタイズ (2026-07-15 着手)
 
-- **リポジトリが public** で、実業務の接続名 (store-a /
-  store-b / store-c / "Beta") が既にマージ済みテスト
-  フィクスチャ + collector pack に入っている。secret 値は無いが、
-  リポジトリ全体を名前サニタイズするかは maintainer 判断待ち。
+- **経緯**: public リポジトリのソース/テスト/テンプレに実業務接続名が
+  露出していた (2026-07-13〜14 のハンドオフ準備でテストのサンプルデータ
+  として実名を使ってしまったのが原因)。**出荷 exe には非埋め込み**
+  (テストは `#[cfg(test)]`、テンプレは `tests/` の include_str! のみ)。
+- **現行置換 = 実施済み** (このブランチ `chore/sanitize-connection-names`)。
+  実名を中立サンプル id (store-a / store-b / store-c) + サンプル行データ
+  (Alpha / Beta) に一括置換。実名↔サンプルの対応は非公開メモリのみ保持。
+- **履歴書き換え = human のボール (未実行)**: 過去コミットにはまだ実名が
+  残る。`docs/maintainer/history-sanitize-runbook.md` の手順で
+  `git filter-repo --replace-text` → develop/main を force-push する。
+  破壊的操作 (全ハッシュ変更・既存クローン/PR/フォーク破損) のため human 実行。
 
 ---
 
