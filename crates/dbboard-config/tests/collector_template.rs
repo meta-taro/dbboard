@@ -38,17 +38,14 @@ fn collector_template_defines_the_three_expected_connections() {
         "template must define exactly three connections"
     );
 
-    assert!(matches!(
-        by_id[0],
-        ("store-cabaret", ConnectionKind::D1 { .. })
-    ));
+    assert!(matches!(by_id[0], ("store-a", ConnectionKind::D1 { .. })));
     assert!(matches!(
         by_id[1],
-        ("store-lovehotel", ConnectionKind::AuroraDsqlIam { .. })
+        ("store-b", ConnectionKind::AuroraDsqlIam { .. })
     ));
     assert!(matches!(
         by_id[2],
-        ("vegas-gift", ConnectionKind::Supabase { .. })
+        ("store-c", ConnectionKind::Supabase { .. })
     ));
 }
 
@@ -57,9 +54,9 @@ fn collector_template_defines_the_three_expected_connections() {
 #[test]
 fn collector_template_carries_no_secret_material() {
     for reference_key in [
-        "keyring_token_ref",      // store-cabaret (D1 API token)
-        "keyring_secret_key_ref", // store-lovehotel (AWS secret key)
-        "keyring_url_ref",        // vegas-gift (Supabase URL)
+        "keyring_token_ref",      // store-a (D1 API token)
+        "keyring_secret_key_ref", // store-b (AWS secret key)
+        "keyring_url_ref",        // store-c (Supabase URL)
     ] {
         assert!(
             TEMPLATE.contains(reference_key),

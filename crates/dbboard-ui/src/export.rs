@@ -150,13 +150,10 @@ mod tests {
     fn csv_writes_header_and_rows() {
         let columns = [col("id"), col("name")];
         let rows = [
-            Row::new(vec![Value::Integer(1), Value::Text("Vegas Gift".into())]),
-            Row::new(vec![Value::Integer(2), Value::Text("Cabaret".into())]),
+            Row::new(vec![Value::Integer(1), Value::Text("Alpha".into())]),
+            Row::new(vec![Value::Integer(2), Value::Text("Beta".into())]),
         ];
-        assert_eq!(
-            to_csv(&columns, &rows),
-            "id,name\r\n1,Vegas Gift\r\n2,Cabaret"
-        );
+        assert_eq!(to_csv(&columns, &rows), "id,name\r\n1,Alpha\r\n2,Beta");
     }
 
     #[test]
@@ -164,9 +161,9 @@ mod tests {
         let columns = [col("id"), col("name")];
         let rows = [Row::new(vec![
             Value::Integer(1),
-            Value::Text("Cabaret".into()),
+            Value::Text("Beta".into()),
         ])];
-        assert_eq!(to_tsv(&columns, &rows), "id\tname\n1\tCabaret");
+        assert_eq!(to_tsv(&columns, &rows), "id\tname\n1\tBeta");
     }
 
     #[test]

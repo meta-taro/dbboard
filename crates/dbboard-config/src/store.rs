@@ -431,15 +431,15 @@ keyring_url_ref = "dbboard.dsql-prod.url"
 version = 1
 
 [[connections]]
-id                     = "store-lovehotel"
-name                   = "store-lovehotel"
+id                     = "store-b"
+name                   = "store-b"
 kind                   = "aurora-dsql-iam"
 endpoint               = "abc123.dsql.ap-northeast-1.on.aws"
 region                 = "ap-northeast-1"
 database               = "postgres"
 username               = "admin"
 access_key_id          = "AKIAEXAMPLE"
-keyring_secret_key_ref = "dbboard.store-lovehotel.secret_key"
+keyring_secret_key_ref = "dbboard.store-b.secret_key"
 "#;
         let file = ConnectionFile::parse(toml_src).expect("aurora-dsql-iam entry parses");
         assert_eq!(
@@ -450,7 +450,7 @@ keyring_secret_key_ref = "dbboard.store-lovehotel.secret_key"
                 database: "postgres".to_string(),
                 username: "admin".to_string(),
                 access_key_id: "AKIAEXAMPLE".to_string(),
-                keyring_secret_key_ref: "dbboard.store-lovehotel.secret_key".to_string(),
+                keyring_secret_key_ref: "dbboard.store-b.secret_key".to_string(),
             }
         );
     }

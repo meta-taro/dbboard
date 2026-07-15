@@ -1219,11 +1219,11 @@ mod tests {
         // Just dispatched: active id still the old one, error cleared at
         // dispatch. The window must stay open (no premature close/fail).
         assert_eq!(
-            poll_pending_switch("store-cabaret", "", None),
+            poll_pending_switch("store-a", "", None),
             PendingSwitchPoll::Waiting
         );
         assert_eq!(
-            poll_pending_switch("store-cabaret", "prod-pg", None),
+            poll_pending_switch("store-a", "prod-pg", None),
             PendingSwitchPoll::Waiting
         );
     }
@@ -1233,7 +1233,7 @@ mod tests {
         use super::{poll_pending_switch, PendingSwitchPoll};
         // Active id flipped to the requested target: adapter swapped.
         assert_eq!(
-            poll_pending_switch("store-cabaret", "store-cabaret", None),
+            poll_pending_switch("store-a", "store-a", None),
             PendingSwitchPoll::Succeeded
         );
     }
@@ -1244,7 +1244,7 @@ mod tests {
         // Error present and active id unchanged: the switch failed, so the
         // window stays open to show it.
         assert_eq!(
-            poll_pending_switch("store-cabaret", "prod-pg", Some("could not connect")),
+            poll_pending_switch("store-a", "prod-pg", Some("could not connect")),
             PendingSwitchPoll::Failed
         );
     }
@@ -1255,7 +1255,7 @@ mod tests {
         // Belt-and-braces: even if an error string is somehow still set,
         // an active id matching the request means the switch landed.
         assert_eq!(
-            poll_pending_switch("store-cabaret", "store-cabaret", Some("stale")),
+            poll_pending_switch("store-a", "store-a", Some("stale")),
             PendingSwitchPoll::Succeeded
         );
     }

@@ -15,41 +15,41 @@
 
 version = 1
 
-# ── store-cabaret — Cloudflare D1 ──────────────────────────────────────
+# ── store-a — Cloudflare D1 ──────────────────────────────────────
 # Non-secret: account_id, database_id. Secret: the Cloudflare API token,
-# seeded under `dbboard.store-cabaret.token`.
+# seeded under `dbboard.store-a.token`.
 [[connections]]
-id                = "store-cabaret"
-name              = "store-cabaret"
+id                = "store-a"
+name              = "store-a"
 kind              = "d1"
 account_id        = "YOUR_CLOUDFLARE_ACCOUNT_ID"
 database_id       = "YOUR_D1_DATABASE_ID"
-keyring_token_ref = "dbboard.store-cabaret.token"
+keyring_token_ref = "dbboard.store-a.token"
 
-# ── store-lovehotel — Aurora DSQL (IAM) ────────────────────────────────
+# ── store-b — Aurora DSQL (IAM) ────────────────────────────────
 # The adapter mints a short-lived IAM token itself and auto-refreshes it
 # (ADR-0037, 段階B), so an unattended connection survives 24/7. Non-secret:
 # endpoint, region, database, username, access_key_id. Secret: only the AWS
-# secret access key, seeded under `dbboard.store-lovehotel.secret_key`.
+# secret access key, seeded under `dbboard.store-b.secret_key`.
 # This kind is configured here in the file only — the connection window has
 # no add/edit form for it.
 [[connections]]
-id                     = "store-lovehotel"
-name                   = "store-lovehotel"
+id                     = "store-b"
+name                   = "store-b"
 kind                   = "aurora-dsql-iam"
 endpoint               = "YOUR_CLUSTER.dsql.ap-northeast-1.on.aws"
 region                 = "ap-northeast-1"
 database               = "postgres"
 username               = "admin"
 access_key_id          = "YOUR_AWS_ACCESS_KEY_ID"
-keyring_secret_key_ref = "dbboard.store-lovehotel.secret_key"
+keyring_secret_key_ref = "dbboard.store-b.secret_key"
 
-# ── Vegas Gift — Supabase ──────────────────────────────────────────────
+# ── store-c — Supabase ─────────────────────────────────────────
 # The whole Postgres connection URL (which embeds the password) is the
-# secret, seeded under `dbboard.vegas-gift.url`. Nothing about this
+# secret, seeded under `dbboard.store-c.url`. Nothing about this
 # connection other than its id/name lives in this file.
 [[connections]]
-id              = "vegas-gift"
-name            = "Vegas Gift"
+id              = "store-c"
+name            = "store-c"
 kind            = "supabase"
-keyring_url_ref = "dbboard.vegas-gift.url"
+keyring_url_ref = "dbboard.store-c.url"

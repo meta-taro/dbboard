@@ -1512,11 +1512,8 @@ mod tests {
         // Connect, so re-selecting the active id reaches the worker and
         // triggers a fresh adapter build (new IAM token).
         let mut view = ConnectionsView::new();
-        view.request_connect("store-lovehotel");
-        assert_eq!(
-            view.take_pending_connect().as_deref(),
-            Some("store-lovehotel")
-        );
+        view.request_connect("store-b");
+        assert_eq!(view.take_pending_connect().as_deref(), Some("store-b"));
     }
 
     #[test]
