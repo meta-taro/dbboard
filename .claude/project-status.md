@@ -5,15 +5,21 @@
 
 ## 最終更新
 
-- 日付: 2026-07-14 (**収集担当への Windows 内々配布ハンドオフ、コード
-  面ほぼ完了。develop tip = `b69d3a4` (PR #63 collector setup pack)。
-  ハンドオフ前 4 項目すべて develop 入り済、残るは #14 = リリース exe
-  ビルド & 引き渡しのみ。この doc-sync chore がその tick。**)
-- ブランチ: `chore/post-pr63-doc-sync` (develop `b69d3a4` から分岐)。
-- **収集ハンドオフ 4 項目 (すべて merged):** テーブル右クリック簡易SQL
+- 日付: 2026-07-15 (**収集担当への Windows 内々配布ハンドオフ、コード
+  面完了 + #14 exe ビルド確定。develop tip = `fc087ff` (PR #65 Help→
+  GitHub リンク)。ハンドオフ用 release exe は develop から build 済み・
+  目視確認済み。残るは物理引き渡しと実 secret 受け渡しのみ。この
+  doc-sync chore が最後の tick。**)
+- ブランチ: `chore/post-pr65-doc-sync` (develop `fc087ff` から分岐)。
+- **収集ハンドオフ項目 (すべて merged):** テーブル右クリック簡易SQL
   (PR #59) / Help メニュー + バージョン表示 (PR #60) / 段階B トークン
   自動リフレッシュ (ADR-0037, PR #61) / 収集セットアップ pack
-  (PR #63)。加えて先行して aurora-dsql-iam 段階A (ADR-0036, PR #56)。
+  (PR #63) / Help メニューに公式 GitHub リンク (PR #65)。加えて先行して
+  aurora-dsql-iam 段階A (ADR-0036, PR #56)。
+- **#14 ハンドオフ最終ビルド (2026-07-15):** develop `fc087ff` から
+  `cargo build --release` → `target\release\dbboard.exe` (15.6 MB、
+  PE subsystem=GUI、FileVersion 0.1.0)。起動煙テスト + Help→Project on
+  GitHub の目視まで確認済み。exe 単体で自己完結 (VC++ 再頒布不要)。
 - Phase 4 Stage 2 (ADR-0025/0026/0027/0028) は in-process スコープ完結。
   Stage 2 残りは D-2 (ADR-0029 = function-calling) のみで、これは
   `feature/adr-0029-function-calling` ブランチに planning ball あり

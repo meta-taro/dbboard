@@ -409,7 +409,8 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       non-destructive by design for the collector handoff (PR #59).
 - [x] Help menu with version + docs pointer — a menu-bar entry showing
       the running build version (so a handoff bug report pins an exact
-      build) and a pointer at README/`docs/` (PR #60).
+      build) and a pointer at README/`docs/` (PR #60), plus a clickable
+      **Project on GitHub** link back to the public repo (PR #65).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
