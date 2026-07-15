@@ -59,6 +59,7 @@ connections-switch-error = Не удалось подключиться
 language-menu = Язык
 help-menu = Справка
 help-docs-hint = См. README.md и docs/ для настройки и руководств по подключению.
+help-repo-link = Проект на GitHub
 
 ai-menu-button = ИИ-ассистент
 ai-panel-title = ИИ-ассистент

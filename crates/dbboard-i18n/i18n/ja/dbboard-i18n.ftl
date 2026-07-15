@@ -59,6 +59,7 @@ connections-switch-error = 接続できませんでした
 language-menu = 言語
 help-menu = ヘルプ
 help-docs-hint = セットアップと接続の手順は README.md と docs/ を参照してください。
+help-repo-link = GitHub のプロジェクトページ
 
 ai-menu-button = AI アシスタント
 ai-panel-title = AI アシスタント
