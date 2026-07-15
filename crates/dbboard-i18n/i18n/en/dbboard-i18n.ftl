@@ -108,6 +108,7 @@ language-menu = Language
 # `apps/dbboard` from `CARGO_PKG_VERSION`, so it is not translated here.
 help-menu = Help
 help-docs-hint = See README.md and docs/ for setup and connection guides.
+help-repo-link = Project on GitHub
 
 # ADR-0023: AI assistance panel (Phase 4 Stage 1). The menu entry and
 # the panel are both hidden when no provider is wired at startup, so

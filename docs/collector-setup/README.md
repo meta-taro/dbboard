@@ -186,3 +186,10 @@ cmdkey /delete:dbboard.store-lovehotel.secret_key.dbboard
   `crates/dbboard-config/tests/collector_template.rs`, so a schema change
   that would break the template fails the test suite rather than the
   operator's launch.
+
+## Where this comes from
+
+The project lives at <https://github.com/meta-taro/dbboard> — latest
+builds, full docs, and where to file a bug report. The running app also
+links it under **Help → Project on GitHub**, so the version and its
+source are always one click apart.
