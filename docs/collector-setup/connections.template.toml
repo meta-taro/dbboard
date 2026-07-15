@@ -44,12 +44,12 @@ username               = "admin"
 access_key_id          = "YOUR_AWS_ACCESS_KEY_ID"
 keyring_secret_key_ref = "dbboard.store-b.secret_key"
 
-# ── Store C — Supabase ──────────────────────────────────────────────
+# ── store-c — Supabase ─────────────────────────────────────────
 # The whole Postgres connection URL (which embeds the password) is the
 # secret, seeded under `dbboard.store-c.url`. Nothing about this
 # connection other than its id/name lives in this file.
 [[connections]]
 id              = "store-c"
-name            = "Store C"
+name            = "store-c"
 kind            = "supabase"
 keyring_url_ref = "dbboard.store-c.url"

@@ -150,13 +150,10 @@ mod tests {
     fn csv_writes_header_and_rows() {
         let columns = [col("id"), col("name")];
         let rows = [
-            Row::new(vec![Value::Integer(1), Value::Text("Store C".into())]),
+            Row::new(vec![Value::Integer(1), Value::Text("Alpha".into())]),
             Row::new(vec![Value::Integer(2), Value::Text("Beta".into())]),
         ];
-        assert_eq!(
-            to_csv(&columns, &rows),
-            "id,name\r\n1,Store C\r\n2,Beta"
-        );
+        assert_eq!(to_csv(&columns, &rows), "id,name\r\n1,Alpha\r\n2,Beta");
     }
 
     #[test]
