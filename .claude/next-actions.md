@@ -7,17 +7,21 @@
 
 ## 最終更新
 
-- 日付: 2026-07-14
-- develop tip: `b69d3a4` (PR #63 collector setup pack merged)
+- 日付: 2026-07-15
+- develop tip: `fc087ff` (PR #65 Help→GitHub リンク merged)
 - **進行中の目標: 収集担当への内々配布 (Windows-only)。** store-cabaret
   (Cloudflare D1) / store-lovehotel (Aurora DSQL IAM) / Vegas Gift
   (Supabase) の 3 接続を収集する担当に dbboard デスクトップを渡す。
-- **ハンドオフ前 4 項目 = 全て develop 入り済:**
+- **ハンドオフ前項目 = 全て develop 入り済:**
   - ✅ テーブル右クリック簡易SQL (PR #59)
   - ✅ About/バージョン + ヘルプメニュー (PR #60)
   - ✅ 段階B トークン自動リフレッシュ (ADR-0037 / PR #61)
   - ✅ 収集セットアップ pack (PR #63) — テンプレ + cmdkey 手順 + ガードテスト
-- **残タスクは #14 のみ = リリース exe をビルドして担当に渡す。**
+  - ✅ Help メニューに公式 GitHub リンク (PR #65)
+- **#14 = ハンドオフ用 release exe をビルド済み・目視確認済み
+  (2026-07-15、develop `fc087ff` から `target\release\dbboard.exe`、
+  15.6 MB、Help→Project on GitHub の動作も確認)。残るは物理的な
+  引き渡しと実 secret の受け渡しのみ。**
 
 ## モード
 
@@ -29,22 +33,24 @@
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### **★ 最優先: #14 収集リリースのビルド & ハンドオフ**
+### **★ 最優先: #14 の物理引き渡し (ビルドは完了済み)**
 
-前提はすべて develop に揃った (段階B / #59 / #60 / #63)。exe 単体で
-自己完結 (約 15MB、VC++ 再頒布不要、ADR-0032)。手順:
+exe は develop `fc087ff` からビルド済み・目視確認済み
+(`target\release\dbboard.exe`、15.6 MB、自己完結・VC++ 再頒布不要、
+ADR-0032)。**残るは担当機への物理引き渡しと実 secret の受け渡しのみ。**
 
-```
-git checkout develop && git pull --ff-only
-cargo build --release
-# → target\release\dbboard.exe を担当機へ
-```
+担当へ渡すもの:
+1. `target\release\dbboard.exe`
+2. `docs\collector-setup\` 一式 (`connections.template.toml` + `README.md`)
+3. 実 secret 3 種 (Cloudflare API token / AWS secret access key /
+   Supabase URL) を **別経路で安全に** (ファイル・チャット・メール本文に
+   絶対載せない)
 
 - 担当機側のセットアップは `docs/collector-setup/README.md` に沿う
   (config 配置 → cmdkey で 3 secret シード → 起動)。**secret は
   一切ファイルに書かない。**
-- 実 secret 3 種 (Cloudflare API token / AWS secret access key /
-  Supabase URL) を担当に安全に渡す経路を別途用意すること。
+- ソース無変更で再ビルドすると `Finished in ~1s` で既存 exe を再利用する
+  (タイムスタンプが古くても develop tip と一致していれば有効)。
 - MSI で渡したい場合のみ WiX 手順 (下記) だが、exe 単体で十分。
 
 ### 参考: MSI 実ビルド手順 (配布したくなったら)
