@@ -84,13 +84,30 @@ os error 5)。**残るは担当機への物理引き渡しと実 secret / バン
   3. `cd apps/dbboard && cargo wix` → `target\wix\dbboard-0.1.0-x86_64.msi`
 - **exe 単体配布なら不要** = `target\release\dbboard.exe` をそのまま渡せる。
 
-### この doc-sync の後 (agent 側)
+### 実利用ドリブンの機能バックログ (2026-07-16 maintainer 依頼、issue 化済)
 
-- 本 chore (`chore/post-pr72-doc-sync`) をマージしたら、次に動くのは
-  #14 の完了報告か、新しい摩擦レポート待ち。
-- ロードマップ menu-not-sequence の未着手候補: Export results (CSV/JSON) /
-  Saved queries / Schema diff / Group D-2 (ADR-0029 function-calling,
-  planning ball あり)。
+menu-not-sequence の未着手候補。実利用で挙がった順に優先。
+
+- **issue 0012 — 右クリック簡易SQL の自動実行**: 現状はエディタに流し込む
+  だけ (`dbboard-ui/src/lib.rs:1331`)。実行まで一発で。read-only なので
+  安全、auto-LIMIT ガードは維持。小さめ・ADR 不要。
+- **issue 0013 — セル編集 → 保存 (HeidiSQL 風)**: W クリックで
+  フォーム化 → フォーカス外れで仮登録 (dirty tint) → 下部 Save ボタンで
+  PK ベース `UPDATE` を一括実行。**アプリ初の write 経路 = 要 ADR**。
+  PK 無し結果は編集不可、型/NULL/並行更新は ADR で要検討。ADR-0028
+  (`describe_table`) が PK 情報を供給。
+- **issue 0014 — Light / Dark / Auto テーマ**: OS 追従の Auto 込み、
+  選択を永続化。dirty tint (0013) は active Visuals から色取り。小 ADR 想定。
+- **issue 0015 — アイコンを正式ロゴ化**: `apps/dbboard/assets/dbboard.ico`
+  は ADR-0032 で PowerShell+GDI+ 自作 = 完全オリジナル・著作権問題なし。
+  DESIGN.md/README 記載 + canonical asset + master 保持。
+- 既存ロードマップ候補: Export results (CSV/JSON) / Saved queries /
+  Schema diff / Group D-2 (ADR-0029 function-calling, planning ball あり)。
+
+### #14 完了後 (agent 側)
+
+- #14 の完了報告が来たら、上のバックログから摩擦順に着手。write 経路の
+  0013 は着手前に ADR を書く (planner/architect)。
 
 ---
 
