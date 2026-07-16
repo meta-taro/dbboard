@@ -30,6 +30,8 @@ use dbboard_config::{
 use dbboard_i18n::t;
 use eframe::egui;
 
+use crate::errors::{self, ai_settings_error_display, DisplayError};
+
 /// AI provider Settings window. Lives next to [`crate::DbboardApp`] in
 /// the binary and is shown when the user opens it from the top bar.
 #[derive(Debug)]
@@ -38,7 +40,9 @@ pub struct AiSettingsView {
     mode: Mode,
     /// Last error from a failed submit, surfaced inline above the form
     /// buttons. Cleared on every successful submit or mode transition.
-    last_error: Option<String>,
+    /// Carries the localized message and the original English so the
+    /// inline banner can show and copy both (ADR-0039).
+    last_error: Option<DisplayError>,
     /// Id of a provider the user just asked to make active via the
     /// per-row "Use" button. Drained by the host (typically `DesktopApp`)
     /// via [`Self::take_pending_switch`] after every `ui()` call and
@@ -137,7 +141,7 @@ impl AiSettingsView {
     /// renders this above the action buttons.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+        self.last_error.as_ref().map(DisplayError::localized)
     }
 
     /// Record a click on the per-row "Use" button. The host drains the
@@ -210,7 +214,7 @@ impl AiSettingsView {
                 Ok(())
             }
             Err(err) => {
-                self.last_error = Some(err.to_string());
+                self.last_error = Some(ai_settings_error_display(&err));
                 Err(err)
             }
         }
@@ -236,7 +240,7 @@ impl AiSettingsView {
                 Ok(())
             }
             Err(err) => {
-                self.last_error = Some(err.to_string());
+                self.last_error = Some(ai_settings_error_display(&err));
                 Err(err)
             }
         }
@@ -261,7 +265,7 @@ impl AiSettingsView {
                 Ok(())
             }
             Err(err) => {
-                self.last_error = Some(err.to_string());
+                self.last_error = Some(ai_settings_error_display(&err));
                 Err(err)
             }
         }
@@ -309,7 +313,7 @@ impl AiSettingsView {
             }
             Mode::Add(form) => {
                 render_add_form(ui, form);
-                render_error(ui, self.last_error.as_deref());
+                errors::render_error(ui, self.last_error.as_ref());
                 let (submit_btn, cancel_btn) = render_form_buttons(ui);
                 if submit_btn {
                     let _ = self.submit_add(admin);
@@ -319,7 +323,7 @@ impl AiSettingsView {
             }
             Mode::Edit { id, form } => {
                 render_edit_form(ui, id, form);
-                render_error(ui, self.last_error.as_deref());
+                errors::render_error(ui, self.last_error.as_ref());
                 let (submit_btn, cancel_btn) = render_form_buttons(ui);
                 if submit_btn {
                     let _ = self.submit_edit(admin);
@@ -332,7 +336,7 @@ impl AiSettingsView {
                     egui::Color32::LIGHT_RED,
                     format!("{}: {name}", t!("ai-settings-confirm-delete")),
                 );
-                render_error(ui, self.last_error.as_deref());
+                errors::render_error(ui, self.last_error.as_ref());
                 ui.horizontal(|ui| {
                     if ui.button(t!("ai-settings-delete-button")).clicked() {
                         let _ = self.submit_delete(admin);
@@ -490,12 +494,6 @@ fn kind_label(kind: &AiProviderKind) -> String {
     }
 }
 
-fn render_error(ui: &mut egui::Ui, msg: Option<&str>) {
-    if let Some(m) = msg {
-        ui.colored_label(egui::Color32::LIGHT_RED, m);
-    }
-}
-
 fn render_form_buttons(ui: &mut egui::Ui) -> (bool, bool) {
     let mut save = false;
     let mut cancel = false;
@@ -606,7 +604,7 @@ mod tests {
     fn start_add_switches_to_add_with_empty_form_and_clears_error() {
         let mut view = AiSettingsView::new();
         // Seed an error so we can assert it gets cleared.
-        view.last_error = Some("prior".into());
+        view.last_error = Some(DisplayError::plain("prior"));
         view.start_add();
         match view.mode() {
             Mode::Add(form) => {
@@ -668,7 +666,7 @@ mod tests {
     fn cancel_returns_to_list_and_clears_error() {
         let mut view = AiSettingsView::new();
         view.start_add();
-        view.last_error = Some("oops".into());
+        view.last_error = Some(DisplayError::plain("oops"));
         view.cancel();
         assert!(matches!(view.mode(), Mode::List));
         assert!(view.last_error().is_none());
