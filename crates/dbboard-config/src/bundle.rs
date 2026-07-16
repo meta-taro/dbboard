@@ -95,6 +95,25 @@ impl std::fmt::Debug for BundlePayload {
     }
 }
 
+// Scrub the secret values when a payload is dropped (ADR-0038 threat
+// model). The intermediate JSON buffer is already zeroized inside
+// `encrypt_bundle` / `decrypt_bundle`, but the payload itself outlives
+// that buffer — it is built before encryption and handed back after
+// decryption — so its `String` secret values would otherwise linger in
+// freed heap (recoverable via a core dump or a swap-out) after the
+// operation finishes. Keys are non-secret refs; only values are scrubbed.
+//
+// Implementing `Drop` means a `BundlePayload` can no longer be partially
+// moved out of, so consumers take its fields via `std::mem::take` instead
+// of destructuring.
+impl Drop for BundlePayload {
+    fn drop(&mut self) {
+        for value in self.secrets.values_mut() {
+            value.zeroize();
+        }
+    }
+}
+
 /// Failure modes for bundle encryption / decryption.
 #[derive(Debug, Error)]
 pub enum BundleError {
