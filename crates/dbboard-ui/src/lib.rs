@@ -832,6 +832,22 @@ impl DbboardApp {
         let _ = self.cmd_tx.send(Command::ListTables);
     }
 
+    /// Drop a table right-click starter query into the editor and run it in
+    /// one action (issue 0012). Split out from the panel so the "pick ⇒
+    /// run" behaviour is unit-testable without egui. Starters are read-only
+    /// (`SELECT` / `COUNT(*)`), so auto-running one is safe by construction;
+    /// the text stays in the editor so the user can tweak and re-run.
+    /// Ignored while a query is in flight, mirroring the disabled Run
+    /// button — this avoids swapping the editor text out from under an
+    /// in-flight run.
+    fn run_quick_sql(&mut self, sql: String) {
+        if self.busy {
+            return;
+        }
+        self.sql = sql;
+        self.run_sql();
+    }
+
     #[must_use]
     pub fn is_busy(&self) -> bool {
         self.busy
@@ -1306,10 +1322,11 @@ impl DbboardApp {
                                 clicked = Some(table.clone());
                             }
                             // Right-click a table for quick starter queries
-                            // dropped straight into the editor. Read-only by
-                            // design (no DELETE/DROP): this ships to a
-                            // data-collection user, and a mis-click should
-                            // never be destructive.
+                            // that drop into the editor and run immediately
+                            // (issue 0012). Read-only by design (no
+                            // DELETE/DROP): this ships to a data-collection
+                            // user, and a mis-click should never be
+                            // destructive — so auto-running a starter is safe.
                             row.context_menu(|ui| {
                                 if ui.button(t!("tables-context-select")).clicked() {
                                     quick_sql = Some(quick_select_sql(table));
@@ -1329,7 +1346,7 @@ impl DbboardApp {
             }
         });
         if let Some(sql) = quick_sql {
-            self.sql = sql;
+            self.run_quick_sql(sql);
         }
         if let Some(table) = clicked {
             self.open_structure(table);
@@ -2040,6 +2057,48 @@ mod tests {
         let second = cmd_rx.try_recv().expect("ListTables command emitted");
         assert!(matches!(first, Command::Query(sql) if sql == "SELECT 1"));
         assert!(matches!(second, Command::ListTables));
+    }
+
+    #[test]
+    fn quick_sql_pick_sets_the_editor_and_runs_immediately() {
+        // Issue 0012: picking a table right-click starter must both drop the
+        // SQL into the editor and execute it in one action, not leave the
+        // user to press Run afterwards.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.auto_limit = false; // isolate from the ADR-0030 guard
+        let sql = quick_select_sql(&TableInfo::unqualified("widgets"));
+
+        app.run_quick_sql(sql.clone());
+
+        assert_eq!(
+            app.sql, sql,
+            "the starter query stays visible in the editor"
+        );
+        assert!(app.is_busy(), "the pick runs immediately");
+        let first = cmd_rx.try_recv().expect("Query command emitted");
+        let second = cmd_rx.try_recv().expect("ListTables command emitted");
+        assert!(matches!(first, Command::Query(q) if q == sql));
+        assert!(matches!(second, Command::ListTables));
+    }
+
+    #[test]
+    fn quick_sql_pick_is_ignored_while_busy() {
+        // Mirrors the Run button (disabled while busy): a starter picked
+        // during an in-flight query must not swap the editor text mid-run or
+        // dispatch a second query.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv(); // drain bootstrap
+        app.sql = "SELECT 1".into();
+        app.busy = true;
+
+        app.run_quick_sql(quick_count_sql(&TableInfo::unqualified("widgets")));
+
+        assert_eq!(app.sql, "SELECT 1", "editor text is untouched while busy");
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "no command dispatched while busy"
+        );
     }
 
     #[test]
