@@ -422,6 +422,19 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       the Help menu with the release notes and a download link. Updating is
       manual; the check is silent on failure and opt-out via
       `DBBOARD_NO_UPDATE_CHECK` ([ADR-0040](decisions.md), PR #71).
+- [ ] Auto-run table right-click quick-SQL — the starter query should
+      execute on pick, not just drop into the editor (still read-only, still
+      subject to the auto-`LIMIT` guard) (issue 0012).
+- [ ] Inline cell editing with explicit Save (HeidiSQL-style) — double-click
+      a cell to edit, blur stages it (dirty-tinted, not yet written), a
+      Save button below the grid commits every staged edit via
+      primary-key `UPDATE`. The app's first write path — **needs an ADR**
+      (issue 0013).
+- [ ] Light / Dark / Auto theme — a theme switch with an Auto mode that
+      follows the OS setting and persists the choice (issue 0014).
+- [ ] Official logo — formalise the hand-authored, original app icon
+      (ADR-0032) as the project logo: canonical asset, DESIGN.md +
+      README usage, kept-source master (issue 0015).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
