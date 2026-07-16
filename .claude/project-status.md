@@ -5,11 +5,12 @@
 
 ## 最終更新
 
-- 日付: 2026-07-16 (**接続設定の暗号化バンドル export/import
-  = ADR-0038 が develop 着地。PR #68 merge = `de19e34`。develop tip =
-  `de19e34`。この `chore/post-pr68-doc-sync` は roadmap tick +
-  本ファイル + next-actions のみの遅延 sync。**)
-- ブランチ: `chore/post-pr68-doc-sync` (develop `de19e34` から分岐)。
+- 日付: 2026-07-16 (**3 本立て = エラー表示統一 (ADR-0039 / PR #70) +
+  起動時アップデート確認 (ADR-0040 / PR #71) + 内々配布ガイド一式
+  (PR #72) が順に develop 着地。develop tip = `bb9f46f`。この
+  `chore/post-pr72-doc-sync` は roadmap tick + 本ファイル +
+  next-actions + internal-testing の網羅 sync。**)
+- ブランチ: `chore/post-pr72-doc-sync` (develop `bb9f46f` から分岐)。
 - **ADR-0038 = 収集ハンドオフの「ファスト経路」:** パスフレーズ暗号
   `.dbbx` (`age` scrypt + ChaCha20-Poly1305) が全接続 **と** keychain
   から解決した secret を 1 ファイルに封入。収集配布が「テンプレ + 3
@@ -22,18 +23,66 @@
   (PR #63) / Help メニューに公式 GitHub リンク (PR #65) / 暗号化バンドル
   export/import (ADR-0038, PR #68)。加えて先行して aurora-dsql-iam 段階A
   (ADR-0036, PR #56)。
-- **#14 ハンドオフ最終ビルド (2026-07-15 時点):** develop `fc087ff` から
-  `target\release\dbboard.exe` (15.6 MB、PE subsystem=GUI、FileVersion
-  0.1.0) を build 済・目視確認済み。ADR-0038 が入った develop `de19e34`
-  では未再ビルド = 引き渡し前に最新 develop から取り直すのが望ましい
-  (バンドル import で実 secret 受け渡しがさらに簡単になる)。
+- **#14 ハンドオフ最終ビルド:** 直近の目視確認済みビルドは develop
+  `fc087ff` の `target\release\dbboard.exe` (15.6 MB、PE subsystem=GUI、
+  FileVersion 0.1.0)。ただし #70/#71/#72 着地後の develop `bb9f46f` では
+  未再ビルド = **引き渡し前にこの develop から取り直すのが理想** (配布
+  ガイドが説明するコピー可能エラー + 起動時アップデート通知が exe 挙動と
+  一致する)。ビルド前に dbboard ウィンドウを閉じる (実行中だと exe ロック
+  で os error 5)。
 - Phase 4 Stage 2 (ADR-0025/0026/0027/0028) は in-process スコープ完結。
   Stage 2 残りは D-2 (ADR-0029 = function-calling) のみで、これは
   `feature/adr-0029-function-calling` ブランチに planning ball あり
   (別ストリーム)。収集配布はいずれも menu-not-sequence モードの実利用
   ドリブン = ロードマップ順とは独立。
 
-### PR #68 (ADR-0038 = 接続設定の暗号化バンドル export/import) マージクローズ (本セッション / 2026-07-16)
+### PR #70 / #71 / #72 (エラー表示統一 + 起動時アップデート確認 + 内々配布ガイド) マージクローズ (本セッション / 2026-07-16)
+
+develop から分岐した独立 3 ブランチを推奨マージ順 (エラー i18n →
+アップデート確認 → 配布ガイド) で順次 develop 着地。この順序で #72 の
+配布ガイド記述が develop の実装 (コピー可能エラー + 更新通知) と一致し、
+#14 の exe 再ビルド地点が確定する。develop tip = `bb9f46f`。
+
+- **PR #70 = エラー表示の統一 (ADR-0039)**: アプリ由来エラーを「日本語訳
+  + 原文英語」併記 + Copy ボタン (テキストも selectable)。SQL / プロバイダ
+  本文は原文のまま (検索・AI 貼り付け用)。ハンドオフユーザが英文を
+  そのまま報告に貼れる。マージ後 #71 に decisions.md コンフリクト発生
+  (両ブランチが末尾に ADR 追記) → develop 版 (ADR-0039 まで) 採用 +
+  ADR-0040 を再抽出して末尾追記で解決、順序は 0038 → 0039 → 0040。
+- **PR #71 = 起動時アップデート確認 (ADR-0040)**: GitHub Releases API
+  (`/repos/meta-taro/dbboard/releases/latest`) を起動時 1 回 best-effort
+  GET し、`tag_name` を `CARGO_PKG_VERSION` と比較。新版があれば Help
+  メニューに通知 + リリースノート (collapsing) + DL リンク。更新は完全手動
+  (ダウンロードボタンなし)、失敗時サイレント (offline / rate-limit /
+  bad JSON は eprintln のみ)、`DBBOARD_NO_UPDATE_CHECK` 非空でオプトアウト。
+  - 実装: `apps/dbboard/src/update_check.rs` (新規、~311 行)。純粋な
+    バージョン比較 (`parse_version` / `is_newer` / `classify`、新 crate
+    なしで手書き major.minor.patch tuple、v/V 前置と `-`/`+` メタを drop) +
+    async GitHub fetch (reqwest、User-Agent 必須) + `Arc<Mutex<UpdateState>>`
+    共有スロット。binary が既に locale/clock/font/server の startup 配線層
+    なのでここに置く (UI は毎フレーム snapshot を読むだけ)。10 unit test。
+  - `spawn` は `rt.handle().clone()` した runtime handle 上に one-shot
+    task を投げ即 return、解決時 `ctx.request_repaint()` で開いている
+    Help メニューを更新。opt-out 時は request せず `Idle` のまま。
+  - `apps/dbboard/Cargo.toml` に `reqwest` / `serde` を明示追加 (どちらも
+    dbboard-ui 経由で既に transitive だが binary 自身の network 使用を
+    明示)。en/ja に 3 キー (`help-update-available` / `help-update-link`
+    / `help-update-notes`)。
+- **PR #72 = 内々配布ガイド一式**: メンテナ runbook
+  (`docs/maintainer/internal-distribution.md`) + テスター onboarding
+  (`docs/internal-testing.md`) + `.gitignore` (`*.dbbx` / `/dist/` /
+  `connections.toml`)。テスターガイドの「ネットワークは DB 接続だけ」
+  記述を ADR-0040 のアップデート確認と整合 (best-effort・自動 DL なし・
+  offline サイレント・`DBBOARD_NO_UPDATE_CHECK` で off) させた。
+- **doc-split 遵守**: 各 feat/docs PR は code + ADR + user-facing docs
+  のみ。roadmap / 本ファイル / next-actions の tick は本 chore
+  (`chore/post-pr72-doc-sync`) に集約 (memory [[feedback-keep-docs-fresh]])。
+- **web sibling**: ADR-0039/0040 とも desktop-only / in-process、HTTP
+  wire-contract 無変更 = web 影響ゼロ、cross-repo brief 不要。
+- 検証: 本 chore は docs のみの変更につき fmt / clippy -D warnings /
+  check / test は緑を維持 (コード無変更)。
+
+### PR #68 (ADR-0038 = 接続設定の暗号化バンドル export/import) マージクローズ (前セッション / 2026-07-16)
 
 - PR #68 (`feat/connection-bundle-export` → `develop`) マージ済 =
   `de19e34`。ローカル `develop` は `origin/develop` (= `de19e34`) と
