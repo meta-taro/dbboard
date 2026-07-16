@@ -17,6 +17,7 @@ mod ai;
 mod ai_settings;
 mod client;
 mod connections;
+mod errors;
 mod export;
 mod history;
 mod selection;
@@ -1323,7 +1324,7 @@ impl DbboardApp {
                     });
                 }
                 Err(e) => {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
+                    errors::render_error(ui, Some(&errors::db_error_display(e)));
                 }
             }
         });
@@ -1435,7 +1436,7 @@ impl DbboardApp {
                         render_result(ui, result, &mut self.result_selection);
                     }
                     Some(Err(e)) => {
-                        ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
+                        errors::render_error(ui, Some(&errors::db_error_display(e)));
                     }
                 },
                 ResultTab::Structure => self.render_structure(ui),
@@ -1460,7 +1461,7 @@ impl DbboardApp {
                 });
             }
             Some(Err(e)) => {
-                ui.colored_label(egui::Color32::LIGHT_RED, error_display(e));
+                errors::render_error(ui, Some(&errors::db_error_display(e)));
             }
             Some(Ok(schema)) => render_table_schema(ui, schema),
         }
@@ -1486,20 +1487,6 @@ fn history_button_label(sql: &str) -> String {
 /// prefix comes from the active locale's `error-prefix-*` keys; the
 /// message body is the server-returned English string and stays as-is
 /// to preserve the ADR-0009 HTTP contract (see ADR-0015).
-fn error_display(e: &DbError) -> String {
-    let prefix = match e.category() {
-        "connection" => t!("error-prefix-connection"),
-        "schema" => t!("error-prefix-schema"),
-        "type_conversion" => t!("error-prefix-type-conversion"),
-        "capability" => t!("error-prefix-capability"),
-        // Includes "query" and any future category that landed on the
-        // server before the UI was updated — degrade visibly rather
-        // than silently swallowing the prefix.
-        _ => t!("error-prefix-query"),
-    };
-    format!("{prefix}: {}", e.message())
-}
-
 /// Whether the current frame's keyboard state should trigger a run.
 ///
 /// The editor is a multiline field, so a bare Enter must insert a
@@ -1961,11 +1948,12 @@ fn render_expanded_cell_popup(ui: &mut egui::Ui, expand_id: egui::Id) {
 
 #[cfg(test)]
 mod tests {
+    use super::errors::db_error_display;
     use super::{
-        apply_auto_limit, cell_preview, error_display, is_bare_select, is_long_cell,
-        quick_count_sql, quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot,
-        Command, DbboardApp, HistoryStatus, PersistentHistoryStore, Reply, ResultTab,
-        CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
+        apply_auto_limit, cell_preview, is_bare_select, is_long_cell, quick_count_sql,
+        quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot, Command, DbboardApp,
+        HistoryStatus, PersistentHistoryStore, Reply, ResultTab, CELL_PREVIEW_CHARS,
+        DEFAULT_CAPACITY,
     };
     use dbboard_core::{
         Column, ColumnInfo, DbError, QueryResult, Row, TableInfo, TableSchema, Value,
@@ -2217,7 +2205,8 @@ mod tests {
         // (ADR-0009 / ADR-0015) and shows up verbatim after the
         // translated prefix.
         let e = DbError::Connection("host unreachable".into());
-        let rendered = error_display(&e);
+        let shown = db_error_display(&e);
+        let rendered = shown.localized();
         assert!(
             rendered.starts_with("Connection error"),
             "translated prefix missing: {rendered}"
@@ -2237,7 +2226,8 @@ mod tests {
             DbError::TypeConversion("t".into()),
             DbError::Capability("cap".into()),
         ] {
-            let rendered = error_display(&e);
+            let shown = db_error_display(&e);
+            let rendered = shown.localized();
             // Each rendered string contains the category prefix word
             // ("error" / "unavailable") and the wire message body.
             assert!(
