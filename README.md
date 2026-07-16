@@ -136,6 +136,14 @@ in-place, no app restart needed (in-flight requests intentionally
 finish on the old backend; new ones pick up the new one). See
 [ADR-0020](docs/decisions.md) for the swap semantics.
 
+The same window can **Export** all connections to a passphrase-encrypted
+`.dbbx` bundle (`age` scrypt + ChaCha20-Poly1305) that carries the
+connection metadata **and** its secrets, and **Import** one on another
+machine — the one-file way to move a whole setup without hand-seeding the
+keychain. Import is skip-and-report on id/reference conflicts. See
+[ADR-0038](docs/decisions.md) and
+[`docs/connections.md`](docs/connections.md#moving-connections-between-machines-encrypted-bundle).
+
 The same menu bar carries a **Language** / **言語** submenu listing
 the 11 shipped locales by their native names. Picking one swaps the
 UI language in place; the `DBBOARD_LANG` env var still drives the
