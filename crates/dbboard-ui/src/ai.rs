@@ -49,6 +49,7 @@ use dbboard_core::{TableInfo, TableSchema};
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
+use crate::errors::{self, ai_error_display, DisplayError};
 use crate::Command;
 
 /// Which AI command the panel will issue on the next send.
@@ -106,7 +107,7 @@ pub struct AiPanel {
     /// stored as `Ok` so the user keeps the bytes they paid for; the
     /// [`cancelled`](Self::cancelled) flag is the only distinction from
     /// a clean completion.
-    last_response: Option<Result<AiResponseView, String>>,
+    last_response: Option<Result<AiResponseView, DisplayError>>,
     /// In-flight streaming accumulator. `None` between requests and
     /// during the atomic path; `Some` from the first chunk until the
     /// terminal stream reply.
@@ -196,7 +197,7 @@ impl AiPanel {
     }
 
     #[must_use]
-    pub fn last_response(&self) -> Option<&Result<AiResponseView, String>> {
+    pub fn last_response(&self) -> Option<&Result<AiResponseView, DisplayError>> {
         self.last_response.as_ref()
     }
 
@@ -614,8 +615,8 @@ impl AiPanel {
                     tout = view.tokens_out
                 ));
             }
-            Some(Err(msg)) => {
-                ui.colored_label(egui::Color32::LIGHT_RED, msg);
+            Some(Err(err)) => {
+                errors::render_error(ui, Some(err));
             }
         }
     }
@@ -624,20 +625,6 @@ impl AiPanel {
 impl Default for AiPanel {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Translate an [`AiError`] into a user-facing string keyed off the
-/// active locale. Independent of [`crate::error_display`] because AI
-/// errors never travel over the desktop ↔ web HTTP contract; their
-/// taxonomy is its own (ADR-0023 Decision 8).
-fn ai_error_display(err: &AiError) -> String {
-    match err {
-        AiError::Configuration(msg) => format!("{}: {msg}", t!("ai-error-prefix-configuration")),
-        AiError::Network(msg) => format!("{}: {msg}", t!("ai-error-prefix-network")),
-        AiError::Provider(msg) => format!("{}: {msg}", t!("ai-error-prefix-provider")),
-        AiError::Quota(msg) => format!("{}: {msg}", t!("ai-error-prefix-quota")),
-        AiError::Cancelled => t!("ai-error-prefix-cancelled").to_string(),
     }
 }
 
@@ -825,7 +812,8 @@ mod tests {
         panel.on_error(&AiError::Provider("rate_limit".into()));
         assert!(!panel.is_busy());
         match panel.last_response() {
-            Some(Err(msg)) => {
+            Some(Err(err)) => {
+                let msg = err.localized();
                 assert!(
                     msg.contains("rate_limit"),
                     "raw provider message must survive translation: {msg}"
@@ -872,7 +860,8 @@ mod tests {
             (AiError::Provider("rate_limit".into()), "rate_limit"),
             (AiError::Quota("cap reached".into()), "cap reached"),
         ] {
-            let rendered = ai_error_display(&err);
+            let shown = ai_error_display(&err);
+            let rendered = shown.localized();
             assert!(
                 rendered.to_lowercase().contains("error")
                     || rendered.to_lowercase().contains("cancelled")
@@ -888,7 +877,7 @@ mod tests {
             );
         }
         let cancelled = ai_error_display(&AiError::Cancelled);
-        assert!(!cancelled.is_empty());
+        assert!(!cancelled.localized().is_empty());
     }
 
     #[test]
