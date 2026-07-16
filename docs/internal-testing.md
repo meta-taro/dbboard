@@ -22,8 +22,12 @@ report back. It takes about five minutes to get running.
   than the file (that is intentional; the file is encrypted). Skip the
   import section below if you did not receive one.
 
-Nothing here needs the internet except the database connections
-themselves.
+The only thing this needs the internet for is your database connections —
+plus one small, optional check: on startup dbboard asks GitHub whether a
+newer version has been released, so the **Help** menu can tell you when an
+update is available. It never downloads or installs anything on its own,
+it stays silent if you are offline, and you can switch it off entirely by
+setting `DBBOARD_NO_UPDATE_CHECK` to any value.
 
 ---
 
@@ -40,7 +44,9 @@ The window should open and paint. There is no login and no telemetry.
 > **Windows SmartScreen** may warn that the publisher is unrecognized —
 > the build is unsigned. Click **More info → Run anyway**. If your antivirus
 > quarantines it, restore it and allow it; the binary is a plain Rust GUI
-> app with no installer and no network callbacks of its own.
+> app with no installer. Its only outbound call of its own is the optional
+> update check described above (off via `DBBOARD_NO_UPDATE_CHECK`);
+> everything else on the network is the database connections you configure.
 
 Set the interface language from the **Language** menu if you prefer
 Japanese; English is the default and the fallback for anything not yet
