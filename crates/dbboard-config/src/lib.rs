@@ -36,7 +36,7 @@ pub mod store;
 
 pub use admin::{
     ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,
-    ConnectionKindEditDraft, SecretField,
+    ConnectionKindEditDraft, ImportReport, SecretField,
 };
 pub use ai_settings::{
     AiProviderDraft, AiProviderEditDraft, AiProviderKindDraft, AiProviderKindEditDraft,

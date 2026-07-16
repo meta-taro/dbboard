@@ -26,9 +26,11 @@
 //! collapses the rollback story above. Users that want to change kind
 //! must delete + re-add.
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::bundle::{decrypt_bundle, encrypt_bundle, validate_passphrase, BundlePayload};
 use crate::error::ConfigError;
 use crate::secrets::{SecretError, SecretStore};
 use crate::store::{load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind};
@@ -130,6 +132,23 @@ pub enum SecretField {
     Keep,
     /// Overwrite the keyring entry with this new value.
     Set(String),
+}
+
+/// Outcome of [`ConnectionAdmin::import_bundle`] (ADR-0038).
+///
+/// Import is **additive and non-destructive**: an incoming id that
+/// already exists in the live store is never overwritten. Instead it is
+/// recorded in [`ImportReport::skipped`] so the UI can tell the user
+/// exactly which connections were left untouched, while
+/// [`ImportReport::imported`] lists the ids that were newly added. Both
+/// preserve the order in which the bundle presented its entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    /// Ids added to the store by this import.
+    pub imported: Vec<String>,
+    /// Ids present in the bundle but skipped because an entry with the
+    /// same id already existed (or the bundle listed the id twice).
+    pub skipped: Vec<String>,
 }
 
 /// Owns the on-disk TOML file plus an [`Arc<dyn SecretStore>`] handle
@@ -331,6 +350,139 @@ impl ConnectionAdmin {
         }
 
         Ok(())
+    }
+
+    /// Encrypt the entire connection store — every entry plus every
+    /// secret it references — into a passphrase-protected bundle blob
+    /// (ADR-0038, slice b). The returned bytes are written verbatim to a
+    /// user-chosen `.dbbx` file by the UI layer.
+    ///
+    /// The v1 scope is **all connections at once**: the collector handoff
+    /// (#14) wants a whole machine's connection set in one artifact, and a
+    /// per-connection picker adds UI without a real use case yet.
+    ///
+    /// Every `keyring_*_ref` on every entry is resolved through the
+    /// [`SecretStore`] and packed alongside the metadata, because the TOML
+    /// alone is useless on another machine (it stores only references).
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::Bundle`] if `passphrase` is weaker than
+    ///   [`crate::MIN_PASSPHRASE_LEN`], or the age encryptor fails.
+    /// - [`ConfigError::Secret`] if a referenced secret cannot be read
+    ///   from the keychain. Export fails loudly here rather than shipping
+    ///   a bundle that is silently missing a secret.
+    pub fn export_bundle(&self, passphrase: &str) -> Result<Vec<u8>, ConfigError> {
+        // Reject a weak passphrase before touching the keychain, so a
+        // typo costs nothing.
+        validate_passphrase(passphrase)?;
+
+        let mut secrets = BTreeMap::new();
+        for entry in &self.file.connections {
+            for key_ref in keyring_refs_in(&entry.kind) {
+                let value = self.secrets.get(&key_ref)?;
+                secrets.insert(key_ref, value);
+            }
+        }
+
+        let payload = BundlePayload::new(self.file.clone(), secrets);
+        let blob = encrypt_bundle(&payload, passphrase)?;
+        Ok(blob)
+    }
+
+    /// Decrypt `blob` under `passphrase` and merge its connections into
+    /// the live store (ADR-0038, slice b), returning an [`ImportReport`]
+    /// of which ids were added and which were skipped.
+    ///
+    /// Import is **additive and id-conflict-safe**: an incoming id that
+    /// already exists (or that the bundle lists twice) is skipped and
+    /// reported, never overwritten — the user's current secrets and
+    /// metadata are the source of truth. Newly-added entries seed their
+    /// secrets into the keychain first, then the TOML is persisted; on a
+    /// TOML-write failure the just-seeded secrets are rolled back so no
+    /// orphan keyring entry survives, exactly as [`ConnectionAdmin::add`]
+    /// does.
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::Bundle`] if the passphrase is wrong or the blob is
+    ///   corrupt / not a dbboard bundle / a newer bundle version.
+    /// - [`ConfigError::Secret`] if seeding an imported secret fails; any
+    ///   secrets already seeded by this call are rolled back first.
+    /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML
+    ///   write; the seeded secrets are rolled back before returning.
+    pub fn import_bundle(
+        &mut self,
+        blob: &[u8],
+        passphrase: &str,
+    ) -> Result<ImportReport, ConfigError> {
+        let payload = decrypt_bundle(blob, passphrase)?;
+
+        // Ids we must not clobber: everything already in the store, plus
+        // anything we accept earlier in this same bundle (so a bundle that
+        // lists an id twice skips the second occurrence rather than
+        // creating a duplicate entry).
+        let mut seen: HashSet<String> =
+            self.file.connections.iter().map(|e| e.id.clone()).collect();
+
+        let mut report = ImportReport::default();
+        let mut to_add: Vec<ConnectionEntry> = Vec::new();
+        let mut secret_writes: Vec<(String, String)> = Vec::new();
+
+        for entry in payload.connections.connections {
+            if seen.contains(&entry.id) {
+                report.skipped.push(entry.id);
+                continue;
+            }
+            for key_ref in keyring_refs_in(&entry.kind) {
+                // A well-formed dbboard bundle carries every secret it
+                // references; if one is absent we still import the entry's
+                // metadata (the user can re-enter the secret via edit)
+                // rather than dropping the whole connection.
+                if let Some(value) = payload.secrets.get(&key_ref) {
+                    secret_writes.push((key_ref, value.clone()));
+                }
+            }
+            seen.insert(entry.id.clone());
+            report.imported.push(entry.id.clone());
+            to_add.push(entry);
+        }
+
+        if to_add.is_empty() {
+            return Ok(report);
+        }
+
+        // Seed secrets first (same order as `add`); track what we wrote so
+        // a later failure can undo it.
+        let mut written: Vec<String> = Vec::new();
+        for (key_ref, value) in &secret_writes {
+            if let Err(err) = self.secrets.set(key_ref, value) {
+                self.rollback_secret_writes(&written);
+                return Err(ConfigError::Secret(err));
+            }
+            written.push(key_ref.clone());
+        }
+
+        let mut new_file = self.file.clone();
+        new_file.connections.extend(to_add);
+
+        if let Err(err) = save_atomic(&self.path, &new_file) {
+            self.rollback_secret_writes(&written);
+            return Err(err);
+        }
+
+        self.file = new_file;
+        Ok(report)
+    }
+
+    /// Best-effort delete of secrets seeded earlier in a failed
+    /// [`import_bundle`]. Imported ids are new to the store, so deleting
+    /// their refs cannot clobber a still-referenced secret; a delete
+    /// failure is ignored because the surviving orphan is harmless.
+    fn rollback_secret_writes(&self, written: &[String]) {
+        for key_ref in written {
+            let _ = self.secrets.delete(key_ref);
+        }
     }
 
     fn find_index(&self, id: &str) -> Option<usize> {
@@ -1446,5 +1598,164 @@ mod tests {
             .expect("add");
         admin.delete("local").expect("delete");
         assert!(admin.entries().is_empty());
+    }
+
+    // --- Bundle export / import (ADR-0038 slice b) --------------------
+
+    const BUNDLE_PASS: &str = "correct horse battery";
+
+    /// Build a source admin holding a D1 + Supabase + Turso mix and return
+    /// its encrypted bundle blob.
+    fn source_bundle() -> Vec<u8> {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin.add(d1_draft("store-a")).expect("add d1");
+        admin
+            .add(supabase_draft(
+                "store-c",
+                "postgres://postgres:pw@db.example.supabase.co/postgres",
+            ))
+            .expect("add supabase");
+        admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add turso");
+        admin.export_bundle(BUNDLE_PASS).expect("export")
+    }
+
+    #[test]
+    fn export_then_import_into_empty_store_restores_entries_and_secrets() {
+        let blob = source_bundle();
+
+        let (_dir, secrets, mut target) = fresh_admin();
+        let report = target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+
+        assert_eq!(report.imported, vec!["store-a", "store-c", "local"]);
+        assert!(report.skipped.is_empty());
+        assert_eq!(target.entries().len(), 3);
+        // Secret-bearing entries are seeded into the target keychain.
+        assert_eq!(
+            secrets.get("dbboard.store-a.token").expect("token"),
+            "t0k3n"
+        );
+        assert_eq!(
+            secrets.get("dbboard.store-c.url").expect("url"),
+            "postgres://postgres:pw@db.example.supabase.co/postgres"
+        );
+        // Turso carries no secret, so nothing is written for it.
+        assert!(matches!(
+            secrets.get("dbboard.local.token"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn import_skips_conflicting_ids_and_leaves_existing_secret_untouched() {
+        let blob = source_bundle();
+
+        // Target already has `store-a` with a *different* token.
+        let (_dir, secrets, mut target) = fresh_admin();
+        target
+            .add(ConnectionDraft {
+                id: "store-a".to_string(),
+                name: "pre-existing".to_string(),
+                kind: ConnectionKindDraft::D1 {
+                    account_id: "acct".to_string(),
+                    database_id: "db".to_string(),
+                    base_url: None,
+                    token: "local-token".to_string(),
+                },
+            })
+            .expect("seed conflicting entry");
+
+        let report = target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+
+        // The conflict is reported, the two fresh ids are imported.
+        assert_eq!(report.skipped, vec!["store-a"]);
+        assert_eq!(report.imported, vec!["store-c", "local"]);
+        assert_eq!(target.entries().len(), 3);
+        // The pre-existing secret was NOT overwritten by the bundle's.
+        assert_eq!(
+            secrets.get("dbboard.store-a.token").expect("token"),
+            "local-token"
+        );
+        assert_eq!(target.entries()[0].name, "pre-existing");
+    }
+
+    #[test]
+    fn import_of_an_all_conflict_bundle_imports_nothing() {
+        let blob = source_bundle();
+
+        // Re-import the same bundle into a store that already holds all
+        // three ids (import it once, then again).
+        let (_dir, _secrets, mut target) = fresh_admin();
+        target
+            .import_bundle(&blob, BUNDLE_PASS)
+            .expect("first import");
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS)
+            .expect("second import");
+
+        assert!(report.imported.is_empty());
+        assert_eq!(report.skipped, vec!["store-a", "store-c", "local"]);
+        assert_eq!(target.entries().len(), 3);
+    }
+
+    #[test]
+    fn imported_entries_persist_to_disk() {
+        let blob = source_bundle();
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let mut target = ConnectionAdmin::open(path.clone(), secrets as Arc<dyn SecretStore>)
+            .expect("open target");
+        target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+
+        // Re-open from disk: the imported metadata survived the TOML save.
+        let reopen_secrets = Arc::new(InMemorySecretStore::new());
+        let reopened =
+            ConnectionAdmin::open(path, reopen_secrets as Arc<dyn SecretStore>).expect("reopen");
+        assert_eq!(reopened.entries().len(), 3);
+    }
+
+    #[test]
+    fn export_refuses_a_weak_passphrase() {
+        let (_dir, _secrets, admin) = fresh_admin();
+        let err = admin.export_bundle("short").expect_err("must refuse");
+        assert!(matches!(err, ConfigError::Bundle(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn import_with_wrong_passphrase_is_a_bundle_error() {
+        let blob = source_bundle();
+        let (_dir, _secrets, mut target) = fresh_admin();
+        let err = target
+            .import_bundle(&blob, "the wrong passphrase")
+            .expect_err("must fail");
+        assert!(matches!(err, ConfigError::Bundle(_)), "got {err:?}");
+        // A failed import leaves the store empty.
+        assert!(target.entries().is_empty());
+    }
+
+    #[test]
+    fn import_of_garbage_bytes_is_a_bundle_error_not_a_panic() {
+        let (_dir, _secrets, mut target) = fresh_admin();
+        let err = target
+            .import_bundle(b"not an age file", BUNDLE_PASS)
+            .expect_err("must fail");
+        assert!(matches!(err, ConfigError::Bundle(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn export_fails_loudly_when_a_referenced_secret_is_missing() {
+        // Seed an entry but then clear its secret so export cannot resolve
+        // the reference — we must fail rather than ship an incomplete
+        // bundle.
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(d1_draft("store-a")).expect("add");
+        secrets
+            .delete("dbboard.store-a.token")
+            .expect("clear secret");
+        let err = admin.export_bundle(BUNDLE_PASS).expect_err("must fail");
+        assert!(matches!(err, ConfigError::Secret(_)), "got {err:?}");
     }
 }
