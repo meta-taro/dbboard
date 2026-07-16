@@ -9,6 +9,8 @@ publish.workspace = true
 description = "Local TOML connection store and OS keychain backed secrets for dbboard (ADR-0013)."
 
 [dependencies]
+# Passphrase-encrypted connection bundle export/import (ADR-0038).
+age = { workspace = true }
 directories = { workspace = true }
 # keyring 3.x ships NO default credential-store backend: `keyring = "3"`
 # alone silently resolves to the in-memory *mock* store, so every secret
@@ -21,8 +23,13 @@ directories = { workspace = true }
 # cfg blocks so the crate still compiles there.
 keyring = { workspace = true }
 serde = { workspace = true }
+# The bundle payload (connections + resolved secrets) is serialized to
+# JSON before encryption — the plaintext age never sees on disk.
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+# Scrub the intermediate bundle plaintext buffer after use (ADR-0038).
+zeroize = { workspace = true }
 
 # Enable the real OS keychain backend per platform. Kept target-scoped
 # because the Linux secret-service backend pulls a dbus C binding that
@@ -37,7 +44,6 @@ keyring = { workspace = true, features = ["apple-native"] }
 keyring = { workspace = true, features = ["linux-native-sync-persistent", "crypto-rust"] }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]
