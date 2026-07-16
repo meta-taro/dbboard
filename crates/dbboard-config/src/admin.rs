@@ -30,6 +30,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use zeroize::Zeroize;
+
 use crate::bundle::{decrypt_bundle, encrypt_bundle, validate_passphrase, BundlePayload};
 use crate::error::ConfigError;
 use crate::secrets::{SecretError, SecretStore};
@@ -394,14 +396,19 @@ impl ConnectionAdmin {
     /// the live store (ADR-0038, slice b), returning an [`ImportReport`]
     /// of which ids were added and which were skipped.
     ///
-    /// Import is **additive and id-conflict-safe**: an incoming id that
+    /// Import is **additive and conflict-safe**: an incoming id that
     /// already exists (or that the bundle lists twice) is skipped and
     /// reported, never overwritten — the user's current secrets and
-    /// metadata are the source of truth. Newly-added entries seed their
-    /// secrets into the keychain first, then the TOML is persisted; on a
-    /// TOML-write failure the just-seeded secrets are rolled back so no
-    /// orphan keyring entry survives, exactly as [`ConnectionAdmin::add`]
-    /// does.
+    /// metadata are the source of truth. An incoming entry whose
+    /// `keyring_*_ref` points at a keychain slot **another** connection
+    /// already owns is also skipped: `keyring_*_ref` is free-form JSON in
+    /// the bundle, so a crafted bundle could otherwise carry a brand-new id
+    /// but a ref aimed at an existing connection's slot and silently
+    /// overwrite that connection's live secret (ADR-0038 threat model).
+    /// Newly-added entries seed their secrets into the keychain first, then
+    /// the TOML is persisted; on a TOML-write failure the just-seeded
+    /// secrets are rolled back so no orphan keyring entry survives, exactly
+    /// as [`ConnectionAdmin::add`] does.
     ///
     /// # Errors
     ///
@@ -416,7 +423,13 @@ impl ConnectionAdmin {
         blob: &[u8],
         passphrase: &str,
     ) -> Result<ImportReport, ConfigError> {
-        let payload = decrypt_bundle(blob, passphrase)?;
+        let mut payload = decrypt_bundle(blob, passphrase)?;
+        // Take the incoming entries out of the payload so we can iterate
+        // them by value while still borrowing `payload.secrets` below.
+        // `payload` implements `Drop` (it zeroizes its secret values), so
+        // it cannot be partially moved out of — `mem::take` leaves an empty
+        // vec behind and the payload still scrubs its secrets on drop.
+        let incoming = std::mem::take(&mut payload.connections.connections);
 
         // Ids we must not clobber: everything already in the store, plus
         // anything we accept earlier in this same bundle (so a bundle that
@@ -424,24 +437,41 @@ impl ConnectionAdmin {
         // creating a duplicate entry).
         let mut seen: HashSet<String> =
             self.file.connections.iter().map(|e| e.id.clone()).collect();
+        // Keyring refs already owned by an existing entry (or claimed by an
+        // entry accepted earlier in this bundle). Guards the secret store
+        // against a bundle whose ref aims at someone else's slot.
+        let mut claimed_refs: HashSet<String> = self
+            .file
+            .connections
+            .iter()
+            .flat_map(|e| keyring_refs_in(&e.kind))
+            .collect();
 
         let mut report = ImportReport::default();
         let mut to_add: Vec<ConnectionEntry> = Vec::new();
         let mut secret_writes: Vec<(String, String)> = Vec::new();
 
-        for entry in payload.connections.connections {
+        for entry in incoming {
             if seen.contains(&entry.id) {
                 report.skipped.push(entry.id);
                 continue;
             }
-            for key_ref in keyring_refs_in(&entry.kind) {
+            let refs = keyring_refs_in(&entry.kind);
+            if refs.iter().any(|r| claimed_refs.contains(r)) {
+                // Ref collides with a slot another connection owns; refuse
+                // rather than overwrite that connection's secret.
+                report.skipped.push(entry.id);
+                continue;
+            }
+            for key_ref in refs {
                 // A well-formed dbboard bundle carries every secret it
                 // references; if one is absent we still import the entry's
                 // metadata (the user can re-enter the secret via edit)
                 // rather than dropping the whole connection.
                 if let Some(value) = payload.secrets.get(&key_ref) {
-                    secret_writes.push((key_ref, value.clone()));
+                    secret_writes.push((key_ref.clone(), value.clone()));
                 }
+                claimed_refs.insert(key_ref);
             }
             seen.insert(entry.id.clone());
             report.imported.push(entry.id.clone());
@@ -453,15 +483,19 @@ impl ConnectionAdmin {
         }
 
         // Seed secrets first (same order as `add`); track what we wrote so
-        // a later failure can undo it.
+        // a later failure can undo it. Each cloned secret value is scrubbed
+        // as soon as it has been handed to the keychain (ADR-0038).
         let mut written: Vec<String> = Vec::new();
-        for (key_ref, value) in &secret_writes {
+        for i in 0..secret_writes.len() {
+            let (key_ref, value) = &secret_writes[i];
             if let Err(err) = self.secrets.set(key_ref, value) {
                 self.rollback_secret_writes(&written);
+                zeroize_secret_writes(&mut secret_writes);
                 return Err(ConfigError::Secret(err));
             }
             written.push(key_ref.clone());
         }
+        zeroize_secret_writes(&mut secret_writes);
 
         let mut new_file = self.file.clone();
         new_file.connections.extend(to_add);
@@ -597,6 +631,15 @@ impl ConnectionAdmin {
 /// Compute the keyring ref for a given connection id and field.
 fn keyring_ref(id: &str, field: &str) -> String {
     format!("dbboard.{id}.{field}")
+}
+
+/// Scrub the plaintext secret values held in an import's pending-write
+/// buffer (ADR-0038). The keys are non-secret keyring refs; only the
+/// values carry secret material, so only they are zeroized.
+fn zeroize_secret_writes(writes: &mut [(String, String)]) {
+    for (_key_ref, value) in writes.iter_mut() {
+        value.zeroize();
+    }
 }
 
 /// Enumerate every keyring ref that a given [`ConnectionKind`] points
@@ -1715,6 +1758,51 @@ mod tests {
         let reopened =
             ConnectionAdmin::open(path, reopen_secrets as Arc<dyn SecretStore>).expect("reopen");
         assert_eq!(reopened.entries().len(), 3);
+    }
+
+    #[test]
+    fn import_refuses_an_entry_whose_ref_targets_an_existing_connections_slot() {
+        // Target owns "victim" holding a real Supabase URL in the keychain
+        // at dbboard.victim.url.
+        let (_dir, secrets, mut target) = fresh_admin();
+        target
+            .add(supabase_draft(
+                "victim",
+                "postgres://real:secret@db.victim.supabase.co/postgres",
+            ))
+            .expect("seed victim");
+
+        // Craft a bundle whose entry has a *brand-new* id but a
+        // keyring_url_ref aimed at the victim's slot, plus a secret to write
+        // there. Without the ref-collision guard this would silently
+        // hijack the victim's live credentials on import.
+        let mut file = ConnectionFile::empty();
+        file.connections.push(ConnectionEntry {
+            id: "attacker".to_string(),
+            name: "Attacker".to_string(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "dbboard.victim.url".to_string(),
+            },
+        });
+        let mut malicious_secrets = BTreeMap::new();
+        malicious_secrets.insert(
+            "dbboard.victim.url".to_string(),
+            "postgres://attacker@evil.example/db".to_string(),
+        );
+        let payload = BundlePayload::new(file, malicious_secrets);
+        let blob = encrypt_bundle(&payload, BUNDLE_PASS).expect("encrypt");
+
+        let report = target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+
+        // The crafted entry is refused, not imported.
+        assert_eq!(report.skipped, vec!["attacker"]);
+        assert!(report.imported.is_empty());
+        assert_eq!(target.entries().len(), 1);
+        // The victim's secret is intact — never overwritten by the bundle.
+        assert_eq!(
+            secrets.get("dbboard.victim.url").expect("url"),
+            "postgres://real:secret@db.victim.supabase.co/postgres"
+        );
     }
 
     #[test]
