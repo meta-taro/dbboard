@@ -7,6 +7,7 @@
 
 use thiserror::Error;
 
+use crate::bundle::BundleError;
 use crate::secrets::SecretError;
 
 /// Errors that can occur while loading or validating a connection store.
@@ -71,4 +72,12 @@ pub enum ConfigError {
     /// must delete + re-add to switch adapter kind.
     #[error("connection {id} kind cannot change on update")]
     KindMismatch { id: String },
+
+    /// Encrypting or decrypting a connection bundle failed (ADR-0038).
+    /// Wraps the crypto-layer [`BundleError`] so the connection-admin
+    /// export/import methods surface a single error type. Distinct from
+    /// [`ConfigError::Secret`], which is a keychain fault while resolving
+    /// the plaintext the bundle carries.
+    #[error("config bundle failed: {0}")]
+    Bundle(#[from] BundleError),
 }

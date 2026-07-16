@@ -4873,3 +4873,143 @@ token is never older than one refresh interval — well inside the TTL.
 None to any published contract. Internal only: `PostgresAdapter` gains a
 private `PoolHandle` field shape and a background task; the public
 constructor signatures are unchanged. `dbboard-core` is untouched.
+
+## ADR-0038 — Passphrase-encrypted connection bundle export/import
+
+**Status:** Accepted 2026-07-16
+
+### Context
+
+`connections.toml` is deliberately portable-but-incomplete: it stores
+only keyring *references* (`keyring_token_ref`, `keyring_url_ref`,
+`keyring_secret_key_ref`), never secret material (ADR-0013). The secrets
+themselves live in the local OS keychain. That split is right for the
+file's normal life (safe to back up, sync, paste into a bug report), but
+it means the TOML alone is **useless on another machine** — the keychain
+entries it points at do not exist there.
+
+Moving a whole connection set to another machine is exactly the near-term
+need. The collector handoff (#14, project memory "Windows internal
+distribution") today requires handing over the exe, a template TOML, and
+then seeding three secrets by hand with `cmdkey` on the target machine
+(`docs/collector-setup/README.md`), with the real secrets delivered over
+a separate secure channel. That is fiddly and error-prone.
+
+We want a single self-contained artifact that carries the connection
+metadata **and** its secrets, protected so it can travel over an ordinary
+channel, opened with a passphrase delivered out-of-band.
+
+### Decision
+
+Add a **connection bundle**: a `.dbbx` file that is an `age`
+passphrase-encrypted blob whose plaintext is a JSON `BundlePayload`:
+
+```jsonc
+{
+  "version": 1,                 // bundle schema version (BUNDLE_VERSION)
+  "connections": { ... },       // a full ConnectionFile (refs only)
+  "secrets": {                  // keyring_ref -> secret material
+    "dbboard.store-a.token": "…",
+    "dbboard.store-c.url":   "…"
+  }
+}
+```
+
+**Crypto: the `age` crate, passphrase (scrypt) mode.** age gives a
+battle-tested authenticated envelope — scrypt KDF + `ChaCha20-Poly1305`
+AEAD + a versioned file format — in one dependency, so dbboard hand-rolls
+no cryptography. `default-features = false` drops the optional
+`armor`/`async`/`plugin`/`ssh` surface; the bundle is a binary blob
+written straight to a user-chosen path. The alternative — a hand-rolled
+`argon2id` + `XChaCha20-Poly1305` envelope on the RustCrypto primitives
+the tree already pulls transitively — was rejected: it is more code and a
+larger crypto-review surface for no user-visible benefit over age's
+vetted format.
+
+**Layering.** The crypto core (`encrypt_bundle` / `decrypt_bundle` over
+`BundlePayload`) lives in `dbboard-config::bundle`. The orchestration that
+resolves every keyring reference on export and seeds the keychain on
+import — tying the `ConnectionFile` and the `SecretStore` to the payload —
+lives alongside it in `dbboard-config`. `dbboard-ui` only adds the menu
+items, the passphrase dialog, the `rfd` file dialog, and the result
+surfacing; no business logic in the UI layer (per CLAUDE.md Architecture).
+
+**Import conflict policy: skip-and-report.** On import, an entry whose
+`id` already exists in the live store is **not** overwritten; the import
+proceeds for the rest and reports the skipped ids. This is the safe
+default: importing onto a fresh machine (the handoff case) has no
+conflicts, and importing onto a populated machine never silently mutates
+an existing connection's secret. Overwrite/merge modes are a later
+refinement if needed.
+
+**Export scope v1: all connections.** The first cut bundles the entire
+`connections.toml` plus every secret it references. A "pick which
+connections" UI is deferred; the handoff use case wants everything.
+
+**Passphrase policy.** Export refuses a passphrase shorter than
+`MIN_PASSPHRASE_LEN` (8) — a floor against an empty/accidental
+passphrase, not a strength meter. Decrypt imposes no minimum so a bundle
+made elsewhere still opens.
+
+**Memory hygiene.** The JSON plaintext (which briefly holds every secret
+in the clear) is `zeroize`d after the age boundary on both export and
+import. age already zeroizes its own `SecretString` key material. The
+plaintext is never written to disk unencrypted.
+
+### Consequences
+
+- **The collector handoff collapses to two items**: the exe and one
+  `.dbbx` file, with the passphrase spoken/messaged over a separate
+  channel. No manual `cmdkey` seeding, no per-secret side channel. The
+  `docs/collector-setup/` flow gains an "import a bundle" path.
+- **Bundle security reduces to passphrase strength + passphrase
+  channel.** The `.dbbx` is safe at rest and in transit (authenticated
+  AEAD; tampering is detected as corruption, a wrong passphrase is
+  detected distinctly). Anyone with both the file and the passphrase has
+  every secret — the same trust boundary as handing over the secrets
+  directly, but now in one step.
+- **Dependency footprint grows by `age` (+ `zeroize` promoted to a direct
+  dep).** age pulls `curve25519-dalek` / `x25519-dalek` for its X25519
+  recipient path even though only the scrypt path is used; all pure Rust,
+  MIT/Apache-2.0, no system OpenSSL, so ADR-0034's TLS constraints are
+  untouched. The workspace `unsafe_code = "forbid"` still applies to
+  dbboard's own crates; dependency-internal `unsafe` (curve25519 field
+  arithmetic) is unaffected, as with every other crate we vendor.
+- **A decrypt cannot always tell a wrong passphrase from a corrupted key
+  stanza** — age reports both as the same AEAD failure. The bundle layer
+  resolves that ambiguity toward "incorrect passphrase" (the action the
+  user should try first) and reserves "corrupt" for structural failures
+  and tampered payload bodies.
+- **Web sibling**: desktop-only feature, no HTTP wire-contract change, so
+  dbboard-web is unaffected and no cross-repo brief is needed (same
+  posture as ADR-0036/0037).
+
+### SemVer impact (ADR-0011)
+
+None to any published contract. Internal only: `dbboard-config` gains a
+`bundle` module (`BundlePayload`, `encrypt_bundle`, `decrypt_bundle`,
+`validate_passphrase`, `BundleError`) and two new direct dependencies
+(`age`, `zeroize`). `dbboard-core` is untouched.
+
+### Implementation hardening (2026-07-16)
+
+Two hardenings surfaced in review of the import path and are now part of
+the accepted design:
+
+- **Reference-collision refusal.** A keyring reference is
+  `dbboard.<id>.<field>`, derived from the connection id. A crafted
+  bundle could carry a *new* id whose secret ref nonetheless points at an
+  *existing* connection's keychain slot (e.g. new id `attacker` with
+  `keyring_url_ref = "dbboard.victim.url"`), which the seed step would
+  write — overwriting the victim's secret even though skip-and-report
+  protects the victim's *entry*. The importer now collects every ref
+  already claimed by a live entry and **skips (reports) any incoming
+  entry whose ref collides**, across all kind variants including
+  hand-authored `AuroraDsqlIam`. Id-conflict skip and ref-conflict skip
+  are both reported through `ImportReport`.
+- **Decrypted-secret scrubbing.** `BundlePayload` zeroizes its `secrets`
+  values on `Drop`, and the import seed loop zeroizes its cloned
+  `secret_writes` buffer on both the error-return and success paths, so
+  resolved secret material does not linger past the keychain write. This
+  complements the plaintext-JSON zeroize already specified under Memory
+  hygiene.
