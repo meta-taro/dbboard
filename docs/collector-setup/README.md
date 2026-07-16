@@ -114,6 +114,30 @@ Remove-Item (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue
 
 ---
 
+## Fast path — import an encrypted bundle instead of Steps 1–2
+
+If whoever prepared this handoff already has the three connections working
+in their own dbboard, they can hand you **one encrypted `.dbbx` file** plus a
+passphrase (sent separately) instead of a template and three secrets. That
+collapses Steps 1 and 2 to a single import — no editing TOML, no `cmdkey`.
+
+1. Launch `dbboard.exe`, open the connection window, click **Import**.
+2. Pick the `.dbbx` file and enter the passphrase you were given.
+3. dbboard adds all three connections and seeds their secrets into the
+   Windows Credential Manager for you.
+
+The bundle is an `age` passphrase-encrypted file (ADR-0038); it is safe to
+send over an ordinary channel as long as the passphrase travels separately.
+The importer skips (and reports) any connection whose `id` already exists on
+this machine, so re-importing is safe. After importing, jump to Step 3.
+
+To go the other direction — capture a working setup into a bundle to hand
+off — use **Export** in the connection window (passphrase, minimum 8
+characters, confirmed), which writes a `.dbbx` containing all connections and
+their secrets. See [`../connections.md`](../connections.md#moving-connections-between-machines-encrypted-bundle).
+
+---
+
 ## Step 3 — Launch and pick a connection
 
 ```powershell
@@ -182,6 +206,8 @@ cmdkey /delete:dbboard.store-b.secret_key.dbboard
   ADR-0024; the file never holds secret material.
 - Aurora DSQL IAM token minting is ADR-0036; in-pool auto-refresh is
   ADR-0037.
+- The encrypted `.dbbx` bundle export/import (the fast-path above) is
+  ADR-0038.
 - `connections.template.toml` in this folder is covered by
   `crates/dbboard-config/tests/collector_template.rs`, so a schema change
   that would break the template fails the test suite rather than the

@@ -4990,3 +4990,26 @@ None to any published contract. Internal only: `dbboard-config` gains a
 `bundle` module (`BundlePayload`, `encrypt_bundle`, `decrypt_bundle`,
 `validate_passphrase`, `BundleError`) and two new direct dependencies
 (`age`, `zeroize`). `dbboard-core` is untouched.
+
+### Implementation hardening (2026-07-16)
+
+Two hardenings surfaced in review of the import path and are now part of
+the accepted design:
+
+- **Reference-collision refusal.** A keyring reference is
+  `dbboard.<id>.<field>`, derived from the connection id. A crafted
+  bundle could carry a *new* id whose secret ref nonetheless points at an
+  *existing* connection's keychain slot (e.g. new id `attacker` with
+  `keyring_url_ref = "dbboard.victim.url"`), which the seed step would
+  write — overwriting the victim's secret even though skip-and-report
+  protects the victim's *entry*. The importer now collects every ref
+  already claimed by a live entry and **skips (reports) any incoming
+  entry whose ref collides**, across all kind variants including
+  hand-authored `AuroraDsqlIam`. Id-conflict skip and ref-conflict skip
+  are both reported through `ImportReport`.
+- **Decrypted-secret scrubbing.** `BundlePayload` zeroizes its `secrets`
+  values on `Drop`, and the import seed loop zeroizes its cloned
+  `secret_writes` buffer on both the error-return and success paths, so
+  resolved secret material does not linger past the keychain write. This
+  complements the plaintext-JSON zeroize already specified under Memory
+  hygiene.

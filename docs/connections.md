@@ -224,6 +224,44 @@ naming the reference that could not be resolved.
 For a complete, worked Windows setup covering all three collector
 connections, see [`collector-setup/README.md`](collector-setup/README.md).
 
+## Moving connections between machines (encrypted bundle)
+
+`connections.toml` alone is **useless on another machine** — it holds only
+keyring *references*, and the keychain entries they point at do not exist
+elsewhere. To move a whole connection set, export an **encrypted bundle**: a
+single `.dbbx` file that carries the connection metadata **and** the secrets
+it references, sealed with a passphrase you deliver out-of-band. See
+[ADR-0038](decisions.md).
+
+- **Format.** `.dbbx` is an [`age`](https://crates.io/crates/age)
+  passphrase-encrypted blob (scrypt KDF + ChaCha20-Poly1305 AEAD). It is
+  safe at rest and in transit; tampering is detected as corruption and a
+  wrong passphrase is reported distinctly. Anyone with **both** the file and
+  the passphrase has every secret — so keep the two on separate channels.
+
+- **Export.** In the connection window, click **Export**, enter a passphrase
+  (minimum 8 characters) and confirm it, then choose where to write the
+  `.dbbx`. The bundle contains **all** saved connections plus every secret
+  they reference, resolved from the keychain at export time. (Per-connection
+  selection is a later refinement; v1 exports everything.)
+
+- **Import.** Click **Import**, pick a `.dbbx` file, and enter its
+  passphrase. dbboard decrypts the bundle, adds each connection, and seeds
+  the secrets into this machine's keychain. The result reports how many
+  connections were imported and how many were **skipped**:
+
+  - a connection whose `id` already exists here is skipped (never
+    overwritten), and
+  - a connection whose keyring reference would target an already-claimed
+    keychain slot is skipped (a guard against a crafted bundle overwriting
+    an existing connection's secret).
+
+  Skipped ids are listed so you can reconcile them by hand if needed.
+
+The passphrase material and the decrypted plaintext (which briefly holds
+every secret in the clear) are zeroized after use; the plaintext is never
+written to disk unencrypted.
+
 ## File permissions and at-rest posture (ADR-0024)
 
 dbboard tightens the per-user config files it creates against the
