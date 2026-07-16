@@ -5013,3 +5013,193 @@ the accepted design:
   resolved secret material does not linger past the keychain write. This
   complements the plaintext-JSON zeroize already specified under Memory
   hygiene.
+
+## ADR-0039 — Unified error display: localized message + original English, both copyable
+
+**Status:** Accepted 2026-07-16
+
+### Context
+
+The app surfaces errors from several layers — `DbError` (adapters),
+`ConfigError` / `SecretError` / `BundleError` (connection store),
+`AiSettingsError` (AI-provider store), and `AiError` (AI panel). Until now
+these reached the UI in two inconsistent shapes:
+
+- `DbError` and `AiError` were rendered through small local
+  `error_display` / `ai_error_display` helpers that translated only the
+  category *prefix* and kept the body verbatim (ADR-0009 / ADR-0015 /
+  ADR-0023 Decision 8).
+- Everything from `dbboard-config` was rendered by calling `.to_string()`
+  on the error — i.e. the raw English `thiserror` `Display`. A collector
+  running the Japanese UI hit a wall of English (the screenshot that
+  prompted this: `config secret failed: no secret stored for reference:
+  dbboard.<id>.url`). The message was also a plain `ui.colored_label`, so
+  it could be neither selected nor copied.
+
+The maintainer asked for one rule across every app-side error: (1) show it
+in the active locale, (2) show the original English *alongside* the
+translation, and (3) make both **copyable** — selectable text plus a copy
+button — so a non-technical user can paste the English into a web search
+or an AI assistant. dbboard is a learning/reference project and this is a
+cheap, high-value affordance in the AI era.
+
+Scope boundary: **SQL / DB engine error bodies are not translated.** They
+originate at the connection target, not in dbboard, so only their category
+prefix is localized; the body stays verbatim (unchanged from ADR-0009 /
+ADR-0015). The same holds for provider-returned `AiError` bodies.
+
+### Decision
+
+Introduce a single presentation-layer primitive and render path in
+`dbboard-ui::errors`:
+
+- **`DisplayError { localized, original }`** — a value carrying both
+  halves. `new(localized, original)` for errors that travelled up from a
+  lower layer (original = the error's own English `Display`); `plain(text)`
+  for UI-side validations with no lower-layer origin (e.g. "passphrases do
+  not match"), where the two halves are identical so only one line renders
+  and the clipboard is not duplicated.
+- **Per-taxonomy producers** — `config_error_display`,
+  `ai_settings_error_display`, `db_error_display`, `ai_error_display` —
+  each maps its error enum to a Fluent-localized `localized` half and sets
+  `original = err.to_string()`. `SecretError` and `BundleError` get shared
+  helpers because both the connection and AI stores wrap `SecretError`.
+- **`render_error(ui, Option<&DisplayError>)`** — the single inline
+  renderer: a Copy button (copies both halves joined by a newline, or just
+  the one line for a `plain` error) beside the localized message in red,
+  with the original English on a dimmed second line *only when it differs*.
+  Both lines are `egui::Label … .selectable(true)` so Ctrl+C works without
+  the button too.
+
+The localized half comes from Fluent (`t!` / `t_args!`); new keys were
+added to `en` (source of truth) and `ja` only — the other nine locales
+fall back to English per the Tier-2 backlog convention (ADR-0015), and
+there is no locale-parity test to break.
+
+`dbboard-config` stays **i18n-free**: its `thiserror` `Display` remains
+English (it is also the log/`Debug` representation), and translation
+happens entirely at the UI boundary. This keeps the domain/config layers
+free of presentation concerns (per CLAUDE.md Architecture) and gives the
+"original English" half for free.
+
+### Consequences
+
+- Every app-side error now renders identically: Japanese (or fallback
+  English) + original English + copyable. The `ConnectionsView` /
+  `AiSettingsView` `last_error` fields and the `AiPanel` `last_response`
+  error arm changed from `String` to `DisplayError`; the three local
+  `render_error` / `*_display` helpers in `lib.rs`, `connections.rs`,
+  `ai_settings.rs`, and `ai.rs` were removed in favour of the shared
+  module.
+- The in-process connection-switch error (`switch_error_message`) already
+  embeds the English `DbError` body inline, so it is wrapped as
+  `DisplayError::plain` at the render site rather than re-split — it is
+  copyable but shows a single line.
+- Adding a new error variant now means adding one Fluent key (en + ja) and
+  one match arm in the relevant producer; forgetting the key degrades
+  visibly (Fluent echoes the key) and is caught by the
+  `*_localized_half_resolves_a_real_key` tests.
+- Desktop-only, in-process. No HTTP contract change and no web mirror
+  (the taxonomies do not cross the desktop ↔ web boundary).
+
+## ADR-0040 — Startup update check against the GitHub Releases API
+
+**Status:** Accepted 2026-07-16
+
+### Context
+
+dbboard now ships as a hand-delivered `dbboard.exe` to internal testers
+and collector operators (ADR-0032, project memory "Windows internal
+distribution"). There is no installer, no package manager, and no
+auto-update channel: once someone has a copy, nothing tells them a newer
+build exists. In practice a maintainer cuts a new exe, and the people
+holding the old one keep running it because they have no signal to
+re-download.
+
+The ask is narrow: when a newer version is published, the app should let
+the user *know*, show them *what changed*, and let them decide whether to
+update. Explicitly **not** in scope: forced upgrades, in-app download, or
+silently replacing the running binary. The exe is unsigned and delivered
+by hand; automatic self-replacement would be both hard to do safely and
+contrary to the "the human moves the bits" posture of the whole handoff.
+
+A tension has to be named. The tester guide promises "nothing here needs
+the internet except the database connections themselves." An update check
+is, by definition, a network call the app makes on its own behalf. That
+promise has to be reconciled, not ignored.
+
+### Decision
+
+On startup, fire a single best-effort GET against the GitHub Releases API
+for the public repo's **latest** release, compare its tag against this
+binary's own `CARGO_PKG_VERSION`, and surface a notice in the Help menu
+only when the published version is strictly newer.
+
+- **Detection basis: GitHub Releases API.**
+  `GET https://api.github.com/repos/meta-taro/dbboard/releases/latest`
+  returns `tag_name`, `body`, and `html_url`. GitHub excludes drafts and
+  pre-releases from this route, so a 200 is always a real published
+  version. `tag_name` (e.g. `v0.2.0`) drives the comparison; `body` is the
+  changelog; `html_url` is where "get the new version" points. No API
+  token — the endpoint is public and the unauthenticated rate limit is
+  irrelevant for a once-per-launch call.
+
+- **Comparison is pure and total.** Tags are normalised (a leading `v`
+  stripped, pre-release/build metadata dropped) and parsed into
+  `major.minor.patch`; an update is offered only when the latest tuple is
+  strictly greater. Anything unparseable on either side yields "no
+  update" — a malformed tag must never manufacture a phantom notice. This
+  logic lives in a pure `is_newer` / `classify` pair and is unit-tested
+  without any network I/O.
+
+- **Updating stays fully manual.** The notice names the new version, links
+  to its release page, and offers the release notes as a collapsible,
+  **selectable (copyable)** changelog — matching the copyable-error
+  convention (ADR-0039). There is deliberately no download-and-install
+  button.
+
+- **Non-blocking, silent on failure.** The check runs as a task on the
+  existing server runtime (`apps/dbboard` clones a `tokio::runtime::Handle`
+  before the eframe closure, since `rt` must stay in `main` to drive
+  `server.shutdown()`). The UI thread never blocks. Every failure —
+  offline, HTTP error, rate-limited, malformed JSON — folds to a logged,
+  swallowed `Failed` state that renders **nothing**. A failed or offline
+  check is indistinguishable from "up to date"; the feature informs, it
+  never nags and never errors.
+
+- **Opt-out honours the privacy promise.** Setting
+  `DBBOARD_NO_UPDATE_CHECK` to any non-empty value skips the request
+  entirely — the state stays `Idle` and no network call is made. This is
+  the reconciliation of the tester guide's "no network but the databases"
+  wording: the one outbound call the app makes on its own behalf is
+  documented, best-effort, and switchable off. `README.md` documents this
+  and the opt-out env var; the tester guide's "no network but the
+  databases" line must be reconciled to name this call in the doc-sync that
+  lands once `docs/internal-testing.md` reaches `develop` (it is on a
+  parallel branch at time of writing).
+
+### Layering
+
+The comparison logic, the fetch, and the shared state type live in a
+self-contained `apps/dbboard/src/update_check.rs`. The binary is already
+the wiring layer that owns cross-cutting startup concerns (locale, clock,
+CJK fonts, server bootstrap); a once-per-launch update probe belongs with
+them. The result flows to the UI as an `Arc<Mutex<UpdateState>>` the Help
+menu reads each frame — the same shared-slot pattern the connection and AI
+switchers already use (ADR-0020 / ADR-0025). `dbboard-core` and the
+adapters are untouched; this is desktop-only and web-neutral (the web
+sibling has its own deploy channel), so no cross-repo brief is needed.
+
+### Consequences
+
+- One new outbound network dependency (`api.github.com`), off by a single
+  env var, silent when unreachable. `reqwest` + `serde` become direct
+  dependencies of `apps/dbboard` (both were already transitive via
+  `dbboard-ui`), naming the binary's own network use explicitly.
+- New i18n keys `help-update-available` / `help-update-link` /
+  `help-update-notes` in `en` + `ja` (other locales fall back to `en`).
+- The Help menu gains a version-aware row without changing the existing
+  version line (`about_line`) or its test.
+- Release hygiene now matters: the notice is only as good as the tags. A
+  published release must carry a clean `vMAJOR.MINOR.PATCH` tag and useful
+  notes for the changelog to read well.

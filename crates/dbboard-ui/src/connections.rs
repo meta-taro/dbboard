@@ -24,6 +24,8 @@ use dbboard_i18n::t;
 use eframe::egui;
 use zeroize::Zeroize;
 
+use crate::errors::{self, config_error_display, DisplayError};
+
 /// The connection management window. Lives next to [`crate::DbboardApp`]
 /// in the binary and is shown when the user opens it from the top bar.
 #[derive(Debug)]
@@ -32,7 +34,9 @@ pub struct ConnectionsView {
     mode: Mode,
     /// Last error from a failed submit, surfaced inline above the form
     /// buttons. Cleared on every successful submit or mode transition.
-    last_error: Option<String>,
+    /// Carries both the localized message and the original English so the
+    /// inline banner can show and copy both (ADR-0039).
+    last_error: Option<DisplayError>,
     /// Last success message (green), e.g. an export/import summary
     /// (ADR-0038). Shown in List mode after a completed transfer; cleared
     /// on the next mode transition so it does not linger stale.
@@ -228,7 +232,7 @@ impl ConnectionsView {
     /// renders this above the action buttons.
     #[must_use]
     pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+        self.last_error.as_ref().map(DisplayError::localized)
     }
 
     /// Last success message (e.g. an export/import summary), if any. The
@@ -344,7 +348,7 @@ impl ConnectionsView {
                 Ok(())
             }
             Err(err) => {
-                self.last_error = Some(err.to_string());
+                self.last_error = Some(config_error_display(&err));
                 Err(err)
             }
         }
@@ -370,7 +374,7 @@ impl ConnectionsView {
                 Ok(())
             }
             Err(err) => {
-                self.last_error = Some(err.to_string());
+                self.last_error = Some(config_error_display(&err));
                 Err(err)
             }
         }
@@ -394,7 +398,7 @@ impl ConnectionsView {
                 Ok(())
             }
             Err(err) => {
-                self.last_error = Some(err.to_string());
+                self.last_error = Some(config_error_display(&err));
                 Err(err)
             }
         }
@@ -417,7 +421,7 @@ impl ConnectionsView {
             _ => return None,
         };
         if !matches {
-            self.last_error = Some(t!("connections-passphrase-mismatch"));
+            self.last_error = Some(DisplayError::plain(t!("connections-passphrase-mismatch")));
             return None;
         }
         let mut passphrase = match &self.mode {
@@ -430,7 +434,7 @@ impl ConnectionsView {
                 Some(blob)
             }
             Err(err) => {
-                self.last_error = Some(err.to_string());
+                self.last_error = Some(config_error_display(&err));
                 None
             }
         };
@@ -485,7 +489,7 @@ impl ConnectionsView {
                 true
             }
             Err(err) => {
-                self.last_error = Some(err.to_string());
+                self.last_error = Some(config_error_display(&err));
                 false
             }
         }
@@ -552,7 +556,7 @@ impl ConnectionsView {
                 // User backed out of the dialog — keep the Export form open
                 // so they can retry or cancel.
                 SaveOutcome::Cancelled => {}
-                SaveOutcome::Failed(msg) => self.last_error = Some(msg),
+                SaveOutcome::Failed(msg) => self.last_error = Some(DisplayError::plain(msg)),
             }
         }
         if std::mem::take(&mut self.pending_pick) {
@@ -597,7 +601,7 @@ impl ConnectionsView {
             }
             Mode::Add(form) => {
                 let submit_now = render_add_form(ui, form);
-                render_error(ui, self.last_error.as_deref());
+                errors::render_error(ui, self.last_error.as_ref());
                 let (submit_btn, cancel_btn) = render_form_buttons(ui);
                 if submit_btn || submit_now {
                     let _ = self.submit_add(admin);
@@ -607,7 +611,7 @@ impl ConnectionsView {
             }
             Mode::Edit { id, form } => {
                 render_edit_form(ui, id, form);
-                render_error(ui, self.last_error.as_deref());
+                errors::render_error(ui, self.last_error.as_ref());
                 let (submit_btn, cancel_btn) = render_form_buttons(ui);
                 if submit_btn {
                     let _ = self.submit_edit(admin);
@@ -620,7 +624,7 @@ impl ConnectionsView {
                     egui::Color32::LIGHT_RED,
                     format!("{}: {name}", t!("connections-confirm-delete")),
                 );
-                render_error(ui, self.last_error.as_deref());
+                errors::render_error(ui, self.last_error.as_ref());
                 ui.horizontal(|ui| {
                     if ui.button(t!("connections-delete-button")).clicked() {
                         let _ = self.submit_delete(admin);
@@ -632,7 +636,7 @@ impl ConnectionsView {
             }
             Mode::Export(form) => {
                 render_export_form(ui, form);
-                render_error(ui, self.last_error.as_deref());
+                errors::render_error(ui, self.last_error.as_ref());
                 let (export_btn, cancel_btn) = render_transfer_buttons(
                     ui,
                     &t!("connections-export-do"),
@@ -657,7 +661,7 @@ impl ConnectionsView {
                 // arm's borrow discipline).
                 let has_file = form.file_path.is_some();
                 let chosen = form.file_path.clone();
-                render_error(ui, self.last_error.as_deref());
+                errors::render_error(ui, self.last_error.as_ref());
                 let (import_btn, cancel_btn) =
                     render_transfer_buttons(ui, &t!("connections-import-do"), has_file);
                 if choose {
@@ -669,7 +673,9 @@ impl ConnectionsView {
                             Ok(bytes) => {
                                 self.submit_import(admin, &bytes);
                             }
-                            Err(err) => self.last_error = Some(err.to_string()),
+                            Err(err) => {
+                                self.last_error = Some(DisplayError::plain(err.to_string()));
+                            }
                         }
                     }
                 } else if cancel_btn {
@@ -690,8 +696,12 @@ impl ConnectionsView {
     ) {
         // A failed Connect leaves the previous adapter live and lands a
         // SwitchFailed reply off-thread; surface it here (red, above the
-        // list) so the click is never silently swallowed (ADR-0020).
-        render_error(ui, switch_error);
+        // list) so the click is never silently swallowed (ADR-0020). The
+        // message already embeds the English DbError body inline
+        // (`switch_error_message`), so wrap it as a plain copyable error
+        // (ADR-0039) rather than re-deriving a localized/original split.
+        let switch_error = switch_error.map(DisplayError::plain);
+        errors::render_error(ui, switch_error.as_ref());
         // Add / Export / Import all leave List mode; clear a lingering
         // green transfer summary so it does not bleed into the next form
         // (ADR-0038).
@@ -1003,12 +1013,6 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
 /// Delete for it but disables Edit.
 fn is_ui_editable(kind: &ConnectionKind) -> bool {
     !matches!(kind, ConnectionKind::AuroraDsqlIam { .. })
-}
-
-fn render_error(ui: &mut egui::Ui, msg: Option<&str>) {
-    if let Some(msg) = msg {
-        ui.colored_label(egui::Color32::LIGHT_RED, msg);
-    }
 }
 
 fn render_form_buttons(ui: &mut egui::Ui) -> (bool, bool) {
@@ -1393,7 +1397,7 @@ mod tests {
     #[test]
     fn cancel_returns_to_list_and_clears_last_error() {
         let mut view = ConnectionsView::new();
-        view.last_error = Some("stale".into());
+        view.last_error = Some(DisplayError::plain("stale"));
         view.start_add();
         view.cancel();
         assert!(matches!(view.mode(), Mode::List));
@@ -1941,7 +1945,7 @@ mod tests {
     #[test]
     fn start_export_switches_to_a_blank_export_form_and_clears_messages() {
         let mut view = ConnectionsView::new();
-        view.last_error = Some("stale".into());
+        view.last_error = Some(DisplayError::plain("stale"));
         view.last_info = Some("old".into());
         view.start_export();
         match view.mode() {

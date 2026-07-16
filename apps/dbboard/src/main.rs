@@ -47,7 +47,7 @@ use dbboard_config::{
     default_ai_providers_path, secure_fs, AiProviderKind, AiSettingsAdmin, ConnectionAdmin,
     ConnectionFile, KeyringStore, SecretStore,
 };
-use dbboard_i18n::t;
+use dbboard_i18n::{t, t_args};
 use dbboard_server::{
     backend_config_for_entry, backend_config_from_env_and_store, build_adapter,
     resolved_connection_label, serve, swap_backend, AppState, BackendConfig, ServerError,
@@ -57,6 +57,8 @@ use dbboard_ui::{
     DatabaseAdapter, DbError, DbboardApp, PersistentHistoryStore, SchemaSource, DEFAULT_CAPACITY,
 };
 use time::format_description::well_known::Rfc3339;
+
+mod update_check;
 
 /// Locales offered by the runtime language switcher (ADR-0022). The
 /// tag must match a shipped `dbboard-i18n` locale folder; the second
@@ -204,11 +206,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
+    // ADR-0040: the startup update check runs on the same server runtime.
+    // Clone a handle now — `rt` itself must stay in `main` because it
+    // drives `server.shutdown()` after the window closes, so it cannot be
+    // moved into the eframe closure below.
+    let update_rt = rt.handle().clone();
+
     let result = eframe::run_native(
         "dbboard",
         native_options,
         Box::new(move |cc| {
             install_cjk_font(&cc.egui_ctx);
+            // Fire the best-effort update check as the window opens. It is
+            // fully non-blocking: the state starts Idle/Checking and the
+            // task flips it (and requests a repaint) when the GET lands.
+            let update = update_check::spawn(&update_rt, cc.egui_ctx.clone());
             let inner = DbboardApp::connect(
                 base_url,
                 cc.egui_ctx.clone(),
@@ -220,7 +232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ai_provider_slot,
                 Some(schema_source),
             );
-            Ok(Box::new(DesktopApp::new(inner, admin, ai_admin)))
+            Ok(Box::new(DesktopApp::new(inner, admin, ai_admin, update)))
         }),
     );
 
@@ -263,6 +275,12 @@ struct DesktopApp {
     /// wait, so closing it is the clear "done" signal; a failure keeps
     /// it open so the error stays visible.
     pending_switch: Option<String>,
+    /// Shared outcome of the startup update check (ADR-0040). Written once
+    /// by the background task; read every frame the Help menu is open. The
+    /// menu shows a notice only when this reaches
+    /// [`update_check::UpdateState::Available`] — every other state (and a
+    /// disabled or failed check) stays silent.
+    update: update_check::SharedUpdateState,
 }
 
 impl DesktopApp {
@@ -270,6 +288,7 @@ impl DesktopApp {
         inner: DbboardApp,
         admin: Option<Arc<Mutex<ConnectionAdmin>>>,
         ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>,
+        update: update_check::SharedUpdateState,
     ) -> Self {
         Self {
             inner,
@@ -278,6 +297,7 @@ impl DesktopApp {
             ai_settings: AiSettingsView::new(),
             ai_admin,
             pending_switch: None,
+            update,
         }
     }
 }
@@ -342,7 +362,7 @@ impl eframe::App for DesktopApp {
                     self.ai_settings.open();
                 }
                 language_menu(ui);
-                help_menu(ui);
+                help_menu(ui, &self.update);
             });
         });
         if let Some(admin) = &self.admin {
@@ -805,13 +825,58 @@ const REPO_URL: &str = "https://github.com/meta-taro/dbboard";
 /// intentionally tiny — the collector users this ships to need "what
 /// version am I on", "where do I look", and "where does this come from"
 /// far more than a rich About window.
-fn help_menu(ui: &mut egui::Ui) {
+fn help_menu(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
     ui.menu_button(t!("help-menu"), |ui| {
         ui.label(about_line());
+        render_update_notice(ui, update);
         ui.separator();
         ui.label(t!("help-docs-hint"));
         ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
     });
+}
+
+/// Render the update notice under the version line — but only when the
+/// check found a newer release (ADR-0040). `Idle` / `Checking` /
+/// `UpToDate` / `Failed` all render nothing: the feature informs, it never
+/// nags, and a failed or offline check must be indistinguishable from "up
+/// to date".
+///
+/// When shown, the notice names the new version, links to its release
+/// page, and offers the release notes as a collapsible, selectable
+/// (copyable) changelog. Updating stays fully manual — there is no
+/// download button here on purpose.
+fn render_update_notice(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
+    let snapshot = update
+        .lock()
+        .map_or(update_check::UpdateState::Idle, |guard| guard.clone());
+
+    let update_check::UpdateState::Available(info) = snapshot else {
+        return;
+    };
+
+    ui.separator();
+    ui.label(
+        egui::RichText::new(t_args!(
+            "help-update-available",
+            version = info.version.clone()
+        ))
+        .strong(),
+    );
+    if !info.url.is_empty() {
+        ui.hyperlink_to(t!("help-update-link"), &info.url);
+    }
+    if !info.notes.is_empty() {
+        ui.collapsing(t!("help-update-notes"), |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    // Selectable so a tester can Ctrl+C the changelog into
+                    // a report, matching the copyable-error convention
+                    // (ADR-0039).
+                    ui.add(egui::Label::new(info.notes.clone()).selectable(true));
+                });
+        });
+    }
 }
 
 fn language_menu(ui: &mut egui::Ui) {
