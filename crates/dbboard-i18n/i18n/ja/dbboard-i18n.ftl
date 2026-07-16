@@ -122,6 +122,11 @@ language-menu = 言語
 help-menu = ヘルプ
 help-docs-hint = セットアップと接続の手順は README.md と docs/ を参照してください。
 help-repo-link = GitHub のプロジェクトページ
+# ADR-0040: 起動時のアップデート確認。新しいリリースがあるときだけヘルプメニューに
+# 表示する。更新は手動 (リンクからリリースページを開く)。
+help-update-available = アップデートがあります: { $version }
+help-update-link = 新しいバージョンを入手
+help-update-notes = 変更点
 
 ai-menu-button = AI アシスタント
 ai-panel-title = AI アシスタント
