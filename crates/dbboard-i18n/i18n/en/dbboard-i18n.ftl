@@ -130,6 +130,11 @@ language-menu = Language
 help-menu = Help
 help-docs-hint = See README.md and docs/ for setup and connection guides.
 help-repo-link = Project on GitHub
+# ADR-0040: startup update check. Shown in the Help menu only when a newer
+# release exists; updating is manual (the link opens the release page).
+help-update-available = Update available: { $version }
+help-update-link = Get the new version
+help-update-notes = What's changed
 
 # ADR-0023: AI assistance panel (Phase 4 Stage 1). The menu entry and
 # the panel are both hidden when no provider is wired at startup, so

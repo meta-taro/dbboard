@@ -5013,3 +5013,105 @@ the accepted design:
   resolved secret material does not linger past the keychain write. This
   complements the plaintext-JSON zeroize already specified under Memory
   hygiene.
+
+## ADR-0040 — Startup update check against the GitHub Releases API
+
+**Status:** Accepted 2026-07-16
+
+### Context
+
+dbboard now ships as a hand-delivered `dbboard.exe` to internal testers
+and collector operators (ADR-0032, project memory "Windows internal
+distribution"). There is no installer, no package manager, and no
+auto-update channel: once someone has a copy, nothing tells them a newer
+build exists. In practice a maintainer cuts a new exe, and the people
+holding the old one keep running it because they have no signal to
+re-download.
+
+The ask is narrow: when a newer version is published, the app should let
+the user *know*, show them *what changed*, and let them decide whether to
+update. Explicitly **not** in scope: forced upgrades, in-app download, or
+silently replacing the running binary. The exe is unsigned and delivered
+by hand; automatic self-replacement would be both hard to do safely and
+contrary to the "the human moves the bits" posture of the whole handoff.
+
+A tension has to be named. The tester guide promises "nothing here needs
+the internet except the database connections themselves." An update check
+is, by definition, a network call the app makes on its own behalf. That
+promise has to be reconciled, not ignored.
+
+### Decision
+
+On startup, fire a single best-effort GET against the GitHub Releases API
+for the public repo's **latest** release, compare its tag against this
+binary's own `CARGO_PKG_VERSION`, and surface a notice in the Help menu
+only when the published version is strictly newer.
+
+- **Detection basis: GitHub Releases API.**
+  `GET https://api.github.com/repos/meta-taro/dbboard/releases/latest`
+  returns `tag_name`, `body`, and `html_url`. GitHub excludes drafts and
+  pre-releases from this route, so a 200 is always a real published
+  version. `tag_name` (e.g. `v0.2.0`) drives the comparison; `body` is the
+  changelog; `html_url` is where "get the new version" points. No API
+  token — the endpoint is public and the unauthenticated rate limit is
+  irrelevant for a once-per-launch call.
+
+- **Comparison is pure and total.** Tags are normalised (a leading `v`
+  stripped, pre-release/build metadata dropped) and parsed into
+  `major.minor.patch`; an update is offered only when the latest tuple is
+  strictly greater. Anything unparseable on either side yields "no
+  update" — a malformed tag must never manufacture a phantom notice. This
+  logic lives in a pure `is_newer` / `classify` pair and is unit-tested
+  without any network I/O.
+
+- **Updating stays fully manual.** The notice names the new version, links
+  to its release page, and offers the release notes as a collapsible,
+  **selectable (copyable)** changelog — matching the copyable-error
+  convention (ADR-0039). There is deliberately no download-and-install
+  button.
+
+- **Non-blocking, silent on failure.** The check runs as a task on the
+  existing server runtime (`apps/dbboard` clones a `tokio::runtime::Handle`
+  before the eframe closure, since `rt` must stay in `main` to drive
+  `server.shutdown()`). The UI thread never blocks. Every failure —
+  offline, HTTP error, rate-limited, malformed JSON — folds to a logged,
+  swallowed `Failed` state that renders **nothing**. A failed or offline
+  check is indistinguishable from "up to date"; the feature informs, it
+  never nags and never errors.
+
+- **Opt-out honours the privacy promise.** Setting
+  `DBBOARD_NO_UPDATE_CHECK` to any non-empty value skips the request
+  entirely — the state stays `Idle` and no network call is made. This is
+  the reconciliation of the tester guide's "no network but the databases"
+  wording: the one outbound call the app makes on its own behalf is
+  documented, best-effort, and switchable off. `README.md` documents this
+  and the opt-out env var; the tester guide's "no network but the
+  databases" line must be reconciled to name this call in the doc-sync that
+  lands once `docs/internal-testing.md` reaches `develop` (it is on a
+  parallel branch at time of writing).
+
+### Layering
+
+The comparison logic, the fetch, and the shared state type live in a
+self-contained `apps/dbboard/src/update_check.rs`. The binary is already
+the wiring layer that owns cross-cutting startup concerns (locale, clock,
+CJK fonts, server bootstrap); a once-per-launch update probe belongs with
+them. The result flows to the UI as an `Arc<Mutex<UpdateState>>` the Help
+menu reads each frame — the same shared-slot pattern the connection and AI
+switchers already use (ADR-0020 / ADR-0025). `dbboard-core` and the
+adapters are untouched; this is desktop-only and web-neutral (the web
+sibling has its own deploy channel), so no cross-repo brief is needed.
+
+### Consequences
+
+- One new outbound network dependency (`api.github.com`), off by a single
+  env var, silent when unreachable. `reqwest` + `serde` become direct
+  dependencies of `apps/dbboard` (both were already transitive via
+  `dbboard-ui`), naming the binary's own network use explicitly.
+- New i18n keys `help-update-available` / `help-update-link` /
+  `help-update-notes` in `en` + `ja` (other locales fall back to `en`).
+- The Help menu gains a version-aware row without changing the existing
+  version line (`about_line`) or its test.
+- Release hygiene now matters: the notice is only as good as the tags. A
+  published release must carry a clean `vMAJOR.MINOR.PATCH` tag and useful
+  notes for the changelog to read well.
