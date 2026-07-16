@@ -64,6 +64,48 @@ error-prefix-schema = Schema error
 error-prefix-type-conversion = Type conversion error
 error-prefix-capability = Capability unavailable
 
+# ADR-0039 unified error display. Every app-side error is rendered as a
+# localized message plus its original English text, both selectable and
+# copyable. These keys are the localized half; the English half comes from
+# each error type's own `Display`. `error-copy-button` copies both halves.
+error-copy-button = Copy
+error-copy-hint = Copy this error (translation and original English) to the clipboard
+error-original-label = Original
+
+# SecretError (shared by connection and AI-provider stores).
+secret-error-not-found = No secret is stored for this connection (reference: { $reference }). Seed it in this machine's credential store first.
+secret-error-backend = The secret store operation failed (reference: { $reference }): { $detail }
+
+# ConfigError — connection store load / validation / edit failures.
+config-error-parse = Could not parse the configuration file: { $detail }
+config-error-unsupported-version = Unsupported configuration version: { $found } (only version { $expected } is supported).
+config-error-duplicate-id = Duplicate connection id: { $id }
+config-error-io = Configuration file access failed: { $detail }
+config-error-serialize = Could not write the configuration: { $detail }
+config-error-no-config-dir = Could not determine a per-user configuration directory.
+config-error-not-found = No connection found with id: { $id }
+config-error-kind-mismatch = The kind of connection { $id } cannot change on edit; delete it and add it again instead.
+
+# BundleError — encrypted connection bundle export / import (ADR-0038).
+config-error-bundle-passphrase-short = The passphrase must be at least { $min } characters.
+config-error-bundle-serialize = Could not prepare the bundle contents: { $detail }
+config-error-bundle-incorrect-passphrase = Incorrect passphrase.
+config-error-bundle-corrupt = The file is corrupt or was not produced by dbboard.
+config-error-bundle-unsupported-version = Unsupported bundle version: { $found }.
+config-error-bundle-invalid-payload = The bundle contents are not a valid dbboard payload: { $detail }
+config-error-bundle-io = Bundle file access failed: { $detail }
+
+# AiSettingsError — AI-provider store load / validation / edit failures.
+ai-settings-error-parse = Could not parse the AI providers file: { $detail }
+ai-settings-error-unsupported-version = Unsupported AI providers version: { $found } (only version { $expected } is supported).
+ai-settings-error-duplicate-id = Duplicate AI provider id: { $id }
+ai-settings-error-unknown-active-id = The active AI provider id is unknown: { $id }
+ai-settings-error-io = AI providers file access failed: { $detail }
+ai-settings-error-serialize = Could not write the AI providers file: { $detail }
+ai-settings-error-no-config-dir = Could not determine a per-user configuration directory.
+ai-settings-error-not-found = No AI provider found with id: { $id }
+ai-settings-error-kind-mismatch = The kind of AI provider { $id } cannot change on edit; delete it and add it again instead.
+
 # Connection management window (ADR-0016). HeidiSQL mental model: this
 # window manages stored entries; the running process keeps talking to
 # whichever entry it was launched with.
