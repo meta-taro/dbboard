@@ -50,6 +50,11 @@ tokio-util = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Scrub the passphrase buffers held by the connection export/import forms
+# once the operation completes or is cancelled (ADR-0038). The crypto core
+# in dbboard-config already zeroizes its own plaintext; this covers the
+# UI-side String the user typed into the passphrase field.
+zeroize = { workspace = true }
 
 [dev-dependencies]
 # `ConnectionsView` tests need a real on-disk path for
