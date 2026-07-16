@@ -31,6 +31,47 @@ error-prefix-schema = スキーマ取得エラー
 error-prefix-type-conversion = 型変換エラー
 error-prefix-capability = 機能非対応
 
+# ADR-0039 エラー表示の統一。アプリ側のエラーは「日本語訳 + 元の英文」を
+# 併記し、いずれも選択・コピー可能にする。ここは訳のキー。英文は各エラー型の
+# Display から取得する。error-copy-button は訳と英文の両方をコピーする。
+error-copy-button = コピー
+error-copy-hint = このエラー（訳と元の英文）をクリップボードにコピー
+error-original-label = 原文
+
+# SecretError（接続ストア・AI プロバイダストア共通）。
+secret-error-not-found = この接続の secret が保存されていません（参照: { $reference }）。先にこのマシンの資格情報ストアに登録してください。
+secret-error-backend = secret ストアの操作に失敗しました（参照: { $reference }）: { $detail }
+
+# ConfigError — 接続ストアの読み込み・検証・編集エラー。
+config-error-parse = 設定ファイルを解析できませんでした: { $detail }
+config-error-unsupported-version = サポート外の設定バージョンです: { $found }（対応はバージョン { $expected } のみ）。
+config-error-duplicate-id = 接続 id が重複しています: { $id }
+config-error-io = 設定ファイルへのアクセスに失敗しました: { $detail }
+config-error-serialize = 設定の書き出しに失敗しました: { $detail }
+config-error-no-config-dir = ユーザーごとの設定ディレクトリを特定できませんでした。
+config-error-not-found = 指定した id の接続が見つかりません: { $id }
+config-error-kind-mismatch = 接続 { $id } の種類は編集では変更できません。削除して追加し直してください。
+
+# BundleError — 接続設定の暗号化バンドル export / import（ADR-0038）。
+config-error-bundle-passphrase-short = パスフレーズは { $min } 文字以上にしてください。
+config-error-bundle-serialize = バンドルの内容を準備できませんでした: { $detail }
+config-error-bundle-incorrect-passphrase = パスフレーズが違います。
+config-error-bundle-corrupt = ファイルが壊れているか、dbboard で作成されたものではありません。
+config-error-bundle-unsupported-version = サポート外のバンドルバージョンです: { $found }。
+config-error-bundle-invalid-payload = バンドルの内容が dbboard の形式として不正です: { $detail }
+config-error-bundle-io = バンドルファイルへのアクセスに失敗しました: { $detail }
+
+# AiSettingsError — AI プロバイダストアの読み込み・検証・編集エラー。
+ai-settings-error-parse = AI プロバイダ設定ファイルを解析できませんでした: { $detail }
+ai-settings-error-unsupported-version = サポート外の AI プロバイダ設定バージョンです: { $found }（対応はバージョン { $expected } のみ）。
+ai-settings-error-duplicate-id = AI プロバイダ id が重複しています: { $id }
+ai-settings-error-unknown-active-id = アクティブな AI プロバイダ id が不明です: { $id }
+ai-settings-error-io = AI プロバイダ設定ファイルへのアクセスに失敗しました: { $detail }
+ai-settings-error-serialize = AI プロバイダ設定の書き出しに失敗しました: { $detail }
+ai-settings-error-no-config-dir = ユーザーごとの設定ディレクトリを特定できませんでした。
+ai-settings-error-not-found = 指定した id の AI プロバイダが見つかりません: { $id }
+ai-settings-error-kind-mismatch = AI プロバイダ { $id } の種類は編集では変更できません。削除して追加し直してください。
+
 connections-window-title = 接続
 connections-restart-hint = 変更は dbboard の次回起動時から有効になります。
 connections-list-empty = （接続が登録されていません）
@@ -81,6 +122,11 @@ language-menu = 言語
 help-menu = ヘルプ
 help-docs-hint = セットアップと接続の手順は README.md と docs/ を参照してください。
 help-repo-link = GitHub のプロジェクトページ
+# ADR-0040: 起動時のアップデート確認。新しいリリースがあるときだけヘルプメニューに
+# 表示する。更新は手動 (リンクからリリースページを開く)。
+help-update-available = アップデートがあります: { $version }
+help-update-link = 新しいバージョンを入手
+help-update-notes = 変更点
 
 ai-menu-button = AI アシスタント
 ai-panel-title = AI アシスタント
