@@ -82,7 +82,8 @@ a file.
 A quick tour that exercises the main paths:
 
 - **Browse** — pick a table in the left sidebar; right-click it for quick
-  "Select all rows" / "Count rows" starter queries.
+  "Select all rows" / "Count rows" starters that run on the spot (the SQL
+  also lands in the editor so you can tweak and re-run it).
 - **Query** — type SQL in the editor and press **Run** (or Ctrl+Enter).
   Bare `SELECT`s get an automatic `LIMIT` so a huge table cannot freeze the
   UI; you can override or uncheck it.
