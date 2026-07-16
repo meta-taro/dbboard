@@ -150,6 +150,16 @@ UI language in place; the `DBBOARD_LANG` env var still drives the
 startup default and is unchanged by the runtime switcher. See
 [ADR-0022](docs/decisions.md).
 
+The **Help** menu shows the running version and, when a newer release has
+been published, an **Update available** notice with the release notes and
+a link to the download page. This is the one network call dbboard makes on
+its own behalf: a single best-effort request to the public GitHub Releases
+API at startup, compared against the running version. Updating is entirely
+manual — there is no auto-download and nothing is replaced for you. The
+check is silent when offline or on any error, and you can turn it off
+completely by setting `DBBOARD_NO_UPDATE_CHECK` to any non-empty value. See
+[ADR-0040](docs/decisions.md).
+
 ### Local Turso/libSQL (default)
 
 | Variable | Purpose | Default |

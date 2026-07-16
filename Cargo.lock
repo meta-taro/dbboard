@@ -882,6 +882,8 @@ dependencies = [
  "dbboard-ui",
  "eframe",
  "egui",
+ "reqwest",
+ "serde",
  "tempfile",
  "time",
  "tokio",
