@@ -56,6 +56,27 @@ connections-reconnect-button = 再接続
 connections-active-marker = （接続済み）
 connections-switch-error = 接続できませんでした
 
+# ADR-0038: 接続設定全体の暗号化エクスポート／インポート。
+# バンドルはパスフレーズで暗号化され（age scrypt + ChaCha20-Poly1305）、
+# インポート時に既存の ID はスキップして報告する。
+connections-export-button = エクスポート…
+connections-import-button = インポート…
+connections-export-heading = 接続設定をエクスポート
+connections-import-heading = 接続設定をインポート
+connections-export-passphrase-hint = パスフレーズを設定してください。このファイルをインポートする際に必要になります（復元はできません）。
+connections-import-passphrase-hint = このファイルのエクスポート時に設定したパスフレーズを入力してください。
+connections-passphrase = パスフレーズ
+connections-passphrase-confirm = パスフレーズ（確認）
+connections-passphrase-mismatch = パスフレーズが一致しません。
+connections-export-do = エクスポート
+connections-import-do = インポート
+connections-choose-file = ファイルを選択…
+connections-no-file-chosen = （ファイル未選択）
+connections-bundle-filter = dbboard バンドル
+connections-export-ok = 接続設定をエクスポートしました
+connections-import-imported = インポート
+connections-import-skipped = スキップ
+
 language-menu = 言語
 help-menu = ヘルプ
 help-docs-hint = セットアップと接続の手順は README.md と docs/ を参照してください。
