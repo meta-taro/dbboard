@@ -36,3 +36,16 @@ desktop.ini
 *.sqlite-journal
 *.db-shm
 *.db-wal
+
+# --- 内々テスト配布の成果物 (公開リポジトリに絶対に入れない) ---
+# 接続設定の暗号化バンドル (ADR-0038)。パスフレーズで暗号化されているとはいえ
+# secret を内包するため、リポジトリには一切コミットしない。手元での export/import
+# 用に置いても追跡対象外にする。
+*.dbbx
+# 配布ステージング用ディレクトリ。ここに release exe / .dbbx / 手順書一式をまとめて
+# 受け渡す運用を想定。中身は成果物なので追跡しない。
+/dist/
+# 実接続を書いた本番 connections.toml (テンプレートは *.template.toml として追跡する)。
+# 万一リポジトリ配下にコピーされても実店舗名・参照が漏れないよう保険で除外。
+connections.toml
+!*.template.toml

@@ -447,6 +447,23 @@ entry with the app icon, shows the MIT license, and offers an opt-out
 "add to PATH" feature. The UpgradeCode is fixed, so installing a newer
 version upgrades an existing install in place.
 
+### Handing a build to someone
+
+Three role-specific guides cover the actual handoff:
+
+- **Producing a build** (maintainer): build the exe, optionally export an
+  encrypted connection bundle, deliver, and keep artifacts out of the
+  public repo — [`docs/maintainer/internal-distribution.md`](docs/maintainer/internal-distribution.md).
+- **Trying it as a tester**: install, run, and report feedback —
+  [`docs/internal-testing.md`](docs/internal-testing.md).
+- **Standing up the three fixed data-collection connections** (operator):
+  [`docs/collector-setup/README.md`](docs/collector-setup/README.md).
+
+Connections and their secrets move between machines as a single
+passphrase-encrypted `.dbbx` bundle (Export / Import in the connection
+window, [ADR-0038](docs/decisions.md)); the passphrase always travels on a
+separate channel.
+
 ## Contributing
 
 This project follows the rules in [`CLAUDE.md`](CLAUDE.md). In short:
