@@ -39,12 +39,18 @@ per-row identity, dirty-state, and a save transaction.
       per edited row, keyed on the table's primary key from
       `describe_table` (ADR-0028). All staged edits commit together;
       on success the dirty-tint clears.
-- [ ] A row with **no usable primary key** cannot be edited — the cell
-      does not enter edit mode, with a clear hint why (blind `UPDATE`
-      without a unique key could rewrite multiple rows).
+- [ ] A row with **no usable row identity** cannot be edited — the cell
+      does not enter edit mode, with a clear hint why (a blind `UPDATE`
+      without a unique key could rewrite multiple rows). "Usable identity"
+      is **adapter-specific** (see the coverage section below): a declared
+      primary key everywhere, plus the implicit `rowid` on SQLite-family
+      tables that have one.
 - [ ] Editing is only offered for a result set that maps to a single
       updatable base table (a plain `SELECT` from one table). Joined /
       computed / multi-table results are read-only.
+- [ ] **Views and other non-table objects are read-only** unless the ADR
+      explicitly decides otherwise — do not silently generate an `UPDATE`
+      against a view (see coverage section).
 - [ ] A staged edit can be reverted (per-cell and/or "discard all") before
       Save, restoring the original value and clearing the tint.
 - [ ] Errors from Save use the unified copyable error display (ADR-0039)
@@ -54,11 +60,41 @@ per-row identity, dirty-state, and a save transaction.
       generation (correct `SET`/`WHERE`, parameterised, per PK), and
       "no PK ⇒ not editable" — all without a live DB.
 
+## Per-DB dialect & object-type coverage (raised 2026-07-16)
+
+Write-back is **not uniform across the adapters** — this must be designed
+per family, not once generically.
+
+| Family | Adapters | Identifier quote | Placeholder | No-declared-PK identity |
+|---|---|---|---|---|
+| SQLite | Turso / libSQL, Cloudflare D1 | `"col"` | `?` | implicit **`rowid`** (except `WITHOUT ROWID` tables → refuse) |
+| Postgres | Supabase, Neon, Aurora DSQL | `"col"` | `$1` | none reliable (`ctid` is fragile / not stable) → refuse without a real key |
+
+- **Row identity is adapter-specific.** SQLite-family tables without a
+  declared primary key still have a usable `rowid`, so "no PK ⇒ refuse" is
+  *too strict* there — prefer `rowid`/`oid`-style identity where the
+  adapter guarantees it. Postgres has no equally safe implicit key, so
+  refuse when there is no PK/unique key.
+- **Views**: not directly updatable by default. SQLite/libSQL/D1 views are
+  read-only unless they have an `INSTEAD OF` trigger; Postgres updates only
+  *simple* views (single base table, no aggregate/DISTINCT/GROUP BY, …) and
+  auto-updatable rules. Default: **treat views as read-only** and only
+  revisit updatable-view support behind an explicit ADR decision. The UI
+  must know whether a queried object is a table or a view — `describe_table`
+  / `list_tables` (ADR-0028) should distinguish object kind, or the ADR
+  adds that.
+- **Other objects** (materialized views, CTE/derived results, foreign
+  tables): read-only.
+- **Dialect specifics to pin in the ADR**: identifier quoting, placeholder
+  style (`?` vs `$n`), boolean/NULL/date encoding, and how each adapter
+  reports "rows affected" so Save can confirm exactly one row changed.
+
 ## Notes / open questions for the ADR
 
-- **Identity / WHERE clause**: prefer the primary key. Fallback policy
-  when there is no PK: refuse (safest) vs. `WHERE` on all original column
-  values (fragile). Lean refuse.
+- **Identity / WHERE clause**: prefer the primary key; fall back to an
+  adapter-guaranteed implicit identity (SQLite `rowid`) where available;
+  otherwise refuse. Never `WHERE` on all original column values (fragile,
+  and ambiguous on duplicate rows).
 - **Type fidelity**: the editor works on text; the `UPDATE` must round-trip
   the column type (NULL vs empty string, numbers, booleans, dates). NULL
   needs an explicit affordance, not "empty text".
