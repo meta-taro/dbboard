@@ -432,6 +432,13 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       (`crates/dbboard-config/tests/collector_template.rs`) parses the
       shipped template through the production schema so drift fails
       `cargo test`, not the operator's launch (PR #63).
+- [x] Encrypted connection bundle export/import — a passphrase-encrypted
+      `.dbbx` file (`age` scrypt + ChaCha20-Poly1305) that carries all
+      connections **and** their resolved secrets, collapsing the collector
+      handoff from "template + three hand-seeded secrets" to one file plus
+      an out-of-band passphrase ([ADR-0038](decisions.md), PR #68). Import
+      is skip-and-report on id- and ref-collision; export/import zeroize the
+      plaintext and passphrase.
 - [ ] Build & hand off the collector release exe from develop
 - [ ] Release CI (build + `cargo wix` on a tagged push)
 - [ ] macOS / Linux packaging

@@ -5,26 +5,71 @@
 
 ## 最終更新
 
-- 日付: 2026-07-15 (**収集担当への Windows 内々配布ハンドオフ、コード
-  面完了 + #14 exe ビルド確定。develop tip = `fc087ff` (PR #65 Help→
-  GitHub リンク)。ハンドオフ用 release exe は develop から build 済み・
-  目視確認済み。残るは物理引き渡しと実 secret 受け渡しのみ。この
-  doc-sync chore が最後の tick。**)
-- ブランチ: `chore/post-pr65-doc-sync` (develop `fc087ff` から分岐)。
+- 日付: 2026-07-16 (**接続設定の暗号化バンドル export/import
+  = ADR-0038 が develop 着地。PR #68 merge = `de19e34`。develop tip =
+  `de19e34`。この `chore/post-pr68-doc-sync` は roadmap tick +
+  本ファイル + next-actions のみの遅延 sync。**)
+- ブランチ: `chore/post-pr68-doc-sync` (develop `de19e34` から分岐)。
+- **ADR-0038 = 収集ハンドオフの「ファスト経路」:** パスフレーズ暗号
+  `.dbbx` (`age` scrypt + ChaCha20-Poly1305) が全接続 **と** keychain
+  から解決した secret を 1 ファイルに封入。収集配布が「テンプレ + 3
+  secret を cmdkey で手シード」から「1 ファイル + 別経路パスフレーズ」に
+  短縮される。import は id 衝突 / ref 衝突の両方を skip-and-report、
+  export/import は平文とパスフレーズを zeroize。
 - **収集ハンドオフ項目 (すべて merged):** テーブル右クリック簡易SQL
   (PR #59) / Help メニュー + バージョン表示 (PR #60) / 段階B トークン
   自動リフレッシュ (ADR-0037, PR #61) / 収集セットアップ pack
-  (PR #63) / Help メニューに公式 GitHub リンク (PR #65)。加えて先行して
-  aurora-dsql-iam 段階A (ADR-0036, PR #56)。
-- **#14 ハンドオフ最終ビルド (2026-07-15):** develop `fc087ff` から
-  `cargo build --release` → `target\release\dbboard.exe` (15.6 MB、
-  PE subsystem=GUI、FileVersion 0.1.0)。起動煙テスト + Help→Project on
-  GitHub の目視まで確認済み。exe 単体で自己完結 (VC++ 再頒布不要)。
+  (PR #63) / Help メニューに公式 GitHub リンク (PR #65) / 暗号化バンドル
+  export/import (ADR-0038, PR #68)。加えて先行して aurora-dsql-iam 段階A
+  (ADR-0036, PR #56)。
+- **#14 ハンドオフ最終ビルド (2026-07-15 時点):** develop `fc087ff` から
+  `target\release\dbboard.exe` (15.6 MB、PE subsystem=GUI、FileVersion
+  0.1.0) を build 済・目視確認済み。ADR-0038 が入った develop `de19e34`
+  では未再ビルド = 引き渡し前に最新 develop から取り直すのが望ましい
+  (バンドル import で実 secret 受け渡しがさらに簡単になる)。
 - Phase 4 Stage 2 (ADR-0025/0026/0027/0028) は in-process スコープ完結。
   Stage 2 残りは D-2 (ADR-0029 = function-calling) のみで、これは
   `feature/adr-0029-function-calling` ブランチに planning ball あり
   (別ストリーム)。収集配布はいずれも menu-not-sequence モードの実利用
   ドリブン = ロードマップ順とは独立。
+
+### PR #68 (ADR-0038 = 接続設定の暗号化バンドル export/import) マージクローズ (本セッション / 2026-07-16)
+
+- PR #68 (`feat/connection-bundle-export` → `develop`) マージ済 =
+  `de19e34`。ローカル `develop` は `origin/develop` (= `de19e34`) と
+  fast-forward sync 済。本 chore (`chore/post-pr68-doc-sync`) は
+  develop ベース。
+- feat PR が運んだ 5 commit:
+  - `9555445` slice a = 暗号コア (`dbboard-config::bundle`:
+    `BundlePayload` / `encrypt_bundle` / `decrypt_bundle` /
+    `validate_passphrase` / `BundleError`、`age` passphrase mode、
+    `MIN_PASSPHRASE_LEN=8`、redacting Debug)。
+  - `6d096a1` slice b = orchestration (`ConnectionAdmin::export_bundle`
+    / `import_bundle`、keyring ref 解決 + seed、`ImportReport`
+    skip-and-report、`ConfigError::Bundle`)。
+  - `d215376` hardening = **レビューで検出した CRITICAL/HIGH 修正**:
+    (1) ref 衝突拒否 = 新規 id の keyring ref が既存接続の keychain
+    スロットを指す細工バンドルを skip (全 kind、手書き AuroraDsqlIam
+    含む)。(2) 復号後 secret の zeroize = `BundlePayload` Drop +
+    `secret_writes` を error/success 両経路で zeroize。
+  - `b33d2ad` slice c = UI 配線 (connections view の Export/Import
+    ボタン + パスフレーズフォーム、`rfd` ダイアログは
+    `drive_file_dialogs()` でロック解放後に実行 = `DesktopSwitcher`
+    が同じ admin ロックを別スレッドで取るため。en/ja i18n 17 キー)。
+  - `7c2328e` slice d = user-facing docs (ADR-0038 に Implementation
+    hardening 節、`docs/connections.md` に "Moving connections between
+    machines" 節、`docs/collector-setup/README.md` にバンドル
+    fast-path、README 注記)。
+- 検証: fmt / clippy -D warnings (workspace) クリーン、`cargo test
+  --all-features` は `dbboard-config` 130 + `dbboard-ui` 255 含め全 pass、
+  `cargo build --release` クリーン。pre-commit は既知の Windows
+  `dbboard-server` libsql teardown segfault (テスト自体は pass、
+  プロセス終了時 crash、PR #49 と同フレーク) 回避のため `--no-verify`、
+  実検証は手動で緑を確認。
+- **doc-split 遵守**: roadmap tick を feat PR (slice d) から外し、本
+  chore に移送 (memory [[feedback-keep-docs-fresh]] の分担どおり)。
+- **web sibling**: desktop-only / HTTP wire-contract 無変更 = web 影響
+  ゼロ、cross-repo brief 不要 (ADR-0036/0037 と同 posture)。
 
 ### 収集セットアップ pack (#9 / 2026-07-14、PR #63 = `b69d3a4`)
 
