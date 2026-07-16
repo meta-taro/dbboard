@@ -376,6 +376,12 @@ impl eframe::App for DesktopApp {
                 switch_error.as_deref(),
             );
         }
+        // ADR-0038: run any deferred export-save / import-pick native file
+        // dialog now that the ConnectionAdmin lock (the `guard` above) is
+        // released. The dialog blocks this thread for an unbounded time and
+        // `DesktopSwitcher::switch` shares that lock, so it must never run
+        // while the guard is held — mirrors the pending_connect drain.
+        self.connections.drive_file_dialogs();
         // ADR-0025 slice (b): render the AI Settings window and push the
         // currently-active provider's display name down to the panel.
         // The push happens every frame (cheap clone of a short String)

@@ -95,6 +95,27 @@ connections-reconnect-button = Reconnect
 connections-active-marker = (active)
 connections-switch-error = Could not connect
 
+# ADR-0038: encrypted export / import of the whole connection store.
+# The bundle is passphrase-encrypted (age scrypt + ChaCha20-Poly1305);
+# import skips ids that already exist and reports them.
+connections-export-button = Export…
+connections-import-button = Import…
+connections-export-heading = Export connections
+connections-import-heading = Import connections
+connections-export-passphrase-hint = Choose a passphrase. You will need it to import this file later — it cannot be recovered.
+connections-import-passphrase-hint = Enter the passphrase this file was exported with.
+connections-passphrase = Passphrase
+connections-passphrase-confirm = Confirm passphrase
+connections-passphrase-mismatch = Passphrases do not match.
+connections-export-do = Export
+connections-import-do = Import
+connections-choose-file = Choose file…
+connections-no-file-chosen = (no file chosen)
+connections-bundle-filter = dbboard bundle
+connections-export-ok = Connections exported
+connections-import-imported = Imported
+connections-import-skipped = Skipped
+
 # ADR-0022: runtime locale switcher. The menu-bar label itself is
 # translated so a user who landed in the wrong locale still finds the
 # switcher; the submenu entries below it stay in each locale's native

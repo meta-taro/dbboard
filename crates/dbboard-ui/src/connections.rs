@@ -14,12 +14,15 @@
 //! unit tests against an in-memory [`ConnectionAdmin`]; the egui code
 //! path is exercised end-to-end at the binary level only.
 
+use std::path::PathBuf;
+
 use dbboard_config::{
     ConfigError, ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionEntry,
     ConnectionKind, ConnectionKindDraft, ConnectionKindEditDraft, SecretField,
 };
 use dbboard_i18n::t;
 use eframe::egui;
+use zeroize::Zeroize;
 
 /// The connection management window. Lives next to [`crate::DbboardApp`]
 /// in the binary and is shown when the user opens it from the top bar.
@@ -30,6 +33,10 @@ pub struct ConnectionsView {
     /// Last error from a failed submit, surfaced inline above the form
     /// buttons. Cleared on every successful submit or mode transition.
     last_error: Option<String>,
+    /// Last success message (green), e.g. an export/import summary
+    /// (ADR-0038). Shown in List mode after a completed transfer; cleared
+    /// on the next mode transition so it does not linger stale.
+    last_info: Option<String>,
     /// Id of a connection the user just asked to switch to via the
     /// per-row "Connect" button (ADR-0020). Drained by the host
     /// (typically `DesktopApp`) via [`Self::take_pending_connect`]
@@ -38,6 +45,18 @@ pub struct ConnectionsView {
     /// a second click before the host drains overwrites the first, so
     /// only the most recent intent reaches the worker.
     pending_connect: Option<String>,
+    /// An export blob awaiting a native "Save As" dialog, plus the number
+    /// of connections it holds (ADR-0038). Set when the user confirms an
+    /// export; drained by the host via [`Self::drive_file_dialogs`] *after*
+    /// it releases the `ConnectionAdmin` lock, because the native dialog
+    /// blocks this thread for an unbounded time and the connection switcher
+    /// shares that lock (same rationale as [`Self::pending_connect`]).
+    pending_save: Option<(Vec<u8>, usize)>,
+    /// `true` when the user clicked "Choose file…" in the Import form and a
+    /// native open dialog is owed (ADR-0038). Drained lock-free by the host
+    /// in [`Self::drive_file_dialogs`] for the same reason as
+    /// [`Self::pending_save`].
+    pending_pick: bool,
 }
 
 impl Default for ConnectionsView {
@@ -62,6 +81,30 @@ pub enum Mode {
     /// "Are you sure?" confirmation prompt before a destructive
     /// delete. Shows the entry's display name to reduce mis-clicks.
     ConfirmDelete { id: String, name: String },
+    /// Passphrase form for exporting the whole store to an encrypted
+    /// bundle (ADR-0038). Requires a passphrase typed twice.
+    Export(ExportFormState),
+    /// Passphrase form for importing an encrypted bundle (ADR-0038).
+    /// Requires a chosen `.dbbx` file plus its passphrase.
+    Import(ImportFormState),
+}
+
+/// Backing buffers for the Export form (ADR-0038). Both fields hold
+/// secret passphrase material and are zeroized when the form closes.
+#[derive(Debug, Default, Clone)]
+pub struct ExportFormState {
+    pub passphrase: String,
+    pub confirm: String,
+}
+
+/// Backing buffers for the Import form (ADR-0038). `file_path` is set by
+/// the native file picker; `file_name` is its display label. `passphrase`
+/// is secret material and is zeroized when the form closes.
+#[derive(Debug, Default, Clone)]
+pub struct ImportFormState {
+    pub passphrase: String,
+    pub file_name: String,
+    pub file_path: Option<PathBuf>,
 }
 
 /// Adapter kind chosen by the kind selector in the Add form.
@@ -152,7 +195,10 @@ impl ConnectionsView {
             is_open: false,
             mode: Mode::List,
             last_error: None,
+            last_info: None,
             pending_connect: None,
+            pending_save: None,
+            pending_pick: false,
         }
     }
 
@@ -185,6 +231,13 @@ impl ConnectionsView {
         self.last_error.as_deref()
     }
 
+    /// Last success message (e.g. an export/import summary), if any. The
+    /// UI renders this in green at the top of List mode.
+    #[must_use]
+    pub fn last_info(&self) -> Option<&str> {
+        self.last_info.as_deref()
+    }
+
     /// Record a click on the per-row "Connect" button (ADR-0020). The
     /// host drains the value with [`Self::take_pending_connect`] after
     /// every `ui()` call. A repeat click before the host drains
@@ -206,6 +259,21 @@ impl ConnectionsView {
     pub fn start_add(&mut self) {
         self.mode = Mode::Add(AddFormState::default());
         self.last_error = None;
+        self.last_info = None;
+    }
+
+    /// Switch to the Export passphrase form (ADR-0038).
+    pub fn start_export(&mut self) {
+        self.mode = Mode::Export(ExportFormState::default());
+        self.last_error = None;
+        self.last_info = None;
+    }
+
+    /// Switch to the Import passphrase form (ADR-0038).
+    pub fn start_import(&mut self) {
+        self.mode = Mode::Import(ImportFormState::default());
+        self.last_error = None;
+        self.last_info = None;
     }
 
     /// Switch to the Edit form pre-filled from `entry`. Secret fields
@@ -217,6 +285,7 @@ impl ConnectionsView {
             form: EditFormState::from_entry(entry),
         };
         self.last_error = None;
+        self.last_info = None;
     }
 
     /// Switch to the delete confirmation prompt for `entry`.
@@ -226,12 +295,29 @@ impl ConnectionsView {
             name: entry.name.clone(),
         };
         self.last_error = None;
+        self.last_info = None;
     }
 
     /// Cancel whatever form is currently shown and return to `List`.
+    /// Scrubs any passphrase buffers first so a cancelled export/import
+    /// does not leave secret material in memory (ADR-0038).
     pub fn cancel(&mut self) {
+        self.scrub_passphrases();
         self.mode = Mode::List;
         self.last_error = None;
+    }
+
+    /// Zero out any passphrase strings held by the current form before it
+    /// is dropped or replaced (ADR-0038). A no-op for non-transfer modes.
+    fn scrub_passphrases(&mut self) {
+        match &mut self.mode {
+            Mode::Export(form) => {
+                form.passphrase.zeroize();
+                form.confirm.zeroize();
+            }
+            Mode::Import(form) => form.passphrase.zeroize(),
+            _ => {}
+        }
     }
 
     /// Build a [`ConnectionDraft`] from the current Add form and route
@@ -314,6 +400,97 @@ impl ConnectionsView {
         }
     }
 
+    /// Validate the Export form and encrypt the whole store into a bundle
+    /// blob (ADR-0038). Returns `Some(blob)` ready for the caller to write
+    /// to a user-chosen file; `None` (with [`Self::last_error`] set) if the
+    /// two passphrases disagree or [`ConnectionAdmin::export_bundle`] fails.
+    /// The mode stays `Export` on either outcome so the caller can drive
+    /// the save dialog (success) or the user can retry (failure).
+    ///
+    /// The passphrase is cloned out of the form only for the duration of
+    /// the call and zeroized before returning.
+    pub fn submit_export(&mut self, admin: &ConnectionAdmin) -> Option<Vec<u8>> {
+        // Compare before cloning so the common typo-in-confirm case does no
+        // extra secret allocation.
+        let matches = match &self.mode {
+            Mode::Export(form) => form.passphrase == form.confirm,
+            _ => return None,
+        };
+        if !matches {
+            self.last_error = Some(t!("connections-passphrase-mismatch"));
+            return None;
+        }
+        let mut passphrase = match &self.mode {
+            Mode::Export(form) => form.passphrase.clone(),
+            _ => return None,
+        };
+        let outcome = match admin.export_bundle(&passphrase) {
+            Ok(blob) => {
+                self.last_error = None;
+                Some(blob)
+            }
+            Err(err) => {
+                self.last_error = Some(err.to_string());
+                None
+            }
+        };
+        passphrase.zeroize();
+        outcome
+    }
+
+    /// Close the Export form after the bundle has been written, returning
+    /// to List with a green success summary (ADR-0038). `count` is the
+    /// number of connections written.
+    pub fn finish_export(&mut self, count: usize) {
+        self.scrub_passphrases();
+        self.mode = Mode::List;
+        self.last_error = None;
+        self.last_info = Some(format!("{} ({})", t!("connections-export-ok"), count));
+    }
+
+    /// Decrypt `blob` under the Import form's passphrase and merge it into
+    /// the store (ADR-0038). On success returns to List with a green
+    /// summary of imported vs skipped ids and returns `true`; on failure
+    /// sets [`Self::last_error`], leaves the form open, and returns
+    /// `false`. The passphrase is zeroized before returning either way.
+    pub fn submit_import(&mut self, admin: &mut ConnectionAdmin, blob: &[u8]) -> bool {
+        let mut passphrase = match &self.mode {
+            Mode::Import(form) => form.passphrase.clone(),
+            _ => return false,
+        };
+        let result = admin.import_bundle(blob, &passphrase);
+        passphrase.zeroize();
+
+        match result {
+            Ok(report) => {
+                // Append the skipped-id list only when non-empty so the
+                // common all-imported case stays terse.
+                let detail = if report.skipped.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", report.skipped.join(", "))
+                };
+                let msg = format!(
+                    "{}: {} / {}: {}{}",
+                    t!("connections-import-imported"),
+                    report.imported.len(),
+                    t!("connections-import-skipped"),
+                    report.skipped.len(),
+                    detail,
+                );
+                self.scrub_passphrases();
+                self.mode = Mode::List;
+                self.last_error = None;
+                self.last_info = Some(msg);
+                true
+            }
+            Err(err) => {
+                self.last_error = Some(err.to_string());
+                false
+            }
+        }
+    }
+
     /// Render the window into `ctx`. No-op when closed.
     ///
     /// Holds a `&mut ConnectionAdmin` for the duration of the call;
@@ -349,7 +526,43 @@ impl ConnectionsView {
             .show(ctx, |ui| {
                 self.render(ui, admin, active_id, switch_error);
             });
+        // Closing via the window's own title-bar X bypasses `cancel()`, so
+        // scrub any passphrase left in an open Export/Import form here too
+        // (ADR-0038) — otherwise it would linger in memory until the form
+        // is revisited.
+        if self.is_open && !is_open {
+            self.scrub_passphrases();
+        }
         self.is_open = is_open;
+    }
+
+    /// Run any native file dialog owed by a transfer (ADR-0038). The host
+    /// MUST call this after releasing the `ConnectionAdmin` lock: the
+    /// native dialog blocks this thread for an unbounded time and the
+    /// connection switcher shares that lock, so running it under the lock
+    /// would stall an in-flight Connect/Reconnect. Needs no admin access —
+    /// saving writes bytes and picking returns a path; the actual
+    /// encrypt/import already ran under the lock inside [`Self::render`].
+    /// A no-op unless an export blob is awaiting save or an import file
+    /// pick was requested.
+    pub fn drive_file_dialogs(&mut self) {
+        if let Some((blob, count)) = self.pending_save.take() {
+            match save_bundle_via_dialog(&blob) {
+                SaveOutcome::Written => self.finish_export(count),
+                // User backed out of the dialog — keep the Export form open
+                // so they can retry or cancel.
+                SaveOutcome::Cancelled => {}
+                SaveOutcome::Failed(msg) => self.last_error = Some(msg),
+            }
+        }
+        if std::mem::take(&mut self.pending_pick) {
+            if let Some((path, name)) = pick_bundle_file() {
+                if let Mode::Import(form) = &mut self.mode {
+                    form.file_name = name;
+                    form.file_path = Some(path);
+                }
+            }
+        }
     }
 
     fn render(
@@ -364,6 +577,12 @@ impl ConnectionsView {
         ui.label(t!("connections-restart-hint"));
         ui.separator();
 
+        // A completed export/import leaves a green summary here (ADR-0038)
+        // until the next mode transition clears it.
+        if let Some(info) = &self.last_info {
+            ui.colored_label(egui::Color32::LIGHT_GREEN, info);
+        }
+
         match &mut self.mode {
             Mode::List => {
                 Self::render_list(
@@ -371,6 +590,7 @@ impl ConnectionsView {
                     admin,
                     &mut self.mode,
                     &mut self.pending_connect,
+                    &mut self.last_info,
                     active_id,
                     switch_error,
                 );
@@ -410,6 +630,52 @@ impl ConnectionsView {
                     }
                 });
             }
+            Mode::Export(form) => {
+                render_export_form(ui, form);
+                render_error(ui, self.last_error.as_deref());
+                let (export_btn, cancel_btn) = render_transfer_buttons(
+                    ui,
+                    &t!("connections-export-do"),
+                    /* enabled */ true,
+                );
+                if export_btn {
+                    if let Some(blob) = self.submit_export(admin) {
+                        // Defer the blocking Save dialog to the host, which
+                        // runs it after releasing the ConnectionAdmin lock
+                        // (ADR-0038); the switcher shares that lock.
+                        let count = admin.entries().len();
+                        self.pending_save = Some((blob, count));
+                    }
+                } else if cancel_btn {
+                    self.cancel();
+                }
+            }
+            Mode::Import(form) => {
+                let choose = render_import_form(ui, form);
+                // Capture every form-derived value before touching `self`,
+                // so the `&mut self.mode` borrow ends here (mirrors the Add
+                // arm's borrow discipline).
+                let has_file = form.file_path.is_some();
+                let chosen = form.file_path.clone();
+                render_error(ui, self.last_error.as_deref());
+                let (import_btn, cancel_btn) =
+                    render_transfer_buttons(ui, &t!("connections-import-do"), has_file);
+                if choose {
+                    // Defer the blocking open dialog to the host (see above).
+                    self.pending_pick = true;
+                } else if import_btn {
+                    if let Some(path) = chosen {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                self.submit_import(admin, &bytes);
+                            }
+                            Err(err) => self.last_error = Some(err.to_string()),
+                        }
+                    }
+                } else if cancel_btn {
+                    self.cancel();
+                }
+            }
         }
     }
 
@@ -418,6 +684,7 @@ impl ConnectionsView {
         admin: &mut ConnectionAdmin,
         mode: &mut Mode,
         pending_connect: &mut Option<String>,
+        last_info: &mut Option<String>,
         active_id: &str,
         switch_error: Option<&str>,
     ) {
@@ -425,8 +692,24 @@ impl ConnectionsView {
         // SwitchFailed reply off-thread; surface it here (red, above the
         // list) so the click is never silently swallowed (ADR-0020).
         render_error(ui, switch_error);
-        if ui.button(t!("connections-add-button")).clicked() {
-            *mode = Mode::Add(AddFormState::default());
+        // Add / Export / Import all leave List mode; clear a lingering
+        // green transfer summary so it does not bleed into the next form
+        // (ADR-0038).
+        let mut leave = None;
+        ui.horizontal(|ui| {
+            if ui.button(t!("connections-add-button")).clicked() {
+                leave = Some(Mode::Add(AddFormState::default()));
+            }
+            if ui.button(t!("connections-export-button")).clicked() {
+                leave = Some(Mode::Export(ExportFormState::default()));
+            }
+            if ui.button(t!("connections-import-button")).clicked() {
+                leave = Some(Mode::Import(ImportFormState::default()));
+            }
+        });
+        if let Some(next) = leave {
+            *mode = next;
+            *last_info = None;
             return;
         }
         ui.separator();
@@ -486,12 +769,16 @@ impl ConnectionsView {
                             id: entry.id.clone(),
                             form: EditFormState::from_entry(entry),
                         };
+                        // Leaving List mode: drop a stale transfer summary
+                        // so it does not linger over the Edit form (ADR-0038).
+                        *last_info = None;
                     }
                     if ui.small_button(t!("connections-delete-button")).clicked() {
                         *mode = Mode::ConfirmDelete {
                             id: entry.id.clone(),
                             name: entry.name.clone(),
                         };
+                        *last_info = None;
                     }
                 });
             }
@@ -879,6 +1166,116 @@ fn kind_selector_label(kind: KindSelector) -> &'static str {
         KindSelector::Supabase => "Supabase",
         KindSelector::AuroraDsql => "Aurora DSQL",
     }
+}
+
+/// The native file extension for an encrypted connection bundle
+/// (ADR-0038). "dbbx" = **dbb**oard e**x**port.
+const BUNDLE_EXTENSION: &str = "dbbx";
+/// Default file name the Save dialog opens with.
+const BUNDLE_DEFAULT_FILE: &str = "dbboard-connections.dbbx";
+
+/// Render the Export passphrase form (ADR-0038). The user types the
+/// passphrase twice; [`ConnectionsView::submit_export`] rejects a
+/// mismatch before any crypto runs.
+fn render_export_form(ui: &mut egui::Ui, form: &mut ExportFormState) {
+    ui.heading(t!("connections-export-heading"));
+    ui.label(t!("connections-export-passphrase-hint"));
+    egui::Grid::new("connections-export-grid")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label(t!("connections-passphrase"));
+            ui.add(egui::TextEdit::singleline(&mut form.passphrase).password(true));
+            ui.end_row();
+            ui.label(t!("connections-passphrase-confirm"));
+            ui.add(egui::TextEdit::singleline(&mut form.confirm).password(true));
+            ui.end_row();
+        });
+    ui.separator();
+}
+
+/// Render the Import passphrase form (ADR-0038). Returns `true` when the
+/// "Choose file…" button was clicked so the caller can open the native
+/// picker (kept out of this fn to keep it headless-testable).
+fn render_import_form(ui: &mut egui::Ui, form: &mut ImportFormState) -> bool {
+    ui.heading(t!("connections-import-heading"));
+    ui.label(t!("connections-import-passphrase-hint"));
+    let mut choose = false;
+    ui.horizontal(|ui| {
+        choose = ui.button(t!("connections-choose-file")).clicked();
+        let name = if form.file_name.is_empty() {
+            t!("connections-no-file-chosen")
+        } else {
+            form.file_name.clone()
+        };
+        ui.label(name);
+    });
+    egui::Grid::new("connections-import-grid")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label(t!("connections-passphrase"));
+            ui.add(egui::TextEdit::singleline(&mut form.passphrase).password(true));
+            ui.end_row();
+        });
+    ui.separator();
+    choose
+}
+
+/// Render the confirm / cancel button row shared by the Export and Import
+/// forms. The primary button is disabled when `enabled` is false (Import
+/// with no file chosen yet). Returns `(primary_clicked, cancel_clicked)`.
+fn render_transfer_buttons(ui: &mut egui::Ui, primary_label: &str, enabled: bool) -> (bool, bool) {
+    let mut primary = false;
+    let mut cancel = false;
+    ui.horizontal(|ui| {
+        primary = ui
+            .add_enabled(enabled, egui::Button::new(primary_label))
+            .clicked();
+        cancel = ui.button(t!("connections-cancel-button")).clicked();
+    });
+    (primary, cancel)
+}
+
+/// Outcome of driving the native "Save As" dialog for an export bundle.
+#[derive(Debug)]
+enum SaveOutcome {
+    /// The blob was written to the user-chosen path.
+    Written,
+    /// The user dismissed the dialog without choosing a path.
+    Cancelled,
+    /// A path was chosen but the write failed; carries a display message.
+    Failed(String),
+}
+
+/// Open a native "Save As" dialog and write `blob` to the chosen path
+/// (ADR-0038). The default file name uses the `.dbbx` extension. Mirrors
+/// the CSV export glue in `lib.rs`: rfd for the dialog, `std::fs::write`
+/// for the bytes, and the outcome mapped back to the caller rather than
+/// surfaced via a message box here.
+fn save_bundle_via_dialog(blob: &[u8]) -> SaveOutcome {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter(t!("connections-bundle-filter"), &[BUNDLE_EXTENSION])
+        .set_file_name(BUNDLE_DEFAULT_FILE)
+        .save_file()
+    else {
+        return SaveOutcome::Cancelled;
+    };
+    match std::fs::write(&path, blob) {
+        Ok(()) => SaveOutcome::Written,
+        Err(err) => SaveOutcome::Failed(err.to_string()),
+    }
+}
+
+/// Open a native file picker for an existing bundle (ADR-0038). Returns
+/// the chosen path plus its file-name label, or `None` if dismissed.
+fn pick_bundle_file() -> Option<(PathBuf, String)> {
+    let path = rfd::FileDialog::new()
+        .add_filter(t!("connections-bundle-filter"), &[BUNDLE_EXTENSION])
+        .pick_file()?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Some((path, name))
 }
 
 #[cfg(test)]
@@ -1525,5 +1922,216 @@ mod tests {
         view.request_connect("b");
         assert_eq!(view.take_pending_connect().as_deref(), Some("b"));
         assert!(view.take_pending_connect().is_none());
+    }
+
+    // --- ADR-0038 encrypted export / import ---
+
+    fn seed_one(admin: &mut ConnectionAdmin) {
+        admin
+            .add(ConnectionDraft {
+                id: "local".into(),
+                name: "Local".into(),
+                kind: ConnectionKindDraft::Turso {
+                    path: ":memory:".into(),
+                },
+            })
+            .expect("seed");
+    }
+
+    #[test]
+    fn start_export_switches_to_a_blank_export_form_and_clears_messages() {
+        let mut view = ConnectionsView::new();
+        view.last_error = Some("stale".into());
+        view.last_info = Some("old".into());
+        view.start_export();
+        match view.mode() {
+            Mode::Export(form) => {
+                assert!(form.passphrase.is_empty());
+                assert!(form.confirm.is_empty());
+            }
+            other => panic!("expected Export, got {other:?}"),
+        }
+        assert!(view.last_error().is_none());
+        assert!(view.last_info().is_none());
+    }
+
+    #[test]
+    fn start_import_switches_to_a_blank_import_form_and_clears_messages() {
+        let mut view = ConnectionsView::new();
+        view.last_info = Some("old".into());
+        view.start_import();
+        match view.mode() {
+            Mode::Import(form) => {
+                assert!(form.passphrase.is_empty());
+                assert!(form.file_path.is_none());
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+        assert!(view.last_info().is_none());
+    }
+
+    #[test]
+    fn submit_export_with_mismatched_passphrases_reports_and_yields_no_blob() {
+        let (_dir, _secrets, mut admin) = build_admin();
+        seed_one(&mut admin);
+        let mut view = ConnectionsView::new();
+        view.start_export();
+        if let Mode::Export(form) = &mut view.mode {
+            form.passphrase = "correct horse".into();
+            form.confirm = "wrong horse".into();
+        }
+        assert!(view.submit_export(&admin).is_none());
+        assert!(view.last_error().is_some());
+        // Form stays open so the user can fix the confirmation.
+        assert!(matches!(view.mode(), Mode::Export(_)));
+    }
+
+    #[test]
+    fn submit_export_with_matching_passphrase_yields_a_decryptable_blob() {
+        let (_dir, _secrets, mut admin) = build_admin();
+        seed_one(&mut admin);
+        let mut view = ConnectionsView::new();
+        view.start_export();
+        if let Mode::Export(form) = &mut view.mode {
+            form.passphrase = "correct horse battery".into();
+            form.confirm = "correct horse battery".into();
+        }
+        let blob = view.submit_export(&admin).expect("blob");
+        // The blob round-trips back through the admin importer under the
+        // same passphrase, proving submit_export produced a real bundle.
+        let (_dir2, _secrets2, mut fresh) = build_admin();
+        let report = fresh
+            .import_bundle(&blob, "correct horse battery")
+            .expect("import");
+        assert_eq!(report.imported, vec!["local".to_string()]);
+        assert!(report.skipped.is_empty());
+    }
+
+    #[test]
+    fn submit_import_success_returns_to_list_with_a_green_summary() {
+        // Export from one store, import into a fresh one via the view.
+        let (_dir, _secrets, mut src) = build_admin();
+        seed_one(&mut src);
+        let blob = src.export_bundle("pw pw pw pw").expect("export");
+
+        let (_dir2, _secrets2, mut dst) = build_admin();
+        let mut view = ConnectionsView::new();
+        view.start_import();
+        if let Mode::Import(form) = &mut view.mode {
+            form.passphrase = "pw pw pw pw".into();
+        }
+        assert!(view.submit_import(&mut dst, &blob));
+        assert!(matches!(view.mode(), Mode::List));
+        assert!(view.last_error().is_none());
+        let info = view.last_info().expect("summary");
+        assert!(
+            info.contains('1'),
+            "summary should count 1 imported: {info}"
+        );
+        assert_eq!(dst.entries().len(), 1);
+    }
+
+    #[test]
+    fn submit_import_with_wrong_passphrase_keeps_the_form_open_with_an_error() {
+        let (_dir, _secrets, mut src) = build_admin();
+        seed_one(&mut src);
+        let blob = src.export_bundle("right pass phrase").expect("export");
+
+        let (_dir2, _secrets2, mut dst) = build_admin();
+        let mut view = ConnectionsView::new();
+        view.start_import();
+        if let Mode::Import(form) = &mut view.mode {
+            form.passphrase = "wrong pass phrase".into();
+        }
+        assert!(!view.submit_import(&mut dst, &blob));
+        assert!(view.last_error().is_some());
+        assert!(matches!(view.mode(), Mode::Import(_)));
+        assert!(dst.entries().is_empty());
+    }
+
+    #[test]
+    fn submit_import_reports_skipped_ids_in_the_summary() {
+        // Destination already owns "local"; importing the same bundle
+        // must skip it and name it in the green summary.
+        let (_dir, _secrets, mut src) = build_admin();
+        seed_one(&mut src);
+        let blob = src.export_bundle("pass pass pass").expect("export");
+
+        let (_dir2, _secrets2, mut dst) = build_admin();
+        seed_one(&mut dst);
+        let mut view = ConnectionsView::new();
+        view.start_import();
+        if let Mode::Import(form) = &mut view.mode {
+            form.passphrase = "pass pass pass".into();
+        }
+        assert!(view.submit_import(&mut dst, &blob));
+        let info = view.last_info().expect("summary");
+        assert!(info.contains("local"), "skipped id should appear: {info}");
+        assert_eq!(dst.entries().len(), 1);
+    }
+
+    #[test]
+    fn scrub_passphrases_zeroes_the_export_buffers_before_the_mode_swap() {
+        // scrub_passphrases() is private, so the test can call it directly
+        // and inspect the still-Export form — proving the buffers are
+        // emptied rather than merely dropped (cancel() would drop them
+        // regardless, giving no real regression signal).
+        let mut view = ConnectionsView::new();
+        view.start_export();
+        if let Mode::Export(form) = &mut view.mode {
+            form.passphrase = "secret material".into();
+            form.confirm = "secret material".into();
+        }
+        view.scrub_passphrases();
+        match view.mode() {
+            Mode::Export(form) => {
+                assert!(form.passphrase.is_empty());
+                assert!(form.confirm.is_empty());
+            }
+            other => panic!("expected Export, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancel_from_export_returns_to_list() {
+        let mut view = ConnectionsView::new();
+        view.start_export();
+        if let Mode::Export(form) = &mut view.mode {
+            form.passphrase = "secret material".into();
+            form.confirm = "secret material".into();
+        }
+        view.cancel();
+        assert!(matches!(view.mode(), Mode::List));
+    }
+
+    #[test]
+    fn submit_export_surfaces_a_weak_passphrase_error_and_yields_no_blob() {
+        let (_dir, _secrets, mut admin) = build_admin();
+        seed_one(&mut admin);
+        let mut view = ConnectionsView::new();
+        view.start_export();
+        if let Mode::Export(form) = &mut view.mode {
+            // Matches confirm, but below MIN_PASSPHRASE_LEN, so the crypto
+            // core rejects it — exercising submit_export's Err branch.
+            form.passphrase = "short".into();
+            form.confirm = "short".into();
+        }
+        assert!(view.submit_export(&admin).is_none());
+        assert!(view.last_error().is_some());
+        assert!(matches!(view.mode(), Mode::Export(_)));
+    }
+
+    #[test]
+    fn finish_export_returns_to_list_with_a_count_bearing_summary() {
+        let mut view = ConnectionsView::new();
+        view.start_export();
+        if let Mode::Export(form) = &mut view.mode {
+            form.passphrase = "secret material".into();
+            form.confirm = "secret material".into();
+        }
+        view.finish_export(3);
+        assert!(matches!(view.mode(), Mode::List));
+        let info = view.last_info().expect("summary");
+        assert!(info.contains('3'), "summary should carry the count: {info}");
     }
 }

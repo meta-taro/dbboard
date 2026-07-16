@@ -28,6 +28,7 @@
 pub mod admin;
 pub mod ai_settings;
 pub mod ai_store;
+pub mod bundle;
 pub mod error;
 pub mod secrets;
 pub mod secure_fs;
@@ -35,7 +36,7 @@ pub mod store;
 
 pub use admin::{
     ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,
-    ConnectionKindEditDraft, SecretField,
+    ConnectionKindEditDraft, ImportReport, SecretField,
 };
 pub use ai_settings::{
     AiProviderDraft, AiProviderEditDraft, AiProviderKindDraft, AiProviderKindEditDraft,
@@ -44,6 +45,10 @@ pub use ai_settings::{
 pub use ai_store::{
     default_ai_providers_path, AiProviderEntry, AiProviderFile, AiProviderKind, AiSettingsError,
     AI_CONFIG_VERSION,
+};
+pub use bundle::{
+    decrypt_bundle, encrypt_bundle, validate_passphrase, BundleError, BundlePayload,
+    BUNDLE_VERSION, MIN_PASSPHRASE_LEN,
 };
 pub use error::ConfigError;
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};

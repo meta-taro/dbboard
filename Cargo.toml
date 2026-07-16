@@ -119,6 +119,21 @@ keyring = "3"
 # default backend needs GTK3 dev libraries at build time; the maintainer
 # builds on Windows where no extra system libs are required.
 rfd = "0.17"
+# Passphrase-based encryption for the connection bundle export/import
+# (ADR-0038). age gives us a battle-tested envelope in one dependency:
+# scrypt KDF + ChaCha20-Poly1305 AEAD + a versioned, authenticated file
+# format, so dbboard hand-rolls no crypto. Passphrase (scrypt) recipient
+# only; the X25519 recipient path is unused but comes with the crate.
+# Pure Rust, MIT/Apache-2.0, no system OpenSSL. default-features = false
+# drops the optional `armor`/`async`/`plugin`/`ssh` surface — the bundle
+# is a binary blob written straight to a user-chosen path.
+age = { version = "0.11", default-features = false }
+# Scrub the decrypted-bundle plaintext buffer from memory after use
+# (ADR-0038). age already zeroizes its own SecretString key material;
+# this covers the intermediate JSON byte buffer that briefly holds the
+# resolved secrets before/after the age boundary. Already in the tree
+# transitively via age; pinned here to depend on it directly.
+zeroize = "1"
 # tempfile-based integration tests for dbboard-config's filesystem layer.
 tempfile = "3"
 # Pure-Rust mock HTTP server for dbboard-anthropic's round-trip tests.
