@@ -411,6 +411,17 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       the running build version (so a handoff bug report pins an exact
       build) and a pointer at README/`docs/` (PR #60), plus a clickable
       **Project on GitHub** link back to the public repo (PR #65).
+- [x] Unified copyable error display — every app-generated error is shown
+      as a localized message plus its original English, both selectable
+      with a Copy button, so a handoff user can paste the English into an
+      AI/search while reading their own language ([ADR-0039](decisions.md),
+      PR #70). SQL/provider error bodies stay verbatim.
+- [x] In-app update check — a best-effort startup GET to the GitHub
+      Releases API compares the latest published tag against the running
+      version and, only when newer, shows an **Update available** notice in
+      the Help menu with the release notes and a download link. Updating is
+      manual; the check is silent on failure and opt-out via
+      `DBBOARD_NO_UPDATE_CHECK` ([ADR-0040](decisions.md), PR #71).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
@@ -439,6 +450,12 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       an out-of-band passphrase ([ADR-0038](decisions.md), PR #68). Import
       is skip-and-report on id- and ref-collision; export/import zeroize the
       plaintext and passphrase.
+- [x] Internal test-distribution guides — a maintainer runbook
+      (`docs/maintainer/internal-distribution.md`: build, sanity-check,
+      optional `.dbbx` export, delivery over two channels, do-not-commit
+      hygiene) plus a tester onboarding guide (`docs/internal-testing.md`),
+      and `.gitignore` rules that keep `*.dbbx` / `/dist/` /
+      `connections.toml` out of the public repo (PR #72).
 - [ ] Build & hand off the collector release exe from develop
 - [ ] Release CI (build + `cargo wix` on a tagged push)
 - [ ] macOS / Linux packaging
