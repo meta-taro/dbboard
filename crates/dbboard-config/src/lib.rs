@@ -10,6 +10,11 @@
 //!   companion file added in ADR-0025 Phase 4 Stage 2 Group A. Same
 //!   filesystem posture (`secure_fs`-backed atomic writes, Unix
 //!   `0o600` / Windows inherited DACL) as `store`.
+//! - [`annotations`] — the on-disk shape + admin API for local
+//!   table/column notes (`annotations.toml`, ADR-0045). Same
+//!   `secure_fs` posture as the stores above, but carries *no* secret
+//!   and never writes to any database — the notes are documentation the
+//!   engines (SQLite/D1 especially) can't hold themselves.
 //! - [`secrets`] — `SecretStore` trait with an OS-keychain backend
 //!   ([`secrets::KeyringStore`]) and an in-memory fallback
 //!   ([`secrets::InMemorySecretStore`]) for tests and CI. Used by
@@ -28,6 +33,7 @@
 pub mod admin;
 pub mod ai_settings;
 pub mod ai_store;
+pub mod annotations;
 pub mod bundle;
 pub mod error;
 pub mod secrets;
@@ -46,6 +52,10 @@ pub use ai_settings::{
 pub use ai_store::{
     default_ai_providers_path, AiProviderEntry, AiProviderFile, AiProviderKind, AiSettingsError,
     AI_CONFIG_VERSION,
+};
+pub use annotations::{
+    default_annotations_path, table_key, AnnotationsAdmin, AnnotationsError, AnnotationsFile,
+    ColumnAnnotation, ConnectionAnnotations, TableAnnotations, ANNOTATIONS_VERSION,
 };
 pub use bundle::{
     decrypt_bundle, encrypt_bundle, validate_passphrase, BundleError, BundlePayload,
