@@ -137,4 +137,5 @@ edit-discard-button = 취소
 edit-staged-count = 미저장 편집 { $count }건
 edit-set-null = NULL로 설정
 edit-revert-cell = 셀 되돌리기
+edit-cell-hint = 더블클릭하여 편집 · 우클릭하여 NULL
 edit-save-unexpected-rows = 저장 중단: 1개 행이어야 하나 { $rows }개 행에 영향

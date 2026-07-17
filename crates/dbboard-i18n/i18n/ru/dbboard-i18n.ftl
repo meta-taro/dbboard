@@ -138,4 +138,5 @@ edit-discard-button = Отменить
 edit-staged-count = Несохранённых правок: { $count }
 edit-set-null = Установить NULL
 edit-revert-cell = Вернуть ячейку
+edit-cell-hint = Двойной клик для правки · правый клик для NULL
 edit-save-unexpected-rows = Сохранение остановлено: ожидалась 1 строка, затронуто { $rows }

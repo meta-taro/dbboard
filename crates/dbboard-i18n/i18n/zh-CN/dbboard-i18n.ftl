@@ -137,4 +137,5 @@ edit-discard-button = 放弃
 edit-staged-count = { $count } 处未保存修改
 edit-set-null = 设为 NULL
 edit-revert-cell = 还原单元格
+edit-cell-hint = 双击编辑 · 右键设为 NULL
 edit-save-unexpected-rows = 已停止保存：应为 1 行，却影响了 { $rows } 行
