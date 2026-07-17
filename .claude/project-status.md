@@ -5,12 +5,25 @@
 
 ## 最終更新
 
-- 日付: 2026-07-16 (**3 本立て = エラー表示統一 (ADR-0039 / PR #70) +
-  起動時アップデート確認 (ADR-0040 / PR #71) + 内々配布ガイド一式
-  (PR #72) が順に develop 着地。develop tip = `bb9f46f`。この
-  `chore/post-pr72-doc-sync` は roadmap tick + 本ファイル +
-  next-actions + internal-testing の網羅 sync。**)
-- ブランチ: `chore/post-pr72-doc-sync` (develop `bb9f46f` から分岐)。
+- 日付: 2026-07-17 (**実利用バックログ 0012–0015 = 4 本まとめて develop
+  着地。** スタックドブランチ連鎖を下から順に merge: 0012 右クリック簡易
+  SQL 即実行 (PR #76) → 0014 Light/Dark/Auto テーマ (PR #77) → 0015 アイコン
+  正式ロゴ化 (PR #78) → 0013 セル編集→Save (ADR-0042, PR #79) → next-actions
+  先行更新 (PR #80)。develop tip = `992d1ea`。この
+  `chore/post-pr76-80-doc-sync` は roadmap tick + issue 0012–0015 を closed +
+  本ファイル + next-actions の網羅 sync。)
+- ブランチ: `chore/post-pr76-80-doc-sync` (develop `992d1ea` から分岐)。
+- **0013 = アプリ初の write 経路 (ADR-0042):** core `write_back.rs` が
+  純関数として PK ベース `UPDATE` を組み立て (識別子/値をダイアレクト別に
+  クオート、injection をコンストラクションで排除)、UI `edit.rs` が
+  staged 編集を plan 化。Save は既存 SQL-string query 経路で UPDATE を
+  1 件ずつ直列実行 (ワイヤ契約不変 = web ミラー不要)、成功後 browse を
+  再実行してエンジン正規化値を反映。編集可否は「右クリック→Select で
+  開いた単一テーブル + PK 解決済み」のみ = 任意SQL/view/join は
+  read-only、Blob も read-only。i18n キー6件を全11ロケールに追加。
+- **前回 (2026-07-16) からの継続項目 = 全て develop 着地済:** エラー表示
+  統一 (ADR-0039 / PR #70) + 起動時アップデート確認 (ADR-0040 / PR #71) +
+  内々配布ガイド一式 (PR #72)。
 - **ADR-0038 = 収集ハンドオフの「ファスト経路」:** パスフレーズ暗号
   `.dbbx` (`age` scrypt + ChaCha20-Poly1305) が全接続 **と** keychain
   から解決した secret を 1 ファイルに封入。収集配布が「テンプレ + 3
@@ -23,13 +36,11 @@
   (PR #63) / Help メニューに公式 GitHub リンク (PR #65) / 暗号化バンドル
   export/import (ADR-0038, PR #68)。加えて先行して aurora-dsql-iam 段階A
   (ADR-0036, PR #56)。
-- **#14 ハンドオフ最終ビルド:** 直近の目視確認済みビルドは develop
-  `fc087ff` の `target\release\dbboard.exe` (15.6 MB、PE subsystem=GUI、
-  FileVersion 0.1.0)。ただし #70/#71/#72 着地後の develop `bb9f46f` では
-  未再ビルド = **引き渡し前にこの develop から取り直すのが理想** (配布
-  ガイドが説明するコピー可能エラー + 起動時アップデート通知が exe 挙動と
-  一致する)。ビルド前に dbboard ウィンドウを閉じる (実行中だと exe ロック
-  で os error 5)。
+- **#14 ハンドオフ最終ビルド:** 0012–0015 が develop `992d1ea` に入った
+  ので、**引き渡し前にこの develop から `cargo build --release` を取り直すのが
+  理想** = 収集担当が最新 UX (即実行簡易SQL・テーマ・セル編集) と配布ガイド
+  記載のコピー可能エラー + 起動時アップデート通知をすべて備えた exe を得る。
+  ビルド前に dbboard ウィンドウを閉じる (実行中だと exe ロックで os error 5)。
 - Phase 4 Stage 2 (ADR-0025/0026/0027/0028) は in-process スコープ完結。
   Stage 2 残りは D-2 (ADR-0029 = function-calling) のみで、これは
   `feature/adr-0029-function-calling` ブランチに planning ball あり

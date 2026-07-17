@@ -1,6 +1,6 @@
 # 0014: Light / Dark / Auto theme
 
-- **Status**: open
+- **Status**: closed — shipped 2026-07-17 (PR #77)
 - **Phase**: 5 (quality of life)
 - **Opened**: 2026-07-16
 
