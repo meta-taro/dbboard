@@ -422,6 +422,11 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       the Help menu with the release notes and a download link. Updating is
       manual; the check is silent on failure and opt-out via
       `DBBOARD_NO_UPDATE_CHECK` ([ADR-0040](decisions.md), PR #71).
+      In-use follow-ups (PR #86): the Help menu now stays open while its
+      update link and **変更点** changelog toggle are clicked (egui menus
+      default to close-on-any-click), and the release notes render as
+      Markdown via `egui_commonmark` instead of literal `**source**`
+      ([ADR-0043](decisions.md); this raised the workspace MSRV to 1.92).
 - [x] Auto-run table right-click quick-SQL — the starter query now
       executes on pick, not just drops into the editor (still read-only, still
       subject to the auto-`LIMIT` guard) (issue 0012, PR #76).
