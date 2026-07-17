@@ -409,14 +409,20 @@ CI does not run this yet; run it locally when adding or upgrading a
 dependency. New license expressions surfaced by the check go into
 `deny.toml`'s `licenses.allow` list with a one-line rationale.
 
-## Windows distribution (internal)
+## Packaging & distribution (internal)
 
-The release binary is a self-contained GUI app: no console window, an
+Primary target is Windows; macOS packaging is also wired (see below). The
+Windows release binary is a self-contained GUI app: no console window, an
 embedded icon + version metadata, and a statically-linked MSVC CRT (no
 Visual C++ Redistributable required on the target machine). See
 [ADR-0032](docs/decisions.md).
 
-### Just the executable
+> **Note on trust.** The artifacts are **not code-signed yet**, so Windows
+> SmartScreen and macOS Gatekeeper will warn about an unknown publisher.
+> Verify a download against the published `SHA256SUMS.txt` (see *Release
+> builds & checksums*). Signing is a planned follow-up ([ADR-0044](docs/decisions.md)).
+
+### Just the executable (Windows)
 
 ```sh
 cargo build --release
@@ -449,6 +455,41 @@ The MSI installs to `%ProgramFiles%\dbboard`, registers a clean uninstall
 entry with the app icon, shows the MIT license, and offers an opt-out
 "add to PATH" feature. The UpgradeCode is fixed, so installing a newer
 version upgrades an existing install in place.
+
+### macOS app (.app / .dmg)
+
+The macOS bundle is built with [cargo-bundle](https://github.com/burtonageo/cargo-bundle)
+**on a Mac** (the `.app`/`.dmg`, and later signing/notarization, cannot be
+produced from Windows):
+
+```sh
+cargo install cargo-bundle
+cargo bundle --release --package dbboard
+# → target/release/bundle/osx/dbboard.app
+# wrap it in a .dmg:
+hdiutil create -volname dbboard \
+  -srcfolder target/release/bundle/osx/dbboard.app \
+  -ov -format UDZO dbboard.dmg
+```
+
+The bundle identity (identifier `com.meta-taro.dbboard`, category, icon,
+minimum macOS version) lives in `[package.metadata.bundle]` in
+[`apps/dbboard/Cargo.toml`](apps/dbboard/Cargo.toml). See
+[ADR-0044](docs/decisions.md).
+
+### Release builds & checksums
+
+Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which builds the Windows (exe + MSI) and macOS (.dmg) artifacts on their
+native runners and attaches them to the matching GitHub Release together
+with a combined `SHA256SUMS.txt`. A manual `workflow_dispatch` run builds
+the same artifacts as a smoke test without publishing. Verify a download:
+
+```sh
+sha256sum -c SHA256SUMS.txt        # Linux/macOS
+# or on Windows PowerShell:
+#   (Get-FileHash .\dbboard-windows-x86_64.exe -Algorithm SHA256).Hash
+```
 
 ### Handing a build to someone
 
