@@ -138,4 +138,5 @@ edit-discard-button = Descartar
 edit-staged-count = { $count } edição(ões) pendente(s)
 edit-set-null = Definir NULL
 edit-revert-cell = Reverter célula
+edit-cell-hint = Clique duplo para editar · clique direito para NULL
 edit-save-unexpected-rows = Salvamento interrompido: esperava 1 linha, { $rows } afetadas
