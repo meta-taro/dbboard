@@ -484,9 +484,26 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       hygiene) plus a tester onboarding guide (`docs/internal-testing.md`),
       and `.gitignore` rules that keep `*.dbbx` / `/dist/` /
       `connections.toml` out of the public repo (PR #72).
-- [ ] Build & hand off the collector release exe from develop
-- [ ] Release CI (build + `cargo wix` on a tagged push)
-- [ ] macOS / Linux packaging
+- [x] Build & hand off the collector release exe from develop — the
+      ADR-0038-inclusive `dbboard.exe` was rebuilt and physically handed
+      off to the data-collection operator (2026-07-16).
+- [x] Release CI (build + checksums on a tagged push) — a `v*.*.*` tag push
+      builds Windows (exe + MSI) and macOS (`.dmg`) on native runners and
+      publishes them to the matching GitHub Release with a combined
+      `SHA256SUMS.txt`; `workflow_dispatch` runs the same build as a
+      non-publishing smoke test ([ADR-0044](decisions.md), PR #88). Authored
+      on Windows and **not yet proven green** — the first tag push (or a
+      dispatch smoke run) is the intended first live test.
+- [x] macOS packaging — `[package.metadata.bundle]` lets `cargo bundle
+      --release` produce `dbboard.app` on a Mac; the release CI wraps it in a
+      compressed `.dmg` via `hdiutil` ([ADR-0044](decisions.md), PR #88).
+      Sources are in-tree; the build + code-signing/notarization run on a Mac.
+- [ ] Code signing (Authenticode / Apple Developer ID + notarization) —
+      removes the SmartScreen / Gatekeeper "unknown publisher" warnings on the
+      unsigned artifacts. Needs paid certs + repo secrets; the release
+      workflow already has commented `codesign` / `notarytool` / `stapler`
+      placeholders (ADR-0044 §Future).
+- [ ] Linux packaging (AppImage / `.deb`)
 
 ## Phase 6+ — Stretch
 

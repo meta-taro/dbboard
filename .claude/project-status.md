@@ -5,6 +5,23 @@
 
 ## 最終更新
 
+- 日付: 2026-07-17 (**配れるインストーラ + Release CI を PR #88 で整備。**
+  経緯: 「いきなり unsigned exe は OSS として怪しまれる」という指摘を受け、
+  (1) MSI がビルド不能だった WiX v3 属性バグ (`AbsentDisallow` →
+  `Absent="disallow"`) を修正しローカルで MSI 生成確認、(2) macOS `.app`/`.dmg`
+  用に `[package.metadata.bundle]` を in-tree 追加、(3) `v*.*.*` タグ push で
+  Win(exe+MSI)+Mac(.dmg) をネイティブ runner でビルドし `SHA256SUMS.txt` 付き
+  で GitHub Release に公開する `release.yml` を追加 ([ADR-0044](../docs/decisions.md))。
+  GH Actions 追加は必須のセキュリティレビュー対象 → HIGH 2 (workflow 全体の
+  `contents:write` を publish ジョブのみに絞る + build は `persist-credentials:false`;
+  publish ガードを `event_name=='push' && ref_type=='tag'` にして
+  workflow_dispatch のタグ指定誤発火による `--clobber` 上書きを封じる) /
+  MEDIUM 1 (`cp -n` + 件数照合で将来のファイル名衝突を loud fail) を修正済み。
+  **CI は Windows 上で書いたため未実走** = 初回タグ push か dispatch 空撃ちが
+  初ライブテスト。未署名なので SmartScreen/Gatekeeper 警告は残る (署名は有料・
+  後日, ADR-0044 §Future にプレースホルダ済)。この doc-sync は roadmap の
+  packaging 3 項目 tick (exe ハンドオフ #14 済 / Release CI / macOS) +
+  未対応の署名・Linux を新規項目化 + 本ファイル。develop tip = `7a01f23`。)
 - 日付: 2026-07-17 (**v0.2.0 リリース済 + Help メニュー更新通知の 2 バグを
   PR #86 で修正。** 経緯: PR #82 の 4 バグ修正 → doc-sync PR #83 → バージョンを
   0.1.0→0.2.0 に bump (PR #84) → develop を main にマージして v0.2.0 タグ +
