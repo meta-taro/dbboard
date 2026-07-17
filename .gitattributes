@@ -1,2 +1,9 @@
 # Never apply CRLF/LF normalisation to the Windows icon asset.
 *.ico binary
+
+# Keep CI/shell files LF even when edited on Windows: the `run:` blocks in
+# workflow YAML execute under bash on Linux/macOS runners, where a stray CR
+# breaks heredocs and line continuations (ADR-0044).
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
