@@ -131,6 +131,9 @@ structure-col-type = 型別
 structure-col-nullable = 空
 structure-col-pk = 鍵
 structure-col-default = 預設值
+structure-col-note = 備註
+structure-note-hint = 新增備註…
+structure-table-note = 資料表備註
 
 edit-save-button = 儲存
 edit-discard-button = 捨棄
