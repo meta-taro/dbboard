@@ -8,108 +8,89 @@
 ## 最終更新
 
 - 日付: 2026-07-17
-- develop tip: `22cb6d3` (PR #82 まで merged)
-- **✅ 実利用バックログ 0012–0015 = 4 本すべて develop 着地完了** (PR
-  #76/#77/#78/#79)。
-- **✅ 実機ビルドで見つかった 4 バグを PR #82 で修正済 (0013/0014 の
-  追随):**
-  - ①ダークでもタイトルバーがライト → `ViewportCommand::SetTheme` で
-    OS chrome 追従
-  - ②③空/NULL セルが再編集・右クリックできない → セル全域をクリック面化
-  - ④編集後の Save ボタンが画面外 → 下部固定パネルへ
-  - + NULL 発見性のホバーヒント (全11ロケール)
-  roadmap 追随注記 + issue 0013/0014 Status 追記 + project-status +
-  本ファイルの sync は `chore/post-pr82-doc-sync` (このブランチ)。
+- develop tip: `bcd7db1` (PR #86 まで merged)。main = v0.2.0 タグ (`891d2cc`)。
+- **✅ v0.2.0 リリース済 (PR #84 bump → PR #85 release merge)。** `develop→main`
+  規約どおり 0.1.0→0.2.0 bump 後 main にマージ、v0.2.0 タグ + exe 資産公開
+  (`gh release create`)。`releases/latest` = v0.2.0 を確認済 (= update-check の
+  GET 対象)。公開前に exe を実接続名でスキャン (0 一致)。
+- **✅ #14 ハンドオフ exe は 2026-07-16 に配布済 (usage 未確認)。** 配布した
+  exe は番号 0.1.0 だが中身は update-check 入りの develop ビルド。v0.2.0 公開は
+  「その exe が起動時に更新を検知できるか」の実地プローブを兼ねる。観測できる
+  唯一の使用シグナル = リリース資産の downloadCount (匿名 API GET は観測不可)。
+  → `gh release view v0.2.0 --json assets --jq '.assets[].downloadCount'`。
+- **✅ Help メニュー更新通知の 2 バグを PR #86 で修正:**
+  - ①メニューがクリックで即閉じ、リンク/変更点を操作できない →
+    `CloseOnClickOutside` 化 (`MenuButton`/`MenuConfig`)
+  - ②変更点が生 Markdown 表示 → `egui_commonmark 0.23` で描画 (ADR-0043)。
+    MSRV 1.75→1.92 (egui_commonmark 要件)。
+  roadmap 追随注記 + project-status + 本ファイルの sync は
+  `chore/post-pr86-doc-sync` (このブランチ)。
+- **✅ 実利用バックログ 0012–0015 (PR #76/#77/#78/#79) + 実機 4 バグ PR #82** も
+  全て develop 着地済 (前セッション)。
 - **進行中の目標: 収集担当への内々配布 (Windows-only)。** store-a
   (Cloudflare D1) / store-b (Aurora DSQL IAM) / store-c
   (Supabase) の 3 接続を収集する担当に dbboard デスクトップを渡す。
   ※ id は中立サンプル名。実際の店舗名との対応は非公開メモリ側にのみ保持。
-- **ハンドオフ前項目 = 全て develop 入り済:**
-  - ✅ テーブル右クリック簡易SQL (PR #59)
-  - ✅ About/バージョン + ヘルプメニュー (PR #60)
-  - ✅ 段階B トークン自動リフレッシュ (ADR-0037 / PR #61)
-  - ✅ 収集セットアップ pack (PR #63) — テンプレ + cmdkey 手順 + ガードテスト
-  - ✅ Help メニューに公式 GitHub リンク (PR #65)
-  - ✅ **接続設定の暗号化バンドル export/import (ADR-0038 / PR #68)** —
-    パスフレーズ暗号 `.dbbx` 1 ファイルで全接続 + secret を移送。収集
-    ハンドオフの「ファスト経路」= テンプレ + cmdkey 3 手シードの代替。
-  - ✅ **エラー表示の統一 = コピー可能・日英併記 (ADR-0039 / PR #70)** —
-    アプリ側エラーを「日本語訳 + 原文英語」併記 + Copy ボタン。ハンドオフ
-    ユーザが英文を AI/検索に貼れる。SQL/プロバイダ本文は原文のまま。
-  - ✅ **起動時アップデート確認 (ADR-0040 / PR #71)** — GitHub Releases
-    API を 1 回 best-effort GET し、新版があれば Help メニューに通知 +
-    リリースノート + DL リンク。更新は手動、失敗時サイレント、
-    `DBBOARD_NO_UPDATE_CHECK` でオプトアウト。
-  - ✅ **内々配布ガイド一式 (PR #72)** — メンテナ runbook
-    (`docs/maintainer/internal-distribution.md`) + テスター onboarding
-    (`docs/internal-testing.md`) + `.gitignore` (`*.dbbx` / `/dist/` /
-    `connections.toml`)。
-- **#14 = ハンドオフ用 release exe。0012–0015 + PR #82 の実機バグ修正が
-  develop `22cb6d3` に着地済 = 再ビルドの障害はもう無い。** この develop から
-  `cargo build --release` を取り直せば、収集担当が最新 UX (即実行簡易SQL・
-  テーマ (タイトルバー追従込み)・再編集可能なセル編集 + 常時見える Save 行) +
-  配布ガイド記載のコピー可能エラー + 起動時アップデート通知をすべて備えた
-  exe を得る。残るは物理引き渡しと実 secret (または バンドル + パスフレーズ)
-  の受け渡しのみ。**
 
 ## モード
 
 **in-use / continuous-improvement (menu-not-sequence)** — 2026-06-24 以降。
-今は収集担当への配布に向けたハンドオフ準備が実利用ドリブンの主軸で、
-その最後の 1 手 (#14) が残っている。
+配布 (#14) は 2026-07-16 に完了済。今は「配布済 exe を担当が実際に使うか」を
+v0.2.0 の update-check で観測しつつ、次の実利用改善 (下記の user 側ボール) を
+摩擦順に進めるフェーズ。
 
 ---
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### **★ 最優先: #14 の物理引き渡し (要 exe 再ビルド)**
+### ★ 候補 A: AI プロバイダの実地テスト (未実施)
 
-**引き渡し前に最新 develop `22cb6d3` から `cargo build --release` を
-取り直す**こと。この develop は #70 (コピー可能エラー) / #71 (更新通知) /
-#72 (配布ガイド) + 0012–0015 (即実行簡易SQL・テーマ・セル編集・ロゴ) +
-#82 (実機バグ 4 件: タイトルバー追従・セル再編集・Save 行常時表示・NULL
-発見性) を含み、配布ガイドの記述と exe の挙動が一致する。
-※ ビルド前に **dbboard のウィンドウを閉じる** (実行中だと exe ロックで
-os error 5)。**残るは担当機への物理引き渡しと実 secret / バンドルの
-受け渡しのみ。**
+AI プロバイダ (Anthropic) はコード実装済だが**実地テスト未了**。テスト手順 =
+接続に Anthropic API キーを入れて自然文→SQL を 1 回流す。詰まりが出れば
+friction として拾い、次リリースに反映。**キーの渡し方** (`.dbbx` バンドル経由
+/ 直接入力) を決めれば着手可。maintainer は「ローカルメモ機能と一緒に出したい」
+意向 (2026-07-17)。
 
-担当へ渡すもの:
-1. `target\release\dbboard.exe` (最新 develop `22cb6d3` から再ビルド)
-2. secret の受け渡し、以下いずれか:
-   - **推奨 (ADR-0038)**: 手元の dbboard で 3 接続を Export し、暗号化
-     `.dbbx` 1 ファイルを渡す。**パスフレーズは別経路** (口頭 / 別チャネル)。
-     担当機側は Import 1 回で接続 + secret が入る。テンプレも cmdkey も不要。
-   - **旧手順**: `docs\collector-setup\` 一式 + 実 secret 3 種
-     (Cloudflare API token / AWS secret access key / Supabase URL) を
-     **別経路で安全に**、担当機で cmdkey シード。
+### ★ 候補 B: ローカルメモ機能 (Structure タブに注釈列) — 要 ADR
 
-- バンドル経路の担当機セットアップ: exe 起動 → Connections ウィンドウ →
-  Import → `.dbbx` 選択 + パスフレーズ入力。`docs/connections.md` の
-  "Moving connections between machines" 節参照。
-- 旧 cmdkey 経路は `docs/collector-setup/README.md` に沿う
-  (config 配置 → cmdkey で 3 secret シード → 起動)。**secret は
-  一切ファイルに書かない。**
-- MSI で渡したい場合のみ WiX 手順 (下記) だが、exe 単体で十分。
+SQLite/D1 にはテーブル/カラムコメントの第一級概念が無く、Postgres も現状
+`describe_table` が `information_schema.columns` のみで `pg_description` 未取得
+= **どのアダプタもコメント非表示**。代替案 = dbboard 側 (デスクトップローカル)
+に注釈を持つ:
+- 保存先: config ディレクトリに `annotations.toml` (キー = 接続ID/テーブル/カラム)
+- 表示: Structure タブに「メモ」列を追加、クリックで編集。DB には一切書かない
+  (権限不要・read-only 接続でも可)。`.dbbx` に含めれば端末間移送も可 (任意)
+- Postgres だけ追加で `pg_description` からの「DB由来コメント」併記も可能
+候補 A と同じリリースに載せる想定。**着手前に ADR。**
 
-### 参考: MSI 実ビルド手順 (配布したくなったら)
+### 候補 C: cargo-deny の既存ドリフト対応 (別 chore)
 
-- PR #52 で MSI **ソース**は揃済。human 手順:
-  1. WiX Toolset v3 をインストール (candle.exe / light.exe を PATH に)
-  2. `cargo install cargo-wix`
-  3. `cd apps/dbboard && cargo wix` → `target\wix\dbboard-0.1.0-x86_64.msi`
-- **exe 単体配布なら不要** = `target\release\dbboard.exe` をそのまま渡せる。
+`cargo deny` が advisories/licenses 3 件 FAILED (PR #86 とは無関係・既存依存に
+RustSec 新規 2026 アドバイザリが後から命中): `proc-macro-error2` (unmaintained
+← age) / `option-ext` (MPL-2.0 ← directories) / `quick-xml` (DoS ←
+wayland-scanner ← eframe, Linux のみ)。cargo-deny は commit フックではないので
+緊急ではないが、`deny.toml` に一時 exception (期限付き) か依存 bump で解消する。
 
-### 実利用ドリブンの機能バックログ (2026-07-16 maintainer 依頼)
+### 候補 D: 既存ロードマップ機能バックログ
 
-**4 件すべて実装・merge 完了** (2026-07-17): 0012 右クリック簡易SQL 即実行
-(PR #76) / 0013 セル編集→Save (ADR-0042, PR #79) / 0014 Light/Dark/Auto
-テーマ (PR #77) / 0015 アイコン正式ロゴ化 (PR #78)。**実機ビルドで見つかった
-4 バグも PR #82 で修正 merged** (タイトルバー追従・セル再編集・Save 行常時
-表示・NULL 発見性)。
+未着手: Export results は済 (CSV/JSON) / Saved queries / Schema diff /
+Group D-2 (ADR-0029 function-calling, `feature/adr-0029-function-calling` に
+planning ball)。実利用の摩擦順に着手。新 write 経路は着手前に ADR。
 
-- 既存ロードマップ候補 (未着手): Export results (CSV/JSON) / Saved queries /
-  Schema diff / Group D-2 (ADR-0029 function-calling, planning ball あり)。
-- 実利用の摩擦順にここから着手。新 write 経路は着手前に ADR。
+### 参考: 配布済 exe の使用シグナル確認 / 再配布
+
+- **使用確認**: `gh release view v0.2.0 --json assets --jq
+  '.assets[].downloadCount'` (匿名 update-check の GET 自体は観測不可、
+  資産 DL 数のみ)。
+- **新版を配布したくなったら**: develop から `cargo build --release` →
+  次バージョンを bump → main にマージ → タグ + `gh release create` で exe 資産。
+  配布済 0.1.0 exe が起動時に検知する。ビルド前に dbboard ウィンドウを閉じる
+  (exe ロックで os error 5)。公開前に exe を実接続名でスキャン (0 一致)。
+- **MSI で渡す場合**: PR #52 で MSI ソース揃済。WiX v3 + `cargo install
+  cargo-wix` → `cd apps/dbboard && cargo wix`。exe 単体で十分なら不要。
+- secret 移送 = **推奨 (ADR-0038)**: 手元で 3 接続を Export → `.dbbx` を渡し
+  パスフレーズは別経路。担当機は Import 1 回。旧 cmdkey 手順は
+  `docs/collector-setup/README.md`。**secret は一切ファイルに書かない。**
 
 ---
 
