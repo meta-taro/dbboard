@@ -5457,3 +5457,92 @@ every frame.
   `directories` → ADR-0013), and `quick-xml` (via `wayland-scanner` →
   `eframe`, Linux-only). Tracked separately; `cargo deny` is a manual/CI
   gate, not a commit hook, so it does not block this change.
+
+## ADR-0044 — Real distributable installers + release CI with checksums
+
+- **Status**: Accepted 2026-07-17
+- **Builds on**: ADR-0032 (Windows MSI sources), ADR-0038 (secret handoff)
+
+### Context
+
+Distribution so far has been a hand-built, hand-carried `dbboard.exe`
+(ADR-0032 hardened it to be self-contained, but it stayed a bare exe). For
+an OSS project a bare, unsigned exe reads as untrustworthy: SmartScreen and
+AV engines flag an "unknown publisher", and a first-time downloader has
+nothing to verify the file against. Three gaps, in ascending order of trust
+gained per unit of cost:
+
+1. No **installer** — the exe is not a recognizable "install this app"
+   artifact. (The MSI *sources* existed since ADR-0032 but had never been
+   built.)
+2. No **build provenance / checksums** — nothing ties a downloaded file to a
+   public, reproducible build.
+3. No **code signing** — the OS-level "unknown publisher" warning persists
+   regardless of 1–2.
+
+There was also no macOS artifact at all, though the code already compiles
+and runs there (Windows-specific bits are `cfg(windows)`-gated; keyring uses
+the `apple-native` Keychain backend).
+
+### Decision
+
+Ship the first two gaps now; defer signing (gap 3) as a paid follow-up.
+
+1. **Make the MSI actually build.** The hand-authored `wix/main.wxs` used
+   `AbsentDisallow="yes"`, which WiX v3's `candle` rejects (CNDL0004); the
+   correct v3 spelling is `Absent="disallow"`. With that fixed, WiX Toolset
+   v3.14 + `cargo-wix` 0.3.9 produce `dbboard-<version>-x86_64.msi` (version
+   injected from Cargo via `$(var.Version)`). `cargo wix` must run from
+   `apps/dbboard` so the linker resolves the `assets\` / `wix\` relative
+   `SourceFile` paths against that CWD.
+2. **macOS `.app` / `.dmg` via `cargo-bundle`.** A
+   `[package.metadata.bundle]` block in `apps/dbboard/Cargo.toml` is the
+   source of truth for the bundle identity (`identifier`
+   `com.meta-taro.dbboard`, category, icon, min OS version). `cargo bundle
+   --release` on a Mac produces the `.app`; the release CI wraps it in a
+   compressed `.dmg` with `hdiutil`. This mirrors the Windows split —
+   **sources in-tree, the artifact build is a separate native step** — since
+   `.app`/`.dmg` cannot be produced (or later signed/notarized) from
+   Windows.
+3. **Release CI with checksums** (`.github/workflows/release.yml`). A
+   `v*.*.*` tag push builds the Windows (exe + MSI) and macOS (.dmg)
+   artifacts on their native runners and publishes them to the matching
+   GitHub Release alongside a combined `SHA256SUMS.txt`. `workflow_dispatch`
+   runs the same build as a smoke test without publishing. Checksums are the
+   cheapest strong trust signal — anyone can verify a download against the
+   value CI computed.
+
+### Alternatives considered
+
+- **`cargo-dist` (unify everything).** One tool for multi-platform build +
+  installers + checksums + CI. Rejected for now: it would replace the
+  working `cargo-wix` MSI path (just fixed) and impose its own release
+  orchestration — large churn against a project in low-churn, menu-not-
+  sequence mode. Revisit if the piecemeal setup grows unwieldy.
+- **Third-party release action** (e.g. `softprops/action-gh-release`).
+  Rejected to keep the supply-chain surface minimal: the publish step uses
+  the runner-bundled `gh` CLI with the built-in `GITHUB_TOKEN`. Only
+  first-party `actions/checkout` + `actions/*-artifact` are used, pinned by
+  major tag.
+
+### Consequences
+
+- **Not signed → OS warnings remain.** Windows artifacts trip SmartScreen;
+  the macOS `.app` trips Gatekeeper. Signing needs paid certs (Authenticode
+  / Apple Developer ID) + repo secrets; the workflow leaves commented
+  placeholder steps (`codesign` / `notarytool` / `stapler`) marking where
+  they slot in. Tracked as the ADR-0044 §Future item.
+- **`cargo-bundle` is lightly maintained.** Accepted for a small, stable
+  metadata surface; if it rots, the escape hatch is a hand-written `.app` +
+  `create-dmg`, or `cargo-packager`. The in-tree metadata (identifier,
+  category, min OS) is tool-agnostic and would port.
+- **CI is groundwork, not yet proven green.** It was authored on Windows and
+  cannot be executed locally; the first tag push (or a `workflow_dispatch`
+  smoke run) is expected to shake out runner-specific issues (WiX via choco,
+  `cargo-bundle` output path). This is the intended first live test.
+- **Least-privilege security posture.** `permissions: contents: write` only;
+  no secrets beyond the built-in token; no third-party release action.
+- **Icon is 256px.** Enough to ship; a 1024px source would sharpen the
+  largest Retina slot (`TODO(icon-1024)`).
+- **Desktop-only / no `dbboard-web` mirror.** Packaging and CI are build
+  concerns with no HTTP contract surface.
