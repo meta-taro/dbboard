@@ -5,14 +5,22 @@
 
 ## 最終更新
 
-- 日付: 2026-07-17 (**実利用バックログ 0012–0015 = 4 本まとめて develop
-  着地。** スタックドブランチ連鎖を下から順に merge: 0012 右クリック簡易
-  SQL 即実行 (PR #76) → 0014 Light/Dark/Auto テーマ (PR #77) → 0015 アイコン
-  正式ロゴ化 (PR #78) → 0013 セル編集→Save (ADR-0042, PR #79) → next-actions
-  先行更新 (PR #80)。develop tip = `992d1ea`。この
-  `chore/post-pr76-80-doc-sync` は roadmap tick + issue 0012–0015 を closed +
-  本ファイル + next-actions の網羅 sync。)
-- ブランチ: `chore/post-pr76-80-doc-sync` (develop `992d1ea` から分岐)。
+- 日付: 2026-07-17 (**実利用バックログ 0012–0015 着地後、実機ビルドで
+  見つかった 4 バグを PR #82 でまとめて修正。** 0013 セル編集 + 0014 テーマの
+  追随修正: ①ダークでも Windows タイトルバーがライトのまま →
+  `ViewportCommand::SetTheme` で OS chrome も追従 (Auto は SystemDefault で
+  OS に返却)、②セルが文字幅 Label でクリック判定がほぼ無く空/NULL セルを
+  再編集・右クリックできない → セル全域を allocate_response でクリック面化 +
+  テキスト自前描画、③編集後の Save 行がグリッド ScrollArea に押し出されて
+  画面外 → グリッドより前に宣言した下部固定パネルへ、④NULL 発見性 →
+  ②の全域化で右クリック「NULL に設定」到達 + ホバーヒント (全11ロケール)。
+  develop tip = `22cb6d3`。この `chore/post-pr82-doc-sync` は roadmap の
+  0013/0014 項目に追随注記 + issue 0013/0014 の Status 追記 + 本ファイル +
+  next-actions の sync。)
+- ブランチ: `chore/post-pr82-doc-sync` (develop `22cb6d3` から分岐)。
+- **PR #82 = 純デスクトップ/in-process 修正 = ワイヤ契約不変・web ミラー
+  不要。** テスト `theme_preference_maps_onto_viewport_theme` 追加、
+  検証コマンド全通過 (release build/test 含む)。
 - **0013 = アプリ初の write 経路 (ADR-0042):** core `write_back.rs` が
   純関数として PK ベース `UPDATE` を組み立て (識別子/値をダイアレクト別に
   クオート、injection をコンストラクションで排除)、UI `edit.rs` が
@@ -36,11 +44,13 @@
   (PR #63) / Help メニューに公式 GitHub リンク (PR #65) / 暗号化バンドル
   export/import (ADR-0038, PR #68)。加えて先行して aurora-dsql-iam 段階A
   (ADR-0036, PR #56)。
-- **#14 ハンドオフ最終ビルド:** 0012–0015 が develop `992d1ea` に入った
-  ので、**引き渡し前にこの develop から `cargo build --release` を取り直すのが
-  理想** = 収集担当が最新 UX (即実行簡易SQL・テーマ・セル編集) と配布ガイド
-  記載のコピー可能エラー + 起動時アップデート通知をすべて備えた exe を得る。
-  ビルド前に dbboard ウィンドウを閉じる (実行中だと exe ロックで os error 5)。
+- **#14 ハンドオフ最終ビルド:** 0012–0015 + PR #82 の 4 バグ修正が develop
+  `22cb6d3` に入ったので、**引き渡し前にこの develop から
+  `cargo build --release` を取り直すのが理想** = 収集担当が最新 UX
+  (即実行簡易SQL・テーマ (タイトルバー追従込み)・再編集可能なセル編集 +
+  常時見える Save 行) と配布ガイド記載のコピー可能エラー + 起動時アップデート
+  通知をすべて備えた exe を得る。ビルド前に dbboard ウィンドウを閉じる
+  (実行中だと exe ロックで os error 5)。
 - Phase 4 Stage 2 (ADR-0025/0026/0027/0028) は in-process スコープ完結。
   Stage 2 残りは D-2 (ADR-0029 = function-calling) のみで、これは
   `feature/adr-0029-function-calling` ブランチに planning ball あり
