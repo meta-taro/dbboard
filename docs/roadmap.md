@@ -422,19 +422,22 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       the Help menu with the release notes and a download link. Updating is
       manual; the check is silent on failure and opt-out via
       `DBBOARD_NO_UPDATE_CHECK` ([ADR-0040](decisions.md), PR #71).
-- [ ] Auto-run table right-click quick-SQL — the starter query should
-      execute on pick, not just drop into the editor (still read-only, still
-      subject to the auto-`LIMIT` guard) (issue 0012).
-- [ ] Inline cell editing with explicit Save (HeidiSQL-style) — double-click
-      a cell to edit, blur stages it (dirty-tinted, not yet written), a
-      Save button below the grid commits every staged edit via
-      primary-key `UPDATE`. The app's first write path — **needs an ADR**
-      (issue 0013).
-- [ ] Light / Dark / Auto theme — a theme switch with an Auto mode that
-      follows the OS setting and persists the choice (issue 0014).
-- [ ] Official logo — formalise the hand-authored, original app icon
+- [x] Auto-run table right-click quick-SQL — the starter query now
+      executes on pick, not just drops into the editor (still read-only, still
+      subject to the auto-`LIMIT` guard) (issue 0012, PR #76).
+- [x] Inline cell editing with explicit Save (HeidiSQL-style) — double-click
+      a cell to edit, blur stages it (theme-aware dirty tint, not yet
+      written), a Save row below the grid commits every staged edit via
+      primary-key `UPDATE`, serialized one at a time through the existing
+      SQL-string query path, then re-browses to show engine-normalized
+      values. Editable only for single-table browse results with a resolved
+      primary key; arbitrary SQL, views and joins stay read-only. The app's
+      first write path ([ADR-0042](decisions.md), issue 0013, PR #79).
+- [x] Light / Dark / Auto theme — a theme switch with an Auto mode that
+      follows the OS setting and persists the choice (issue 0014, PR #77).
+- [x] Official logo — formalised the hand-authored, original app icon
       (ADR-0032) as the project logo: canonical asset, DESIGN.md +
-      README usage, kept-source master (issue 0015).
+      README usage, kept-source master (issue 0015, PR #78).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
