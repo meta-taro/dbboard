@@ -5393,3 +5393,67 @@ model), fully unit-tested, no UI and no contract change. The egui wiring
 - Editing is deliberately narrow (single-table `SELECT`, real identity,
   tables-not-views). Widening — updatable views, composite/unique-key
   fallback, optimistic concurrency — is future ADR work.
+
+## ADR-0043 — Render the update notice's release notes as Markdown
+
+- **Status**: Accepted 2026-07-17
+- **Builds on**: ADR-0040 (the startup update check surfaces the notice)
+
+### Context
+
+ADR-0040's update notice shows the newer release's notes under a "変更点"
+collapsible in the Help menu. The notes are the **GitHub release body**,
+which is authored in CommonMark (`## headings`, `**bold**`, `` `code` ``,
+`- bullets`, `[links](url)`). The notice rendered them with a plain
+`egui::Label`, so a tester saw literal `**dbboard**` and raw `[text](url)`
+markup instead of formatted text — noise exactly where a release summary
+should be scannable.
+
+egui has no built-in Markdown renderer. Two ways to fix it: adopt the
+ecosystem-standard `egui_commonmark`, or hand-roll a small renderer for the
+subset we author.
+
+### Decision
+
+Adopt **`egui_commonmark` 0.23** (the egui-0.34-compatible release) and
+render the notes with `CommonMarkViewer`. A `CommonMarkCache` lives on
+`DesktopApp` so an open menu re-uses parsed output instead of re-parsing
+every frame.
+
+- **`default-features = false, features = ["pulldown_cmark"]`.** The notes
+  are short, text-only Markdown, so the image loaders, SVG, syntax
+  highlighter, and network `fetch` features stay off. The resolved subtree
+  is four crates — `egui_commonmark`, `egui_commonmark_backend`,
+  `pulldown-cmark` (MIT), `unicase` (MIT/Apache) — and adds no advisory or
+  license failure of its own (`cargo deny` traced clean through the new
+  subtree; the pre-existing failures below are unrelated).
+- **MSRV raised 1.75 → 1.92.** egui_commonmark 0.23 requires rustc 1.92.
+  dbboard is an internal, never-published binary built on current stable
+  (1.95 at time of writing), so the declared floor was aspirational; moving
+  it to the real requirement is honest and costs nothing.
+
+### Alternatives considered
+
+- **Hand-rolled subset renderer.** No dependency, MSRV unchanged, but only
+  as correct as the cases we code. The release body is free-form GitHub
+  Markdown; a battle-tested parser is the faithful choice and matches the
+  "prefer libraries over hand-rolled" principle.
+- **`comrak` backend.** A heavier GFM parser; pulldown-cmark covers the
+  notes and keeps the subtree small.
+
+### Consequences
+
+- **Desktop-only / UI-only.** No HTTP contract change, no `dbboard-web`
+  mirror. The notice text is still selectable (Ctrl+C into a report),
+  preserving the ADR-0039 copyable affordance.
+- **MSRV bump is a maintenance note, not a user-facing change.** No CI
+  matrix pins the old floor; the git hooks build on the installed stable.
+  It did unlock one MSRV-gated clippy lint (`duration_suboptimal_units`),
+  fixed in the same change: a `dsql_auth` test now reads `from_mins(10)`
+  instead of `from_secs(600)`.
+- **Pre-existing `cargo deny` drift (unrelated to this ADR).** The RustSec
+  DB has since flagged crates already in the tree: `proc-macro-error2`
+  (unmaintained, via `age` → ADR-0038), `option-ext` (MPL-2.0, via
+  `directories` → ADR-0013), and `quick-xml` (via `wayland-scanner` →
+  `eframe`, Linux-only). Tracked separately; `cargo deny` is a manual/CI
+  gate, not a commit hook, so it does not block this change.

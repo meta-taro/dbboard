@@ -19,7 +19,11 @@ version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
-rust-version = "1.75"
+# Raised from 1.75 to 1.92 by egui_commonmark 0.23 (the egui-0.34-compatible
+# release), which renders the update notice's release notes. This is an
+# internal, never-published binary and the maintainer builds on current
+# stable, so tracking the real floor is honest and costs nothing (ADR-0043).
+rust-version = "1.92"
 # This is a binary project; the supporting crates are internal and never
 # published to crates.io. Each member opts in with `publish.workspace = true`.
 publish = false
@@ -53,6 +57,13 @@ eframe = { version = "0.34", default-features = false, features = ["default_font
 # sticky header, virtualized rows, and per-column separators — none of
 # which egui::Grid offers. See ADR-0030.
 egui_extras = { version = "0.34", default-features = false }
+# Native Markdown rendering for the update notice's release notes, which
+# arrive as the GitHub release body in CommonMark (ADR-0043). Without it the
+# `**bold**`, `## headings`, `` `code` ``, and `[links]` render as literal
+# source. 0.23 is the egui-0.34-compatible release. default-features = false
+# drops the image loaders / syntax highlighter / network fetch — the notes
+# are short text-only Markdown — leaving just the pulldown-cmark parser.
+egui_commonmark = { version = "0.23", default-features = false, features = ["pulldown_cmark"] }
 # D1 (and the Anthropic AI provider) talk to REST APIs over HTTPS.
 # rustls avoids a system OpenSSL dependency, keeping the Windows build
 # self-contained. Roots come from the OS trust store (`*-native-roots`),

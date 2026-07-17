@@ -316,6 +316,11 @@ struct DesktopApp {
     /// per-user config dir — the Theme menu still works for the session,
     /// the choice just is not remembered across restarts.
     ui_settings_path: Option<PathBuf>,
+    /// Parsed-Markdown cache for the update notice's release notes
+    /// (ADR-0043). `egui_commonmark` re-parses `&str` every frame otherwise;
+    /// the cache lives on the app so an open Help menu stays cheap. Empty
+    /// and untouched until a newer release is found.
+    commonmark_cache: egui_commonmark::CommonMarkCache,
 }
 
 impl DesktopApp {
@@ -337,6 +342,7 @@ impl DesktopApp {
             update,
             theme,
             ui_settings_path,
+            commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
 
@@ -474,7 +480,7 @@ impl eframe::App for DesktopApp {
                 }
                 language_menu(ui);
                 self.theme_menu(ui);
-                help_menu(ui, &self.update);
+                help_menu(ui, &self.update, &mut self.commonmark_cache);
             });
         });
         if let Some(admin) = &self.admin {
@@ -937,14 +943,35 @@ const REPO_URL: &str = "https://github.com/meta-taro/dbboard";
 /// intentionally tiny — the collector users this ships to need "what
 /// version am I on", "where do I look", and "where does this come from"
 /// far more than a rich About window.
-fn help_menu(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
-    ui.menu_button(t!("help-menu"), |ui| {
-        ui.label(about_line());
-        render_update_notice(ui, update);
-        ui.separator();
-        ui.label(t!("help-docs-hint"));
-        ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
-    });
+/// Close behavior for the Help menu. egui menus default to
+/// [`egui::PopupCloseBehavior::CloseOnClick`], which dismisses the whole
+/// menu on *any* click — inside or outside. The Help menu now carries
+/// interactive content (the update hyperlink and a collapsible changelog
+/// from `render_update_notice`), and that default swallows the first click
+/// on a link or the "release notes" toggle, slamming the menu shut before
+/// the widget can react. `CloseOnClickOutside` keeps the menu open while
+/// the user interacts with its contents and only dismisses it on a click
+/// outside the popup body.
+fn help_menu_close_behavior() -> egui::PopupCloseBehavior {
+    egui::PopupCloseBehavior::CloseOnClickOutside
+}
+
+fn help_menu(
+    ui: &mut egui::Ui,
+    update: &update_check::SharedUpdateState,
+    md_cache: &mut egui_commonmark::CommonMarkCache,
+) {
+    egui::containers::menu::MenuButton::new(t!("help-menu"))
+        .config(
+            egui::containers::menu::MenuConfig::new().close_behavior(help_menu_close_behavior()),
+        )
+        .ui(ui, |ui| {
+            ui.label(about_line());
+            render_update_notice(ui, update, md_cache);
+            ui.separator();
+            ui.label(t!("help-docs-hint"));
+            ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
+        });
 }
 
 /// Render the update notice under the version line — but only when the
@@ -957,7 +984,11 @@ fn help_menu(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
 /// page, and offers the release notes as a collapsible, selectable
 /// (copyable) changelog. Updating stays fully manual — there is no
 /// download button here on purpose.
-fn render_update_notice(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
+fn render_update_notice(
+    ui: &mut egui::Ui,
+    update: &update_check::SharedUpdateState,
+    md_cache: &mut egui_commonmark::CommonMarkCache,
+) {
     let snapshot = update
         .lock()
         .map_or(update_check::UpdateState::Idle, |guard| guard.clone());
@@ -982,10 +1013,12 @@ fn render_update_notice(ui: &mut egui::Ui, update: &update_check::SharedUpdateSt
             egui::ScrollArea::vertical()
                 .max_height(200.0)
                 .show(ui, |ui| {
-                    // Selectable so a tester can Ctrl+C the changelog into
-                    // a report, matching the copyable-error convention
-                    // (ADR-0039).
-                    ui.add(egui::Label::new(info.notes.clone()).selectable(true));
+                    // The release body arrives as CommonMark; render it so
+                    // headings/bold/code/links read as formatted text
+                    // instead of literal `**source**` (ADR-0043). The viewer
+                    // keeps text selectable, preserving the Ctrl+C-into-a-
+                    // report affordance of the old plain label (ADR-0039).
+                    egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, &info.notes);
                 });
         });
     }
@@ -1194,6 +1227,18 @@ mod tests {
         assert_eq!(
             viewport_theme(ThemePreference::Dark),
             egui::SystemTheme::Dark
+        );
+    }
+
+    #[test]
+    fn help_menu_stays_open_on_inside_clicks() {
+        // Regression: the Help menu carries an update hyperlink and a
+        // collapsible changelog. The egui default (`CloseOnClick`) closes
+        // the menu on the first inside click, so the link and the notes
+        // toggle were unusable. It must close only on an *outside* click.
+        assert_eq!(
+            super::help_menu_close_behavior(),
+            egui::PopupCloseBehavior::CloseOnClickOutside
         );
     }
 
