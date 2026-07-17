@@ -201,3 +201,10 @@ structure-col-type = 型
 structure-col-nullable = Null
 structure-col-pk = キー
 structure-col-default = 既定値
+
+edit-save-button = 保存
+edit-discard-button = 破棄
+edit-staged-count = { $count } 件の未保存編集
+edit-set-null = NULL に設定
+edit-revert-cell = セルを元に戻す
+edit-save-unexpected-rows = 保存を中止しました: 1 行のはずが { $rows } 行に影響

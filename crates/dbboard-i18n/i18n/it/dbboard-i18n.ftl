@@ -132,3 +132,10 @@ structure-col-type = Tipo
 structure-col-nullable = Null
 structure-col-pk = Chiave
 structure-col-default = Predef.
+
+edit-save-button = Salva
+edit-discard-button = Annulla
+edit-staged-count = { $count } modifica/e in sospeso
+edit-set-null = Imposta NULL
+edit-revert-cell = Ripristina cella
+edit-save-unexpected-rows = Salvataggio interrotto: prevista 1 riga, { $rows } interessate
