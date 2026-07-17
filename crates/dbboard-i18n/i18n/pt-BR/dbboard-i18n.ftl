@@ -57,6 +57,10 @@ connections-active-marker = (ativa)
 connections-switch-error = Falha na conexão
 
 language-menu = Idioma
+theme-menu = Tema
+theme-auto = Automático
+theme-light = Claro
+theme-dark = Escuro
 help-menu = Ajuda
 help-docs-hint = Consulte README.md e docs/ para configuração e guias de conexão.
 help-repo-link = Projeto no GitHub

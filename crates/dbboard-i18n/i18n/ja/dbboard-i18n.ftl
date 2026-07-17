@@ -119,6 +119,10 @@ connections-import-imported = インポート
 connections-import-skipped = スキップ
 
 language-menu = 言語
+theme-menu = テーマ
+theme-auto = 自動
+theme-light = ライト
+theme-dark = ダーク
 help-menu = ヘルプ
 help-docs-hint = セットアップと接続の手順は README.md と docs/ を参照してください。
 help-repo-link = GitHub のプロジェクトページ
