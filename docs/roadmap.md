@@ -433,8 +433,15 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       values. Editable only for single-table browse results with a resolved
       primary key; arbitrary SQL, views and joins stay read-only. The app's
       first write path ([ADR-0042](decisions.md), issue 0013, PR #79).
+      In-use follow-ups (PR #82): every cell is now a full click target so
+      empty/NULL cells can be re-edited and right-clicked, the Save row is
+      pinned to a bottom panel so it can't scroll off screen, and a hover
+      hint teaches double-click-to-edit / right-click-for-NULL.
 - [x] Light / Dark / Auto theme — a theme switch with an Auto mode that
       follows the OS setting and persists the choice (issue 0014, PR #77).
+      In-use follow-up (PR #82): the Windows title bar now follows the theme
+      too via `ViewportCommand::SetTheme`, so Dark no longer leaves a light
+      title bar (Auto hands the bar back to the OS).
 - [x] Official logo — formalised the hand-authored, original app icon
       (ADR-0032) as the project logo: canonical asset, DESIGN.md +
       README usage, kept-source master (issue 0015, PR #78).

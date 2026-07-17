@@ -1,6 +1,9 @@
 # 0013: Inline cell editing with explicit Save (HeidiSQL-style)
 
-- **Status**: closed — shipped 2026-07-17 (ADR-0042, PR #79)
+- **Status**: closed — shipped 2026-07-17 (ADR-0042, PR #79; in-use
+  follow-up fixes PR #82: full-cell click target so empty/NULL cells stay
+  editable + right-clickable, Save row pinned to a bottom panel, hover
+  hint teaching double-click-edit / right-click-NULL)
 - **Phase**: 5 (quality of life), but architecturally significant
 - **Opened**: 2026-07-16
 - **Depends on**: ADR-0028 (`describe_table` gives the columns and
