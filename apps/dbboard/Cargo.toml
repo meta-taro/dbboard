@@ -40,6 +40,10 @@ dbboard-ai = { workspace = true }
 dbboard-anthropic = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+# Renders the update notice's release notes (GitHub release body) as
+# Markdown instead of literal source (ADR-0043). Holds a CommonMarkCache on
+# the app so parsed output is reused across frames.
+egui_commonmark = { workspace = true }
 tokio = { workspace = true }
 # Startup update check (ADR-0040): a single best-effort GET to the GitHub
 # Releases API, compared against this binary's CARGO_PKG_VERSION. reqwest
