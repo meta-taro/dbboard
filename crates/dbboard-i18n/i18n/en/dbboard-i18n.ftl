@@ -165,6 +165,14 @@ connections-import-skipped = Skipped
 # `apps/dbboard` rather than translated.
 language-menu = Language
 
+# ADR-0041: colour-theme switcher. Sits next to the Language menu. `Auto`
+# follows the OS light/dark setting; `Light` / `Dark` pin it. The choice
+# is persisted to `ui-settings.toml`.
+theme-menu = Theme
+theme-auto = Auto
+theme-light = Light
+theme-dark = Dark
+
 # Help menu (internal distribution). A small Help menu surfaces the
 # running version and points non-technical collector users at the setup
 # docs. The version line itself (`dbboard 0.1.0`) is assembled in

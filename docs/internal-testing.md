@@ -52,6 +52,10 @@ Set the interface language from the **Language** menu if you prefer
 Japanese; English is the default and the fallback for anything not yet
 translated.
 
+Pick a colour theme from the **Theme** menu — **Light**, **Dark**, or
+**Auto** (follows your Windows light/dark setting). The choice is
+remembered between runs; **Auto** is the default.
+
 ---
 
 ## Connect to a database
