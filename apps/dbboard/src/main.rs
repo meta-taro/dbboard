@@ -937,14 +937,31 @@ const REPO_URL: &str = "https://github.com/meta-taro/dbboard";
 /// intentionally tiny — the collector users this ships to need "what
 /// version am I on", "where do I look", and "where does this come from"
 /// far more than a rich About window.
+/// Close behavior for the Help menu. egui menus default to
+/// [`egui::PopupCloseBehavior::CloseOnClick`], which dismisses the whole
+/// menu on *any* click — inside or outside. The Help menu now carries
+/// interactive content (the update hyperlink and a collapsible changelog
+/// from `render_update_notice`), and that default swallows the first click
+/// on a link or the "release notes" toggle, slamming the menu shut before
+/// the widget can react. `CloseOnClickOutside` keeps the menu open while
+/// the user interacts with its contents and only dismisses it on a click
+/// outside the popup body.
+fn help_menu_close_behavior() -> egui::PopupCloseBehavior {
+    egui::PopupCloseBehavior::CloseOnClickOutside
+}
+
 fn help_menu(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
-    ui.menu_button(t!("help-menu"), |ui| {
-        ui.label(about_line());
-        render_update_notice(ui, update);
-        ui.separator();
-        ui.label(t!("help-docs-hint"));
-        ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
-    });
+    egui::containers::menu::MenuButton::new(t!("help-menu"))
+        .config(
+            egui::containers::menu::MenuConfig::new().close_behavior(help_menu_close_behavior()),
+        )
+        .ui(ui, |ui| {
+            ui.label(about_line());
+            render_update_notice(ui, update);
+            ui.separator();
+            ui.label(t!("help-docs-hint"));
+            ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
+        });
 }
 
 /// Render the update notice under the version line — but only when the
@@ -1194,6 +1211,18 @@ mod tests {
         assert_eq!(
             viewport_theme(ThemePreference::Dark),
             egui::SystemTheme::Dark
+        );
+    }
+
+    #[test]
+    fn help_menu_stays_open_on_inside_clicks() {
+        // Regression: the Help menu carries an update hyperlink and a
+        // collapsible changelog. The egui default (`CloseOnClick`) closes
+        // the menu on the first inside click, so the link and the notes
+        // toggle were unusable. It must close only on an *outside* click.
+        assert_eq!(
+            super::help_menu_close_behavior(),
+            egui::PopupCloseBehavior::CloseOnClickOutside
         );
     }
 
