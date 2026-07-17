@@ -5,19 +5,18 @@
 
 ## 最終更新
 
-- 日付: 2026-07-17 (**実利用バックログ 0012–0015 着地後、実機ビルドで
-  見つかった 4 バグを PR #82 でまとめて修正。** 0013 セル編集 + 0014 テーマの
-  追随修正: ①ダークでも Windows タイトルバーがライトのまま →
-  `ViewportCommand::SetTheme` で OS chrome も追従 (Auto は SystemDefault で
-  OS に返却)、②セルが文字幅 Label でクリック判定がほぼ無く空/NULL セルを
-  再編集・右クリックできない → セル全域を allocate_response でクリック面化 +
-  テキスト自前描画、③編集後の Save 行がグリッド ScrollArea に押し出されて
-  画面外 → グリッドより前に宣言した下部固定パネルへ、④NULL 発見性 →
-  ②の全域化で右クリック「NULL に設定」到達 + ホバーヒント (全11ロケール)。
-  develop tip = `22cb6d3`。この `chore/post-pr82-doc-sync` は roadmap の
-  0013/0014 項目に追随注記 + issue 0013/0014 の Status 追記 + 本ファイル +
-  next-actions の sync。)
-- ブランチ: `chore/post-pr82-doc-sync` (develop `22cb6d3` から分岐)。
+- 日付: 2026-07-17 (**v0.2.0 リリース済 + Help メニュー更新通知の 2 バグを
+  PR #86 で修正。** 経緯: PR #82 の 4 バグ修正 → doc-sync PR #83 → バージョンを
+  0.1.0→0.2.0 に bump (PR #84) → develop を main にマージして v0.2.0 タグ +
+  exe 資産公開 (PR #85)。#14 の収集ハンドオフ exe は 2026-07-16 に配布済
+  (番号 0.1.0 だが中身は update-check 入りの develop ビルド) で、v0.2.0 公開は
+  その exe が起動時に更新を検知できるかの実地プローブを兼ねる。担当と同条件
+  (番号 0.1.0 + update-check) の bump 直前ビルドで検証したところ、更新通知は
+  出るが Help メニューが**クリックで即閉じてリンク/変更点を操作できない**、
+  かつ変更点が**生 Markdown のまま**という 2 バグを確認 → PR #86 で修正。
+  develop tip = `bcd7db1`。この `chore/post-pr86-doc-sync` は roadmap の
+  update-check 項目に追随注記 + 本ファイル + next-actions の sync。)
+- ブランチ: `chore/post-pr86-doc-sync` (develop `bcd7db1` から分岐)。
 - **PR #82 = 純デスクトップ/in-process 修正 = ワイヤ契約不変・web ミラー
   不要。** テスト `theme_preference_maps_onto_viewport_theme` 追加、
   検証コマンド全通過 (release build/test 含む)。
@@ -57,7 +56,40 @@
   (別ストリーム)。収集配布はいずれも menu-not-sequence モードの実利用
   ドリブン = ロードマップ順とは独立。
 
-### PR #70 / #71 / #72 (エラー表示統一 + 起動時アップデート確認 + 内々配布ガイド) マージクローズ (本セッション / 2026-07-16)
+### v0.2.0 リリース + PR #86 (Help メニュー更新通知の 2 バグ修正) (本セッション / 2026-07-17)
+
+- **v0.2.0 リリース (PR #84 bump → PR #85 release merge):** `develop→main`
+  リリース規約どおり、workspace を 0.1.0→0.2.0 に bump 後、develop を main に
+  マージして v0.2.0 タグ (`891d2cc`) + `gh release create` で exe 資産添付。
+  公開前に exe を実接続名でスキャン (0 一致 = 公開安全)。`releases/latest` が
+  v0.2.0 を返すこと (= update-check が GET する対象)・draft/prerelease=false・
+  資産 `dbboard.exe` 添付・downloadCount=0 を確認。CHANGELOG に 0.2.0 節、
+  README の status 行を 0.2.0 に更新済。
+- **PR #86 = Help メニュー更新通知の 2 バグ (in-use 発見):** いずれも純
+  デスクトップ/UI = ワイヤ契約不変・web ミラー不要。
+  1. **クリックで即閉じる:** egui メニューは既定 `PopupCloseBehavior::
+     CloseOnClick` = 内外どこをクリックしても閉じる。更新リンクと「変更点」
+     折りたたみがウィジェットに届く前にメニューが閉じ操作不能だった。Help
+     メニューのみ `CloseOnClickOutside` 化 (`MenuButton`/`MenuConfig` 経由)。
+     `help_menu_close_behavior()` に切り出し回帰テスト追加。
+  2. **変更点が生 Markdown:** GitHub リリース本文 (CommonMark) を素の Label
+     で出していたため `**bold**`/`## 見出し`/`[link]` が生表示。
+     `egui_commonmark 0.23` (egui 0.34 対応版) を導入し `CommonMarkViewer` で
+     描画、`CommonMarkCache` を `DesktopApp` に保持。default-features=false +
+     `pulldown_cmark` のみ (画像/SVG/ハイライタ/fetch 無効) = 追加は 4 クレート。
+     テキストは selectable 維持 (ADR-0039)。
+- **MSRV 1.75→1.92:** egui_commonmark 0.23 要件。内部専用・未公開バイナリで
+  現行 stable ビルドなので実 floor に合わせただけ。副作用で MSRV ゲート
+  clippy `duration_suboptimal_units` が 1 件解禁 → `dsql_auth` テストを
+  `from_secs(600)`→`from_mins(10)` に修正。ADR-0043 記録。
+- **cargo-deny の既存ドリフト (PR #86 とは無関係・別 chore 候補):**
+  advisories/licenses が 3 件 FAILED だが全て既存依存に RustSec の新規 2026
+  アドバイザリが後から当たったもの: `proc-macro-error2` (unmaintained ← age)
+  / `option-ext` (MPL-2.0 ← directories) / `quick-xml` (DoS ← wayland-scanner
+  ← eframe, Linux のみ)。cargo-deny は commit フックではないので今回の妨げ
+  なし。deny.toml の一時 exception か依存 bump で別途対応する。
+
+### PR #70 / #71 / #72 (エラー表示統一 + 起動時アップデート確認 + 内々配布ガイド) マージクローズ (前セッション / 2026-07-16)
 
 develop から分岐した独立 3 ブランチを推奨マージ順 (エラー i18n →
 アップデート確認 → 配布ガイド) で順次 develop 着地。この順序で #72 の
