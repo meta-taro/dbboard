@@ -33,6 +33,7 @@ pub mod error;
 pub mod secrets;
 pub mod secure_fs;
 pub mod store;
+pub mod ui_settings;
 
 pub use admin::{
     ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,
@@ -55,4 +56,8 @@ pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, K
 pub use store::{
     default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind,
     CONFIG_VERSION,
+};
+pub use ui_settings::{
+    default_ui_settings_path, load_or_default as load_ui_settings, save_atomic as save_ui_settings,
+    ThemePreference, UiSettingsFile, UI_SETTINGS_VERSION,
 };

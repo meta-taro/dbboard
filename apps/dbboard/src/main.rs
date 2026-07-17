@@ -38,14 +38,16 @@
 // during development. No-op on non-Windows targets.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use dbboard_ai::{AiError, AiProvider};
 use dbboard_anthropic::AnthropicProvider;
 use dbboard_config::store::{default_history_path, default_path, load_or_empty};
 use dbboard_config::{
-    default_ai_providers_path, secure_fs, AiProviderKind, AiSettingsAdmin, ConnectionAdmin,
-    ConnectionFile, KeyringStore, SecretStore,
+    default_ai_providers_path, default_ui_settings_path, load_ui_settings, save_ui_settings,
+    secure_fs, AiProviderKind, AiSettingsAdmin, ConnectionAdmin, ConnectionFile, KeyringStore,
+    SecretStore, ThemePreference, UiSettingsFile,
 };
 use dbboard_i18n::{t, t_args};
 use dbboard_server::{
@@ -212,11 +214,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // moved into the eframe closure below.
     let update_rt = rt.handle().clone();
 
+    // ADR-0041: resolve the persisted colour theme before the window opens.
+    // A missing config dir just means "no persistence" — the theme still
+    // works for the session, it only cannot be remembered — so we keep the
+    // default (Auto) and a `None` path rather than aborting. A malformed
+    // file degrades to the default inside `load_ui_settings`.
+    let ui_settings_path = default_ui_settings_path().ok();
+    let theme = ui_settings_path
+        .as_deref()
+        .map_or_else(UiSettingsFile::default, load_ui_settings)
+        .theme;
+
     let result = eframe::run_native(
         "dbboard",
         native_options,
         Box::new(move |cc| {
             install_cjk_font(&cc.egui_ctx);
+            // ADR-0041: apply the persisted theme before the first paint so
+            // there is no dark→light flash. `System` (our `Auto`) tracks the
+            // OS setting live for the rest of the session.
+            cc.egui_ctx.set_theme(egui_theme(theme));
             // Fire the best-effort update check as the window opens. It is
             // fully non-blocking: the state starts Idle/Checking and the
             // task flips it (and requests a repaint) when the GET lands.
@@ -232,7 +249,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ai_provider_slot,
                 Some(schema_source),
             );
-            Ok(Box::new(DesktopApp::new(inner, admin, ai_admin, update)))
+            Ok(Box::new(DesktopApp::new(
+                inner,
+                admin,
+                ai_admin,
+                update,
+                theme,
+                ui_settings_path,
+            )))
         }),
     );
 
@@ -281,6 +305,13 @@ struct DesktopApp {
     /// [`update_check::UpdateState::Available`] — every other state (and a
     /// disabled or failed check) stays silent.
     update: update_check::SharedUpdateState,
+    /// Current colour-theme choice (ADR-0041). Drives the ✓ in the Theme
+    /// menu and is written to [`Self::ui_settings_path`] on every change.
+    theme: ThemePreference,
+    /// Where to persist [`Self::theme`]. `None` when the OS reported no
+    /// per-user config dir — the Theme menu still works for the session,
+    /// the choice just is not remembered across restarts.
+    ui_settings_path: Option<PathBuf>,
 }
 
 impl DesktopApp {
@@ -289,6 +320,8 @@ impl DesktopApp {
         admin: Option<Arc<Mutex<ConnectionAdmin>>>,
         ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>,
         update: update_check::SharedUpdateState,
+        theme: ThemePreference,
+        ui_settings_path: Option<PathBuf>,
     ) -> Self {
         Self {
             inner,
@@ -298,6 +331,50 @@ impl DesktopApp {
             ai_admin,
             pending_switch: None,
             update,
+            theme,
+            ui_settings_path,
+        }
+    }
+
+    /// Render the Theme submenu and apply a pick immediately (ADR-0041).
+    /// Selecting a theme retints the running UI this frame via
+    /// [`egui::Context::set_theme`] and best-effort-persists the choice;
+    /// a persistence failure is logged, never surfaced, because the theme
+    /// already applied and the app must not block on a settings write.
+    fn theme_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button(t!("theme-menu"), |ui| {
+            // Fixed order (Auto default first) so the submenu never
+            // reshuffles as the active choice changes. Labels are looked
+            // up with literal keys because `t!` only accepts literals.
+            for (pref, label) in [
+                (ThemePreference::Auto, t!("theme-auto")),
+                (ThemePreference::Light, t!("theme-light")),
+                (ThemePreference::Dark, t!("theme-dark")),
+            ] {
+                let active = self.theme == pref;
+                let prefix = if active { "✓ " } else { "    " };
+                if ui.button(format!("{prefix}{label}")).clicked() {
+                    self.set_theme(ui.ctx(), pref);
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    /// Adopt `pref` as the active theme: retint egui now and persist it.
+    /// Persisting is best-effort and only attempted when a config path is
+    /// known and the value actually changed (avoids a redundant write when
+    /// the user re-picks the current theme).
+    fn set_theme(&mut self, ctx: &egui::Context, pref: ThemePreference) {
+        ctx.set_theme(egui_theme(pref));
+        if self.theme == pref {
+            return;
+        }
+        self.theme = pref;
+        if let Some(path) = &self.ui_settings_path {
+            if let Err(e) = save_ui_settings(path, &UiSettingsFile::with_theme(pref)) {
+                eprintln!("dbboard: could not persist theme preference: {e}");
+            }
         }
     }
 }
@@ -338,6 +415,18 @@ fn poll_pending_switch(
     }
 }
 
+/// Map our persisted [`ThemePreference`] onto egui's runtime theme knob
+/// (ADR-0041). `Auto` becomes `System`, which egui follows against the OS
+/// light/dark setting for the life of the process. A free function so the
+/// mapping is unit-testable without an egui context.
+fn egui_theme(pref: ThemePreference) -> egui::ThemePreference {
+    match pref {
+        ThemePreference::Light => egui::ThemePreference::Light,
+        ThemePreference::Dark => egui::ThemePreference::Dark,
+        ThemePreference::Auto => egui::ThemePreference::System,
+    }
+}
+
 impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::Panel::top("dbboard-menu").show_inside(ui, |ui| {
@@ -362,6 +451,7 @@ impl eframe::App for DesktopApp {
                     self.ai_settings.open();
                 }
                 language_menu(ui);
+                self.theme_menu(ui);
                 help_menu(ui, &self.update);
             });
         });
@@ -1041,6 +1131,27 @@ mod tests {
 
     fn empty_slot() -> AiProviderSlot {
         Arc::new(RwLock::new(None))
+    }
+
+    #[test]
+    fn theme_preference_maps_onto_egui_theme() {
+        use super::egui_theme;
+        use dbboard_config::ThemePreference;
+        // Auto is the important case: it must become egui's `System` so the
+        // running UI tracks the OS light/dark setting (ADR-0041), not a
+        // frozen light or dark.
+        assert_eq!(
+            egui_theme(ThemePreference::Auto),
+            egui::ThemePreference::System
+        );
+        assert_eq!(
+            egui_theme(ThemePreference::Light),
+            egui::ThemePreference::Light
+        );
+        assert_eq!(
+            egui_theme(ThemePreference::Dark),
+            egui::ThemePreference::Dark
+        );
     }
 
     #[test]

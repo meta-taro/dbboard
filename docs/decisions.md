@@ -5203,3 +5203,58 @@ sibling has its own deploy channel), so no cross-repo brief is needed.
 - Release hygiene now matters: the notice is only as good as the tags. A
   published release must carry a clean `vMAJOR.MINOR.PATCH` tag and useful
   notes for the changelog to read well.
+
+## ADR-0041 — Light / Dark / Auto theme with persisted preference
+
+- **Status**: Accepted 2026-07-17
+- **Tracks**: issue 0014
+
+### Context
+
+The app shipped a single visual theme (egui's default dark). Light/dark
+switching is a baseline expectation, and an **Auto** mode that follows the
+OS setting is the modern default. The maintainer asked for all three, with
+the choice remembered across restarts.
+
+Two facts shaped the design:
+
+1. egui already models exactly this. `egui::ThemePreference` has
+   `Dark` / `Light` / `System`, and `Context::set_theme` applies it —
+   `System` makes egui track the OS light/dark preference and update live
+   when the user flips it. So the app does not hand-roll OS detection or
+   `Visuals` swapping; it maps its own preference onto egui's and lets
+   egui do the work.
+2. The runtime **language** switcher (ADR-0022) is deliberately *not*
+   persisted — it resolves from env/OS at startup and swaps in memory. The
+   theme, by contrast, must persist, so it needs a small on-disk settings
+   file. There was no general "app settings" store yet; the two existing
+   stores (`connections.toml`, `ai-providers.toml`) are domain-specific.
+
+### Decision
+
+- Add a **`ui-settings.toml`** file under the same `ProjectDirs` config
+  dir as the other stores, owned by a new `dbboard-config::ui_settings`
+  module. It mirrors the existing store shape: a `version` field, TOML
+  serde, atomic sibling-`*.tmp`-then-rename writes via `secure_fs`.
+- Model the choice as `ThemePreference { Light, Dark, Auto }` (default
+  **Auto**). The binary maps it onto `egui::ThemePreference`
+  (`Auto → System`) and calls `ctx.set_theme` at startup and whenever the
+  user picks a new value from a new **Theme** menu.
+- **Loading is non-fatal.** Unlike the connection store, a missing,
+  malformed, or version-incompatible `ui-settings.toml` never errors — it
+  falls back to the default in memory (logged), because UI chrome must not
+  be able to block startup. The next save rewrites the file cleanly.
+- Persist on change only (a menu pick), best-effort: a failed write is
+  logged, the in-memory choice still applies for the session.
+
+### Consequences
+
+- First general per-user UI-preferences file; future UI prefs (e.g. a
+  persisted language, grid density) have an obvious home and pattern.
+- Auto correctness rides on egui: `System` tracks the OS and repaints on
+  change, so there is no separate OS-theme polling to maintain.
+- Desktop-only / in-process. No HTTP contract change, no `history.jsonl`
+  change, no `dbboard-web` mirror.
+- Custom colours introduced later (e.g. the dirty-cell tint in issue 0013)
+  must read from the active `Visuals`, not hard-coded RGB, so they hold up
+  in both themes.

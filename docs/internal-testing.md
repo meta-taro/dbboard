@@ -52,6 +52,10 @@ Set the interface language from the **Language** menu if you prefer
 Japanese; English is the default and the fallback for anything not yet
 translated.
 
+Pick a colour theme from the **Theme** menu — **Light**, **Dark**, or
+**Auto** (follows your Windows light/dark setting). The choice is
+remembered between runs; **Auto** is the default.
+
 ---
 
 ## Connect to a database
@@ -82,7 +86,8 @@ a file.
 A quick tour that exercises the main paths:
 
 - **Browse** — pick a table in the left sidebar; right-click it for quick
-  "Select all rows" / "Count rows" starter queries.
+  "Select all rows" / "Count rows" starters that run on the spot (the SQL
+  also lands in the editor so you can tweak and re-run it).
 - **Query** — type SQL in the editor and press **Run** (or Ctrl+Enter).
   Bare `SELECT`s get an automatic `LIMIT` so a huge table cannot freeze the
   UI; you can override or uncheck it.
