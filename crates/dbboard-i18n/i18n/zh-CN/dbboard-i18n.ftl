@@ -57,6 +57,10 @@ connections-active-marker = （当前）
 connections-switch-error = 无法连接
 
 language-menu = 语言
+theme-menu = 主题
+theme-auto = 自动
+theme-light = 浅色
+theme-dark = 深色
 help-menu = 帮助
 help-docs-hint = 有关设置和连接指南，请参阅 README.md 和 docs/。
 help-repo-link = GitHub 上的项目

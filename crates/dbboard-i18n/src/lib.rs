@@ -320,6 +320,28 @@ mod tests {
     }
 
     #[test]
+    fn theme_menu_labels_resolve_and_localize() {
+        // ADR-0041: the colour-theme switcher. The menu title and all
+        // three choices must resolve to real translations in en and
+        // localise in ja rather than leaking the raw key id.
+        let _g = LOADER_GUARD.lock().unwrap();
+
+        let en = init(Some("en")).expect("init must succeed for en");
+        assert_eq!(en.get("theme-menu"), "Theme");
+        assert_eq!(en.get("theme-auto"), "Auto");
+        assert_eq!(en.get("theme-light"), "Light");
+        assert_eq!(en.get("theme-dark"), "Dark");
+
+        let ja = init(Some("ja")).expect("init must succeed for ja");
+        for key in ["theme-menu", "theme-auto", "theme-light", "theme-dark"] {
+            let v = ja.get(key);
+            assert!(!v.is_empty());
+            assert_ne!(v, key, "ja must not fall back to the key id for {key}");
+        }
+        assert_ne!(ja.get("theme-menu"), "Theme", "ja must differ from en");
+    }
+
+    #[test]
     fn reconnect_button_label_resolves_and_is_localized() {
         // ADR-0036: the active row's recovery button. en is the source;
         // ja must be a real translation, not the key echoed back (the

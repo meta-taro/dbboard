@@ -57,6 +57,10 @@ connections-active-marker = (활성)
 connections-switch-error = 연결하지 못했습니다
 
 language-menu = 언어
+theme-menu = 테마
+theme-auto = 자동
+theme-light = 라이트
+theme-dark = 다크
 help-menu = 도움말
 help-docs-hint = 설정 및 연결 안내는 README.md와 docs/를 참조하세요.
 help-repo-link = GitHub 프로젝트 페이지
