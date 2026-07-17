@@ -45,9 +45,10 @@ use dbboard_ai::{AiError, AiProvider};
 use dbboard_anthropic::AnthropicProvider;
 use dbboard_config::store::{default_history_path, default_path, load_or_empty};
 use dbboard_config::{
-    default_ai_providers_path, default_ui_settings_path, load_ui_settings, save_ui_settings,
-    secure_fs, AiProviderKind, AiSettingsAdmin, ConnectionAdmin, ConnectionFile, KeyringStore,
-    SecretStore, ThemePreference, UiSettingsFile,
+    default_ai_providers_path, default_annotations_path, default_ui_settings_path,
+    load_ui_settings, save_ui_settings, secure_fs, AiProviderKind, AiSettingsAdmin,
+    AnnotationsAdmin, ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore, ThemePreference,
+    UiSettingsFile,
 };
 use dbboard_i18n::{t, t_args};
 use dbboard_server::{
@@ -242,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // fully non-blocking: the state starts Idle/Checking and the
             // task flips it (and requests a repaint) when the GET lands.
             let update = update_check::spawn(&update_rt, cc.egui_ctx.clone());
-            let inner = DbboardApp::connect(
+            let inner = attach_annotations(DbboardApp::connect(
                 base_url,
                 cc.egui_ctx.clone(),
                 history,
@@ -252,7 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ai_switcher,
                 ai_provider_slot,
                 Some(schema_source),
-            );
+            ));
             Ok(Box::new(DesktopApp::new(
                 inner,
                 admin,
@@ -830,6 +831,33 @@ fn bootstrap_ai(
         None => Arc::new(NullAiSwitcher),
     };
     (slot, switcher, ai_admin)
+}
+
+/// Open the local table/column note store (`annotations.toml`, ADR-0045).
+///
+/// Returns `None` — the Structure tab's Note column stays read-only — when
+/// the config dir can't be resolved or the file is unreadable/corrupt. The
+/// notes carry no secret and never touch a database, so a load failure is
+/// logged and degrades gracefully rather than aborting startup.
+/// Attach the local note store (ADR-0045) to a freshly-connected app.
+/// Kept as a wrapper so `main` stays a single expression; a missing or
+/// unreadable file degrades to no notes via [`open_annotations`].
+fn attach_annotations(app: DbboardApp) -> DbboardApp {
+    match open_annotations() {
+        Some(admin) => app.with_annotations(admin),
+        None => app,
+    }
+}
+
+fn open_annotations() -> Option<AnnotationsAdmin> {
+    let path = default_annotations_path().ok()?;
+    match AnnotationsAdmin::new_with_file(path) {
+        Ok(admin) => Some(admin),
+        Err(e) => {
+            eprintln!("dbboard: annotations.toml unreadable, local notes disabled: {e}");
+            None
+        }
+    }
 }
 
 /// Resolve the optional AI provider via the precedence chain
