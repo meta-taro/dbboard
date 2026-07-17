@@ -1,6 +1,6 @@
 # 0013: Inline cell editing with explicit Save (HeidiSQL-style)
 
-- **Status**: open — **needs an ADR** (first write path in the app)
+- **Status**: closed — shipped 2026-07-17 (ADR-0042, PR #79)
 - **Phase**: 5 (quality of life), but architecturally significant
 - **Opened**: 2026-07-16
 - **Depends on**: ADR-0028 (`describe_table` gives the columns and

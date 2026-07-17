@@ -1,6 +1,6 @@
 # 0012: Right-click quick-SQL should run, not just insert
 
-- **Status**: open
+- **Status**: closed — shipped 2026-07-17 (PR #76)
 - **Phase**: 5 (quality of life)
 - **Opened**: 2026-07-16
 - **Tracks**: extends PR #59 (table right-click starter queries)

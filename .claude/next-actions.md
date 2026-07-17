@@ -8,19 +8,16 @@
 ## 最終更新
 
 - 日付: 2026-07-17
-- develop tip: `52d4863` (PR #75 = issue 0013 の per-DB/view カバレッジ追記 merged)
-- **🆕 実利用バックログ 0012–0015 = コード実装 4 件すべて完了、human の
-  push / PR / merge 待ち。** スタックドブランチ連鎖 (下が土台):
-  - `feature/quick-sql-autorun` — 0012 右クリック簡易SQL 即実行 (**PR #76 既にオープン**)
-  - `feature/theme-light-dark-auto` — 0014 Light/Dark/Auto テーマ (未 push)
-  - `feature/official-logo` — 0015 アイコンを正式ロゴ化 (未 push)
-  - `feature/adr-0042-inline-edit` — 0013 セル編集→Save (ADR-0042、未 push)
-  各ブランチは一つ下の上に積まれている。push → develop 向け PR → 順に merge。
-  fmt/clippy/check/test は各コミットの pre-commit hook で通過済。push 時に
-  pre-push hook が release build/test を回す (**事前に dbboard ウィンドウを
-  閉じる**)。0012/0013 の user 向け docs と ADR-0042 は feat コミット同梱。
-  内部トラッキング (roadmap/issue status/project-status) の tick は各 PR
-  merge 後に `chore/post-prNN-doc-sync` で。
+- develop tip: `992d1ea` (PR #80 まで merged)
+- **✅ 実利用バックログ 0012–0015 = 4 本すべて develop 着地完了。**
+  スタックを下から順に merge 済:
+  - 0012 右クリック簡易SQL 即実行 — **PR #76**
+  - 0014 Light/Dark/Auto テーマ — **PR #77**
+  - 0015 アイコンを正式ロゴ化 — **PR #78**
+  - 0013 セル編集→Save (ADR-0042、アプリ初の write 経路) — **PR #79**
+  - next-actions 先行更新 — **PR #80**
+  roadmap tick + issue 0012–0015 を closed + project-status + 本ファイルの
+  最終 sync は `chore/post-pr76-80-doc-sync` (このブランチ)。
 - **進行中の目標: 収集担当への内々配布 (Windows-only)。** store-a
   (Cloudflare D1) / store-b (Aurora DSQL IAM) / store-c
   (Supabase) の 3 接続を収集する担当に dbboard デスクトップを渡す。
@@ -45,12 +42,12 @@
     (`docs/maintainer/internal-distribution.md`) + テスター onboarding
     (`docs/internal-testing.md`) + `.gitignore` (`*.dbbx` / `/dist/` /
     `connections.toml`)。
-- **#14 = ハンドオフ用 release exe。0012–0015 が develop に入ってから
-  再ビルドするのが理想** (収集担当が最新の UX = 即実行簡易SQL・テーマ・
-  セル編集を得られる)。0012–0015 を merge 後の develop から
-  `cargo build --release` を取り直すこと。急ぐなら現 develop `52d4863`
-  でも配布ガイド (コピー可能エラー + 更新通知) とは一致する。残るは物理
-  引き渡しと実 secret (またはバンドル + パスフレーズ) の受け渡しのみ。**
+- **#14 = ハンドオフ用 release exe。0012–0015 は develop `992d1ea` に
+  着地済 = 再ビルドの障害はもう無い。** この develop から
+  `cargo build --release` を取り直せば、収集担当が最新 UX (即実行簡易SQL・
+  テーマ・セル編集) + 配布ガイド記載のコピー可能エラー + 起動時アップデート
+  通知をすべて備えた exe を得る。残るは物理引き渡しと実 secret (または
+  バンドル + パスフレーズ) の受け渡しのみ。**
 
 ## モード
 

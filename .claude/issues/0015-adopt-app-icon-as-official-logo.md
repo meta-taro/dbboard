@@ -1,6 +1,6 @@
 # 0015: Adopt the app icon as the official logo
 
-- **Status**: open
+- **Status**: closed — shipped 2026-07-17 (PR #78)
 - **Phase**: 5 (quality of life / branding)
 - **Opened**: 2026-07-16
 
