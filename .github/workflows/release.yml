@@ -13,9 +13,12 @@
 # steps are left as commented placeholders below so the wiring is obvious.
 #
 # Security posture (CLAUDE.md "Adding GitHub Actions workflows"): least
-# privilege (`contents: write` only, for the release upload), no third-party
-# release action (the publish step uses the runner-bundled `gh` CLI with the
-# built-in GITHUB_TOKEN), and first-party actions are pinned by major tag.
+# privilege — the workflow defaults to read-only and `contents: write` is
+# granted ONLY to the publish job (the build jobs run untrusted crates.io
+# build.rs/proc-macro code via `cargo build`/`cargo install`, so they must
+# never hold a write-scoped token). No third-party release action (the
+# publish step uses the runner-bundled `gh` CLI with the built-in
+# GITHUB_TOKEN), and first-party actions are pinned by major tag.
 name: release
 
 on:
@@ -24,14 +27,21 @@ on:
       - "v*.*.*"
   workflow_dispatch: {}
 
+# Read-only by default; the publish job re-grants `contents: write` for
+# itself only.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
+      # persist-credentials: false — this job runs untrusted build-time code
+      # (cargo build / cargo install) and never pushes, so it must not leave a
+      # GITHUB_TOKEN wired into the git credential helper.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Build release binary
         run: cargo build --release --package dbboard
@@ -71,7 +81,10 @@ jobs:
   build-macos:
     runs-on: macos-latest
     steps:
+      # See build-windows: no push, untrusted build code → drop the token.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Build release binary
         run: cargo build --release --package dbboard
@@ -113,10 +126,19 @@ jobs:
 
   publish:
     needs: [build-windows, build-macos]
-    # Only publish for a real tag push; workflow_dispatch is a build-only
-    # smoke test.
-    if: github.ref_type == 'tag'
+    # Only publish for a real tag *push*. Checking event_name as well as
+    # ref_type is load-bearing: a manual workflow_dispatch run can also be
+    # aimed at an existing tag (via the "Run workflow" ref picker or
+    # `gh workflow run --ref <tag>`), where ref_type is likewise 'tag'. Without
+    # the event_name guard, such a re-run would fall through to the --clobber
+    # upload below and silently overwrite the already-published, checksummed
+    # assets of a released tag.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    # The only job that writes: re-grant the release-upload scope here so the
+    # build jobs stay read-only.
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -124,8 +146,19 @@ jobs:
 
       - name: Assemble release assets + combined checksums
         run: |
+          set -euo pipefail
           mkdir -p out
-          find staged -type f ! -name 'SHA256SUMS.*.txt' -exec cp {} out/ \;
+          # cp -n (no-clobber): today's per-platform names don't collide, but a
+          # future Linux/ARM artifact reusing a filename must fail loudly here
+          # rather than silently drop a binary from the release. The count check
+          # below turns any skipped (would-be-clobbered) file into a hard error.
+          find staged -type f ! -name 'SHA256SUMS.*.txt' -exec cp -n {} out/ \;
+          expected=$(find staged -type f ! -name 'SHA256SUMS.*.txt' | wc -l)
+          actual=$(find out -type f | wc -l)
+          if [ "$expected" -ne "$actual" ]; then
+            echo "::error::artifact filename collision: staged $expected files but out/ has $actual" >&2
+            exit 1
+          fi
           cat staged/*/SHA256SUMS.*.txt > out/SHA256SUMS.txt
           ls -la out
           cat out/SHA256SUMS.txt
