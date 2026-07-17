@@ -316,6 +316,11 @@ struct DesktopApp {
     /// per-user config dir — the Theme menu still works for the session,
     /// the choice just is not remembered across restarts.
     ui_settings_path: Option<PathBuf>,
+    /// Parsed-Markdown cache for the update notice's release notes
+    /// (ADR-0043). `egui_commonmark` re-parses `&str` every frame otherwise;
+    /// the cache lives on the app so an open Help menu stays cheap. Empty
+    /// and untouched until a newer release is found.
+    commonmark_cache: egui_commonmark::CommonMarkCache,
 }
 
 impl DesktopApp {
@@ -337,6 +342,7 @@ impl DesktopApp {
             update,
             theme,
             ui_settings_path,
+            commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
 
@@ -474,7 +480,7 @@ impl eframe::App for DesktopApp {
                 }
                 language_menu(ui);
                 self.theme_menu(ui);
-                help_menu(ui, &self.update);
+                help_menu(ui, &self.update, &mut self.commonmark_cache);
             });
         });
         if let Some(admin) = &self.admin {
@@ -950,14 +956,18 @@ fn help_menu_close_behavior() -> egui::PopupCloseBehavior {
     egui::PopupCloseBehavior::CloseOnClickOutside
 }
 
-fn help_menu(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
+fn help_menu(
+    ui: &mut egui::Ui,
+    update: &update_check::SharedUpdateState,
+    md_cache: &mut egui_commonmark::CommonMarkCache,
+) {
     egui::containers::menu::MenuButton::new(t!("help-menu"))
         .config(
             egui::containers::menu::MenuConfig::new().close_behavior(help_menu_close_behavior()),
         )
         .ui(ui, |ui| {
             ui.label(about_line());
-            render_update_notice(ui, update);
+            render_update_notice(ui, update, md_cache);
             ui.separator();
             ui.label(t!("help-docs-hint"));
             ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
@@ -974,7 +984,11 @@ fn help_menu(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
 /// page, and offers the release notes as a collapsible, selectable
 /// (copyable) changelog. Updating stays fully manual — there is no
 /// download button here on purpose.
-fn render_update_notice(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
+fn render_update_notice(
+    ui: &mut egui::Ui,
+    update: &update_check::SharedUpdateState,
+    md_cache: &mut egui_commonmark::CommonMarkCache,
+) {
     let snapshot = update
         .lock()
         .map_or(update_check::UpdateState::Idle, |guard| guard.clone());
@@ -999,10 +1013,12 @@ fn render_update_notice(ui: &mut egui::Ui, update: &update_check::SharedUpdateSt
             egui::ScrollArea::vertical()
                 .max_height(200.0)
                 .show(ui, |ui| {
-                    // Selectable so a tester can Ctrl+C the changelog into
-                    // a report, matching the copyable-error convention
-                    // (ADR-0039).
-                    ui.add(egui::Label::new(info.notes.clone()).selectable(true));
+                    // The release body arrives as CommonMark; render it so
+                    // headings/bold/code/links read as formatted text
+                    // instead of literal `**source**` (ADR-0043). The viewer
+                    // keeps text selectable, preserving the Ctrl+C-into-a-
+                    // report affordance of the old plain label (ADR-0039).
+                    egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, &info.notes);
                 });
         });
     }

@@ -323,10 +323,10 @@ mod tests {
         use super::{refresh_interval, DEFAULT_EXPIRES_SECS};
         use std::time::Duration;
 
-        // The default 900s TTL refreshes every 600s.
+        // The default 900s TTL refreshes every 600s (10 min).
         assert_eq!(
             refresh_interval(DEFAULT_EXPIRES_SECS),
-            Duration::from_secs(600)
+            Duration::from_mins(10)
         );
 
         // Invariant for every sane TTL: a positive interval that still
