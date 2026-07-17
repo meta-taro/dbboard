@@ -17,6 +17,7 @@ mod ai;
 mod ai_settings;
 mod client;
 mod connections;
+mod edit;
 mod errors;
 mod export;
 mod history;
@@ -48,11 +49,12 @@ pub use worker::{AiProviderSlot, AiProviderSwitcher, ConnectionSwitcher, SchemaS
 pub use dbboard_ai::{AiError, AiProvider, StopReason};
 pub use dbboard_core::{DatabaseAdapter, DbError};
 
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
-use dbboard_core::{DbResult, QueryResult, TableInfo, TableSchema};
+use dbboard_core::{DbResult, QueryResult, SqlDialect, TableInfo, TableSchema, Value};
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
@@ -305,6 +307,71 @@ struct StructureView {
     schema: Option<DbResult<TableSchema>>,
 }
 
+/// The open inline editor (issue 0013 slice b): a single-line text field
+/// swapped in over one result cell after a double-click. `just_opened`
+/// requests keyboard focus on the first frame; blur stages the buffer.
+struct CellEditor {
+    row: usize,
+    col: usize,
+    buffer: String,
+    just_opened: bool,
+}
+
+/// An in-flight inline-edit save (issue 0013 slice b). Each staged row is
+/// one keyed `UPDATE`; they run one at a time through the existing
+/// `Command::Query` path. `current` is the statement awaiting its reply;
+/// `remaining` is the rest of the queue. A reply advances the queue in
+/// `drain_replies` (see [`DbboardApp::advance_save`]).
+struct SaveQueue {
+    current: edit::PlannedUpdate,
+    remaining: VecDeque<edit::PlannedUpdate>,
+}
+
+/// What the result grid asks the app to do after a frame (issue 0013
+/// slice b). Bubbled out of the free `render_result` function so the
+/// mutating action runs against `&mut self` once the grid's borrows end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GridIntent {
+    /// Run the staged edits (Save button).
+    Save,
+    /// Drop all staged edits (Discard button).
+    Discard,
+}
+
+/// Inline cell-editing state (issue 0013 slice b), attached to the current
+/// result. It is only *populated* when the result came from a browse
+/// `SELECT` of a single base table (see [`DbboardApp::run_table_browse`]);
+/// an arbitrary query, a `COUNT(*)`, or a view/join leaves `source`
+/// `None` and the grid stays read-only. All heavy logic lives in the pure
+/// [`edit`] module; this struct is just the frame-to-frame state.
+#[derive(Default)]
+struct EditGrid {
+    /// Base table of the current result, or `None` for a read-only result.
+    source: Option<TableInfo>,
+    /// `describe_table` schema for `source`, once it arrives. `None` while
+    /// the describe is in flight or if it failed (either way, not
+    /// editable until a schema with a primary key lands).
+    schema: Option<TableSchema>,
+    /// Dialect captured from the live adapter id at browse time.
+    dialect: Option<SqlDialect>,
+    /// The open inline editor, if any.
+    active: Option<CellEditor>,
+    /// Staged (仮登録) edits keyed by `(row, col)` grid position.
+    staged: BTreeMap<(usize, usize), edit::StagedValue>,
+    /// In-flight save queue; `Some` while `UPDATE`s are running.
+    save: Option<SaveQueue>,
+    /// Last save failure, shown under the Save button (ADR-0039 style).
+    error: Option<errors::DisplayError>,
+}
+
+impl EditGrid {
+    /// Reset to a fresh, read-only state. Called before every manual run;
+    /// [`DbboardApp::run_table_browse`] re-establishes provenance after.
+    fn reset(&mut self) {
+        *self = EditGrid::default();
+    }
+}
+
 pub struct DbboardApp {
     sql: String,
     tables: DbResult<Vec<TableInfo>>,
@@ -375,6 +442,9 @@ pub struct DbboardApp {
     active_tab: ResultTab,
     /// Structure-tab state, `Some` once a table has been clicked.
     structure: Option<StructureView>,
+    /// Inline cell-editing state (issue 0013 slice b). Populated only for
+    /// browse-`SELECT` results of a single base table; read-only otherwise.
+    edit: EditGrid,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -499,6 +569,7 @@ impl DbboardApp {
             auto_limit: true,
             active_tab: ResultTab::Results,
             structure: None,
+            edit: EditGrid::default(),
             busy: false,
             cmd_tx,
             reply_rx,
@@ -524,6 +595,13 @@ impl DbboardApp {
             match reply {
                 Reply::Tables(r) => self.tables = r,
                 Reply::QueryResult(r) => {
+                    // Inline-edit save steps (issue 0013 slice b) reuse the
+                    // query path; intercept their replies before the normal
+                    // result/history handling so they never replace the grid
+                    // or land in query history.
+                    if self.advance_save(&r) {
+                        continue;
+                    }
                     if let Some(pending) = self.pending.take() {
                         // Best-effort completion record. A disk write
                         // failure must not block the UI's view of the
@@ -543,6 +621,10 @@ impl DbboardApp {
                     // A fresh result invalidates any row selection carried
                     // over from the previous one (ADR-0035 slice 2).
                     self.result_selection.clear();
+                    // The rows just changed underneath any open inline
+                    // editor; close it (issue 0013 slice b). Staged edits
+                    // persist — a fresh run already reset them via run_sql.
+                    self.edit.active = None;
                     self.busy = false;
                 }
                 // ADR-0020: swap completed. Treat the new id as the
@@ -643,6 +725,15 @@ impl DbboardApp {
                 // if it still matches the table on screen — the user may
                 // have clicked another table while this one was in flight.
                 Reply::TableDescribed { table, result } => {
+                    // Feed the inline editor's primary-key lookup when this
+                    // describe is for the current browse result (issue 0013
+                    // slice b). A describe error just leaves it non-editable.
+                    if self.edit.source.as_ref() == Some(&table) {
+                        self.edit.schema = match &result {
+                            Ok(schema) => Some(schema.clone()),
+                            Err(_) => None,
+                        };
+                    }
                     if let Some(view) = self.structure.as_mut() {
                         if view.table == table {
                             view.schema = Some(result);
@@ -807,6 +898,11 @@ impl DbboardApp {
         if self.busy || self.sql.trim().is_empty() {
             return;
         }
+        // A fresh manual run drops any inline-edit provenance (issue 0013
+        // slice b): an arbitrary query, a COUNT(*), or a re-typed SELECT is
+        // read-only until a browse-SELECT re-establishes an editable table.
+        // `run_table_browse` re-sets provenance right after calling this.
+        self.edit.reset();
         // Bring the result forward: a query run while the user is on the
         // Structure tab (ADR-0031) would otherwise leave its output hidden
         // behind the table inspector. Switch at submit time so the busy
@@ -846,6 +942,133 @@ impl DbboardApp {
         }
         self.sql = sql;
         self.run_sql();
+    }
+
+    /// Run a table's browse `SELECT *` and mark the result editable (issue
+    /// 0013 slice b). Unlike [`Self::run_quick_sql`], this remembers the
+    /// source [`TableInfo`] and kicks off a `describe_table` so the inline
+    /// editor can resolve a primary key. Read-only until the schema lands;
+    /// non-primary-key or view results simply never become editable.
+    fn run_table_browse(&mut self, table: TableInfo) {
+        if self.busy {
+            return;
+        }
+        // `run_sql` resets edit state, so establish provenance afterwards.
+        self.run_quick_sql(quick_select_sql(&table));
+        self.edit.source = Some(table.clone());
+        self.edit.dialect = self.current_dialect();
+        let _ = self.cmd_tx.send(Command::DescribeTable { table });
+    }
+
+    /// SQL dialect of the live adapter, or `None` when no adapter is wired
+    /// or its id is unknown (issue 0013 slice b). Read off the injected
+    /// [`SchemaSource`] so a connection switch is reflected immediately,
+    /// mirroring [`Self::db_has_describe_table`].
+    fn current_dialect(&self) -> Option<SqlDialect> {
+        self.schema_source
+            .as_ref()
+            .and_then(|s| edit::dialect_for_adapter_id(s.current_adapter().id()))
+    }
+
+    /// Turn the staged inline edits into keyed `UPDATE`s and start running
+    /// them one at a time (issue 0013 slice b). A planning error (e.g. a
+    /// missing primary-key column) is surfaced under the Save button and
+    /// leaves every edit staged; nothing runs. No-op when nothing is
+    /// staged or the result is not editable.
+    fn begin_save(&mut self) {
+        let (Some(table), Some(schema), Some(dialect)) = (
+            self.edit.source.clone(),
+            self.edit.schema.clone(),
+            self.edit.dialect,
+        ) else {
+            return;
+        };
+        let Some(Ok(result)) = self.last_result.as_ref() else {
+            return;
+        };
+        let plans =
+            match edit::build_update_plans(&table, &schema, dialect, result, &self.edit.staged) {
+                Ok(plans) => plans,
+                Err(e) => {
+                    self.edit.error = Some(errors::DisplayError::plain(e.to_string()));
+                    return;
+                }
+            };
+        let mut queue: VecDeque<_> = plans.into();
+        let Some(current) = queue.pop_front() else {
+            return; // nothing staged
+        };
+        self.edit.error = None;
+        self.edit.active = None;
+        self.busy = true;
+        let sql = current.sql.clone();
+        self.edit.save = Some(SaveQueue {
+            current,
+            remaining: queue,
+        });
+        let _ = self.cmd_tx.send(Command::Query(sql));
+    }
+
+    /// Handle a `Reply::QueryResult` that belongs to an in-flight inline
+    /// save (issue 0013 slice b). Returns `true` when the reply was
+    /// consumed as a save step so the caller skips the normal
+    /// result-handling path. A confirmed step (`rows_affected == 1`) clears
+    /// its staged cells and sends the next; any other count or an error
+    /// stops the run, surfaces a message, and leaves the rest staged.
+    fn advance_save(&mut self, reply: &DbResult<QueryResult>) -> bool {
+        let Some(mut queue) = self.edit.save.take() else {
+            return false;
+        };
+        match reply {
+            Ok(qr) if qr.rows_affected == 1 => {
+                // Commit: the cells this UPDATE wrote are no longer dirty.
+                for &col in &queue.current.columns {
+                    self.edit.staged.remove(&(queue.current.row, col));
+                }
+                if let Some(next) = queue.remaining.pop_front() {
+                    let sql = next.sql.clone();
+                    queue.current = next;
+                    self.edit.save = Some(queue);
+                    let _ = self.cmd_tx.send(Command::Query(sql));
+                } else {
+                    // All rows committed. Re-read the table so the grid
+                    // shows engine-normalised values (a typed/triggered
+                    // column may differ from the text we sent).
+                    self.busy = false;
+                    self.refresh_after_save();
+                }
+            }
+            // 0 rows = the keyed row vanished (concurrent delete); >1 =
+            // the "primary key" was not unique. Either way, stop and keep
+            // the remaining edits staged for the user to retry.
+            Ok(qr) => {
+                self.edit.error = Some(errors::DisplayError::plain(t_args!(
+                    "edit-save-unexpected-rows",
+                    rows = qr.rows_affected
+                )));
+                self.busy = false;
+            }
+            Err(e) => {
+                self.edit.error = Some(errors::db_error_display(e));
+                self.busy = false;
+            }
+        }
+        true
+    }
+
+    /// Re-run the browse `SELECT` after a fully-committed save so the grid
+    /// reflects what actually landed, keeping the table editable.
+    fn refresh_after_save(&mut self) {
+        if let Some(table) = self.edit.source.clone() {
+            self.run_table_browse(table);
+        }
+    }
+
+    /// Drop all staged inline edits and any open editor (Discard button).
+    fn discard_edits(&mut self) {
+        self.edit.staged.clear();
+        self.edit.active = None;
+        self.edit.error = None;
     }
 
     #[must_use]
@@ -1301,6 +1524,11 @@ impl DbboardApp {
         // to the editor after the `&self.tables` borrow ends, mirroring how
         // `clicked` defers `open_structure`.
         let mut quick_sql: Option<String> = None;
+        // A right-click "Select" browses the table as an *editable* result
+        // (issue 0013 slice b); it carries the source `TableInfo` rather
+        // than a bare SQL string so provenance survives. "Count" stays a
+        // plain read-only starter.
+        let mut quick_browse: Option<TableInfo> = None;
         egui::Panel::left("tables").show_inside(ui, |ui| {
             ui.heading(t!("tables-heading"));
             ui.separator();
@@ -1329,7 +1557,7 @@ impl DbboardApp {
                             // destructive — so auto-running a starter is safe.
                             row.context_menu(|ui| {
                                 if ui.button(t!("tables-context-select")).clicked() {
-                                    quick_sql = Some(quick_select_sql(table));
+                                    quick_browse = Some(table.clone());
                                     ui.close();
                                 }
                                 if ui.button(t!("tables-context-count")).clicked() {
@@ -1345,7 +1573,9 @@ impl DbboardApp {
                 }
             }
         });
-        if let Some(sql) = quick_sql {
+        if let Some(table) = quick_browse {
+            self.run_table_browse(table);
+        } else if let Some(sql) = quick_sql {
             self.run_quick_sql(sql);
         }
         if let Some(table) = clicked {
@@ -1434,31 +1664,48 @@ impl DbboardApp {
             }
 
             ui.separator();
-            // ADR-0031: tab between the query result and the clicked
-            // table's structure.
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.active_tab, ResultTab::Results, t!("tab-results"));
-                ui.selectable_value(
-                    &mut self.active_tab,
-                    ResultTab::Structure,
-                    t!("tab-structure"),
-                );
-            });
-            match self.active_tab {
-                ResultTab::Results => match &self.last_result {
-                    None => {
-                        ui.label(t!("result-empty"));
-                    }
-                    Some(Ok(result)) => {
-                        render_result(ui, result, &mut self.result_selection);
-                    }
-                    Some(Err(e)) => {
-                        errors::render_error(ui, Some(&errors::db_error_display(e)));
-                    }
-                },
-                ResultTab::Structure => self.render_structure(ui),
-            }
+            self.render_result_area(ui);
         });
+    }
+
+    /// Result/structure tab body and the inline-edit action handoff
+    /// (ADR-0031 + issue 0013 slice b). Split out of `render_query_panel`
+    /// to keep each function focused.
+    fn render_result_area(&mut self, ui: &mut egui::Ui) {
+        // ADR-0031: tab between the query result and the clicked table's
+        // structure.
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.active_tab, ResultTab::Results, t!("tab-results"));
+            ui.selectable_value(
+                &mut self.active_tab,
+                ResultTab::Structure,
+                t!("tab-structure"),
+            );
+        });
+        // Inline-edit actions bubble out of the grid so they run against
+        // `&mut self` once the grid's field borrows end (issue 0013 slice b).
+        let mut grid_intent = None;
+        let busy = self.busy;
+        match self.active_tab {
+            ResultTab::Results => match &self.last_result {
+                None => {
+                    ui.label(t!("result-empty"));
+                }
+                Some(Ok(result)) => {
+                    grid_intent =
+                        render_result(ui, result, &mut self.result_selection, &mut self.edit, busy);
+                }
+                Some(Err(e)) => {
+                    errors::render_error(ui, Some(&errors::db_error_display(e)));
+                }
+            },
+            ResultTab::Structure => self.render_structure(ui),
+        }
+        match grid_intent {
+            Some(GridIntent::Save) => self.begin_save(),
+            Some(GridIntent::Discard) => self.discard_edits(),
+            None => {}
+        }
     }
 
     /// Structure tab body (ADR-0031): the selected table's name and its
@@ -1731,13 +1978,25 @@ fn render_result(
     ui: &mut egui::Ui,
     result: &QueryResult,
     selection: &mut selection::ResultSelection,
-) {
+    edit: &mut EditGrid,
+    busy: bool,
+) -> Option<GridIntent> {
     use egui_extras::{Column, TableBuilder};
 
     if result.rows.is_empty() {
         ui.label(t_args!("result-affected", rows = result.rows_affected));
-        return;
+        return None;
     }
+
+    // Whether this result can be inline-edited (issue 0013 slice b): it
+    // needs single-table provenance with a resolved primary key. `busy`
+    // (a query or save in flight) freezes cell interaction but still lets
+    // the Save row show its progress, so keep the two flags apart.
+    let has_identity = matches!(
+        (edit.schema.as_ref(), edit.dialect),
+        (Some(schema), Some(dialect)) if edit::is_editable(schema, dialect)
+    );
+    let interactive = has_identity && !busy;
 
     // Export toolbar (ADR-0035): copy/save the whole grid, plus — once
     // rows are selected — copy/save just the selection.
@@ -1827,14 +2086,15 @@ fn render_result(
                                 },
                             );
                         });
-                        let values: Vec<String> = result.rows[index]
-                            .values()
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect();
-                        for value in &values {
+                        for col_idx in 0..result.columns.len() {
+                            let value = result.rows[index].get(col_idx);
                             row.col(|ui| {
-                                render_cell(ui, value, expand_id);
+                                if interactive {
+                                    render_editable_cell(ui, edit, index, col_idx, value);
+                                } else {
+                                    let text = value.map(ToString::to_string).unwrap_or_default();
+                                    render_cell(ui, &text, expand_id);
+                                }
                             });
                         }
                     });
@@ -1845,7 +2105,154 @@ fn render_result(
         selection.click(index, mods);
     }
 
+    let intent = if has_identity {
+        render_save_row(ui, edit)
+    } else {
+        None
+    };
+
     render_expanded_cell_popup(ui, expand_id);
+    intent
+}
+
+/// Inline-edit Save row below the grid (issue 0013 slice b). Shown only
+/// when there are staged edits, a save in flight, or a lingering save
+/// error to report; returns the button the user pressed, if any.
+fn render_save_row(ui: &mut egui::Ui, edit: &EditGrid) -> Option<GridIntent> {
+    if edit.staged.is_empty() && edit.save.is_none() && edit.error.is_none() {
+        return None;
+    }
+    let mut intent = None;
+    ui.separator();
+    let saving = edit.save.is_some();
+    let staged_count = edit.staged.len();
+    let can_act = !saving && staged_count > 0;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(can_act, egui::Button::new(t!("edit-save-button")))
+            .clicked()
+        {
+            intent = Some(GridIntent::Save);
+        }
+        if ui
+            .add_enabled(can_act, egui::Button::new(t!("edit-discard-button")))
+            .clicked()
+        {
+            intent = Some(GridIntent::Discard);
+        }
+        if saving {
+            ui.spinner();
+        }
+        ui.label(t_args!("edit-staged-count", count = staged_count));
+    });
+    if let Some(err) = edit.error.as_ref() {
+        errors::render_error(ui, Some(err));
+    }
+    intent
+}
+
+/// One editable result-grid cell (issue 0013 slice b). Shows the staged
+/// value with a faint dirty tint when the cell has an uncommitted edit,
+/// otherwise the original value. Double-click swaps in a single-line
+/// editor; losing focus stages the buffer (仮登録). A right-click menu
+/// sets SQL NULL or reverts the cell. Blob cells have no text form and
+/// stay read-only.
+fn render_editable_cell(
+    ui: &mut egui::Ui,
+    edit: &mut EditGrid,
+    row: usize,
+    col: usize,
+    value: Option<&Value>,
+) {
+    // Active editor for this exact cell: render the text box instead of a
+    // label, and stage on blur.
+    if edit
+        .active
+        .as_ref()
+        .is_some_and(|e| e.row == row && e.col == col)
+    {
+        let editor = edit.active.as_mut().expect("checked just above");
+        let resp =
+            ui.add(egui::TextEdit::singleline(&mut editor.buffer).desired_width(f32::INFINITY));
+        if std::mem::take(&mut editor.just_opened) {
+            resp.request_focus();
+        }
+        // Blur = 仮登録. An emptied box stages empty text, never NULL —
+        // NULL is an explicit right-click action so it can't be typed by
+        // accident.
+        if resp.lost_focus() {
+            let buffer = editor.buffer.clone();
+            edit.staged
+                .insert((row, col), edit::StagedValue::Text(buffer));
+            edit.active = None;
+        }
+        return;
+    }
+
+    let staged = edit.staged.get(&(row, col)).cloned();
+    let (display, is_staged) = match &staged {
+        Some(edit::StagedValue::Null) => ("NULL".to_owned(), true),
+        Some(edit::StagedValue::Text(text)) => (text.clone(), true),
+        None => (value.map(ToString::to_string).unwrap_or_default(), false),
+    };
+
+    // Faint dirty tint pulled from the active Visuals so it holds up in
+    // both light and dark themes (ADR-0041) instead of a hard-coded RGB.
+    if is_staged {
+        let sel = ui.visuals().selection.bg_fill;
+        let tint = egui::Color32::from_rgba_unmultiplied(sel.r(), sel.g(), sel.b(), 48);
+        ui.painter().rect_filled(ui.max_rect(), 2.0, tint);
+    }
+
+    let shown = if is_long_cell(&display) {
+        cell_preview(&display)
+    } else {
+        display.clone()
+    };
+    // A blob has no editable text form; render it as a plain, unsensed
+    // label so double-click and the NULL/revert menu don't apply.
+    let editable = !matches!(value, Some(Value::Blob(_)));
+    if !editable {
+        ui.label(shown);
+        return;
+    }
+
+    let label = ui.add(egui::Label::new(shown).sense(egui::Sense::click()));
+    label.context_menu(|ui| {
+        if ui.button(t!("edit-set-null")).clicked() {
+            edit.staged.insert((row, col), edit::StagedValue::Null);
+            ui.close();
+        }
+        if is_staged && ui.button(t!("edit-revert-cell")).clicked() {
+            edit.staged.remove(&(row, col));
+            ui.close();
+        }
+    });
+    if label.double_clicked() {
+        let seed = match &staged {
+            Some(edit::StagedValue::Text(text)) => text.clone(),
+            Some(edit::StagedValue::Null) => String::new(),
+            None => value_edit_text(value).unwrap_or_default(),
+        };
+        edit.active = Some(CellEditor {
+            row,
+            col,
+            buffer: seed,
+            just_opened: true,
+        });
+    }
+}
+
+/// Text used to seed the inline editor from a typed value (issue 0013
+/// slice b). Returns `None` for a blob, which has no editable text form.
+fn value_edit_text(value: Option<&Value>) -> Option<String> {
+    match value {
+        None | Some(Value::Null) => Some(String::new()),
+        Some(Value::Integer(n)) => Some(n.to_string()),
+        Some(Value::Real(x)) => Some(x.to_string()),
+        Some(Value::Text(s)) => Some(s.clone()),
+        Some(Value::Blob(_)) => None,
+    }
 }
 
 /// Column grid for the structure tab (ADR-0031): one row per column with

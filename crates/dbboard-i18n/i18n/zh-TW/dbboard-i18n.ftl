@@ -131,3 +131,10 @@ structure-col-type = 型別
 structure-col-nullable = 空
 structure-col-pk = 鍵
 structure-col-default = 預設值
+
+edit-save-button = 儲存
+edit-discard-button = 捨棄
+edit-staged-count = { $count } 項未儲存的編輯
+edit-set-null = 設為 NULL
+edit-revert-cell = 還原儲存格
+edit-save-unexpected-rows = 已停止儲存：應為 1 列，卻影響了 { $rows } 列

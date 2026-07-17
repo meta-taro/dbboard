@@ -15,6 +15,7 @@ mod limits;
 mod row;
 mod schema;
 mod value;
+mod write_back;
 
 pub use adapter::DatabaseAdapter;
 pub use capabilities::{
@@ -26,3 +27,6 @@ pub use limits::{too_many_rows_error, MAX_RESULT_ROWS};
 pub use row::{Column, QueryResult, Row};
 pub use schema::{ColumnInfo, TableInfo, TableSchema};
 pub use value::Value;
+pub use write_back::{
+    build_update_sql, CellValue, RowIdentity, RowKey, SqlDialect, UpdatePlan, WriteBackError,
+};
