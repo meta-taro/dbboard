@@ -1,3 +1,5 @@
+<img src="apps/dbboard/assets/dbboard-logo-256.png" alt="dbboard logo" align="right" width="96" height="96">
+
 # dbboard
 
 A high-performance desktop database client for modern serverless and
