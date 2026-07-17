@@ -871,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cargo-husky",
  "dbboard-ai",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-anthropic"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -920,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "age",
  "directories",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-d1"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-i18n"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fluent-bundle",
  "i18n-embed",
@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-postgres"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "dbboard-config",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-turso"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dbboard-ai",
