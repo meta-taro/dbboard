@@ -7,8 +7,20 @@
 
 ## 最終更新
 
-- 日付: 2026-07-16
-- develop tip: `bb9f46f` (PR #72 = 内々配布ガイド + gitignore merged)
+- 日付: 2026-07-17
+- develop tip: `52d4863` (PR #75 = issue 0013 の per-DB/view カバレッジ追記 merged)
+- **🆕 実利用バックログ 0012–0015 = コード実装 4 件すべて完了、human の
+  push / PR / merge 待ち。** スタックドブランチ連鎖 (下が土台):
+  - `feature/quick-sql-autorun` — 0012 右クリック簡易SQL 即実行 (**PR #76 既にオープン**)
+  - `feature/theme-light-dark-auto` — 0014 Light/Dark/Auto テーマ (未 push)
+  - `feature/official-logo` — 0015 アイコンを正式ロゴ化 (未 push)
+  - `feature/adr-0042-inline-edit` — 0013 セル編集→Save (ADR-0042、未 push)
+  各ブランチは一つ下の上に積まれている。push → develop 向け PR → 順に merge。
+  fmt/clippy/check/test は各コミットの pre-commit hook で通過済。push 時に
+  pre-push hook が release build/test を回す (**事前に dbboard ウィンドウを
+  閉じる**)。0012/0013 の user 向け docs と ADR-0042 は feat コミット同梱。
+  内部トラッキング (roadmap/issue status/project-status) の tick は各 PR
+  merge 後に `chore/post-prNN-doc-sync` で。
 - **進行中の目標: 収集担当への内々配布 (Windows-only)。** store-a
   (Cloudflare D1) / store-b (Aurora DSQL IAM) / store-c
   (Supabase) の 3 接続を収集する担当に dbboard デスクトップを渡す。
@@ -33,11 +45,12 @@
     (`docs/maintainer/internal-distribution.md`) + テスター onboarding
     (`docs/internal-testing.md`) + `.gitignore` (`*.dbbx` / `/dist/` /
     `connections.toml`)。
-- **#14 = ハンドオフ用 release exe。現 develop `bb9f46f` は #70/#71/#72
-  を含み、配布ガイドの説明 (コピー可能エラー + 更新通知) と実装が一致する
-  理想の再ビルド地点。この develop から `cargo build --release` を取り直す
-  こと。残るは物理引き渡しと実 secret (またはバンドル + パスフレーズ) の
-  受け渡しのみ。**
+- **#14 = ハンドオフ用 release exe。0012–0015 が develop に入ってから
+  再ビルドするのが理想** (収集担当が最新の UX = 即実行簡易SQL・テーマ・
+  セル編集を得られる)。0012–0015 を merge 後の develop から
+  `cargo build --release` を取り直すこと。急ぐなら現 develop `52d4863`
+  でも配布ガイド (コピー可能エラー + 更新通知) とは一致する。残るは物理
+  引き渡しと実 secret (またはバンドル + パスフレーズ) の受け渡しのみ。**
 
 ## モード
 
@@ -86,28 +99,34 @@ os error 5)。**残るは担当機への物理引き渡しと実 secret / バン
 
 ### 実利用ドリブンの機能バックログ (2026-07-16 maintainer 依頼、issue 化済)
 
-menu-not-sequence の未着手候補。実利用で挙がった順に優先。
+**4 件すべて実装完了** (2026-07-17)。push / PR / merge は human ボール
+(上の「最終更新」のブランチ連鎖参照)。
 
-- **issue 0012 — 右クリック簡易SQL の自動実行**: 現状はエディタに流し込む
-  だけ (`dbboard-ui/src/lib.rs:1331`)。実行まで一発で。read-only なので
-  安全、auto-LIMIT ガードは維持。小さめ・ADR 不要。
-- **issue 0013 — セル編集 → 保存 (HeidiSQL 風)**: W クリックで
-  フォーム化 → フォーカス外れで仮登録 (dirty tint) → 下部 Save ボタンで
-  PK ベース `UPDATE` を一括実行。**アプリ初の write 経路 = 要 ADR**。
-  PK 無し結果は編集不可、型/NULL/並行更新は ADR で要検討。ADR-0028
-  (`describe_table`) が PK 情報を供給。
-- **issue 0014 — Light / Dark / Auto テーマ**: OS 追従の Auto 込み、
-  選択を永続化。dirty tint (0013) は active Visuals から色取り。小 ADR 想定。
-- **issue 0015 — アイコンを正式ロゴ化**: `apps/dbboard/assets/dbboard.ico`
-  は ADR-0032 で PowerShell+GDI+ 自作 = 完全オリジナル・著作権問題なし。
-  DESIGN.md/README 記載 + canonical asset + master 保持。
-- 既存ロードマップ候補: Export results (CSV/JSON) / Saved queries /
-  Schema diff / Group D-2 (ADR-0029 function-calling, planning ball あり)。
+- ✅ **issue 0012 — 右クリック簡易SQL の自動実行**: pick で即実行。
+  read-only なので安全、auto-LIMIT ガード維持。`feature/quick-sql-autorun`
+  = **PR #76 オープン中**。
+- ✅ **issue 0013 — セル編集 → 保存 (HeidiSQL 風)**: W クリックで
+  フォーム化 → フォーカス外れで仮登録 (theme-aware dirty tint) → 下部
+  Save で PK ベース `UPDATE` を 1 件ずつ直列実行 → 成功後 browse SELECT
+  を再実行してエンジン正規化値を反映。右クリック「Select」で開いた単一
+  テーブル + PK 解決済みの結果のみ編集可 (任意SQL/view/join は read-only)。
+  部分失敗は残りを staged 維持。**アプリ初の write 経路 = ADR-0042
+  (Accepted)**。core `write_back.rs` (slice a) + UI `edit.rs`/grid 配線
+  (slice b)。`feature/adr-0042-inline-edit` (未 push)。
+- ✅ **issue 0014 — Light / Dark / Auto テーマ**: OS 追従 Auto 込み、
+  選択を永続化。`feature/theme-light-dark-auto` (未 push)。
+- ✅ **issue 0015 — アイコンを正式ロゴ化**: `dbboard.ico` は ADR-0032 で
+  自作 = 著作権問題なし。DESIGN.md/README 記載。`feature/official-logo`
+  (未 push)。
+- 既存ロードマップ候補 (未着手): Saved queries / Schema diff /
+  Group D-2 (ADR-0029 function-calling, planning ball あり)。
 
-### #14 完了後 (agent 側)
+### 0012–0015 の merge 後 (agent 側)
 
-- #14 の完了報告が来たら、上のバックログから摩擦順に着手。write 経路の
-  0013 は着手前に ADR を書く (planner/architect)。
+- 各 feat PR が番号を得たら `chore/post-prNN-doc-sync` で roadmap tick +
+  issue 0012–0015 を closed + project-status + この next-actions を更新。
+- その後 #14 を merge 済 develop から再ビルドして物理引き渡し。
+- 以降は実利用の摩擦順に上の未着手候補へ。新 write 経路は着手前 ADR。
 
 ---
 
