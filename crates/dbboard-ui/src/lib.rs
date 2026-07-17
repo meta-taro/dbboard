@@ -2019,6 +2019,17 @@ fn render_result(
     // highlight). ADR-0035 slice 2.
     let mut pending_click: Option<(usize, selection::ClickModifiers)> = None;
 
+    // Pin the Save row to the bottom of the result area *before* laying out
+    // the grid, so it stays on screen no matter how tall the grid grows.
+    // The grid's ScrollArea claims all remaining height, so a Save row added
+    // after it was pushed past the window edge and the user couldn't find it
+    // (issue 0013 follow-up). A bottom panel reserves its slice up front.
+    let mut intent = None;
+    if has_identity && has_pending_save(edit) {
+        egui::Panel::bottom("edit-save-row")
+            .show_inside(ui, |ui| intent = render_save_row(ui, edit));
+    }
+
     egui::ScrollArea::horizontal()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -2105,14 +2116,15 @@ fn render_result(
         selection.click(index, mods);
     }
 
-    let intent = if has_identity {
-        render_save_row(ui, edit)
-    } else {
-        None
-    };
-
     render_expanded_cell_popup(ui, expand_id);
     intent
+}
+
+/// Whether the inline-edit Save row has anything to show: pending staged
+/// edits, a save in flight, or a lingering error. Gates the bottom panel
+/// so an idle grid isn't topped by an empty reserved strip.
+fn has_pending_save(edit: &EditGrid) -> bool {
+    !edit.staged.is_empty() || edit.save.is_some() || edit.error.is_some()
 }
 
 /// Inline-edit Save row below the grid (issue 0013 slice b). Shown only
@@ -2123,7 +2135,9 @@ fn render_save_row(ui: &mut egui::Ui, edit: &EditGrid) -> Option<GridIntent> {
         return None;
     }
     let mut intent = None;
-    ui.separator();
+    // Small top margin so the buttons don't touch the panel's divider line;
+    // the bottom panel already supplies the separator from the grid.
+    ui.add_space(4.0);
     let saving = edit.save.is_some();
     let staged_count = edit.staged.len();
     let can_act = !saving && staged_count > 0;
@@ -2217,8 +2231,23 @@ fn render_editable_cell(
         return;
     }
 
-    let label = ui.add(egui::Label::new(shown).sense(egui::Sense::click()));
-    label.context_menu(|ui| {
+    // Claim the whole cell as the interaction surface, then paint the text
+    // ourselves. A text-sized `Label` left empty or short cells with almost
+    // nothing to click, so an emptied/NULL value couldn't be re-opened for
+    // edit or given the NULL menu — the two follow-up bugs (issue 0013).
+    let response = ui.allocate_response(ui.available_size(), egui::Sense::click());
+    if !shown.is_empty() {
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        ui.painter().text(
+            response.rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            &shown,
+            font_id,
+            ui.visuals().text_color(),
+        );
+    }
+    let response = response.on_hover_text(t!("edit-cell-hint"));
+    response.context_menu(|ui| {
         if ui.button(t!("edit-set-null")).clicked() {
             edit.staged.insert((row, col), edit::StagedValue::Null);
             ui.close();
@@ -2228,7 +2257,7 @@ fn render_editable_cell(
             ui.close();
         }
     });
-    if label.double_clicked() {
+    if response.double_clicked() {
         let seed = match &staged {
             Some(edit::StagedValue::Text(text)) => text.clone(),
             Some(edit::StagedValue::Null) => String::new(),
