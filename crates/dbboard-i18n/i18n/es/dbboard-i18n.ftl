@@ -132,3 +132,10 @@ structure-col-type = Tipo
 structure-col-nullable = Nulo
 structure-col-pk = Clave
 structure-col-default = Predet.
+
+edit-save-button = Guardar
+edit-discard-button = Descartar
+edit-staged-count = { $count } edición(es) pendiente(s)
+edit-set-null = Establecer NULL
+edit-revert-cell = Revertir celda
+edit-save-unexpected-rows = Guardado detenido: se esperaba 1 fila, { $rows } afectadas

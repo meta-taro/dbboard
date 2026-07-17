@@ -132,3 +132,10 @@ structure-col-type = Type
 structure-col-nullable = Null
 structure-col-pk = Clé
 structure-col-default = Défaut
+
+edit-save-button = Enregistrer
+edit-discard-button = Annuler
+edit-staged-count = { $count } modification(s) en attente
+edit-set-null = Définir NULL
+edit-revert-cell = Rétablir la cellule
+edit-save-unexpected-rows = Enregistrement arrêté : 1 ligne attendue, { $rows } affectée(s)

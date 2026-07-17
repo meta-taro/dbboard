@@ -132,3 +132,10 @@ structure-col-type = Тип
 structure-col-nullable = Null
 structure-col-pk = Ключ
 structure-col-default = По умолч.
+
+edit-save-button = Сохранить
+edit-discard-button = Отменить
+edit-staged-count = Несохранённых правок: { $count }
+edit-set-null = Установить NULL
+edit-revert-cell = Вернуть ячейку
+edit-save-unexpected-rows = Сохранение остановлено: ожидалась 1 строка, затронуто { $rows }

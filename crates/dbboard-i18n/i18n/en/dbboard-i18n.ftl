@@ -256,3 +256,10 @@ ai-active-with-name = Active: { $name }
 ai-include-details = Include column details
 ai-prefetching = Fetching table schemas…
 ai-prefetch-warning = Could not describe { $count } table(s); continuing without them.
+
+edit-save-button = Save
+edit-discard-button = Discard
+edit-staged-count = { $count } pending edit(s)
+edit-set-null = Set NULL
+edit-revert-cell = Revert cell
+edit-save-unexpected-rows = Save stopped: expected 1 row, { $rows } affected

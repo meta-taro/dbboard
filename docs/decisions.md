@@ -5258,3 +5258,138 @@ Two facts shaped the design:
 - Custom colours introduced later (e.g. the dirty-cell tint in issue 0013)
   must read from the active `Visuals`, not hard-coded RGB, so they hold up
   in both themes.
+
+## ADR-0042 — Inline cell editing: the first write-back path
+
+- **Status**: Accepted 2026-07-17
+- **Tracks**: issue 0013
+- **Builds on**: ADR-0028 (`describe_table` supplies columns + primary key)
+
+### Context
+
+Every path in dbboard so far **reads**. The maintainer wants HeidiSQL-style
+in-place editing: double-click a result cell to edit it, blur to *stage*
+the change (仮登録) with a faint dirty tint, and press a **Save** button
+below the grid to commit. Nothing touches the database before Save.
+
+Introducing write-back forces three decisions that outlive the UI:
+
+1. **How a row is identified** for a safe `WHERE`. A blind `UPDATE`
+   without a unique key can rewrite many rows.
+2. **How the `UPDATE` reaches the database.** The entire stack is
+   SQL-string-only: `DatabaseAdapter::query(&self, sql: &str)`, the HTTP
+   contract, and the UI's `Command::Query(String)` carry **no bound
+   parameters**. Adding a parameterised path would change the adapter
+   trait *and the HTTP wire contract* — a cross-repo change requiring a
+   `dbboard-web` brief and every adapter to reimplement.
+3. **Where the SQL is built.** CLAUDE.md forbids business logic in egui
+   event handlers.
+
+### Decision
+
+This ADR is **slice a: the pure write-back core** (SQL generation + dirty
+model), fully unit-tested, no UI and no contract change. The egui wiring
+(double-click editor, tint, Save button, dialect/PK plumbing to the UI) is
+**slice b**, a separate PR that builds on this.
+
+- **Contained, literal-SQL path — no new adapter method, no wire change.**
+  Write-back reuses the existing `query(sql)` execution. The `UPDATE` is
+  built as a complete SQL string in a new pure module,
+  **`dbboard-core::write_back`** (core is "no I/O", and string generation
+  is pure — it sits next to the adapter contract per CLAUDE.md). This
+  keeps the first write path **desktop-only / in-process**: no HTTP
+  contract change, no `dbboard-web` mirror. A typed/parameterised path is
+  explicitly deferred (see Alternatives) and can replace the internals
+  later without changing the UI.
+- **Injection safety by construction.** Identifiers are emitted
+  double-quoted with any embedded `"` doubled (`"user""s"`) — identical
+  for SQLite and Postgres. Values are emitted as **single-quoted string
+  literals with `'` doubled**, or the bare keyword `NULL`. No user text is
+  ever concatenated unescaped.
+- **Type fidelity via engine coercion, not UI-side parsing.** The editor
+  works on text, so every non-null value is written as a quoted string
+  literal and the engine coerces it by the target column's type/affinity:
+  `SET n = '123'` lands an integer, `SET b = 'true'` a boolean, `SET d =
+  '2026-01-01'` a date, on both SQLite (type affinity) and Postgres
+  (assignment cast from an `unknown` literal). This dodges lossy UI-side
+  type parsing. **NULL is the one value that is not text** and gets an
+  explicit affordance (a distinct staged state emitting the `NULL`
+  keyword), never "empty string".
+- **Row identity is adapter-specific** (mirrors the issue's coverage
+  table). A `RowIdentity` is required to edit; without one the cell never
+  enters edit mode:
+  - **Declared primary key** (any family): key the `WHERE` on the PK
+    columns from `describe_table`.
+  - **SQLite family** (Turso/libSQL, D1) with no declared PK: use the
+    implicit **`rowid`** — *except* `WITHOUT ROWID` tables, which have no
+    rowid and are refused.
+  - **Postgres family** (Supabase, Neon, Aurora DSQL) with no PK/unique
+    key: **refuse** (`ctid` is not stable, so there is no safe implicit
+    key).
+- **Concurrency: PK-only `WHERE` + report rows-affected** (the simplest
+  safe default). Save confirms the `UPDATE` matched exactly one row; a
+  count of 0 or >1 is surfaced as an error and leaves the edit staged.
+  Optimistic "WHERE also matches the original values" is deferred.
+- **Object kind gates editability.** Only a plain `SELECT` from a single
+  base **table** is editable. **Views, materialised views, joins,
+  computed/multi-table, and CTE/derived results are read-only** — no
+  updatable-view support in this ADR (SQLite needs `INSTEAD OF` triggers;
+  Postgres only auto-updates simple views). Editability is decided in the
+  pure core from the resolved target; the UI only offers editing when the
+  core says the target is updatable.
+- **Failure handling.** A Save error uses the unified copyable error
+  display (ADR-0039) and leaves every edit **staged** (not dropped) so the
+  user can retry. Staged edits are revertible (per-cell and discard-all)
+  before Save.
+
+### Slice-a surface (`dbboard-core::write_back`, pure)
+
+- `enum SqlDialect { Sqlite, Postgres }` — drives schema qualification
+  (Postgres qualifies `"schema"."table"`; SQLite does not) and which
+  implicit identity is allowed.
+- `enum RowIdentity { PrimaryKey(Vec<String>), SqliteRowid }` and a
+  resolver `RowIdentity::resolve(schema: &TableSchema, dialect,
+  without_rowid: bool) -> Option<RowIdentity>` returning `None` (=refuse)
+  per the rules above.
+- `enum CellValue { Null, Text(String) }` — a staged new value.
+- `enum RowKey { Columns(Vec<(String, Value)>), Rowid(i64) }` — the
+  concrete `WHERE` key for one row: named identity columns paired with the
+  row's *original* typed `Value`s, or a SQLite `rowid`. (`RowIdentity`
+  above is the *capability*; `RowKey` is the *filled-in* key the UI builds
+  from the selected row.)
+- `struct UpdatePlan { table, key: RowKey, edits: Vec<(String, CellValue)> }`
+  and `build_update_sql(&UpdatePlan, dialect) -> Result<String,
+  WriteBackError>` producing the fully-escaped `UPDATE … SET … WHERE …`.
+  Identity values encode by their real type (bare number / quoted text /
+  `IS NULL`); edited values are always quoted string literals coerced by
+  the engine.
+- `enum WriteBackError { NoEdits, EmptyKey, UnsupportedKeyType(String) }`
+  for the refusable cases (nothing edited, an unkeyed update, or a blob
+  identity value that has no safe literal form).
+
+### Alternatives considered
+
+- **Parameterised execute path** (bind values, `?`/`$n`). Safer typing and
+  the "proper" long-term design, but changes the adapter trait *and the
+  HTTP wire contract*, dragging in a `dbboard-web` coordination brief and
+  every adapter. Rejected for the first cut in favour of the contained
+  literal-SQL path; the pure core hides SQL construction so this can be
+  swapped in later behind the same `UpdatePlan` without touching the UI.
+- **`WHERE` on all original column values** (no PK needed). Fragile and
+  ambiguous on duplicate rows; can update multiple rows. Rejected — hence
+  the refuse-without-identity rule.
+- **UI-side type parsing** (decide int/bool/date before building SQL).
+  Lossy and dialect-specific; engine coercion of a quoted literal is
+  simpler and more faithful.
+
+### Consequences
+
+- First mutation path in the app, but contained: **desktop-only /
+  in-process, no HTTP contract change, no `history.jsonl` change, no
+  `dbboard-web` mirror.** If slice b later adds a parameterised wire path,
+  *that* would need a cross-repo brief.
+- The dirty-cell tint (slice b) reads from the active egui `Visuals`
+  (ADR-0041) so it holds up in both themes.
+- Editing is deliberately narrow (single-table `SELECT`, real identity,
+  tables-not-views). Widening — updatable views, composite/unique-key
+  fallback, optimistic concurrency — is future ADR work.
