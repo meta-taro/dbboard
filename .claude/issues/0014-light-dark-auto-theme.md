@@ -1,6 +1,7 @@
 # 0014: Light / Dark / Auto theme
 
-- **Status**: closed — shipped 2026-07-17 (PR #77)
+- **Status**: closed — shipped 2026-07-17 (PR #77; in-use follow-up fix
+  PR #82: OS title bar now follows the theme via `ViewportCommand::SetTheme`)
 - **Phase**: 5 (quality of life)
 - **Opened**: 2026-07-16
 
