@@ -5,18 +5,18 @@
 //! the REST API (the Workers binding is Worker-only). So this adapter
 //! is an HTTP client of `POST /accounts/{account}/d1/database/{db}/raw`
 //! that maps Cloudflare's JSON envelope onto the `dbboard-core` domain
-//! types. It mirrors `TursoAdapter`'s method surface
-//! (`connect` / `ping` / `list_tables` / `query`); the workspace-wide
-//! adapter trait is still deferred to Phase 2 (see `docs/roadmap.md`).
+//! types. Implements the workspace-wide [`DatabaseAdapter`] contract
+//! (ADR-0012); Phase 2 advertises no optional capabilities.
 //!
 //! The `/raw` endpoint is used over `/query` because it preserves
 //! column order and returns rows as positional arrays, which is what a
 //! result table needs. It also returns the same shape for SELECT and
 //! DML, so no statement routing is required.
 
+use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
-    MAX_RESULT_ROWS,
+    too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter, DbError, DbResult,
+    QueryResult, Row, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -82,47 +82,6 @@ impl D1Adapter {
         })
     }
 
-    /// Cheap liveness probe: runs `SELECT 1` and discards the result.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Connection`] on transport/auth failure or
-    /// [`DbError::Query`] when the probe statement is rejected.
-    pub async fn ping(&self) -> DbResult<()> {
-        self.post_raw("SELECT 1").await.map(|_| ())
-    }
-
-    /// List user tables (everything in `sqlite_master` that is not a
-    /// `sqlite_*` internal table), ascending by name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Schema`] when the introspection query fails.
-    pub async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
-        // Re-tag the failure category: a failed introspection query is
-        // a schema error to the rest of the system, not a user query.
-        let envelope = self
-            .post_raw(LIST_TABLES_SQL)
-            .await
-            .map_err(reclassify_schema)?;
-        envelope_to_tables(envelope)
-    }
-
-    /// Execute a SQL statement against D1 and collect the result.
-    ///
-    /// `/raw` returns the same envelope for SELECT and DML, so there is
-    /// no need to route by statement kind: rows come from
-    /// `results.rows` and the affected count from `meta.changes`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Connection`], [`DbError::Query`], or
-    /// [`DbError::TypeConversion`] depending on the failure mode.
-    pub async fn query(&self, sql: &str) -> DbResult<QueryResult> {
-        let envelope = self.post_raw(sql).await?;
-        envelope_to_query_result(envelope)
-    }
-
     /// POST a single statement to the `/raw` endpoint and return the
     /// parsed, success-checked envelope.
     async fn post_raw(&self, sql: &str) -> DbResult<D1Envelope> {
@@ -156,6 +115,54 @@ impl D1Adapter {
         } else {
             Err(error_from_response(status, &envelope.errors))
         }
+    }
+}
+
+#[async_trait]
+impl DatabaseAdapter for D1Adapter {
+    fn id(&self) -> &'static str {
+        "d1"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            has_describe_table: true,
+            ..Capabilities::default()
+        }
+    }
+
+    async fn ping(&self) -> DbResult<()> {
+        self.post_raw("SELECT 1").await.map(|_| ())
+    }
+
+    async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+        // Re-tag the failure category: a failed introspection query is
+        // a schema error to the rest of the system, not a user query.
+        let envelope = self
+            .post_raw(LIST_TABLES_SQL)
+            .await
+            .map_err(reclassify_schema)?;
+        envelope_to_tables(envelope)
+    }
+
+    async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+        // `/raw` returns the same envelope for SELECT and DML, so the
+        // statement kind doesn't need to be routed: rows come from
+        // `results.rows` and the affected count from `meta.changes`.
+        let envelope = self.post_raw(sql).await?;
+        envelope_to_query_result(envelope)
+    }
+
+    async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+        // Same PRAGMA as the Turso adapter, over the /raw envelope.
+        // PRAGMA arguments cannot be bound as parameters, so the name is
+        // embedded with single quotes doubled (SQLite string-literal
+        // escaping).
+        let escaped = table.name.replace('\'', "''");
+        let envelope = self
+            .post_raw(&format!("PRAGMA table_info('{escaped}')"))
+            .await?;
+        envelope_to_table_schema(table, envelope)
     }
 }
 
@@ -269,6 +276,96 @@ fn envelope_to_tables(envelope: D1Envelope) -> DbResult<Vec<TableInfo>> {
         .collect()
 }
 
+/// Map a `PRAGMA table_info` envelope (`cid, name, type, notnull,
+/// dflt_value, pk`) onto a [`TableSchema`]. Columns are located by name
+/// rather than position so a reordered envelope still maps correctly.
+fn envelope_to_table_schema(table: &TableInfo, envelope: D1Envelope) -> DbResult<TableSchema> {
+    let result = envelope_to_query_result(envelope)?;
+
+    // PRAGMA table_info returns zero rows for a missing table rather
+    // than an engine error, so synthesise SQLite's own message shape to
+    // satisfy the ADR-0028 "missing table is DbError::Query" rule.
+    if result.rows.is_empty() {
+        return Err(DbError::Query(format!("no such table: {}", table.name)));
+    }
+
+    let position = |field: &str| -> DbResult<usize> {
+        result
+            .columns
+            .iter()
+            .position(|c| c.name == field)
+            .ok_or_else(|| {
+                DbError::Schema(format!(
+                    "PRAGMA table_info result is missing the '{field}' column"
+                ))
+            })
+    };
+    let cid_at = position("cid")?;
+    let name_at = position("name")?;
+    let type_at = position("type")?;
+    let notnull_at = position("notnull")?;
+    let dflt_at = position("dflt_value")?;
+    let pk_at = position("pk")?;
+
+    let mut columns = Vec::with_capacity(result.rows.len());
+    // (pk position, column name) — collected out of order, sorted below.
+    let mut pk_parts: Vec<(i64, String)> = Vec::new();
+    for row in &result.rows {
+        let cid = pragma_int(row, cid_at, "cid")?;
+        let name = pragma_text(row, name_at, "name")?;
+        let declared = pragma_text(row, type_at, "type")?;
+        let notnull = pragma_int(row, notnull_at, "notnull")?;
+        let default_value = match row.get(dflt_at) {
+            Some(Value::Null) | None => None,
+            Some(Value::Text(s)) => Some(s.clone()),
+            Some(other) => Some(other.to_string()),
+        };
+        let pk = pragma_int(row, pk_at, "pk")?;
+
+        if pk > 0 {
+            pk_parts.push((pk, name.clone()));
+        }
+        let ordinal = u32::try_from(cid)
+            .map_err(|_| DbError::TypeConversion(format!("negative PRAGMA cid: {cid}")))?
+            + 1; // cid is 0-based; ColumnInfo::ordinal is 1-based (ADR-0028).
+
+        columns.push(ColumnInfo {
+            name,
+            // Typeless SQLite columns report an empty string.
+            declared_type: (!declared.is_empty()).then_some(declared),
+            nullable: notnull == 0,
+            primary_key: pk > 0,
+            ordinal,
+            default_value,
+        });
+    }
+
+    pk_parts.sort_by_key(|&(key_position, _)| key_position);
+    Ok(TableSchema {
+        table: table.clone(),
+        columns,
+        primary_key: pk_parts.into_iter().map(|(_, name)| name).collect(),
+    })
+}
+
+fn pragma_int(row: &Row, at: usize, field: &str) -> DbResult<i64> {
+    match row.get(at) {
+        Some(Value::Integer(n)) => Ok(*n),
+        other => Err(DbError::TypeConversion(format!(
+            "expected an integer '{field}' in a PRAGMA table_info row, got {other:?}"
+        ))),
+    }
+}
+
+fn pragma_text(row: &Row, at: usize, field: &str) -> DbResult<String> {
+    match row.get(at) {
+        Some(Value::Text(s)) => Ok(s.clone()),
+        other => Err(DbError::TypeConversion(format!(
+            "expected a text '{field}' in a PRAGMA table_info row, got {other:?}"
+        ))),
+    }
+}
+
 /// Convert one JSON cell from a `/raw` row into a domain [`Value`].
 ///
 /// SQLite storage classes map onto JSON as: null→Null, integers→Integer,
@@ -378,10 +475,11 @@ fn reclassify_schema(err: DbError) -> DbError {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_raw_url, convert_json_value, envelope_to_query_result, envelope_to_tables,
-        error_from_response, reclassify_schema, D1ApiError, D1Envelope,
+        build_raw_url, convert_json_value, envelope_to_query_result, envelope_to_table_schema,
+        envelope_to_tables, error_from_response, reclassify_schema, D1Adapter, D1ApiError,
+        D1Config, D1Envelope,
     };
-    use dbboard_core::{DbError, Value};
+    use dbboard_core::{DatabaseAdapter, DbError, TableInfo, Value};
     use serde_json::json;
 
     fn parse(body: serde_json::Value) -> D1Envelope {
@@ -577,6 +675,93 @@ mod tests {
         assert!(matches!(passed, DbError::Connection(_)));
         let retagged = reclassify_schema(DbError::Query("boom".into()));
         assert!(matches!(retagged, DbError::Schema(_)));
+    }
+
+    fn pragma_envelope(rows: &serde_json::Value) -> D1Envelope {
+        parse(json!({
+            "success": true,
+            "result": [{
+                "results": {
+                    "columns": ["cid", "name", "type", "notnull", "dflt_value", "pk"],
+                    "rows": rows
+                },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }))
+    }
+
+    #[test]
+    fn connect_advertises_describe_table_capability() {
+        let adapter = D1Adapter::connect(D1Config {
+            account_id: "acc".into(),
+            database_id: "db".into(),
+            api_token: "token".into(),
+            base_url: None,
+        })
+        .expect("build adapter");
+        assert!(adapter.capabilities().has_describe_table);
+    }
+
+    #[test]
+    fn table_schema_maps_pragma_rows_with_composite_pk_in_key_order() {
+        // Declaration order: sku, order_id, line_no — but the composite
+        // key order is (order_id=1, line_no=2), which must win.
+        let envelope = pragma_envelope(&json!([
+            [0, "sku", "TEXT", 1, "'unknown'", 0],
+            [1, "order_id", "INTEGER", 0, null, 1],
+            [2, "line_no", "INTEGER", 0, null, 2]
+        ]));
+        let table = TableInfo::unqualified("order_items");
+        let schema = envelope_to_table_schema(&table, envelope).expect("map schema");
+
+        assert_eq!(schema.table, table);
+        let names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["sku", "order_id", "line_no"]);
+        // cid is 0-based; ordinal is normalised to 1-based.
+        let ordinals: Vec<u32> = schema.columns.iter().map(|c| c.ordinal).collect();
+        assert_eq!(ordinals, vec![1, 2, 3]);
+
+        let sku = &schema.columns[0];
+        assert!(!sku.nullable);
+        assert!(!sku.primary_key);
+        assert_eq!(sku.default_value.as_deref(), Some("'unknown'"));
+
+        assert!(schema.columns[1].nullable);
+        assert!(schema.columns[1].primary_key);
+        assert_eq!(schema.columns[1].default_value, None);
+
+        assert_eq!(
+            schema.primary_key,
+            vec!["order_id".to_owned(), "line_no".to_owned()]
+        );
+    }
+
+    #[test]
+    fn table_schema_maps_empty_declared_type_to_none() {
+        // Typeless SQLite columns report "" from PRAGMA table_info.
+        let envelope = pragma_envelope(&json!([[0, "anything", "", 0, null, 0]]));
+        let table = TableInfo::unqualified("loose");
+        let schema = envelope_to_table_schema(&table, envelope).expect("map schema");
+        assert_eq!(schema.columns[0].declared_type, None);
+        assert!(schema.primary_key.is_empty());
+    }
+
+    #[test]
+    fn table_schema_for_missing_table_is_a_query_error() {
+        // PRAGMA table_info on a missing table returns zero rows rather
+        // than an engine error; the adapter synthesises SQLite's message.
+        let envelope = pragma_envelope(&json!([]));
+        let err = envelope_to_table_schema(&TableInfo::unqualified("ghost"), envelope)
+            .expect_err("missing table should fail");
+        let DbError::Query(msg) = err else {
+            panic!("expected DbError::Query, got {err:?}");
+        };
+        assert!(
+            msg.contains("no such table") && msg.contains("ghost"),
+            "unexpected message: {msg}"
+        );
     }
 
     #[test]

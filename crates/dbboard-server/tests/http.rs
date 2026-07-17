@@ -11,7 +11,9 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use dbboard_server::{build_router, connect, serve, AppState, BackendConfig};
+use dbboard_server::{
+    build_adapter, build_router, connect, serve, swap_backend, AppState, BackendConfig,
+};
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
@@ -62,6 +64,30 @@ async fn health_returns_ok() {
     let (status, body) = request(&state, get("/health")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({ "status": "ok" }));
+}
+
+#[tokio::test]
+async fn capabilities_reports_adapter_id_and_flags() {
+    let state = memory_state().await;
+    let (status, body) = request(&state, get("/capabilities")).await;
+    assert_eq!(status, StatusCode::OK);
+    // Turso ships no Supabase-style optional surfaces (ADR-0012), so
+    // those flags are `false`; `has_describe_table` turned `true` with
+    // ADR-0028 slice (b). The id is what `TursoAdapter::id` returns.
+    assert_eq!(
+        body,
+        json!({
+            "id": "turso",
+            "capabilities": {
+                "has_views": false,
+                "has_functions": false,
+                "has_auth": false,
+                "has_storage": false,
+                "has_realtime": false,
+                "has_describe_table": true,
+            }
+        })
+    );
 }
 
 #[tokio::test]
@@ -160,6 +186,78 @@ async fn non_json_content_type_is_unsupported_media_type() {
         .expect("build request");
     let (status, _) = request(&state, req).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+/// ADR-0020 swap point: after `swap_backend` runs, the *next* request
+/// must hit the new adapter. Two distinct in-memory libSQL databases —
+/// each its own empty schema — make the swap observable: a table
+/// created against adapter A must not be visible through adapter B.
+#[tokio::test]
+async fn swap_backend_routes_next_request_to_new_adapter() {
+    let state = memory_state().await;
+
+    // Create a table against the original adapter.
+    let (status, _) = request(&state, post_query("CREATE TABLE in_original (n INTEGER)")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Build a *fresh* in-memory Turso adapter — independent connection,
+    // therefore independent (empty) schema.
+    let fresh_adapter = build_adapter(BackendConfig::turso(":memory:"))
+        .await
+        .expect("build fresh adapter");
+
+    // Swap the running state to point at the fresh adapter.
+    swap_backend(&state, fresh_adapter);
+
+    // The next /tables request must see the fresh adapter's empty
+    // schema, not the original adapter's `in_original` table.
+    let (status, body) = request(&state, get("/tables")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "tables": [] }));
+}
+
+/// ADR-0020: the desktop binary owns a `RunningServer` and reaches the
+/// live `AppState` through it. After a swap issued via that state, the
+/// loopback server's next response must reflect the new adapter.
+#[tokio::test]
+async fn running_server_state_lets_swap_take_effect_over_loopback() {
+    let server = serve(BackendConfig::turso(":memory:"))
+        .await
+        .expect("server starts");
+    let base = format!("http://127.0.0.1:{}", server.port);
+    let client = reqwest::Client::new();
+
+    // Plant a table through the original adapter.
+    let create: Value = client
+        .post(format!("{base}/query"))
+        .json(&json!({ "sql": "CREATE TABLE in_original (n INTEGER)" }))
+        .send()
+        .await
+        .expect("create request")
+        .json()
+        .await
+        .expect("create body");
+    assert_eq!(create["rows_affected"], json!(0));
+
+    // Build a fresh adapter and swap it in via the exposed AppState.
+    let fresh = build_adapter(BackendConfig::turso(":memory:"))
+        .await
+        .expect("build fresh adapter");
+    swap_backend(&server.state(), fresh);
+
+    // The next /tables call over the same loopback socket must see the
+    // fresh adapter's empty schema, not the original `in_original` row.
+    let tables: Value = client
+        .get(format!("{base}/tables"))
+        .send()
+        .await
+        .expect("tables request")
+        .json()
+        .await
+        .expect("tables body");
+    assert_eq!(tables, json!({ "tables": [] }));
+
+    server.shutdown().await.expect("clean shutdown");
 }
 
 #[tokio::test]

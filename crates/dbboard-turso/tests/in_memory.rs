@@ -4,7 +4,7 @@
 //! promises in the roadmap, without requiring any remote Turso
 //! credentials or temp files on disk.
 
-use dbboard_core::Value;
+use dbboard_core::{DatabaseAdapter, DbError, TableInfo, Value};
 use dbboard_turso::TursoAdapter;
 
 async fn fresh_db() -> TursoAdapter {
@@ -125,6 +125,119 @@ async fn query_over_the_row_cap_is_a_query_error() {
         msg.contains(&MAX_RESULT_ROWS.to_string()),
         "error should mention the cap, got: {msg}"
     );
+}
+
+#[tokio::test]
+async fn capabilities_advertise_describe_table() {
+    let adapter = fresh_db().await;
+    assert!(adapter.capabilities().has_describe_table);
+}
+
+#[tokio::test]
+async fn describe_table_reports_columns_in_ordinal_order() {
+    let adapter = fresh_db().await;
+    adapter
+        .query(
+            "CREATE TABLE users (\
+             id INTEGER PRIMARY KEY, \
+             email TEXT NOT NULL DEFAULT 'nobody@example.com', \
+             note TEXT)",
+        )
+        .await
+        .expect("create users");
+
+    let schema = adapter
+        .describe_table(&TableInfo::unqualified("users"))
+        .await
+        .expect("describe users");
+
+    assert_eq!(schema.table, TableInfo::unqualified("users"));
+    let names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["id", "email", "note"]);
+    // SQLite's PRAGMA cid is 0-based; the adapter normalises to 1-based.
+    let ordinals: Vec<u32> = schema.columns.iter().map(|c| c.ordinal).collect();
+    assert_eq!(ordinals, vec![1, 2, 3]);
+
+    let id = &schema.columns[0];
+    assert_eq!(id.declared_type.as_deref(), Some("INTEGER"));
+    assert!(id.primary_key);
+    assert_eq!(id.default_value, None);
+
+    let email = &schema.columns[1];
+    assert!(!email.nullable);
+    assert!(!email.primary_key);
+    // SQLite reports the default as the literal DDL expression text,
+    // quotes included.
+    assert_eq!(email.default_value.as_deref(), Some("'nobody@example.com'"));
+
+    let note = &schema.columns[2];
+    assert!(note.nullable);
+    assert_eq!(note.default_value, None);
+
+    assert_eq!(schema.primary_key, vec!["id".to_owned()]);
+}
+
+#[tokio::test]
+async fn describe_table_materialises_composite_pk_in_key_order() {
+    let adapter = fresh_db().await;
+    adapter
+        .query(
+            "CREATE TABLE order_items (\
+             sku TEXT, \
+             order_id INTEGER, \
+             line_no INTEGER, \
+             PRIMARY KEY (order_id, line_no))",
+        )
+        .await
+        .expect("create order_items");
+
+    let schema = adapter
+        .describe_table(&TableInfo::unqualified("order_items"))
+        .await
+        .expect("describe order_items");
+
+    // Key order (order_id, line_no), not column declaration order.
+    assert_eq!(
+        schema.primary_key,
+        vec!["order_id".to_owned(), "line_no".to_owned()]
+    );
+    let pk_flags: Vec<bool> = schema.columns.iter().map(|c| c.primary_key).collect();
+    assert_eq!(pk_flags, vec![false, true, true]);
+}
+
+#[tokio::test]
+async fn describe_table_missing_table_is_a_query_error() {
+    let adapter = fresh_db().await;
+    let err = adapter
+        .describe_table(&TableInfo::unqualified("ghost"))
+        .await
+        .expect_err("describing a missing table should fail");
+    let DbError::Query(msg) = err else {
+        panic!("expected DbError::Query, got {err:?}");
+    };
+    assert!(
+        msg.contains("no such table") && msg.contains("ghost"),
+        "unexpected message: {msg}"
+    );
+}
+
+/// A single quote in the table name must not break out of the PRAGMA
+/// argument (escaping guard — the name comes back from `list_tables`
+/// but could be attacker-influenced via a hostile schema).
+#[tokio::test]
+async fn describe_table_handles_quoted_table_names() {
+    let adapter = fresh_db().await;
+    adapter
+        .query("CREATE TABLE \"we'ird\" (id INTEGER PRIMARY KEY)")
+        .await
+        .expect("create we'ird");
+
+    let schema = adapter
+        .describe_table(&TableInfo::unqualified("we'ird"))
+        .await
+        .expect("describe we'ird");
+    assert_eq!(schema.columns.len(), 1);
+    assert_eq!(schema.primary_key, vec!["id".to_owned()]);
 }
 
 /// Opening a path that does not exist must not echo the path back in

@@ -2,8 +2,12 @@
 resolver = "2"
 members = [
     "apps/dbboard",
+    "crates/dbboard-ai",
+    "crates/dbboard-anthropic",
+    "crates/dbboard-config",
     "crates/dbboard-core",
     "crates/dbboard-d1",
+    "crates/dbboard-i18n",
     "crates/dbboard-postgres",
     "crates/dbboard-server",
     "crates/dbboard-turso",
@@ -11,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
@@ -22,6 +26,21 @@ publish = false
 
 [workspace.dependencies]
 dbboard-core = { path = "crates/dbboard-core" }
+# Optional AI integration layer (ADR-0023). The trait crate defines the
+# `AiProvider` surface; concrete providers (Anthropic, …) live in
+# sibling crates that depend on this one only.
+dbboard-ai = { path = "crates/dbboard-ai" }
+# First concrete AI provider — talks to the Anthropic Messages API over
+# `reqwest` (ADR-0023). The binary depends on this only when AI is
+# wired in (Stage 1 wiring follows in a sibling PR).
+dbboard-anthropic = { path = "crates/dbboard-anthropic" }
+# Local user configuration: connections.toml + OS keychain (ADR-0013).
+# The server depends on this to wire env-vars with the file-backed store
+# into a single BackendConfig resolution.
+dbboard-config = { path = "crates/dbboard-config" }
+# UI-only translation loader (ADR-0015). Consumed by `dbboard-ui` and
+# initialised once at startup from `apps/dbboard`.
+dbboard-i18n = { path = "crates/dbboard-i18n" }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # libsql core only — no remote/sync/replication/tls. Phase 1.5 will
@@ -30,21 +49,96 @@ libsql = { version = "0.9", default-features = false, features = ["core"] }
 egui = "0.34"
 # eframe with the default glow renderer; wgpu lands later if needed.
 eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
-# D1 talks to Cloudflare's REST API over HTTPS. rustls avoids a system
-# OpenSSL dependency, keeping the Windows build self-contained.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# egui's official companion crate. TableBuilder gives the result grid a
+# sticky header, virtualized rows, and per-column separators — none of
+# which egui::Grid offers. See ADR-0030.
+egui_extras = { version = "0.34", default-features = false }
+# D1 (and the Anthropic AI provider) talk to REST APIs over HTTPS.
+# rustls avoids a system OpenSSL dependency, keeping the Windows build
+# self-contained. Roots come from the OS trust store (`*-native-roots`),
+# NOT the webpki-bundled Mozilla set: a Windows desktop routinely sits
+# behind a TLS-inspecting middlebox (AV like Norton, or a corporate
+# proxy) that re-signs every HTTPS connection with a locally-installed
+# CA. webpki roots don't include that CA, so the handshake fails with a
+# bare "error sending request" and every DB connection breaks. The OS
+# store *does* include it (browsers and curl/schannel trust it), so
+# native roots make dbboard behave like a normal desktop client. Still
+# pure-Rust rustls — rustls-native-certs only reads the store, it does
+# not pull in OpenSSL. See ADR-0034.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# CockroachDB / Neon talk the PostgreSQL wire protocol. rustls (ring)
-# keeps TLS pure-Rust, matching reqwest above and avoiding system OpenSSL.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres"] }
-# Consumes the `raw_sql(...).fetch_many(...)` result stream.
+# Neon / Supabase / Aurora DSQL talk the PostgreSQL wire protocol.
+# rustls (ring) keeps TLS pure-Rust, matching reqwest above and avoiding
+# system OpenSSL. `-native-roots` (not the default `-webpki`) so the
+# Postgres-family adapters trust the OS store and survive the same
+# TLS-inspecting middleboxes described on `reqwest` above. See ADR-0034.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres"] }
+# Consumes the `raw_sql(...).fetch_many(...)` result stream. Also drives
+# the dbboard-anthropic SSE stream wrapper (ADR-0026 Decision 4).
 futures-util = "0.3"
+# Pure-Rust SigV4 primitives for Aurora DSQL IAM token generation
+# (ADR-0036). Hand-rolled SigV4 keeps auth off the AWS SDK, which would
+# otherwise pull in aws-lc-rs and break the rustls-ring / no-aws-lc-rs
+# TLS constraint (ADR-0034). Versions pinned to what Cargo.lock already
+# resolves transitively, so no new dependency tree is introduced.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+percent-encoding = "2"
+# now_utc() + compile-time format descriptions for the SigV4 amz-date
+# and credential-scope datestamp. `macros` for `format_description!`.
+time = { version = "0.3", features = ["formatting", "macros"] }
+# `CancellationToken` for cooperative cancel on the dbboard-ui worker's
+# streaming AI dispatch (ADR-0026 Decision 5). Lightweight Arc handle
+# whose `.cancelled()` future can be raced against the stream future via
+# `tokio::select!`; no `unsafe`, no manual abort plumbing.
+tokio-util = { version = "0.7", default-features = false }
 # Local in-process HTTP backend (Phase 1.5 / ADR-0009). The desktop UI
 # talks to this loopback server over the same contract as dbboard-web.
 axum = "0.8"
 # JSON has no byte type, so Value::Blob is encoded as base64 on the wire.
 base64 = "0.22"
+# AFIT (async fn in trait) is not object-safe; the server holds adapters
+# as Arc<dyn DatabaseAdapter>. async-trait macros around that until
+# object-safe async fns stabilise (ADR-0012).
+async-trait = "0.1"
+# Connection store file format (ADR-0013). String round-trip only at the
+# schema layer; filesystem reads live in the same crate's store module.
+toml = "0.8"
+# Cross-platform config-dir resolution for connections.toml (ADR-0013).
+directories = "5"
+# OS keychain backed secret storage for connection tokens (ADR-0013).
+# Maps to Windows Credential Manager / macOS Keychain / Linux Secret
+# Service uniformly; no system OpenSSL dependency.
+keyring = "3"
+# Native "Save As" / message dialogs for exporting a result set to CSV
+# (ADR-0035). Wraps the OS file picker (Win32 IFileDialog on Windows,
+# NSSavePanel on macOS, GTK/xdg-portal on Linux) so the export UX matches
+# a normal desktop app. Pure-Rust bindings, MIT/Apache-2.0. On Linux the
+# default backend needs GTK3 dev libraries at build time; the maintainer
+# builds on Windows where no extra system libs are required.
+rfd = "0.17"
+# Passphrase-based encryption for the connection bundle export/import
+# (ADR-0038). age gives us a battle-tested envelope in one dependency:
+# scrypt KDF + ChaCha20-Poly1305 AEAD + a versioned, authenticated file
+# format, so dbboard hand-rolls no crypto. Passphrase (scrypt) recipient
+# only; the X25519 recipient path is unused but comes with the crate.
+# Pure Rust, MIT/Apache-2.0, no system OpenSSL. default-features = false
+# drops the optional `armor`/`async`/`plugin`/`ssh` surface — the bundle
+# is a binary blob written straight to a user-chosen path.
+age = { version = "0.11", default-features = false }
+# Scrub the decrypted-bundle plaintext buffer from memory after use
+# (ADR-0038). age already zeroizes its own SecretString key material;
+# this covers the intermediate JSON byte buffer that briefly holds the
+# resolved secrets before/after the age boundary. Already in the tree
+# transitively via age; pinned here to depend on it directly.
+zeroize = "1"
+# tempfile-based integration tests for dbboard-config's filesystem layer.
+tempfile = "3"
+# Pure-Rust mock HTTP server for dbboard-anthropic's round-trip tests.
+# Dev-dep only — the production code never depends on it.
+wiremock = "0.6"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

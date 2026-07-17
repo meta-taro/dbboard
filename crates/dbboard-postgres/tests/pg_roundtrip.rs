@@ -8,7 +8,7 @@
 //! the text-format value mapping (every value comes back as `Value::Text`,
 //! NULL as `Value::Null`).
 
-use dbboard_core::Value;
+use dbboard_core::{DatabaseAdapter, Value};
 use dbboard_postgres::{PostgresAdapter, PostgresConfig};
 
 fn config_from_env() -> Option<PostgresConfig> {
@@ -88,6 +88,69 @@ async fn dml_and_select_round_trip() {
     adapter.query(&drop_sql).await.expect("cleanup drop");
 }
 
+/// `describe_table` round-trip: columns arrive in ordinal order with
+/// nullability, defaults, and the composite primary key in key order
+/// (ADR-0028). Missing tables surface as `DbError::Query`.
+#[tokio::test]
+async fn describe_table_round_trips_columns_and_composite_pk() {
+    use dbboard_core::TableInfo;
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+
+    let table = format!("dbboard_pg_describe_{}", std::process::id());
+    let drop_sql = format!("DROP TABLE IF EXISTS {table}");
+    adapter.query(&drop_sql).await.expect("pre-drop");
+    adapter
+        .query(&format!(
+            "CREATE TABLE {table} (\
+             order_id INT, \
+             line_no INT, \
+             sku TEXT NOT NULL DEFAULT 'unknown', \
+             PRIMARY KEY (order_id, line_no))"
+        ))
+        .await
+        .expect("create");
+
+    let info = TableInfo::qualified("public", &table);
+    let schema = adapter.describe_table(&info).await.expect("describe");
+
+    assert_eq!(schema.table, info);
+    let names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["order_id", "line_no", "sku"]);
+    let ordinals: Vec<u32> = schema.columns.iter().map(|c| c.ordinal).collect();
+    assert_eq!(ordinals, vec![1, 2, 3]);
+    assert_eq!(
+        schema.primary_key,
+        vec!["order_id".to_owned(), "line_no".to_owned()]
+    );
+
+    let sku = &schema.columns[2];
+    assert!(!sku.nullable);
+    assert!(!sku.primary_key);
+    assert!(
+        sku.default_value
+            .as_deref()
+            .is_some_and(|d| d.contains("unknown")),
+        "expected a default mentioning 'unknown', got {:?}",
+        sku.default_value
+    );
+
+    adapter.query(&drop_sql).await.expect("cleanup drop");
+
+    let err = adapter
+        .describe_table(&TableInfo::qualified("public", &table))
+        .await
+        .expect_err("describing a dropped table should fail");
+    assert!(
+        matches!(err, dbboard_core::DbError::Query(_)),
+        "expected DbError::Query, got {err:?}"
+    );
+}
+
 /// Exactly at the row cap: `generate_series(1, MAX_RESULT_ROWS)` returns
 /// `MAX_RESULT_ROWS` rows and must succeed.
 #[tokio::test]
@@ -102,6 +165,89 @@ async fn query_at_the_row_cap_returns_all_rows() {
     let sql = format!("SELECT n FROM generate_series(1, {MAX_RESULT_ROWS}) AS s(n)");
     let result = adapter.query(&sql).await.expect("query at cap");
     assert_eq!(result.rows.len(), MAX_RESULT_ROWS);
+}
+
+/// Neon round-trip: same wire protocol as Postgres, but
+/// `connect_neon` flips the runtime adapter id to `"neon"` (ADR-0018).
+/// Gated on its own env var so the `DBBOARD_PG_URL` test can stay
+/// pointed at `CockroachDB` / vanilla Postgres while this one targets a
+/// real Neon endpoint. Neon enforces TLS — the URL must include
+/// `sslmode=require`.
+#[tokio::test]
+async fn neon_round_trip_reports_neon_flavor() {
+    let Some(url) = std::env::var("DBBOARD_NEON_URL").ok() else {
+        eprintln!("skipping: DBBOARD_NEON_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_neon(PostgresConfig { url })
+        .await
+        .expect("connect_neon");
+    adapter.ping().await.expect("ping");
+    assert_eq!(
+        adapter.id(),
+        "neon",
+        "connect_neon must surface the neon flavor at runtime"
+    );
+
+    let result = adapter.query("SELECT 1 AS one").await.expect("query");
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
+}
+
+/// Supabase round-trip: same wire protocol as Postgres, but
+/// `connect_supabase` flips the runtime adapter id to `"supabase"`
+/// (ADR-0019). Gated on its own env var; both the direct `:5432` host
+/// and the transaction-pooler `:6543` host satisfy this test — the URL
+/// itself picks. Supabase enforces TLS, so the URL must include
+/// `sslmode=require`.
+#[tokio::test]
+async fn supabase_round_trip_reports_supabase_flavor() {
+    let Some(url) = std::env::var("DBBOARD_SUPABASE_URL").ok() else {
+        eprintln!("skipping: DBBOARD_SUPABASE_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_supabase(PostgresConfig { url })
+        .await
+        .expect("connect_supabase");
+    adapter.ping().await.expect("ping");
+    assert_eq!(
+        adapter.id(),
+        "supabase",
+        "connect_supabase must surface the supabase flavor at runtime"
+    );
+
+    let result = adapter.query("SELECT 1 AS one").await.expect("query");
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
+}
+
+/// Aurora DSQL round-trip: same wire protocol as Postgres, but
+/// `connect_aurora_dsql` flips the runtime adapter id to `"aurora-dsql"`
+/// (ADR-0021). Gated on its own env var so the other pg-wire round-trips
+/// keep pointing at their respective backends. Aurora DSQL enforces TLS
+/// and IAM auth — the URL must include `sslmode=require` and a fresh
+/// short-lived IAM authentication token in the password segment
+/// (~15 min TTL). An expired token surfaces as `DbError::Connection`
+/// at `connect`/`ping` time.
+#[tokio::test]
+async fn aurora_dsql_round_trip_reports_aurora_dsql_flavor() {
+    let Some(url) = std::env::var("DBBOARD_AURORA_DSQL_URL").ok() else {
+        eprintln!("skipping: DBBOARD_AURORA_DSQL_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url })
+        .await
+        .expect("connect_aurora_dsql");
+    adapter.ping().await.expect("ping");
+    assert_eq!(
+        adapter.id(),
+        "aurora-dsql",
+        "connect_aurora_dsql must surface the aurora-dsql flavor at runtime"
+    );
+
+    let result = adapter.query("SELECT 1 AS one").await.expect("query");
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
 }
 
 /// One row past the cap must surface as `DbError::Query` rather than a

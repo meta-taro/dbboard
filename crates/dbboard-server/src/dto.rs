@@ -6,7 +6,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use dbboard_core::{DbError, TableInfo};
+use dbboard_core::{Capabilities, DbError, TableInfo};
 use serde::{Deserialize, Serialize};
 
 /// `POST /query` request body.
@@ -25,6 +25,15 @@ pub(crate) struct HealthResponse {
 #[derive(Debug, Serialize)]
 pub(crate) struct TablesResponse {
     pub tables: Vec<TableInfo>,
+}
+
+/// `GET /capabilities` response body. `id` identifies the connected
+/// adapter (e.g. `"turso"`, `"d1"`, `"postgres"`); `capabilities` is the
+/// flat per-feature flag struct from `dbboard-core` (ADR-0012).
+#[derive(Debug, Serialize)]
+pub(crate) struct CapabilitiesResponse {
+    pub id: &'static str,
+    pub capabilities: Capabilities,
 }
 
 /// Error response wrapper: `{"error":{"category":"...","message":"..."}}`.
@@ -65,12 +74,16 @@ impl IntoResponse for ApiError {
 /// Map a domain error onto an HTTP status. A bad SQL statement is the
 /// caller's fault (`400`); a type the adapter cannot represent is
 /// semantically invalid (`422`); connection and schema failures are the
-/// upstream database's fault from the UI's perspective (`502`).
+/// upstream database's fault from the UI's perspective (`502`); a
+/// capability the adapter does not implement is treated as a missing
+/// resource (`404`, per ADR-0012) so the UI can hide the feature
+/// cleanly instead of surfacing it as a SQL error.
 fn status_for(err: &DbError) -> StatusCode {
     match err {
         DbError::Query(_) => StatusCode::BAD_REQUEST,
         DbError::TypeConversion(_) => StatusCode::UNPROCESSABLE_ENTITY,
         DbError::Connection(_) | DbError::Schema(_) => StatusCode::BAD_GATEWAY,
+        DbError::Capability(_) => StatusCode::NOT_FOUND,
     }
 }
 
@@ -105,6 +118,14 @@ mod tests {
         assert_eq!(
             status_for(&DbError::Schema(String::new())),
             StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[test]
+    fn capability_unavailable_is_not_found() {
+        assert_eq!(
+            status_for(&DbError::Capability(String::new())),
+            StatusCode::NOT_FOUND
         );
     }
 }

@@ -1,0 +1,2 @@
+# Never apply CRLF/LF normalisation to the Windows icon asset.
+*.ico binary

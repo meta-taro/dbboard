@@ -46,24 +46,34 @@ Supabase) track the vendor's current API and the pinned client crate.
 D1 does not expose a user-visible version; the service is treated as a
 single moving target tracked by the integration test.
 
-### PostgreSQL-wire (CockroachDB / Neon / vanilla Postgres)
+### PostgreSQL-wire (CockroachDB / Neon / Supabase / Aurora DSQL / vanilla Postgres)
 
 Shared `dbboard-postgres` adapter on `sqlx 0.8 + tls-rustls-ring`.
 
 | Server | Tier 1 | Tier 2 | Notes |
 |---|---|---|---|
-| CockroachDB | `v24.x` | `v23.2` LTS | Postgres wire 3.0; live test gated on `DBBOARD_PG_URL`. |
-| Neon (managed Postgres) | Postgres `17`, `16` | Postgres `15` | Same adapter; connection picker quirks land in Phase 3. |
+| CockroachDB | `v24.x` | `v23.2` LTS | Postgres wire 3.0; live test gated on `DBBOARD_PG_URL`; `id()` returns `"postgres"`. |
+| Neon (managed Postgres) | Postgres `17`, `16` | Postgres `15` | Same adapter; flavored as a first-class kind (ADR-0018) so the runtime adapter id is `"neon"`. Live test gated on `DBBOARD_NEON_URL` (TLS required — Neon enforces `sslmode=require`). |
+| Supabase (managed Postgres) | Postgres `17`, `16`, `15` | — | Same adapter; flavored as a first-class kind (ADR-0019) so the runtime adapter id is `"supabase"`. Live test gated on `DBBOARD_SUPABASE_URL` (TLS required; both the direct `:5432` endpoint and the transaction-pooler `:6543` endpoint are covered — pick via the URL). |
+| AWS Aurora DSQL | current managed service | — | Same adapter; flavored as a first-class kind (ADR-0021) so the runtime adapter id is `"aurora-dsql"`. Live test gated on `DBBOARD_AURORA_DSQL_URL` (TLS required; the URL's password segment must carry a short-lived IAM authentication token, ~15 min TTL). The `aurora-dsql-iam` connection kind (ADR-0036) mints that token itself from stored AWS credentials, for connections that outlive the ~15-min TTL. Aurora DSQL has no user-visible Postgres major version; the service is tracked as a single moving target. |
 | Vanilla PostgreSQL | Postgres `17`, `16` | Postgres `15` | Same adapter; no special handling. |
 
 Older Postgres majors (≤ 14) are best effort — the wire protocol
 matches, but no commitment.
 
-### Supabase
+The Supabase REST surface (PostgREST, GoTrue, Storage, Realtime) is
+deliberately out of scope at this stage: ADR-0019 limits Phase 3 to
+the pg-wire path. A future ADR will decide whether to layer REST
+capabilities on top of the flavored adapter.
 
-Phase 3. Will be filled in when the adapter lands; expected baseline is
-Supabase's currently supported Postgres majors and the matching
-PostgREST + GoTrue API versions.
+Aurora DSQL IAM-token handling comes in two kinds. `aurora-dsql`
+(ADR-0021) takes a manually supplied URL where the user owns token
+freshness. `aurora-dsql-iam` (ADR-0036) mints the SigV4 token itself
+from stored AWS credentials — using a hand-rolled pure-Rust signer, not
+the AWS SDK, so the rustls-`ring` crypto stack (ADR-0034) is preserved.
+v1 mints the token when the connection is built (startup and each
+connection switch); continuous in-pool refresh before expiry is a
+planned follow-up ADR.
 
 ## Adding or moving a version
 
