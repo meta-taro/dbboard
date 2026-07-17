@@ -12,18 +12,65 @@ description = "dbboard desktop binary: wires adapters and UI together."
 name = "dbboard"
 path = "src/main.rs"
 
+# Embeds the icon + version/product metadata into the Windows binary and
+# suppresses the console window at link time (ADR-0032). Windows-only via
+# a target cfg so non-Windows builds pull in nothing.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 # The binary wires the in-process server to the UI and links neither
 # adapters nor dbboard-core directly: the server owns backend selection
 # (the adapters reach the binary transitively through dbboard-server).
+# dbboard-config is only needed here for the load-or-empty entry point
+# and the keyring secret backend; resolution itself lives in the server.
+dbboard-config = { workspace = true }
+# Translation loader (ADR-0015). The binary is the only crate that
+# resolves the user's locale (env var → OS → en fallback) and registers
+# CJK system fonts. `dbboard-ui` itself only sees the macros.
+dbboard-i18n = { workspace = true }
 dbboard-server = { path = "../../crates/dbboard-server" }
 dbboard-ui = { path = "../../crates/dbboard-ui" }
+# Optional AI provider trait + the first concrete provider (ADR-0023).
+# The binary resolves `DBBOARD_ANTHROPIC_API_KEY` at startup, constructs
+# an `AnthropicProvider` on success, and injects it into the UI as
+# `Option<Arc<dyn AiProvider>>`. A missing env var or a construction
+# failure degrades gracefully — the binary still runs without AI.
+dbboard-ai = { workspace = true }
+dbboard-anthropic = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 tokio = { workspace = true }
+# Startup update check (ADR-0040): a single best-effort GET to the GitHub
+# Releases API, compared against this binary's CARGO_PKG_VERSION. reqwest
+# drives the call (same rustls stack as the rest of the workspace) and
+# serde deserializes the release envelope. Both are already transitive via
+# dbboard-ui; naming them here makes the binary's own network use explicit.
+reqwest = { workspace = true }
+serde = { workspace = true }
+# ADR-0017 history.jsonl stamps RFC 3339 ms-precision timestamps. The
+# binary owns the clock so `dbboard-ui` stays free of any date crate;
+# `formatting` is the only feature needed for OffsetDateTime → RFC 3339.
+time = { version = "0.3", default-features = false, features = ["formatting", "std"] }
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+# Scratch ai-providers.toml + scratch keyring for the in-process AI
+# switcher tests (ADR-0025). Tests construct AiSettingsAdmin via
+# `new_with_file` against a tempdir path; `set_active` writes to that
+# path so each test leaves a clean disk state.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+# cargo-wix settings (ADR-0032). The hand-authored `wix/main.wxs` is the
+# source of truth for the installer; these keys let `cargo wix init
+# --force` regenerate a template with the SAME fixed GUIDs, and point the
+# license dialog at the MIT RTF. Changing the GUIDs breaks in-place
+# upgrades — keep them in lockstep with `wix/main.wxs`.
+[package.metadata.wix]
+upgrade-guid = "A8AED330-48F5-4C84-89AD-C1303DF5543F"
+path-guid = "B008E00A-3525-4A0F-AF0E-DF2045D814B2"
+eula = "wix/License.rtf"
+name = "dbboard"

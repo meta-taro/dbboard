@@ -22,21 +22,37 @@ dbboard/
 │   └── dbboard/            # binary; boots local server + UI in one process
 └── crates/
     ├── dbboard-core/       # domain: traits, types, errors (no I/O; serde only)
+    ├── dbboard-config/     # connections.toml + OS keychain (ADR-0013)
+    ├── dbboard-i18n/       # Fluent bundles (ADR-0015/0022)
     ├── dbboard-turso/      # adapter: Turso / libSQL
     ├── dbboard-d1/         # adapter: Cloudflare D1 (REST)
-    ├── dbboard-postgres/   # adapter: PostgreSQL-wire (CockroachDB / Neon)
-    ├── dbboard-supabase/   # adapter: Supabase (later)
+    ├── dbboard-postgres/   # adapter: PostgreSQL-wire (CockroachDB + Neon /
+    │                       #   Supabase / Aurora DSQL via the flavor field —
+    │                       #   ADR-0018/0019/0021)
     ├── dbboard-server/     # local axum HTTP backend (ADR-0006)
-    ├── dbboard-ai/         # optional AI provider trait + adapters
+    ├── dbboard-ai/         # AI provider trait + value types (ADR-0023)
+    ├── dbboard-anthropic/  # AI provider: Anthropic Messages API (ADR-0023)
     └── dbboard-ui/         # egui views; HTTP client of dbboard-server
 ```
 
-As of `0.1.0`, `dbboard-core`, `dbboard-turso`, `dbboard-d1`,
-`dbboard-postgres`, `dbboard-server`, `dbboard-ui`, and `apps/dbboard`
-all ship (Phase 1 / 1.5 / 1.6 / 1.7 closed). The UI talks to the
-server over HTTP rather than calling adapters directly; `apps/dbboard`
-boots both in one process. `dbboard-supabase` and `dbboard-ai` are
-later phases — see [`roadmap.md`](roadmap.md).
+As of the latest `develop`, `dbboard-core`, `dbboard-config`,
+`dbboard-i18n`, `dbboard-turso`, `dbboard-d1`, `dbboard-postgres` (with
+its three pg-wire flavors), `dbboard-server`, `dbboard-ui`, `dbboard-ai`
+(trait crate; landed via PR #20 on 2026-06-15), `dbboard-anthropic`
+(first concrete provider; landed via PR #22 on 2026-06-15), and
+`apps/dbboard` all ship. The UI talks to the server over HTTP rather
+than calling adapters directly; `apps/dbboard` boots both in one
+process. The binary constructs `Option<Arc<dyn AiProvider>>` from env
+vars at startup (landed via PR #24 on 2026-06-17 —
+`DBBOARD_ANTHROPIC_API_KEY` is the opt-in gate, missing or construction
+failure degrades to `None`). The `dbboard-ui` AI panel consumes the
+provider behind `has_ai_provider()`; the worker thread routes
+`Command::AiExplain` / `Command::AiSuggest` through
+`tokio::runtime::block_on(provider.*)` and surfaces results as
+`Reply::AiResponded` / `Reply::AiFailed`. Eleven Fluent locales carry
+the `ai-*` strings; the menu entry and the panel are hidden entirely
+when no provider was wired (ADR-0023 Decision 11). Phase 4 Stage 1
+slice (b).
 
 ## Dependency Rules
 
@@ -44,13 +60,19 @@ Strictly enforced via cargo workspace edges:
 
 ```
 apps/dbboard
-   ├──> dbboard-ui ───────┐                  (HTTP client of dbboard-server)
-   └──> dbboard-server ───┤
-            ├──> dbboard-turso ────┤──> dbboard-core
-            ├──> dbboard-d1 ───────┤
-            ├──> dbboard-postgres ─┤
-            └──> (dbboard-ai) ─────┘          (dbboard-ai also depends on core)
+   ├──> dbboard-ui ────────────────┐         (HTTP client of dbboard-server)
+   ├──> dbboard-server ────────────┤
+   │       ├──> dbboard-turso ─────┤
+   │       ├──> dbboard-d1 ────────┤──> dbboard-core
+   │       └──> dbboard-postgres ──┤
+   └──> (dbboard-anthropic) ───────┤         (concrete AI providers live alongside
+            └──> dbboard-ai ───────┘          the binary; in-process, no HTTP)
 ```
+
+The AI layer sits next to the binary, not under `dbboard-server`:
+`apps/dbboard` constructs `Option<Arc<dyn AiProvider>>` at startup and
+hands it to the UI worker directly. AI calls do not traverse the HTTP
+contract ([ADR-0023](decisions.md)).
 
 - `dbboard-core` depends on nothing in this workspace (it derives
   `serde` for the wire format, which is pure data transformation, not
@@ -62,9 +84,22 @@ apps/dbboard
 - `dbboard-ui` depends on `dbboard-core` among workspace crates only. It
   talks to the local server **over HTTP** (via external crates `reqwest`
   / `tokio`), not via direct function calls.
+- `dbboard-ai` (trait crate) depends on `dbboard-core` only — for
+  `TableInfo`, which is re-exported so concrete providers do not need
+  a direct `dbboard-core` dep. No I/O, no async runtime at runtime
+  (`tokio` is a dev-only dep for trait tests).
+- Concrete AI providers (`dbboard-anthropic`, future peers) depend on
+  `dbboard-ai` only — never on `dbboard-server`, `dbboard-ui`, or each
+  other.
 - `apps/dbboard` boots `dbboard-server` (binding to `127.0.0.1:0`,
   reading back the assigned port) and starts `dbboard-ui` with that
-  port. On exit it shuts the server down cleanly.
+  port. On exit it shuts the server down cleanly. The binary also
+  resolves the optional AI provider at startup
+  (`resolve_ai_provider`): when `DBBOARD_ANTHROPIC_API_KEY` is set,
+  it constructs an `AnthropicProvider` and passes
+  `Some(Arc::new(provider))` to `DbboardApp::connect`; otherwise
+  it passes `None` and the UI hides AI controls via
+  `has_ai_provider()`.
 
 This means new DB support is added by writing one crate that implements
 the trait, then wiring it into `dbboard-server`. No UI or core changes
@@ -110,18 +145,51 @@ pub trait DatabaseAdapter: Send + Sync {
 that do not implement a given capability simply leave the accessor at
 its `None` default — no code changes elsewhere.
 
-## AI Layer (optional, later)
+## AI Layer (optional)
 
-A separate trait in `dbboard-ai` that mirrors the adapter pattern:
+A separate trait in `dbboard-ai` that mirrors the adapter pattern.
+The trait crate is in `develop` as of PR #20 (2026-06-15); the first
+concrete provider `dbboard-anthropic` (Anthropic Messages API over
+`reqwest`) followed in PR #22 (2026-06-15). The `apps/dbboard`
+env-var wiring landed via PR #24 (2026-06-17), and the `dbboard-ui`
+AI panel slice (b) landed as the next PR against the same issue
+([ADR-0023](decisions.md);
+`.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`).
+The UI panel is registered only when `has_ai_provider()` returns
+true; the worker thread routes `Command::AiExplain` /
+`Command::AiSuggest` through `tokio::runtime::block_on(provider.*)`
+just like ADR-0020's `ConnectionSwitcher`, surfacing results as
+`Reply::AiResponded { text, tokens_in, tokens_out }` or
+`Reply::AiFailed { error: AiError }`. The menu entry and the panel
+both hide entirely when no provider was wired (ADR-0023 Decision 11
+graceful degradation = absence).
 
 ```rust
 #[async_trait::async_trait]
 pub trait AiProvider: Send + Sync {
-    async fn explain_sql(&self, sql: &str) -> Result<String, AiError>;
-    async fn suggest_sql(&self, prompt: &str, schema: &SchemaSnapshot)
-        -> Result<String, AiError>;
+    fn id(&self) -> &'static str;
+    fn capabilities(&self) -> AiCapabilities;
+    async fn explain(&self, req: &ExplainRequest)
+        -> AiResult<AiResponse>;
+    async fn suggest_sql(&self, req: &SuggestRequest)
+        -> AiResult<AiResponse>;
 }
 ```
+
+`AiCapabilities` is the same flat-bool shape as
+`dbboard_core::Capabilities` (all-false default, additive flags as
+Stage 2 capabilities land). `SuggestRequest::schema: Vec<TableInfo>`
+carries the current `list_tables()` result — full DDL extraction is a
+Stage 2 concern. `AiError` is a separate taxonomy from `DbError`
+(`Configuration` / `Network` / `Provider` / `Quota` / `Cancelled`);
+because AI calls never traverse the HTTP contract, the
+prefix-translation rule from ADR-0009 does not apply.
+
+Dependency rule: `dbboard-ai` depends on `dbboard-core` only (for
+`TableInfo`, re-exported so concrete providers do not need a direct
+`dbboard-core` dep). Concrete providers (`dbboard-anthropic`, future
+peers) depend on `dbboard-ai` only — never on `dbboard-ui` or on
+each other.
 
 The UI calls `Option<Arc<dyn AiProvider>>`. When `None`, AI-related
 controls are hidden or disabled.
@@ -165,9 +233,31 @@ secret first.
 
 ## Configuration
 
-- Connections are stored in a local file (TBD: `~/.config/dbboard/config.toml`
-  or platform equivalent via the `directories` crate).
-- Secrets are stored via the OS keychain (TBD: `keyring` crate).
+User-facing configuration lives in a dedicated crate
+**`crates/dbboard-config`** (added in Phase 2; see
+[ADR-0013](decisions.md)). It owns both halves:
+
+- **Connection metadata** in a per-user TOML file
+  (`connections.toml`) under the platform's standard config dir,
+  resolved through the `directories` crate. The file is `version = 1`
+  with a list of `[[connections]]` entries (`kind = "turso" | "d1" |
+  "postgres"`). A missing file yields an empty store; the file is
+  created lazily when the UI saves the first entry, with mode `0o600`
+  on Unix (routed through `dbboard_config::secure_fs::create_new_user_only`
+  per ADR-0024). `history.jsonl` lands the same way and re-tightens
+  defensively on every append for files that pre-date the ADR.
+- **Secrets** in the OS keychain via the `keyring` crate (Windows
+  Credential Manager, macOS Keychain, Linux Secret Service). The TOML
+  stores only opaque `keyring_*_ref` keys; tokens and connection
+  strings never appear on disk. The OS keychain is unaffected by the
+  ADR-0024 at-rest hardening — secrets there are encrypted by the OS
+  even on a recovered powered-off disk.
+
+`apps/dbboard::main` resolves a backend in this order:
+`DBBOARD_PG_URL` → `DBBOARD_D1_*` → `DBBOARD_TURSO_PATH` →
+`DBBOARD_CONNECTION=<id>` from `connections.toml` → single-entry
+auto-select → default Turso `:memory:`. The config layer is purely
+additive; existing env-driven flows are unchanged.
 
 ## Testing Strategy
 

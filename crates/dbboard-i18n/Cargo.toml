@@ -1,0 +1,38 @@
+[package]
+name = "dbboard-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Internal i18n loader for dbboard-ui (ADR-0015)."
+
+[lints]
+workspace = true
+
+[dependencies]
+# Fluent runtime — ICU MessageFormat-style messages with plurals and
+# selectors. Mozilla-maintained, stable across multiple years.
+fluent-bundle = "0.15"
+# Loader glue: embedded resources, fallback chain, select() helper.
+# We deliberately do NOT enable `desktop-requester` — locale detection
+# is handled by sys-locale directly (see ADR-0015).
+i18n-embed = { version = "0.15", default-features = false, features = ["fluent-system", "rust-embed"] }
+# i18n-embed-fl's fl!() macro is *not* used: it is a proc-macro that
+# locates `i18n.toml` and `<crate-name>.ftl` relative to the *calling*
+# crate, which would require duplicating both into every consumer.
+# Instead, the t!()/t_args!() macros below call FluentLanguageLoader
+# methods directly at runtime, and key validation is exercised by the
+# dbboard-i18n unit tests against the embedded resources.
+#
+# Walks the `i18n/` folder at compile time and embeds each `.ftl` as
+# a static byte slice. No runtime file I/O for the default install
+# (preserves the single self-contained binary property).
+rust-embed = "8"
+# BCP-47 identifiers used by both fluent-bundle and i18n-embed.
+unic-langid = { version = "0.9", features = ["macros"] }
+# Pure-Rust OS locale detection. No system-OpenSSL pull-in; reads
+# GetUserDefaultLocaleName on Windows, CFLocaleCopyCurrent on macOS,
+# LC_ALL / LC_MESSAGES / LANG on Linux.
+sys-locale = "0.3"

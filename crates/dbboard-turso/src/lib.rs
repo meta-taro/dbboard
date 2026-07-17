@@ -1,14 +1,14 @@
 //! Turso / libSQL adapter for dbboard.
 //!
 //! Wraps the official `libsql` crate so the rest of dbboard sees only
-//! the domain types from `dbboard-core`. The adapter does not yet
-//! implement a workspace-wide trait — Phase 2 of the roadmap extracts
-//! that trait once the second adapter (Neon) gives it a real second
-//! shape to honour.
+//! the domain types from `dbboard-core`. Implements the workspace-wide
+//! [`DatabaseAdapter`] contract (ADR-0012); Phase 2 advertises no
+//! optional capabilities — Turso ships base catalog access only.
 
+use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
-    MAX_RESULT_ROWS,
+    too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter, DbError, DbResult,
+    QueryResult, Row, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 
 pub struct TursoAdapter {
@@ -46,14 +46,22 @@ impl TursoAdapter {
             .map_err(|e| DbError::Connection(redact_path(e.to_string(), path)))?;
         Ok(Self { conn, _db: db })
     }
+}
 
-    /// Cheap liveness probe: runs `SELECT 1` and discards the row.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Query`] when the probe statement fails to
-    /// execute on the live connection.
-    pub async fn ping(&self) -> DbResult<()> {
+#[async_trait]
+impl DatabaseAdapter for TursoAdapter {
+    fn id(&self) -> &'static str {
+        "turso"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            has_describe_table: true,
+            ..Capabilities::default()
+        }
+    }
+
+    async fn ping(&self) -> DbResult<()> {
         // `Connection::execute` is DML-only — passing a SELECT trips
         // libSQL's "Execute returned rows" guard, so the probe goes
         // through the row-returning path and discards the row.
@@ -69,15 +77,7 @@ impl TursoAdapter {
         Ok(())
     }
 
-    /// List user tables (i.e. anything in `sqlite_master` that is not
-    /// a `sqlite_*` internal table). Names are returned in ascending
-    /// lexicographic order.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Schema`] when the underlying introspection
-    /// query fails.
-    pub async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+    async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
         let mut rows = self
             .conn
             .query(
@@ -101,28 +101,94 @@ impl TursoAdapter {
         Ok(tables)
     }
 
-    /// Execute a SQL statement and collect every row into memory.
-    ///
-    /// Internally dispatches to libSQL's row-returning path for
-    /// `SELECT`-shaped statements and to the affected-rows path for
-    /// `INSERT`/`UPDATE`/`DELETE`/DDL, since libSQL exposes those as
-    /// distinct entry points and rejects a statement sent through
-    /// the wrong one.
-    ///
-    /// Phase 1 only targets the small result sets a developer pastes
-    /// into the SQL editor; streaming and pagination land later.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Query`] or [`DbError::TypeConversion`]
-    /// depending on the failure mode.
-    pub async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+    async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+        // libSQL splits row-returning and DML/DDL across two driver
+        // entry points and rejects a statement sent through the wrong
+        // one, so route by the first SQL keyword. Phase 1 targets the
+        // small result sets a developer pastes into the SQL editor;
+        // streaming and pagination land later.
         if is_row_returning(sql) {
             run_select(&self.conn, sql).await
         } else {
             run_execute(&self.conn, sql).await
         }
     }
+
+    async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+        // PRAGMA arguments cannot be bound as parameters, so the name is
+        // embedded with single quotes doubled (SQLite string-literal
+        // escaping). The name usually comes from `list_tables`, but a
+        // hostile schema could put anything in it.
+        let escaped = table.name.replace('\'', "''");
+        let mut rows = self
+            .conn
+            .query(&format!("PRAGMA table_info('{escaped}')"), ())
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut columns = Vec::new();
+        // (pk position, column name) — collected out of order, sorted below.
+        let mut pk_parts: Vec<(i64, String)> = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?
+        {
+            columns.push(column_from_pragma_row(&row, &mut pk_parts)?);
+        }
+
+        // PRAGMA table_info returns zero rows for a missing table rather
+        // than an engine error, so synthesise SQLite's own message shape
+        // to satisfy the ADR-0028 "missing table is DbError::Query" rule.
+        if columns.is_empty() {
+            return Err(DbError::Query(format!("no such table: {}", table.name)));
+        }
+
+        pk_parts.sort_by_key(|&(position, _)| position);
+        Ok(TableSchema {
+            table: table.clone(),
+            columns,
+            primary_key: pk_parts.into_iter().map(|(_, name)| name).collect(),
+        })
+    }
+}
+
+/// Map one `PRAGMA table_info` row (`cid, name, type, notnull,
+/// dflt_value, pk`) onto a [`ColumnInfo`], recording primary-key parts
+/// into `pk_parts` as `(key position, column name)`.
+fn column_from_pragma_row(
+    row: &libsql::Row,
+    pk_parts: &mut Vec<(i64, String)>,
+) -> DbResult<ColumnInfo> {
+    let type_error = |e: libsql::Error| DbError::TypeConversion(e.to_string());
+
+    let cid: i64 = row.get(0).map_err(type_error)?;
+    let name: String = row.get(1).map_err(type_error)?;
+    let declared: String = row.get(2).map_err(type_error)?;
+    let notnull: i64 = row.get(3).map_err(type_error)?;
+    let default_value = match row.get_value(4).map_err(type_error)? {
+        libsql::Value::Null => None,
+        libsql::Value::Text(s) => Some(s),
+        other => Some(format!("{other:?}")),
+    };
+    let pk: i64 = row.get(5).map_err(type_error)?;
+
+    if pk > 0 {
+        pk_parts.push((pk, name.clone()));
+    }
+    let ordinal = u32::try_from(cid)
+        .map_err(|_| DbError::TypeConversion(format!("negative PRAGMA cid: {cid}")))?
+        + 1; // cid is 0-based; ColumnInfo::ordinal is 1-based (ADR-0028).
+
+    Ok(ColumnInfo {
+        name,
+        // Typeless SQLite columns report an empty string.
+        declared_type: (!declared.is_empty()).then_some(declared),
+        nullable: notnull == 0,
+        primary_key: pk > 0,
+        ordinal,
+        default_value,
+    })
 }
 
 async fn run_select(conn: &libsql::Connection, sql: &str) -> DbResult<QueryResult> {

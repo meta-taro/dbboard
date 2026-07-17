@@ -43,10 +43,35 @@ struct ErrorBody {
 }
 
 /// Decide which HTTP request a command becomes.
+///
+/// `SwitchConnection` (ADR-0020) and `AiExplain` / `AiSuggest`
+/// (ADR-0023) are intentionally *not* HTTP requests — the worker
+/// dispatches each in-process before calling `request_for`. Reaching
+/// any panic arm would indicate a bug in the worker's dispatch order
+/// rather than user input.
 pub(crate) fn request_for(command: &Command) -> HttpRequest {
     match command {
         Command::ListTables => HttpRequest::GetTables,
         Command::Query(sql) => HttpRequest::PostQuery(sql.clone()),
+        Command::SwitchConnection { .. } => {
+            unreachable!("SwitchConnection is handled in the worker before request_for")
+        }
+        Command::AiExplain { .. }
+        | Command::AiSuggest { .. }
+        | Command::AiExplainStream { .. }
+        | Command::AiSuggestStream { .. }
+        | Command::CancelAiRequest => {
+            unreachable!("AI commands are routed to the provider before request_for")
+        }
+        Command::SwitchAiProvider { .. } => {
+            unreachable!("SwitchAiProvider is handled by AiProviderSwitcher before request_for")
+        }
+        Command::PrefetchSchema { .. } => {
+            unreachable!("PrefetchSchema is handled via SchemaSource before request_for")
+        }
+        Command::DescribeTable { .. } => {
+            unreachable!("DescribeTable is handled via SchemaSource before request_for")
+        }
     }
 }
 

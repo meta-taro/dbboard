@@ -1,0 +1,8 @@
+# Config read at compile time by the `fluent_language_loader!()` macro
+# from i18n-embed. Keep the fallback language as English (ADR-0015 —
+# every other locale falls back here for missing keys).
+
+fallback_language = "en"
+
+[fluent]
+assets_dir = "i18n"

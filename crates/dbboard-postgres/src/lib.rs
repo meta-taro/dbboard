@@ -2,10 +2,10 @@
 //!
 //! `CockroachDB` speaks the PostgreSQL wire protocol, so a desktop client
 //! reaches it with an ordinary `postgresql://…` connection string and a
-//! Postgres driver. This adapter uses `sqlx` over a `PgPool` and mirrors
-//! the method surface of the other adapters
-//! (`connect` / `ping` / `list_tables` / `query`); the workspace-wide
-//! adapter trait is still deferred to Phase 2 (see `docs/roadmap.md`).
+//! Postgres driver. This adapter uses `sqlx` over a `PgPool` and
+//! implements the workspace-wide [`DatabaseAdapter`] contract
+//! (ADR-0012); the only optional capability advertised is
+//! `describe_table` (ADR-0028).
 //!
 //! The crate is deliberately generic: `CockroachDB` is the first target,
 //! but Neon and any other PostgreSQL-wire database connect the same way
@@ -23,13 +23,49 @@
 //! `timestamptz`, `jsonb`, arrays, and user-defined types — without
 //! pulling in per-type decode features.
 
+use std::sync::{Arc, PoisonError, RwLock, Weak};
+
+use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Column, DbError, DbResult, QueryResult, Row, TableInfo, Value,
-    MAX_RESULT_ROWS,
+    too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter, DbError, DbResult,
+    QueryResult, Row, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
 use sqlx::{Column as _, Either, Row as _, TypeInfo as _, ValueRef as _};
+
+mod dsql_auth;
+
+/// Where an adapter gets the `PgPool` to run the next statement.
+///
+/// Every flavor except `aurora-dsql-iam` holds a plain [`PgPool`] for the
+/// process lifetime ([`PoolHandle::Static`]). The IAM flavor's token
+/// expires (~15 min), and sqlx 0.8 has no per-connection password callback,
+/// so its pool is periodically rebuilt with a fresh token and swapped
+/// behind an `RwLock` by a background task ([`PoolHandle::Refreshing`],
+/// ADR-0037 段階B).
+enum PoolHandle {
+    Static(PgPool),
+    Refreshing(Arc<RwLock<PgPool>>),
+}
+
+impl PoolHandle {
+    /// The pool to use for the next statement. Cheap — [`PgPool`] is an
+    /// `Arc` internally, so this clones a handle, not the connections. For
+    /// the refreshing variant the read lock is held only long enough to
+    /// clone that handle and is released before the caller `.await`s, so a
+    /// mid-flight token swap never blocks a running query. A poisoned lock
+    /// (a panic in the refresh task) is recovered rather than propagated,
+    /// so a background hiccup cannot wedge the whole adapter.
+    fn current(&self) -> PgPool {
+        match self {
+            PoolHandle::Static(pool) => pool.clone(),
+            PoolHandle::Refreshing(lock) => {
+                lock.read().unwrap_or_else(PoisonError::into_inner).clone()
+            }
+        }
+    }
+}
 
 /// Small pool: a desktop client issues one statement at a time, so a
 /// handful of connections is plenty and keeps server-side resource use
@@ -47,6 +83,29 @@ const LIST_TABLES_SQL: &str = "SELECT table_schema, table_name FROM information_
      AND table_type = 'BASE TABLE' \
      ORDER BY table_schema, table_name";
 
+/// Columns of one table in ordinal order (ADR-0028). Each text column is
+/// cast to `TEXT` so the `information_schema` domain types
+/// (`sql_identifier`, `character_data`, ...) decode as plain strings
+/// under the extended protocol, and `ordinal_position` is cast to `INT4`
+/// because `CockroachDB` reports it as `INT8`.
+const DESCRIBE_COLUMNS_SQL: &str = "SELECT column_name::TEXT, data_type::TEXT, \
+     is_nullable::TEXT, column_default::TEXT, ordinal_position::INT4 \
+     FROM information_schema.columns \
+     WHERE table_schema = $1 AND table_name = $2 \
+     ORDER BY ordinal_position";
+
+/// Primary-key column names of one table in key order (ADR-0028).
+const DESCRIBE_PK_SQL: &str = "SELECT kcu.column_name::TEXT \
+     FROM information_schema.table_constraints tc \
+     JOIN information_schema.key_column_usage kcu \
+       ON kcu.constraint_name = tc.constraint_name \
+      AND kcu.constraint_schema = tc.constraint_schema \
+      AND kcu.table_schema = tc.table_schema \
+      AND kcu.table_name = tc.table_name \
+     WHERE tc.constraint_type = 'PRIMARY KEY' \
+       AND tc.table_schema = $1 AND tc.table_name = $2 \
+     ORDER BY kcu.ordinal_position";
+
 /// Connection parameters for a PostgreSQL-wire database.
 ///
 /// `url` is a secret: it embeds the password and is never logged, never
@@ -55,14 +114,73 @@ pub struct PostgresConfig {
     pub url: String,
 }
 
+/// Connection parameters for an Aurora DSQL IAM connection (ADR-0036).
+///
+/// Unlike [`PostgresConfig`], no token is supplied: it is minted from the
+/// AWS credentials at connect time. `secret_key` is a secret and is never
+/// logged, so this struct deliberately does not derive `Debug`.
+/// `endpoint` is the bare cluster host (no scheme, no port); `username`
+/// is typically `admin`.
+pub struct AuroraDsqlIamParams {
+    pub endpoint: String,
+    pub region: String,
+    pub database: String,
+    pub username: String,
+    pub access_key_id: String,
+    pub secret_key: String,
+}
+
+/// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
+/// generic PostgreSQL-wire connection (`CockroachDB`, self-hosted
+/// Postgres, or any other Postgres-flavoured server the user did not
+/// specifically label).
+pub const FLAVOR_POSTGRES: &str = "postgres";
+
+/// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
+/// connection the user declared as Neon (ADR-0018). Wire and SQL path
+/// are identical to [`FLAVOR_POSTGRES`]; the difference is the label
+/// the rest of the system sees in capability output and connection
+/// picker UI.
+pub const FLAVOR_NEON: &str = "neon";
+
+/// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
+/// connection the user declared as Supabase (ADR-0019). Wire and SQL
+/// path are identical to [`FLAVOR_POSTGRES`]; the difference is the
+/// label the rest of the system sees in capability output and
+/// connection picker UI. REST surfaces (auth / storage / realtime /
+/// functions) are out of scope for this flavor and will land via a
+/// future ADR.
+pub const FLAVOR_SUPABASE: &str = "supabase";
+
+/// Stable adapter identifier reported by [`DatabaseAdapter::id`] for a
+/// connection the user declared as AWS Aurora DSQL (ADR-0021). Wire and
+/// SQL path are identical to [`FLAVOR_POSTGRES`]; the difference is the
+/// label the rest of the system sees in capability output and
+/// connection picker UI. The connection URL's password field is
+/// expected to carry a short-lived IAM authentication token (~15 min
+/// TTL) generated via `aws dsql generate-db-connect-admin-auth-token`
+/// or an equivalent SDK call; automatic token refresh via the AWS SDK
+/// is out of scope for this flavor and will land via a future ADR.
+pub const FLAVOR_AURORA_DSQL: &str = "aurora-dsql";
+
 pub struct PostgresAdapter {
     // Only the pool is retained; the connection URL (with its password)
-    // is intentionally not stored, so it cannot leak through Debug.
-    pool: sqlx::PgPool,
+    // is intentionally not stored, so it cannot leak through Debug. For
+    // `aurora-dsql-iam` this is a refreshing handle whose token is re-minted
+    // in the background (ADR-0037); every other flavor holds a static pool.
+    pool: PoolHandle,
+    // Stable label reported by `id()`. See [`FLAVOR_POSTGRES`] /
+    // [`FLAVOR_NEON`]. A `'static str` because the only flavors are
+    // compile-time constants in this crate.
+    flavor: &'static str,
 }
 
 impl PostgresAdapter {
     /// Connect to a PostgreSQL-wire database and build a connection pool.
+    ///
+    /// The adapter reports [`FLAVOR_POSTGRES`] as its id. Use
+    /// [`connect_neon`](Self::connect_neon) when the user has explicitly
+    /// declared a Neon connection (ADR-0018).
     ///
     /// # Errors
     ///
@@ -70,6 +188,100 @@ impl PostgresAdapter {
     /// cannot establish a connection (bad host, TLS failure, auth
     /// rejection, timeout, ...).
     pub async fn connect(config: PostgresConfig) -> DbResult<Self> {
+        Self::connect_with_flavor(config, FLAVOR_POSTGRES).await
+    }
+
+    /// Connect to a Neon database (ADR-0018). The wire protocol and SQL
+    /// path are identical to [`connect`](Self::connect); the only
+    /// difference is that the adapter reports [`FLAVOR_NEON`] as its id,
+    /// so capabilities output and the connection picker can label the
+    /// connection as Neon rather than generic Postgres.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`connect`](Self::connect).
+    pub async fn connect_neon(config: PostgresConfig) -> DbResult<Self> {
+        Self::connect_with_flavor(config, FLAVOR_NEON).await
+    }
+
+    /// Connect to a Supabase Postgres database (ADR-0019). The wire
+    /// protocol and SQL path are identical to [`connect`](Self::connect);
+    /// the only difference is that the adapter reports
+    /// [`FLAVOR_SUPABASE`] as its id, so capabilities output and the
+    /// connection picker can label the connection as Supabase rather
+    /// than generic Postgres. Both the direct connection (`:5432`) and
+    /// the transaction-pooler endpoint (`:6543`) accept this entry
+    /// point — the URL itself encodes the choice.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`connect`](Self::connect).
+    pub async fn connect_supabase(config: PostgresConfig) -> DbResult<Self> {
+        Self::connect_with_flavor(config, FLAVOR_SUPABASE).await
+    }
+
+    /// Connect to an AWS Aurora DSQL database (ADR-0021). The wire
+    /// protocol and SQL path are identical to [`connect`](Self::connect);
+    /// the only difference is that the adapter reports
+    /// [`FLAVOR_AURORA_DSQL`] as its id, so capabilities output and the
+    /// connection picker can label the connection as Aurora DSQL rather
+    /// than generic Postgres.
+    ///
+    /// Aurora DSQL only accepts short-lived IAM authentication tokens
+    /// (typical TTL ~15 minutes) in place of a static password. The
+    /// caller is expected to embed a freshly minted token in
+    /// [`PostgresConfig::url`]; this constructor does not refresh
+    /// tokens. Refresh integration via the AWS SDK is a future ADR.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`connect`](Self::connect). An expired IAM token surfaces
+    /// as [`DbError::Connection`] (auth rejection) from the underlying
+    /// pool.
+    pub async fn connect_aurora_dsql(config: PostgresConfig) -> DbResult<Self> {
+        Self::connect_with_flavor(config, FLAVOR_AURORA_DSQL).await
+    }
+
+    /// Connect to an AWS Aurora DSQL database using IAM authentication
+    /// (ADR-0036). Unlike [`connect_aurora_dsql`](Self::connect_aurora_dsql),
+    /// which expects a pre-generated token embedded in the URL, this path
+    /// **mints a fresh IAM token at connect time** from the supplied AWS
+    /// access-key / secret-key pair, so the connection never carries a
+    /// stale token. Admin (`admin`) usernames get a `DbConnectAdmin`
+    /// token; any other role gets `DbConnect`.
+    ///
+    /// The token is short-lived (~15 min). To keep an unattended 24/7
+    /// connection alive (段階B, ADR-0037), a background task re-mints the
+    /// token and swaps in a freshly authenticated pool every
+    /// [`dsql_auth::refresh_interval`] — so a new physical connection is
+    /// always dialled with a current token and Aurora DSQL's idle-recycle
+    /// `access denied` cannot occur. The task stops when this adapter is
+    /// dropped (process exit or a connection switch), because it only holds
+    /// a [`Weak`] handle to the shared pool.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`connect`](Self::connect). A clock skew or wrong
+    /// credentials surface as [`DbError::Connection`] (auth rejection)
+    /// from the underlying pool. A later refresh failure is non-fatal: the
+    /// current pool is kept and the next tick retries.
+    pub async fn connect_aurora_dsql_iam(params: AuroraDsqlIamParams) -> DbResult<Self> {
+        // The `admin` role authenticates against the admin action; every
+        // other role uses the plain connect action.
+        let is_admin = params.username == "admin";
+        let pool = build_dsql_pool(&params, is_admin).await?;
+
+        // Share the pool behind an RwLock so the refresh task can swap in a
+        // freshly authenticated one without disturbing in-flight queries.
+        let shared = Arc::new(RwLock::new(pool));
+        spawn_token_refresh(Arc::downgrade(&shared), params, is_admin);
+        Ok(Self {
+            pool: PoolHandle::Refreshing(shared),
+            flavor: FLAVOR_AURORA_DSQL,
+        })
+    }
+
+    async fn connect_with_flavor(config: PostgresConfig, flavor: &'static str) -> DbResult<Self> {
         if config.url.trim().is_empty() {
             return Err(DbError::Connection(
                 "PostgreSQL connection URL is empty".to_string(),
@@ -80,35 +292,130 @@ impl PostgresAdapter {
         // connecting; a parse failure is reduced to a fixed string by
         // `classify_error` so the password cannot leak.
         let options: PgConnectOptions = config.url.parse().map_err(|e| classify_error(&e))?;
+        Self::connect_options(options, flavor).await
+    }
+
+    /// Build the pool from already-parsed options, hardening the TLS
+    /// policy first. Shared by the URL-based connect paths (the IAM path
+    /// builds its pool through [`build_dsql_pool`] instead so it can be
+    /// re-run by the refresh task).
+    async fn connect_options(options: PgConnectOptions, flavor: &'static str) -> DbResult<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(MAX_CONNECTIONS)
             .connect_with(harden_ssl_mode(options))
             .await
             .map_err(|e| classify_error(&e))?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool: PoolHandle::Static(pool),
+            flavor,
+        })
+    }
+}
+
+/// Mint a fresh Aurora DSQL IAM token from `params` and open a pool
+/// authenticated with it. Re-run by [`spawn_token_refresh`] on every
+/// refresh tick, so it must depend on nothing but its arguments and the
+/// clock.
+///
+/// The options are built programmatically rather than via a URL string:
+/// the token is itself percent-encoded, and round-tripping it through URL
+/// parsing would double-decode `%2F` back to `/` and corrupt the
+/// signature. `.password()` takes the token verbatim. DSQL mandates TLS;
+/// `Require` encrypts without pinning the cert, matching the rest of the
+/// Postgres-family adapters.
+async fn build_dsql_pool(params: &AuroraDsqlIamParams, is_admin: bool) -> DbResult<PgPool> {
+    let token = dsql_auth::generate_dsql_token(&dsql_auth::DsqlTokenParams {
+        endpoint: &params.endpoint,
+        region: &params.region,
+        access_key_id: &params.access_key_id,
+        secret_key: &params.secret_key,
+        is_admin,
+        expires_secs: dsql_auth::DEFAULT_EXPIRES_SECS,
+    });
+    let options = PgConnectOptions::new()
+        .host(&params.endpoint)
+        .port(5432)
+        .database(&params.database)
+        .username(&params.username)
+        .password(&token)
+        .ssl_mode(PgSslMode::Require);
+    PgPoolOptions::new()
+        .max_connections(MAX_CONNECTIONS)
+        .connect_with(options)
+        .await
+        .map_err(|e| classify_error(&e))
+}
+
+/// Spawn the background token-refresh loop for an `aurora-dsql-iam` pool
+/// (ADR-0037 段階B).
+///
+/// The task owns `params` (so it can re-sign forever) and holds only a
+/// [`Weak`] to the shared pool: once the adapter is dropped, the last
+/// strong `Arc` goes and the next `upgrade()` returns `None`, so the loop
+/// exits on its own — no shutdown channel, no task that outlives a
+/// connection switch. `params` carries the AWS secret key, so it lives in
+/// memory for the adapter's whole lifetime here; it is never logged and
+/// never in a `Debug`, matching the 段階A posture.
+fn spawn_token_refresh(pool: Weak<RwLock<PgPool>>, params: AuroraDsqlIamParams, is_admin: bool) {
+    let interval = dsql_auth::refresh_interval(dsql_auth::DEFAULT_EXPIRES_SECS);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            // Adapter gone while we slept → nothing left to refresh.
+            if pool.upgrade().is_none() {
+                return;
+            }
+
+            // A transient mint/connect failure is non-fatal: keep the
+            // current pool (its token may still be valid) and retry next
+            // tick rather than tearing down a working connection.
+            let Ok(fresh) = build_dsql_pool(&params, is_admin).await else {
+                continue;
+            };
+
+            // Re-check liveness after the (awaiting) build, then swap. The
+            // write lock is held only for the pointer swap, never across an
+            // await.
+            let Some(shared) = pool.upgrade() else {
+                return;
+            };
+            let old = {
+                let mut guard = shared.write().unwrap_or_else(PoisonError::into_inner);
+                std::mem::replace(&mut *guard, fresh)
+            };
+            drop(shared);
+
+            // Drain the retired pool off the refresh path: `close()` waits
+            // for in-flight connections to return, which must not hold up
+            // the next refresh tick.
+            tokio::spawn(async move { old.close().await });
+        }
+    });
+}
+
+#[async_trait]
+impl DatabaseAdapter for PostgresAdapter {
+    fn id(&self) -> &'static str {
+        self.flavor
     }
 
-    /// Cheap liveness probe: runs `SELECT 1` and discards the result.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Connection`] on transport failure or
-    /// [`DbError::Query`] if the probe statement is rejected.
-    pub async fn ping(&self) -> DbResult<()> {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            has_describe_table: true,
+            ..Capabilities::default()
+        }
+    }
+
+    async fn ping(&self) -> DbResult<()> {
+        let pool = self.pool.current();
         sqlx::raw_sql("SELECT 1")
-            .execute(&self.pool)
+            .execute(&pool)
             .await
             .map_err(|e| classify_error(&e))
             .map(|_| ())
     }
 
-    /// List user tables as `schema.table`, ordered by schema then name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Schema`] when the introspection query fails or
-    /// returns an unexpected row shape.
-    pub async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+    async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
         // A failed introspection query is a schema error to the rest of
         // the system, not a user query error.
         let result = self
@@ -129,25 +436,80 @@ impl PostgresAdapter {
             .collect()
     }
 
-    /// Execute a SQL statement and collect the result.
-    ///
-    /// Uses the simple query protocol via [`sqlx::raw_sql`], which
-    /// streams back row data and command-completion counts in one pass —
-    /// so SELECT and DML need no separate routing. Row-returning
-    /// statements expose their rows and leave `rows_affected` at 0; DML
-    /// leaves `rows` empty and reports the affected count.
-    ///
-    /// This is shaped for a single statement. Given a multi-statement
-    /// string, `columns` reflect the first row-returning statement and
-    /// `rows_affected` is only meaningful for a pure DML/DDL batch; mixing
-    /// row-returning and DML statements in one call is not supported.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DbError::Connection`], [`DbError::Query`], or
-    /// [`DbError::TypeConversion`] depending on the failure mode.
-    pub async fn query(&self, sql: &str) -> DbResult<QueryResult> {
-        let mut stream = sqlx::raw_sql(sql).fetch_many(&self.pool);
+    async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+        // Unqualified `TableInfo` defaults to `public` — where
+        // unqualified DDL lands on both Postgres and CockroachDB.
+        let schema = table.schema.as_deref().unwrap_or("public");
+
+        let pool = self.pool.current();
+
+        // Unlike `query`, this path uses the extended protocol
+        // (`sqlx::query` + binds): schema/table names come from
+        // introspection data, and binding keeps them out of the SQL text.
+        let column_rows = sqlx::query(DESCRIBE_COLUMNS_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        // information_schema returns an empty set (not an error) for an
+        // unknown table; surface it as a query error like the SQLite
+        // adapters do.
+        if column_rows.is_empty() {
+            return Err(DbError::Query(format!(
+                "relation \"{schema}.{}\" does not exist",
+                table.name
+            )));
+        }
+
+        let pk_rows = sqlx::query(DESCRIBE_PK_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        let primary_key = pk_rows
+            .iter()
+            .map(|row| row.try_get(0).map_err(|e| classify_error(&e)))
+            .collect::<DbResult<Vec<String>>>()?;
+
+        let columns = column_rows
+            .iter()
+            .map(|row| -> DbResult<ColumnInfo> {
+                let name: String = row.try_get(0).map_err(|e| classify_error(&e))?;
+                let data_type: String = row.try_get(1).map_err(|e| classify_error(&e))?;
+                let is_nullable: String = row.try_get(2).map_err(|e| classify_error(&e))?;
+                let default_value: Option<String> =
+                    row.try_get(3).map_err(|e| classify_error(&e))?;
+                let ordinal: i32 = row.try_get(4).map_err(|e| classify_error(&e))?;
+                column_from_parts(
+                    name,
+                    data_type,
+                    &is_nullable,
+                    default_value,
+                    ordinal,
+                    &primary_key,
+                )
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+
+        Ok(TableSchema {
+            table: table.clone(),
+            columns,
+            primary_key,
+        })
+    }
+
+    async fn query(&self, sql: &str) -> DbResult<QueryResult> {
+        // sqlx::raw_sql uses the simple query protocol, which streams
+        // row data and command-completion counts in one pass — so SELECT
+        // and DML need no separate routing. Row-returning statements
+        // expose rows and leave `rows_affected` at 0; pure DML leaves
+        // `rows` empty and reports the affected count. Mixing both in
+        // one call is not supported (`columns` would reflect the first
+        // row-returning statement only).
+        let pool = self.pool.current();
+        let mut stream = sqlx::raw_sql(sql).fetch_many(&pool);
 
         let mut columns: Option<Vec<Column>> = None;
         let mut rows: Vec<Row> = Vec::new();
@@ -233,6 +595,40 @@ fn tuple_to_table(schema: String, name: String) -> TableInfo {
     TableInfo::qualified(schema, name)
 }
 
+/// Assemble a [`ColumnInfo`] from one `information_schema.columns` row.
+///
+/// `is_nullable` is the SQL-standard `"YES"`/`"NO"` string, compared
+/// case-insensitively. `ordinal` must be positive —
+/// `information_schema` guarantees a 1-based `ordinal_position`, so
+/// anything else means a broken catalog and is rejected instead of
+/// silently cast (ADR-0028 Decision 3).
+fn column_from_parts(
+    name: String,
+    data_type: String,
+    is_nullable: &str,
+    default_value: Option<String>,
+    ordinal: i32,
+    primary_key: &[String],
+) -> DbResult<ColumnInfo> {
+    let ordinal = u32::try_from(ordinal)
+        .ok()
+        .filter(|o| *o > 0)
+        .ok_or_else(|| {
+            DbError::TypeConversion(format!(
+                "non-positive ordinal_position {ordinal} for column {name}"
+            ))
+        })?;
+    let in_primary_key = primary_key.iter().any(|k| k == &name);
+    Ok(ColumnInfo {
+        name,
+        declared_type: Some(data_type),
+        nullable: is_nullable.eq_ignore_ascii_case("YES"),
+        primary_key: in_primary_key,
+        ordinal,
+        default_value,
+    })
+}
+
 /// Harden the connection's TLS policy.
 ///
 /// sqlx defaults an unspecified `sslmode` to [`PgSslMode::Prefer`], which
@@ -311,9 +707,37 @@ fn truncate(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_error, harden_ssl_mode, reclassify_schema, truncate, tuple_to_table};
-    use dbboard_core::DbError;
-    use sqlx::postgres::{PgConnectOptions, PgSslMode};
+    use super::{
+        classify_error, column_from_parts, harden_ssl_mode, reclassify_schema, truncate,
+        tuple_to_table, FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+    };
+    use dbboard_core::{DatabaseAdapter, DbError};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+
+    /// `id()` is part of the public contract documented in
+    /// `docs/architecture.md` (adapter identifiers `turso`, `neon`,
+    /// `supabase`, `aurora-dsql` are stable strings). Every flavor
+    /// constant must keep its byte-content stable across releases —
+    /// capability consumers match on them — and must be different from
+    /// each other.
+    #[test]
+    fn flavor_constants_are_stable_and_distinct() {
+        assert_eq!(FLAVOR_POSTGRES, "postgres");
+        assert_eq!(FLAVOR_NEON, "neon");
+        assert_eq!(FLAVOR_SUPABASE, "supabase");
+        assert_eq!(FLAVOR_AURORA_DSQL, "aurora-dsql");
+        let all = [
+            FLAVOR_POSTGRES,
+            FLAVOR_NEON,
+            FLAVOR_SUPABASE,
+            FLAVOR_AURORA_DSQL,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "flavors {a} and {b} must be distinct");
+            }
+        }
+    }
 
     #[test]
     fn unspecified_ssl_mode_is_upgraded_to_require() {
@@ -342,6 +766,96 @@ mod tests {
             harden_ssl_mode(verified).get_ssl_mode(),
             PgSslMode::VerifyFull
         ));
+    }
+
+    /// `connect_lazy_with` builds a pool without any network I/O, which
+    /// is enough to read the adapter's static capability flags. It still
+    /// needs a Tokio context to spawn the pool's background worker,
+    /// hence `#[tokio::test]`.
+    #[tokio::test]
+    async fn capabilities_advertise_describe_table() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        let adapter = super::PostgresAdapter {
+            pool: super::PoolHandle::Static(pool),
+            flavor: FLAVOR_POSTGRES,
+        };
+        assert!(adapter.capabilities().has_describe_table);
+    }
+
+    /// A `Static` handle hands back exactly the pool it wraps. `max_connections`
+    /// is an observable, network-free property of a lazily-built pool, so it
+    /// stands in for pool identity here (`PgPool` exposes no identity of its
+    /// own).
+    #[tokio::test]
+    async fn static_pool_handle_returns_the_wrapped_pool() {
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .connect_lazy_with(PgConnectOptions::new());
+        let handle = super::PoolHandle::Static(pool);
+        assert_eq!(handle.current().options().get_max_connections(), 3);
+    }
+
+    /// The refreshing handle reads the *current* pool through the lock, so a
+    /// background swap is visible to the next `current()` — the exact
+    /// behaviour the token-refresh task (ADR-0037) relies on. Two lazy pools
+    /// with distinct `max_connections` stand in for a stale vs. fresh pool.
+    #[tokio::test]
+    async fn refreshing_pool_handle_reflects_a_swap() {
+        use std::sync::{Arc, RwLock};
+
+        let stale = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy_with(PgConnectOptions::new());
+        let shared = Arc::new(RwLock::new(stale));
+        let handle = super::PoolHandle::Refreshing(Arc::clone(&shared));
+        assert_eq!(handle.current().options().get_max_connections(), 1);
+
+        // Simulate the refresh task swapping a freshly authenticated pool in.
+        let fresh = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_lazy_with(PgConnectOptions::new());
+        *shared.write().unwrap() = fresh;
+
+        assert_eq!(handle.current().options().get_max_connections(), 2);
+    }
+
+    #[test]
+    fn column_from_parts_parses_nullability_and_pk_membership() {
+        let pk = vec!["id".to_owned()];
+        let id = column_from_parts(
+            "id".into(),
+            "integer".into(),
+            "NO",
+            Some("nextval('users_id_seq'::regclass)".into()),
+            1,
+            &pk,
+        )
+        .expect("id column");
+        assert!(!id.nullable);
+        assert!(id.primary_key);
+        assert_eq!(id.ordinal, 1);
+        assert_eq!(
+            id.default_value.as_deref(),
+            Some("nextval('users_id_seq'::regclass)")
+        );
+
+        let note = column_from_parts("note".into(), "text".into(), "YES", None, 2, &pk)
+            .expect("note column");
+        assert!(note.nullable);
+        assert!(!note.primary_key);
+        assert_eq!(note.declared_type.as_deref(), Some("text"));
+    }
+
+    #[test]
+    fn column_from_parts_rejects_a_non_positive_ordinal() {
+        // information_schema.ordinal_position is 1-based; anything else
+        // indicates a broken catalog and must not be silently cast.
+        let err = column_from_parts("x".into(), "text".into(), "YES", None, 0, &[])
+            .expect_err("ordinal 0 should fail");
+        assert!(matches!(err, DbError::TypeConversion(_)));
+        let err = column_from_parts("x".into(), "text".into(), "YES", None, -1, &[])
+            .expect_err("negative ordinal should fail");
+        assert!(matches!(err, DbError::TypeConversion(_)));
     }
 
     #[test]

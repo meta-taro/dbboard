@@ -1,22 +1,32 @@
 //! Domain layer for dbboard.
 //!
-//! This crate holds the value types, schema metadata, and error
-//! taxonomy shared by every database adapter and the UI. It performs
-//! no I/O and does not depend on any other workspace crate.
+//! This crate holds the value types, schema metadata, error taxonomy,
+//! and adapter contract shared by every database adapter and the UI.
+//! It performs no I/O and does not depend on any other workspace crate.
 //!
-//! The adapter trait itself is introduced in Phase 2 once the Turso
-//! slice has revealed the concrete API surface (see
-//! `docs/roadmap.md`). Phase 1 keeps the types Turso-shaped to avoid
-//! premature abstraction.
+//! Phase 2 introduces the adapter trait and the [`Capabilities`]
+//! discovery struct per ADR-0012. Optional per-DB features attach as
+//! marker traits in [`capabilities`].
 
+mod adapter;
+mod capabilities;
 mod error;
 mod limits;
 mod row;
 mod schema;
 mod value;
+mod write_back;
 
+pub use adapter::DatabaseAdapter;
+pub use capabilities::{
+    AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
+    ViewIntrospection,
+};
 pub use error::{DbError, DbResult};
 pub use limits::{too_many_rows_error, MAX_RESULT_ROWS};
 pub use row::{Column, QueryResult, Row};
-pub use schema::{ColumnInfo, TableInfo};
+pub use schema::{ColumnInfo, TableInfo, TableSchema};
 pub use value::Value;
+pub use write_back::{
+    build_update_sql, CellValue, RowIdentity, RowKey, SqlDialect, UpdatePlan, WriteBackError,
+};

@@ -9,10 +9,21 @@ publish.workspace = true
 description = "PostgreSQL-wire adapter for dbboard (CockroachDB, Neon, ...) over sqlx."
 
 [dependencies]
+async-trait = { workspace = true }
 dbboard-core = { workspace = true }
 sqlx = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true }
+# AWS SigV4 presigned-URL auth for Aurora DSQL IAM tokens (ADR-0036).
+# Hand-rolled SigV4 over pure-Rust primitives, deliberately NOT the AWS
+# SDK: the SDK pulls in aws-lc-rs, which would violate the rustls-ring /
+# no-aws-lc-rs TLS constraint (ADR-0034). All four are already resolved
+# transitively in Cargo.lock, so this adds no new dependency tree.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+percent-encoding = { workspace = true }
+time = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
