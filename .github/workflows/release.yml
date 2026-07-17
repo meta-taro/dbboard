@@ -1,0 +1,173 @@
+# Release build + checksums (ADR-0044).
+#
+# Pushing a `v*.*.*` tag builds the distributable artifacts on their native
+# runners and publishes them to the matching GitHub Release together with a
+# combined SHA256SUMS.txt. A manual `workflow_dispatch` run builds the same
+# artifacts as a smoke test but does NOT publish (there is no tag to attach
+# to). Checksums are the highest-leverage trust signal for an OSS binary:
+# anyone can verify a download against the value the CI computed.
+#
+# NOT signed yet. Windows artifacts trip SmartScreen ("unknown publisher")
+# and the macOS .app trips Gatekeeper until code signing + notarization are
+# wired (ADR-0044 §Future / needs paid certs + repo secrets). The signing
+# steps are left as commented placeholders below so the wiring is obvious.
+#
+# Security posture (CLAUDE.md "Adding GitHub Actions workflows"): least
+# privilege — the workflow defaults to read-only and `contents: write` is
+# granted ONLY to the publish job (the build jobs run untrusted crates.io
+# build.rs/proc-macro code via `cargo build`/`cargo install`, so they must
+# never hold a write-scoped token). No third-party release action (the
+# publish step uses the runner-bundled `gh` CLI with the built-in
+# GITHUB_TOKEN), and first-party actions are pinned by major tag.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+# Read-only by default; the publish job re-grants `contents: write` for
+# itself only.
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      # persist-credentials: false — this job runs untrusted build-time code
+      # (cargo build / cargo install) and never pushes, so it must not leave a
+      # GITHUB_TOKEN wired into the git credential helper.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build release binary
+        run: cargo build --release --package dbboard
+
+      # WiX v3 (candle/light) + cargo-wix; see ADR-0032 / ADR-0044. choco is
+      # preinstalled on windows runners. cargo-wix is pinned so a template
+      # regeneration cannot silently change the installer shape.
+      - name: Install WiX Toolset v3 + cargo-wix
+        run: |
+          choco install wixtoolset --version=3.14.1 --no-progress -y
+          cargo install cargo-wix --version 0.3.9 --locked
+
+      # Run from the package dir: main.wxs references `assets\dbboard.ico`
+      # and `wix\License.rtf` relative to apps/dbboard (the light linker
+      # resolves SourceFile against the CWD). Output still lands in the
+      # workspace target/wix/.
+      - name: Build MSI
+        working-directory: apps/dbboard
+        run: cargo wix --package dbboard --nocapture
+
+      - name: Stage artifacts + checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/dbboard.exe dist/dbboard-windows-x86_64.exe
+          Copy-Item (Get-ChildItem target/wix/*.msi | Select-Object -First 1) dist/
+          Get-ChildItem dist | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name |
+              Out-File -Append -Encoding ascii dist/SHA256SUMS.windows.txt
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      # See build-windows: no push, untrusted build code → drop the token.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build release binary
+        run: cargo build --release --package dbboard
+
+      # cargo-bundle reads [package.metadata.bundle] to produce the .app
+      # (ADR-0044). Pinned for the same reason as cargo-wix above.
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --version 0.6.0 --locked
+
+      - name: Bundle .app
+        run: cargo bundle --release --package dbboard
+
+      # Wrap the .app in a compressed .dmg with hdiutil (built into macOS —
+      # no extra tooling). The .app path is fixed by cargo-bundle.
+      - name: Build .dmg
+        run: |
+          APP="target/release/bundle/osx/dbboard.app"
+          VERSION="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import sys,json; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="dbboard"))')"
+          mkdir -p dist
+          hdiutil create -volname dbboard -srcfolder "$APP" -ov -format UDZO \
+            "dist/dbboard-macos-universal-${VERSION}.dmg"
+
+      # TODO(signing): before the dmg step, sign the .app, then notarize +
+      # staple. Needs repo secrets (Developer ID cert .p12 + password, Apple
+      # ID / team / app-specific password). ADR-0044 §Future.
+      #   codesign --deep --force --options runtime --sign "$DEVELOPER_ID" "$APP"
+      #   xcrun notarytool submit ... --wait && xcrun stapler staple "$APP"
+
+      - name: Checksums
+        run: |
+          cd dist
+          shasum -a 256 * > SHA256SUMS.macos.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/
+
+  publish:
+    needs: [build-windows, build-macos]
+    # Only publish for a real tag *push*. Checking event_name as well as
+    # ref_type is load-bearing: a manual workflow_dispatch run can also be
+    # aimed at an existing tag (via the "Run workflow" ref picker or
+    # `gh workflow run --ref <tag>`), where ref_type is likewise 'tag'. Without
+    # the event_name guard, such a re-run would fall through to the --clobber
+    # upload below and silently overwrite the already-published, checksummed
+    # assets of a released tag.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    # The only job that writes: re-grant the release-upload scope here so the
+    # build jobs stay read-only.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+
+      - name: Assemble release assets + combined checksums
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # cp -n (no-clobber): today's per-platform names don't collide, but a
+          # future Linux/ARM artifact reusing a filename must fail loudly here
+          # rather than silently drop a binary from the release. The count check
+          # below turns any skipped (would-be-clobbered) file into a hard error.
+          find staged -type f ! -name 'SHA256SUMS.*.txt' -exec cp -n {} out/ \;
+          expected=$(find staged -type f ! -name 'SHA256SUMS.*.txt' | wc -l)
+          actual=$(find out -type f | wc -l)
+          if [ "$expected" -ne "$actual" ]; then
+            echo "::error::artifact filename collision: staged $expected files but out/ has $actual" >&2
+            exit 1
+          fi
+          cat staged/*/SHA256SUMS.*.txt > out/SHA256SUMS.txt
+          ls -la out
+          cat out/SHA256SUMS.txt
+
+      # Runner-bundled gh CLI + built-in token; no third-party release
+      # action. `--clobber` makes re-runs idempotent.
+      - name: Publish to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" out/* \
+            --repo "${GITHUB_REPOSITORY}" --clobber

@@ -75,7 +75,7 @@
             Description="Installs the dbboard executable."
             Level="1"
             ConfigurableDirectory="APPLICATIONFOLDER"
-            AbsentDisallow="yes">
+            Absent="disallow">
             <ComponentRef Id="binary0"/>
 
             <Feature
