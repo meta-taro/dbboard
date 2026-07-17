@@ -8,16 +8,18 @@
 ## 最終更新
 
 - 日付: 2026-07-17
-- develop tip: `992d1ea` (PR #80 まで merged)
-- **✅ 実利用バックログ 0012–0015 = 4 本すべて develop 着地完了。**
-  スタックを下から順に merge 済:
-  - 0012 右クリック簡易SQL 即実行 — **PR #76**
-  - 0014 Light/Dark/Auto テーマ — **PR #77**
-  - 0015 アイコンを正式ロゴ化 — **PR #78**
-  - 0013 セル編集→Save (ADR-0042、アプリ初の write 経路) — **PR #79**
-  - next-actions 先行更新 — **PR #80**
-  roadmap tick + issue 0012–0015 を closed + project-status + 本ファイルの
-  最終 sync は `chore/post-pr76-80-doc-sync` (このブランチ)。
+- develop tip: `22cb6d3` (PR #82 まで merged)
+- **✅ 実利用バックログ 0012–0015 = 4 本すべて develop 着地完了** (PR
+  #76/#77/#78/#79)。
+- **✅ 実機ビルドで見つかった 4 バグを PR #82 で修正済 (0013/0014 の
+  追随):**
+  - ①ダークでもタイトルバーがライト → `ViewportCommand::SetTheme` で
+    OS chrome 追従
+  - ②③空/NULL セルが再編集・右クリックできない → セル全域をクリック面化
+  - ④編集後の Save ボタンが画面外 → 下部固定パネルへ
+  - + NULL 発見性のホバーヒント (全11ロケール)
+  roadmap 追随注記 + issue 0013/0014 Status 追記 + project-status +
+  本ファイルの sync は `chore/post-pr82-doc-sync` (このブランチ)。
 - **進行中の目標: 収集担当への内々配布 (Windows-only)。** store-a
   (Cloudflare D1) / store-b (Aurora DSQL IAM) / store-c
   (Supabase) の 3 接続を収集する担当に dbboard デスクトップを渡す。
@@ -42,12 +44,13 @@
     (`docs/maintainer/internal-distribution.md`) + テスター onboarding
     (`docs/internal-testing.md`) + `.gitignore` (`*.dbbx` / `/dist/` /
     `connections.toml`)。
-- **#14 = ハンドオフ用 release exe。0012–0015 は develop `992d1ea` に
-  着地済 = 再ビルドの障害はもう無い。** この develop から
+- **#14 = ハンドオフ用 release exe。0012–0015 + PR #82 の実機バグ修正が
+  develop `22cb6d3` に着地済 = 再ビルドの障害はもう無い。** この develop から
   `cargo build --release` を取り直せば、収集担当が最新 UX (即実行簡易SQL・
-  テーマ・セル編集) + 配布ガイド記載のコピー可能エラー + 起動時アップデート
-  通知をすべて備えた exe を得る。残るは物理引き渡しと実 secret (または
-  バンドル + パスフレーズ) の受け渡しのみ。**
+  テーマ (タイトルバー追従込み)・再編集可能なセル編集 + 常時見える Save 行) +
+  配布ガイド記載のコピー可能エラー + 起動時アップデート通知をすべて備えた
+  exe を得る。残るは物理引き渡しと実 secret (または バンドル + パスフレーズ)
+  の受け渡しのみ。**
 
 ## モード
 
@@ -61,15 +64,17 @@
 
 ### **★ 最優先: #14 の物理引き渡し (要 exe 再ビルド)**
 
-**引き渡し前に最新 develop `bb9f46f` から `cargo build --release` を
+**引き渡し前に最新 develop `22cb6d3` から `cargo build --release` を
 取り直す**こと。この develop は #70 (コピー可能エラー) / #71 (更新通知) /
-#72 (配布ガイド) を含み、配布ガイドの記述と exe の挙動が一致する。
+#72 (配布ガイド) + 0012–0015 (即実行簡易SQL・テーマ・セル編集・ロゴ) +
+#82 (実機バグ 4 件: タイトルバー追従・セル再編集・Save 行常時表示・NULL
+発見性) を含み、配布ガイドの記述と exe の挙動が一致する。
 ※ ビルド前に **dbboard のウィンドウを閉じる** (実行中だと exe ロックで
 os error 5)。**残るは担当機への物理引き渡しと実 secret / バンドルの
 受け渡しのみ。**
 
 担当へ渡すもの:
-1. `target\release\dbboard.exe` (最新 develop `bb9f46f` から再ビルド)
+1. `target\release\dbboard.exe` (最新 develop `22cb6d3` から再ビルド)
 2. secret の受け渡し、以下いずれか:
    - **推奨 (ADR-0038)**: 手元の dbboard で 3 接続を Export し、暗号化
      `.dbbx` 1 ファイルを渡す。**パスフレーズは別経路** (口頭 / 別チャネル)。
@@ -94,36 +99,17 @@ os error 5)。**残るは担当機への物理引き渡しと実 secret / バン
   3. `cd apps/dbboard && cargo wix` → `target\wix\dbboard-0.1.0-x86_64.msi`
 - **exe 単体配布なら不要** = `target\release\dbboard.exe` をそのまま渡せる。
 
-### 実利用ドリブンの機能バックログ (2026-07-16 maintainer 依頼、issue 化済)
+### 実利用ドリブンの機能バックログ (2026-07-16 maintainer 依頼)
 
-**4 件すべて実装完了** (2026-07-17)。push / PR / merge は human ボール
-(上の「最終更新」のブランチ連鎖参照)。
+**4 件すべて実装・merge 完了** (2026-07-17): 0012 右クリック簡易SQL 即実行
+(PR #76) / 0013 セル編集→Save (ADR-0042, PR #79) / 0014 Light/Dark/Auto
+テーマ (PR #77) / 0015 アイコン正式ロゴ化 (PR #78)。**実機ビルドで見つかった
+4 バグも PR #82 で修正 merged** (タイトルバー追従・セル再編集・Save 行常時
+表示・NULL 発見性)。
 
-- ✅ **issue 0012 — 右クリック簡易SQL の自動実行**: pick で即実行。
-  read-only なので安全、auto-LIMIT ガード維持。`feature/quick-sql-autorun`
-  = **PR #76 オープン中**。
-- ✅ **issue 0013 — セル編集 → 保存 (HeidiSQL 風)**: W クリックで
-  フォーム化 → フォーカス外れで仮登録 (theme-aware dirty tint) → 下部
-  Save で PK ベース `UPDATE` を 1 件ずつ直列実行 → 成功後 browse SELECT
-  を再実行してエンジン正規化値を反映。右クリック「Select」で開いた単一
-  テーブル + PK 解決済みの結果のみ編集可 (任意SQL/view/join は read-only)。
-  部分失敗は残りを staged 維持。**アプリ初の write 経路 = ADR-0042
-  (Accepted)**。core `write_back.rs` (slice a) + UI `edit.rs`/grid 配線
-  (slice b)。`feature/adr-0042-inline-edit` (未 push)。
-- ✅ **issue 0014 — Light / Dark / Auto テーマ**: OS 追従 Auto 込み、
-  選択を永続化。`feature/theme-light-dark-auto` (未 push)。
-- ✅ **issue 0015 — アイコンを正式ロゴ化**: `dbboard.ico` は ADR-0032 で
-  自作 = 著作権問題なし。DESIGN.md/README 記載。`feature/official-logo`
-  (未 push)。
-- 既存ロードマップ候補 (未着手): Saved queries / Schema diff /
-  Group D-2 (ADR-0029 function-calling, planning ball あり)。
-
-### 0012–0015 の merge 後 (agent 側)
-
-- 各 feat PR が番号を得たら `chore/post-prNN-doc-sync` で roadmap tick +
-  issue 0012–0015 を closed + project-status + この next-actions を更新。
-- その後 #14 を merge 済 develop から再ビルドして物理引き渡し。
-- 以降は実利用の摩擦順に上の未着手候補へ。新 write 経路は着手前 ADR。
+- 既存ロードマップ候補 (未着手): Export results (CSV/JSON) / Saved queries /
+  Schema diff / Group D-2 (ADR-0029 function-calling, planning ball あり)。
+- 実利用の摩擦順にここから着手。新 write 経路は着手前に ADR。
 
 ---
 
