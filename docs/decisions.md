@@ -5540,8 +5540,20 @@ Ship the first two gaps now; defer signing (gap 3) as a paid follow-up.
   cannot be executed locally; the first tag push (or a `workflow_dispatch`
   smoke run) is expected to shake out runner-specific issues (WiX via choco,
   `cargo-bundle` output path). This is the intended first live test.
-- **Least-privilege security posture.** `permissions: contents: write` only;
-  no secrets beyond the built-in token; no third-party release action.
+- **Least-privilege security posture.** A pre-merge security review of the
+  workflow hardened three points: (1) the workflow defaults to
+  `contents: read` and `contents: write` is re-granted **only** to the
+  `publish` job — the build jobs run untrusted crates.io `build.rs`/proc-macro
+  code via `cargo build`/`cargo install`, so they must never hold a
+  write-scoped token, and their `actions/checkout` sets
+  `persist-credentials: false`; (2) the publish guard is
+  `github.event_name == 'push' && github.ref_type == 'tag'`, not `ref_type`
+  alone — a manual `workflow_dispatch` aimed at an existing tag would
+  otherwise fall through to the `--clobber` upload and silently overwrite a
+  released tag's checksummed assets; (3) the asset copy is `cp -n` plus a
+  file-count check so a future cross-platform filename collision fails loudly
+  instead of dropping a binary. No secrets beyond the built-in token; no
+  third-party release action.
 - **Icon is 256px.** Enough to ship; a 1024px source would sharpen the
   largest Retina slot (`TODO(icon-1024)`).
 - **Desktop-only / no `dbboard-web` mirror.** Packaging and CI are build
