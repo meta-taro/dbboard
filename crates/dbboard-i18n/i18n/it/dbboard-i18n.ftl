@@ -138,4 +138,5 @@ edit-discard-button = Annulla
 edit-staged-count = { $count } modifica/e in sospeso
 edit-set-null = Imposta NULL
 edit-revert-cell = Ripristina cella
+edit-cell-hint = Doppio clic per modificare · clic destro per NULL
 edit-save-unexpected-rows = Salvataggio interrotto: prevista 1 riga, { $rows } interessate

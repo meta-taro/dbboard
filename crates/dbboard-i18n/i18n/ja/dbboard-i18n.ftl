@@ -207,4 +207,5 @@ edit-discard-button = 破棄
 edit-staged-count = { $count } 件の未保存編集
 edit-set-null = NULL に設定
 edit-revert-cell = セルを元に戻す
+edit-cell-hint = ダブルクリックで編集 · 右クリックで NULL
 edit-save-unexpected-rows = 保存を中止しました: 1 行のはずが { $rows } 行に影響

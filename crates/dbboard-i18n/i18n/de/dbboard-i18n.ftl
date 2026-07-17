@@ -138,4 +138,5 @@ edit-discard-button = Verwerfen
 edit-staged-count = { $count } ausstehende Änderung(en)
 edit-set-null = Auf NULL setzen
 edit-revert-cell = Zelle zurücksetzen
+edit-cell-hint = Zum Bearbeiten doppelklicken · Rechtsklick für NULL
 edit-save-unexpected-rows = Speichern gestoppt: 1 Zeile erwartet, { $rows } betroffen

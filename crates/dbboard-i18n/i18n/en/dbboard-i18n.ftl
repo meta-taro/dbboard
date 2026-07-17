@@ -262,4 +262,5 @@ edit-discard-button = Discard
 edit-staged-count = { $count } pending edit(s)
 edit-set-null = Set NULL
 edit-revert-cell = Revert cell
+edit-cell-hint = Double-click to edit · right-click for NULL
 edit-save-unexpected-rows = Save stopped: expected 1 row, { $rows } affected
