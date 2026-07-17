@@ -234,6 +234,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // there is no dark→light flash. `System` (our `Auto`) tracks the
             // OS setting live for the rest of the session.
             cc.egui_ctx.set_theme(egui_theme(theme));
+            // Also push the theme to the OS window chrome so the Windows
+            // title bar matches from the first frame (see `set_theme`).
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::SetTheme(viewport_theme(theme)));
             // Fire the best-effort update check as the window opens. It is
             // fully non-blocking: the state starts Idle/Checking and the
             // task flips it (and requests a repaint) when the GET lands.
@@ -367,6 +371,11 @@ impl DesktopApp {
     /// the user re-picks the current theme).
     fn set_theme(&mut self, ctx: &egui::Context, pref: ThemePreference) {
         ctx.set_theme(egui_theme(pref));
+        // egui retints its own painting, but the OS window chrome (the
+        // Windows title bar) is drawn by winit and only follows the
+        // *system* theme unless we push an explicit override. Sync it here
+        // so a Dark pick doesn't leave a light title bar above a dark app.
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(viewport_theme(pref)));
         if self.theme == pref {
             return;
         }
@@ -424,6 +433,19 @@ fn egui_theme(pref: ThemePreference) -> egui::ThemePreference {
         ThemePreference::Light => egui::ThemePreference::Light,
         ThemePreference::Dark => egui::ThemePreference::Dark,
         ThemePreference::Auto => egui::ThemePreference::System,
+    }
+}
+
+/// Map our persisted [`ThemePreference`] onto the OS-chrome theme override
+/// sent via [`egui::ViewportCommand::SetTheme`]. `Auto` becomes
+/// `SystemDefault`, which clears the override so the title bar tracks the
+/// OS setting again. A free function so the mapping is unit-testable
+/// without a viewport.
+fn viewport_theme(pref: ThemePreference) -> egui::SystemTheme {
+    match pref {
+        ThemePreference::Light => egui::SystemTheme::Light,
+        ThemePreference::Dark => egui::SystemTheme::Dark,
+        ThemePreference::Auto => egui::SystemTheme::SystemDefault,
     }
 }
 
@@ -1151,6 +1173,27 @@ mod tests {
         assert_eq!(
             egui_theme(ThemePreference::Dark),
             egui::ThemePreference::Dark
+        );
+    }
+
+    #[test]
+    fn theme_preference_maps_onto_viewport_theme() {
+        use super::viewport_theme;
+        use dbboard_config::ThemePreference;
+        // Auto must clear the OS-chrome override (SystemDefault) so the
+        // title bar follows the OS again; explicit picks force the matching
+        // title-bar theme so it can't diverge from the app body.
+        assert_eq!(
+            viewport_theme(ThemePreference::Auto),
+            egui::SystemTheme::SystemDefault
+        );
+        assert_eq!(
+            viewport_theme(ThemePreference::Light),
+            egui::SystemTheme::Light
+        );
+        assert_eq!(
+            viewport_theme(ThemePreference::Dark),
+            egui::SystemTheme::Dark
         );
     }
 
