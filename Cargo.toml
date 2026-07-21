@@ -51,6 +51,13 @@ dbboard-connect = { path = "crates/dbboard-connect" }
 # initialised once at startup from `apps/dbboard`.
 dbboard-i18n = { path = "crates/dbboard-i18n" }
 thiserror = "2"
+# Pure SQL parser for the read-only classifier (ADR-0046, Decision 6).
+# dbboard-core walks the parsed AST to prove a statement is a single
+# read-only query — the primary enforcement for Cloudflare D1 (which has
+# no server-side read-only mode) and defense-in-depth for the engines
+# that enforce read-only themselves. AST classification, never string
+# matching. default-features keeps the std dialects (Postgres, SQLite).
+sqlparser = "0.62"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # libsql core only — no remote/sync/replication/tls. Phase 1.5 will
 # widen this when the local HTTP backend introduces remote Turso.
