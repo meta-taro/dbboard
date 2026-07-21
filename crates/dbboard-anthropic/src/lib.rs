@@ -24,7 +24,7 @@ mod stream;
 
 const PROVIDER_ID: &str = "anthropic";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
-const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_MODEL: &str = "claude-sonnet-5";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
@@ -78,8 +78,9 @@ impl AnthropicProvider {
     }
 
     /// Build a provider against the [`DEFAULT_MODEL`] constant
-    /// (`claude-sonnet-4-6`, per `rules/performance.md`'s
-    /// "best coding model" pick).
+    /// (`claude-sonnet-5`, the current-generation Sonnet — the prior
+    /// `claude-sonnet-4-6` default 400'd against live accounts once it
+    /// was retired).
     ///
     /// # Errors
     ///
@@ -525,8 +526,8 @@ mod tests {
     }
 
     #[test]
-    fn default_model_is_claude_sonnet_4_6() {
-        assert_eq!(DEFAULT_MODEL, "claude-sonnet-4-6");
+    fn default_model_is_claude_sonnet_5() {
+        assert_eq!(DEFAULT_MODEL, "claude-sonnet-5");
     }
 
     #[test]
