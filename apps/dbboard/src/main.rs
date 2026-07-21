@@ -833,12 +833,6 @@ fn bootstrap_ai(
     (slot, switcher, ai_admin)
 }
 
-/// Open the local table/column note store (`annotations.toml`, ADR-0045).
-///
-/// Returns `None` — the Structure tab's Note column stays read-only — when
-/// the config dir can't be resolved or the file is unreadable/corrupt. The
-/// notes carry no secret and never touch a database, so a load failure is
-/// logged and degrades gracefully rather than aborting startup.
 /// Attach the local note store (ADR-0045) to a freshly-connected app.
 /// Kept as a wrapper so `main` stays a single expression; a missing or
 /// unreadable file degrades to no notes via [`open_annotations`].
@@ -849,6 +843,12 @@ fn attach_annotations(app: DbboardApp) -> DbboardApp {
     }
 }
 
+/// Open the local table/column note store (`annotations.toml`, ADR-0045).
+///
+/// Returns `None` — the Structure tab's Note column stays read-only — when
+/// the config dir can't be resolved or the file is unreadable/corrupt. The
+/// notes carry no secret and never touch a database, so a load failure is
+/// logged and degrades gracefully rather than aborting startup.
 fn open_annotations() -> Option<AnnotationsAdmin> {
     let path = default_annotations_path().ok()?;
     match AnnotationsAdmin::new_with_file(path) {
