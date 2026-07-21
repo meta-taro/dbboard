@@ -342,6 +342,38 @@ mod tests {
     }
 
     #[test]
+    fn ai_scope_and_about_labels_resolve_and_localize() {
+        // ADR-0045 follow-up: the AI Assistant surfaces a scope caption
+        // in its panel and an "About" block in the Help menu, both to
+        // prevent the misreading that the assistant runs SQL or touches
+        // data on its own. Each key must resolve to a real en translation
+        // and localise in ja rather than leaking the raw key id (Fluent's
+        // fallback for a missing key).
+        let _g = LOADER_GUARD.lock().unwrap();
+        let keys = ["ai-scope-hint", "help-ai-about-title", "help-ai-about-body"];
+
+        // A missing key does not echo the raw id back — FluentLanguageLoader
+        // returns the sentinel `No localization for id: "<key>"`. So an
+        // `assert_ne!(v, key)` guard is not enough to prove a key exists;
+        // reject the sentinel explicitly.
+        let missing = |v: &str| v.starts_with("No localization for id");
+
+        let en = init(Some("en")).expect("init en");
+        for key in keys {
+            let v = en.get(key);
+            assert!(!v.is_empty(), "en {key} must be non-empty");
+            assert!(!missing(&v), "en {key} must be translated, not missing");
+        }
+
+        let ja = init(Some("ja")).expect("init ja");
+        for key in keys {
+            let v = ja.get(key);
+            assert!(!v.is_empty(), "ja {key} must be non-empty");
+            assert!(!missing(&v), "ja {key} must be translated, not missing");
+        }
+    }
+
+    #[test]
     fn reconnect_button_label_resolves_and_is_localized() {
         // ADR-0036: the active row's recovery button. en is the source;
         // ja must be a real translation, not the key echoed back (the

@@ -126,6 +126,8 @@ theme-dark = ダーク
 help-menu = ヘルプ
 help-docs-hint = セットアップと接続の手順は README.md と docs/ を参照してください。
 help-repo-link = GitHub のプロジェクトページ
+help-ai-about-title = AI アシスタントについて
+help-ai-about-body = AI アシスタントは、SQL 文をわかりやすい言葉で説明し、入力した説明文から SQL クエリの下書きを作成します。提案の際にはテーブル名・カラム名も参照します。SQL を実行することはなく、データベースへ書き込むことも、テーブルの行をどこかへ送信することもありません。下書きをエディタにコピーして自分で実行するまで、何も起きません。API キーが必要で、OS の資格情報マネージャーに保存されます。
 # ADR-0040: 起動時のアップデート確認。新しいリリースがあるときだけヘルプメニューに
 # 表示する。更新は手動 (リンクからリリースページを開く)。
 help-update-available = アップデートがあります: { $version }
@@ -134,6 +136,7 @@ help-update-notes = 変更点
 
 ai-menu-button = AI アシスタント
 ai-panel-title = AI アシスタント
+ai-scope-hint = SQL の説明と、説明文からのクエリ下書きを行います。SQL を自動実行したりデータを変更したりはせず、確認と実行はすべて自分で行います。
 ai-mode-explain = SQL を説明
 ai-mode-suggest = SQL を生成
 ai-input-explain = 説明したい SQL：
