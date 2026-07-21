@@ -12,7 +12,24 @@ version = 2
 yanked = "deny"
 # Add entries here to silence a specific RustSec advisory. Each entry
 # must include `reason` so future readers know why.
-ignore = []
+ignore = [
+    # Unmaintained (not a vulnerability). Pulled by i18n-embed-fl (a
+    # build-time proc-macro) -> age -> dbboard-config. It runs only during
+    # compilation, never at runtime, and there is no upstream fix: both
+    # proc-macro-error and this fork are abandoned and i18n-embed-fl has
+    # not migrated. No runtime exposure, so tracked rather than blocked.
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2: build-time-only transitive dep of i18n-embed-fl; no runtime exposure, no upstream fix" },
+    # quick-xml 0.39.x DoS pair (quadratic attribute scan / unbounded
+    # namespace allocation). Reached ONLY through wayland-scanner, a
+    # Linux-only build-time proc-macro that parses the Wayland protocol
+    # XML bundled inside the crate to generate code. The parsed XML is
+    # trusted, fixed, build-time input — never network or user data — so
+    # neither DoS vector is reachable. wayland-scanner pins ^0.39, so the
+    # >=0.41 fix cannot be pulled in without an upstream (eframe/winit)
+    # bump. Re-check when the GUI stack updates.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml: Linux-only build-time XML codegen (wayland-scanner) over trusted bundled input; DoS vector unreachable, pinned by upstream ^0.39" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml: Linux-only build-time XML codegen (wayland-scanner) over trusted bundled input; DoS vector unreachable, pinned by upstream ^0.39" },
+]
 
 [licenses]
 version = 2
@@ -33,7 +50,7 @@ allow = [
     "BSL-1.0",              # clipboard-win / error-code (Boost SL, permissive)
     "OFL-1.1",              # epaint_default_fonts bundles SIL Open Font License fonts
     "Ubuntu-font-1.0",      # epaint_default_fonts bundles the Ubuntu font
-    "CDLA-Permissive-2.0",  # webpki-roots (Mozilla CA bundle, permissive redistribution)
+    "MPL-2.0",              # option-ext (via directories/dirs-sys): file-level weak copyleft, fine to redistribute unmodified in a binary
 ]
 confidence-threshold = 0.8
 
