@@ -51,7 +51,7 @@ use futures_util::StreamExt;
 use reqwest_eventsource::{Event, EventSource};
 use serde::Deserialize;
 
-use crate::{truncate_to_owned, MAX_ERROR_DETAIL};
+use crate::{body_error_detail, truncate_to_owned, MAX_ERROR_DETAIL};
 
 /// Adapt a [`reqwest_eventsource::EventSource`] into an [`AiStream`].
 ///
@@ -119,8 +119,13 @@ pub(crate) fn anthropic_stream(es: EventSource) -> AiStream {
                 }
                 Err(err) => {
                     state.closed = true;
+                    // Read any error-response body *before* closing the
+                    // EventSource: a non-2xx open carries the reason
+                    // (credit balance, invalid model, …) in the response
+                    // body, and dropping the connection would discard it.
+                    let mapped = map_stream_error(err).await;
                     state.es.close();
-                    return Some((Err(map_eventsource_err(err)), state));
+                    return Some((Err(mapped), state));
                 }
             }
         }
@@ -324,6 +329,30 @@ fn parse_error(data: &str) -> ParseOutcome {
     ))))
 }
 
+/// Async error mapper for the stream open/read path. Only
+/// `InvalidStatusCode` needs `await` — the API returns the failure
+/// reason in the response body, which we consume here — so everything
+/// else delegates to the synchronous [`map_eventsource_err`].
+async fn map_stream_error(err: reqwest_eventsource::Error) -> AiError {
+    use reqwest_eventsource::Error as E;
+    match err {
+        E::InvalidStatusCode(status, response) => {
+            let code = status.as_u16();
+            let detail = match response.bytes().await {
+                Ok(bytes) => body_error_detail(&bytes),
+                // Body read failed (connection dropped mid-response):
+                // still surface the status so the user isn't left with
+                // a silent failure.
+                Err(_) => "no response body".to_string(),
+            };
+            AiError::Provider(format!(
+                "anthropic streaming error (status {code}): {detail}"
+            ))
+        }
+        other => map_eventsource_err(other),
+    }
+}
+
 fn map_eventsource_err(err: reqwest_eventsource::Error) -> AiError {
     use reqwest_eventsource::Error as E;
     match err {
@@ -331,6 +360,9 @@ fn map_eventsource_err(err: reqwest_eventsource::Error) -> AiError {
             "anthropic streaming transport error: {}",
             e.without_url()
         )),
+        // Handled by the async `map_stream_error`, which reads the
+        // response body. This arm stays for match exhaustiveness and
+        // as a body-less fallback if ever reached synchronously.
         E::InvalidStatusCode(status, _) => {
             AiError::Provider(format!("anthropic streaming: status {}", status.as_u16()))
         }
