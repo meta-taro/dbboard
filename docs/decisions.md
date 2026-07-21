@@ -5605,7 +5605,9 @@ database.
    `crates/dbboard-config/src/annotations.rs` module mirrors the `ai_store` /
    `ai_settings` split: a versioned file type (`version` field, `load_or_empty`
    treats a missing file as empty, forward-compatible parse) plus an admin API
-   (`set_note` / `clear_note` / `get` for table- and column-level notes) with
+   (`set_table_note` / `set_column_note` for writes — an empty/whitespace
+   string clears and prunes the entry, so there is no separate `clear` call —
+   and `table_note` / `column_note` for reads) with
    rollback-on-save-failure. Persistence + value types live in
    **`dbboard-config`** (the persistence layer), not `dbboard-core` (which
    stays I/O-free), consistent with `ai_settings`.
