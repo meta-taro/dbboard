@@ -64,9 +64,12 @@ theme-dark = 다크
 help-menu = 도움말
 help-docs-hint = 설정 및 연결 안내는 README.md와 docs/를 참조하세요.
 help-repo-link = GitHub 프로젝트 페이지
+help-ai-about-title = AI 어시스턴트 정보
+help-ai-about-body = AI 어시스턴트는 SQL 문을 쉬운 말로 설명하고, 입력한 설명으로부터 SQL 쿼리 초안을 작성합니다. 제안 시에는 테이블과 열 이름도 참조합니다. SQL을 실행하지 않고, 데이터베이스에 쓰지 않으며, 테이블 행을 어디에도 전송하지 않습니다. 초안을 편집기에 복사해 직접 실행하기 전까지는 아무 일도 일어나지 않습니다. API 키가 필요하며, 운영 체제의 자격 증명 관리자에 저장됩니다.
 
 ai-menu-button = AI 어시스턴트
 ai-panel-title = AI 어시스턴트
+ai-scope-hint = SQL을 설명하고 설명문으로부터 쿼리 초안을 작성합니다. SQL을 실행하거나 데이터를 변경하지 않으며, 확인과 실행은 모두 사용자가 직접 합니다.
 ai-mode-explain = SQL 설명
 ai-mode-suggest = SQL 생성
 ai-input-explain = 설명할 SQL:

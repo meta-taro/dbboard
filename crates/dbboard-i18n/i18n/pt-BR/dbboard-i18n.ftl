@@ -64,9 +64,12 @@ theme-dark = Escuro
 help-menu = Ajuda
 help-docs-hint = Consulte README.md e docs/ para configuração e guias de conexão.
 help-repo-link = Projeto no GitHub
+help-ai-about-title = Sobre o Assistente de IA
+help-ai-about-body = O Assistente de IA explica uma instrução SQL em linguagem simples e rascunha uma consulta SQL a partir de uma descrição que você digita; para as sugestões, ele também lê os nomes de suas tabelas e colunas. Ele nunca executa SQL, nunca grava no seu banco de dados e nunca envia linhas de dados para lugar algum: nada acontece até você copiar um rascunho para o editor e executá-lo você mesmo. É necessária uma chave de API, que fica armazenada no gerenciador de credenciais do seu sistema operacional.
 
 ai-menu-button = Assistente de IA
 ai-panel-title = Assistente de IA
+ai-scope-hint = Explica SQL e rascunha consultas a partir de uma descrição. Nunca executa SQL nem altera dados: você revisa e executa tudo.
 ai-mode-explain = Explicar SQL
 ai-mode-suggest = Sugerir SQL
 ai-input-explain = SQL a explicar:
