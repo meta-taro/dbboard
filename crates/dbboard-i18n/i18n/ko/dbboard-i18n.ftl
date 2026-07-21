@@ -131,6 +131,9 @@ structure-col-type = 유형
 structure-col-nullable = Null
 structure-col-pk = 키
 structure-col-default = 기본값
+structure-col-note = 메모
+structure-note-hint = 메모 추가…
+structure-table-note = 테이블 메모
 
 edit-save-button = 저장
 edit-discard-button = 취소

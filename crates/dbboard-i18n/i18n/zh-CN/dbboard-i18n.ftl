@@ -131,6 +131,9 @@ structure-col-type = 类型
 structure-col-nullable = 空
 structure-col-pk = 键
 structure-col-default = 默认值
+structure-col-note = 备注
+structure-note-hint = 添加备注…
+structure-table-note = 表备注
 
 edit-save-button = 保存
 edit-discard-button = 放弃

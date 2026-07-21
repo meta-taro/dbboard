@@ -54,7 +54,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
-use dbboard_core::{DbResult, QueryResult, SqlDialect, TableInfo, TableSchema, Value};
+use dbboard_config::{table_key as annotation_table_key, AnnotationsAdmin};
+use dbboard_core::{ColumnInfo, DbResult, QueryResult, SqlDialect, TableInfo, TableSchema, Value};
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
@@ -305,6 +306,23 @@ enum ResultTab {
 struct StructureView {
     table: TableInfo,
     schema: Option<DbResult<TableSchema>>,
+    /// Per-column note edit buffers (column name -> in-progress text),
+    /// lazily seeded from the stored note the first time each column
+    /// renders (ADR-0045). Held on the view so switching tables drops
+    /// any half-typed note instead of leaking it onto the next table.
+    note_buffers: BTreeMap<String, String>,
+    /// Table-level note buffer, seeded and dropped like `note_buffers`.
+    /// `None` until the first render seeds it from the stored note.
+    table_note_buffer: Option<String>,
+}
+
+/// Which annotation field a structure-tab edit commits to (ADR-0045).
+/// The connection id and table key are derived from the live
+/// [`StructureView`] at commit time, so only the leaf differs here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NoteTarget {
+    Table,
+    Column(String),
 }
 
 /// The open inline editor (issue 0013 slice b): a single-line text field
@@ -442,6 +460,10 @@ pub struct DbboardApp {
     active_tab: ResultTab,
     /// Structure-tab state, `Some` once a table has been clicked.
     structure: Option<StructureView>,
+    /// Local table/column notes (ADR-0045). Injected by the binary via
+    /// [`Self::with_annotations`]; `None` in tests / in-memory flows,
+    /// where the Structure tab's Note column renders read-only and empty.
+    annotations: Option<AnnotationsAdmin>,
     /// Inline cell-editing state (issue 0013 slice b). Populated only for
     /// browse-`SELECT` results of a single base table; read-only otherwise.
     edit: EditGrid,
@@ -569,6 +591,7 @@ impl DbboardApp {
             auto_limit: true,
             active_tab: ResultTab::Results,
             structure: None,
+            annotations: None,
             edit: EditGrid::default(),
             busy: false,
             cmd_tx,
@@ -587,7 +610,44 @@ impl DbboardApp {
         self.structure = Some(StructureView {
             table,
             schema: None,
+            note_buffers: BTreeMap::new(),
+            table_note_buffer: None,
         });
+    }
+
+    /// Attach the local annotations store so the Structure tab's Note
+    /// column becomes editable (ADR-0045). Builder-style so the desktop
+    /// binary can chain it onto [`Self::connect`] without growing the
+    /// already-long constructor arg list; tests that need notes set the
+    /// field directly.
+    #[must_use]
+    pub fn with_annotations(mut self, annotations: AnnotationsAdmin) -> Self {
+        self.annotations = Some(annotations);
+        self
+    }
+
+    /// Persist an edited note for the Structure tab's current table
+    /// (ADR-0045). No-op when no annotations store is wired or no table
+    /// is on screen. Keyed by the live connection id plus the table's
+    /// schema-qualified key so the same table name under two connections
+    /// keeps independent notes. A disk-write failure is logged and
+    /// swallowed — a note is documentation, never worth blocking the UI.
+    fn commit_structure_note(&mut self, target: &NoteTarget, text: &str) {
+        let Some(view) = &self.structure else {
+            return;
+        };
+        let key = annotation_table_key(view.table.schema.as_deref(), &view.table.name);
+        let conn = self.conn_label.clone();
+        let Some(admin) = self.annotations.as_mut() else {
+            return;
+        };
+        let res = match target {
+            NoteTarget::Table => admin.set_table_note(&conn, &key, text),
+            NoteTarget::Column(column) => admin.set_column_note(&conn, &key, column, text),
+        };
+        if let Err(e) = res {
+            eprintln!("dbboard: annotation save failed: {e}");
+        }
     }
 
     fn drain_replies(&mut self) {
@@ -1710,24 +1770,186 @@ impl DbboardApp {
 
     /// Structure tab body (ADR-0031): the selected table's name and its
     /// `describe_table` outcome rendered as a column grid.
-    fn render_structure(&self, ui: &mut egui::Ui) {
+    fn render_structure(&mut self, ui: &mut egui::Ui) {
         let Some(view) = &self.structure else {
             ui.label(t!("structure-empty"));
             return;
         };
         ui.strong(&view.table.name);
         ui.separator();
-        match &view.schema {
+
+        // Take the columns to render, dropping the borrow on `self.structure`
+        // so the note buffers (also on the view) and the annotations store
+        // can be borrowed mutably below.
+        let columns = match &view.schema {
             None => {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(t!("structure-loading"));
                 });
+                return;
             }
             Some(Err(e)) => {
                 errors::render_error(ui, Some(&errors::db_error_display(e)));
+                return;
             }
-            Some(Ok(schema)) => render_table_schema(ui, schema),
+            Some(Ok(schema)) => schema.columns.clone(),
+        };
+        let table_key = annotation_table_key(view.table.schema.as_deref(), &view.table.name);
+        let conn = self.conn_label.clone();
+        // The Note column is inert without a wired store (tests / in-memory
+        // flows): still rendered, but disabled so it reads as "not here yet"
+        // rather than silently swallowing edits.
+        let has_store = self.annotations.is_some();
+
+        self.render_table_note(ui, &table_key, &conn, has_store);
+
+        if columns.is_empty() {
+            ui.label(t!("structure-no-columns"));
+            return;
+        }
+
+        self.render_schema_grid(ui, &columns, &table_key, &conn, has_store);
+    }
+
+    /// Render the column grid with the editable Note column (ADR-0045).
+    /// Split from [`Self::render_structure`] so each stays under the size
+    /// limit; takes the already-derived `table_key`/`conn` so it does not
+    /// re-touch `self.structure` while iterating the cloned columns.
+    fn render_schema_grid(
+        &mut self,
+        ui: &mut egui::Ui,
+        columns: &[ColumnInfo],
+        table_key: &str,
+        conn: &str,
+        has_store: bool,
+    ) {
+        use egui_extras::{Column, TableBuilder};
+
+        let row_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
+        let headers: [String; 7] = [
+            t!("structure-col-ordinal"),
+            t!("structure-col-name"),
+            t!("structure-col-type"),
+            t!("structure-col-nullable"),
+            t!("structure-col-pk"),
+            t!("structure-col-default"),
+            t!("structure-col-note"),
+        ];
+
+        // Bind the two disjoint `self` fields as locals so the table
+        // closures capture only these, not `self` — `note_buffers` lives on
+        // `self.structure`, the stored notes on `self.annotations`.
+        let buffers = &mut self
+            .structure
+            .as_mut()
+            .expect("structure present")
+            .note_buffers;
+        let annotations = self.annotations.as_ref();
+        // (column name, edited text) pairs to persist once the borrows drop.
+        let mut commits: Vec<(String, String)> = Vec::new();
+
+        let mut table = TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .auto_shrink([false, false]);
+        for _ in &headers {
+            table = table.column(Column::auto().at_least(48.0).clip(true).resizable(true));
+        }
+        table
+            .header(row_height, |mut header| {
+                for h in &headers {
+                    header.col(|ui| {
+                        ui.strong(h.as_str());
+                    });
+                }
+            })
+            .body(|mut body| {
+                for col in columns {
+                    body.row(row_height, |mut row| {
+                        row.col(|ui| {
+                            ui.label(col.ordinal.to_string());
+                        });
+                        row.col(|ui| {
+                            ui.label(&col.name);
+                        });
+                        row.col(|ui| {
+                            ui.label(col.declared_type.as_deref().unwrap_or(""));
+                        });
+                        // A checkmark reads the same in every locale, so the
+                        // nullable / PK cells stay text-key-free.
+                        row.col(|ui| {
+                            ui.label(if col.nullable { "✓" } else { "" });
+                        });
+                        row.col(|ui| {
+                            ui.label(if col.primary_key { "PK" } else { "" });
+                        });
+                        row.col(|ui| {
+                            ui.label(col.default_value.as_deref().unwrap_or(""));
+                        });
+                        row.col(|ui| {
+                            let stored = annotations
+                                .and_then(|a| a.column_note(conn, table_key, &col.name))
+                                .unwrap_or("")
+                                .to_string();
+                            let buf = buffers
+                                .entry(col.name.clone())
+                                .or_insert_with(|| stored.clone());
+                            let resp = ui.add_enabled(
+                                has_store,
+                                egui::TextEdit::singleline(buf)
+                                    .hint_text(t!("structure-note-hint"))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            // Enter and click-away both surrender focus; only
+                            // persist when the text actually changed so an
+                            // idle focus pass never rewrites the file.
+                            if resp.lost_focus() && buf.trim() != stored.trim() {
+                                commits.push((col.name.clone(), buf.clone()));
+                            }
+                        });
+                    });
+                }
+            });
+
+        for (column, text) in commits {
+            self.commit_structure_note(&NoteTarget::Column(column), &text);
+        }
+    }
+
+    /// Render the single-line table-level note editor above the column
+    /// grid (ADR-0045). Split out of [`Self::render_structure`] to keep
+    /// that method under the size limit and to isolate the table-note
+    /// buffer's borrow from the per-column one.
+    fn render_table_note(&mut self, ui: &mut egui::Ui, table_key: &str, conn: &str, enabled: bool) {
+        let stored = self
+            .annotations
+            .as_ref()
+            .and_then(|a| a.table_note(conn, table_key))
+            .unwrap_or("")
+            .to_string();
+        let buf = self
+            .structure
+            .as_mut()
+            .expect("structure present")
+            .table_note_buffer
+            .get_or_insert_with(|| stored.clone());
+        let mut commit: Option<String> = None;
+        ui.horizontal(|ui| {
+            ui.label(t!("structure-table-note"));
+            let resp = ui.add_enabled(
+                enabled,
+                egui::TextEdit::singleline(buf)
+                    .hint_text(t!("structure-note-hint"))
+                    .desired_width(f32::INFINITY),
+            );
+            if resp.lost_focus() && buf.trim() != stored.trim() {
+                commit = Some(buf.clone());
+            }
+        });
+        if let Some(text) = commit {
+            self.commit_structure_note(&NoteTarget::Table, &text);
         }
     }
 }
@@ -2284,71 +2506,6 @@ fn value_edit_text(value: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Column grid for the structure tab (ADR-0031): one row per column with
-/// ordinal, name, declared type, nullability, primary-key flag, and the
-/// raw default expression. Not virtualized — a table has few columns.
-fn render_table_schema(ui: &mut egui::Ui, schema: &TableSchema) {
-    use egui_extras::{Column, TableBuilder};
-
-    if schema.columns.is_empty() {
-        ui.label(t!("structure-no-columns"));
-        return;
-    }
-
-    let row_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
-    let headers: [String; 6] = [
-        t!("structure-col-ordinal"),
-        t!("structure-col-name"),
-        t!("structure-col-type"),
-        t!("structure-col-nullable"),
-        t!("structure-col-pk"),
-        t!("structure-col-default"),
-    ];
-
-    let mut table = TableBuilder::new(ui)
-        .striped(true)
-        .resizable(true)
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .auto_shrink([false, false]);
-    for _ in &headers {
-        table = table.column(Column::auto().at_least(48.0).clip(true).resizable(true));
-    }
-    table
-        .header(row_height, |mut header| {
-            for h in &headers {
-                header.col(|ui| {
-                    ui.strong(h.as_str());
-                });
-            }
-        })
-        .body(|mut body| {
-            for col in &schema.columns {
-                body.row(row_height, |mut row| {
-                    row.col(|ui| {
-                        ui.label(col.ordinal.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(&col.name);
-                    });
-                    row.col(|ui| {
-                        ui.label(col.declared_type.as_deref().unwrap_or(""));
-                    });
-                    // A checkmark reads the same in every locale, so the
-                    // nullable / PK cells stay text-key-free.
-                    row.col(|ui| {
-                        ui.label(if col.nullable { "✓" } else { "" });
-                    });
-                    row.col(|ui| {
-                        ui.label(if col.primary_key { "PK" } else { "" });
-                    });
-                    row.col(|ui| {
-                        ui.label(col.default_value.as_deref().unwrap_or(""));
-                    });
-                });
-            }
-        });
-}
-
 /// One result-grid cell: a plain label for short values, or a truncated
 /// preview plus an expand button that parks the full text in egui memory
 /// for the popup to pick up.
@@ -2404,9 +2561,9 @@ mod tests {
     use super::errors::db_error_display;
     use super::{
         apply_auto_limit, cell_preview, is_bare_select, is_long_cell, quick_count_sql,
-        quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot, Command, DbboardApp,
-        HistoryStatus, PersistentHistoryStore, Reply, ResultTab, CELL_PREVIEW_CHARS,
-        DEFAULT_CAPACITY,
+        quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot, AnnotationsAdmin,
+        Command, DbboardApp, HistoryStatus, NoteTarget, PersistentHistoryStore, Reply, ResultTab,
+        CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
     };
     use dbboard_core::{
         Column, ColumnInfo, DbError, QueryResult, Row, TableInfo, TableSchema, Value,
@@ -3747,6 +3904,66 @@ mod tests {
         app.drain_replies();
 
         assert!(app.structure.as_ref().unwrap().schema.is_none());
+    }
+
+    // --- ADR-0045: local table/column notes on the Structure tab ---
+
+    #[test]
+    fn open_structure_drops_stale_note_buffers() {
+        // A half-typed note on one table must not bleed onto the next: the
+        // buffers live on the view and reset when a new table opens.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv();
+        app.open_structure(TableInfo::unqualified("stores"));
+        let view = app.structure.as_mut().unwrap();
+        view.note_buffers.insert("id".into(), "in progress".into());
+        view.table_note_buffer = Some("table memo".into());
+
+        app.open_structure(TableInfo::unqualified("orders"));
+
+        let view = app.structure.as_ref().unwrap();
+        assert!(view.note_buffers.is_empty());
+        assert!(view.table_note_buffer.is_none());
+    }
+
+    #[test]
+    fn commit_structure_note_persists_column_keyed_by_conn_and_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("annotations.toml");
+        let admin = AnnotationsAdmin::new_with_file(path.clone()).unwrap();
+        let (mut app, cmd_rx, _reply_tx) = build_with_persistent(
+            PersistentHistoryStore::in_memory_only(DEFAULT_CAPACITY),
+            "store-a",
+        );
+        app.annotations = Some(admin);
+        let _ = cmd_rx.try_recv();
+        app.open_structure(TableInfo::unqualified("stores"));
+
+        app.commit_structure_note(&NoteTarget::Column("id".into()), "  primary id  ");
+        app.commit_structure_note(&NoteTarget::Table, "the stores table");
+
+        // Reopen from disk: the note is stored under conn `store-a`, table
+        // key `stores`, column `id`, and trimmed on the way in.
+        let reopened = AnnotationsAdmin::new_with_file(path).unwrap();
+        assert_eq!(
+            reopened.column_note("store-a", "stores", "id"),
+            Some("primary id")
+        );
+        assert_eq!(
+            reopened.table_note("store-a", "stores"),
+            Some("the stores table")
+        );
+    }
+
+    #[test]
+    fn commit_structure_note_is_a_noop_without_a_store() {
+        // No annotations store wired (the tests / in-memory posture): the
+        // commit must simply do nothing rather than panic.
+        let (mut app, cmd_rx, _reply_tx) = build();
+        let _ = cmd_rx.try_recv();
+        app.open_structure(TableInfo::unqualified("stores"));
+        app.commit_structure_note(&NoteTarget::Column("id".into()), "note");
+        assert!(app.annotations.is_none());
     }
 
     #[test]

@@ -5558,3 +5558,115 @@ Ship the first two gaps now; defer signing (gap 3) as a paid follow-up.
   largest Retina slot (`TODO(icon-1024)`).
 - **Desktop-only / no `dbboard-web` mirror.** Packaging and CI are build
   concerns with no HTTP contract surface.
+
+## ADR-0045 — Local column/table annotations (dbboard-side, no DB write)
+
+- **Status**: Accepted 2026-07-17
+- **Builds on**: ADR-0028 (`describe_table` full schema), ADR-0031 (Structure
+  tab), ADR-0025 (per-user `*.toml` store pattern), ADR-0038 (`.dbbx` — for
+  the boundary this ADR deliberately does *not* cross)
+
+### Context
+
+An operator reading an unfamiliar table wants to record what a column *means*
+("`status`: 0=pending 1=paid 2=void", "`amt`: minor units, JPY"). The obvious
+home for such notes is a database-native column comment, but the primary
+targets can't provide one uniformly:
+
+- **SQLite / libSQL (Turso) / Cloudflare D1** have **no first-class comment
+  concept** — no `COMMENT ON COLUMN`, no `pg_description`-style catalog, and no
+  extension adds one. The single native trick is embedding `-- …` / `/* … */`
+  inside the `CREATE TABLE` DDL, which SQLite preserves verbatim in
+  `sqlite_master.sql`; but that is unstructured (self-parse the DDL), fragile
+  (other tools recreating the table drop it), and **requires write
+  permission** — a non-starter for a read-only collector connection, and D1
+  constrains DDL further.
+- **Postgres (Neon / Supabase / Aurora DSQL)** *does* have first-class
+  `COMMENT ON` + `pg_description`, but dbboard's `describe_table` currently
+  reads only `information_schema.columns`, so even existing DB comments aren't
+  surfaced today.
+
+This asymmetry means a DB-native approach can't serve the actual fleet
+(D1 + aurora-dsql + supabase) uniformly, and would demand write access the
+operator often lacks. The notes are also *documentation*, not schema — losing
+them to someone else's `ALTER TABLE` is unacceptable.
+
+### Decision
+
+Store annotations **on the dbboard side**, in a per-user file, and surface them
+as an editable column in the existing Structure tab. Nothing is written to any
+database.
+
+1. **Storage — `annotations.toml`.** A new per-user file in the same config
+   dir as `connections.toml` / `ai-providers.toml` / `history.jsonl`, resolved
+   via the same `ProjectDirs::from("dev", "dbboard", "dbboard")` lookup.
+   Written atomically through `secure_fs` (0o600 on Unix, user-only DACL on
+   Windows) exactly like `ai_store::save_atomic`. A new
+   `crates/dbboard-config/src/annotations.rs` module mirrors the `ai_store` /
+   `ai_settings` split: a versioned file type (`version` field, `load_or_empty`
+   treats a missing file as empty, forward-compatible parse) plus an admin API
+   (`set_table_note` / `set_column_note` for writes — an empty/whitespace
+   string clears and prunes the entry, so there is no separate `clear` call —
+   and `table_note` / `column_note` for reads) with
+   rollback-on-save-failure. Persistence + value types live in
+   **`dbboard-config`** (the persistence layer), not `dbboard-core` (which
+   stays I/O-free), consistent with `ai_settings`.
+
+2. **Key granularity — table + column.** Keyed `connection id → table → note`,
+   where the table key is schema-qualified where the engine has schemas
+   (`public.orders`) and the bare name where it doesn't (SQLite/libSQL/D1) —
+   reusing `TableInfo`'s qualification. Each table entry carries an optional
+   table-level note plus a `column name → note` map. Connection **id** (stable,
+   from `connections.toml`) is the anchor, not the display name, so renaming a
+   connection keeps its notes.
+
+3. **UI — a "Note" column in the Structure tab.** Extend `render_table_schema`
+   (currently ordinal / name / type / nullable / PK / default) with a seventh
+   editable **Note** column; clicking a cell opens an inline text field,
+   committing on focus-loss/Enter persists via the admin API. This makes the
+   Structure render path `&mut self` (or routes the edit through the existing
+   worker message/`Reply` pattern like `edit.rs`) since it now mutates state —
+   a deliberate, contained change from today's read-only `&self` render. New
+   i18n keys (`structure-col-note`, edit hint) added to all locales.
+
+4. **No DB write / read-only safe.** The whole point: annotations require no DB
+   privilege, work on a read-only connection, and never touch the wire — so
+   they're valid for every adapter including D1 and IAM-scoped aurora-dsql.
+
+### Alternatives considered
+
+- **DB-native comments** (`COMMENT ON`, or DDL comments in `sqlite_master`).
+  Rejected as the *primary* store: not uniform across the fleet, fragile on
+  SQLite, and write-requiring (§Context).
+- **Surfacing Postgres `pg_description`.** Real value, but **out of scope
+  here** — it's a *DB-derived* read that belongs in `describe_table`
+  (adapter + core change) and would be shown as a separate, read-only "DB
+  comment" lane alongside local notes. Deferred to its own ADR so this feature
+  stays a focused, uniform, write-free local store and its value can be proven
+  on the SQLite-family connections first.
+- **Bundling annotations into the `.dbbx` export for cross-machine sharing.**
+  Rejected for the first release, and specifically *not* into `.dbbx`. `.dbbx`
+  (ADR-0038) is an **encrypted, passphrase-gated secret bundle** for connection
+  handoff; annotations are **non-secret documentation**. Merging them mismatches
+  intent (a note edit would demand a passphrase; a secret bundle would carry
+  docs). If sharing becomes a real need, it should be a **separate plain-text
+  annotations export/import** (no passphrase, no secrets), leaving `.dbbx` for
+  secrets only. Deferred.
+
+### Consequences
+
+- **New persistent format** (`annotations.toml`, versioned) — additive, lazily
+  created, a missing/old file degrades to "no notes". TDD: config module lands
+  with parse/roundtrip/save-atomic/version tests first, mirroring `ai_store`.
+- **Structure render becomes mutating.** The Structure tab's render path gains
+  `&mut self` / a message hop; contained to that tab, no effect on the
+  read-only result grid.
+- **Notes are per-machine** until the deferred plain-text export ships. On a
+  single collector laptop this is fine; the ADR names the escape hatch.
+- **`pg_description` stays invisible** until its own ADR — accepted so this
+  slice is uniform across all adapters and unblocked by any adapter work.
+- **Desktop-only / no `dbboard-web` mirror / no HTTP contract change.** Purely
+  local persistence and UI.
+- **Ships alongside the AI-provider live test** per the maintainer's wish to
+  release both together; the two are independent (this is code, that is a test
+  activity) and neither blocks the other.

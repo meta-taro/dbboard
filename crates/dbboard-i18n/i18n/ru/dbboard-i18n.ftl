@@ -132,6 +132,9 @@ structure-col-type = Тип
 structure-col-nullable = Null
 structure-col-pk = Ключ
 structure-col-default = По умолч.
+structure-col-note = Заметка
+structure-note-hint = Добавить заметку…
+structure-table-note = Заметка таблицы
 
 edit-save-button = Сохранить
 edit-discard-button = Отменить

@@ -132,6 +132,9 @@ structure-col-type = Tipo
 structure-col-nullable = Nulo
 structure-col-pk = Clave
 structure-col-default = Predet.
+structure-col-note = Nota
+structure-note-hint = Añadir una nota…
+structure-table-note = Nota de tabla
 
 edit-save-button = Guardar
 edit-discard-button = Descartar
