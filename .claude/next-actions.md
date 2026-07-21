@@ -7,8 +7,25 @@
 
 ## 最終更新
 
-- 日付: 2026-07-21
-- develop tip: `0f734ff` (PR #90 まで merged)。main = v0.2.0 タグ (`891d2cc`)。
+- 日付: 2026-07-21 (AI 実地テスト → error-body fix セッション)
+- develop tip: `b2d157b` (PR #92 まで merged)。main = v0.2.0 タグ (`891d2cc`)。
+- **▶ 今の user 側ボール: `feature/ai-assistant-help` を push** →
+  `git push -u origin feature/ai-assistant-help`。push 後、agent が
+  `scratchpad/pr-ai-help-body.md` を本文に PR (→develop) を作成する。
+  ブランチ = 新 develop 上にリベース済 (`cf618f0`)、fmt/clippy/test 全緑。
+  中身 = AI アシスタントのスコープ説明 (パネル caption + Help の About block)、
+  全ロケール i18n、TDD。**⚠ 未 push (ローカルのみ)。**
+- **✅ 候補 A (AI プロバイダ実地テスト) 着手済 → 3 findings 判明。** Anthropic
+  キー投入 → Suggest 実行で `status 400` (残高不足の疑い、課金は user が断念)。
+  発見:
+  - **#1 ✅ 修正済 (PR #92, merge `b2d157b`):** streaming 経路が API エラー本文を
+    握りつぶし `status 400` だけ出していた → `body_error_detail` 共有 +
+    async `map_stream_error` で本文 (残高不足/無効モデル等) を surface。TDD。
+  - **#2 未対応:** デフォルトモデル `claude-sonnet-4-6` が stale → `claude-sonnet-5`
+    に bump (軽い chore、`crates/dbboard-anthropic/src/lib.rs` DEFAULT_MODEL)。
+  - **#3 未対応:** AI パネルのスコープ caption が地味 (user が「なにができるの?」)。
+    視認性向上 / 入力例プレースホルダ。
+- **✅ 候補 B (ローカル注釈, ADR-0045) develop 着地 (PR #90 → 以降 #91 doc-sync)。**
 - **✅ 候補 B (ローカル注釈, ADR-0045) develop 着地 (PR #90, merge commit `0f734ff`)。**
   config ディレクトリの `annotations.toml` (キー = 接続 **id**/テーブル/カラム) に
   注釈を持ち、Structure タブに編集可能な Note 列を追加。DB 非書き込み・read-only

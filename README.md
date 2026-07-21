@@ -320,7 +320,7 @@ id = "primary"
 name = "Anthropic"
 [providers.kind]
 type = "anthropic"
-model = "claude-sonnet-4-6"           # optional; omitted = default
+model = "claude-sonnet-5"             # optional; omitted = default
 keyring_api_key_ref = "dbboard.ai.primary.api_key"
 ```
 
@@ -329,7 +329,7 @@ keyring_api_key_ref = "dbboard.ai.primary.api_key"
 | Variable | Purpose | Default |
 |---|---|---|
 | `DBBOARD_ANTHROPIC_API_KEY` | API key from the Anthropic console. Sets the panel up without touching `ai-providers.toml`. | _(unset = fall through to TOML)_ |
-| `DBBOARD_ANTHROPIC_MODEL` | Model identifier override. | `claude-sonnet-4-6` |
+| `DBBOARD_ANTHROPIC_MODEL` | Model identifier override. | `claude-sonnet-5` |
 
 When `DBBOARD_ANTHROPIC_API_KEY` is set, it **always wins** over
 `ai-providers.toml`. This preserves the original Stage 1 wiring for
