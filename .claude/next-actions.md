@@ -7,8 +7,19 @@
 
 ## 最終更新
 
-- 日付: 2026-07-17
-- develop tip: `7a01f23` (PR #88 まで merged)。main = v0.2.0 タグ (`891d2cc`)。
+- 日付: 2026-07-21
+- develop tip: `0f734ff` (PR #90 まで merged)。main = v0.2.0 タグ (`891d2cc`)。
+- **✅ 候補 B (ローカル注釈, ADR-0045) develop 着地 (PR #90, merge commit `0f734ff`)。**
+  config ディレクトリの `annotations.toml` (キー = 接続 **id**/テーブル/カラム) に
+  注釈を持ち、Structure タブに編集可能な Note 列を追加。DB 非書き込み・read-only
+  接続でも可・全アダプタ一律・全13ロケール i18n。検証全 green (281 tests, うち
+  annotations 15) + `rust-reviewer` Approve (CRITICAL/HIGH ゼロ)。残 MEDIUM
+  (Structure render のファイル/関数サイズ, per-frame clone) は既存債務の継続 =
+  `.claude/issues/0016` に follow-up 化。この doc-sync (`chore/post-pr90-doc-sync`)
+  = roadmap tick + project-status + 本ファイル。
+- **→ 次の user 側ボール: 候補 A (AI プロバイダ実地テスト)。** maintainer 意向で
+  B と同リリース同梱予定だった片割れ。着手に必要な決定 = **キーの渡し方**
+  (`.dbbx` バンドル経由 / 直接入力)。下記「候補 A」参照。
 - **✅ 配れるインストーラ + Release CI を PR #88 で整備 (ADR-0044):** MSI
   ビルド不能の WiX v3 属性バグ修正 (ローカルで MSI 生成確認) + macOS
   `.app`/`.dmg` 用 `cargo-bundle` 設定を in-tree 化 + `v*.*.*` タグ push で
@@ -58,17 +69,16 @@ friction として拾い、次リリースに反映。**キーの渡し方** (`.
 / 直接入力) を決めれば着手可。maintainer は「ローカルメモ機能と一緒に出したい」
 意向 (2026-07-17)。
 
-### ★ 候補 B: ローカルメモ機能 (Structure タブに注釈列) — 要 ADR
+### ✅ 候補 B: ローカルメモ機能 (Structure タブに注釈列) — 完了 (PR #90 merged)
 
-SQLite/D1 にはテーブル/カラムコメントの第一級概念が無く、Postgres も現状
-`describe_table` が `information_schema.columns` のみで `pg_description` 未取得
-= **どのアダプタもコメント非表示**。代替案 = dbboard 側 (デスクトップローカル)
-に注釈を持つ:
-- 保存先: config ディレクトリに `annotations.toml` (キー = 接続ID/テーブル/カラム)
-- 表示: Structure タブに「メモ」列を追加、クリックで編集。DB には一切書かない
-  (権限不要・read-only 接続でも可)。`.dbbx` に含めれば端末間移送も可 (任意)
-- Postgres だけ追加で `pg_description` からの「DB由来コメント」併記も可能
-候補 A と同じリリースに載せる想定。**着手前に ADR。**
+**develop 着地済** (ADR-0045, PR #90, merge commit `0f734ff`)。config ディレクトリの
+`annotations.toml` (キー = 接続ID/テーブル/カラム, 接続 **id** 固定なので接続名変更
+でも残る) に注釈を持ち、Structure タブに編集可能な Note 列を追加。DB には一切
+書かない (権限不要・read-only 接続でも可)。
+- 意図的に範囲外 (別 ADR): Postgres `pg_description` 併記は `describe_table`
+  (adapter+core) 改修が要るので延期。`.dbbx` 同梱は却下 (暗号 secret bundle と
+  非 secret ドキュメントは intent 不一致)、共有が要るなら別の plain-text export。
+- follow-up debt: `.claude/issues/0016` (render 抽出 / per-frame clone 除去 / テスト追加)。
 
 ### 候補 C: cargo-deny の既存ドリフト対応 (別 chore)
 
