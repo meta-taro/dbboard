@@ -147,6 +147,16 @@ struct PendingSuggest {
     has_streaming: bool,
 }
 
+/// The scope caption shown above the AI input (ADR-0045 follow-up).
+///
+/// Rendered `.strong()` so it reads as a standing guarantee, not fine
+/// print: the assistant only drafts SQL, it never runs it or touches
+/// data on its own. Factored out so a test can pin the i18n key against
+/// drift — the emphasis itself is not publicly readable off `RichText`.
+fn scope_hint() -> egui::RichText {
+    egui::RichText::new(t!("ai-scope-hint")).strong()
+}
+
 impl AiPanel {
     #[must_use]
     pub fn new() -> Self {
@@ -521,7 +531,7 @@ impl AiPanel {
                 // Scope caption (ADR-0045 follow-up): make it visible at a
                 // glance that the assistant never runs SQL or touches data
                 // on its own, so no one mistakes a draft for an executed query.
-                ui.label(egui::RichText::new(t!("ai-scope-hint")).weak().small());
+                ui.label(scope_hint());
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.mode, AiMode::Explain, t!("ai-mode-explain"));
                     ui.selectable_value(&mut self.mode, AiMode::Suggest, t!("ai-mode-suggest"));
@@ -634,10 +644,19 @@ impl Default for AiPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::{ai_error_display, AiMode, AiPanel};
+    use super::{ai_error_display, scope_hint, AiMode, AiPanel};
     use crate::Command;
     use dbboard_ai::{AiError, StopReason};
     use dbboard_core::{TableInfo, TableSchema};
+    use dbboard_i18n::t;
+
+    // Guards the scope caption against i18n key drift. The emphasis
+    // (`.strong()`) is not publicly readable off `RichText`, so we pin
+    // the resolved text — if the key is renamed or dropped, this fails.
+    #[test]
+    fn scope_hint_uses_the_scope_key() {
+        assert_eq!(scope_hint().text(), t!("ai-scope-hint"));
+    }
 
     fn schema_two() -> Vec<TableInfo> {
         vec![
