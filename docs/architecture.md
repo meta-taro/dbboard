@@ -29,7 +29,10 @@ dbboard/
     ├── dbboard-postgres/   # adapter: PostgreSQL-wire (CockroachDB + Neon /
     │                       #   Supabase / Aurora DSQL via the flavor field —
     │                       #   ADR-0018/0019/0021)
+    ├── dbboard-connect/    # connection factory: connections.toml entry +
+    │                       #   keyring secret -> connected adapter (ADR-0046)
     ├── dbboard-server/     # local axum HTTP backend (ADR-0006)
+    ├── dbboard-mcp/        # headless read-only MCP server over stdio (ADR-0046)
     ├── dbboard-ai/         # AI provider trait + value types (ADR-0023)
     ├── dbboard-anthropic/  # AI provider: Anthropic Messages API (ADR-0023)
     └── dbboard-ui/         # egui views; HTTP client of dbboard-server
@@ -37,10 +40,13 @@ dbboard/
 
 As of the latest `develop`, `dbboard-core`, `dbboard-config`,
 `dbboard-i18n`, `dbboard-turso`, `dbboard-d1`, `dbboard-postgres` (with
-its three pg-wire flavors), `dbboard-server`, `dbboard-ui`, `dbboard-ai`
-(trait crate; landed via PR #20 on 2026-06-15), `dbboard-anthropic`
-(first concrete provider; landed via PR #22 on 2026-06-15), and
-`apps/dbboard` all ship. The UI talks to the server over HTTP rather
+its three pg-wire flavors), `dbboard-connect` (connection factory,
+ADR-0046), `dbboard-server`, `dbboard-mcp` (headless read-only MCP
+server, ADR-0046), `dbboard-ui`, `dbboard-ai` (trait crate; landed via
+PR #20 on 2026-06-15), `dbboard-anthropic` (first concrete provider;
+landed via PR #22 on 2026-06-15), and `apps/dbboard` all ship.
+`dbboard-mcp` is a standalone stdio binary — the only workspace entry
+point other than `apps/dbboard`. The UI talks to the server over HTTP rather
 than calling adapters directly; `apps/dbboard` boots both in one
 process. The binary constructs `Option<Arc<dyn AiProvider>>` from env
 vars at startup (landed via PR #24 on 2026-06-17 —
@@ -78,9 +84,22 @@ contract ([ADR-0023](decisions.md)).
   `serde` for the wire format, which is pure data transformation, not
   I/O).
 - Adapter crates depend on `dbboard-core` only.
-- `dbboard-server` depends on `dbboard-core` and the concrete adapter
-  crates (it is the only place that knows the full adapter set; since
-  Phase 1.5 `apps/dbboard` reaches them only transitively through it).
+- `dbboard-connect` depends on `dbboard-core`, `dbboard-config`, and the
+  concrete adapter crates. It is the single place that turns a
+  `connections.toml` entry plus its keyring secret into a connected
+  `Arc<dyn DatabaseAdapter>` (`backend_config_for_entry` +
+  `connect_adapter`), extracted from `dbboard-server` so a second entry
+  point can reuse the exact, security-sensitive construction without
+  pulling in axum ([ADR-0046](decisions.md)).
+- `dbboard-server` depends on `dbboard-connect` (and `dbboard-core`); it
+  is reached from `apps/dbboard` and owns the HTTP contract. Since Phase
+  1.5 `apps/dbboard` reaches the adapter set only transitively through
+  the connect + server layer.
+- `dbboard-mcp` depends on `dbboard-connect`, `dbboard-core`, and
+  `dbboard-config`. It is a **standalone binary** (not booted by
+  `apps/dbboard`) that serves a read-only tool surface over stdio to an
+  external AI agent — a second consumer of the connection factory,
+  entirely independent of the HTTP server ([ADR-0046](decisions.md)).
 - `dbboard-ui` depends on `dbboard-core` among workspace crates only. It
   talks to the local server **over HTTP** (via external crates `reqwest`
   / `tokio`), not via direct function calls.

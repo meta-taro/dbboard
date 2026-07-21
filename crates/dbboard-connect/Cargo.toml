@@ -1,0 +1,24 @@
+[package]
+name = "dbboard-connect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Resolve dbboard connection config + keyring secrets into a connected database adapter (axum-free factory, ADR-0046)."
+
+[dependencies]
+dbboard-core = { workspace = true }
+# connections.toml + OS keychain resolution (ADR-0013): entries and
+# secret refs come in, a BackendConfig comes out.
+dbboard-config = { workspace = true }
+# Concrete adapters wired by the match in `backend.rs`. Depended on by
+# path (not workspace deps) exactly as `dbboard-server` did before the
+# ADR-0046 extraction.
+dbboard-d1 = { path = "../dbboard-d1" }
+dbboard-postgres = { path = "../dbboard-postgres" }
+dbboard-turso = { path = "../dbboard-turso" }
+
+[lints]
+workspace = true

@@ -18,8 +18,6 @@
 //! the bind address widened beyond loopback, a per-launch secret
 //! (e.g. an `X-DBBoard-Token` header) must be added first.
 
-mod backend;
-mod config;
 mod dto;
 mod handlers;
 
@@ -33,9 +31,14 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use backend::connect_adapter;
+// The connection factory moved to `dbboard-connect` (ADR-0046). The
+// adapter constructor stays an internal detail (as it was here before);
+// the config resolvers + `BackendConfig` are re-exported so this crate's
+// public surface — and every existing caller (`apps/dbboard`, the
+// http.rs tests) — is unchanged.
+use dbboard_connect::connect_adapter;
 
-pub use config::{
+pub use dbboard_connect::{
     backend_config_for_entry, backend_config_from_env, backend_config_from_env_and_store,
     resolved_connection_label, BackendConfig,
 };
@@ -51,8 +54,8 @@ const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 /// on that captured `Arc` for the request's lifetime. A swap from
 /// outside the request loop ([`swap_backend`]) takes effect on the
 /// *next* request; queries already in flight finish against the
-/// adapter they captured. See [`backend`] for why the adapter must
-/// not be reconnected per request.
+/// adapter they captured. See `dbboard-connect` for why the adapter
+/// must not be reconnected per request.
 ///
 /// The lock is held only long enough to clone the inner `Arc`, so the
 /// guard never crosses an `.await`; a write contends with a snapshot

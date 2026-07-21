@@ -27,8 +27,9 @@ use std::sync::{Arc, PoisonError, RwLock, Weak};
 
 use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter, DbError, DbResult,
-    QueryResult, Row, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
+    classify_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
+    DbError, DbResult, QueryResult, ReadOnlyStatement, Row, SqlDialect, TableInfo, TableSchema,
+    Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
@@ -71,6 +72,18 @@ impl PoolHandle {
 /// handful of connections is plenty and keeps server-side resource use
 /// (and `CockroachDB` Cloud connection limits) modest.
 const MAX_CONNECTIONS: u32 = 5;
+
+/// `statement_timeout` applied inside the read-only transaction
+/// ([`PostgresAdapter::query_read_only`], ADR-0046 §8). It is the real
+/// cancellation backstop: an MCP client that drops a tool future only
+/// cancels the Rust side at an await point, so the server-side timeout is
+/// what stops an abandoned query from pinning a pooled connection.
+const READ_ONLY_STATEMENT_TIMEOUT_SECS: u32 = 30;
+
+/// Name of the server-side cursor used to row-cap a read-only query. A
+/// fixed identifier is safe because each cursor lives and dies inside one
+/// short-lived transaction on its own pooled connection.
+const READ_ONLY_CURSOR: &str = "dbboard_ro_cursor";
 
 /// Cap on error text surfaced into a [`DbError`], so a hostile or
 /// oversized server message cannot dump an unbounded string into the UI.
@@ -543,6 +556,121 @@ impl DatabaseAdapter for PostgresAdapter {
             rows_affected,
         })
     }
+
+    async fn query_read_only(&self, sql: &str, max_rows: usize) -> DbResult<QueryResult> {
+        // Prove a single read-only statement under the Postgres grammar,
+        // and learn whether it is a cursor-able query or an EXPLAIN (a
+        // utility statement that cannot be a cursor source).
+        let kind = classify_read_only(sql, SqlDialect::Postgres)?;
+        // The transaction body lives in a free `async fn`: nesting the
+        // sqlx `Executor` borrows inside an `#[async_trait]` method trips
+        // the "implementation of `Executor` is not general enough" HRTB
+        // error, which a plain async fn with concrete lifetimes avoids.
+        run_read_only_txn(self.pool.current(), sql, max_rows, kind).await
+    }
+}
+
+/// Execute a validated read-only statement inside a server-side
+/// `READ ONLY` transaction and return at most `max_rows` rows.
+///
+/// A `READ ONLY` transaction makes Postgres itself reject every write for
+/// its whole duration — INSERT / UPDATE / DELETE / DDL, `nextval()`,
+/// data-modifying CTEs, and a writing `FOR UPDATE` — closing the
+/// simple-query multi-statement and CTE-DML hazards even if the
+/// classifier's grammar missed one. The sqlx `Transaction` rolls back on
+/// drop, so an early `?` return never leaves the pooled connection
+/// mid-transaction.
+async fn run_read_only_txn(
+    pool: PgPool,
+    sql: &str,
+    max_rows: usize,
+    kind: ReadOnlyStatement,
+) -> DbResult<QueryResult> {
+    let mut tx = pool.begin().await.map_err(|e| classify_error(&e))?;
+    // Two single statements (not one `raw_sql` batch): the simple-query
+    // batch protocol widens the sqlx `Executor` lifetime bounds enough to
+    // trip the "not general enough" HRTB error under `#[async_trait]`.
+    sqlx::query("SET TRANSACTION READ ONLY")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| classify_error(&e))?;
+    let timeout = format!("SET LOCAL statement_timeout = '{READ_ONLY_STATEMENT_TIMEOUT_SECS}s'");
+    sqlx::query(&timeout)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| classify_error(&e))?;
+
+    let fetched = match kind {
+        // A plain query becomes a server-side cursor so at most
+        // `max_rows` rows ever cross the wire — an engine-level cap,
+        // not a textual `LIMIT` wrapped around arbitrary SQL.
+        ReadOnlyStatement::Query => fetch_via_cursor(&mut tx, sql, max_rows).await,
+        // EXPLAIN returns a small, bounded plan and cannot be a cursor
+        // source, so run it directly and materialise its rows.
+        ReadOnlyStatement::Explain => run_capped(&mut tx, sql).await,
+    };
+
+    // Read-only txn: nothing to commit. Roll back to release the snapshot
+    // promptly. Surface a fetch failure ahead of a rollback failure so
+    // the caller sees the real cause.
+    let rollback = tx.rollback().await;
+    let mut result = fetched?;
+    rollback.map_err(|e| classify_error(&e))?;
+    result.truncate_rows(max_rows);
+    Ok(result)
+}
+
+/// Row-cap a read-only query with a server-side cursor: `DECLARE` it over
+/// the (already validated) statement, then `FETCH FORWARD max_rows`, so
+/// the server materialises only the rows we keep.
+///
+/// Takes a concrete `&mut PgConnection` (not `&mut Transaction`) so the
+/// executor borrow has a single, nameable lifetime — passing the
+/// transaction and deref-ing inside trips the sqlx `Executor` HRTB error
+/// under `#[async_trait]`.
+async fn fetch_via_cursor(
+    conn: &mut sqlx::PgConnection,
+    sql: &str,
+    max_rows: usize,
+) -> DbResult<QueryResult> {
+    let declare = format!("DECLARE {READ_ONLY_CURSOR} NO SCROLL CURSOR FOR {sql}");
+    sqlx::query(&declare)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| classify_error(&e))?;
+
+    let fetch = format!("FETCH FORWARD {max_rows} FROM {READ_ONLY_CURSOR}");
+    let rows = sqlx::query(&fetch)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| classify_error(&e))?;
+    pg_rows_to_result(&rows)
+}
+
+/// Run `sql` directly on the connection (used for EXPLAIN, which cannot
+/// be a cursor source) and materialise its rows.
+async fn run_capped(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<QueryResult> {
+    let rows = sqlx::query(sql)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| classify_error(&e))?;
+    pg_rows_to_result(&rows)
+}
+
+/// Build a [`QueryResult`] from already-fetched rows: columns come from
+/// the first row (empty when there are none), matching the row-streaming
+/// path in [`PostgresAdapter::query`].
+fn pg_rows_to_result(rows: &[PgRow]) -> DbResult<QueryResult> {
+    let columns = rows.first().map(columns_of).unwrap_or_default();
+    let rows = rows
+        .iter()
+        .map(|row| Ok(Row::new(row_to_values(row)?)))
+        .collect::<DbResult<Vec<_>>>()?;
+    Ok(QueryResult {
+        columns,
+        rows,
+        rows_affected: 0,
+    })
 }
 
 /// Build the column list from a row, recording the Postgres type name
@@ -793,6 +921,57 @@ mod tests {
             .connect_lazy_with(PgConnectOptions::new());
         let handle = super::PoolHandle::Static(pool);
         assert_eq!(handle.current().options().get_max_connections(), 3);
+    }
+
+    /// Build an adapter over a lazily-built pool: no network I/O happens
+    /// until a statement is actually executed, so tests that only exercise
+    /// the pre-connection classifier stay hermetic.
+    fn lazy_adapter() -> super::PostgresAdapter {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        super::PostgresAdapter {
+            pool: super::PoolHandle::Static(pool),
+            flavor: FLAVOR_POSTGRES,
+        }
+    }
+
+    /// `query_read_only` classifies before it connects: a write is
+    /// rejected by the AST guard, so `pool.begin()` is never reached and
+    /// the lazy (never-connected) pool never touches the network. This is
+    /// the belt in front of the `BEGIN READ ONLY` engine backstop.
+    #[tokio::test]
+    async fn query_read_only_rejects_a_write_before_connecting() {
+        let err = lazy_adapter()
+            .query_read_only("DELETE FROM users", 100)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+        assert!(err.message().contains("read-only"), "message: {err}");
+    }
+
+    /// The simple-query multi-statement hazard (`SELECT 1; DROP TABLE t`
+    /// would run both under the batch protocol) is rejected by the
+    /// classifier before any connection is opened.
+    #[tokio::test]
+    async fn query_read_only_rejects_a_multi_statement_batch_before_connecting() {
+        let err = lazy_adapter()
+            .query_read_only("SELECT 1; DROP TABLE users", 100)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+    }
+
+    /// A data-modifying CTE (`WITH x AS (DELETE ...) SELECT`) is a write
+    /// dressed as a query; the classifier rejects it pre-connection too.
+    #[tokio::test]
+    async fn query_read_only_rejects_a_data_modifying_cte_before_connecting() {
+        let err = lazy_adapter()
+            .query_read_only(
+                "WITH gone AS (DELETE FROM users RETURNING id) SELECT * FROM gone",
+                100,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
     }
 
     /// The refreshing handle reads the *current* pool through the lock, so a

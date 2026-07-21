@@ -7,24 +7,32 @@
 
 ## 最終更新
 
-- 日付: 2026-07-21 (AI 実地テスト → error-body fix セッション)
-- develop tip: `b2d157b` (PR #92 まで merged)。main = v0.2.0 タグ (`891d2cc`)。
-- **▶ 今の user 側ボール: `feature/ai-assistant-help` を push** →
-  `git push -u origin feature/ai-assistant-help`。push 後、agent が
-  `scratchpad/pr-ai-help-body.md` を本文に PR (→develop) を作成する。
-  ブランチ = 新 develop 上にリベース済 (`cf618f0`)、fmt/clippy/test 全緑。
-  中身 = AI アシスタントのスコープ説明 (パネル caption + Help の About block)、
-  全ロケール i18n、TDD。**⚠ 未 push (ローカルのみ)。**
-- **✅ 候補 A (AI プロバイダ実地テスト) 着手済 → 3 findings 判明。** Anthropic
-  キー投入 → Suggest 実行で `status 400` (残高不足の疑い、課金は user が断念)。
-  発見:
-  - **#1 ✅ 修正済 (PR #92, merge `b2d157b`):** streaming 経路が API エラー本文を
-    握りつぶし `status 400` だけ出していた → `body_error_detail` 共有 +
-    async `map_stream_error` で本文 (残高不足/無効モデル等) を surface。TDD。
-  - **#2 未対応:** デフォルトモデル `claude-sonnet-4-6` が stale → `claude-sonnet-5`
-    に bump (軽い chore、`crates/dbboard-anthropic/src/lib.rs` DEFAULT_MODEL)。
-  - **#3 未対応:** AI パネルのスコープ caption が地味 (user が「なにができるの?」)。
-    視認性向上 / 入力例プレースホルダ。
+- 日付: 2026-07-21 (AI 実地テスト → error-body/model/scope 3 findings → MCP 企画セッション)
+- develop tip: `bb66f05` (PR #92/#93/#94 まで merged)。main = v0.2.0 タグ (`891d2cc`)。
+- **▶ 今の user 側ボール: MCP サーバ (ADR-0046) の実装着手。** 企画確定 →
+  ADR-0046 を `docs/decisions.md` に起票済 (Status: Proposed)。決定 = **dbboard 自体を
+  read-only MCP サーバ化**し、外部 AI エージェント (Claude Desktop/Code) が設定済 DB
+  接続を操作できるようにする (現 AI レイヤの反転)。形態 = 独立 stdio バイナリ
+  `dbboard-mcp` (headless)、SDK = `rmcp` 2.2.0。今セッションはコードなし (企画+ADR のみ)。
+  **次セッション = TDD で実装** (下記フェーズ)。architect レビュー済 (C1 致命的所見反映)。
+  - **フェーズ1:** `crates/dbboard-connect` 抽出 (`BackendConfig` +
+    `backend_config_for_entry` + `build_adapter` を `dbboard-server` から axum 非依存で
+    分離、server は re-export)。
+  - **フェーズ2:** `dbboard-core` に純関数 `is_single_read_only_statement` (sqlparser、
+    敵対的入力テーブルで RED先行) + アダプタ contract に `query_read_only` (Postgres=
+    `BEGIN READ ONLY`+statement_timeout / libSQL=`PRAGMA query_only` / D1=AST分類)。
+  - **フェーズ3:** `dbboard-mcp` バイナリ = rmcp `ServerHandler` + 5 read-only ツール
+    (`list_connections`/`list_tables`/`describe_table`/`run_read_query`/`get_annotations`)、
+    per-id 接続キャッシュ、stdout 不可侵 (log→stderr、console subsystem)、`--config` 上書き。
+  - **⚠ merge 前:** `rmcp` の security review + `cargo deny`。
+- **⏸ #3 (AI パネル scope 視認性) は parked。** ブランチ `feature/ai-panel-scope-visibility`
+  作成済・変更ゼロ。入力欄プレースホルダ + caption を `.weak()` から強調、TDD。MCP 落ち着いたら再開。
+- **✅ AI 実地テスト 3 findings 全て着地:**
+  - **#1 (PR #92, merge `b2d157b`):** streaming がエラー本文を握りつぶし `status 400`
+    だけ → `body_error_detail` 共有 + async `map_stream_error` で本文 surface。TDD。
+  - **#2 (PR #94):** デフォルトモデル `claude-sonnet-4-6` → `claude-sonnet-5` bump。TDD。
+  - **AI scope help (PR #93):** スコープ説明 (パネル caption + Help About)、全ロケール i18n。
+  - **#3 → 上記 parked。**
 - **✅ 候補 B (ローカル注釈, ADR-0045) develop 着地 (PR #90 → 以降 #91 doc-sync)。**
 - **✅ 候補 B (ローカル注釈, ADR-0045) develop 着地 (PR #90, merge commit `0f734ff`)。**
   config ディレクトリの `annotations.toml` (キー = 接続 **id**/テーブル/カラム) に

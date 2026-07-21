@@ -11,9 +11,10 @@ description = "Local in-process HTTP backend for dbboard: serves the adapter API
 [dependencies]
 dbboard-core = { workspace = true }
 dbboard-config = { workspace = true }
-dbboard-d1 = { path = "../dbboard-d1" }
-dbboard-postgres = { path = "../dbboard-postgres" }
-dbboard-turso = { path = "../dbboard-turso" }
+# The connection factory (BackendConfig + backend_config_* + adapter
+# construction) lives here since ADR-0046; this crate re-exports it and
+# no longer wires the concrete adapter crates directly.
+dbboard-connect = { workspace = true }
 axum = { workspace = true }
 # `net` for the loopback TcpListener, `sync` for the shutdown channel.
 tokio = { workspace = true, features = ["net", "sync"] }

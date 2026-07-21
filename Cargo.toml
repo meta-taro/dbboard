@@ -5,9 +5,11 @@ members = [
     "crates/dbboard-ai",
     "crates/dbboard-anthropic",
     "crates/dbboard-config",
+    "crates/dbboard-connect",
     "crates/dbboard-core",
     "crates/dbboard-d1",
     "crates/dbboard-i18n",
+    "crates/dbboard-mcp",
     "crates/dbboard-postgres",
     "crates/dbboard-server",
     "crates/dbboard-turso",
@@ -39,13 +41,24 @@ dbboard-ai = { path = "crates/dbboard-ai" }
 # wired in (Stage 1 wiring follows in a sibling PR).
 dbboard-anthropic = { path = "crates/dbboard-anthropic" }
 # Local user configuration: connections.toml + OS keychain (ADR-0013).
-# The server depends on this to wire env-vars with the file-backed store
-# into a single BackendConfig resolution.
+# The connection factory depends on this to wire env-vars with the
+# file-backed store into a single BackendConfig resolution.
 dbboard-config = { path = "crates/dbboard-config" }
+# Connection factory (ADR-0046): BackendConfig resolution + adapter
+# construction, extracted from dbboard-server so the headless MCP server
+# reuses it without depending on axum. dbboard-server re-exports it.
+dbboard-connect = { path = "crates/dbboard-connect" }
 # UI-only translation loader (ADR-0015). Consumed by `dbboard-ui` and
 # initialised once at startup from `apps/dbboard`.
 dbboard-i18n = { path = "crates/dbboard-i18n" }
 thiserror = "2"
+# Pure SQL parser for the read-only classifier (ADR-0046, Decision 6).
+# dbboard-core walks the parsed AST to prove a statement is a single
+# read-only query — the primary enforcement for Cloudflare D1 (which has
+# no server-side read-only mode) and defense-in-depth for the engines
+# that enforce read-only themselves. AST classification, never string
+# matching. default-features keeps the std dialects (Postgres, SQLite).
+sqlparser = "0.62"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # libsql core only — no remote/sync/replication/tls. Phase 1.5 will
 # widen this when the local HTTP backend introduces remote Turso.
@@ -147,6 +160,22 @@ age = { version = "0.11", default-features = false }
 zeroize = "1"
 # tempfile-based integration tests for dbboard-config's filesystem layer.
 tempfile = "3"
+# Official Rust MCP SDK (ADR-0046). `dbboard-mcp` uses it to expose the
+# read-only tool surface over a stdio transport so an external AI agent
+# (Claude Desktop / Claude Code) can drive dbboard's configured
+# connections. `server` = the `ServerHandler` + service layer, `macros`
+# = the `#[tool]`/`#[tool_router]`/`#[tool_handler]` proc-macros,
+# `transport-io` = the stdio transport (stdout is the MCP channel, so all
+# logging goes to stderr). Pinned to 2.2.0 (the v2 model/protocol line).
+rmcp = { version = "2.2", features = ["server", "macros", "transport-io"] }
+# JSON Schema derivation for the MCP tool parameter structs. rmcp 2.x
+# requires schemars 1.0 (a 0.8 `JsonSchema` will not satisfy the bound).
+schemars = "1"
+# Structured, level-filtered logging for the headless MCP server. Emitted
+# to stderr only — stdout carries the JSON-RPC frames. `tracing` is also
+# rmcp's own logging facade, so this shares its instrumentation.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Pure-Rust mock HTTP server for dbboard-anthropic's round-trip tests.
 # Dev-dep only — the production code never depends on it.
 wiremock = "0.6"

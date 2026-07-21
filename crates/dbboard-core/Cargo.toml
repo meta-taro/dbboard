@@ -20,6 +20,9 @@ base64 = { workspace = true }
 # is compile-time only — defining an async trait is not I/O, so the
 # crate's "no I/O" rule still holds.
 async-trait = { workspace = true }
+# Read-only SQL classifier (ADR-0046). Parsing SQL text into an AST is a
+# pure transformation — no I/O — so the crate's "no I/O" rule holds.
+sqlparser = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

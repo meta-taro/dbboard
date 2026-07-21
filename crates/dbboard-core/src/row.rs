@@ -67,6 +67,17 @@ impl QueryResult {
             rows_affected: 0,
         }
     }
+
+    /// Drop any rows beyond `max_rows`, keeping the columns intact.
+    ///
+    /// The read-only query path (ADR-0046) caps an agent's result set by
+    /// *truncating* to a soft bound rather than erroring like the
+    /// workspace-wide [`MAX_RESULT_ROWS`](crate::MAX_RESULT_ROWS): a
+    /// broad `SELECT *` returns its first `max_rows` rows plus a
+    /// `truncated` signal, instead of failing outright.
+    pub fn truncate_rows(&mut self, max_rows: usize) {
+        self.rows.truncate(max_rows);
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +120,35 @@ mod tests {
         };
         assert_eq!(result.columns[0].name, "id");
         assert_eq!(result.rows[0].get(0), Some(&Value::Integer(1)));
+    }
+
+    #[test]
+    fn truncate_rows_keeps_only_the_first_max_rows() {
+        let mut result = QueryResult {
+            columns: vec![Column {
+                name: "id".into(),
+                declared_type: None,
+            }],
+            rows: (0..5).map(|i| Row::new(vec![Value::Integer(i)])).collect(),
+            rows_affected: 0,
+        };
+        result.truncate_rows(2);
+        assert_eq!(result.rows.len(), 2);
+        // Columns are untouched by the row cap.
+        assert_eq!(result.columns.len(), 1);
+        assert_eq!(result.rows[0].get(0), Some(&Value::Integer(0)));
+        assert_eq!(result.rows[1].get(0), Some(&Value::Integer(1)));
+    }
+
+    #[test]
+    fn truncate_rows_is_a_noop_when_under_the_cap() {
+        let mut result = QueryResult {
+            columns: Vec::new(),
+            rows: vec![Row::new(vec![Value::Integer(1)])],
+            rows_affected: 0,
+        };
+        result.truncate_rows(10);
+        assert_eq!(result.rows.len(), 1);
     }
 
     #[test]
