@@ -330,6 +330,48 @@ async fn non_2xx_response_surfaces_on_the_first_stream_item_as_provider_error() 
 }
 
 #[tokio::test]
+async fn non_2xx_response_surfaces_the_api_error_body_not_just_the_status() {
+    // Regression: a 400 from the Messages API carries the *reason* in
+    // its JSON body (e.g. "credit balance too low", an invalid model).
+    // The streaming error path used to drop that body and surface only
+    // `status 400`, forcing users to guess. The detail must reach the
+    // error message the same way the non-streaming path already does.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Your credit balance is too low to access the Claude API."
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = provider_for(&server, "claude-x");
+    let mut stream = provider
+        .stream_explain(&explain_req())
+        .await
+        .expect("open returns Ok even though the upstream will reject");
+    let first = stream.next().await.expect("at least one item");
+    match first {
+        Err(AiError::Provider(msg)) => {
+            assert!(msg.contains("400"), "status code must survive: {msg}");
+            assert!(
+                msg.contains("credit balance is too low"),
+                "the API error message must reach the user: {msg}"
+            );
+            assert!(
+                msg.contains("invalid_request_error"),
+                "the API error kind must reach the user: {msg}"
+            );
+        }
+        other => panic!("expected Err(Provider(400…)), got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn streaming_request_body_carries_stream_true_and_keeps_user_content() {
     // Smoke test the body shape: when `stream_explain` runs the
     // outgoing JSON must carry `"stream": true` AND the same

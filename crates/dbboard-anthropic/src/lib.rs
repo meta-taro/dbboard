@@ -447,9 +447,19 @@ fn parsed_to_response(parsed: MessagesResponse, model: &str) -> AiResult<AiRespo
 /// from a runtime-rejected key is still a `Provider` error rather than
 /// re-raising as `Configuration`.
 fn error_from_status_and_body(status: u16, body: &[u8]) -> AiError {
-    let detail = parse_error_envelope(body)
-        .unwrap_or_else(|| truncate_to_owned(&String::from_utf8_lossy(body)));
-    AiError::Provider(format!("anthropic api error (status {status}): {detail}"))
+    AiError::Provider(format!(
+        "anthropic api error (status {status}): {}",
+        body_error_detail(body)
+    ))
+}
+
+/// Extract a human-readable reason from an API error response body,
+/// preferring the structured `{ "error": { … } }` envelope and falling
+/// back to the raw (truncated) text when the body is not JSON. Shared by
+/// the atomic and streaming error paths so both surface the same detail
+/// (e.g. "credit balance too low") instead of a bare status code.
+pub(crate) fn body_error_detail(body: &[u8]) -> String {
+    parse_error_envelope(body).unwrap_or_else(|| truncate_to_owned(&String::from_utf8_lossy(body)))
 }
 
 fn parse_error_envelope(body: &[u8]) -> Option<String> {
