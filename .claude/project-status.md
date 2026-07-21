@@ -5,6 +5,24 @@
 
 ## 最終更新
 
+- 日付: 2026-07-21 (**ローカル注釈機能 (ADR-0045) を PR #90 で develop に投入。**
+  経緯: 実利用の摩擦候補 B。SQLite/libSQL/D1 にはカラムコメントの第一級概念が
+  無く、Postgres も現状 `describe_table` が `pg_description` 未取得 =
+  どのアダプタもコメント非表示。そこで DB には一切書かず dbboard 側
+  (config ディレクトリの `annotations.toml`, キー = 接続 **id**/テーブル/カラム)
+  に注釈を持ち、Structure タブに編集可能な Note 列を追加。read-only 接続でも可・
+  全アダプタ一律。前セッションで実装済みだったブランチを本セッションで検証
+  (fmt/clippy/check/test 全 green, 281 tests, うち annotations 15) →
+  `rust-reviewer` = Approve/CRITICAL・HIGH ゼロ → レビュー指摘の軽微 doc ズレ
+  2 件 (main.rs の doc-comment 帰属バグ + ADR の API 名) を `3916dde` で修正 →
+  延期 MEDIUM (Structure render のファイル/関数サイズ・per-frame clone) を
+  `.claude/issues/0016` に follow-up 化 → push → PR #90 (merge commit `0f734ff`)。
+  意図的に範囲外: Postgres `pg_description` 併記 (別 ADR)、`.dbbx` 同梱 (却下:
+  暗号 secret bundle と非 secret ドキュメントは intent 不一致)。maintainer 意向
+  では候補 A (AI プロバイダ実地テスト) と同リリース同梱予定 = 次の着手先。
+  この doc-sync は roadmap の annotations 項目 tick + 本ファイル + next-actions。
+  develop tip = `0f734ff`。付随: Norton 隔離された harness の `claude.exe` を
+  復旧 (Grep ツールが一時失効していた, [[env-windows-norton]] の既知パターン)。)
 - 日付: 2026-07-17 (**配れるインストーラ + Release CI を PR #88 で整備。**
   経緯: 「いきなり unsigned exe は OSS として怪しまれる」という指摘を受け、
   (1) MSI がビルド不能だった WiX v3 属性バグ (`AbsentDisallow` →

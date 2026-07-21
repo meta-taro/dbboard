@@ -450,6 +450,14 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 - [x] Official logo — formalised the hand-authored, original app icon
       (ADR-0032) as the project logo: canonical asset, DESIGN.md +
       README usage, kept-source master (issue 0015, PR #78).
+- [x] Local table/column annotations — an editable **Note** column in the
+      Structure tab, stored per-user in `annotations.toml` (keyed on the
+      stable connection id, so a rename keeps the notes) and written through
+      `secure_fs`. Nothing is written to any database, so it works on
+      read-only connections and every adapter uniformly. Deliberately does
+      *not* surface Postgres `pg_description` (its own ADR) or ride the
+      `.dbbx` secret bundle ([ADR-0045](decisions.md), PR #90). Follow-up
+      render refactor tracked in issue 0016.
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
