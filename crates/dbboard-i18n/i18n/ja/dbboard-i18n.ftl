@@ -201,6 +201,9 @@ structure-col-type = 型
 structure-col-nullable = Null
 structure-col-pk = キー
 structure-col-default = 既定値
+structure-col-note = メモ
+structure-note-hint = メモを追加…
+structure-table-note = テーブルメモ
 
 edit-save-button = 保存
 edit-discard-button = 破棄
