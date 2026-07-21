@@ -5670,3 +5670,222 @@ database.
 - **Ships alongside the AI-provider live test** per the maintainer's wish to
   release both together; the two are independent (this is code, that is a test
   activity) and neither blocks the other.
+
+## ADR-0046 — `dbboard-mcp`: expose dbboard as a read-only MCP server
+
+- **Status**: Proposed 2026-07-21
+- **Builds on**: ADR-0023 (AI provider layer — this *inverts* its direction),
+  ADR-0028 (`describe_table` full schema), ADR-0029 (function-calling primitive —
+  the tool surface it foresaw, exposed outward instead of inward), ADR-0013
+  (`connections.toml`), ADR-0025 (per-user `*.toml` store + keyring),
+  ADR-0037 (Aurora DSQL IAM token refresh), ADR-0045 (local annotations),
+  ADR-0009 (`dbboard-server` in-process backend — source of the connection
+  factory this ADR extracts)
+
+### Context
+
+dbboard's AI layer (ADR-0023..0029) makes dbboard the *caller*: the app embeds
+an Anthropic provider and asks it to explain/suggest SQL. The maintainer wants
+the **inverse** — an external AI agent (Claude Desktop / Claude Code) that can
+*operate dbboard*: browse the configured databases, read schema, run read
+queries, read the local annotations.
+
+Why route this through dbboard rather than a generic database MCP server:
+
+1. **dbboard already owns the hard parts.** Connection definitions
+   (`connections.toml`), OS-keyring secrets (Windows Credential Manager here),
+   and a validated adapter per engine — Cloudflare D1 (HTTP REST), Aurora DSQL
+   (IAM token + background refresh, ADR-0037), Supabase / Neon / Postgres (sqlx),
+   Turso / libSQL (file/remote). An agent driving `dbboard-mcp` names a
+   **connection id**; it never sees a raw DSN, password, or IAM credential.
+2. **The primitives already exist.** `DatabaseAdapter::{list_tables,
+   describe_table, query}` (ADR-0028) and `annotations.toml` (ADR-0045) map
+   almost one-to-one onto MCP tools. `describe_table` was explicitly built as
+   "the natural first tool for a database AI companion" (ADR-0029 §Context);
+   this ADR is where that tool surface finally lands.
+3. **The connection factory already exists and is proven.** `dbboard-server`
+   exposes `backend_config_for_entry(entry, secrets)` → `build_adapter(config)
+   -> Arc<dyn DatabaseAdapter>`, matching on `BackendConfig::{Turso, D1,
+   Postgres, Neon, Supabase, AuroraDsql}` with `ping()` validation.
+   `apps/dbboard` (`DesktopSwitcher`) already consumes exactly this pair.
+
+But three facts about the *existing* code make a naive implementation unsafe or
+broken, and shape the decisions below:
+
+- **The Postgres adapter runs the simple query protocol.**
+  `PostgresAdapter::query` uses `sqlx::raw_sql(sql).fetch_many(&pool)`, which
+  executes *multiple semicolon-separated statements sequentially*. So
+  `SELECT 1; DROP TABLE t;` is **not** a parse error — both run. A
+  `starts_with("SELECT")` guard is therefore a data-loss vulnerability on
+  Neon/Supabase/Aurora DSQL — the exact connections the unattended collector
+  depends on. Postgres also allows DML inside CTEs
+  (`WITH x AS (DELETE ... RETURNING *) SELECT ...`, starts with `WITH`),
+  `SELECT ... FOR UPDATE`, `nextval()`/`setval()`, `EXPLAIN ANALYZE <dml>`,
+  `CALL proc()`. String matching cannot be trusted.
+- **Open-per-request is actively wrong for two adapters.** Turso `:memory:` is a
+  *fresh empty database on every connect*; Aurora DSQL spawns a **background
+  token-refresh task inside the adapter** (ADR-0037 段階B) that keeps a pool
+  authenticated 24/7. Reopening per tool call gives the agent a blank DB
+  (Turso) and throws away the refresh task + pays full SigV4/TLS/`ping()` each
+  call (DSQL).
+- **The reusable factory lives in `dbboard-server`, which pulls in `axum` +
+  `TcpListener`.** Depending on it from a headless stdio binary would compile an
+  HTTP server into the MCP process for no reason and couple two apps.
+
+### Decision
+
+Add a **standalone headless stdio MCP server binary**, `dbboard-mcp`, that an
+MCP client spawns. It reuses `dbboard-config` (connections + annotations +
+keyring) and a newly-extracted connection factory to serve a **read-only** tool
+surface over stdio. No GUI, no loopback socket, no new persistence.
+
+1. **Extract `crates/dbboard-connect` (app-layer library, no `axum`).** Move
+   `BackendConfig`, `backend_config_for_entry` / `entry_to_backend`, and
+   `connect_adapter` / `build_adapter` out of `dbboard-server` into a lean crate
+   that depends only on `dbboard-core` + the adapter crates + `dbboard-config`.
+   `dbboard-server` re-exports from it (HTTP contract unchanged); `dbboard-mcp`
+   depends on `dbboard-connect` + `dbboard-config` only. One source of truth for
+   security-sensitive connection construction across GUI, server, and MCP; no
+   axum weight in the stdio binary. A single new `dbboard-mcp` crate alone is
+   **not** enough — the shared factory prevents a maintenance fork of
+   credential-handling code. Layer rules hold: `dbboard-connect` sits at the
+   wiring layer, depends on core/adapters/config, never on ui/server.
+
+2. **SDK — `rmcp` 2.2.0** (official Rust MCP SDK, released 2026-07-08). Features
+   `macros` (`#[tool]` / `#[tool_router]`) + `transport-io` (stdio). Server is a
+   `ServerHandler` struct launched via `serve_server(handler, stdio())`. Pin the
+   exact version in `Cargo.lock`; add a **compile-smoke integration test** so an
+   SDK bump can't silently change the tool-registration shape. New dependency →
+   security review + `cargo deny` (downloads/maintenance/license) before merge,
+   per CLAUDE.md; this ADR entry is the required decision record.
+
+3. **stdout is the transport — hard invariants.** In stdio transport the JSON-RPC
+   stream owns stdout; one stray byte corrupts the session.
+   - ALL logging/diagnostics to **stderr** only (`tracing_subscriber::fmt()
+     .with_writer(std::io::stderr)`); route or silence sqlx's default `Info`
+     query log. A test asserts no tool path writes stdout.
+   - **Do NOT copy** `windows_subsystem = "windows"` from `apps/dbboard`
+     (main.rs:39). The MCP binary must be a **console-subsystem** app or the
+     stdio pipes won't attach. Round-trip a framed message in an integration
+     test to catch any Windows CRLF text-mode translation.
+
+4. **One multi-thread tokio runtime; keep blocking calls off it.** A single
+   `#[tokio::main]` runtime hosts both the rmcp serve loop and all adapter I/O —
+   no nested runtime, no `block_on`-in-async, so `apps/dbboard`'s cross-runtime
+   `build_adapter_on` dance is unnecessary here. `keyring` reads (Windows
+   Credential Manager RPC) and config `std::fs` reads are **synchronous
+   blocking**; wrap them in `tokio::task::spawn_blocking` (or resolve at
+   first-use behind the cache in Decision 6) so they never stall an executor
+   worker under concurrent tool calls.
+
+5. **v1 tool surface — read-only (5 tools):**
+
+   | Tool | Params | Returns |
+   |---|---|---|
+   | `list_connections` | — | `[{id, name, kind, capabilities, read_only:true}]` — sourced from `ConnectionFile`; **secrets (`keyring_*_ref`) never serialized** (guarded by the existing store.rs redaction test) |
+   | `list_tables` | `connection_id` | `Vec<TableInfo> {schema?, name}` |
+   | `describe_table` | `connection_id, schema?, table` | `TableSchema {columns:[{name, declared_type, nullable, primary_key, ordinal, default_value}], primary_key}`; adapters whose default returns `DbError::Capability` surface a clean tool error keyed off the `capabilities` flag |
+   | `run_read_query` | `connection_id, sql, max_rows?` | `{columns:[{name,type}], rows, row_count, truncated:bool}` |
+   | `get_annotations` | `connection_id, table?, column?` | table/column notes via `AnnotationsAdmin` |
+
+   **Row cap truncates, does not error.** The workspace cap
+   `MAX_RESULT_ROWS = 10_000` (dbboard-core/limits.rs) *errors* — hostile to an
+   agent whose broad `SELECT *` would just fail. `run_read_query` gets its own
+   smaller default (e.g. 200–1000), enforced as a real engine-level `LIMIT`
+   (inside the read-only transaction of Decision 6, not a naive
+   `SELECT (...) LIMIT n` wrap), returning `truncated:true` instead of erroring.
+   No cursor exists in the codebase; document offset/limit guidance in the tool
+   description rather than building pagination for v1.
+
+6. **Read-only enforced by the engine, not by string matching (resolves the
+   Postgres hazard).** Add a read-only execution path to the adapter contract —
+   `async fn query_read_only(&self, sql, max_rows) -> DbResult<QueryResult>`
+   (default impl = classify-then-`query`) — so each engine enforces it its own
+   way:
+   - **Postgres family (Neon/Supabase/DSQL):** execute inside a server-side
+     `BEGIN READ ONLY; SET LOCAL statement_timeout = '<n>s'; <sql>; ROLLBACK`.
+     `READ ONLY` makes the *server* reject INSERT/UPDATE/DELETE/DDL/`nextval`/
+     writing `FOR UPDATE`, defeating CTE-DML and multi-statement writes together;
+     the `statement_timeout` doubles as the cancellation backstop (Decision 8).
+   - **libSQL / Turso (SQLite):** `PRAGMA query_only = ON` on the connection
+     before serving (engine-enforced, rejects all writes); open read-only where
+     the builder allows.
+   - **Cloudflare D1 (HTTP REST):** *no server-side read-only mode exists* — the
+     weakest link. Classify with a real parser (`sqlparser`, correct dialect):
+     reject anything that is not a single `SELECT`/`WITH ... SELECT`/`EXPLAIN`-of-
+     select, reject multi-statement, walk the AST to reject DML-in-CTE. The ADR
+     labels D1 explicitly as **"classified, not engine-enforced."**
+
+   The **pure classifier** `is_single_read_only_statement(sql, dialect)` lives in
+   `dbboard-core` (no I/O, unit-testable, shareable with the web sibling); the
+   per-engine enforcement lives in each adapter's `query_read_only`. **Prefix /
+   `starts_with` checks are banned.** The v1 read tools never call the bare
+   `query()`.
+
+7. **Per-`connection_id` lazy adapter cache — never open-per-request.** A
+   process-lived `Arc<Mutex<HashMap<String, Arc<dyn DatabaseAdapter>>>>` built on
+   first use via the Decision 1 factory, mirroring what `AppState` does for the
+   GUI's single adapter, generalized to N. Required for correctness: Turso
+   `:memory:` (fresh empty DB per open) and DSQL (keep the refresh task warm).
+   Adapters are `Send + Sync` and hold their own pools, so caching is safe;
+   DSQL should not be idle-evicted.
+
+8. **Config discovery + cancellation.** Resolve `connections.toml` via the same
+   `ProjectDirs::from("dev","dbboard","dbboard")` lookup as the GUI (NOT cwd),
+   plus an explicit `--config` / `DBBOARD_CONFIG` override (settable in
+   `claude_desktop_config.json`'s `env` block, since Claude Desktop's spawn env
+   has none of the `DBBOARD_*` vars). **Log the resolved config path + connection
+   count to stderr at startup** so a handoff bug is diagnosable; carry over the
+   ADR-0024 cloud-sync-path warning. Cancellation (`notifications/cancelled`)
+   drops the tool future, but a dropped future only cancels at await points — the
+   server-side `statement_timeout` (Postgres), `reqwest` client timeout (D1), and
+   libSQL query timeout are the real backstops so an abandoned query can't pin a
+   pooled connection.
+
+### Out of scope (v1)
+
+- **Any write tool** (SQL writes, schema DDL). Deferred behind a future
+  per-connection opt-in gate (its own ADR).
+- **`set_annotation` write tool.** Candidate (annotations are a dbboard-local
+  file write, not a DB write, so it does not break the read-only posture) but
+  deferred: `annotations.toml` is read-modify-write last-writer-wins, and the GUI
+  owns the same file — concurrent edits can silently drop a note. `save_atomic`
+  prevents *corruption*, not *lost updates*. Gating it behind the same opt-in as
+  future writes keeps the "read-only v1" posture crisp.
+- **GUI-embedded "attach to the live session" HTTP/SSE mode** — the staged v2.
+- **Resources / prompts / sampling** MCP surfaces — tools only for v1.
+- **Localised tool descriptions** — English, agent-facing.
+- **`dbboard-web` mirror** — desktop-only; no HTTP contract change.
+
+### Consequences
+
+- **Two new crates/bins + one new dependency.** `crates/dbboard-connect`
+  (extraction, `dbboard-server` re-exports through it) and `dbboard-mcp`
+  (the binary). `rmcp` gets a security review + `cargo deny` pass before merge.
+- **Reuses the proven, `ping()`-validated factory**, so the agent gets the same
+  connection fidelity the GUI does — DSQL IAM refresh and D1 HTTP included.
+- **Read-only by engine enforcement** keeps the unattended-collector safety bar:
+  even pointed at the live Aurora DSQL connection, an agent cannot mutate data,
+  and the Postgres multi-statement / CTE-DML hazards are closed at the server,
+  not by fragile string matching.
+- **Adapter contract grows one method** (`query_read_only`, defaulted) — additive,
+  pre-existing adapters compile unchanged. `dbboard-core` gains a pure,
+  well-tested SQL classifier the web sibling can adopt.
+- **Concurrency**: sqlx `PgPool` and the D1 `reqwest` client are concurrency-safe
+  under the shared cache; a single libSQL handle may head-of-line-block — accept
+  for v1, note it, add a per-connection semaphore if it bites.
+- **Windows footguns carried forward**: the known benign libSQL teardown
+  segfault (project memory) now surfaces as an "abnormal child exit" the MCP
+  client logs on *every* shutdown — mitigate with an explicit stdout flush +
+  `std::process::exit(0)` on a clean shutdown request. The new unsigned
+  `dbboard-mcp.exe` is another binary Norton may flag — note it in the
+  internal-distribution docs.
+- **TDD plan** (next session): tests first — (1) `is_single_read_only_statement`
+  against a table of adversarial inputs (`SELECT 1; DROP TABLE t`, `WITH x AS
+  (DELETE...) SELECT`, `SELECT ... FOR UPDATE`, `PRAGMA`, leading comments,
+  `EXPLAIN <dml>`); (2) `list_connections` redacts secrets; (3) stdout stays
+  clean; (4) each engine's `query_read_only` rejects a write inside a read-only
+  txn/pragma; (5) a temp-libSQL round-trip of `list_tables` / `describe_table` /
+  `run_read_query` with truncation. Then implement: extract `dbboard-connect`,
+  add `query_read_only` + classifier, build the bin tool-by-tool.
+
