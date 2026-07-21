@@ -518,6 +518,10 @@ impl AiPanel {
                     let owned = name.to_string();
                     ui.label(t_args!("ai-active-with-name", name = owned));
                 }
+                // Scope caption (ADR-0045 follow-up): make it visible at a
+                // glance that the assistant never runs SQL or touches data
+                // on its own, so no one mistakes a draft for an executed query.
+                ui.label(egui::RichText::new(t!("ai-scope-hint")).weak().small());
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.mode, AiMode::Explain, t!("ai-mode-explain"));
                     ui.selectable_value(&mut self.mode, AiMode::Suggest, t!("ai-mode-suggest"));

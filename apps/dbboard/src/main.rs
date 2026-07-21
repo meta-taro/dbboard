@@ -999,6 +999,14 @@ fn help_menu(
             ui.separator();
             ui.label(t!("help-docs-hint"));
             ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
+            ui.separator();
+            // Collapsed by default so the long scope explanation does not
+            // crowd the menu; expanded on demand it states plainly that the
+            // AI Assistant only explains and drafts SQL — it never runs it
+            // or writes to the database (ADR-0045 follow-up).
+            ui.collapsing(t!("help-ai-about-title"), |ui| {
+                ui.label(t!("help-ai-about-body"));
+            });
         });
 }
 
