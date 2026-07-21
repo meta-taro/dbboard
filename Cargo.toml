@@ -9,6 +9,7 @@ members = [
     "crates/dbboard-core",
     "crates/dbboard-d1",
     "crates/dbboard-i18n",
+    "crates/dbboard-mcp",
     "crates/dbboard-postgres",
     "crates/dbboard-server",
     "crates/dbboard-turso",
@@ -159,6 +160,22 @@ age = { version = "0.11", default-features = false }
 zeroize = "1"
 # tempfile-based integration tests for dbboard-config's filesystem layer.
 tempfile = "3"
+# Official Rust MCP SDK (ADR-0046). `dbboard-mcp` uses it to expose the
+# read-only tool surface over a stdio transport so an external AI agent
+# (Claude Desktop / Claude Code) can drive dbboard's configured
+# connections. `server` = the `ServerHandler` + service layer, `macros`
+# = the `#[tool]`/`#[tool_router]`/`#[tool_handler]` proc-macros,
+# `transport-io` = the stdio transport (stdout is the MCP channel, so all
+# logging goes to stderr). Pinned to 2.2.0 (the v2 model/protocol line).
+rmcp = { version = "2.2", features = ["server", "macros", "transport-io"] }
+# JSON Schema derivation for the MCP tool parameter structs. rmcp 2.x
+# requires schemars 1.0 (a 0.8 `JsonSchema` will not satisfy the bound).
+schemars = "1"
+# Structured, level-filtered logging for the headless MCP server. Emitted
+# to stderr only — stdout carries the JSON-RPC frames. `tracing` is also
+# rmcp's own logging facade, so this shares its instrumentation.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Pure-Rust mock HTTP server for dbboard-anthropic's round-trip tests.
 # Dev-dep only — the production code never depends on it.
 wiremock = "0.6"
