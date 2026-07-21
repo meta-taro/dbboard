@@ -20,6 +20,8 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use dbboard_core::DbError;
+
 use crate::service::{McpService, ServiceError};
 
 /// Parameters for [`DbboardMcp::list_tables`].
@@ -204,17 +206,56 @@ fn json_block<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
 }
 
 /// Map a service error onto the MCP error envelope. A bad connection id
-/// or a rejected (non-read-only) statement is the caller's mistake —
-/// `invalid_params`; a config/keyring/task failure is ours —
-/// `internal_error`. Neither path embeds a secret.
+/// or a statement the engine rejected (a write, DDL, bad SQL, an unknown
+/// table) is the caller's mistake — `invalid_params`. A config/keyring/
+/// task failure, or a transient backend outage, is not something the
+/// caller can fix by editing its request — `internal_error`, which tells
+/// the agent to retry rather than rewrite. Neither path embeds a secret.
 fn to_mcp(err: &ServiceError) -> McpError {
     let message = err.to_string();
     match err {
+        // A backend connection drop is an environment failure, not a bad
+        // request — matched first so it wins over the blanket `Db` arm.
+        ServiceError::Db(DbError::Connection(_)) => McpError::internal_error(message, None),
+        // An unknown id, or any other DbError (rejected write, bad SQL,
+        // unknown table, unsupported capability), is attributable to what
+        // the caller sent.
         ServiceError::ConnectionNotFound(_) | ServiceError::Db(_) => {
             McpError::invalid_params(message, None)
         }
         ServiceError::Config(_) | ServiceError::Annotations(_) | ServiceError::Task(_) => {
             McpError::internal_error(message, None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_mcp;
+    use crate::service::ServiceError;
+    use dbboard_core::DbError;
+    use rmcp::model::ErrorCode;
+
+    #[test]
+    fn unknown_connection_is_a_bad_request() {
+        let err = to_mcp(&ServiceError::ConnectionNotFound("nope".into()));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn a_rejected_write_is_a_bad_request() {
+        // A read-only violation surfaces as DbError::Query — the caller
+        // sent a statement it should not have.
+        let err = to_mcp(&ServiceError::Db(DbError::Query("write rejected".into())));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn a_transient_connection_drop_is_our_problem_not_a_bad_request() {
+        // The agent should retry, not treat its own SQL as invalid.
+        let err = to_mcp(&ServiceError::Db(DbError::Connection(
+            "host unreachable".into(),
+        )));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 }
