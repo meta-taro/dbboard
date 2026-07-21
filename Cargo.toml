@@ -5,6 +5,7 @@ members = [
     "crates/dbboard-ai",
     "crates/dbboard-anthropic",
     "crates/dbboard-config",
+    "crates/dbboard-connect",
     "crates/dbboard-core",
     "crates/dbboard-d1",
     "crates/dbboard-i18n",
@@ -39,9 +40,13 @@ dbboard-ai = { path = "crates/dbboard-ai" }
 # wired in (Stage 1 wiring follows in a sibling PR).
 dbboard-anthropic = { path = "crates/dbboard-anthropic" }
 # Local user configuration: connections.toml + OS keychain (ADR-0013).
-# The server depends on this to wire env-vars with the file-backed store
-# into a single BackendConfig resolution.
+# The connection factory depends on this to wire env-vars with the
+# file-backed store into a single BackendConfig resolution.
 dbboard-config = { path = "crates/dbboard-config" }
+# Connection factory (ADR-0046): BackendConfig resolution + adapter
+# construction, extracted from dbboard-server so the headless MCP server
+# reuses it without depending on axum. dbboard-server re-exports it.
+dbboard-connect = { path = "crates/dbboard-connect" }
 # UI-only translation loader (ADR-0015). Consumed by `dbboard-ui` and
 # initialised once at startup from `apps/dbboard`.
 dbboard-i18n = { path = "crates/dbboard-i18n" }

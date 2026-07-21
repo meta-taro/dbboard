@@ -935,6 +935,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbboard-connect"
+version = "0.2.0"
+dependencies = [
+ "dbboard-config",
+ "dbboard-core",
+ "dbboard-d1",
+ "dbboard-postgres",
+ "dbboard-turso",
+]
+
+[[package]]
 name = "dbboard-core"
 version = "0.2.0"
 dependencies = [
@@ -991,10 +1002,8 @@ version = "0.2.0"
 dependencies = [
  "axum",
  "dbboard-config",
+ "dbboard-connect",
  "dbboard-core",
- "dbboard-d1",
- "dbboard-postgres",
- "dbboard-turso",
  "reqwest",
  "serde",
  "serde_json",

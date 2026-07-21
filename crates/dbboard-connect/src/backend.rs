@@ -1,14 +1,16 @@
 //! Wire a [`BackendConfig`] up to a concrete [`DatabaseAdapter`].
 //!
-//! The HTTP handlers never see the adapter kind: they hold an
-//! `Arc<dyn DatabaseAdapter>` produced here and dispatch through the
-//! trait surface only. Adding a new adapter means a new match arm
-//! below and no changes to the handlers (ADR-0012).
+//! Consumers hold an `Arc<dyn DatabaseAdapter>` produced here and
+//! dispatch through the trait surface only; the adapter kind never
+//! leaks. Adding a new adapter means a new match arm below and no
+//! changes to any consumer (ADR-0012).
 //!
-//! The server owns the single connected adapter for the lifetime of
-//! the process — never reconnecting per request. That is load-bearing
-//! for Turso `:memory:`, where each fresh connection is its *own* empty
-//! database; reconnecting would silently lose any `CREATE TABLE`.
+//! Callers own the connected adapter for its lifetime — never
+//! reconnecting per request. That is load-bearing for Turso `:memory:`,
+//! where each fresh connection is its *own* empty database; reconnecting
+//! would silently lose any `CREATE TABLE`. Both `dbboard-server` (one
+//! adapter) and `dbboard-mcp` (a per-connection-id cache, ADR-0046) rely
+//! on it.
 
 use std::sync::Arc;
 
@@ -25,7 +27,14 @@ use crate::config::BackendConfig;
 /// is reported at startup rather than on the first request. For
 /// non-self-validating drivers (D1, sqlx) this also runs `ping()` so
 /// the fail-fast contract holds uniformly across adapters.
-pub(crate) async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn DatabaseAdapter>> {
+///
+/// # Errors
+///
+/// Returns a [`DbError`] if the adapter cannot connect — a bad token,
+/// URL, or file path, or a failed `ping()` reachability check.
+///
+/// [`DbError`]: dbboard_core::DbError
+pub async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn DatabaseAdapter>> {
     match config {
         BackendConfig::Turso { path } => {
             let adapter = TursoAdapter::connect_local(&path).await?;
