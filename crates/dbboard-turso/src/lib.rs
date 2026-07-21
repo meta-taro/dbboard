@@ -7,8 +7,9 @@
 
 use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter, DbError, DbResult,
-    QueryResult, Row, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
+    check_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
+    DbError, DbResult, QueryResult, Row, SqlDialect, TableInfo, TableSchema, Value,
+    MAX_RESULT_ROWS,
 };
 
 pub struct TursoAdapter {
@@ -112,6 +113,28 @@ impl DatabaseAdapter for TursoAdapter {
         } else {
             run_execute(&self.conn, sql).await
         }
+    }
+
+    async fn query_read_only(&self, sql: &str, max_rows: usize) -> DbResult<QueryResult> {
+        // Belt: prove it is a single read-only statement under the SQLite
+        // grammar (also rejects the `SELECT 1; DELETE …` multi-statement
+        // batch the bare `query` router would mis-handle).
+        check_read_only(sql, SqlDialect::Sqlite)?;
+
+        // Braces: SQLite's own `query_only` makes the *engine* reject any
+        // write for the duration, covering anything the parser's grammar
+        // might accept as a query but that still writes. The flag lives on
+        // the shared connection, so it must be cleared again afterwards or
+        // a later `query` write on this handle would be stuck read-only.
+        set_query_only(&self.conn, true).await?;
+        let result = run_select_capped(&self.conn, sql, max_rows).await;
+        let reset = set_query_only(&self.conn, false).await;
+        // Surface a query failure first, but never swallow a failed reset:
+        // a connection left read-only would corrupt later writes silently.
+        let mut result = result?;
+        reset?;
+        result.truncate_rows(max_rows);
+        Ok(result)
     }
 
     async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
@@ -236,6 +259,69 @@ async fn run_select(conn: &libsql::Connection, sql: &str) -> DbResult<QueryResul
     })
 }
 
+/// Toggle SQLite's `query_only` PRAGMA on the connection. While ON, the
+/// engine rejects every write with `SQLITE_READONLY` — the engine-level
+/// half of [`TursoAdapter::query_read_only`]'s read-only guarantee.
+async fn set_query_only(conn: &libsql::Connection, on: bool) -> DbResult<()> {
+    let value = if on { "ON" } else { "OFF" };
+    // A setter PRAGMA returns no rows, so it goes through `execute`.
+    conn.execute(&format!("PRAGMA query_only = {value}"), ())
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+    Ok(())
+}
+
+/// Row-returning query that stops after `limit` rows rather than erroring
+/// at the workspace cap. The read-only tool surface (ADR-0046) bounds an
+/// agent's result set by truncation, so a broad `SELECT *` returns its
+/// first `limit` rows instead of failing like [`run_select`].
+async fn run_select_capped(
+    conn: &libsql::Connection,
+    sql: &str,
+    limit: usize,
+) -> DbResult<QueryResult> {
+    let mut rows = conn
+        .query(sql, ())
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+
+    let column_count = rows.column_count();
+    #[allow(clippy::cast_sign_loss)]
+    let mut columns = Vec::with_capacity(column_count as usize);
+    for i in 0..column_count {
+        columns.push(Column {
+            name: rows.column_name(i).unwrap_or_default().to_string(),
+            declared_type: rows.column_type(i).ok().map(format_column_type),
+        });
+    }
+
+    let mut result_rows = Vec::new();
+    while result_rows.len() < limit {
+        let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?
+        else {
+            break;
+        };
+        #[allow(clippy::cast_sign_loss)]
+        let mut values = Vec::with_capacity(column_count as usize);
+        for i in 0..column_count {
+            let raw = row
+                .get_value(i)
+                .map_err(|e| DbError::TypeConversion(e.to_string()))?;
+            values.push(convert_value(raw));
+        }
+        result_rows.push(Row::new(values));
+    }
+
+    Ok(QueryResult {
+        columns,
+        rows: result_rows,
+        rows_affected: 0,
+    })
+}
+
 async fn run_execute(conn: &libsql::Connection, sql: &str) -> DbResult<QueryResult> {
     let affected = conn
         .execute(sql, ())
@@ -320,7 +406,96 @@ fn format_column_type(t: libsql::ValueType) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_value, is_row_returning, redact_path, Value};
+    use super::{convert_value, is_row_returning, redact_path, TursoAdapter, Value};
+    use dbboard_core::{DatabaseAdapter, DbError};
+
+    /// Open an in-memory adapter seeded with a `t(id INTEGER, label TEXT)`
+    /// table holding `count` rows.
+    async fn seeded(count: i64) -> TursoAdapter {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+            .await
+            .unwrap();
+        for i in 0..count {
+            adapter
+                .query(&format!("INSERT INTO t (id, label) VALUES ({i}, 'row{i}')"))
+                .await
+                .unwrap();
+        }
+        adapter
+    }
+
+    async fn row_count(adapter: &TursoAdapter) -> i64 {
+        let result = adapter.query("SELECT count(*) FROM t").await.unwrap();
+        match result.rows[0].get(0).unwrap() {
+            Value::Integer(n) => *n,
+            other => panic!("unexpected count value: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn query_read_only_returns_rows_and_truncates_to_max() {
+        let adapter = seeded(5).await;
+        let result = adapter
+            .query_read_only("SELECT id, label FROM t ORDER BY id", 3)
+            .await
+            .unwrap();
+        assert_eq!(result.columns.len(), 2);
+        assert_eq!(result.rows.len(), 3, "row cap should truncate to max_rows");
+        assert_eq!(result.rows[0].get(0), Some(&Value::Integer(0)));
+    }
+
+    #[tokio::test]
+    async fn query_read_only_rejects_a_write_and_leaves_data_intact() {
+        let adapter = seeded(3).await;
+        let err = adapter
+            .query_read_only("DELETE FROM t", 100)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+        assert_eq!(row_count(&adapter).await, 3, "the DELETE must not have run");
+    }
+
+    #[tokio::test]
+    async fn query_read_only_rejects_multi_statement_batch() {
+        let adapter = seeded(3).await;
+        let err = adapter
+            .query_read_only("SELECT 1; DELETE FROM t", 100)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+        assert_eq!(row_count(&adapter).await, 3);
+    }
+
+    #[tokio::test]
+    async fn query_read_only_clears_query_only_so_later_writes_succeed() {
+        let adapter = seeded(2).await;
+        // A read-only call flips PRAGMA query_only ON then must reset it.
+        adapter
+            .query_read_only("SELECT * FROM t", 100)
+            .await
+            .unwrap();
+        // If the flag leaked, this ordinary write would fail SQLITE_READONLY.
+        adapter
+            .query("INSERT INTO t (id, label) VALUES (99, 'after')")
+            .await
+            .unwrap();
+        assert_eq!(row_count(&adapter).await, 3);
+    }
+
+    #[tokio::test]
+    async fn query_read_only_clears_query_only_even_after_a_rejected_write() {
+        let adapter = seeded(1).await;
+        // The classifier rejects this before touching the engine, but the
+        // reset path must still run so the connection is writable again.
+        let _ = adapter.query_read_only("DELETE FROM t", 100).await;
+        adapter
+            .query("INSERT INTO t (id, label) VALUES (42, 'ok')")
+            .await
+            .unwrap();
+        assert_eq!(row_count(&adapter).await, 2);
+    }
 
     #[test]
     fn convert_value_maps_null() {
