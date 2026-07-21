@@ -28,9 +28,8 @@ const AURORA_DSQL_URL_ENV: &str = "DBBOARD_AURORA_DSQL_URL";
 
 const CONNECTION_SELECTOR_ENV: &str = "DBBOARD_CONNECTION";
 
-/// What the server should connect to. Resolved cheaply (no I/O) and
-/// handed to [`crate::serve`], which does the actual connecting inside
-/// its tokio runtime.
+/// What to connect to. Resolved cheaply (no I/O); the actual connecting
+/// is done by [`crate::connect_adapter`] inside a tokio runtime.
 pub enum BackendConfig {
     Turso {
         path: String,

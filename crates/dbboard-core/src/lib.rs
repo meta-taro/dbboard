@@ -12,6 +12,7 @@ mod adapter;
 mod capabilities;
 mod error;
 mod limits;
+mod read_only;
 mod row;
 mod schema;
 mod value;
@@ -24,6 +25,10 @@ pub use capabilities::{
 };
 pub use error::{DbError, DbResult};
 pub use limits::{too_many_rows_error, MAX_RESULT_ROWS};
+pub use read_only::{
+    check_read_only, classify_read_only, is_single_read_only_statement, ReadOnlyStatement,
+    ReadOnlyViolation,
+};
 pub use row::{Column, QueryResult, Row};
 pub use schema::{ColumnInfo, TableInfo, TableSchema};
 pub use value::Value;

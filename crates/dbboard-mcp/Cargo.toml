@@ -1,0 +1,40 @@
+[package]
+name = "dbboard-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Headless MCP (Model Context Protocol) server exposing dbboard's configured connections to an AI agent over stdio, read-only (ADR-0046)."
+
+[[bin]]
+name = "dbboard-mcp"
+path = "src/main.rs"
+
+[dependencies]
+dbboard-core = { workspace = true }
+dbboard-config = { workspace = true }
+# The connection factory (ADR-0046): resolves a connections.toml entry +
+# keyring secret into a connected adapter, without pulling in axum. The
+# MCP server reuses the exact same, security-sensitive construction the
+# desktop GUI uses.
+dbboard-connect = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# `sync` for the adapter-cache Mutex, `io-std` for the stdio transport,
+# `rt-multi-thread` + `macros` for the runtime, `signal` so a Ctrl-C
+# shuts the server down cleanly alongside peer-disconnect.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "io-std", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+dbboard-turso = { path = "../dbboard-turso" }
+
+[lints]
+workspace = true

@@ -250,6 +250,80 @@ async fn aurora_dsql_round_trip_reports_aurora_dsql_flavor() {
     assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
 }
 
+/// `query_read_only` caps by *truncating*, not erroring (ADR-0046): a
+/// 100-row series with `max_rows = 10` comes back with exactly 10 rows.
+/// This is the opposite of `query`'s hard `MAX_RESULT_ROWS` error, since
+/// the MCP surface must degrade gracefully for an agent.
+#[tokio::test]
+async fn read_only_query_truncates_to_max_rows() {
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+    let sql = "SELECT n FROM generate_series(1, 100) AS s(n) ORDER BY n";
+    let result = adapter.query_read_only(sql, 10).await.expect("read-only");
+    assert_eq!(result.rows.len(), 10);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
+}
+
+/// The engine backstop, not the classifier: `nextval()` is a *write*
+/// (it advances a sequence) wrapped in a `SELECT`, so the AST classifier
+/// waves it through as read-only — but `BEGIN READ ONLY` makes Postgres
+/// itself reject it. This proves the read-only guarantee does not rest on
+/// string/AST matching alone (ADR-0046 Decision 6).
+#[tokio::test]
+async fn read_only_rejects_nextval_at_the_engine() {
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+
+    let seq = format!("dbboard_pg_ro_seq_{}", std::process::id());
+    adapter
+        .query(&format!("DROP SEQUENCE IF EXISTS {seq}"))
+        .await
+        .expect("pre-drop");
+    adapter
+        .query(&format!("CREATE SEQUENCE {seq}"))
+        .await
+        .expect("create seq");
+
+    // Classifier sees a plain SELECT and allows it; the read-only txn
+    // must still refuse the sequence advance.
+    let err = adapter
+        .query_read_only(&format!("SELECT nextval('{seq}')"), 100)
+        .await
+        .expect_err("nextval must be rejected by the read-only transaction");
+    assert!(
+        matches!(err, dbboard_core::DbError::Query(_)),
+        "expected DbError::Query from the engine, got {err:?}"
+    );
+
+    adapter
+        .query(&format!("DROP SEQUENCE IF EXISTS {seq}"))
+        .await
+        .expect("cleanup drop");
+}
+
+/// EXPLAIN is a utility statement that cannot back a cursor, so
+/// `query_read_only` runs it on the direct (non-cursor) branch. It must
+/// still succeed and return the plan text rows.
+#[tokio::test]
+async fn read_only_explain_returns_a_plan() {
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+    let result = adapter
+        .query_read_only("EXPLAIN SELECT 1", 100)
+        .await
+        .expect("explain");
+    assert!(!result.rows.is_empty(), "EXPLAIN should return plan rows");
+}
+
 /// One row past the cap must surface as `DbError::Query` rather than a
 /// truncated result. The Postgres adapter streams rows, so the check
 /// fires mid-stream once `MAX_RESULT_ROWS` rows have been buffered.

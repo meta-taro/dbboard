@@ -15,8 +15,9 @@
 
 use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter, DbError, DbResult,
-    QueryResult, Row, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
+    check_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
+    DbError, DbResult, QueryResult, Row, SqlDialect, TableInfo, TableSchema, Value,
+    MAX_RESULT_ROWS,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -153,6 +154,19 @@ impl DatabaseAdapter for D1Adapter {
         envelope_to_query_result(envelope)
     }
 
+    async fn query_read_only(&self, sql: &str, max_rows: usize) -> DbResult<QueryResult> {
+        // D1 exposes no server-side read-only mode (no `PRAGMA query_only`
+        // over `/raw`, no `BEGIN READ ONLY`), so the AST classifier IS the
+        // enforcement here — not defense-in-depth. It is parsed with the
+        // SQLite dialect that matches D1's engine, so SQLite-only syntax
+        // is judged correctly (ADR-0046 Decision 6).
+        check_read_only(sql, SqlDialect::Sqlite)?;
+        let envelope = self.post_raw(sql).await?;
+        // Truncate to `max_rows` rather than erroring past the workspace
+        // cap: the MCP surface must degrade gracefully for an agent.
+        envelope_to_query_result_capped(envelope, max_rows)
+    }
+
     async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
         // Same PRAGMA as the Turso adapter, over the /raw envelope.
         // PRAGMA arguments cannot be bound as parameters, so the name is
@@ -247,6 +261,43 @@ fn envelope_to_query_result(envelope: D1Envelope) -> DbResult<QueryResult> {
 
     let mut rows = Vec::with_capacity(first.results.rows.len());
     for raw_row in first.results.rows {
+        let mut values = Vec::with_capacity(raw_row.len());
+        for cell in raw_row {
+            values.push(convert_json_value(cell)?);
+        }
+        rows.push(Row::new(values));
+    }
+
+    Ok(QueryResult {
+        columns,
+        rows,
+        rows_affected: first.meta.changes,
+    })
+}
+
+/// Like [`envelope_to_query_result`] but caps by *truncating* to
+/// `max_rows` rather than erroring past [`MAX_RESULT_ROWS`]. Rows beyond
+/// the cap are dropped before conversion, so a huge D1 response is never
+/// fully materialised. Used only by the read-only MCP path (ADR-0046).
+fn envelope_to_query_result_capped(envelope: D1Envelope, max_rows: usize) -> DbResult<QueryResult> {
+    let first = envelope
+        .result
+        .into_iter()
+        .next()
+        .ok_or_else(|| DbError::Query("D1 returned no statement result".to_string()))?;
+
+    let columns = first
+        .results
+        .columns
+        .into_iter()
+        .map(|name| Column {
+            name,
+            declared_type: None,
+        })
+        .collect();
+
+    let mut rows = Vec::with_capacity(first.results.rows.len().min(max_rows));
+    for raw_row in first.results.rows.into_iter().take(max_rows) {
         let mut values = Vec::with_capacity(raw_row.len());
         for cell in raw_row {
             values.push(convert_json_value(cell)?);
@@ -475,9 +526,9 @@ fn reclassify_schema(err: DbError) -> DbError {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_raw_url, convert_json_value, envelope_to_query_result, envelope_to_table_schema,
-        envelope_to_tables, error_from_response, reclassify_schema, D1Adapter, D1ApiError,
-        D1Config, D1Envelope,
+        build_raw_url, convert_json_value, envelope_to_query_result,
+        envelope_to_query_result_capped, envelope_to_table_schema, envelope_to_tables,
+        error_from_response, reclassify_schema, D1Adapter, D1ApiError, D1Config, D1Envelope,
     };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo, Value};
     use serde_json::json;
@@ -768,6 +819,96 @@ mod tests {
     fn blob_array_rejects_null_item() {
         let err = convert_json_value(json!([1, null, 2])).unwrap_err();
         assert!(matches!(err, DbError::TypeConversion(_)));
+    }
+
+    fn adapter() -> D1Adapter {
+        D1Adapter::connect(D1Config {
+            account_id: "acc".into(),
+            database_id: "db".into(),
+            api_token: "token".into(),
+            base_url: None,
+        })
+        .expect("build adapter")
+    }
+
+    /// D1 has no engine read-only mode, so the classifier is the whole
+    /// guarantee: a write is rejected before `post_raw`, so no HTTP
+    /// request is ever made (the adapter is never pointed at a live API).
+    #[tokio::test]
+    async fn query_read_only_rejects_a_write_without_calling_the_api() {
+        let err = adapter()
+            .query_read_only("DELETE FROM users", 100)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+        assert!(err.message().contains("read-only"), "message: {err}");
+    }
+
+    /// The SQLite dialect must be used, not Postgres: a multi-statement
+    /// batch is still rejected pre-network.
+    #[tokio::test]
+    async fn query_read_only_rejects_a_multi_statement_batch_without_calling_the_api() {
+        let err = adapter()
+            .query_read_only("SELECT 1; DROP TABLE users", 100)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+    }
+
+    /// The capped parser truncates to `max_rows` instead of erroring past
+    /// the workspace cap — the read-only path degrades gracefully.
+    #[test]
+    fn capped_parser_truncates_to_max_rows() {
+        let rows: Vec<serde_json::Value> = (0..50).map(|i| json!([i])).collect();
+        let envelope = parse(json!({
+            "success": true,
+            "result": [{
+                "results": { "columns": ["n"], "rows": rows },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }));
+        let result = envelope_to_query_result_capped(envelope, 10).expect("capped");
+        assert_eq!(result.rows.len(), 10);
+        assert_eq!(result.columns.len(), 1);
+        assert_eq!(result.rows[0].get(0), Some(&Value::Integer(0)));
+    }
+
+    /// A result under the cap is returned whole, with the affected count
+    /// preserved from `meta.changes`.
+    #[test]
+    fn capped_parser_returns_everything_under_the_cap() {
+        let envelope = parse(json!({
+            "success": true,
+            "result": [{
+                "results": { "columns": ["id"], "rows": [[1], [2], [3]] },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }));
+        let result = envelope_to_query_result_capped(envelope, 100).expect("capped");
+        assert_eq!(result.rows.len(), 3);
+    }
+
+    /// Past the workspace cap the capped parser does NOT error (unlike
+    /// `envelope_to_query_result`): it truncates to `max_rows`.
+    #[test]
+    fn capped_parser_does_not_error_past_the_workspace_cap() {
+        use dbboard_core::MAX_RESULT_ROWS;
+        let rows: Vec<serde_json::Value> = (0..=MAX_RESULT_ROWS).map(|i| json!([i])).collect();
+        let envelope = parse(json!({
+            "success": true,
+            "result": [{
+                "results": { "columns": ["n"], "rows": rows },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }));
+        let result = envelope_to_query_result_capped(envelope, 5).expect("capped, not errored");
+        assert_eq!(result.rows.len(), 5);
     }
 
     /// Exactly at the cap — `MAX_RESULT_ROWS` rows in the envelope must
