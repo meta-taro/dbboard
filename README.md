@@ -13,12 +13,12 @@ databases straightforward.
 
 ## Status
 
-Pre-1.0; workspace at `0.2.0` with Phases 1, 3, and the Phase 4 AI
-assistant closed. The Turso,
-Cloudflare D1, CockroachDB, Neon, Supabase, and AWS Aurora DSQL adapters
-all ship over the local HTTP backend. See [`CHANGELOG.md`](CHANGELOG.md)
-for what landed and [`docs/roadmap.md`](docs/roadmap.md) for the next
-phase.
+Pre-1.0; workspace at `0.3.0`. Phases 1, 3, and the Phase 4 AI assistant
+are closed, and dbboard now doubles as a **read-only MCP server**
+(`dbboard-mcp`) for external AI agents (ADR-0046). The Turso, Cloudflare
+D1, CockroachDB, Neon, Supabase, and AWS Aurora DSQL adapters all ship
+over the local HTTP backend. See [`CHANGELOG.md`](CHANGELOG.md) for what
+landed and [`docs/roadmap.md`](docs/roadmap.md) for the next phase.
 
 This is the **desktop** implementation. The web counterpart lives at
 [meta-taro/dbboard-web](https://github.com/meta-taro/dbboard-web) (Nuxt +

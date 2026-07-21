@@ -9,6 +9,71 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-21
+
+Third tagged release. Headlined by **dbboard as a read-only MCP server**
+(ADR-0046) so an external AI agent — Claude Desktop, Claude Code — can
+drive the databases dbboard is already configured with, without ever
+seeing a secret and without being able to write. Also rolls up local
+column/table annotations, the signed-off distribution installers +
+Release CI, and a batch of AI-panel and packaging fixes. Desktop-only;
+the HTTP contract in [`docs/api-contract.md`](docs/api-contract.md) is
+unchanged from 0.2.0.
+
+### Added
+
+- **Read-only MCP server** (`dbboard-mcp`): a standalone stdio binary
+  that exposes dbboard's configured connections to an MCP client as five
+  read-only tools — `list_connections`, `list_tables`, `describe_table`,
+  `run_read_query`, `get_annotations`. Read-only is **engine-enforced**
+  (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`, D1 AST
+  classification), not string matching; results are bounded; secrets stay
+  in the OS keychain and are never serialized into a tool result or error.
+  Connection wiring is factored into a new `dbboard-connect` crate so the
+  binary reuses the server's connect path without pulling in axum
+  (ADR-0046).
+- **Local column and table annotations** (`annotations.toml`): an editable
+  Note column on the Structure tab, keyed by connection id / table /
+  column. Notes live in the config directory, never touch the database,
+  work on read-only connections, and apply uniformly across every adapter
+  (ADR-0045).
+- **Distribution installers + Release CI** (ADR-0044): a `v*.*.*` tag now
+  publishes a GitHub Release carrying Windows (`.exe` + MSI) and macOS
+  (`.dmg`) artifacts with a `SHA256SUMS.txt`, via `cargo-wix` /
+  `cargo-bundle`. Artifacts are unsigned for now (SmartScreen / Gatekeeper
+  warnings remain; code signing is tracked separately).
+
+### Changed
+
+- **AI scope caption** in the assistant panel now reads as a standing,
+  emphasised guarantee — the assistant only drafts SQL, it never runs it
+  or touches data on its own — instead of dismissible fine print
+  (ADR-0045 follow-up).
+- **Default Anthropic model** bumped to `claude-sonnet-5`.
+- **Help menu** renders update-notice release notes as Markdown and stays
+  open on inside clicks so links and change notes are usable (ADR-0043).
+
+### Fixed
+
+- **Anthropic streaming errors** now surface the API response body (e.g.
+  insufficient balance, invalid model) instead of a bare `status 400`.
+
+### Security
+
+- `cargo deny` advisory/license drift resolved: three transitive
+  build-time advisories (proc-macro-error2 unmaintained, the quick-xml
+  DoS pair) documented as ignores with reasons, `MPL-2.0` allowed for
+  `option-ext`, and the dead `CDLA-Permissive-2.0` allowance trimmed.
+- A `security-reviewer` pass over the MCP crate found no CRITICAL/HIGH
+  issues; the five secret/read-only invariants are verified at the source.
+
+### Documentation
+
+- ADR-0043 through ADR-0046 capture the decisions since 0.2.0.
+- `crates/dbboard-mcp/README.md` (tool table, security posture, Claude
+  Desktop wiring) and the dbboard-connect / dbboard-mcp entries in
+  [`docs/architecture.md`](docs/architecture.md).
+
 ## [0.2.0] — 2026-07-17
 
 Second tagged release. Rolls up Phase 3 (multi-connection management),
