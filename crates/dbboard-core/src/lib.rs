@@ -15,6 +15,7 @@ mod limits;
 mod read_only;
 mod row;
 mod schema;
+mod sort;
 mod value;
 mod write_back;
 
@@ -31,6 +32,7 @@ pub use read_only::{
 };
 pub use row::{Column, QueryResult, Row};
 pub use schema::{ColumnInfo, TableInfo, TableSchema};
+pub use sort::{compare_values, sorted_row_order, SortKey};
 pub use value::Value;
 pub use write_back::{
     build_update_sql, CellValue, RowIdentity, RowKey, SqlDialect, UpdatePlan, WriteBackError,
