@@ -24,6 +24,7 @@ result-export-selected-csv = 선택 행 CSV 저장…
 result-clear-selection = 선택 해제
 result-selected-count = { $count }행 선택됨
 result-select-row-hint = 클릭하여 행 선택 (Ctrl / Shift 로 다중 선택)
+result-sort-hint = 클릭하여 정렬; Ctrl / Shift로 정렬 기준 추가
 
 error-prefix-connection = 연결 오류
 error-prefix-query = 쿼리 오류

@@ -55,7 +55,10 @@ use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
 use dbboard_config::{table_key as annotation_table_key, AnnotationsAdmin};
-use dbboard_core::{ColumnInfo, DbResult, QueryResult, SqlDialect, TableInfo, TableSchema, Value};
+use dbboard_core::{
+    sorted_row_order, ColumnInfo, DbResult, QueryResult, Row, SortKey, SqlDialect, TableInfo,
+    TableSchema, Value,
+};
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
@@ -398,6 +401,9 @@ pub struct DbboardApp {
     /// whenever a new result replaces [`Self::last_result`] — the old
     /// indices no longer point at the same rows.
     result_selection: selection::ResultSelection,
+    /// Result-grid column sort (up to three levels). Reset whenever a new
+    /// result replaces [`Self::last_result`] — the columns may differ.
+    result_sort: SortState,
     history: PersistentHistoryStore,
     /// `Some` between submitting a query and consuming its reply; the
     /// `drain_replies` path uses this to compute `duration_ms`.
@@ -577,6 +583,7 @@ impl DbboardApp {
             tables: Ok(Vec::new()),
             last_result: None,
             result_selection: selection::ResultSelection::default(),
+            result_sort: SortState::default(),
             history,
             pending: None,
             pending_ai: None,
@@ -679,8 +686,10 @@ impl DbboardApp {
                     }
                     self.last_result = Some(r);
                     // A fresh result invalidates any row selection carried
-                    // over from the previous one (ADR-0035 slice 2).
+                    // over from the previous one (ADR-0035 slice 2), and any
+                    // sort keyed on the previous result's columns.
                     self.result_selection.clear();
+                    self.result_sort.reset();
                     // The rows just changed underneath any open inline
                     // editor; close it (issue 0013 slice b). Staged edits
                     // persist — a fresh run already reset them via run_sql.
@@ -1752,8 +1761,14 @@ impl DbboardApp {
                     ui.label(t!("result-empty"));
                 }
                 Some(Ok(result)) => {
-                    grid_intent =
-                        render_result(ui, result, &mut self.result_selection, &mut self.edit, busy);
+                    grid_intent = render_result(
+                        ui,
+                        result,
+                        &mut self.result_selection,
+                        &mut self.result_sort,
+                        &mut self.edit,
+                        busy,
+                    );
                 }
                 Some(Err(e)) => {
                     errors::render_error(ui, Some(&errors::db_error_display(e)));
@@ -2196,10 +2211,102 @@ fn save_csv_via_dialog(columns: &[dbboard_core::Column], rows: &[dbboard_core::R
     }
 }
 
+/// Most sort levels the grid tracks at once — a primary, secondary, and
+/// tertiary key. Matches what a user can reasonably reason about and keeps
+/// the header indicator (level numbers 1–3) legible.
+const MAX_SORT_KEYS: usize = 3;
+
+/// Result-grid sort state: the ordered sort keys plus a cached row
+/// permutation. The order is recomputed only when the keys change or the
+/// result's row count no longer matches, so a displayed grid isn't re-sorted
+/// every frame. Sorting reorders *display*, never the underlying rows — the
+/// row indices used for selection and inline editing stay valid.
+#[derive(Default)]
+struct SortState {
+    /// Active sort keys, primary first, capped at [`MAX_SORT_KEYS`].
+    keys: Vec<SortKey>,
+    /// Cached permutation of the current result's row indices.
+    order: Vec<usize>,
+    /// The keys changed since `order` was last computed.
+    dirty: bool,
+}
+
+impl SortState {
+    /// Drop all sorting. Called when a fresh result replaces the old one —
+    /// the columns (and their meaning) may have changed entirely.
+    fn reset(&mut self) {
+        self.keys.clear();
+        self.order.clear();
+        self.dirty = true;
+    }
+
+    /// Apply a header click on `column`. A plain click sorts by that column
+    /// alone, cycling ascending → descending → off. An `additive` click
+    /// (Ctrl / Shift held) instead builds a multi-level sort: a new column is
+    /// appended as the next level (up to [`MAX_SORT_KEYS`]), and clicking an
+    /// existing level cycles its own direction ascending → descending → gone.
+    fn on_header_click(&mut self, column: usize, additive: bool) {
+        let existing = self.keys.iter().position(|k| k.column == column);
+        if additive {
+            match existing {
+                Some(i) if self.keys[i].ascending => self.keys[i].ascending = false,
+                Some(i) => {
+                    self.keys.remove(i);
+                }
+                None if self.keys.len() < MAX_SORT_KEYS => {
+                    self.keys.push(SortKey {
+                        column,
+                        ascending: true,
+                    });
+                }
+                // At the cap: ignore the extra column rather than silently
+                // evicting a level the user set on purpose.
+                None => {}
+            }
+        } else {
+            match self.keys.as_slice() {
+                [only] if only.column == column && only.ascending => {
+                    self.keys[0].ascending = false;
+                }
+                [only] if only.column == column => self.keys.clear(),
+                _ => {
+                    self.keys.clear();
+                    self.keys.push(SortKey {
+                        column,
+                        ascending: true,
+                    });
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The display order for `rows`, recomputing the cached permutation when
+    /// the keys changed or the row count no longer matches (a safety net for
+    /// any result swap that didn't call [`Self::reset`]).
+    fn order_for(&mut self, rows: &[Row]) -> &[usize] {
+        if self.dirty || self.order.len() != rows.len() {
+            self.order = sorted_row_order(rows, &self.keys);
+            self.dirty = false;
+        }
+        &self.order
+    }
+
+    /// If `column` participates in the sort, its 1-based level and direction
+    /// for the header indicator; `None` when the column isn't sorted.
+    fn indicator(&self, column: usize) -> Option<(usize, bool)> {
+        self.keys
+            .iter()
+            .position(|k| k.column == column)
+            .map(|i| (i + 1, self.keys[i].ascending))
+    }
+}
+
 fn render_result(
     ui: &mut egui::Ui,
     result: &QueryResult,
     selection: &mut selection::ResultSelection,
+    sort: &mut SortState,
     edit: &mut EditGrid,
     busy: bool,
 ) -> Option<GridIntent> {
@@ -2241,6 +2348,17 @@ fn render_result(
     // highlight). ADR-0035 slice 2.
     let mut pending_click: Option<(usize, selection::ClickModifiers)> = None;
 
+    // Precompute the sort display order and per-column indicators before the
+    // table closures, which can't borrow `sort` (they also need to *mutate*
+    // it on a header click). A header click is captured and applied after the
+    // table, the same way the row click above is deferred.
+    let order: Vec<usize> = sort.order_for(&result.rows).to_vec();
+    let indicators: Vec<Option<(usize, bool)>> = (0..result.columns.len())
+        .map(|c| sort.indicator(c))
+        .collect();
+    let show_levels = sort.keys.len() > 1;
+    let mut pending_header_click: Option<(usize, bool)> = None;
+
     // Pin the Save row to the bottom of the result area *before* laying out
     // the grid, so it stays on screen no matter how tall the grid grows.
     // The grid's ScrollArea claims all remaining height, so a Save row added
@@ -2277,17 +2395,17 @@ fn render_result(
 
             table
                 .header(row_height, |mut header| {
-                    // Empty gutter header above the row-number column.
-                    header.col(|_ui| {});
-                    for col in &result.columns {
-                        header.col(|ui| {
-                            ui.strong(&col.name);
-                        });
-                    }
+                    pending_header_click =
+                        render_sort_header(&mut header, &result.columns, &indicators, show_levels);
                 })
                 .body(|body| {
                     body.rows(row_height, result.rows.len(), |mut row| {
-                        let index = row.index();
+                        // `display` is the on-screen position; `index` is the
+                        // actual row in `result.rows` it maps to under the
+                        // current sort. Selection and editing key on `index`
+                        // so they stay correct whatever the display order.
+                        let display = row.index();
+                        let index = order[display];
                         // Highlight the whole row even though only the
                         // gutter is clickable, so the selection reads
                         // across all columns.
@@ -2296,14 +2414,14 @@ fn render_result(
                             ui.with_layout(
                                 egui::Layout::top_down_justified(egui::Align::Center),
                                 |ui| {
-                                    // 1-based row number, like a spreadsheet
-                                    // row header. The justified layout makes
-                                    // the whole gutter cell the click target,
-                                    // not just the digits.
+                                    // Sequential 1-based display position, like
+                                    // a spreadsheet row header. The justified
+                                    // layout makes the whole gutter cell the
+                                    // click target, not just the digits.
                                     let response = ui
                                         .selectable_label(
                                             selection.is_selected(index),
-                                            (index + 1).to_string(),
+                                            (display + 1).to_string(),
                                         )
                                         .on_hover_text(t!("result-select-row-hint"));
                                     if response.clicked() {
@@ -2337,9 +2455,63 @@ fn render_result(
     if let Some((index, mods)) = pending_click {
         selection.click(index, mods);
     }
+    if let Some((column, additive)) = pending_header_click {
+        sort.on_header_click(column, additive);
+    }
 
     render_expanded_cell_popup(ui, expand_id);
     intent
+}
+
+/// Render the result grid's header row: an empty gutter cell, then one
+/// clickable, sort-aware cell per column. Returns the column a click landed on
+/// (with whether a modifier was held), for the caller to apply after the table
+/// so the sort can't change mid-layout.
+fn render_sort_header(
+    header: &mut egui_extras::TableRow<'_, '_>,
+    columns: &[dbboard_core::Column],
+    indicators: &[Option<(usize, bool)>],
+    show_levels: bool,
+) -> Option<(usize, bool)> {
+    let mut click = None;
+    // Empty gutter header above the row-number column.
+    header.col(|_ui| {});
+    for (col_idx, col) in columns.iter().enumerate() {
+        header.col(|ui| {
+            // Clickable header: sorts by this column. The selected highlight
+            // marks an active sort column; the label carries the ▲/▼ arrow and
+            // (when multi-level) the sort level number.
+            let label = sort_header_label(&col.name, indicators[col_idx], show_levels);
+            let response = ui
+                .selectable_label(
+                    indicators[col_idx].is_some(),
+                    egui::RichText::new(label).strong(),
+                )
+                .on_hover_text(t!("result-sort-hint"));
+            if response.clicked() {
+                let mods = ui.input(|i| i.modifiers);
+                click = Some((col_idx, mods.command || mods.shift));
+            }
+        });
+    }
+    click
+}
+
+/// Build a column header label with its sort indicator: an ▲/▼ arrow when the
+/// column is sorted, plus a 1-based level number when more than one column is
+/// sorted, so the primary/secondary/tertiary order stays legible.
+fn sort_header_label(name: &str, indicator: Option<(usize, bool)>, show_levels: bool) -> String {
+    match indicator {
+        None => name.to_string(),
+        Some((level, ascending)) => {
+            let arrow = if ascending { '▲' } else { '▼' };
+            if show_levels {
+                format!("{name} {arrow}{level}")
+            } else {
+                format!("{name} {arrow}")
+            }
+        }
+    }
 }
 
 /// Whether the inline-edit Save row has anything to show: pending staged
@@ -2570,6 +2742,112 @@ mod tests {
     };
     use std::sync::mpsc;
     use std::sync::{Arc, RwLock};
+
+    /// Header-click cycling and cached-order behaviour of the result-grid
+    /// sort. Pure state logic, so it needs no egui context.
+    mod sort_state {
+        use super::super::{sort_header_label, SortState, MAX_SORT_KEYS};
+        use dbboard_core::{Row, SortKey, Value};
+
+        fn rows(vals: &[i64]) -> Vec<Row> {
+            vals.iter()
+                .map(|v| Row::new(vec![Value::Integer(*v)]))
+                .collect()
+        }
+
+        fn key(column: usize, ascending: bool) -> SortKey {
+            SortKey { column, ascending }
+        }
+
+        #[test]
+        fn plain_click_cycles_ascending_descending_off() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            assert_eq!(s.keys, vec![key(0, true)]);
+            s.on_header_click(0, false);
+            assert_eq!(s.keys, vec![key(0, false)]);
+            s.on_header_click(0, false);
+            assert!(s.keys.is_empty());
+        }
+
+        #[test]
+        fn plain_click_on_a_new_column_replaces_the_sort() {
+            let mut s = SortState::default();
+            s.on_header_click(0, true); // build a two-level sort first
+            s.on_header_click(1, true);
+            s.on_header_click(2, false); // plain click on a third column
+            assert_eq!(s.keys, vec![key(2, true)]);
+        }
+
+        #[test]
+        fn additive_click_builds_a_multi_level_sort() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            s.on_header_click(1, true);
+            s.on_header_click(2, true);
+            assert_eq!(s.keys.len(), 3);
+            assert_eq!(s.indicator(0), Some((1, true)));
+            assert_eq!(s.indicator(1), Some((2, true)));
+            assert_eq!(s.indicator(2), Some((3, true)));
+        }
+
+        #[test]
+        fn additive_click_cycles_then_drops_an_existing_level() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            s.on_header_click(1, true); // add level 2 ascending
+            s.on_header_click(1, true); // ascending -> descending
+            assert_eq!(s.indicator(1), Some((2, false)));
+            s.on_header_click(1, true); // descending -> removed
+            assert_eq!(s.indicator(1), None);
+            assert_eq!(s.keys, vec![key(0, true)]); // primary survives
+        }
+
+        #[test]
+        fn additive_click_ignores_a_fourth_column_at_the_cap() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            s.on_header_click(1, true);
+            s.on_header_click(2, true);
+            s.on_header_click(3, true); // would be a fourth level
+            assert_eq!(s.keys.len(), MAX_SORT_KEYS);
+            assert_eq!(s.indicator(3), None);
+        }
+
+        #[test]
+        fn order_for_reflects_the_active_sort() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false); // ascending
+            assert_eq!(s.order_for(&rows(&[3, 1, 2])), &[1, 2, 0]);
+        }
+
+        #[test]
+        fn order_for_recomputes_when_the_row_count_changes() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            assert_eq!(s.order_for(&rows(&[2, 1])), &[1, 0]);
+            // A shorter/longer result must not reuse the stale permutation.
+            assert_eq!(s.order_for(&rows(&[5, 6, 4])), &[2, 0, 1]);
+        }
+
+        #[test]
+        fn reset_clears_the_keys() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            let _ = s.order_for(&rows(&[3, 1, 2]));
+            s.reset();
+            assert!(s.keys.is_empty());
+        }
+
+        #[test]
+        fn header_label_appends_arrow_and_level_number() {
+            assert_eq!(sort_header_label("id", None, false), "id");
+            assert_eq!(sort_header_label("id", Some((1, true)), false), "id ▲");
+            assert_eq!(sort_header_label("id", Some((1, false)), false), "id ▼");
+            // The level number appears only once more than one column sorts.
+            assert_eq!(sort_header_label("id", Some((2, true)), true), "id ▲2");
+        }
+    }
 
     const FIXED_TS: &str = "2026-06-04T00:00:00.000Z";
 

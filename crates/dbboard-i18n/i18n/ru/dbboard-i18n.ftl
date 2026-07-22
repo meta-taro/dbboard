@@ -24,6 +24,7 @@ result-export-selected-csv = Сохранить выбранное в CSV…
 result-clear-selection = Снять выделение
 result-selected-count = Выбрано: { $count }
 result-select-row-hint = Клик для выбора строки (Ctrl / Shift для нескольких)
+result-sort-hint = Нажмите для сортировки; Ctrl / Shift — добавить уровень
 
 error-prefix-connection = Ошибка подключения
 error-prefix-query = Ошибка запроса
