@@ -5889,3 +5889,79 @@ surface over stdio. No GUI, no loopback socket, no new persistence.
   `run_read_query` with truncation. Then implement: extract `dbboard-connect`,
   add `query_read_only` + classifier, build the bin tool-by-tool.
 
+## ADR-0047 — Download page on GitHub Pages
+
+- **Status**: Accepted 2026-07-22
+- **Builds on**: ADR-0044 (release CI + checksummed artifacts — the assets
+  this page links to), ADR-0040 (in-app update check that already points at a
+  "download page")
+
+### Context
+
+After ADR-0044 the release CI publishes checksummed Windows (exe + MSI) and
+macOS (.dmg) artifacts to each GitHub Release, and ADR-0040's in-app update
+notice links users to "the download page". But there was no such page — the
+link went to the raw GitHub Releases list, which buries the current binaries
+under changelog prose, prior-version assets, and source-tarball noise. A
+first-time downloader has no clean "get dbboard" landing spot, and no
+in-context nudge to verify the checksum before running an unsigned binary.
+
+GitHub Pages is free for public repositories, so a purpose-built download
+page costs nothing to host.
+
+### Decision
+
+Ship a single static download page at `site/index.html`, deployed to GitHub
+Pages, and point ADR-0040's in-app link and the README at it.
+
+1. **Data-driven, not hand-maintained.** The page is static HTML/CSS/JS with
+   no build step and no framework. At load it calls the public GitHub
+   Releases API (`/repos/meta-taro/dbboard/releases/latest`) and renders the
+   current version, per-platform download buttons, and the
+   `SHA256SUMS.txt` link **client-side**. So the page content tracks releases
+   automatically — cutting a new release needs no page edit and no redeploy.
+2. **Deploy via first-party Actions** (`.github/workflows/pages.yml`):
+   `actions/configure-pages` + `upload-pages-artifact` + `deploy-pages`,
+   pinned by major tag. The workflow runs on push to `develop` (the
+   integration branch; `main` is release-tag-only) under `site/**` (or the
+   workflow itself) plus `workflow_dispatch`. Because the content is fetched
+   at runtime, the deploy branch does not change what visitors see. Least
+   privilege: read-only by default, `pages: write` + `id-token: write`
+   granted to the deploy job only — matching the ADR-0044 posture. No
+   third-party action.
+3. **Verification + honesty up front.** The page carries the `sha256sum -c`
+   / `Get-FileHash` commands and an explicit unsigned-binary caveat
+   (SmartScreen / Gatekeeper), so the trust story from ADR-0044 travels with
+   the download instead of living only in the README. A page-level CSP
+   (`script-src 'self'`, `connect-src` limited to the GitHub API) is set via
+   a meta tag — GitHub Pages can't send response headers — as defense in
+   depth; the page logic lives in a same-origin `app.js` (not inline) so an
+   injected inline script cannot execute.
+
+### Alternatives considered
+
+- **Static, hard-coded version links.** Simpler (no JS, works offline), but
+  every release would need a page edit + redeploy PR — exactly the manual
+  toil the update-check flow was meant to avoid. Rejected: the API call is
+  cheap and degrades gracefully.
+- **Deploy from a branch / `/docs` folder** instead of the Actions pipeline.
+  Rejected to keep one consistent deploy mechanism and least-privilege token
+  scoping; the first-party Pages actions are the maintained path.
+- **A full marketing site / static-site generator.** Over-scoped for a
+  learning/reference project; a single page is the whole need.
+
+### Consequences
+
+- **Runtime dependency on the GitHub API.** If the unauthenticated call fails
+  (offline, or the ~60/hr per-IP rate limit), the page falls back to a direct
+  link to the Releases page rather than showing a broken state. The dynamic
+  parts are built via DOM APIs (not `innerHTML`) and download URLs are
+  restricted to GitHub hosts, so an unexpected API payload cannot inject
+  markup or an off-site link.
+- **One-time enable is a human step.** Pages must be switched on in repo
+  Settings → Pages → Source: "GitHub Actions"; the first deploy is triggered
+  with `workflow_dispatch`. The published URL is
+  `https://meta-taro.github.io/dbboard/`.
+- **The unsigned-binary caveat is now front-and-center**, which is the honest
+  state until code signing (ADR-0044 §Future) lands.
+
