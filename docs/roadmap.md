@@ -475,6 +475,14 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       stderr. The v0.3.0 headline feature ([ADR-0046](decisions.md),
       `crates/dbboard-mcp/`). This closes dbboard's AI story in both
       directions: AI *client* (Phase 4) and AI *server* (here).
+- [x] Multi-column result sort — click a column header to sort it
+      (ascending → descending → off), Ctrl/Shift-click to add a secondary
+      then tertiary key (capped at three); headers show a ▲/▼ arrow and, when
+      more than one column sorts, a 1-based level number. The ordering lives in
+      `dbboard-core::sort` (out of the UI event handlers) and sorts by a
+      permutation of row indices rather than moving rows, so selection and
+      inline-edit row/PK mappings stay valid; a fresh result resets the sort
+      ([ADR-0048](decisions.md), PR #106).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
@@ -487,7 +495,11 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       MSVC CRT so no VC++ Redistributable is needed) plus cargo-wix MSI
       installer sources ([ADR-0032](decisions.md), PR #52). Building the
       MSI is a maintainer step (`cargo wix`); the plain exe needs no
-      extra tooling.
+      extra tooling. In-use follow-up (PR #105): the MSI now installs a
+      **Start Menu** entry and a **Desktop** shortcut (non-advertised
+      `Shortcut` + per-user HKCU `RegistryValue` key-path + `RemoveFolder`),
+      both co-located in the Binaries feature to keep WiX ICE69 a benign
+      warning; uninstall removes them and the Start Menu folder.
 - [x] Collector setup pack — `docs/collector-setup/` ships a
       secret-free `connections.template.toml` (D1 / aurora-dsql-iam /
       supabase) plus a Windows `cmdkey` quickstart, so the
@@ -529,6 +541,15 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       --release` produce `dbboard.app` on a Mac; the release CI wraps it in a
       compressed `.dmg` via `hdiutil` ([ADR-0044](decisions.md), PR #88).
       Sources are in-tree; the build + code-signing/notarization run on a Mac.
+- [x] Download page on GitHub Pages — a single static page (`site/`) deployed
+      by a first-party Pages workflow (`configure-pages` /
+      `upload-pages-artifact` / `deploy-pages`) that links the latest release
+      assets, shows the `SHA256SUMS.txt` verification steps, and warns about
+      the unsigned-binary SmartScreen/Gatekeeper prompts. The in-app update
+      notice's "download page" link now resolves to a real page
+      ([ADR-0047](decisions.md), PR #104). The `.exe` is the primary (filled)
+      button and the `.msi` the secondary (outline) — a deliberate two-tier
+      layout, kept as-is.
 - [ ] Code signing (Authenticode / Apple Developer ID + notarization) —
       removes the SmartScreen / Gatekeeper "unknown publisher" warnings on the
       unsigned artifacts. Needs paid certs + repo secrets; the release

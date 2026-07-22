@@ -7,16 +7,31 @@
 
 ## 最終更新
 
-- 日付: 2026-07-22 (**v0.3.0 リリース完了 + MCP サーバ着地。次の user 側ボール =
-  DL ページ (GitHub Pages) の可否確認と着手判断。**)
-- develop tip: `97ed4ef` (PR #101 まで merged)。main = `70ecb93` = **v0.3.0 タグ**。
-- **▶ 今の user 側ボール: DL ページ / GitHub Pages。** GitHub Pages は public リポで
-  **無料**。提案 = 別 feat PR (`feat/download-page` + **ADR-0047**) で、first-party
-  action (`actions/configure-pages` / `upload-pages-artifact` / `deploy-pages`) を
-  使った Pages デプロイ workflow + DL ページ (最新リリース資産へのリンク +
-  `SHA256SUMS.txt` 検証手順 + 未署名バイナリの注意書き)。**未着手・scope 未確定** =
-  次に user と詰める (このリリース資産だけ静的に貼るか / Releases API を叩いて
-  自動追随するか)。※ この chore (doc-sync) とは別 PR。
+- 日付: 2026-07-22 (**DL ページ + 結果グリッド強化 (ソート/MSI ショートカット) が
+  develop 着地。次の user 側ボール = マージ済み機能の実地確認、または実利用摩擦の
+  次テーマ選択。**)
+- develop tip: PR #104 (DL ページ) → #105 (MSI ショートカット) → #106 (ソート) まで
+  merged。main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり)。
+- **✅ DL ページ (GitHub Pages) 完了 (PR #104, ADR-0047):**
+  https://meta-taro.github.io/dbboard/ が live。Pages workflow は `site/**` 変更を
+  検知して develop merge で自動デプロイ。`.exe` = primary (塗り) / `.msi` =
+  secondary (アウトライン) の 2 段ボタン (意図的、そのまま維持で user 合意)。
+  in-app update 通知の「download page」リンクが実在するページに解決するようになった。
+- **✅ 結果グリッド 2 機能を develop 着地 (実利用で発覚した moれ):**
+  - **マルチカラムソート (PR #106, ADR-0048):** ヘッダークリックで昇順→降順→解除、
+    Ctrl/Shift で第二・第三キー (最大 3)。順序ロジックは `dbboard-core::sort` に分離
+    (UI にビジネスロジックを置かない規則)、`result.rows` は不変で行選択・インライン
+    編集のインデックスを保持。core 10 + UI 9 テスト。
+  - **MSI ショートカット (PR #105):** スタートメニュー + デスクトップ。非アドバタイズ
+    型 (Shortcut + HKCU RegistryValue key-path + RemoveFolder)、ICE69 回避のため
+    Binaries フィーチャに同居。アンインストールで削除。
+- **▶ 今の user 側ボール:** (1) マージ済み機能の実地確認 = MSI 再ビルドで
+  ショートカット出現/アンインストール消去、ソート UX (多段・矢印/レベル番号・
+  ソート後も編集が正しい行を指すか)。(2) 次の実利用摩擦テーマの選択 (下記 候補)。
+- **MSI アンインストールの残留 (user 質問への回答済み):** MSI は exe/PATH/フォルダ/
+  ARP エントリを削除するが、`%APPDATA%\dbboard\dbboard\` の設定ファイルと Windows
+  資格情報マネージャーのエントリは残す (仕様どおり)。クリーンアップ手順は口頭提示済。
+  README への明文化は未 (任意 follow-up)。
 - **✅ v0.3.0 リリース済 (2026-07-22):** 目玉 = read-only MCP サーバ
   `dbboard-mcp` ([ADR-0046](../docs/decisions.md), PR #95)。dbboard を AI
   *サーバ* にもした (stdio 5 ツール固定・秘密非露出・read-only エンジン強制)。
@@ -42,23 +57,27 @@
 ## モード
 
 **in-use / continuous-improvement (menu-not-sequence)** — 2026-06-24 以降。
-配布 (#14) は 2026-07-16 に完了済、v0.3.0 公開済。今は「配布済 exe を担当が実際に
-使うか」を update-check で観測しつつ、次の実利用改善 (下記の user 側ボール) を
-摩擦順に進めるフェーズ。
+配布 (#14) は 2026-07-16 に完了済、v0.3.0 公開済、DL ページも live。今は
+「配布済 exe を担当が実際に使うか」を update-check で観測しつつ、次の実利用改善
+(下記の user 側ボール) を摩擦順に進めるフェーズ。直近は結果グリッドのソート漏れと
+MSI ショートカット漏れを実地で発見して補完した。
 
 ---
 
 ## user 側のボール (= 次に着手する時の選択肢)
 
-### ★ 候補 A: DL ページ / GitHub Pages (未着手・今回の user 関心)
+### ★ 候補 A: 実利用摩擦の次テーマ (menu-not-sequence)
 
-GitHub Pages は public リポで無料。別 feat PR (`feat/download-page` + ADR-0047)
-で Pages デプロイ workflow + DL ページを用意する。**着手前に scope を確定**:
-(1) 最新リリース資産へのリンクを静的に貼るだけか、(2) GitHub Releases API を
-叩いて最新版を自動追随させるか。いずれも `SHA256SUMS.txt` 検証手順と未署名
-バイナリ (SmartScreen/Gatekeeper) の注意書きを載せる。first-party action 3 種
-(`configure-pages`/`upload-pages-artifact`/`deploy-pages`) を使う。GH Actions
-追加なので merge 前にセキュリティレビュー。
+直近 3 PR (DL ページ / ソート / MSI ショートカット) はいずれも実利用で挙がった
+摩擦。次も同様に「実際に使って気づいた困りごと」を摩擦順に拾う。未着手候補は
+Export results (CSV/JSON) / Saved queries / Schema diff (下記 候補 E)。新しい
+write 経路を伴うものは着手前に ADR。
+
+### 候補 A-2: README に MSI アンインストール残留の明文化 (小・任意)
+
+MSI アンインストールは `%APPDATA%\dbboard\dbboard\` の設定と Windows 資格情報
+マネージャーのエントリを残す (仕様)。ユーザに口頭で伝えた `cmdkey` +
+フォルダ削除のクリーンアップ手順を README か `docs/` に明文化する小 chore。
 
 ### 候補 B: git 履歴の実店舗名 rewrite (human ボール・破壊的・未実行)
 
