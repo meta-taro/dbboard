@@ -24,6 +24,7 @@ result-export-selected-csv = 儲存選取列為 CSV…
 result-clear-selection = 清除選取
 result-selected-count = 已選取 { $count } 列
 result-select-row-hint = 點擊選取該列（Ctrl / Shift 多選）
+result-sort-hint = 點擊排序；Ctrl / Shift 新增排序層級
 
 error-prefix-connection = 連線錯誤
 error-prefix-query = 查詢錯誤

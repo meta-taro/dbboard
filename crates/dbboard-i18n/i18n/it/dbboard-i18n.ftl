@@ -24,6 +24,7 @@ result-export-selected-csv = Salva selezione come CSV…
 result-clear-selection = Cancella selezione
 result-selected-count = { $count } selezionate
 result-select-row-hint = Clic per selezionare la riga (Ctrl / Maiusc per selezione multipla)
+result-sort-hint = Clicca per ordinare; Ctrl / Maiusc per aggiungere un livello
 
 error-prefix-connection = Errore di connessione
 error-prefix-query = Errore di query

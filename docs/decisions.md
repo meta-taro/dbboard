@@ -5965,3 +5965,71 @@ Pages, and point ADR-0040's in-app link and the README at it.
 - **The unsigned-binary caveat is now front-and-center**, which is the honest
   state until code signing (ADR-0044 §Future) lands.
 
+## ADR-0048 — Client-side multi-column sort of the result grid
+
+- **Status**: Accepted 2026-07-22
+- **Builds on**: ADR-0035 (result-grid selection + export — the grid this
+  sorts), issue 0013 (inline editing — whose row indices this must not break)
+
+### Context
+
+The result grid rendered rows in the exact order the adapter returned them,
+with no way to sort. For a serverless/distributed DB client that is a real
+gap: re-sorting by re-issuing `SELECT ... ORDER BY` costs a round trip (and
+isn't possible at all for an arbitrary already-run query), yet users routinely
+want to eyeball a result by one column, then break ties by another. The ask
+was an ordinary spreadsheet-style sort, up to a primary/secondary/tertiary
+key.
+
+### Decision
+
+Sort **client-side, in the presentation layer, as a display-only
+reordering** — the fetched rows are never mutated or re-queried.
+
+1. **Ordering logic lives in `dbboard-core::sort`**, not the UI. A pure
+   `sorted_row_order(rows, keys) -> Vec<usize>` returns a *stable permutation*
+   of row indices; `compare_values` imposes a total order over `Value`
+   (NULLs first, then numbers by magnitude, then text, then blobs), using
+   `f64::total_cmp` so it never panics. Keeping this out of the UI honors the
+   architecture rule (no business logic in event handlers) and makes the
+   ordering unit-testable without egui.
+2. **Sort reorders display, not data.** The grid renders through the
+   permutation: the on-screen position maps to an actual `result.rows` index,
+   and selection + inline editing continue to key on that actual index. So
+   sorting can never corrupt a staged edit's row/primary-key mapping — the
+   reason a permutation was chosen over sorting the row vector in place.
+3. **Up to three levels, built by clicking headers.** A plain header click
+   sorts by that column alone, cycling ascending → descending → off. A
+   Ctrl/Shift-click appends the column as the next level (capped at three) or
+   cycles an existing level's own direction. The header shows a ▲/▼ arrow and,
+   once more than one column sorts, a 1-based level number. The stable sort
+   makes the row's natural order the implicit final tiebreak.
+4. **The permutation is cached** on the view state and recomputed only when
+   the keys change or the row count no longer matches, so a shown grid isn't
+   re-sorted every frame. A fresh query result resets the sort (its columns
+   may differ entirely).
+
+### Alternatives considered
+
+- **`ORDER BY` round-trips.** Rejected: costs a query per sort, can't sort a
+  result whose statement the user typed by hand, and loses the local grid
+  state (selection, staged edits).
+- **Sort the `Vec<Row>` in place.** Simpler to render, but it invalidates the
+  row indices that selection and inline editing depend on, and would force
+  re-deriving primary-key mappings after every click. The index permutation
+  sidesteps all of that.
+- **Full SQL `NULLS FIRST/LAST` + collation fidelity.** Over-scoped; the grid
+  needs a predictable, panic-free total order, not engine-exact semantics.
+  Documented as a fixed, simple order instead.
+
+### Consequences
+
+- Sorting is instantaneous and offline — no query, no network — and composes
+  with the existing selection/export/edit paths unchanged.
+- The order is dbboard's own total order, which may differ from what the
+  database's `ORDER BY` (with its collation and NULL placement) would produce.
+  This is intentional and documented on `compare_values`.
+- Very large result sets pay an `O(n log n)` sort when the keys change; it's
+  cached between frames, and the grid is already row-capped
+  (`MAX_RESULT_ROWS`), so the cost is bounded.
+

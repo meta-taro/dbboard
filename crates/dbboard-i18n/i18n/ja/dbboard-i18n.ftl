@@ -24,6 +24,7 @@ result-export-selected-csv = 選択行を CSV 保存…
 result-clear-selection = 選択解除
 result-selected-count = { $count } 行選択中
 result-select-row-hint = クリックで行を選択（Ctrl / Shift で複数選択）
+result-sort-hint = クリックで並べ替え（Ctrl / Shift で条件を追加）
 
 error-prefix-connection = 接続エラー
 error-prefix-query = クエリエラー
