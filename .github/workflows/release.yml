@@ -94,8 +94,23 @@ jobs:
       - name: Install cargo-bundle
         run: cargo install cargo-bundle --version 0.6.0 --locked
 
+      # cargo-bundle 0.6.0 can't build this crate as-is: it has no package
+      # selector (`--package` is rejected, so we run in the crate dir) AND it
+      # can't read a workspace-inherited version — `version.workspace = true`
+      # is a TOML map and it wants a string ("invalid type: map, expected a
+      # string for key `package.version`"). Resolve the concrete version via
+      # cargo metadata (which *does* understand inheritance), inline it into
+      # this crate's manifest for the bundle only, then restore the manifest.
+      # The .app still lands in the shared workspace target/ the .dmg reads.
       - name: Bundle .app
-        run: cargo bundle --release --package dbboard
+        working-directory: apps/dbboard
+        run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import sys,json; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="dbboard"))')"
+          cp Cargo.toml Cargo.toml.orig
+          sed -i '' 's/^version\.workspace = true/version = "'"$VERSION"'"/' Cargo.toml
+          cargo bundle --release
+          mv Cargo.toml.orig Cargo.toml
 
       # Wrap the .app in a compressed .dmg with hdiutil (built into macOS —
       # no extra tooling). The .app path is fixed by cargo-bundle.
