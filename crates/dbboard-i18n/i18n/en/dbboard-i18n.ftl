@@ -35,6 +35,7 @@ result-export-selected-csv = Save selected as CSV…
 result-clear-selection = Clear selection
 result-selected-count = { $count } selected
 result-select-row-hint = Click to select the row (Ctrl / Shift for multiple)
+result-sort-hint = Click to sort; Ctrl / Shift to add a level
 
 # ADR-0031 structure tab: clicking a sidebar table describes it and shows
 # its columns here, next to the query result.

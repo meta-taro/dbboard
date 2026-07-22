@@ -24,6 +24,7 @@ result-export-selected-csv = Auswahl als CSV speichern…
 result-clear-selection = Auswahl aufheben
 result-selected-count = { $count } ausgewählt
 result-select-row-hint = Klicken, um die Zeile auszuwählen (Strg / Umschalt für Mehrfachauswahl)
+result-sort-hint = Zum Sortieren klicken; Strg / Umschalt für eine weitere Ebene
 
 error-prefix-connection = Verbindungsfehler
 error-prefix-query = Abfragefehler

@@ -24,6 +24,7 @@ result-export-selected-csv = 保存选中行为 CSV…
 result-clear-selection = 清除选择
 result-selected-count = 已选 { $count } 行
 result-select-row-hint = 点击选择该行（Ctrl / Shift 多选）
+result-sort-hint = 点击排序；Ctrl / Shift 添加排序层级
 
 error-prefix-connection = 连接错误
 error-prefix-query = 查询错误
