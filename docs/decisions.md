@@ -6033,3 +6033,129 @@ reordering** — the fetched rows are never mutated or re-queried.
   cached between frames, and the grid is already row-capped
   (`MAX_RESULT_ROWS`), so the cost is bounded.
 
+## ADR-0049 — Local logical dump: schema + data, dump-only
+
+- **Status**: Accepted 2026-07-22
+- **Builds on**: ADR-0028 (`describe_table` — the introspection this extends
+  for full DDL), ADR-0042 (write-back — its dialect-aware identifier/value
+  quoting is the seam this reuses), ADR-0035 (result export — the pure,
+  I/O-free serialization pattern this copies), ADR-0036 / ADR-0037 (Aurora
+  DSQL over the Postgres adapter — the constraint that shapes Decision 6)
+
+### Context
+
+dbboard can export a *result set* (CSV/TSV, ADR-0035) and a *connection
+bundle* (`.dbbx`, ADR-0038), but it cannot back up a whole database. The
+internal collector runs three connections (Cloudflare D1, Aurora DSQL,
+Supabase) on a handed-out Windows exe, and none of those engines offers a
+one-click desktop equivalent of `pg_dump` / `sqlite3 .dump`: D1 is HTTP-only,
+DSQL is IAM-gated Postgres, Supabase is pooled Postgres. A portable,
+self-contained `.sql` backup of a connection is a real operational need.
+
+dbboard already has the three pieces required to build this without new
+infrastructure: in-process adapter access snapshotted for background work
+(`SchemaSource`, ADR-0028 slice c), a pure serialization precedent
+(`export.rs`), and dialect-aware quoting (`write_back.rs`, ADR-0042).
+
+### Decision
+
+Produce a **logical dump** — schema plus data — as one `.sql` text file per
+connection, in the **source engine's SQL dialect**. This is **dump-only**;
+restore/import is deliberately deferred to a future ADR.
+
+1. **Pure serialization lives in `dbboard-core::dump`** (Value→SQL-literal and
+   `INSERT` assembly), unit-tested with no adapter, UI, or I/O — mirroring
+   `export.rs`. It reuses `write_back`'s `quote_ident` / `quote_str` (promoted
+   to `pub(crate)`) and its `SqlDialect`, so escaping has one implementation
+   across the write-back and dump paths.
+2. **Value literals are total and dialect-aware.** `NULL`→`NULL`; integers and
+   finite reals emit bare (reals via Rust's shortest round-tripping form);
+   text is single-quote-escaped; blobs render as `X'…'` (SQLite) or
+   `'\x…'::bytea` (Postgres). Non-finite reals — which real data almost never
+   yields, since SQLite stores NaN as NULL and the Postgres adapter returns
+   values as text — are still handled without panicking (`'NaN'`/`'Infinity'`
+   casts on Postgres; NULL / `9e999` on SQLite).
+3. **DDL is produced by the adapter, not core**, via a new optional trait
+   method `table_ddl(&TableInfo)` gated by `Capabilities::has_table_ddl`,
+   defaulting to a `Capability` error — the same evolution shape as
+   `describe_table` (ADR-0028), so every existing adapter keeps compiling.
+   Engine-specific catalog knowledge stays in the adapter layer.
+4. **SQLite-family adapters (D1, Turso) get verbatim DDL cheaply** from
+   `sqlite_master.sql` (table plus its `type='index'` rows). No
+   reconstruction, so the dump reproduces the exact declared schema.
+5. **Postgres-family adapters (Supabase, DSQL) reconstruct DDL from the
+   catalog**: columns/types/`NOT NULL`/defaults/identity, primary key,
+   unique + check constraints, indexes, foreign keys, and owned sequences,
+   assembled in dependency-safe order. The pure assembler is split out so it
+   is unit-testable without a live server.
+6. **Aurora DSQL degrades by construction.** DSQL has no foreign keys and a
+   restricted DDL surface (no sequences/`SERIAL`, no `ALTER … ADD
+   CONSTRAINT`). The FK/sequence catalog queries simply return empty on DSQL,
+   so those sections are omitted and the emitted DDL faithfully describes what
+   DSQL actually holds. The dump makes **no promise of re-importability** into
+   DSQL — acceptable because restore is out of scope (Decision 0).
+7. **Data is complete for every engine**, read with keyset pagination on the
+   primary key (`WHERE pk > $last ORDER BY pk LIMIT <page>`), falling back to
+   `rowid`/`ctid`/`OFFSET` only for PK-less tables (documented cost). Page
+   size stays below `MAX_RESULT_ROWS` so the per-query cap never trips, and
+   each page is rendered straight to the file sink rather than buffered whole.
+8. **Huge-DB guard is warn-and-allow.** A preflight `COUNT(*)` per table sums
+   to the progress total; above a threshold (constant
+   `DEFAULT_BACKUP_WARN_ROWS = 500_000` for now, promotable to a persisted
+   setting later) the UI warns with the row count and lets the user proceed or
+   cancel. Never a hard block.
+9. **Orchestration runs in the worker thread, in-process (never HTTP)**,
+   reusing the `SchemaSource`-style injected adapter snapshot and a
+   `CancellationToken` (the AI-streaming pattern). Progress and completion
+   surface as new `Reply` variants; the egui thread never blocks and the run
+   is cancelable.
+10. **Partial failure is non-fatal.** A table that errors mid-dump is recorded
+    as a SQL comment in the file and collected into a per-table error list on
+    the terminal reply (mirroring `SchemaPrefetched`'s `errors`); the run
+    continues with the remaining tables.
+
+### Scope
+
+- **First adapters**: the production trio — D1, Aurora DSQL, Supabase. Turso
+  and Neon follow for free where the SQLite/Postgres paths already cover them.
+- **v1 slices** (TDD, independently shippable): (a) core value→literal +
+  `INSERT`; (b) dump plan + threshold; (c1) `table_ddl` trait + D1 verbatim
+  DDL; (c2) Postgres/DSQL catalog reconstruction; (d) async orchestrator
+  (paging, progress, cancel, partial failure); (e) worker command/reply + egui
+  UI; (f) i18n (11 locales) + docs.
+
+### Out of scope / limitations
+
+- **Restore/import** — a future ADR.
+- **Aurora DSQL**: no FKs, no sequences; emitted DDL is descriptive, not
+  guaranteed re-importable (Decision 6).
+- **Views, functions, triggers, grants, RLS policies** — not dumped in v1
+  (tables + data only).
+- **Blob fidelity** is literal-level (`X'…'` / `'\x…'`), not streamed; a very
+  large blob column is the memory worst case and is bounded only by page size.
+
+### Alternatives considered
+
+- **Shell out to `pg_dump` / `sqlite3`.** Rejected: not present on the
+  handed-out exe, no binary for D1 at all, and it would fork the trust model
+  (external process handling credentials). In-process reuse of the adapter
+  keeps secrets in the keyring and the dump on the same connection the user
+  already trusts.
+- **Typed reconstruction of Postgres values.** Unnecessary: the Postgres
+  adapter's simple-query path already returns every cell as text, which is
+  exactly what a single-quoted literal wants (the engine re-coerces on
+  insert), the same trick write-back uses.
+- **Hard block above the row threshold.** Rejected in favor of warn-and-allow
+  (Decision 8): the collector may legitimately need a large dump, so the tool
+  informs rather than forbids.
+
+### Consequences
+
+- One new core module, one new optional adapter method (two impls for v1: D1 +
+  Postgres), a new worker command/reply pair, a save-dialog + progress-modal
+  UI flow, and an 11-locale string set.
+- The all-text Postgres value path makes dumps literal-faithful but
+  type-agnostic on re-insert (engine coercion), consistent with write-back.
+- Sibling `dbboard-web` parity: the `table_ddl` capability and the dump concept
+  are recorded here; no code is shared.
+
