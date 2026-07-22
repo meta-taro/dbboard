@@ -94,8 +94,12 @@ jobs:
       - name: Install cargo-bundle
         run: cargo install cargo-bundle --version 0.6.0 --locked
 
+      # cargo-bundle 0.6.0 has no package selector (`--package` is rejected),
+      # so pick the crate by running in its directory; the .app still lands
+      # in the shared workspace target/ that the .dmg step reads from.
       - name: Bundle .app
-        run: cargo bundle --release --package dbboard
+        working-directory: apps/dbboard
+        run: cargo bundle --release
 
       # Wrap the .app in a compressed .dmg with hdiutil (built into macOS —
       # no extra tooling). The .app path is fixed by cargo-bundle.
