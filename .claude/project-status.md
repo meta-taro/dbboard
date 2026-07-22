@@ -3193,7 +3193,7 @@ ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち
 
 ## 直近の作業 (前セッション後半 / 2026-05-26)
 
-- **環境復旧**: Norton と推測される AV が `C:\Users\syste\AppData\Roaming\npm\
+- **環境復旧**: Norton と推測される AV が `C:\Users\<user>\AppData\Roaming\npm\
   node_modules\@anthropic-ai\claude-code\bin\claude.exe` を `.old.<timestamp>` に
   リネーム → web 側で `claude` CLI が起動しなくなった。`bin/claude.exe` に
   リネームし直して復旧 (タイムスタンプから推測: 2026-05-04 頃)。
