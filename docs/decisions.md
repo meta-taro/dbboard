@@ -5393,3 +5393,499 @@ model), fully unit-tested, no UI and no contract change. The egui wiring
 - Editing is deliberately narrow (single-table `SELECT`, real identity,
   tables-not-views). Widening — updatable views, composite/unique-key
   fallback, optimistic concurrency — is future ADR work.
+
+## ADR-0043 — Render the update notice's release notes as Markdown
+
+- **Status**: Accepted 2026-07-17
+- **Builds on**: ADR-0040 (the startup update check surfaces the notice)
+
+### Context
+
+ADR-0040's update notice shows the newer release's notes under a "変更点"
+collapsible in the Help menu. The notes are the **GitHub release body**,
+which is authored in CommonMark (`## headings`, `**bold**`, `` `code` ``,
+`- bullets`, `[links](url)`). The notice rendered them with a plain
+`egui::Label`, so a tester saw literal `**dbboard**` and raw `[text](url)`
+markup instead of formatted text — noise exactly where a release summary
+should be scannable.
+
+egui has no built-in Markdown renderer. Two ways to fix it: adopt the
+ecosystem-standard `egui_commonmark`, or hand-roll a small renderer for the
+subset we author.
+
+### Decision
+
+Adopt **`egui_commonmark` 0.23** (the egui-0.34-compatible release) and
+render the notes with `CommonMarkViewer`. A `CommonMarkCache` lives on
+`DesktopApp` so an open menu re-uses parsed output instead of re-parsing
+every frame.
+
+- **`default-features = false, features = ["pulldown_cmark"]`.** The notes
+  are short, text-only Markdown, so the image loaders, SVG, syntax
+  highlighter, and network `fetch` features stay off. The resolved subtree
+  is four crates — `egui_commonmark`, `egui_commonmark_backend`,
+  `pulldown-cmark` (MIT), `unicase` (MIT/Apache) — and adds no advisory or
+  license failure of its own (`cargo deny` traced clean through the new
+  subtree; the pre-existing failures below are unrelated).
+- **MSRV raised 1.75 → 1.92.** egui_commonmark 0.23 requires rustc 1.92.
+  dbboard is an internal, never-published binary built on current stable
+  (1.95 at time of writing), so the declared floor was aspirational; moving
+  it to the real requirement is honest and costs nothing.
+
+### Alternatives considered
+
+- **Hand-rolled subset renderer.** No dependency, MSRV unchanged, but only
+  as correct as the cases we code. The release body is free-form GitHub
+  Markdown; a battle-tested parser is the faithful choice and matches the
+  "prefer libraries over hand-rolled" principle.
+- **`comrak` backend.** A heavier GFM parser; pulldown-cmark covers the
+  notes and keeps the subtree small.
+
+### Consequences
+
+- **Desktop-only / UI-only.** No HTTP contract change, no `dbboard-web`
+  mirror. The notice text is still selectable (Ctrl+C into a report),
+  preserving the ADR-0039 copyable affordance.
+- **MSRV bump is a maintenance note, not a user-facing change.** No CI
+  matrix pins the old floor; the git hooks build on the installed stable.
+  It did unlock one MSRV-gated clippy lint (`duration_suboptimal_units`),
+  fixed in the same change: a `dsql_auth` test now reads `from_mins(10)`
+  instead of `from_secs(600)`.
+- **Pre-existing `cargo deny` drift (unrelated to this ADR).** The RustSec
+  DB has since flagged crates already in the tree: `proc-macro-error2`
+  (unmaintained, via `age` → ADR-0038), `option-ext` (MPL-2.0, via
+  `directories` → ADR-0013), and `quick-xml` (via `wayland-scanner` →
+  `eframe`, Linux-only). Tracked separately; `cargo deny` is a manual/CI
+  gate, not a commit hook, so it does not block this change.
+
+## ADR-0044 — Real distributable installers + release CI with checksums
+
+- **Status**: Accepted 2026-07-17
+- **Builds on**: ADR-0032 (Windows MSI sources), ADR-0038 (secret handoff)
+
+### Context
+
+Distribution so far has been a hand-built, hand-carried `dbboard.exe`
+(ADR-0032 hardened it to be self-contained, but it stayed a bare exe). For
+an OSS project a bare, unsigned exe reads as untrustworthy: SmartScreen and
+AV engines flag an "unknown publisher", and a first-time downloader has
+nothing to verify the file against. Three gaps, in ascending order of trust
+gained per unit of cost:
+
+1. No **installer** — the exe is not a recognizable "install this app"
+   artifact. (The MSI *sources* existed since ADR-0032 but had never been
+   built.)
+2. No **build provenance / checksums** — nothing ties a downloaded file to a
+   public, reproducible build.
+3. No **code signing** — the OS-level "unknown publisher" warning persists
+   regardless of 1–2.
+
+There was also no macOS artifact at all, though the code already compiles
+and runs there (Windows-specific bits are `cfg(windows)`-gated; keyring uses
+the `apple-native` Keychain backend).
+
+### Decision
+
+Ship the first two gaps now; defer signing (gap 3) as a paid follow-up.
+
+1. **Make the MSI actually build.** The hand-authored `wix/main.wxs` used
+   `AbsentDisallow="yes"`, which WiX v3's `candle` rejects (CNDL0004); the
+   correct v3 spelling is `Absent="disallow"`. With that fixed, WiX Toolset
+   v3.14 + `cargo-wix` 0.3.9 produce `dbboard-<version>-x86_64.msi` (version
+   injected from Cargo via `$(var.Version)`). `cargo wix` must run from
+   `apps/dbboard` so the linker resolves the `assets\` / `wix\` relative
+   `SourceFile` paths against that CWD.
+2. **macOS `.app` / `.dmg` via `cargo-bundle`.** A
+   `[package.metadata.bundle]` block in `apps/dbboard/Cargo.toml` is the
+   source of truth for the bundle identity (`identifier`
+   `com.meta-taro.dbboard`, category, icon, min OS version). `cargo bundle
+   --release` on a Mac produces the `.app`; the release CI wraps it in a
+   compressed `.dmg` with `hdiutil`. This mirrors the Windows split —
+   **sources in-tree, the artifact build is a separate native step** — since
+   `.app`/`.dmg` cannot be produced (or later signed/notarized) from
+   Windows.
+3. **Release CI with checksums** (`.github/workflows/release.yml`). A
+   `v*.*.*` tag push builds the Windows (exe + MSI) and macOS (.dmg)
+   artifacts on their native runners and publishes them to the matching
+   GitHub Release alongside a combined `SHA256SUMS.txt`. `workflow_dispatch`
+   runs the same build as a smoke test without publishing. Checksums are the
+   cheapest strong trust signal — anyone can verify a download against the
+   value CI computed.
+
+### Alternatives considered
+
+- **`cargo-dist` (unify everything).** One tool for multi-platform build +
+  installers + checksums + CI. Rejected for now: it would replace the
+  working `cargo-wix` MSI path (just fixed) and impose its own release
+  orchestration — large churn against a project in low-churn, menu-not-
+  sequence mode. Revisit if the piecemeal setup grows unwieldy.
+- **Third-party release action** (e.g. `softprops/action-gh-release`).
+  Rejected to keep the supply-chain surface minimal: the publish step uses
+  the runner-bundled `gh` CLI with the built-in `GITHUB_TOKEN`. Only
+  first-party `actions/checkout` + `actions/*-artifact` are used, pinned by
+  major tag.
+
+### Consequences
+
+- **Not signed → OS warnings remain.** Windows artifacts trip SmartScreen;
+  the macOS `.app` trips Gatekeeper. Signing needs paid certs (Authenticode
+  / Apple Developer ID) + repo secrets; the workflow leaves commented
+  placeholder steps (`codesign` / `notarytool` / `stapler`) marking where
+  they slot in. Tracked as the ADR-0044 §Future item.
+- **`cargo-bundle` is lightly maintained.** Accepted for a small, stable
+  metadata surface; if it rots, the escape hatch is a hand-written `.app` +
+  `create-dmg`, or `cargo-packager`. The in-tree metadata (identifier,
+  category, min OS) is tool-agnostic and would port.
+- **CI is groundwork, not yet proven green.** It was authored on Windows and
+  cannot be executed locally; the first tag push (or a `workflow_dispatch`
+  smoke run) is expected to shake out runner-specific issues (WiX via choco,
+  `cargo-bundle` output path). This is the intended first live test.
+- **Least-privilege security posture.** A pre-merge security review of the
+  workflow hardened three points: (1) the workflow defaults to
+  `contents: read` and `contents: write` is re-granted **only** to the
+  `publish` job — the build jobs run untrusted crates.io `build.rs`/proc-macro
+  code via `cargo build`/`cargo install`, so they must never hold a
+  write-scoped token, and their `actions/checkout` sets
+  `persist-credentials: false`; (2) the publish guard is
+  `github.event_name == 'push' && github.ref_type == 'tag'`, not `ref_type`
+  alone — a manual `workflow_dispatch` aimed at an existing tag would
+  otherwise fall through to the `--clobber` upload and silently overwrite a
+  released tag's checksummed assets; (3) the asset copy is `cp -n` plus a
+  file-count check so a future cross-platform filename collision fails loudly
+  instead of dropping a binary. No secrets beyond the built-in token; no
+  third-party release action.
+- **Icon is 256px.** Enough to ship; a 1024px source would sharpen the
+  largest Retina slot (`TODO(icon-1024)`).
+- **Desktop-only / no `dbboard-web` mirror.** Packaging and CI are build
+  concerns with no HTTP contract surface.
+
+## ADR-0045 — Local column/table annotations (dbboard-side, no DB write)
+
+- **Status**: Accepted 2026-07-17
+- **Builds on**: ADR-0028 (`describe_table` full schema), ADR-0031 (Structure
+  tab), ADR-0025 (per-user `*.toml` store pattern), ADR-0038 (`.dbbx` — for
+  the boundary this ADR deliberately does *not* cross)
+
+### Context
+
+An operator reading an unfamiliar table wants to record what a column *means*
+("`status`: 0=pending 1=paid 2=void", "`amt`: minor units, JPY"). The obvious
+home for such notes is a database-native column comment, but the primary
+targets can't provide one uniformly:
+
+- **SQLite / libSQL (Turso) / Cloudflare D1** have **no first-class comment
+  concept** — no `COMMENT ON COLUMN`, no `pg_description`-style catalog, and no
+  extension adds one. The single native trick is embedding `-- …` / `/* … */`
+  inside the `CREATE TABLE` DDL, which SQLite preserves verbatim in
+  `sqlite_master.sql`; but that is unstructured (self-parse the DDL), fragile
+  (other tools recreating the table drop it), and **requires write
+  permission** — a non-starter for a read-only collector connection, and D1
+  constrains DDL further.
+- **Postgres (Neon / Supabase / Aurora DSQL)** *does* have first-class
+  `COMMENT ON` + `pg_description`, but dbboard's `describe_table` currently
+  reads only `information_schema.columns`, so even existing DB comments aren't
+  surfaced today.
+
+This asymmetry means a DB-native approach can't serve the actual fleet
+(D1 + aurora-dsql + supabase) uniformly, and would demand write access the
+operator often lacks. The notes are also *documentation*, not schema — losing
+them to someone else's `ALTER TABLE` is unacceptable.
+
+### Decision
+
+Store annotations **on the dbboard side**, in a per-user file, and surface them
+as an editable column in the existing Structure tab. Nothing is written to any
+database.
+
+1. **Storage — `annotations.toml`.** A new per-user file in the same config
+   dir as `connections.toml` / `ai-providers.toml` / `history.jsonl`, resolved
+   via the same `ProjectDirs::from("dev", "dbboard", "dbboard")` lookup.
+   Written atomically through `secure_fs` (0o600 on Unix, user-only DACL on
+   Windows) exactly like `ai_store::save_atomic`. A new
+   `crates/dbboard-config/src/annotations.rs` module mirrors the `ai_store` /
+   `ai_settings` split: a versioned file type (`version` field, `load_or_empty`
+   treats a missing file as empty, forward-compatible parse) plus an admin API
+   (`set_table_note` / `set_column_note` for writes — an empty/whitespace
+   string clears and prunes the entry, so there is no separate `clear` call —
+   and `table_note` / `column_note` for reads) with
+   rollback-on-save-failure. Persistence + value types live in
+   **`dbboard-config`** (the persistence layer), not `dbboard-core` (which
+   stays I/O-free), consistent with `ai_settings`.
+
+2. **Key granularity — table + column.** Keyed `connection id → table → note`,
+   where the table key is schema-qualified where the engine has schemas
+   (`public.orders`) and the bare name where it doesn't (SQLite/libSQL/D1) —
+   reusing `TableInfo`'s qualification. Each table entry carries an optional
+   table-level note plus a `column name → note` map. Connection **id** (stable,
+   from `connections.toml`) is the anchor, not the display name, so renaming a
+   connection keeps its notes.
+
+3. **UI — a "Note" column in the Structure tab.** Extend `render_table_schema`
+   (currently ordinal / name / type / nullable / PK / default) with a seventh
+   editable **Note** column; clicking a cell opens an inline text field,
+   committing on focus-loss/Enter persists via the admin API. This makes the
+   Structure render path `&mut self` (or routes the edit through the existing
+   worker message/`Reply` pattern like `edit.rs`) since it now mutates state —
+   a deliberate, contained change from today's read-only `&self` render. New
+   i18n keys (`structure-col-note`, edit hint) added to all locales.
+
+4. **No DB write / read-only safe.** The whole point: annotations require no DB
+   privilege, work on a read-only connection, and never touch the wire — so
+   they're valid for every adapter including D1 and IAM-scoped aurora-dsql.
+
+### Alternatives considered
+
+- **DB-native comments** (`COMMENT ON`, or DDL comments in `sqlite_master`).
+  Rejected as the *primary* store: not uniform across the fleet, fragile on
+  SQLite, and write-requiring (§Context).
+- **Surfacing Postgres `pg_description`.** Real value, but **out of scope
+  here** — it's a *DB-derived* read that belongs in `describe_table`
+  (adapter + core change) and would be shown as a separate, read-only "DB
+  comment" lane alongside local notes. Deferred to its own ADR so this feature
+  stays a focused, uniform, write-free local store and its value can be proven
+  on the SQLite-family connections first.
+- **Bundling annotations into the `.dbbx` export for cross-machine sharing.**
+  Rejected for the first release, and specifically *not* into `.dbbx`. `.dbbx`
+  (ADR-0038) is an **encrypted, passphrase-gated secret bundle** for connection
+  handoff; annotations are **non-secret documentation**. Merging them mismatches
+  intent (a note edit would demand a passphrase; a secret bundle would carry
+  docs). If sharing becomes a real need, it should be a **separate plain-text
+  annotations export/import** (no passphrase, no secrets), leaving `.dbbx` for
+  secrets only. Deferred.
+
+### Consequences
+
+- **New persistent format** (`annotations.toml`, versioned) — additive, lazily
+  created, a missing/old file degrades to "no notes". TDD: config module lands
+  with parse/roundtrip/save-atomic/version tests first, mirroring `ai_store`.
+- **Structure render becomes mutating.** The Structure tab's render path gains
+  `&mut self` / a message hop; contained to that tab, no effect on the
+  read-only result grid.
+- **Notes are per-machine** until the deferred plain-text export ships. On a
+  single collector laptop this is fine; the ADR names the escape hatch.
+- **`pg_description` stays invisible** until its own ADR — accepted so this
+  slice is uniform across all adapters and unblocked by any adapter work.
+- **Desktop-only / no `dbboard-web` mirror / no HTTP contract change.** Purely
+  local persistence and UI.
+- **Ships alongside the AI-provider live test** per the maintainer's wish to
+  release both together; the two are independent (this is code, that is a test
+  activity) and neither blocks the other.
+
+## ADR-0046 — `dbboard-mcp`: expose dbboard as a read-only MCP server
+
+- **Status**: Proposed 2026-07-21
+- **Builds on**: ADR-0023 (AI provider layer — this *inverts* its direction),
+  ADR-0028 (`describe_table` full schema), ADR-0029 (function-calling primitive —
+  the tool surface it foresaw, exposed outward instead of inward), ADR-0013
+  (`connections.toml`), ADR-0025 (per-user `*.toml` store + keyring),
+  ADR-0037 (Aurora DSQL IAM token refresh), ADR-0045 (local annotations),
+  ADR-0009 (`dbboard-server` in-process backend — source of the connection
+  factory this ADR extracts)
+
+### Context
+
+dbboard's AI layer (ADR-0023..0029) makes dbboard the *caller*: the app embeds
+an Anthropic provider and asks it to explain/suggest SQL. The maintainer wants
+the **inverse** — an external AI agent (Claude Desktop / Claude Code) that can
+*operate dbboard*: browse the configured databases, read schema, run read
+queries, read the local annotations.
+
+Why route this through dbboard rather than a generic database MCP server:
+
+1. **dbboard already owns the hard parts.** Connection definitions
+   (`connections.toml`), OS-keyring secrets (Windows Credential Manager here),
+   and a validated adapter per engine — Cloudflare D1 (HTTP REST), Aurora DSQL
+   (IAM token + background refresh, ADR-0037), Supabase / Neon / Postgres (sqlx),
+   Turso / libSQL (file/remote). An agent driving `dbboard-mcp` names a
+   **connection id**; it never sees a raw DSN, password, or IAM credential.
+2. **The primitives already exist.** `DatabaseAdapter::{list_tables,
+   describe_table, query}` (ADR-0028) and `annotations.toml` (ADR-0045) map
+   almost one-to-one onto MCP tools. `describe_table` was explicitly built as
+   "the natural first tool for a database AI companion" (ADR-0029 §Context);
+   this ADR is where that tool surface finally lands.
+3. **The connection factory already exists and is proven.** `dbboard-server`
+   exposes `backend_config_for_entry(entry, secrets)` → `build_adapter(config)
+   -> Arc<dyn DatabaseAdapter>`, matching on `BackendConfig::{Turso, D1,
+   Postgres, Neon, Supabase, AuroraDsql}` with `ping()` validation.
+   `apps/dbboard` (`DesktopSwitcher`) already consumes exactly this pair.
+
+But three facts about the *existing* code make a naive implementation unsafe or
+broken, and shape the decisions below:
+
+- **The Postgres adapter runs the simple query protocol.**
+  `PostgresAdapter::query` uses `sqlx::raw_sql(sql).fetch_many(&pool)`, which
+  executes *multiple semicolon-separated statements sequentially*. So
+  `SELECT 1; DROP TABLE t;` is **not** a parse error — both run. A
+  `starts_with("SELECT")` guard is therefore a data-loss vulnerability on
+  Neon/Supabase/Aurora DSQL — the exact connections the unattended collector
+  depends on. Postgres also allows DML inside CTEs
+  (`WITH x AS (DELETE ... RETURNING *) SELECT ...`, starts with `WITH`),
+  `SELECT ... FOR UPDATE`, `nextval()`/`setval()`, `EXPLAIN ANALYZE <dml>`,
+  `CALL proc()`. String matching cannot be trusted.
+- **Open-per-request is actively wrong for two adapters.** Turso `:memory:` is a
+  *fresh empty database on every connect*; Aurora DSQL spawns a **background
+  token-refresh task inside the adapter** (ADR-0037 段階B) that keeps a pool
+  authenticated 24/7. Reopening per tool call gives the agent a blank DB
+  (Turso) and throws away the refresh task + pays full SigV4/TLS/`ping()` each
+  call (DSQL).
+- **The reusable factory lives in `dbboard-server`, which pulls in `axum` +
+  `TcpListener`.** Depending on it from a headless stdio binary would compile an
+  HTTP server into the MCP process for no reason and couple two apps.
+
+### Decision
+
+Add a **standalone headless stdio MCP server binary**, `dbboard-mcp`, that an
+MCP client spawns. It reuses `dbboard-config` (connections + annotations +
+keyring) and a newly-extracted connection factory to serve a **read-only** tool
+surface over stdio. No GUI, no loopback socket, no new persistence.
+
+1. **Extract `crates/dbboard-connect` (app-layer library, no `axum`).** Move
+   `BackendConfig`, `backend_config_for_entry` / `entry_to_backend`, and
+   `connect_adapter` / `build_adapter` out of `dbboard-server` into a lean crate
+   that depends only on `dbboard-core` + the adapter crates + `dbboard-config`.
+   `dbboard-server` re-exports from it (HTTP contract unchanged); `dbboard-mcp`
+   depends on `dbboard-connect` + `dbboard-config` only. One source of truth for
+   security-sensitive connection construction across GUI, server, and MCP; no
+   axum weight in the stdio binary. A single new `dbboard-mcp` crate alone is
+   **not** enough — the shared factory prevents a maintenance fork of
+   credential-handling code. Layer rules hold: `dbboard-connect` sits at the
+   wiring layer, depends on core/adapters/config, never on ui/server.
+
+2. **SDK — `rmcp` 2.2.0** (official Rust MCP SDK, released 2026-07-08). Features
+   `macros` (`#[tool]` / `#[tool_router]`) + `transport-io` (stdio). Server is a
+   `ServerHandler` struct launched via `serve_server(handler, stdio())`. Pin the
+   exact version in `Cargo.lock`; add a **compile-smoke integration test** so an
+   SDK bump can't silently change the tool-registration shape. New dependency →
+   security review + `cargo deny` (downloads/maintenance/license) before merge,
+   per CLAUDE.md; this ADR entry is the required decision record.
+
+3. **stdout is the transport — hard invariants.** In stdio transport the JSON-RPC
+   stream owns stdout; one stray byte corrupts the session.
+   - ALL logging/diagnostics to **stderr** only (`tracing_subscriber::fmt()
+     .with_writer(std::io::stderr)`); route or silence sqlx's default `Info`
+     query log. A test asserts no tool path writes stdout.
+   - **Do NOT copy** `windows_subsystem = "windows"` from `apps/dbboard`
+     (main.rs:39). The MCP binary must be a **console-subsystem** app or the
+     stdio pipes won't attach. Round-trip a framed message in an integration
+     test to catch any Windows CRLF text-mode translation.
+
+4. **One multi-thread tokio runtime; keep blocking calls off it.** A single
+   `#[tokio::main]` runtime hosts both the rmcp serve loop and all adapter I/O —
+   no nested runtime, no `block_on`-in-async, so `apps/dbboard`'s cross-runtime
+   `build_adapter_on` dance is unnecessary here. `keyring` reads (Windows
+   Credential Manager RPC) and config `std::fs` reads are **synchronous
+   blocking**; wrap them in `tokio::task::spawn_blocking` (or resolve at
+   first-use behind the cache in Decision 6) so they never stall an executor
+   worker under concurrent tool calls.
+
+5. **v1 tool surface — read-only (5 tools):**
+
+   | Tool | Params | Returns |
+   |---|---|---|
+   | `list_connections` | — | `[{id, name, kind, capabilities, read_only:true}]` — sourced from `ConnectionFile`; **secrets (`keyring_*_ref`) never serialized** (guarded by the existing store.rs redaction test) |
+   | `list_tables` | `connection_id` | `Vec<TableInfo> {schema?, name}` |
+   | `describe_table` | `connection_id, schema?, table` | `TableSchema {columns:[{name, declared_type, nullable, primary_key, ordinal, default_value}], primary_key}`; adapters whose default returns `DbError::Capability` surface a clean tool error keyed off the `capabilities` flag |
+   | `run_read_query` | `connection_id, sql, max_rows?` | `{columns:[{name,type}], rows, row_count, truncated:bool}` |
+   | `get_annotations` | `connection_id, table?, column?` | table/column notes via `AnnotationsAdmin` |
+
+   **Row cap truncates, does not error.** The workspace cap
+   `MAX_RESULT_ROWS = 10_000` (dbboard-core/limits.rs) *errors* — hostile to an
+   agent whose broad `SELECT *` would just fail. `run_read_query` gets its own
+   smaller default (e.g. 200–1000), enforced as a real engine-level `LIMIT`
+   (inside the read-only transaction of Decision 6, not a naive
+   `SELECT (...) LIMIT n` wrap), returning `truncated:true` instead of erroring.
+   No cursor exists in the codebase; document offset/limit guidance in the tool
+   description rather than building pagination for v1.
+
+6. **Read-only enforced by the engine, not by string matching (resolves the
+   Postgres hazard).** Add a read-only execution path to the adapter contract —
+   `async fn query_read_only(&self, sql, max_rows) -> DbResult<QueryResult>`
+   (default impl = classify-then-`query`) — so each engine enforces it its own
+   way:
+   - **Postgres family (Neon/Supabase/DSQL):** execute inside a server-side
+     `BEGIN READ ONLY; SET LOCAL statement_timeout = '<n>s'; <sql>; ROLLBACK`.
+     `READ ONLY` makes the *server* reject INSERT/UPDATE/DELETE/DDL/`nextval`/
+     writing `FOR UPDATE`, defeating CTE-DML and multi-statement writes together;
+     the `statement_timeout` doubles as the cancellation backstop (Decision 8).
+   - **libSQL / Turso (SQLite):** `PRAGMA query_only = ON` on the connection
+     before serving (engine-enforced, rejects all writes); open read-only where
+     the builder allows.
+   - **Cloudflare D1 (HTTP REST):** *no server-side read-only mode exists* — the
+     weakest link. Classify with a real parser (`sqlparser`, correct dialect):
+     reject anything that is not a single `SELECT`/`WITH ... SELECT`/`EXPLAIN`-of-
+     select, reject multi-statement, walk the AST to reject DML-in-CTE. The ADR
+     labels D1 explicitly as **"classified, not engine-enforced."**
+
+   The **pure classifier** `is_single_read_only_statement(sql, dialect)` lives in
+   `dbboard-core` (no I/O, unit-testable, shareable with the web sibling); the
+   per-engine enforcement lives in each adapter's `query_read_only`. **Prefix /
+   `starts_with` checks are banned.** The v1 read tools never call the bare
+   `query()`.
+
+7. **Per-`connection_id` lazy adapter cache — never open-per-request.** A
+   process-lived `Arc<Mutex<HashMap<String, Arc<dyn DatabaseAdapter>>>>` built on
+   first use via the Decision 1 factory, mirroring what `AppState` does for the
+   GUI's single adapter, generalized to N. Required for correctness: Turso
+   `:memory:` (fresh empty DB per open) and DSQL (keep the refresh task warm).
+   Adapters are `Send + Sync` and hold their own pools, so caching is safe;
+   DSQL should not be idle-evicted.
+
+8. **Config discovery + cancellation.** Resolve `connections.toml` via the same
+   `ProjectDirs::from("dev","dbboard","dbboard")` lookup as the GUI (NOT cwd),
+   plus an explicit `--config` / `DBBOARD_CONFIG` override (settable in
+   `claude_desktop_config.json`'s `env` block, since Claude Desktop's spawn env
+   has none of the `DBBOARD_*` vars). **Log the resolved config path + connection
+   count to stderr at startup** so a handoff bug is diagnosable; carry over the
+   ADR-0024 cloud-sync-path warning. Cancellation (`notifications/cancelled`)
+   drops the tool future, but a dropped future only cancels at await points — the
+   server-side `statement_timeout` (Postgres), `reqwest` client timeout (D1), and
+   libSQL query timeout are the real backstops so an abandoned query can't pin a
+   pooled connection.
+
+### Out of scope (v1)
+
+- **Any write tool** (SQL writes, schema DDL). Deferred behind a future
+  per-connection opt-in gate (its own ADR).
+- **`set_annotation` write tool.** Candidate (annotations are a dbboard-local
+  file write, not a DB write, so it does not break the read-only posture) but
+  deferred: `annotations.toml` is read-modify-write last-writer-wins, and the GUI
+  owns the same file — concurrent edits can silently drop a note. `save_atomic`
+  prevents *corruption*, not *lost updates*. Gating it behind the same opt-in as
+  future writes keeps the "read-only v1" posture crisp.
+- **GUI-embedded "attach to the live session" HTTP/SSE mode** — the staged v2.
+- **Resources / prompts / sampling** MCP surfaces — tools only for v1.
+- **Localised tool descriptions** — English, agent-facing.
+- **`dbboard-web` mirror** — desktop-only; no HTTP contract change.
+
+### Consequences
+
+- **Two new crates/bins + one new dependency.** `crates/dbboard-connect`
+  (extraction, `dbboard-server` re-exports through it) and `dbboard-mcp`
+  (the binary). `rmcp` gets a security review + `cargo deny` pass before merge.
+- **Reuses the proven, `ping()`-validated factory**, so the agent gets the same
+  connection fidelity the GUI does — DSQL IAM refresh and D1 HTTP included.
+- **Read-only by engine enforcement** keeps the unattended-collector safety bar:
+  even pointed at the live Aurora DSQL connection, an agent cannot mutate data,
+  and the Postgres multi-statement / CTE-DML hazards are closed at the server,
+  not by fragile string matching.
+- **Adapter contract grows one method** (`query_read_only`, defaulted) — additive,
+  pre-existing adapters compile unchanged. `dbboard-core` gains a pure,
+  well-tested SQL classifier the web sibling can adopt.
+- **Concurrency**: sqlx `PgPool` and the D1 `reqwest` client are concurrency-safe
+  under the shared cache; a single libSQL handle may head-of-line-block — accept
+  for v1, note it, add a per-connection semaphore if it bites.
+- **Windows footguns carried forward**: the known benign libSQL teardown
+  segfault (project memory) now surfaces as an "abnormal child exit" the MCP
+  client logs on *every* shutdown — mitigate with an explicit stdout flush +
+  `std::process::exit(0)` on a clean shutdown request. The new unsigned
+  `dbboard-mcp.exe` is another binary Norton may flag — note it in the
+  internal-distribution docs.
+- **TDD plan** (next session): tests first — (1) `is_single_read_only_statement`
+  against a table of adversarial inputs (`SELECT 1; DROP TABLE t`, `WITH x AS
+  (DELETE...) SELECT`, `SELECT ... FOR UPDATE`, `PRAGMA`, leading comments,
+  `EXPLAIN <dml>`); (2) `list_connections` redacts secrets; (3) stdout stays
+  clean; (4) each engine's `query_read_only` rejects a write inside a read-only
+  txn/pragma; (5) a temp-libSQL round-trip of `list_tables` / `describe_table` /
+  `run_read_query` with truncation. Then implement: extract `dbboard-connect`,
+  add `query_read_only` + classifier, build the bin tool-by-tool.
+

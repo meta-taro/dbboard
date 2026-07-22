@@ -64,7 +64,7 @@ pub struct AiProviderEntry {
 /// id   = "anthropic-main"
 /// name = "Claude Sonnet"
 /// kind = "anthropic"
-/// model = "claude-sonnet-4-6"
+/// model = "claude-sonnet-5"
 /// keyring_api_key_ref = "dbboard.ai.anthropic-main.api_key"
 /// ```
 ///
@@ -76,7 +76,7 @@ pub struct AiProviderEntry {
 pub enum AiProviderKind {
     /// Anthropic Claude provider (ADR-0023). `model` is the request-time
     /// model name; when absent the crate-side default
-    /// (`claude-sonnet-4-6` at the time of writing) is used.
+    /// (`claude-sonnet-5` at the time of writing) is used.
     Anthropic {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,

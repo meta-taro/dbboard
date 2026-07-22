@@ -64,9 +64,12 @@ theme-dark = Sombre
 help-menu = Aide
 help-docs-hint = Consultez README.md et docs/ pour la configuration et les guides de connexion.
 help-repo-link = Projet sur GitHub
+help-ai-about-title = À propos de l'Assistant IA
+help-ai-about-body = L'Assistant IA explique une instruction SQL en langage clair et rédige une requête SQL à partir d'une description que vous saisissez ; pour les suggestions, il lit aussi les noms de vos tables et colonnes. Il n'exécute jamais de SQL, n'écrit jamais dans votre base de données et n'envoie jamais de lignes de données où que ce soit : rien ne se produit tant que vous n'avez pas copié un brouillon dans l'éditeur pour l'exécuter vous-même. Une clé API est requise et est stockée dans le gestionnaire d'identifiants de votre système d'exploitation.
 
 ai-menu-button = Assistant IA
 ai-panel-title = Assistant IA
+ai-scope-hint = Explique le SQL et rédige des requêtes à partir d'une description. Il n'exécute jamais de SQL et ne modifie aucune donnée : vous vérifiez et exécutez tout vous-même.
 ai-mode-explain = Expliquer le SQL
 ai-mode-suggest = Suggérer du SQL
 ai-input-explain = SQL à expliquer :
@@ -132,6 +135,9 @@ structure-col-type = Type
 structure-col-nullable = Null
 structure-col-pk = Clé
 structure-col-default = Défaut
+structure-col-note = Note
+structure-note-hint = Ajouter une note…
+structure-table-note = Note de table
 
 edit-save-button = Enregistrer
 edit-discard-button = Annuler
