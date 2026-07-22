@@ -276,3 +276,29 @@ edit-set-null = Set NULL
 edit-revert-cell = Revert cell
 edit-cell-hint = Double-click to edit · right-click for NULL
 edit-save-unexpected-rows = Save stopped: expected 1 row, { $rows } affected
+
+# ADR-0049 backup (logical dump). A toolbar button preflights the active
+# connection (counting rows), warns before dumping a very large database,
+# then streams the dump to a file the user picks, showing progress and a
+# Cancel button. The completion summary surfaces partial failures,
+# truncations, and cancellation honestly.
+backup-button = Backup…
+backup-button-hint = Dump this database's tables to a SQL file
+backup-planning = Preparing backup…
+backup-warn-title = Large database
+backup-warn-body = This database has { $rows } rows across its tables. A dump may take a while and produce a large file.
+backup-warn-continue = Back up anyway
+backup-warn-cancel = Cancel
+backup-dialog-title = Save backup as
+backup-progress-title = Backing up
+backup-progress-table = Table { $done } of { $total }
+backup-progress-rows = { $done } / { $total } rows
+backup-progress-current = Current: { $table }
+backup-cancel-button = Cancel
+backup-done-title = Backup complete
+backup-done-summary = Dumped { $tables } table(s), { $rows } rows.
+backup-done-cancelled = Backup cancelled — the file holds a partial dump.
+backup-done-failures = { $count } table(s) could not be read and were skipped.
+backup-done-truncations = { $count } table(s) were truncated part-way.
+backup-failed-title = Backup failed
+backup-close-button = Close

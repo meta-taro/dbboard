@@ -66,12 +66,43 @@ pub fn build_select_page(
     sql
 }
 
+/// Build the preflight `SELECT COUNT(*)` for `table`.
+///
+/// The dump's planning pass runs one of these per table to size the
+/// progress denominator and feed the huge-DB warning. Double-quoted
+/// identifiers and dialect-aware schema qualification match
+/// [`build_select_page`], so the same table is addressed identically in
+/// the count and the paged reads.
+#[must_use]
+pub fn build_count(table: &TableInfo, dialect: SqlDialect) -> String {
+    format!("SELECT COUNT(*) FROM {}", qualified_table(table, dialect))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn table() -> TableInfo {
         TableInfo::unqualified("users")
+    }
+
+    #[test]
+    fn count_targets_the_quoted_table() {
+        assert_eq!(
+            build_count(&table(), SqlDialect::Sqlite),
+            "SELECT COUNT(*) FROM \"users\""
+        );
+    }
+
+    #[test]
+    fn count_qualifies_a_postgres_schema() {
+        assert_eq!(
+            build_count(
+                &TableInfo::qualified("public", "users"),
+                SqlDialect::Postgres
+            ),
+            "SELECT COUNT(*) FROM \"public\".\"users\""
+        );
     }
 
     #[test]
