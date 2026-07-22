@@ -15,6 +15,8 @@
 
 mod insert;
 mod literal;
+mod plan;
 
 pub use insert::build_insert;
 pub use literal::value_literal;
+pub use plan::{DumpPlan, TablePlan, DEFAULT_BACKUP_WARN_ROWS, INSERT_BATCH_ROWS, READ_PAGE_ROWS};
