@@ -146,3 +146,25 @@ edit-set-null = NULL로 설정
 edit-revert-cell = 셀 되돌리기
 edit-cell-hint = 더블클릭하여 편집 · 우클릭하여 NULL
 edit-save-unexpected-rows = 저장 중단: 1개 행이어야 하나 { $rows }개 행에 영향
+
+# ADR-0049 backup (logical dump).
+backup-button = 백업…
+backup-button-hint = 이 데이터베이스의 테이블을 SQL 파일로 덤프합니다
+backup-planning = 백업 준비 중…
+backup-warn-title = 대용량 데이터베이스
+backup-warn-body = 이 데이터베이스에는 모든 테이블에 걸쳐 { $rows }개의 행이 있습니다. 덤프에 시간이 걸리고 파일이 커질 수 있습니다.
+backup-warn-continue = 그래도 백업
+backup-warn-cancel = 취소
+backup-dialog-title = 백업 저장 위치
+backup-progress-title = 백업 중
+backup-progress-table = 테이블 { $done } / { $total }
+backup-progress-rows = { $done } / { $total } 행
+backup-progress-current = 현재: { $table }
+backup-cancel-button = 취소
+backup-done-title = 백업 완료
+backup-done-summary = { $tables }개 테이블, { $rows }개 행을 덤프했습니다.
+backup-done-cancelled = 백업이 취소되었습니다 — 파일에는 부분 덤프가 포함되어 있습니다.
+backup-done-failures = { $count }개 테이블을 읽을 수 없어 건너뛰었습니다.
+backup-done-truncations = { $count }개 테이블이 도중에 잘렸습니다.
+backup-failed-title = 백업 실패
+backup-close-button = 닫기

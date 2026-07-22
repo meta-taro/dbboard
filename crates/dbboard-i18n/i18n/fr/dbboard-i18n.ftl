@@ -147,3 +147,25 @@ edit-set-null = Définir NULL
 edit-revert-cell = Rétablir la cellule
 edit-cell-hint = Double-cliquez pour modifier · clic droit pour NULL
 edit-save-unexpected-rows = Enregistrement arrêté : 1 ligne attendue, { $rows } affectée(s)
+
+# ADR-0049 backup (logical dump).
+backup-button = Sauvegarde…
+backup-button-hint = Exporter les tables de cette base de données dans un fichier SQL
+backup-planning = Préparation de la sauvegarde…
+backup-warn-title = Base de données volumineuse
+backup-warn-body = Cette base de données compte { $rows } lignes sur l'ensemble de ses tables. L'export peut être long et produire un fichier volumineux.
+backup-warn-continue = Sauvegarder quand même
+backup-warn-cancel = Annuler
+backup-dialog-title = Enregistrer la sauvegarde sous
+backup-progress-title = Sauvegarde en cours
+backup-progress-table = Table { $done } sur { $total }
+backup-progress-rows = { $done } / { $total } lignes
+backup-progress-current = En cours : { $table }
+backup-cancel-button = Annuler
+backup-done-title = Sauvegarde terminée
+backup-done-summary = { $tables } table(s), { $rows } lignes exportées.
+backup-done-cancelled = Sauvegarde annulée — le fichier contient un export partiel.
+backup-done-failures = { $count } table(s) n'ont pas pu être lues et ont été ignorées.
+backup-done-truncations = { $count } table(s) ont été tronquées en cours de route.
+backup-failed-title = Échec de la sauvegarde
+backup-close-button = Fermer

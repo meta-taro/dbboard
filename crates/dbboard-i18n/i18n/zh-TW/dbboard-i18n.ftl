@@ -146,3 +146,25 @@ edit-set-null = 設為 NULL
 edit-revert-cell = 還原儲存格
 edit-cell-hint = 雙擊編輯 · 右鍵設為 NULL
 edit-save-unexpected-rows = 已停止儲存：應為 1 列，卻影響了 { $rows } 列
+
+# ADR-0049 backup (logical dump).
+backup-button = 備份…
+backup-button-hint = 將此資料庫的資料表匯出為 SQL 檔案
+backup-planning = 正在準備備份…
+backup-warn-title = 大型資料庫
+backup-warn-body = 此資料庫所有資料表共有 { $rows } 列。匯出可能需要一段時間並產生較大的檔案。
+backup-warn-continue = 仍然備份
+backup-warn-cancel = 取消
+backup-dialog-title = 備份另存為
+backup-progress-title = 正在備份
+backup-progress-table = 第 { $done } / { $total } 個資料表
+backup-progress-rows = { $done } / { $total } 列
+backup-progress-current = 目前：{ $table }
+backup-cancel-button = 取消
+backup-done-title = 備份完成
+backup-done-summary = 已匯出 { $tables } 個資料表，{ $rows } 列。
+backup-done-cancelled = 備份已取消 — 檔案包含部分匯出內容。
+backup-done-failures = 有 { $count } 個資料表無法讀取，已略過。
+backup-done-truncations = 有 { $count } 個資料表被中途截斷。
+backup-failed-title = 備份失敗
+backup-close-button = 關閉
