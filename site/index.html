@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Download dbboard</title>
+  <meta name="description" content="Download dbboard — a high-performance desktop database client for modern serverless and distributed databases.">
+  <!-- Defense-in-depth (ADR-0047): scripts are same-origin only (no inline
+       script is allowed, so an injected one cannot run), network egress is
+       pinned to the GitHub Releases API, and there is no base/form surface.
+       GitHub Pages can't set response headers, so this rides as a meta tag. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src https://api.github.com; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <link rel="icon" href="dbboard-logo-256.png">
+  <style>
+    :root {
+      --bg: #f7f8fa; --fg: #1c2024; --muted: #5c6570;
+      --card: #ffffff; --border: #e2e6ea; --accent: #2f6feb;
+      --accent-fg: #ffffff; --code-bg: #eef1f4; --warn-bg: #fff7e6;
+      --warn-border: #f0d48a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1216; --fg: #e6e9ec; --muted: #9aa4af;
+        --card: #171b21; --border: #2a313a; --accent: #4c8dff;
+        --accent-fg: #0f1216; --code-bg: #1e242c; --warn-bg: #2a2415;
+        --warn-border: #5a4c1f;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+    header { display: flex; align-items: center; gap: 1rem; margin-bottom: .5rem; }
+    header img { width: 64px; height: 64px; }
+    h1 { font-size: 2rem; margin: 0; letter-spacing: -0.02em; }
+    .tagline { color: var(--muted); margin: .25rem 0 2rem; }
+    h2 { font-size: 1.15rem; margin: 2.5rem 0 1rem; }
+    a { color: var(--accent); }
+    .cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.25rem; display: flex; flex-direction: column;
+    }
+    .card h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
+    .card .sub { color: var(--muted); font-size: .85rem; margin: 0 0 1rem; }
+    .dl {
+      display: inline-block; margin-top: auto; text-align: center;
+      background: var(--accent); color: var(--accent-fg); text-decoration: none;
+      padding: .55rem .9rem; border-radius: 8px; font-weight: 600; font-size: .95rem;
+    }
+    .dl.secondary {
+      background: transparent; color: var(--accent);
+      border: 1px solid var(--border); margin-top: .5rem; font-weight: 500;
+    }
+    .dl[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+    code, pre { font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace; }
+    pre {
+      background: var(--code-bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: .9rem 1rem; overflow-x: auto; font-size: .85rem;
+    }
+    .note {
+      background: var(--warn-bg); border: 1px solid var(--warn-border);
+      border-radius: 8px; padding: .9rem 1rem; font-size: .92rem;
+    }
+    .meta { color: var(--muted); font-size: .9rem; }
+    .status { color: var(--muted); padding: 1rem 0; }
+    footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .88rem; }
+    footer a { margin-right: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="dbboard-logo-256.png" alt="dbboard logo">
+      <div>
+        <h1>dbboard</h1>
+      </div>
+    </header>
+    <p class="tagline">
+      A high-performance desktop database client for modern serverless and
+      distributed databases — Turso/libSQL, Cloudflare&nbsp;D1, CockroachDB,
+      Neon, Supabase, and AWS&nbsp;Aurora&nbsp;DSQL.
+    </p>
+
+    <h2>Download <span id="version" class="meta"></span></h2>
+    <div id="status" class="status">Loading the latest release…</div>
+    <div id="cards" class="cards" hidden></div>
+
+    <h2>Verify your download</h2>
+    <p>
+      Every release ships a <code>SHA256SUMS.txt</code> covering all
+      artifacts. Compare your download against it before running:
+    </p>
+    <pre>
+# Linux / macOS
+sha256sum -c SHA256SUMS.txt
+
+# Windows PowerShell
+(Get-FileHash .\dbboard-windows-x86_64.exe -Algorithm SHA256).Hash</pre>
+    <p id="checksums-link" class="meta"></p>
+
+    <h2>Before you run it</h2>
+    <p class="note">
+      These binaries are <strong>not code-signed yet</strong>. Windows
+      SmartScreen may warn about an "unknown publisher", and macOS Gatekeeper
+      will ask you to confirm opening an app from an unidentified developer.
+      This is expected for an unsigned open-source build — verify the checksum
+      above, then allow it through. Signing is a tracked follow-up.
+    </p>
+
+    <footer>
+      <a id="all-releases" href="https://github.com/meta-taro/dbboard/releases">All releases</a>
+      <a href="https://github.com/meta-taro/dbboard">Source on GitHub</a>
+      <a href="https://github.com/meta-taro/dbboard#readme">Docs</a>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
