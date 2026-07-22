@@ -19,17 +19,25 @@
 
 use crate::adapter::DatabaseAdapter;
 use crate::capabilities::Capabilities;
-use crate::dump::{build_insert, build_select_page, INSERT_BATCH_ROWS, READ_PAGE_ROWS};
+use crate::dump::{
+    build_count, build_insert, build_select_page, INSERT_BATCH_ROWS, READ_PAGE_ROWS,
+};
+use crate::error::DbResult;
 use crate::row::Row;
 use crate::schema::TableInfo;
 use crate::value::Value;
 use crate::write_back::SqlDialect;
 
-use super::plan::DumpPlan;
+use super::plan::{DumpPlan, TablePlan};
 
 /// Sink the dump's SQL text is written to. The app supplies a file-backed
 /// implementation; tests use an in-memory buffer.
-pub trait DumpSink {
+///
+/// `Send` is required because the desktop app drives [`run_dump`] on a
+/// spawned worker task (`tokio::spawn`), which holds the `&mut dyn DumpSink`
+/// across await points and so demands a `Send` future. A `dyn DumpSink` is
+/// only `Send` if the trait carries `Send` as a supertrait.
+pub trait DumpSink: Send {
     /// Append a chunk of dump text.
     ///
     /// # Errors
@@ -53,8 +61,9 @@ pub trait DumpControl: Send + Sync {
 }
 
 /// A progress snapshot. `rows_done`/`rows_total` drive a percentage bar;
-/// `tables_done`/`tables_total` a coarser step count.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `tables_done`/`tables_total` a coarser step count. `Default` is the
+/// all-zero starting snapshot the UI shows before the first report lands.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DumpProgress {
     pub tables_total: usize,
     pub tables_done: usize,
@@ -188,6 +197,53 @@ pub async fn run_dump(
         None,
     );
     Ok(outcome)
+}
+
+/// Preflight a dump: list the connection's tables and `COUNT(*)` each,
+/// producing the [`DumpPlan`] that sizes progress and drives the huge-DB
+/// warning (ADR-0049 slice b/e).
+///
+/// A table whose count query fails is planned at zero rows rather than
+/// failing the whole preflight — the dump run records that table's failure
+/// instead, so one unreadable table never blocks backing up the rest. Only
+/// the initial `list_tables` error propagates.
+///
+/// # Errors
+///
+/// Returns whatever [`DatabaseAdapter::list_tables`] surfaces.
+pub async fn plan_dump(adapter: &dyn DatabaseAdapter, dialect: SqlDialect) -> DbResult<DumpPlan> {
+    let tables = adapter.list_tables().await?;
+    let mut plans = Vec::with_capacity(tables.len());
+    for table in tables {
+        let count = count_rows(adapter, &table, dialect).await;
+        plans.push(TablePlan::new(table, count));
+    }
+    Ok(DumpPlan::new(plans))
+}
+
+/// `COUNT(*)` one table, degrading a query or decode failure to `0` — a
+/// wrong denominator only skews the progress bar, whereas failing here
+/// would abort a whole backup over one unreadable table.
+async fn count_rows(adapter: &dyn DatabaseAdapter, table: &TableInfo, dialect: SqlDialect) -> u64 {
+    match adapter.query(&build_count(table, dialect)).await {
+        Ok(result) => result
+            .rows
+            .first()
+            .and_then(|row| row.get(0))
+            .and_then(value_to_u64)
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
+/// Coerce a `COUNT(*)` cell to `u64`. Adapters differ: SQLite returns an
+/// `Integer`, the Postgres simple-query path a numeric `Text`.
+fn value_to_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Integer(n) => u64::try_from(*n).ok(),
+        Value::Text(s) => s.parse().ok(),
+        _ => None,
+    }
 }
 
 /// Emit one table: its DDL, then its data. An adapter error at any step is
@@ -463,6 +519,81 @@ mod tests {
         fn write_str(&mut self, _chunk: &str) -> DumpResult<()> {
             Err(DumpError::Sink("disk full".to_owned()))
         }
+    }
+
+    /// An adapter for exercising `plan_dump`: `list_tables` returns a fixed
+    /// set (or errors when `fail_list`), and each `COUNT(*)` query returns
+    /// the next scripted count — `None` scripts a query error, which the
+    /// preflight must degrade to a zero count.
+    struct PlanAdapter {
+        tables: Vec<TableInfo>,
+        fail_list: bool,
+        counts: Mutex<Vec<Option<i64>>>,
+    }
+
+    #[async_trait]
+    impl DatabaseAdapter for PlanAdapter {
+        fn id(&self) -> &'static str {
+            "plan-fake"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
+        async fn ping(&self) -> DbResult<()> {
+            Ok(())
+        }
+        async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+            if self.fail_list {
+                Err(DbError::Connection("list failed".to_owned()))
+            } else {
+                Ok(self.tables.clone())
+            }
+        }
+        async fn query(&self, _sql: &str) -> DbResult<QueryResult> {
+            match self.counts.lock().unwrap().pop().flatten() {
+                Some(n) => Ok(one_col_page(&[n])),
+                None => Err(DbError::Query("count failed".to_owned())),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_dump_counts_each_table_into_the_plan() {
+        let adapter = PlanAdapter {
+            tables: vec![TableInfo::unqualified("a"), TableInfo::unqualified("b")],
+            fail_list: false,
+            // Reversed so `pop` dispenses in table order.
+            counts: Mutex::new(vec![Some(5), Some(10)]),
+        };
+        let plan = plan_dump(&adapter, SqlDialect::Sqlite).await.unwrap();
+        assert_eq!(plan.tables.len(), 2);
+        assert_eq!(plan.tables[0].row_count, 10);
+        assert_eq!(plan.tables[1].row_count, 5);
+        assert_eq!(plan.total_rows(), 15);
+    }
+
+    #[tokio::test]
+    async fn plan_dump_degrades_a_failed_count_to_zero() {
+        let adapter = PlanAdapter {
+            tables: vec![TableInfo::unqualified("a"), TableInfo::unqualified("b")],
+            fail_list: false,
+            counts: Mutex::new(vec![Some(7), None]),
+        };
+        let plan = plan_dump(&adapter, SqlDialect::Sqlite).await.unwrap();
+        // First table's COUNT errored → planned at zero, not fatal.
+        assert_eq!(plan.tables[0].row_count, 0);
+        assert_eq!(plan.tables[1].row_count, 7);
+    }
+
+    #[tokio::test]
+    async fn plan_dump_propagates_a_list_tables_error() {
+        let adapter = PlanAdapter {
+            tables: Vec::new(),
+            fail_list: true,
+            counts: Mutex::new(Vec::new()),
+        };
+        let err = plan_dump(&adapter, SqlDialect::Sqlite).await.unwrap_err();
+        assert!(matches!(err, DbError::Connection(_)));
     }
 
     #[derive(Default)]

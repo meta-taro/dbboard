@@ -15,6 +15,7 @@
 
 mod ai;
 mod ai_settings;
+mod backup;
 mod client;
 mod connections;
 mod edit;
@@ -50,14 +51,15 @@ pub use dbboard_ai::{AiError, AiProvider, StopReason};
 pub use dbboard_core::{DatabaseAdapter, DbError};
 
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
 use dbboard_config::{table_key as annotation_table_key, AnnotationsAdmin};
 use dbboard_core::{
-    sorted_row_order, ColumnInfo, DbResult, QueryResult, Row, SortKey, SqlDialect, TableInfo,
-    TableSchema, Value,
+    sorted_row_order, ColumnInfo, DbResult, DumpOutcome, DumpPlan, DumpProgress, QueryResult, Row,
+    SortKey, SqlDialect, TableInfo, TableSchema, Value, DEFAULT_BACKUP_WARN_ROWS,
 };
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
@@ -142,6 +144,25 @@ pub enum Command {
     /// so the structure view stays independent of the AI prefetch flow.
     /// Issued when the user clicks a table in the sidebar.
     DescribeTable { table: TableInfo },
+    /// Preflight a logical-dump backup of the live connection (ADR-0049
+    /// slice e): list the tables and `COUNT(*)` each. In-process via the
+    /// injected [`worker::SchemaSource`], answered with
+    /// [`Reply::BackupPlanned`]. The UI uses the returned plan to show the
+    /// huge-DB warning and size the progress bar before it opens the save
+    /// dialog and sends [`Command::StartBackup`].
+    PlanBackup,
+    /// Run the backup to `path`, using the plan a preceding
+    /// [`Command::PlanBackup`] produced (ADR-0049 slice e). The worker
+    /// snapshots the live adapter, derives its dialect, and spawns the dump
+    /// task — emitting [`Reply::BackupProgress`] as it pages and a terminal
+    /// [`Reply::BackupComplete`] / [`Reply::BackupFailed`]. Cancellable via
+    /// [`Command::CancelBackup`].
+    StartBackup { path: PathBuf, plan: DumpPlan },
+    /// Cancel the in-flight backup, if any (ADR-0049 Decision 9). The dump
+    /// stops at the next table/page boundary and still reports a
+    /// [`Reply::BackupComplete`] whose outcome is marked cancelled, so the
+    /// partial file is surfaced honestly rather than as an error.
+    CancelBackup,
 }
 
 /// Result flowing worker → UI.
@@ -260,6 +281,31 @@ pub enum Reply {
     TableDescribed {
         table: TableInfo,
         result: DbResult<TableSchema>,
+    },
+    /// Result of a [`Command::PlanBackup`] preflight (ADR-0049 slice e).
+    /// `Ok` carries the per-table plan the UI needs to warn on a huge DB
+    /// and size the progress bar; `Err` surfaces a listing failure (or an
+    /// unsupported connection) so the UI can abandon the backup.
+    BackupPlanned {
+        result: DbResult<DumpPlan>,
+    },
+    /// One progress snapshot of an in-flight backup (ADR-0049 slice e).
+    /// The UI replaces its running meter with `progress` and repaints.
+    BackupProgress {
+        progress: DumpProgress,
+    },
+    /// Terminal marker for a finished backup (ADR-0049 slice e). Carries
+    /// the outcome — rows written, per-table failures, truncations, and
+    /// whether it was cancelled — so the UI can render an honest summary.
+    BackupComplete {
+        outcome: DumpOutcome,
+    },
+    /// The backup could not be written (ADR-0049 slice e): the output file
+    /// could not be created or a write failed. `message` is the OS error.
+    /// Adapter-side per-table failures are *not* here — those ride in
+    /// [`Reply::BackupComplete`]'s outcome and never abort the run.
+    BackupFailed {
+        message: String,
     },
 }
 
@@ -393,6 +439,48 @@ impl EditGrid {
     }
 }
 
+/// Backup (logical dump) UI state (ADR-0049 slice e). A single slot: at
+/// most one backup is planned or running at a time, so the toolbar button
+/// gates on this being idle/terminal.
+///
+/// The state machine is deliberately split so its transitions are pure and
+/// testable — `drain_replies` only *moves between* states, never touching
+/// egui or the native file dialog. The two UI-only steps live in the render
+/// path: [`BackupState::Confirming`] draws the warn modal, and
+/// [`BackupState::ReadyToSave`] triggers the (blocking) save dialog, exactly
+/// as the CSV-export button does.
+#[derive(Debug, Default)]
+enum BackupState {
+    /// No backup activity.
+    #[default]
+    Idle,
+    /// `PlanBackup` sent; awaiting [`Reply::BackupPlanned`].
+    Planning,
+    /// Preflight came back over the warn threshold; the render path shows
+    /// the "large database" modal before proceeding. Carries the plan and
+    /// the warned total so the modal can name the row count.
+    Confirming { plan: DumpPlan, total_rows: u64 },
+    /// Preflight accepted (either under threshold, or confirmed through the
+    /// modal); the render path opens the save dialog on the next frame.
+    ReadyToSave(DumpPlan),
+    /// Dump running; carries the latest progress snapshot for the bar.
+    Running(DumpProgress),
+    /// Terminal: the dump finished (possibly cancelled, or with per-table
+    /// failures / truncations recorded in the outcome).
+    Done(DumpOutcome),
+    /// Terminal: the output file could not be opened or written.
+    Failed(String),
+}
+
+/// The outcome of one frame of the huge-DB confirm modal, captured inside
+/// the render closure and applied after it (egui borrows `ui` for the
+/// closure, so the state transition has to wait until it returns).
+enum ConfirmAction {
+    None,
+    Continue,
+    Cancel,
+}
+
 pub struct DbboardApp {
     sql: String,
     tables: DbResult<Vec<TableInfo>>,
@@ -473,6 +561,9 @@ pub struct DbboardApp {
     /// Inline cell-editing state (issue 0013 slice b). Populated only for
     /// browse-`SELECT` results of a single base table; read-only otherwise.
     edit: EditGrid,
+    /// Backup (logical dump) state machine (ADR-0049 slice e). `Idle`
+    /// until the toolbar Backup button fires a preflight.
+    backup: BackupState,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -600,6 +691,7 @@ impl DbboardApp {
             structure: None,
             annotations: None,
             edit: EditGrid::default(),
+            backup: BackupState::Idle,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -809,6 +901,13 @@ impl DbboardApp {
                         }
                     }
                 }
+                // ADR-0049 slice e: preflight came back. A late reply after
+                // the user already dismissed the flow (state back to Idle)
+                // is ignored, so a stale plan cannot resurrect a modal.
+                Reply::BackupPlanned { result } => self.on_backup_planned(result),
+                Reply::BackupProgress { progress } => self.on_backup_progress(progress),
+                Reply::BackupComplete { outcome } => self.backup = BackupState::Done(outcome),
+                Reply::BackupFailed { message } => self.backup = BackupState::Failed(message),
             }
         }
     }
@@ -1257,6 +1356,295 @@ impl DbboardApp {
         self.has_ai_provider() && self.ai_panel.is_open()
     }
 
+    /// Whether the active connection can be backed up (ADR-0049): a live
+    /// adapter is wired and its id maps to a SQL dialect the dumper knows.
+    /// Read per frame to gate the toolbar button, mirroring
+    /// [`Self::db_has_describe_table`]; `false` in tests / in-memory flows,
+    /// which simply hides the button.
+    #[must_use]
+    pub fn can_backup(&self) -> bool {
+        self.schema_source
+            .as_ref()
+            .is_some_and(|s| edit::dialect_for_adapter_id(s.current_adapter().id()).is_some())
+    }
+
+    /// Whether a backup is mid-flight (planning or dumping) — used to gate
+    /// the toolbar button so a second click cannot start a parallel run. A
+    /// terminal state (`Done`/`Failed`) does not count as busy: its summary
+    /// window is dismissible and a fresh backup may start behind it.
+    #[must_use]
+    fn backup_in_progress(&self) -> bool {
+        matches!(
+            self.backup,
+            BackupState::Planning
+                | BackupState::Confirming { .. }
+                | BackupState::ReadyToSave(_)
+                | BackupState::Running(_)
+        )
+    }
+
+    /// Start a backup by asking the worker to preflight the active
+    /// connection (ADR-0049 slice e). No-op if one is already in flight or
+    /// the connection cannot be dumped — the toolbar already gates on both,
+    /// so this is defence-in-depth. A closed channel leaves the state
+    /// untouched (the UI is shutting down anyway).
+    fn start_backup(&mut self) {
+        if self.backup_in_progress() || !self.can_backup() {
+            return;
+        }
+        if self.cmd_tx.send(Command::PlanBackup).is_ok() {
+            self.backup = BackupState::Planning;
+        }
+    }
+
+    /// Fold a preflight reply into the state machine. A late reply that
+    /// arrives after the user dismissed the flow (state no longer
+    /// `Planning`) is ignored so a stale plan cannot reopen a modal.
+    fn on_backup_planned(&mut self, result: DbResult<DumpPlan>) {
+        if !matches!(self.backup, BackupState::Planning) {
+            return;
+        }
+        self.backup = match result {
+            Ok(plan) => match plan.exceeds_threshold(DEFAULT_BACKUP_WARN_ROWS) {
+                Some(total_rows) => BackupState::Confirming { plan, total_rows },
+                None => BackupState::ReadyToSave(plan),
+            },
+            Err(e) => BackupState::Failed(e.message().to_string()),
+        };
+    }
+
+    /// Apply a progress tick. Ticks only matter while a dump is running;
+    /// one arriving after cancellation/completion (state already terminal)
+    /// is dropped so it cannot resurrect the progress window.
+    fn on_backup_progress(&mut self, progress: DumpProgress) {
+        if matches!(self.backup, BackupState::Running(_)) {
+            self.backup = BackupState::Running(progress);
+        }
+    }
+
+    /// Ask the worker to cancel the in-flight dump (ADR-0049 Decision 9).
+    /// The task still reports a (cancelled) `BackupComplete`, so the state
+    /// stays `Running` until that terminal reply lands.
+    fn cancel_backup(&mut self) {
+        let _ = self.cmd_tx.send(Command::CancelBackup);
+    }
+
+    /// Dismiss a terminal backup summary, returning the slot to idle.
+    fn dismiss_backup(&mut self) {
+        self.backup = BackupState::Idle;
+    }
+
+    /// Render whichever backup window the current state calls for, and
+    /// drive the two UI-only transitions. `Idle`/`Planning` own no window —
+    /// the toolbar carries their affordance (button / spinner). Matching the
+    /// state place with non-binding patterns lets each arm freely re-borrow
+    /// `self` for its sub-render.
+    fn render_backup(&mut self, ctx: &egui::Context) {
+        match self.backup {
+            BackupState::Idle | BackupState::Planning => {}
+            BackupState::Confirming { .. } => self.render_backup_confirm(ctx),
+            // Move the plan out and open the (blocking) native save dialog.
+            // Resetting to Idle first means a cancelled dialog lands back at
+            // Idle with no extra bookkeeping.
+            BackupState::ReadyToSave(_) => {
+                if let BackupState::ReadyToSave(plan) =
+                    std::mem::replace(&mut self.backup, BackupState::Idle)
+                {
+                    self.pick_path_and_start(plan);
+                }
+            }
+            BackupState::Running(_) => self.render_backup_running(ctx),
+            BackupState::Done(_) => self.render_backup_done(ctx),
+            BackupState::Failed(_) => self.render_backup_failed(ctx),
+        }
+    }
+
+    /// The huge-DB warning (ADR-0049 Decision 8, warn-and-allow). Reads the
+    /// total off the `Confirming` state; "Back up anyway" advances to the
+    /// save dialog, "Cancel" abandons the flow.
+    fn render_backup_confirm(&mut self, ctx: &egui::Context) {
+        let BackupState::Confirming { total_rows, .. } = self.backup else {
+            return;
+        };
+        let mut action = ConfirmAction::None;
+        egui::Window::new(t!("backup-warn-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(t_args!("backup-warn-body", rows = total_rows));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t!("backup-warn-continue")).clicked() {
+                        action = ConfirmAction::Continue;
+                    }
+                    if ui.button(t!("backup-warn-cancel")).clicked() {
+                        action = ConfirmAction::Cancel;
+                    }
+                });
+            });
+        match action {
+            ConfirmAction::Continue => {
+                if let BackupState::Confirming { plan, .. } =
+                    std::mem::replace(&mut self.backup, BackupState::Idle)
+                {
+                    self.backup = BackupState::ReadyToSave(plan);
+                }
+            }
+            ConfirmAction::Cancel => self.backup = BackupState::Idle,
+            ConfirmAction::None => {}
+        }
+    }
+
+    /// The live progress window: a bar plus table/row counters and a Cancel
+    /// button. Cancel only signals the worker; the terminal reply flips the
+    /// state, so the window stays up (showing the last progress) until then.
+    fn render_backup_running(&mut self, ctx: &egui::Context) {
+        let BackupState::Running(progress) = &self.backup else {
+            return;
+        };
+        let fraction = backup_fraction(progress);
+        let table_line = t_args!(
+            "backup-progress-table",
+            done = progress.tables_done,
+            total = progress.tables_total
+        );
+        let rows_line = t_args!(
+            "backup-progress-rows",
+            done = progress.rows_done,
+            total = progress.rows_total
+        );
+        let current = progress
+            .current_table
+            .as_ref()
+            .map(|t| t_args!("backup-progress-current", table = t.clone()));
+        let mut cancel = false;
+        egui::Window::new(t!("backup-progress-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                ui.label(table_line);
+                ui.label(rows_line);
+                if let Some(current) = current {
+                    ui.label(current);
+                }
+                ui.add_space(8.0);
+                if ui.button(t!("backup-cancel-button")).clicked() {
+                    cancel = true;
+                }
+            });
+        // Keep the frame ticking so progress replies keep draining.
+        ctx.request_repaint();
+        if cancel {
+            self.cancel_backup();
+        }
+    }
+
+    /// Completion summary. Names the dumped totals and surfaces the honest
+    /// caveats — cancellation, skipped tables, truncations — so a partial
+    /// backup is never mistaken for a clean one. Close returns to idle.
+    fn render_backup_done(&mut self, ctx: &egui::Context) {
+        let BackupState::Done(outcome) = &self.backup else {
+            return;
+        };
+        let summary = t_args!(
+            "backup-done-summary",
+            tables = outcome.tables_dumped,
+            rows = outcome.rows_written
+        );
+        let cancelled = outcome.cancelled;
+        let failures = outcome.failures.len();
+        let truncations = outcome.truncations.len();
+        let mut close = false;
+        egui::Window::new(t!("backup-done-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(summary);
+                if cancelled {
+                    ui.label(t!("backup-done-cancelled"));
+                }
+                if failures > 0 {
+                    ui.label(t_args!("backup-done-failures", count = failures));
+                }
+                if truncations > 0 {
+                    ui.label(t_args!("backup-done-truncations", count = truncations));
+                }
+                ui.add_space(8.0);
+                if ui.button(t!("backup-close-button")).clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.dismiss_backup();
+        }
+    }
+
+    /// Failure window: the output could not be opened or written. Close
+    /// returns to idle.
+    fn render_backup_failed(&mut self, ctx: &egui::Context) {
+        let BackupState::Failed(message) = &self.backup else {
+            return;
+        };
+        // A raw I/O error string has no separate localized/original halves,
+        // so both slots carry the same text (only one line renders).
+        let display = errors::DisplayError::new(message.clone(), message.clone());
+        let mut close = false;
+        egui::Window::new(t!("backup-failed-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                errors::render_error(ui, Some(&display));
+                ui.add_space(8.0);
+                if ui.button(t!("backup-close-button")).clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.dismiss_backup();
+        }
+    }
+
+    /// Blocking "Save As" for the dump, then hand off to the worker
+    /// (ADR-0049 slice e). Mirrors [`save_csv_via_dialog`]: opens in
+    /// Downloads with a non-colliding default name, and a cancelled dialog
+    /// abandons the flow (state already reset to `Idle` by the caller). On a
+    /// chosen path we send `StartBackup` and move to `Running`; a closed
+    /// channel is reported as a failure rather than silently dropped.
+    fn pick_path_and_start(&mut self, plan: DumpPlan) {
+        let download_dir = directories::UserDirs::new()
+            .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf));
+        let file_name = match &download_dir {
+            Some(dir) => {
+                export::next_available_name("dbboard-backup", "sql", |name| dir.join(name).exists())
+            }
+            None => "dbboard-backup.sql".to_string(),
+        };
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(t!("backup-dialog-title"))
+            .add_filter("SQL", &["sql"])
+            .set_file_name(file_name);
+        if let Some(dir) = download_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else {
+            return; // user cancelled; state is already Idle
+        };
+        if self
+            .cmd_tx
+            .send(Command::StartBackup { path, plan })
+            .is_ok()
+        {
+            self.backup = BackupState::Running(DumpProgress::default());
+        } else {
+            self.backup = BackupState::Failed("backup worker unavailable".to_string());
+        }
+    }
+
     /// Toggle the AI panel window. Noop when no provider is wired —
     /// callers do not need to gate this themselves, but in practice the
     /// menu bar already hides the button so this is defence-in-depth.
@@ -1392,7 +1780,10 @@ fn pending_ai_from_command(cmd: &Command, conn_label: &str) -> Option<PendingAiS
         | Command::SwitchConnection { .. }
         | Command::SwitchAiProvider { .. }
         | Command::PrefetchSchema { .. }
-        | Command::DescribeTable { .. } => return None,
+        | Command::DescribeTable { .. }
+        | Command::PlanBackup
+        | Command::StartBackup { .. }
+        | Command::CancelBackup => return None,
     };
     let conn = if conn_label.is_empty() {
         None
@@ -1574,9 +1965,16 @@ impl eframe::App for DbboardApp {
         self.render_tables_panel(ui);
         self.render_query_panel(ui);
 
-        // Egui is event-driven, so request a follow-up frame while a
-        // query is in flight to keep draining the reply channel.
-        if self.busy {
+        // ADR-0049 slice e: backup modals/progress float over everything,
+        // like the AI panel. Rendered after the main panels so they layer
+        // on top.
+        self.render_backup(ui.ctx());
+
+        // Egui is event-driven, so request a follow-up frame while a query
+        // or a backup is in flight to keep draining the reply channel. The
+        // running-progress window also requests repaints itself; this
+        // covers the Planning gap before its window exists.
+        if self.busy || self.backup_in_progress() {
             ui.ctx().request_repaint();
         }
     }
@@ -1669,6 +2067,24 @@ impl DbboardApp {
                     t_args!("auto-limit-checkbox", count = DEFAULT_AUTO_LIMIT),
                 )
                 .on_hover_text(t!("auto-limit-hint"));
+                // ADR-0049 backup: only shown when the live connection can be
+                // dumped, and disabled while any backup is in flight so a
+                // second click cannot start a parallel run.
+                if self.can_backup() {
+                    if ui
+                        .add_enabled(
+                            !self.backup_in_progress(),
+                            egui::Button::new(t!("backup-button")),
+                        )
+                        .on_hover_text(t!("backup-button-hint"))
+                        .clicked()
+                    {
+                        self.start_backup();
+                    }
+                    if matches!(self.backup, BackupState::Planning) {
+                        ui.label(t!("backup-planning"));
+                    }
+                }
                 if self.busy {
                     ui.spinner();
                 }
@@ -2211,6 +2627,36 @@ fn save_csv_via_dialog(columns: &[dbboard_core::Column], rows: &[dbboard_core::R
     }
 }
 
+/// Progress-bar fraction for a running dump, in `[0.0, 1.0]`.
+///
+/// Rows are the fine-grained signal, so they drive the bar whenever the
+/// plan counted any (`rows_total > 0`). A schema-only dump (every table
+/// empty) has no rows to divide, so it falls back to the coarser
+/// table-step count. With neither — the pre-first-report snapshot — the bar
+/// sits at zero.
+//
+// A progress bar only needs a few significant figures, so the u64→f32 cast's
+// precision loss on very large row counts is immaterial (it shifts the bar by
+// sub-pixel amounts); the alternative — exact 64-bit ratio arithmetic — buys
+// nothing a viewer can perceive.
+#[allow(clippy::cast_precision_loss)]
+fn backup_fraction(progress: &DumpProgress) -> f32 {
+    let ratio = |done: u64, total: u64| -> f32 {
+        if total == 0 {
+            0.0
+        } else {
+            // total > 0, so the clamp only guards the (shouldn't-happen)
+            // done > total case.
+            (done as f32 / total as f32).clamp(0.0, 1.0)
+        }
+    };
+    if progress.rows_total > 0 {
+        ratio(progress.rows_done, progress.rows_total)
+    } else {
+        ratio(progress.tables_done as u64, progress.tables_total as u64)
+    }
+}
+
 /// Most sort levels the grid tracks at once — a primary, secondary, and
 /// tertiary key. Matches what a user can reasonably reason about and keeps
 /// the header indicator (level numbers 1–3) legible.
@@ -2732,13 +3178,14 @@ fn render_expanded_cell_popup(ui: &mut egui::Ui, expand_id: egui::Id) {
 mod tests {
     use super::errors::db_error_display;
     use super::{
-        apply_auto_limit, cell_preview, is_bare_select, is_long_cell, quick_count_sql,
-        quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot, AnnotationsAdmin,
-        Command, DbboardApp, HistoryStatus, NoteTarget, PersistentHistoryStore, Reply, ResultTab,
-        CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
+        apply_auto_limit, backup_fraction, cell_preview, is_bare_select, is_long_cell,
+        quick_count_sql, quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot,
+        AnnotationsAdmin, BackupState, Command, DbboardApp, HistoryStatus, NoteTarget,
+        PersistentHistoryStore, Reply, ResultTab, CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
     };
     use dbboard_core::{
-        Column, ColumnInfo, DbError, QueryResult, Row, TableInfo, TableSchema, Value,
+        Column, ColumnInfo, DbError, DumpOutcome, DumpPlan, DumpProgress, QueryResult, Row,
+        TableInfo, TablePlan, TableSchema, Value, DEFAULT_BACKUP_WARN_ROWS,
     };
     use std::sync::mpsc;
     use std::sync::{Arc, RwLock};
@@ -4276,5 +4723,182 @@ mod tests {
     fn quick_count_sql_counts_rows() {
         let sql = quick_count_sql(&TableInfo::unqualified("orders"));
         assert_eq!(sql, "SELECT COUNT(*) FROM \"orders\";");
+    }
+
+    // ADR-0049 slice e: the backup state machine. These exercise the pure
+    // transitions `drain_replies` drives — no egui, no file dialog — so the
+    // warn/confirm/progress/terminal flow is verified without a live adapter.
+    mod backup {
+        use super::{
+            backup_fraction, build, BackupState, Command, DumpOutcome, DumpPlan, DumpProgress,
+            Reply, TableInfo, TablePlan, DEFAULT_BACKUP_WARN_ROWS,
+        };
+
+        fn plan_of(rows: u64) -> DumpPlan {
+            DumpPlan::new(vec![TablePlan::new(TableInfo::unqualified("t"), rows)])
+        }
+
+        #[test]
+        fn planned_under_threshold_goes_straight_to_save() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Planning;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(10)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::ReadyToSave(_)));
+        }
+
+        #[test]
+        fn planned_over_threshold_asks_for_confirmation_with_the_total() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Planning;
+            let rows = DEFAULT_BACKUP_WARN_ROWS + 1;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(rows)),
+                })
+                .unwrap();
+            app.drain_replies();
+            match app.backup {
+                BackupState::Confirming { total_rows, .. } => assert_eq!(total_rows, rows),
+                other => panic!("expected Confirming, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn planned_error_surfaces_as_failed() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Planning;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Err(dbboard_core::DbError::Capability("nope".into())),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::Failed(_)));
+        }
+
+        #[test]
+        fn a_stale_plan_after_dismissal_is_ignored() {
+            // The user dismissed the flow (state back to Idle) before the
+            // preflight reply arrived; it must not resurrect a modal.
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Idle;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(10)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::Idle));
+        }
+
+        #[test]
+        fn progress_updates_only_while_running() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Running(DumpProgress::default());
+            reply_tx
+                .send(Reply::BackupProgress {
+                    progress: DumpProgress {
+                        rows_done: 7,
+                        rows_total: 10,
+                        ..DumpProgress::default()
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.backup {
+                BackupState::Running(p) => assert_eq!(p.rows_done, 7),
+                other => panic!("expected Running, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_late_progress_tick_after_completion_is_dropped() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Done(DumpOutcome::default());
+            reply_tx
+                .send(Reply::BackupProgress {
+                    progress: DumpProgress {
+                        rows_done: 3,
+                        ..DumpProgress::default()
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::Done(_)));
+        }
+
+        #[test]
+        fn complete_and_failed_land_on_terminal_states() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Running(DumpProgress::default());
+            reply_tx
+                .send(Reply::BackupComplete {
+                    outcome: DumpOutcome::default(),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::Done(_)));
+
+            reply_tx
+                .send(Reply::BackupFailed {
+                    message: "disk full".into(),
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.backup {
+                BackupState::Failed(m) => assert_eq!(m, "disk full"),
+                other => panic!("expected Failed, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn start_backup_without_a_dumpable_connection_is_a_noop() {
+            // build() wires no schema source, so can_backup() is false and no
+            // PlanBackup should be emitted (only the bootstrap ListTables).
+            let (mut app, cmd_rx, _reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+            app.start_backup();
+            assert!(matches!(app.backup, BackupState::Idle));
+            assert!(cmd_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn cancel_backup_signals_the_worker() {
+            let (mut app, cmd_rx, _reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap
+            app.cancel_backup();
+            assert!(matches!(cmd_rx.try_recv(), Ok(Command::CancelBackup)));
+        }
+
+        #[test]
+        fn fraction_prefers_rows_then_tables_then_zero() {
+            // Rows drive the bar when counted.
+            assert!(
+                (backup_fraction(&DumpProgress {
+                    rows_done: 1,
+                    rows_total: 4,
+                    ..DumpProgress::default()
+                }) - 0.25)
+                    .abs()
+                    < f32::EPSILON
+            );
+            // No rows (schema-only): fall back to table steps.
+            assert!(
+                (backup_fraction(&DumpProgress {
+                    tables_done: 1,
+                    tables_total: 2,
+                    ..DumpProgress::default()
+                }) - 0.5)
+                    .abs()
+                    < f32::EPSILON
+            );
+            // Nothing counted yet: zero.
+            assert!(backup_fraction(&DumpProgress::default()).abs() < f32::EPSILON);
+        }
     }
 }

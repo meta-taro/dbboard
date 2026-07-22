@@ -27,7 +27,7 @@ pub use insert::build_insert;
 pub use literal::value_literal;
 pub use plan::{DumpPlan, TablePlan, DEFAULT_BACKUP_WARN_ROWS, INSERT_BATCH_ROWS, READ_PAGE_ROWS};
 pub use run::{
-    run_dump, DumpControl, DumpError, DumpOutcome, DumpProgress, DumpResult, DumpSink,
+    plan_dump, run_dump, DumpControl, DumpError, DumpOutcome, DumpProgress, DumpResult, DumpSink,
     TableFailure, TableTruncation,
 };
-pub use select::build_select_page;
+pub use select::{build_count, build_select_page};
