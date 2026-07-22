@@ -67,6 +67,55 @@
                     </Component>
                 </Directory>
             </Directory>
+
+            <!--
+              Start Menu shortcut. The app installs with no launch affordance
+              otherwise (only PATH + a Program Files exe), so users can't find
+              how to start it. Fixed Guid + an HKCU RegistryValue KeyPath: a
+              Shortcut has no versioned file to key on, and the per-user
+              registry marker lets Windows track and remove it per user on
+              uninstall. Target="[#exe0]" resolves to the installed exe by its
+              File Id. RemoveFolder clears the (otherwise-orphaned) Start Menu
+              subfolder on uninstall. -->
+            <Directory Id="ProgramMenuFolder">
+                <Directory Id="ApplicationProgramsFolder" Name="dbboard">
+                    <Component Id="StartMenuShortcut" Guid="C7E3A1F2-5B4D-4E6A-9C81-3F2A7D5E1B90">
+                        <Shortcut Id="StartMenuShortcut"
+                            Name="dbboard"
+                            Description="dbboard — desktop client for serverless databases"
+                            Target="[#exe0]"
+                            WorkingDirectory="APPLICATIONFOLDER"
+                            Icon="ProductICO"/>
+                        <RemoveFolder Id="RemoveApplicationProgramsFolder"
+                            Directory="ApplicationProgramsFolder"
+                            On="uninstall"/>
+                        <RegistryValue Root="HKCU"
+                            Key="Software\meta-taro\dbboard"
+                            Name="StartMenuShortcut"
+                            Type="integer"
+                            Value="1"
+                            KeyPath="yes"/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <!-- Desktop shortcut, same keying rationale as the Start Menu one. -->
+            <Directory Id="DesktopFolder" Name="Desktop">
+                <Component Id="DesktopShortcut" Guid="D4B8F60C-1A2E-4C3F-8B7D-6E5A4C3B2A19">
+                    <Shortcut Id="DesktopShortcut"
+                        Name="dbboard"
+                        Description="dbboard — desktop client for serverless databases"
+                        Target="[#exe0]"
+                        WorkingDirectory="APPLICATIONFOLDER"
+                        Icon="ProductICO"/>
+                    <RegistryValue Root="HKCU"
+                        Key="Software\meta-taro\dbboard"
+                        Name="DesktopShortcut"
+                        Type="integer"
+                        Value="1"
+                        KeyPath="yes"/>
+                </Component>
+            </Directory>
         </Directory>
 
         <Feature
@@ -77,6 +126,11 @@
             ConfigurableDirectory="APPLICATIONFOLDER"
             Absent="disallow">
             <ComponentRef Id="binary0"/>
+            <!-- Shortcuts live in the same feature as the exe they target:
+                 WiX ICE69 rejects a Shortcut whose Target file belongs to a
+                 different feature, since that feature could be absent. -->
+            <ComponentRef Id="StartMenuShortcut"/>
+            <ComponentRef Id="DesktopShortcut"/>
 
             <Feature
                 Id="Environment"
