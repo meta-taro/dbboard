@@ -360,6 +360,62 @@ Remaining deferred Stage 2 capability (full-DDL schema snapshots +
 function-calling — Group D) is tracked in ADR-0023 §9. Groups A / B
 / C are closed (ADR-0025 / ADR-0026 / ADR-0027).
 
+## MCP server (read-only)
+
+Besides being an AI *client*, dbboard also ships as a headless
+[MCP](https://modelcontextprotocol.io) *server* — `dbboard-mcp` — that
+hands the databases dbboard is already configured with to an external AI
+agent (Claude Desktop, Claude Code) as a small, **read-only** tool
+surface over stdio. It reuses the exact same `connections.toml` + OS
+keychain machinery as the GUI, so it adds no new place to keep
+credentials. See [ADR-0046](docs/decisions.md) and the crate README,
+[`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
+full spec.
+
+Five fixed tools: `list_connections`, `list_tables`, `describe_table`,
+`run_read_query`, and `get_annotations` (dbboard's local notes, ADR-0045).
+The security posture is the reason it is safe to point an agent at:
+
+- **Secrets never cross the wire.** The only connection metadata
+  serialized is `{ id, name, kind }` — no URLs, tokens, or keyring
+  references, and no error message embeds one.
+- **Read-only is engine-enforced, not string-matched.** Postgres-wire
+  runs each statement inside `BEGIN TRANSACTION READ ONLY`, libSQL/Turso
+  under `PRAGMA query_only`, and D1 classifies the AST — so `UPDATE`,
+  DDL, multi-statement batches, and `SELECT … FOR UPDATE` all fail at
+  the source.
+- **Result sets are bounded.** `run_read_query` clamps `max_rows` to a
+  hard cap of 1000 (default 200) with a `truncated` flag.
+- **stdout is sacred.** JSON-RPC frames own stdout; all logging goes to
+  stderr (`RUST_LOG`, default `info`).
+
+```sh
+cargo build --release -p dbboard-mcp
+# binary at target/release/dbboard-mcp(.exe)
+```
+
+Register it with Claude Desktop by adding the absolute path to the built
+binary in `claude_desktop_config.json`
+(`%APPDATA%\Claude\claude_desktop_config.json` on Windows,
+`~/Library/Application Support/Claude/claude_desktop_config.json` on
+macOS):
+
+```jsonc
+{
+  "mcpServers": {
+    "dbboard": {
+      "command": "C:\\path\\to\\dbboard-mcp.exe"
+    }
+  }
+}
+```
+
+With no arguments it reads the same per-user `connections.toml` the GUI
+uses; pass `--config` (or set `DBBOARD_CONFIG`) to point at a curated,
+least-privilege subset instead. Full configuration — including the
+per-OS config paths and running it under Claude Code — is documented in
+[`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md).
+
 ## Development
 
 Before committing, the pre-commit hook runs:
@@ -464,7 +520,18 @@ produced from Windows):
 
 ```sh
 cargo install cargo-bundle
-cargo bundle --release --package dbboard
+# cargo-bundle 0.6.0 has no package selector (`--package` is rejected), so
+# run it from the binary crate dir. It also can't read a workspace-inherited
+# version — `version.workspace = true` is a TOML map and it wants a string
+# ("invalid type: map, expected a string for key `package.version`"), so
+# temporarily inline the concrete version for the bundle only:
+cd apps/dbboard
+VERSION="$(cargo metadata --no-deps --format-version 1 \
+  | python3 -c 'import sys,json; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="dbboard"))')"
+cp Cargo.toml Cargo.toml.orig
+sed -i '' 's/^version\.workspace = true/version = "'"$VERSION"'"/' Cargo.toml
+cargo bundle --release
+mv Cargo.toml.orig Cargo.toml
 # → target/release/bundle/osx/dbboard.app
 # wrap it in a .dmg:
 hdiutil create -volname dbboard \
