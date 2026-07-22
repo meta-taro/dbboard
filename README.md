@@ -25,6 +25,17 @@ This is the **desktop** implementation. The web counterpart lives at
 NestJS). The two share concepts and feature parity goals but are
 independent codebases.
 
+## Download
+
+Prebuilt Windows (`.exe` / `.msi`) and macOS (`.dmg`) binaries for the
+latest release are on the **[download page](https://meta-taro.github.io/dbboard/)**
+(GitHub Pages), or directly on the
+[Releases](https://github.com/meta-taro/dbboard/releases) page. Every
+release ships a `SHA256SUMS.txt`; verify your download before running it.
+The binaries are not code-signed yet, so Windows SmartScreen / macOS
+Gatekeeper will warn on first launch (see [ADR-0047](docs/decisions.md)
+and [ADR-0044](docs/decisions.md)).
+
 ## Goals
 
 - **Performance first** — native Rust UI built on egui.

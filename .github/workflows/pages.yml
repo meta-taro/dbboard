@@ -1,0 +1,67 @@
+# Download page → GitHub Pages (ADR-0047).
+#
+# Publishes the static download page in `site/` to GitHub Pages. The page is
+# data-driven: at load it queries the public GitHub Releases API for the
+# latest release and renders the current version + asset links + checksum
+# instructions client-side, so the *content* tracks releases automatically
+# and this workflow only re-runs when the page itself (or this workflow)
+# changes. It deploys from `develop` (the integration branch; `main` is
+# reserved for release tags per CLAUDE.md) — since the content is fetched at
+# runtime, which branch builds the page does not change what visitors see. A
+# one-time enable is required in repo Settings → Pages → Source: "GitHub
+# Actions"; the first deploy can be kicked off with workflow_dispatch.
+#
+# Security posture (CLAUDE.md "Adding GitHub Actions workflows"): least
+# privilege. The default token is read-only; the Pages-specific `pages:
+# write` + `id-token: write` scopes are granted to the deploy job only. Only
+# first-party actions are used (configure-pages / upload-pages-artifact /
+# deploy-pages / checkout), pinned by major tag — no third-party action. The
+# site is static; no secrets are read and nothing is built from untrusted
+# code.
+name: pages
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch: {}
+
+# Read-only by default; the deploy job re-grants the Pages scopes for itself.
+permissions:
+  contents: read
+
+# One in-flight Pages deployment at a time; don't cancel a running deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/configure-pages@v5
+
+      # Ship only the static site directory as the Pages artifact.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # The only job that needs write: Pages deployment + OIDC token exchange.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
