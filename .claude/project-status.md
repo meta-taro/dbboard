@@ -5,6 +5,51 @@
 
 ## 最終更新
 
+- 日付: 2026-07-22 (**v0.3.0 リリース完了。目玉 = read-only MCP サーバ
+  (`dbboard-mcp`, ADR-0046)。** PR #90 (注釈) 以降の未記録分をまとめて記録:
+  #92 `fix/anthropic-error-body` (AI エラー本文の扱い修正) → #93
+  `feature/ai-assistant-help` (AI アシスタントのヘルプ導線) → #94
+  `chore/default-model-sonnet-5` (既定モデルを `claude-sonnet-5` に) → #95
+  `feature/dbboard-connect` = **MCP サーバ本体** (`crates/dbboard-mcp`,
+  [ADR-0046](../docs/decisions.md))。dbboard を AI *クライアント* (Phase 4) に
+  加え AI *サーバ* にもした: stdio 越しの 5 ツール固定 (`list_connections`,
+  `list_tables`, `describe_table`, `run_read_query`, `get_annotations`)、GUI と
+  同じ `connections.toml`+OS keychain を再利用し新たな秘密の置き場を作らない。
+  秘密はワイヤに出ない (`{id,name,kind}` のみ直列化)、read-only は**エンジン強制**
+  (`BEGIN TRANSACTION READ ONLY` / `PRAGMA query_only` / D1 は AST 分類) で
+  文字列マッチではない、行数は 1000 上限、stdout は JSON-RPC 専用でログは全て
+  stderr。→ #96 `feature/ai-panel-scope-visibility` (AI パネルの表示スコープ =
+  未設定時は完全非表示の graceful degradation を仕上げ)。
+  **リリース手順:** #97 `chore/release-0.3.0` でワークスペースを 0.3.0 に bump →
+  #98 で develop を main にマージし v0.3.0 タグ push → Release CI が macOS で
+  2 連続失敗。原因は cargo-bundle 0.6.0 の 2 つの癖: (1) `--package` 非対応 →
+  #99 でクレートディレクトリ内実行に変更、(2) `version.workspace = true` を
+  読めない (TOML map を string 期待し `invalid type: map, expected a string`)
+  → #100 で bundle ステップ限定で解決済みバージョンを inline (`cargo metadata`
+  で解決 → sed で一時差し替え → 復元)。**さらに publish ジョブが
+  `release not found` で落ちた**: `gh release upload` は既存リリースに添付する
+  だけで作成しない (v0.1.0/v0.2.0 は手動作成済だった)。→ `gh release create
+  v0.3.0 --verify-tag` でリリースオブジェクトを先に作成 → `gh run rerun
+  <id> --failed` で publish のみ再実行 (ビルド成果物は保持されるので再ビルド無し・
+  タグ push イベント文脈も保たれ publish ガード通過) → 成功。
+  [[project-release-ci-needs-release-object]] に runbook 化。
+  最終 CI = build-windows ✅ / build-macos ✅ / publish ✅、Release は非 draft・
+  Latest、資産 4 点 (`dbboard-windows-x86_64.exe`, `dbboard-0.3.0-x86_64.msi`,
+  `dbboard-macos-universal-0.3.0.dmg`, `SHA256SUMS.txt`)。
+  **PII スイープ (OSS 公開前, ユーザ依頼):** 追跡ツリーで実店舗名・個人名・
+  ドメインは 0 件、email は全て `example.*`/fixture。唯一の実 PII = 本ファイル
+  3196 行のローカルユーザ名 `syste` → #101 `chore/redact-local-path` で
+  `<user>` に伏字化 (コミットコメントは伏せた内容を再記載しない最小限)。
+  公開 exe も実名/PII を `grep -a -i` で 0 件確認、SHA256 が
+  `SHA256SUMS.txt` と一致。→ #102 で develop を再度 main にマージ、タグ v0.3.0 は
+  最終コミット `70ecb93` を指す。
+  **未了 (human ball, リリースを塞がない):** git 履歴に残る実店舗名の破壊的
+  rewrite (`git filter-repo --replace-text` + force-push, [[private-connection-name-mapping]])、
+  release.yml の publish ステップ自己作成化 (`gh release view || gh release
+  create`)。develop tip = `97ed4ef` / main = `70ecb93` (= v0.3.0)。
+  この doc-sync (`chore/post-0.3.0-doc-sync`) = README に MCP サーバ節追加 +
+  macOS bundle の壊れた `--package` 例修正、roadmap の Release CI を proven-green
+  化 + MCP 項目追加 + Pacing Note 刷新、本ファイル + next-actions。)
 - 日付: 2026-07-21 (**ローカル注釈機能 (ADR-0045) を PR #90 で develop に投入。**
   経緯: 実利用の摩擦候補 B。SQLite/libSQL/D1 にはカラムコメントの第一級概念が
   無く、Postgres も現状 `describe_table` が `pg_description` 未取得 =

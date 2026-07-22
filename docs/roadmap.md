@@ -14,17 +14,20 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-05-26)**: `desktop` Phases 1 / 1.5 / 1.6 / 1.7 have
-  shipped and the workspace is at `0.1.0` (per ADR-0011). `web` has
-  closed its Phase 1: the pnpm + Nuxt 4 + NestJS 11 monorepo scaffold
-  with a `GET /health` smoke is on `develop`, and the contract is
-  byte-content-mirrored at `dbboard@89b7c70`. The baton is back on
-  `desktop` for Phase 2 (adapter trait + capability model +
-  `GET /capabilities`). When `/capabilities` lands, the desktop side
-  amends `docs/api-contract.md` and emits a handoff brief in the
-  format of `939fe22` so the web side can re-sync and pick up its
-  queued issues `0003` (NestJS HTTP surface), `0004` (Postgres
-  adapter), `0005` (row cap + body limit + conformance tests).
+- **Right now (2026-07-22)**: `desktop` has shipped Phases 1 through 5
+  and released **v0.3.0** — all six adapters (Turso, D1, CockroachDB,
+  Neon, Supabase, Aurora DSQL), the optional AI assistant (Phase 4), and
+  now a read-only MCP server (`dbboard-mcp`, ADR-0046). The workspace is
+  at `0.3.0`; the tagged Release CI is proven green (see Phase 5). The
+  `web` status below is **last-known as of the 2026-05-26 sync** and has
+  not been re-verified this session (`dbboard-web` is a separate repo,
+  not checked out here — only the HTTP contract and the history JSON
+  schema are shared). As of that sync `web` had closed its Phase 1 (pnpm
+  + Nuxt 4 + NestJS 11 monorepo scaffold with a `GET /health` smoke on
+  `develop`, contract byte-content-mirrored at `dbboard@89b7c70`), with
+  the baton back on `desktop`. No contract change in this v0.3.0 line
+  needs a web mirror — the MCP server is desktop-local and does not
+  touch the shared HTTP contract.
 - **Exception**: contract changes (endpoint shapes, error categories,
   schema metadata) are drafted in one repo, mirrored in the other
   immediately, and only then built against.
@@ -458,6 +461,20 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       *not* surface Postgres `pg_description` (its own ADR) or ride the
       `.dbbx` secret bundle ([ADR-0045](decisions.md), PR #90). Follow-up
       render refactor tracked in issue 0016.
+- [x] Read-only MCP server (`dbboard-mcp`) — dbboard now doubles as a
+      headless [MCP](https://modelcontextprotocol.io) server that hands its
+      already-configured databases to an external AI agent (Claude Desktop /
+      Claude Code) over stdio as a small **read-only** tool surface. Five
+      fixed tools (`list_connections`, `list_tables`, `describe_table`,
+      `run_read_query`, `get_annotations`), reusing the exact
+      `connections.toml` + OS-keychain machinery as the GUI. Secrets never
+      cross the wire (only `{id,name,kind}` is serialized); read-only is
+      **engine-enforced** (`BEGIN TRANSACTION READ ONLY` / `PRAGMA
+      query_only` / D1 AST classification), not string-matched; result sets
+      clamp to 1000 rows; stdout is reserved for JSON-RPC and all logs go to
+      stderr. The v0.3.0 headline feature ([ADR-0046](decisions.md),
+      `crates/dbboard-mcp/`). This closes dbboard's AI story in both
+      directions: AI *client* (Phase 4) and AI *server* (here).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
@@ -499,9 +516,15 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       builds Windows (exe + MSI) and macOS (`.dmg`) on native runners and
       publishes them to the matching GitHub Release with a combined
       `SHA256SUMS.txt`; `workflow_dispatch` runs the same build as a
-      non-publishing smoke test ([ADR-0044](decisions.md), PR #88). Authored
-      on Windows and **not yet proven green** — the first tag push (or a
-      dispatch smoke run) is the intended first live test.
+      non-publishing smoke test ([ADR-0044](decisions.md), PR #88). **Proven
+      green** by the v0.3.0 release (2026-07-22): the first live tag push
+      surfaced two macOS `cargo-bundle` quirks (no `--package` selector; can't
+      read a workspace-inherited `version.workspace = true` — fixed by
+      inlining the resolved version for the bundle step, PR #100) and one
+      operational gotcha — `gh release upload` only *attaches* to an existing
+      release, so the release object must be created before the publish job
+      runs (it did for v0.1.0/v0.2.0 by hand). Making the publish step
+      create-if-missing is a tracked follow-up.
 - [x] macOS packaging — `[package.metadata.bundle]` lets `cargo bundle
       --release` produce `dbboard.app` on a Mac; the release CI wraps it in a
       compressed `.dmg` via `hdiutil` ([ADR-0044](decisions.md), PR #88).
