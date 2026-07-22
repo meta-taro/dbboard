@@ -5,6 +5,45 @@
 
 ## 最終更新
 
+- 日付: 2026-07-22 (**DL ページ live 化 (#104) + 結果グリッドの実利用摩擦 2 件を
+  補完: マルチカラムソート (#106) と MSI ショートカット (#105)。** 経緯: v0.3.0
+  リリース後、in-app update 通知が「download page」へリンクするのに実ページが
+  無かった → PR #104 `feat/download-page` (ADR-0047) で GitHub Pages に静的 DL
+  ページを載せ、first-party action 3 種 (`configure-pages`/`upload-pages-artifact`/
+  `deploy-pages`) の workflow で develop merge (tip `4fa5981`) 時に自動デプロイ →
+  https://meta-taro.github.io/dbboard/ が live (pages workflow は `site/**` 変更で
+  発火、23s で成功)。`.exe` = primary (塗り) / `.msi` = secondary (アウトライン)
+  の意図的 2 段ボタン、user 合意で維持。**user が MSI を初テストして 2 つの摩擦を
+  報告** → (1) ソート機能が丸ごと無かった、(2) MSI にショートカットが無かった。
+  加えて MSI アンインストールの残留を質問 → exe/PATH/フォルダ/ARP は消えるが
+  `%APPDATA%\dbboard\dbboard\` 設定 + Windows 資格情報マネージャーのエントリは
+  残ると回答 (クリーンアップ手順提示、README 明文化は任意 follow-up)。
+  **PR #105 `feature/msi-shortcuts` (`bb73bf1`) = MSI ショートカット:** WiX v3
+  非アドバタイズ型 (Shortcut + 各ユーザ HKCU `RegistryValue` key-path +
+  `RemoveFolder`) でスタートメニュー (`ProgramMenuFolder\dbboard`) + デスクトップ。
+  当初 Shortcuts を別サブフィーチャにしたら **ICE69 (LGHT0204 error)** = 対象ファイル
+  `exe0` が別フィーチャという理由で light が拒否 → 両 ComponentRef を exe と同じ
+  **Binaries フィーチャに同居**させて ICE69 を benign warning (LGHT1076) に降格、
+  `cargo wix --package dbboard --nocapture` (workspace は `--package` 必須) で MSI
+  ビルド成功。ADR は新設せず (ADR-0032 installer の自然な拡張、根拠は wxs コメント、
+  append-only 番号のブランチ間衝突回避)。**PR #106 `feature/result-multi-sort`
+  (`0049719`) = 最大 3 キーのソート (ADR-0048):** 順序ロジックを新 crate モジュール
+  `dbboard-core::sort` に分離 (UI イベントハンドラにビジネスロジックを置かない
+  アーキ規則) = `compare_values` (NULL<数値<テキスト<Blob の全順序、`f64::total_cmp`
+  で panic なし、int/real は `cmp_int_real` ヘルパで `#[allow(cast_precision_loss)]`)
+  + `sorted_row_order` (安定ソートで行 index の permutation を返す)。**表示順のみ
+  並べ替え = `result.rows` 不変**なので行選択・インライン編集の index/PK 対応が
+  崩れない。UI 側は `SortState` (keys/order/dirty をキャッシュ、新結果で reset、
+  header クリック = 素で昇順→降順→解除サイクル・Ctrl/Shift で多段) + `render_sort_header`
+  ヘルパ (too_many_lines 回避で抽出) + ▲/▼ 矢印と複数キー時のレベル番号。全 11
+  ロケールに `result-sort-hint` 追加。core 10 + UI sort_state 9 テスト。検証は fmt/
+  clippy -D warnings (pedantic)/check/test --all-features 全緑、pre-commit 通過。
+  両ブランチとも develop から独立分岐 = 相互衝突なし、user が push → PR #105/#106 を
+  develop 宛に作成 → user が両方マージ (merge `a5dbbb8` / `ef501fd`)。**CI 補足:**
+  このリポは PR/ブランチ CI が無い (workflow は pages.yml=site 変更 push と
+  release.yml=タグのみ)、品質ゲートは cargo-husky の pre-commit/pre-push フック。
+  この doc-sync (`chore/post-105-106-doc-sync`) = roadmap に 3 項目 tick (DL ページ/
+  ソート/MSI ショートカット) + 本ファイル + next-actions。develop tip = `ef501fd`。)
 - 日付: 2026-07-22 (**v0.3.0 リリース完了。目玉 = read-only MCP サーバ
   (`dbboard-mcp`, ADR-0046)。** PR #90 (注釈) 以降の未記録分をまとめて記録:
   #92 `fix/anthropic-error-body` (AI エラー本文の扱い修正) → #93
