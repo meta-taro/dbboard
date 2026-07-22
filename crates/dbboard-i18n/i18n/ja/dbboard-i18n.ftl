@@ -216,3 +216,25 @@ edit-set-null = NULL に設定
 edit-revert-cell = セルを元に戻す
 edit-cell-hint = ダブルクリックで編集 · 右クリックで NULL
 edit-save-unexpected-rows = 保存を中止しました: 1 行のはずが { $rows } 行に影響
+
+# ADR-0049 backup (logical dump).
+backup-button = バックアップ…
+backup-button-hint = このデータベースのテーブルを SQL ファイルにダンプします
+backup-planning = バックアップを準備中…
+backup-warn-title = 大きなデータベース
+backup-warn-body = このデータベースにはテーブル全体で { $rows } 行あります。ダンプには時間がかかり、大きなファイルになる場合があります。
+backup-warn-continue = そのままバックアップ
+backup-warn-cancel = キャンセル
+backup-dialog-title = バックアップの保存先
+backup-progress-title = バックアップ中
+backup-progress-table = テーブル { $done } / { $total }
+backup-progress-rows = { $done } / { $total } 行
+backup-progress-current = 現在: { $table }
+backup-cancel-button = キャンセル
+backup-done-title = バックアップ完了
+backup-done-summary = { $tables } 個のテーブル、{ $rows } 行をダンプしました。
+backup-done-cancelled = バックアップをキャンセルしました — ファイルには部分的なダンプが含まれています。
+backup-done-failures = { $count } 個のテーブルを読み取れず、スキップしました。
+backup-done-truncations = { $count } 個のテーブルが途中で切り詰められました。
+backup-failed-title = バックアップ失敗
+backup-close-button = 閉じる

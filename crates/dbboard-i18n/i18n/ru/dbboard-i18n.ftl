@@ -147,3 +147,25 @@ edit-set-null = Установить NULL
 edit-revert-cell = Вернуть ячейку
 edit-cell-hint = Двойной клик для правки · правый клик для NULL
 edit-save-unexpected-rows = Сохранение остановлено: ожидалась 1 строка, затронуто { $rows }
+
+# ADR-0049 backup (logical dump).
+backup-button = Резервная копия…
+backup-button-hint = Выгрузить таблицы этой базы данных в файл SQL
+backup-planning = Подготовка резервной копии…
+backup-warn-title = Большая база данных
+backup-warn-body = В этой базе данных { $rows } строк во всех таблицах. Выгрузка может занять время и создать большой файл.
+backup-warn-continue = Всё равно создать копию
+backup-warn-cancel = Отмена
+backup-dialog-title = Сохранить резервную копию как
+backup-progress-title = Создание резервной копии
+backup-progress-table = Таблица { $done } из { $total }
+backup-progress-rows = { $done } / { $total } строк
+backup-progress-current = Текущая: { $table }
+backup-cancel-button = Отмена
+backup-done-title = Резервное копирование завершено
+backup-done-summary = Выгружено таблиц: { $tables }, строк: { $rows }.
+backup-done-cancelled = Резервное копирование отменено — файл содержит частичную выгрузку.
+backup-done-failures = Не удалось прочитать { $count } таблиц(ы), они пропущены.
+backup-done-truncations = { $count } таблиц(ы) обрезаны на середине.
+backup-failed-title = Ошибка резервного копирования
+backup-close-button = Закрыть
