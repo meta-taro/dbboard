@@ -73,7 +73,9 @@ async fn capabilities_reports_adapter_id_and_flags() {
     assert_eq!(status, StatusCode::OK);
     // Turso ships no Supabase-style optional surfaces (ADR-0012), so
     // those flags are `false`; `has_describe_table` turned `true` with
-    // ADR-0028 slice (b). The id is what `TursoAdapter::id` returns.
+    // ADR-0028 slice (b). `has_table_ddl` (ADR-0049) is still `false` here
+    // — the dump DDL path lands on the production adapters (D1 first), not
+    // Turso, in this slice. The id is what `TursoAdapter::id` returns.
     assert_eq!(
         body,
         json!({
@@ -85,6 +87,7 @@ async fn capabilities_reports_adapter_id_and_flags() {
                 "has_storage": false,
                 "has_realtime": false,
                 "has_describe_table": true,
+                "has_table_ddl": false,
             }
         })
     );

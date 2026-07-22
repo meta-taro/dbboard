@@ -128,6 +128,7 @@ impl DatabaseAdapter for D1Adapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_describe_table: true,
+            has_table_ddl: true,
             ..Capabilities::default()
         }
     }
@@ -177,6 +178,26 @@ impl DatabaseAdapter for D1Adapter {
             .post_raw(&format!("PRAGMA table_info('{escaped}')"))
             .await?;
         envelope_to_table_schema(table, envelope)
+    }
+
+    async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
+        // SQLite stores each object's own `CREATE` text verbatim in
+        // `sqlite_master.sql`, so a table's DDL — plus the DDL of every
+        // index it owns — comes back in one round-trip (ADR-0049 Decision
+        // 4). Names are embedded with single quotes doubled, the same
+        // SQLite string-literal escaping `describe_table` uses; the name
+        // is not a bindable parameter here. Auto-created indexes (those
+        // backing PRIMARY KEY / UNIQUE) carry a NULL `sql` and are
+        // filtered out — they are re-created implicitly by the table DDL.
+        let escaped = table.name.replace('\'', "''");
+        let sql = format!(
+            "SELECT type, sql FROM sqlite_master \
+             WHERE (type = 'table' AND name = '{escaped}') \
+                OR (type = 'index' AND tbl_name = '{escaped}' AND sql IS NOT NULL) \
+             ORDER BY (type = 'table') DESC, name"
+        );
+        let envelope = self.post_raw(&sql).await?;
+        envelope_to_table_ddl(table, envelope)
     }
 }
 
@@ -399,6 +420,65 @@ fn envelope_to_table_schema(table: &TableInfo, envelope: D1Envelope) -> DbResult
     })
 }
 
+/// Assemble a table's `CREATE` DDL from a `SELECT type, sql FROM
+/// sqlite_master` envelope: the `type='table'` row's statement first, then
+/// each `type='index'` row's statement, every one terminated with `;`.
+///
+/// `sqlite_master.sql` stores each statement without a trailing semicolon,
+/// so one is appended. A missing table row (zero `type='table'` rows)
+/// synthesises SQLite's own "no such table" message, matching the
+/// [`envelope_to_table_schema`] contract.
+fn envelope_to_table_ddl(table: &TableInfo, envelope: D1Envelope) -> DbResult<String> {
+    let result = envelope_to_query_result(envelope)?;
+    let type_at = result
+        .columns
+        .iter()
+        .position(|c| c.name == "type")
+        .ok_or_else(|| {
+            DbError::Schema("sqlite_master result is missing the 'type' column".into())
+        })?;
+    let sql_at = result
+        .columns
+        .iter()
+        .position(|c| c.name == "sql")
+        .ok_or_else(|| {
+            DbError::Schema("sqlite_master result is missing the 'sql' column".into())
+        })?;
+
+    let mut create_table: Option<String> = None;
+    let mut index_ddls: Vec<String> = Vec::new();
+    for row in &result.rows {
+        let (Some(Value::Text(kind)), Some(Value::Text(stmt))) =
+            (row.get(type_at), row.get(sql_at))
+        else {
+            // Non-text type/sql cell: not something sqlite_master emits, so
+            // treat it as a schema-shape error rather than silently drop it.
+            return Err(DbError::Schema(format!(
+                "unexpected sqlite_master row for {}: {row:?}",
+                table.name
+            )));
+        };
+        match kind.as_str() {
+            "table" => create_table = Some(stmt.clone()),
+            "index" => index_ddls.push(stmt.clone()),
+            _ => {}
+        }
+    }
+
+    let Some(create_table) = create_table else {
+        return Err(DbError::Query(format!("no such table: {}", table.name)));
+    };
+
+    let mut ddl = String::new();
+    ddl.push_str(create_table.trim_end());
+    ddl.push_str(";\n");
+    for index in index_ddls {
+        ddl.push_str(index.trim_end());
+        ddl.push_str(";\n");
+    }
+    Ok(ddl)
+}
+
 fn pragma_int(row: &Row, at: usize, field: &str) -> DbResult<i64> {
     match row.get(at) {
         Some(Value::Integer(n)) => Ok(*n),
@@ -527,8 +607,9 @@ fn reclassify_schema(err: DbError) -> DbError {
 mod tests {
     use super::{
         build_raw_url, convert_json_value, envelope_to_query_result,
-        envelope_to_query_result_capped, envelope_to_table_schema, envelope_to_tables,
-        error_from_response, reclassify_schema, D1Adapter, D1ApiError, D1Config, D1Envelope,
+        envelope_to_query_result_capped, envelope_to_table_ddl, envelope_to_table_schema,
+        envelope_to_tables, error_from_response, reclassify_schema, D1Adapter, D1ApiError,
+        D1Config, D1Envelope,
     };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo, Value};
     use serde_json::json;
@@ -753,6 +834,87 @@ mod tests {
         })
         .expect("build adapter");
         assert!(adapter.capabilities().has_describe_table);
+    }
+
+    #[test]
+    fn connect_advertises_table_ddl_capability() {
+        let adapter = D1Adapter::connect(D1Config {
+            account_id: "acc".into(),
+            database_id: "db".into(),
+            api_token: "token".into(),
+            base_url: None,
+        })
+        .expect("build adapter");
+        assert!(adapter.capabilities().has_table_ddl);
+    }
+
+    fn master_envelope(rows: &serde_json::Value) -> D1Envelope {
+        parse(json!({
+            "success": true,
+            "result": [{
+                "results": { "columns": ["type", "sql"], "rows": rows },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }))
+    }
+
+    #[test]
+    fn table_ddl_emits_create_table_then_indexes_each_terminated() {
+        // sqlite_master stores each statement without a trailing `;`.
+        let envelope = master_envelope(&json!([
+            [
+                "table",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)"
+            ],
+            ["index", "CREATE INDEX idx_users_email ON users (email)"],
+            [
+                "index",
+                "CREATE UNIQUE INDEX uq_users_email ON users (email)"
+            ]
+        ]));
+        let ddl = envelope_to_table_ddl(&TableInfo::unqualified("users"), envelope).expect("ddl");
+        assert_eq!(
+            ddl,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);\n\
+             CREATE INDEX idx_users_email ON users (email);\n\
+             CREATE UNIQUE INDEX uq_users_email ON users (email);\n"
+        );
+    }
+
+    #[test]
+    fn table_ddl_without_indexes_is_just_the_create_table() {
+        let envelope = master_envelope(&json!([["table", "CREATE TABLE t (id INTEGER)"]]));
+        let ddl = envelope_to_table_ddl(&TableInfo::unqualified("t"), envelope).expect("ddl");
+        assert_eq!(ddl, "CREATE TABLE t (id INTEGER);\n");
+    }
+
+    #[test]
+    fn table_ddl_for_missing_table_is_a_query_error() {
+        // The query filters an auto-index (NULL sql) out server-side, so a
+        // table that does not exist yields zero rows here.
+        let envelope = master_envelope(&json!([]));
+        let err = envelope_to_table_ddl(&TableInfo::unqualified("ghost"), envelope)
+            .expect_err("missing table should fail");
+        let DbError::Query(msg) = err else {
+            panic!("expected DbError::Query, got {err:?}");
+        };
+        assert!(
+            msg.contains("no such table") && msg.contains("ghost"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn table_ddl_with_only_orphan_indexes_still_reports_missing_table() {
+        // Defensive: if the table row is absent but index rows arrive, the
+        // absence of a CREATE TABLE is what matters — there is nothing to
+        // reconstruct, so it is still a missing-table error.
+        let envelope = master_envelope(&json!([["index", "CREATE INDEX idx ON gone (x)"]]));
+        let err = envelope_to_table_ddl(&TableInfo::unqualified("gone"), envelope)
+            .expect_err("no table row should fail");
+        assert!(matches!(err, DbError::Query(_)));
     }
 
     #[test]

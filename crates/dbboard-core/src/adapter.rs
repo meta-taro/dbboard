@@ -81,6 +81,26 @@ pub trait DatabaseAdapter: Send + Sync {
         ))
     }
 
+    /// The `CREATE` DDL that reconstructs `table` — the `CREATE TABLE`
+    /// statement plus any dependent objects the engine attaches to it
+    /// (indexes, and where the engine models them this way, constraints).
+    /// The backup/dump path (ADR-0049) emits this ahead of a table's data.
+    ///
+    /// The returned string is one or more complete, `;`-terminated SQL
+    /// statements in the adapter's own dialect. It carries no promise of
+    /// cross-engine portability — a Postgres dump does not re-import into
+    /// SQLite, and a DSQL dump omits the constraints DSQL cannot express.
+    ///
+    /// The default returns [`DbError::Capability`] so adapters that pre-date
+    /// ADR-0049 compile unchanged and miss at runtime rather than at build
+    /// time. Implementors must also flip [`Capabilities::has_table_ddl`].
+    async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
+        let _ = table;
+        Err(DbError::Capability(
+            "table_ddl not supported by this adapter".into(),
+        ))
+    }
+
     fn views(&self) -> Option<&dyn ViewIntrospection> {
         None
     }
@@ -159,6 +179,7 @@ mod tests {
                 has_storage: true,
                 has_realtime: true,
                 has_describe_table: true,
+                has_table_ddl: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -183,6 +204,12 @@ mod tests {
                 }],
                 primary_key: vec!["id".into()],
             })
+        }
+        async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
+            Ok(format!(
+                "CREATE TABLE {} (id INTEGER PRIMARY KEY);",
+                table.name
+            ))
         }
         fn views(&self) -> Option<&dyn ViewIntrospection> {
             Some(self)
@@ -269,6 +296,32 @@ mod tests {
     fn describe_table_capability_flag_matches_support() {
         assert!(!NoopAdapter.capabilities().has_describe_table);
         assert!(FullAdapter.capabilities().has_describe_table);
+    }
+
+    #[tokio::test]
+    async fn default_table_ddl_surfaces_capability_error() {
+        let err = NoopAdapter
+            .table_ddl(&TableInfo::unqualified("users"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(err.message(), "table_ddl not supported by this adapter");
+    }
+
+    #[tokio::test]
+    async fn overridden_table_ddl_reconstructs_the_requested_table() {
+        let ddl = FullAdapter
+            .table_ddl(&TableInfo::unqualified("users"))
+            .await
+            .unwrap();
+        assert!(ddl.starts_with("CREATE TABLE users"));
+        assert!(ddl.trim_end().ends_with(';'));
+    }
+
+    #[test]
+    fn table_ddl_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_table_ddl);
+        assert!(FullAdapter.capabilities().has_table_ddl);
     }
 
     /// An adapter whose `query` always returns `row_count` single-cell
