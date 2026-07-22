@@ -19,7 +19,7 @@ constructor that the binary populates from these variables:
 | Variable                       | Required | Default              |
 |--------------------------------|----------|----------------------|
 | `DBBOARD_ANTHROPIC_API_KEY`    | yes      | —                    |
-| `DBBOARD_ANTHROPIC_MODEL`      | no       | `claude-sonnet-4-6`  |
+| `DBBOARD_ANTHROPIC_MODEL`      | no       | `claude-sonnet-5`    |
 
 When `DBBOARD_ANTHROPIC_API_KEY` is absent or empty, the binary does
 not construct the provider; the AI menu entry and the panel both

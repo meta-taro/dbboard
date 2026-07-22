@@ -40,6 +40,10 @@ dbboard-ai = { workspace = true }
 dbboard-anthropic = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+# Renders the update notice's release notes (GitHub release body) as
+# Markdown instead of literal source (ADR-0043). Holds a CommonMarkCache on
+# the app so parsed output is reused across frames.
+egui_commonmark = { workspace = true }
 tokio = { workspace = true }
 # Startup update check (ADR-0040): a single best-effort GET to the GitHub
 # Releases API, compared against this binary's CARGO_PKG_VERSION. reqwest
@@ -74,3 +78,31 @@ upgrade-guid = "A8AED330-48F5-4C84-89AD-C1303DF5543F"
 path-guid = "B008E00A-3525-4A0F-AF0E-DF2045D814B2"
 eula = "wix/License.rtf"
 name = "dbboard"
+
+# cargo-bundle settings for the macOS .app / .dmg (ADR-0044). The bare
+# release binary runs on macOS, but a handed-off Mac build wants a proper
+# `.app` (Finder icon, bundle identifier, Retina flag) — `cargo bundle
+# --release` reads these keys to produce `target/release/bundle/osx/`.
+# Building + code-signing + notarization happen on a Mac (mirrors the
+# Windows "sources in-tree, build is a separate step" split); this block is
+# just the source of truth for the bundle's identity.
+[package.metadata.bundle]
+name = "dbboard"
+# Reverse-DNS of the GitHub org. Stable forever — changing it makes macOS
+# treat an upgrade as a different app (new prefs, new keychain ACLs).
+identifier = "com.meta-taro.dbboard"
+# cargo-bundle builds the .icns from this PNG. 256px is enough to ship; a
+# 1024px source would sharpen the largest Retina slot — swap in when we have
+# one (TODO(icon-1024): higher-res app icon for macOS/Retina).
+icon = ["assets/dbboard-logo-256.png"]
+category = "public.app-category.developer-tools"
+short_description = "Desktop database client for serverless & distributed databases."
+long_description = """
+dbboard is a high-performance desktop database client for modern serverless
+and distributed databases (Turso/libSQL, Cloudflare D1, Postgres/Neon/Supabase),
+with an optional pluggable AI assistant for explaining and drafting SQL.
+"""
+copyright = "Copyright (c) meta-taro. MIT-licensed."
+# egui/eframe needs a reasonably modern AppKit; 10.15 is the usual floor for
+# the winit/glow stack. Adjust if a target Mac is older.
+osx_minimum_system_version = "10.15"

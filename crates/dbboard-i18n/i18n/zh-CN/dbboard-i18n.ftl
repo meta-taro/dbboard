@@ -64,9 +64,12 @@ theme-dark = 深色
 help-menu = 帮助
 help-docs-hint = 有关设置和连接指南，请参阅 README.md 和 docs/。
 help-repo-link = GitHub 上的项目
+help-ai-about-title = 关于 AI 助手
+help-ai-about-body = AI 助手会用通俗的语言解释 SQL 语句，并根据你输入的描述起草 SQL 查询；在给出建议时还会读取你的表名和列名。它绝不会执行 SQL，绝不会写入你的数据库，也绝不会将数据行发送到任何地方——在你将草稿复制到编辑器并自行执行之前，什么都不会发生。需要 API 密钥，密钥保存在操作系统的凭据管理器中。
 
 ai-menu-button = AI 助手
 ai-panel-title = AI 助手
+ai-scope-hint = 解释 SQL 并根据描述起草查询。它绝不会执行 SQL 或更改数据——一切都由你自己检查并执行。
 ai-mode-explain = 解释 SQL
 ai-mode-suggest = 生成 SQL
 ai-input-explain = 要解释的 SQL：
@@ -131,6 +134,9 @@ structure-col-type = 类型
 structure-col-nullable = 空
 structure-col-pk = 键
 structure-col-default = 默认值
+structure-col-note = 备注
+structure-note-hint = 添加备注…
+structure-table-note = 表备注
 
 edit-save-button = 保存
 edit-discard-button = 放弃

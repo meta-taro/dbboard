@@ -49,6 +49,9 @@ structure-col-type = Type
 structure-col-nullable = Null
 structure-col-pk = Key
 structure-col-default = Default
+structure-col-note = Note
+structure-note-hint = Add a note…
+structure-table-note = Table note
 
 # ADR-0030 result grid: long / multi-line cell values are truncated with
 # an ellipsis and an expand button that opens the full text in a popup.
@@ -180,6 +183,11 @@ theme-dark = Dark
 help-menu = Help
 help-docs-hint = See README.md and docs/ for setup and connection guides.
 help-repo-link = Project on GitHub
+# ADR-0045 follow-up: an "About AI Assistant" block in the Help menu, kept
+# in sync with `ai-scope-hint` so users cannot misread the assistant as
+# something that runs SQL or changes data on its own.
+help-ai-about-title = About AI Assistant
+help-ai-about-body = The AI Assistant explains a SQL statement in plain language and drafts a SQL query from a description you type; for suggestions it also reads your table and column names. It never runs SQL, never writes to your database, and never sends table rows anywhere — nothing happens until you copy a draft into the editor and run it yourself. An API key is required and is stored in your operating system's credential manager.
 # ADR-0040: startup update check. Shown in the Help menu only when a newer
 # release exists; updating is manual (the link opens the release page).
 help-update-available = Update available: { $version }
@@ -193,6 +201,9 @@ help-update-notes = What's changed
 # language the provider returned it in (typically English).
 ai-menu-button = AI Assistant
 ai-panel-title = AI Assistant
+# One-line scope caption under the panel title. Keep the meaning aligned
+# with `help-ai-about-body`.
+ai-scope-hint = Explains SQL and drafts queries from a description. It never runs SQL or changes data — you review and run everything yourself.
 ai-mode-explain = Explain SQL
 ai-mode-suggest = Suggest SQL
 ai-input-explain = SQL to explain:

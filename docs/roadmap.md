@@ -422,6 +422,11 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       the Help menu with the release notes and a download link. Updating is
       manual; the check is silent on failure and opt-out via
       `DBBOARD_NO_UPDATE_CHECK` ([ADR-0040](decisions.md), PR #71).
+      In-use follow-ups (PR #86): the Help menu now stays open while its
+      update link and **変更点** changelog toggle are clicked (egui menus
+      default to close-on-any-click), and the release notes render as
+      Markdown via `egui_commonmark` instead of literal `**source**`
+      ([ADR-0043](decisions.md); this raised the workspace MSRV to 1.92).
 - [x] Auto-run table right-click quick-SQL — the starter query now
       executes on pick, not just drops into the editor (still read-only, still
       subject to the auto-`LIMIT` guard) (issue 0012, PR #76).
@@ -445,6 +450,14 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 - [x] Official logo — formalised the hand-authored, original app icon
       (ADR-0032) as the project logo: canonical asset, DESIGN.md +
       README usage, kept-source master (issue 0015, PR #78).
+- [x] Local table/column annotations — an editable **Note** column in the
+      Structure tab, stored per-user in `annotations.toml` (keyed on the
+      stable connection id, so a rename keeps the notes) and written through
+      `secure_fs`. Nothing is written to any database, so it works on
+      read-only connections and every adapter uniformly. Deliberately does
+      *not* surface Postgres `pg_description` (its own ADR) or ride the
+      `.dbbx` secret bundle ([ADR-0045](decisions.md), PR #90). Follow-up
+      render refactor tracked in issue 0016.
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
@@ -479,9 +492,26 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       hygiene) plus a tester onboarding guide (`docs/internal-testing.md`),
       and `.gitignore` rules that keep `*.dbbx` / `/dist/` /
       `connections.toml` out of the public repo (PR #72).
-- [ ] Build & hand off the collector release exe from develop
-- [ ] Release CI (build + `cargo wix` on a tagged push)
-- [ ] macOS / Linux packaging
+- [x] Build & hand off the collector release exe from develop — the
+      ADR-0038-inclusive `dbboard.exe` was rebuilt and physically handed
+      off to the data-collection operator (2026-07-16).
+- [x] Release CI (build + checksums on a tagged push) — a `v*.*.*` tag push
+      builds Windows (exe + MSI) and macOS (`.dmg`) on native runners and
+      publishes them to the matching GitHub Release with a combined
+      `SHA256SUMS.txt`; `workflow_dispatch` runs the same build as a
+      non-publishing smoke test ([ADR-0044](decisions.md), PR #88). Authored
+      on Windows and **not yet proven green** — the first tag push (or a
+      dispatch smoke run) is the intended first live test.
+- [x] macOS packaging — `[package.metadata.bundle]` lets `cargo bundle
+      --release` produce `dbboard.app` on a Mac; the release CI wraps it in a
+      compressed `.dmg` via `hdiutil` ([ADR-0044](decisions.md), PR #88).
+      Sources are in-tree; the build + code-signing/notarization run on a Mac.
+- [ ] Code signing (Authenticode / Apple Developer ID + notarization) —
+      removes the SmartScreen / Gatekeeper "unknown publisher" warnings on the
+      unsigned artifacts. Needs paid certs + repo secrets; the release
+      workflow already has commented `codesign` / `notarytool` / `stapler`
+      placeholders (ADR-0044 §Future).
+- [ ] Linux packaging (AppImage / `.deb`)
 
 ## Phase 6+ — Stretch
 

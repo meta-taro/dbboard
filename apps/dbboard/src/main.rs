@@ -45,9 +45,10 @@ use dbboard_ai::{AiError, AiProvider};
 use dbboard_anthropic::AnthropicProvider;
 use dbboard_config::store::{default_history_path, default_path, load_or_empty};
 use dbboard_config::{
-    default_ai_providers_path, default_ui_settings_path, load_ui_settings, save_ui_settings,
-    secure_fs, AiProviderKind, AiSettingsAdmin, ConnectionAdmin, ConnectionFile, KeyringStore,
-    SecretStore, ThemePreference, UiSettingsFile,
+    default_ai_providers_path, default_annotations_path, default_ui_settings_path,
+    load_ui_settings, save_ui_settings, secure_fs, AiProviderKind, AiSettingsAdmin,
+    AnnotationsAdmin, ConnectionAdmin, ConnectionFile, KeyringStore, SecretStore, ThemePreference,
+    UiSettingsFile,
 };
 use dbboard_i18n::{t, t_args};
 use dbboard_server::{
@@ -242,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // fully non-blocking: the state starts Idle/Checking and the
             // task flips it (and requests a repaint) when the GET lands.
             let update = update_check::spawn(&update_rt, cc.egui_ctx.clone());
-            let inner = DbboardApp::connect(
+            let inner = attach_annotations(DbboardApp::connect(
                 base_url,
                 cc.egui_ctx.clone(),
                 history,
@@ -252,7 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ai_switcher,
                 ai_provider_slot,
                 Some(schema_source),
-            );
+            ));
             Ok(Box::new(DesktopApp::new(
                 inner,
                 admin,
@@ -316,6 +317,11 @@ struct DesktopApp {
     /// per-user config dir — the Theme menu still works for the session,
     /// the choice just is not remembered across restarts.
     ui_settings_path: Option<PathBuf>,
+    /// Parsed-Markdown cache for the update notice's release notes
+    /// (ADR-0043). `egui_commonmark` re-parses `&str` every frame otherwise;
+    /// the cache lives on the app so an open Help menu stays cheap. Empty
+    /// and untouched until a newer release is found.
+    commonmark_cache: egui_commonmark::CommonMarkCache,
 }
 
 impl DesktopApp {
@@ -337,6 +343,7 @@ impl DesktopApp {
             update,
             theme,
             ui_settings_path,
+            commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
 
@@ -474,7 +481,7 @@ impl eframe::App for DesktopApp {
                 }
                 language_menu(ui);
                 self.theme_menu(ui);
-                help_menu(ui, &self.update);
+                help_menu(ui, &self.update, &mut self.commonmark_cache);
             });
         });
         if let Some(admin) = &self.admin {
@@ -826,6 +833,33 @@ fn bootstrap_ai(
     (slot, switcher, ai_admin)
 }
 
+/// Attach the local note store (ADR-0045) to a freshly-connected app.
+/// Kept as a wrapper so `main` stays a single expression; a missing or
+/// unreadable file degrades to no notes via [`open_annotations`].
+fn attach_annotations(app: DbboardApp) -> DbboardApp {
+    match open_annotations() {
+        Some(admin) => app.with_annotations(admin),
+        None => app,
+    }
+}
+
+/// Open the local table/column note store (`annotations.toml`, ADR-0045).
+///
+/// Returns `None` — the Structure tab's Note column stays read-only — when
+/// the config dir can't be resolved or the file is unreadable/corrupt. The
+/// notes carry no secret and never touch a database, so a load failure is
+/// logged and degrades gracefully rather than aborting startup.
+fn open_annotations() -> Option<AnnotationsAdmin> {
+    let path = default_annotations_path().ok()?;
+    match AnnotationsAdmin::new_with_file(path) {
+        Ok(admin) => Some(admin),
+        Err(e) => {
+            eprintln!("dbboard: annotations.toml unreadable, local notes disabled: {e}");
+            None
+        }
+    }
+}
+
 /// Resolve the optional AI provider via the precedence chain
 /// **env > `ai-providers.toml` active id > none** (ADR-0023 + ADR-0025).
 ///
@@ -937,14 +971,43 @@ const REPO_URL: &str = "https://github.com/meta-taro/dbboard";
 /// intentionally tiny — the collector users this ships to need "what
 /// version am I on", "where do I look", and "where does this come from"
 /// far more than a rich About window.
-fn help_menu(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
-    ui.menu_button(t!("help-menu"), |ui| {
-        ui.label(about_line());
-        render_update_notice(ui, update);
-        ui.separator();
-        ui.label(t!("help-docs-hint"));
-        ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
-    });
+/// Close behavior for the Help menu. egui menus default to
+/// [`egui::PopupCloseBehavior::CloseOnClick`], which dismisses the whole
+/// menu on *any* click — inside or outside. The Help menu now carries
+/// interactive content (the update hyperlink and a collapsible changelog
+/// from `render_update_notice`), and that default swallows the first click
+/// on a link or the "release notes" toggle, slamming the menu shut before
+/// the widget can react. `CloseOnClickOutside` keeps the menu open while
+/// the user interacts with its contents and only dismisses it on a click
+/// outside the popup body.
+fn help_menu_close_behavior() -> egui::PopupCloseBehavior {
+    egui::PopupCloseBehavior::CloseOnClickOutside
+}
+
+fn help_menu(
+    ui: &mut egui::Ui,
+    update: &update_check::SharedUpdateState,
+    md_cache: &mut egui_commonmark::CommonMarkCache,
+) {
+    egui::containers::menu::MenuButton::new(t!("help-menu"))
+        .config(
+            egui::containers::menu::MenuConfig::new().close_behavior(help_menu_close_behavior()),
+        )
+        .ui(ui, |ui| {
+            ui.label(about_line());
+            render_update_notice(ui, update, md_cache);
+            ui.separator();
+            ui.label(t!("help-docs-hint"));
+            ui.hyperlink_to(t!("help-repo-link"), REPO_URL);
+            ui.separator();
+            // Collapsed by default so the long scope explanation does not
+            // crowd the menu; expanded on demand it states plainly that the
+            // AI Assistant only explains and drafts SQL — it never runs it
+            // or writes to the database (ADR-0045 follow-up).
+            ui.collapsing(t!("help-ai-about-title"), |ui| {
+                ui.label(t!("help-ai-about-body"));
+            });
+        });
 }
 
 /// Render the update notice under the version line — but only when the
@@ -957,7 +1020,11 @@ fn help_menu(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
 /// page, and offers the release notes as a collapsible, selectable
 /// (copyable) changelog. Updating stays fully manual — there is no
 /// download button here on purpose.
-fn render_update_notice(ui: &mut egui::Ui, update: &update_check::SharedUpdateState) {
+fn render_update_notice(
+    ui: &mut egui::Ui,
+    update: &update_check::SharedUpdateState,
+    md_cache: &mut egui_commonmark::CommonMarkCache,
+) {
     let snapshot = update
         .lock()
         .map_or(update_check::UpdateState::Idle, |guard| guard.clone());
@@ -982,10 +1049,12 @@ fn render_update_notice(ui: &mut egui::Ui, update: &update_check::SharedUpdateSt
             egui::ScrollArea::vertical()
                 .max_height(200.0)
                 .show(ui, |ui| {
-                    // Selectable so a tester can Ctrl+C the changelog into
-                    // a report, matching the copyable-error convention
-                    // (ADR-0039).
-                    ui.add(egui::Label::new(info.notes.clone()).selectable(true));
+                    // The release body arrives as CommonMark; render it so
+                    // headings/bold/code/links read as formatted text
+                    // instead of literal `**source**` (ADR-0043). The viewer
+                    // keeps text selectable, preserving the Ctrl+C-into-a-
+                    // report affordance of the old plain label (ADR-0039).
+                    egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, &info.notes);
                 });
         });
     }
@@ -1194,6 +1263,18 @@ mod tests {
         assert_eq!(
             viewport_theme(ThemePreference::Dark),
             egui::SystemTheme::Dark
+        );
+    }
+
+    #[test]
+    fn help_menu_stays_open_on_inside_clicks() {
+        // Regression: the Help menu carries an update hyperlink and a
+        // collapsible changelog. The egui default (`CloseOnClick`) closes
+        // the menu on the first inside click, so the link and the notes
+        // toggle were unusable. It must close only on an *outside* click.
+        assert_eq!(
+            super::help_menu_close_behavior(),
+            egui::PopupCloseBehavior::CloseOnClickOutside
         );
     }
 

@@ -64,9 +64,12 @@ theme-dark = Dunkel
 help-menu = Hilfe
 help-docs-hint = Siehe README.md und docs/ für Einrichtung und Verbindungsanleitungen.
 help-repo-link = Projekt auf GitHub
+help-ai-about-title = Über den KI-Assistenten
+help-ai-about-body = Der KI-Assistent erklärt eine SQL-Anweisung in verständlicher Sprache und entwirft aus einer von Ihnen eingegebenen Beschreibung eine SQL-Abfrage; für Vorschläge liest er außerdem Ihre Tabellen- und Spaltennamen. Er führt niemals SQL aus, schreibt niemals in Ihre Datenbank und sendet niemals Tabellenzeilen irgendwohin – nichts geschieht, bis Sie einen Entwurf in den Editor kopieren und selbst ausführen. Ein API-Schlüssel ist erforderlich und wird in der Anmeldeinformationsverwaltung Ihres Betriebssystems gespeichert.
 
 ai-menu-button = KI-Assistent
 ai-panel-title = KI-Assistent
+ai-scope-hint = Erklärt SQL und entwirft Abfragen aus einer Beschreibung. Es führt niemals SQL aus und ändert keine Daten – Sie prüfen und führen alles selbst aus.
 ai-mode-explain = SQL erklären
 ai-mode-suggest = SQL vorschlagen
 ai-input-explain = Zu erklärendes SQL:
@@ -132,6 +135,9 @@ structure-col-type = Typ
 structure-col-nullable = Null
 structure-col-pk = Schlüssel
 structure-col-default = Standard
+structure-col-note = Notiz
+structure-note-hint = Notiz hinzufügen…
+structure-table-note = Tabellennotiz
 
 edit-save-button = Speichern
 edit-discard-button = Verwerfen

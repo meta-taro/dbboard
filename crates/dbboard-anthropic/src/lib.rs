@@ -24,7 +24,7 @@ mod stream;
 
 const PROVIDER_ID: &str = "anthropic";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
-const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+const DEFAULT_MODEL: &str = "claude-sonnet-5";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
@@ -78,8 +78,9 @@ impl AnthropicProvider {
     }
 
     /// Build a provider against the [`DEFAULT_MODEL`] constant
-    /// (`claude-sonnet-4-6`, per `rules/performance.md`'s
-    /// "best coding model" pick).
+    /// (`claude-sonnet-5`, the current-generation Sonnet — the prior
+    /// `claude-sonnet-4-6` default 400'd against live accounts once it
+    /// was retired).
     ///
     /// # Errors
     ///
@@ -447,9 +448,19 @@ fn parsed_to_response(parsed: MessagesResponse, model: &str) -> AiResult<AiRespo
 /// from a runtime-rejected key is still a `Provider` error rather than
 /// re-raising as `Configuration`.
 fn error_from_status_and_body(status: u16, body: &[u8]) -> AiError {
-    let detail = parse_error_envelope(body)
-        .unwrap_or_else(|| truncate_to_owned(&String::from_utf8_lossy(body)));
-    AiError::Provider(format!("anthropic api error (status {status}): {detail}"))
+    AiError::Provider(format!(
+        "anthropic api error (status {status}): {}",
+        body_error_detail(body)
+    ))
+}
+
+/// Extract a human-readable reason from an API error response body,
+/// preferring the structured `{ "error": { … } }` envelope and falling
+/// back to the raw (truncated) text when the body is not JSON. Shared by
+/// the atomic and streaming error paths so both surface the same detail
+/// (e.g. "credit balance too low") instead of a bare status code.
+pub(crate) fn body_error_detail(body: &[u8]) -> String {
+    parse_error_envelope(body).unwrap_or_else(|| truncate_to_owned(&String::from_utf8_lossy(body)))
 }
 
 fn parse_error_envelope(body: &[u8]) -> Option<String> {
@@ -515,8 +526,8 @@ mod tests {
     }
 
     #[test]
-    fn default_model_is_claude_sonnet_4_6() {
-        assert_eq!(DEFAULT_MODEL, "claude-sonnet-4-6");
+    fn default_model_is_claude_sonnet_5() {
+        assert_eq!(DEFAULT_MODEL, "claude-sonnet-5");
     }
 
     #[test]
