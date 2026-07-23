@@ -41,6 +41,12 @@ pub struct Capabilities {
     /// `/capabilities` payloads parseable — the flag reads as `false`.
     #[serde(default)]
     pub has_describe_table: bool,
+    /// The adapter implements `DatabaseAdapter::table_ddl` (ADR-0049) — it
+    /// can produce a `CREATE TABLE` (+ indexes) for a table, which the
+    /// backup/dump path needs. `#[serde(default)]` keeps pre-ADR-0049
+    /// payloads parseable — the flag reads as `false`.
+    #[serde(default)]
+    pub has_table_ddl: bool,
 }
 
 #[cfg(test)]
@@ -56,6 +62,7 @@ mod tests {
         assert!(!caps.has_storage);
         assert!(!caps.has_realtime);
         assert!(!caps.has_describe_table);
+        assert!(!caps.has_table_ddl);
     }
 
     #[test]
@@ -70,6 +77,7 @@ mod tests {
         assert!(!caps.has_storage);
         assert!(!caps.has_realtime);
         assert!(!caps.has_describe_table);
+        assert!(!caps.has_table_ddl);
     }
 
     #[test]
@@ -94,7 +102,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false}"#
         );
     }
 
@@ -107,6 +115,7 @@ mod tests {
             has_storage: false,
             has_realtime: true,
             has_describe_table: true,
+            has_table_ddl: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();
@@ -120,5 +129,15 @@ mod tests {
         let json = r#"{"has_views":false,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":false}"#;
         let caps: Capabilities = serde_json::from_str(json).unwrap();
         assert!(!caps.has_describe_table);
+    }
+
+    #[test]
+    fn legacy_json_without_table_ddl_flag_deserializes_as_false() {
+        // Pre-ADR-0049 payloads carry describe_table but not table_ddl; the
+        // newer flag must still default to false (additive wire contract).
+        let json = r#"{"has_views":false,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":false,"has_describe_table":true}"#;
+        let caps: Capabilities = serde_json::from_str(json).unwrap();
+        assert!(caps.has_describe_table);
+        assert!(!caps.has_table_ddl);
     }
 }

@@ -10,6 +10,7 @@
 
 mod adapter;
 mod capabilities;
+mod dump;
 mod error;
 mod limits;
 mod read_only;
@@ -23,6 +24,11 @@ pub use adapter::DatabaseAdapter;
 pub use capabilities::{
     AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
     ViewIntrospection,
+};
+pub use dump::{
+    build_count, build_insert, build_select_page, plan_dump, run_dump, value_literal, DumpControl,
+    DumpError, DumpOutcome, DumpPlan, DumpProgress, DumpResult, DumpSink, TableFailure, TablePlan,
+    TableTruncation, DEFAULT_BACKUP_WARN_ROWS, INSERT_BATCH_ROWS, READ_PAGE_ROWS,
 };
 pub use error::{DbError, DbResult};
 pub use limits::{too_many_rows_error, MAX_RESULT_ROWS};

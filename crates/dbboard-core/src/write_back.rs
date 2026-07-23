@@ -217,7 +217,10 @@ fn edit_literal(val: &CellValue) -> String {
 /// The table name for the `UPDATE` target. Postgres qualifies with the
 /// schema when present; SQLite has no schema namespace so the name stands
 /// alone even if a `schema` slipped into `TableInfo`.
-fn qualified_table(table: &TableInfo, dialect: SqlDialect) -> String {
+///
+/// `pub(crate)` so the dump path (ADR-0049) qualifies `INSERT` targets the
+/// same way write-back qualifies `UPDATE` targets.
+pub(crate) fn qualified_table(table: &TableInfo, dialect: SqlDialect) -> String {
     match (dialect, &table.schema) {
         (SqlDialect::Postgres, Some(schema)) => {
             format!("{}.{}", quote_ident(schema), quote_ident(&table.name))
@@ -228,12 +231,18 @@ fn qualified_table(table: &TableInfo, dialect: SqlDialect) -> String {
 
 /// Quote a SQL identifier, doubling any embedded double-quote. Valid for
 /// both SQLite and Postgres.
-fn quote_ident(ident: &str) -> String {
+///
+/// `pub(crate)` so the dump path (ADR-0049) shares one escaping
+/// implementation with write-back rather than re-deriving it.
+pub(crate) fn quote_ident(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
 /// Quote a SQL string literal, doubling any embedded single-quote.
-fn quote_str(s: &str) -> String {
+///
+/// `pub(crate)` so the dump path (ADR-0049) shares one escaping
+/// implementation with write-back rather than re-deriving it.
+pub(crate) fn quote_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 

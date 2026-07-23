@@ -174,6 +174,18 @@ check is silent when offline or on any error, and you can turn it off
 completely by setting `DBBOARD_NO_UPDATE_CHECK` to any non-empty value. See
 [ADR-0040](docs/decisions.md).
 
+A **Backup…** button on the query toolbar dumps the active connection to a
+single self-contained `.sql` file — schema plus data, in the source engine's
+own dialect (verbatim DDL for the Turso/D1 SQLite family, reconstructed DDL
+for the Postgres family including Neon, Supabase, and Aurora DSQL). The dump
+streams `INSERT` batches straight to disk with keyset pagination, so a large
+database never buffers in memory. Before starting, a preflight row count warns
+if the database is bigger than a fixed threshold (500k rows) so a giant dump
+isn't kicked off blindly; while running, a window shows table/row progress and
+a percentage bar and can **Cancel** at any time (the file keeps the partial
+dump). It is **dump-only** — restore is deferred to a later release. See
+[ADR-0049](docs/decisions.md).
+
 ### Local Turso/libSQL (default)
 
 | Variable | Purpose | Default |
