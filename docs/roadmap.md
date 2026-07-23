@@ -483,6 +483,16 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       permutation of row indices rather than moving rows, so selection and
       inline-edit row/PK mappings stay valid; a fresh result resets the sort
       ([ADR-0048](decisions.md), PR #106).
+- [x] Logical backup (dump) — a **Backup…** toolbar button dumps the whole
+      connection to a single `.sql` file: an in-process worker task walks every
+      table (SQLite for Turso/D1, full schema reconstruction for the Postgres
+      family incl. Neon/Supabase/Aurora DSQL), streaming `INSERT` batches so a
+      large DB never buffers in memory. A preflight row count warns before a
+      dump crosses `DEFAULT_BACKUP_WARN_ROWS` (500k, constant for now) so a
+      giant DB isn't started blindly, a live progress window shows table/row
+      counters + a percent bar and can **Cancel** mid-dump (the file keeps the
+      partial dump), and the completion summary surfaces any skipped/truncated
+      tables. Dump-only for v1; restore is deferred ([ADR-0049](decisions.md)).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
