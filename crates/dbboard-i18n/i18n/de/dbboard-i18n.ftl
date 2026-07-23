@@ -169,3 +169,8 @@ backup-done-failures = { $count } Tabelle(n) konnten nicht gelesen werden und wu
 backup-done-truncations = { $count } Tabelle(n) wurden vorzeitig abgeschnitten.
 backup-failed-title = Sicherung fehlgeschlagen
 backup-close-button = Schließen
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Sicherung
+backup-threshold-label = Warnen ab (Zeilen)
+backup-threshold-hint = Zeigt vor dem Dump die Warnung für große Datenbanken an, wenn die Gesamtzahl der Zeilen diesen Wert überschreitet. Wird in ui-settings.toml gespeichert.

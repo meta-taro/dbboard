@@ -169,3 +169,8 @@ backup-done-failures = { $count } table(s) n'ont pas pu être lues et ont été 
 backup-done-truncations = { $count } table(s) ont été tronquées en cours de route.
 backup-failed-title = Échec de la sauvegarde
 backup-close-button = Fermer
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Sauvegarde
+backup-threshold-label = Avertir au-delà de (lignes)
+backup-threshold-hint = Affiche l'avertissement de grande base de données avant le vidage lorsque le nombre total de lignes dépasse cette valeur. Enregistré dans ui-settings.toml.

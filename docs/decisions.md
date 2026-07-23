@@ -6159,3 +6159,71 @@ restore/import is deliberately deferred to a future ADR.
 - Sibling `dbboard-web` parity: the `table_ddl` capability and the dump concept
   are recorded here; no code is shared.
 
+
+## ADR-0050 — User-configurable backup warn threshold
+
+- **Status**: Accepted 2026-07-23
+- **Builds on**: ADR-0041 (`ui-settings.toml` — the persisted-preferences
+  store this extends), ADR-0049 (logical dump — the feature whose
+  `DEFAULT_BACKUP_WARN_ROWS = 500_000` constant this promotes to a setting)
+
+### Context
+
+ADR-0049 shipped the logical dump with a fixed large-database warn threshold
+(`DEFAULT_BACKUP_WARN_ROWS = 500_000`), and its own text flagged promoting that
+constant to a persisted setting as a follow-up. The threshold is a judgement
+call — "how many rows is 'a lot'?" — that depends on the connection and the
+operator's patience, so a single baked-in number is wrong for someone whose
+routine dump is 800k rows (nagged every time) or 50k (never warned when they'd
+want to be). The maintainer asked for it to be user-changeable from the app.
+
+### Decision
+
+Make the warn threshold a **persisted, user-editable setting**, reusing the
+existing `ui-settings.toml` store (ADR-0041) rather than introducing a new one.
+
+1. **Storage: one new optional field on `UiSettingsFile`** —
+   `backup_warn_rows: Option<u64>`, `#[serde(default, skip_serializing_if =
+   "Option::is_none")]`. No schema-version bump: a file written before this ADR
+   has no key and reads back as `None`, and a theme-only save stays
+   byte-identical (the field is omitted when unset). `None` means "not
+   configured".
+2. **The domain default stays single-sourced in `dbboard-core`.**
+   `dbboard-config` has no dependency on `dbboard-core` and must not duplicate
+   `DEFAULT_BACKUP_WARN_ROWS`. So `None` is resolved to the fallback at the app
+   layer: `DesktopApp` seeds the editable value from the persisted `Option`,
+   falling back to `DbboardApp::backup_warn_rows()` (which the inner app itself
+   seeded from the core constant) — the binary never re-imports the constant.
+3. **The core already took the threshold as a parameter.**
+   `DumpPlan::exceeds_threshold(threshold)` needed no change; only the single
+   UI read site swaps the constant for a per-app `backup_warn_rows` field,
+   pushed in via `DbboardApp::set_backup_warn_rows`.
+4. **UI: a `Backup` submenu beside `Theme`** in the menu bar, holding a numeric
+   `DragValue` (floored at 1). A change applies to the inner app immediately
+   (so a dump started the same frame uses the new value) and persists **the
+   moment the value settles** — a keyboard edit commits (`changed()` while not
+   mid-drag) or a drag is released (`drag_stopped()`). Guarding the write on
+   `!dragged()` keeps a scrub from firing an atomic file write every frame,
+   while deliberately *not* keying persistence off focus loss, so quitting
+   immediately after an edit cannot drop it.
+5. **Load-modify-save, never clobber.** Persisting any one preference now loads
+   the whole `UiSettingsFile`, mutates the one field, and writes it back
+   (`persist_ui_settings`). This fixes a latent footgun: `set_theme` previously
+   saved `UiSettingsFile::with_theme(pref)`, a fresh struct that would have
+   reset a sibling `backup_warn_rows` to its default on every theme change.
+
+### Out of scope
+
+- Per-connection thresholds — the setting is global, matching the single
+  process-wide dump flow.
+- Exposing the threshold over the HTTP contract — it is a desktop-chrome
+  preference, like the theme, and lives only on the binary side.
+
+### Consequences
+
+- One optional TOML field, one new inner-app field + setter/getter, one menu
+  submenu, and three new i18n keys across 11 locales.
+- `UiSettingsFile::with_theme` is retained for tests but documented as
+  *not* preserving siblings; production writes go through load-modify-save.
+- Sibling `dbboard-web`: no parity impact — the threshold is a desktop UI
+  preference, not part of the adapter or dump contract.

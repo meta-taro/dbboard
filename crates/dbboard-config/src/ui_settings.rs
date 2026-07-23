@@ -45,6 +45,14 @@ pub struct UiSettingsFile {
     /// older file that predates a future added field still loads.
     #[serde(default)]
     pub theme: ThemePreference,
+    /// The backup large-database warn threshold in total rows (ADR-0050).
+    /// `None` means "not configured" — the app falls back to its built-in
+    /// default (`dbboard_core::DEFAULT_BACKUP_WARN_ROWS`) rather than this
+    /// crate duplicating a domain constant it has no dependency on. A file
+    /// written before ADR-0050 has no key, so `#[serde(default)]` reads it
+    /// back as `None` and the fallback applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_warn_rows: Option<u64>,
 }
 
 impl Default for UiSettingsFile {
@@ -52,17 +60,23 @@ impl Default for UiSettingsFile {
         Self {
             version: UI_SETTINGS_VERSION,
             theme: ThemePreference::default(),
+            backup_warn_rows: None,
         }
     }
 }
 
 impl UiSettingsFile {
-    /// A settings file pinning `theme` at the current schema version.
+    /// A settings file pinning `theme` at the current schema version, with
+    /// the backup threshold left unset. Convenience for call sites that only
+    /// touch the theme; to change one field while preserving the others,
+    /// load-modify-save the whole struct instead (see
+    /// [`crate::load_ui_settings`]).
     #[must_use]
     pub fn with_theme(theme: ThemePreference) -> Self {
         Self {
             version: UI_SETTINGS_VERSION,
             theme,
+            backup_warn_rows: None,
         }
     }
 
@@ -199,6 +213,66 @@ mod tests {
         // A file with only a version still loads (forward-compatible read).
         let file = UiSettingsFile::parse("version = 1\n").expect("parse");
         assert_eq!(file.theme, ThemePreference::Auto);
+    }
+
+    #[test]
+    fn backup_warn_rows_defaults_to_none_and_is_omitted_when_unset() {
+        // Default carries no threshold (the app supplies its own fallback).
+        let file = UiSettingsFile::default();
+        assert_eq!(file.backup_warn_rows, None);
+        // An unset threshold is skipped on the wire so a pre-ADR-0050 file
+        // stays byte-identical after a theme-only save.
+        let toml = toml::to_string(&file).expect("serialize");
+        assert!(!toml.contains("backup_warn_rows"), "got: {toml}");
+    }
+
+    #[test]
+    fn backup_warn_rows_absent_in_an_older_file_reads_back_as_none() {
+        // A file written before ADR-0050 (theme only) still loads.
+        let file = UiSettingsFile::parse("version = 1\ntheme = \"dark\"\n").expect("parse");
+        assert_eq!(file.theme, ThemePreference::Dark);
+        assert_eq!(file.backup_warn_rows, None);
+    }
+
+    #[test]
+    fn backup_warn_rows_round_trips_when_set() {
+        let file = UiSettingsFile {
+            backup_warn_rows: Some(1_000_000),
+            ..UiSettingsFile::with_theme(ThemePreference::Light)
+        };
+        let toml = toml::to_string(&file).expect("serialize");
+        let back = UiSettingsFile::parse(&toml).expect("parse");
+        assert_eq!(back, file);
+        assert_eq!(back.backup_warn_rows, Some(1_000_000));
+    }
+
+    #[test]
+    fn load_modify_save_preserves_the_sibling_field() {
+        // Regression guard for the clobber footgun: changing the theme via
+        // load-modify-save must not drop a persisted backup threshold, and
+        // vice versa. `with_theme` deliberately does NOT preserve siblings,
+        // so callers that need to must go through load-modify-save.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ui-settings.toml");
+
+        // Seed a file that has a threshold set.
+        save_atomic(
+            &path,
+            &UiSettingsFile {
+                backup_warn_rows: Some(250_000),
+                ..UiSettingsFile::with_theme(ThemePreference::Auto)
+            },
+        )
+        .expect("seed");
+
+        // Load-modify-save the theme only.
+        let mut file = load_or_default(&path);
+        file.theme = ThemePreference::Dark;
+        save_atomic(&path, &file).expect("save theme");
+
+        let after = load_or_default(&path);
+        assert_eq!(after.theme, ThemePreference::Dark);
+        assert_eq!(after.backup_warn_rows, Some(250_000), "threshold clobbered");
     }
 
     #[test]
