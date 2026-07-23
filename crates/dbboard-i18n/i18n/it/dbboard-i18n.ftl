@@ -169,3 +169,8 @@ backup-done-failures = Impossibile leggere { $count } tabella/e, che sono state 
 backup-done-truncations = { $count } tabella/e sono state troncate a metà.
 backup-failed-title = Backup non riuscito
 backup-close-button = Chiudi
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Backup
+backup-threshold-label = Avvisa oltre (righe)
+backup-threshold-hint = Mostra l'avviso di database di grandi dimensioni prima del dump quando il numero totale di righe supera questo valore. Salvato in ui-settings.toml.

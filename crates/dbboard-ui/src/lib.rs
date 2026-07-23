@@ -564,6 +564,12 @@ pub struct DbboardApp {
     /// Backup (logical dump) state machine (ADR-0049 slice e). `Idle`
     /// until the toolbar Backup button fires a preflight.
     backup: BackupState,
+    /// Large-database warn threshold in total rows (ADR-0050). Seeded to
+    /// [`DEFAULT_BACKUP_WARN_ROWS`] and overridden by the persisted
+    /// `ui-settings.toml` value the binary pushes in via
+    /// [`Self::set_backup_warn_rows`]. The preflight compares the plan's
+    /// total against this, not the constant.
+    backup_warn_rows: u64,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -692,6 +698,7 @@ impl DbboardApp {
             annotations: None,
             edit: EditGrid::default(),
             backup: BackupState::Idle,
+            backup_warn_rows: DEFAULT_BACKUP_WARN_ROWS,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -1405,7 +1412,7 @@ impl DbboardApp {
             return;
         }
         self.backup = match result {
-            Ok(plan) => match plan.exceeds_threshold(DEFAULT_BACKUP_WARN_ROWS) {
+            Ok(plan) => match plan.exceeds_threshold(self.backup_warn_rows) {
                 Some(total_rows) => BackupState::Confirming { plan, total_rows },
                 None => BackupState::ReadyToSave(plan),
             },
@@ -1691,6 +1698,25 @@ impl DbboardApp {
     #[must_use]
     pub fn active_ai_provider_label(&self) -> Option<&str> {
         self.active_ai_provider_label.as_deref()
+    }
+
+    /// Set the backup large-database warn threshold in total rows (ADR-0050).
+    /// The binary owns `ui-settings.toml` (the persisted source of truth) and
+    /// pushes the resolved value in — the persisted setting when present, the
+    /// [`DEFAULT_BACKUP_WARN_ROWS`] fallback otherwise. The next preflight
+    /// ([`Self::on_backup_planned`]) compares against this.
+    pub fn set_backup_warn_rows(&mut self, rows: u64) {
+        self.backup_warn_rows = rows;
+    }
+
+    /// The threshold the next preflight will use. Seeded to
+    /// [`DEFAULT_BACKUP_WARN_ROWS`]; reflects the last value pushed by
+    /// [`Self::set_backup_warn_rows`]. Exposed so the binary can read the
+    /// built-in default back out (to seed the settings editor) without
+    /// re-importing the core constant.
+    #[must_use]
+    pub fn backup_warn_rows(&self) -> u64 {
+        self.backup_warn_rows
     }
 
     /// Last `SwitchAiProvider` failure surfaced through
@@ -4766,6 +4792,50 @@ mod tests {
                 BackupState::Confirming { total_rows, .. } => assert_eq!(total_rows, rows),
                 other => panic!("expected Confirming, got {other:?}"),
             }
+        }
+
+        #[test]
+        fn a_lowered_threshold_warns_where_the_default_would_not() {
+            // ADR-0050: the preflight compares against the runtime threshold,
+            // not the constant. A plan that sits under the 500k default must
+            // warn once the user lowers the threshold below it.
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.set_backup_warn_rows(100);
+            app.backup = BackupState::Planning;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(500)),
+                })
+                .unwrap();
+            app.drain_replies();
+            match app.backup {
+                BackupState::Confirming { total_rows, .. } => assert_eq!(total_rows, 500),
+                other => panic!("expected Confirming, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_raised_threshold_skips_the_warning_the_default_would_show() {
+            // The mirror of the above: raising the threshold above a plan the
+            // 500k default would have flagged skips the warning entirely.
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.set_backup_warn_rows(DEFAULT_BACKUP_WARN_ROWS * 10);
+            app.backup = BackupState::Planning;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(DEFAULT_BACKUP_WARN_ROWS + 1)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::ReadyToSave(_)));
+        }
+
+        #[test]
+        fn the_default_threshold_is_the_core_constant() {
+            // A freshly built app uses the domain default until the binary
+            // pushes a persisted override.
+            let (app, _cmd_rx, _reply_tx) = build();
+            assert_eq!(app.backup_warn_rows(), DEFAULT_BACKUP_WARN_ROWS);
         }
 
         #[test]

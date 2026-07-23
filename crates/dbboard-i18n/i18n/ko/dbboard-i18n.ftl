@@ -168,3 +168,8 @@ backup-done-failures = { $count }개 테이블을 읽을 수 없어 건너뛰었
 backup-done-truncations = { $count }개 테이블이 도중에 잘렸습니다.
 backup-failed-title = 백업 실패
 backup-close-button = 닫기
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = 백업
+backup-threshold-label = 경고 기준 행 수
+backup-threshold-hint = 덤프하기 전에 전체 행 수가 이 값을 초과하면 대용량 데이터베이스 경고를 표시합니다. ui-settings.toml에 저장됩니다.
