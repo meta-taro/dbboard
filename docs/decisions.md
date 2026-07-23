@@ -6227,3 +6227,115 @@ existing `ui-settings.toml` store (ADR-0041) rather than introducing a new one.
   *not* preserving siblings; production writes go through load-modify-save.
 - Sibling `dbboard-web`: no parity impact — the threshold is a desktop UI
   preference, not part of the adapter or dump contract.
+
+## ADR-0051 — Logical restore / import
+
+- **Status**: Accepted 2026-07-23 (implementation in progress, landing in slices)
+- **Builds on**: ADR-0049 (logical dump — the write-side this reverses; restore
+  targets the same engines and consumes the `.sql` dump produces), ADR-0046
+  (`read_only` — the sqlparser-based classifier whose parsing approach Layer 2
+  reuses), ADR-0012 (the `DatabaseAdapter` trait + `Capabilities` extension
+  model this adds two methods and two flags to)
+
+### Context
+
+ADR-0049 gave dbboard a one-way door: it can dump a connection to `.sql` but
+cannot load one back. The maintainer runs collector databases whose recovery
+story is "restore the dump", so the missing read-side is real operational
+friction, not a completeness itch. Restore is also the natural next major
+feature after the dump landed and its warn threshold became configurable
+(ADR-0050).
+
+Four scoping decisions were settled with the maintainer up front, because each
+changes the shape of the work:
+
+1. **Input = any `.sql`, not only dbboard's own dumps.** `pg_dump` and
+   `sqlite3 .dump` output must import too. This forbids a parser that only
+   understands the narrow shape dbboard emits, and drives the two-layer split
+   below (a lexical splitter that never rejects, plus a best-effort classifier
+   that downgrades on parse failure rather than refusing).
+2. **Engine scope = the same engines dump supports** — Turso/libSQL and
+   Cloudflare D1 (SQLite family), Neon and Supabase (Postgres family), and
+   Aurora DSQL best-effort.
+3. **Safety model = empty / new targets only.** Restore refuses to run against
+   a connection that already has user tables, or demands an explicit typed
+   confirmation. It never silently merges into or overwrites populated schemas.
+   This keeps the first cut safe without building diff/merge/conflict handling.
+4. **Threshold-setting first (ADR-0050), restore second.** Done — ADR-0050
+   shipped the settings-persistence groundwork; this ADR is the follow-on.
+
+### Decision
+
+Mirror the dump pipeline's shape (a pure, I/O-free core in `dbboard-core`
+driven by the `DatabaseAdapter` trait, with the app supplying the file source
+and the progress/cancellation channel) for the read side, under
+`crates/dbboard-core/src/restore/`.
+
+1. **A two-layer statement pipeline.**
+   - **Layer 1 — `split_statements` (this slice, landed).** A lexical,
+     dialect-agnostic splitter that carves a script into statements, correctly
+     ignoring `;` inside string literals, quoted identifiers (double-quote and
+     backtick), dollar-quoted bodies, and line/block comments (nesting-aware).
+     Backslash escapes are honoured *only* inside Postgres `E'…'` strings, to
+     match `standard_conforming_strings` (the `pg_dump` default since PG 9.1,
+     and SQLite always). It classifies nothing and rejects nothing — it only
+     finds boundaries — so it is robust to any `.sql`.
+   - **Layer 2 — sqlparser classification (later slice).** Each split statement
+     is parsed with the dialect's grammar to label it (DDL / insert / other)
+     and to drive ordering and safety checks. Crucially it **downgrades on
+     parse failure**: a statement the grammar cannot parse is not dropped but
+     passed through as an opaque "run as-is" statement, so a best-effort restore
+     of hand-written or exotic SQL still executes. This reuses ADR-0046's
+     parsing approach but inverts its stance — read_only *fails closed*, restore
+     *degrades open*.
+
+2. **Two additive `DatabaseAdapter` methods + two `Capabilities` flags**,
+   following the ADR-0012 / ADR-0049 extension pattern (default impl returns
+   `DbError::Capability`, so pre-existing adapters compile unchanged and miss at
+   runtime, not build time):
+   - `execute(&self, sql: &str) -> DbResult<u64>` — run one write/DDL statement,
+     returning rows affected. Gated by `Capabilities::has_execute`.
+   - `execute_in_transaction(&self, statements: &[String]) -> DbResult<()>` —
+     run a batch atomically. Gated by `Capabilities::has_atomic_restore`.
+   Both are *additive*; the dump-only adapters keep working, and each adapter
+   opts in as its slice lands.
+
+3. **Empty-target gate via `list_tables`.** Before running, restore calls the
+   existing `list_tables`; a non-empty result blocks the run behind a typed
+   confirmation (safety decision 3). No new introspection surface is needed.
+
+4. **Per-engine transaction strategy.** Turso/libSQL and Postgres restore
+   atomically (`execute_in_transaction`). D1 has no multi-statement transaction
+   over its HTTP API, so it falls back to per-statement execution and reports
+   which statement failed. DSQL is best-effort `Continue`-on-error, matching how
+   dump degrades its DDL for DSQL.
+
+5. **A `RestoreState` UI state machine** mirroring `BackupState`
+   (Idle / Planning / Confirming / `Blocked { existing }` / Running / Done /
+   Failed), with the `Blocked` variant carrying the existing-table list for the
+   typed-confirmation dialog. The core stays I/O-free and testable with a fake
+   adapter, exactly like `run_dump`.
+
+Implementation lands in ordered TDD slices; this ADR is written at slice 1
+(the splitter) and updated only by appended follow-on ADRs, never rewritten.
+
+### Out of scope
+
+- **Merge / diff / conflict resolution.** Restore targets empty schemas; loading
+  into a populated database is explicitly refused rather than reconciled.
+- **Cross-engine translation.** A Postgres dump is not rewritten to run on
+  SQLite; restore runs a script against an engine of the matching family, same
+  as dump produces one per dialect.
+- **Selective / partial restore** (single-table, data-only, schema-only). The
+  first cut is whole-script.
+
+### Consequences
+
+- A new `restore/` module sibling to `dump/`, and two additive methods on the
+  adapter trait that every adapter may implement over successive slices.
+- Restore accepts foreign `.sql` (pg_dump, sqlite3) because Layer 1 is lexical
+  and Layer 2 degrades open — at the cost of not statically validating a script
+  before running it; failures surface per-statement at execution time.
+- Sibling `dbboard-web`: shares the *concept* (two-layer split, empty-target
+  safety) but not code; if web grows a restore path, coordinate the adapter
+  contract shape here.
