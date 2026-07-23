@@ -7,13 +7,23 @@
 
 ## 最終更新
 
-- 日付: 2026-07-23 (**論理バックアップ (ダンプ) ADR-0049 が PR #108 で develop 着地。**
-  次の user 側ボール = (1) この chore doc-sync PR のマージ、(2) 実地確認
-  (D1/Supabase/DSQL をダンプ・巨大 DB 警告・進捗/キャンセル・部分ダンプ)、
-  (3) 次テーマ = restore (別 ADR) か次の実利用摩擦。)
-- develop tip: PR #108 (backup dump, merge `190526e`) が最新。直前は
-  #104 (DL ページ) → #105 (MSI ショートカット) → #106 (ソート)。
+- 日付: 2026-07-23 (**バックアップ警告閾値の設定化 ADR-0050 が PR #110 で develop
+  着地。** 500k 定数を `ui-settings.toml` の永続設定に昇格 = メニューバー Backup
+  から変更・再起動後も保持。core 定数は dbboard-core に一本化のまま (config は
+  `Option<u64>`、`None` はアプリ層でフォールバック解決)。ついでに `set_theme` の
+  兄弟フィールド clobber バグも load-modify-save 化で解消。次の user 側ボール =
+  (1) この chore doc-sync PR のマージ、(2) backup の実地確認 (D1/Supabase/DSQL・
+  巨大 DB 警告・進捗/キャンセル・部分ダンプ)、(3) 本命 = **restore/import**
+  (ADR-0051、設計調査済) の着手。)
+- develop tip: PR #110 (backup 閾値設定化 ADR-0050, merge `6116d1e`) が最新。
+  直前は #108 (backup dump `190526e`) → #109 (doc-sync)。
   main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup)。
+- **✅ バックアップ警告閾値の設定化 (PR #110, ADR-0050):** メニューバー Theme 隣の
+  **Backup** サブメニュー (`DragValue`、下限 1) で warn 閾値を変更でき、
+  `ui-settings.toml` に保存され再起動後も保持。既定 500k は dbboard-core の定数に
+  一本化 (dbboard-config は非依存の `Option<u64>`、`None`→アプリ層でフォールバック)。
+  永続化を全て load-modify-save (`persist_ui_settings`) 経由にして theme↔閾値の
+  clobber を防止。i18n 3 キー全 11 ロケール。rust-reviewer Approve。
 - **✅ 論理バックアップ = dump-only (PR #108, ADR-0049):** クエリツールバーの
   **Backup…** で接続全体を 1 つの `.sql` にダンプ。SQLite 系 (Turso/D1) は
   `sqlite_master` 逐語 DDL、Postgres 系 (Neon/Supabase/Aurora DSQL) は catalog
