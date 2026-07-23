@@ -169,3 +169,8 @@ backup-done-failures = Não foi possível ler { $count } tabela(s), que foram ig
 backup-done-truncations = { $count } tabela(s) foram truncadas no meio.
 backup-failed-title = Falha no backup
 backup-close-button = Fechar
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Backup
+backup-threshold-label = Avisar acima de (linhas)
+backup-threshold-hint = Mostra o aviso de banco de dados grande antes do despejo quando o total de linhas excede este valor. Salvo em ui-settings.toml.

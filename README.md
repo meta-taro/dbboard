@@ -180,11 +180,13 @@ own dialect (verbatim DDL for the Turso/D1 SQLite family, reconstructed DDL
 for the Postgres family including Neon, Supabase, and Aurora DSQL). The dump
 streams `INSERT` batches straight to disk with keyset pagination, so a large
 database never buffers in memory. Before starting, a preflight row count warns
-if the database is bigger than a fixed threshold (500k rows) so a giant dump
+if the database is bigger than a threshold (500k rows by default, adjustable
+under the **Backup** menu and remembered across restarts) so a giant dump
 isn't kicked off blindly; while running, a window shows table/row progress and
 a percentage bar and can **Cancel** at any time (the file keeps the partial
 dump). It is **dump-only** — restore is deferred to a later release. See
-[ADR-0049](docs/decisions.md).
+[ADR-0049](docs/decisions.md) and [ADR-0050](docs/decisions.md) (the
+configurable threshold).
 
 ### Local Turso/libSQL (default)
 

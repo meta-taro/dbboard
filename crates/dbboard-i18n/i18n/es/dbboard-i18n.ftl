@@ -169,3 +169,8 @@ backup-done-failures = No se pudieron leer { $count } tabla(s) y se omitieron.
 backup-done-truncations = { $count } tabla(s) se truncaron a medias.
 backup-failed-title = Error en la copia de seguridad
 backup-close-button = Cerrar
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Copia de seguridad
+backup-threshold-label = Advertir a partir de (filas)
+backup-threshold-hint = Muestra la advertencia de base de datos grande antes del volcado cuando el total de filas supera este valor. Se guarda en ui-settings.toml.

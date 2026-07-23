@@ -168,3 +168,8 @@ backup-done-failures = 有 { $count } 個資料表無法讀取，已略過。
 backup-done-truncations = 有 { $count } 個資料表被中途截斷。
 backup-failed-title = 備份失敗
 backup-close-button = 關閉
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = 備份
+backup-threshold-label = 警告閾值（列數）
+backup-threshold-hint = 傾印前，當總列數超過此值時顯示大型資料庫警告。儲存至 ui-settings.toml。
