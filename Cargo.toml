@@ -10,6 +10,7 @@ members = [
     "crates/dbboard-d1",
     "crates/dbboard-i18n",
     "crates/dbboard-mcp",
+    "crates/dbboard-openai",
     "crates/dbboard-postgres",
     "crates/dbboard-server",
     "crates/dbboard-turso",
@@ -40,6 +41,10 @@ dbboard-ai = { path = "crates/dbboard-ai" }
 # `reqwest` (ADR-0023). The binary depends on this only when AI is
 # wired in (Stage 1 wiring follows in a sibling PR).
 dbboard-anthropic = { path = "crates/dbboard-anthropic" }
+# Second concrete AI provider — talks to the OpenAI Chat Completions API
+# (ADR-0052). Same dependency rule as dbboard-anthropic: depends on
+# dbboard-ai only, mirrors its provider + SSE-stream shape.
+dbboard-openai = { path = "crates/dbboard-openai" }
 # Local user configuration: connections.toml + OS keychain (ADR-0013).
 # The connection factory depends on this to wire env-vars with the
 # file-backed store into a single BackendConfig resolution.
