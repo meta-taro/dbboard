@@ -36,6 +36,9 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, 
 use sqlx::{Column as _, Either, Row as _, TypeInfo as _, ValueRef as _};
 
 mod dsql_auth;
+mod table_ddl;
+
+use table_ddl::{assemble_table_ddl, ColumnDef, ConstraintDef, SequenceDef, TableDdlParts};
 
 /// Where an adapter gets the `PgPool` to run the next statement.
 ///
@@ -118,6 +121,60 @@ const DESCRIBE_PK_SQL: &str = "SELECT kcu.column_name::TEXT \
      WHERE tc.constraint_type = 'PRIMARY KEY' \
        AND tc.table_schema = $1 AND tc.table_name = $2 \
      ORDER BY kcu.ordinal_position";
+
+/// Columns of one table for DDL reconstruction (ADR-0049), read from
+/// `pg_catalog` so the type comes back canonicalised by `format_type` and
+/// the default verbatim from `pg_get_expr` — richer than the
+/// `information_schema` view `describe_table` uses.
+const DDL_COLUMNS_SQL: &str = "SELECT a.attname::TEXT, \
+     format_type(a.atttypid, a.atttypmod)::TEXT, \
+     a.attnotnull, \
+     pg_get_expr(ad.adbin, ad.adrelid)::TEXT \
+     FROM pg_catalog.pg_attribute a \
+     JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+     WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
+     ORDER BY a.attnum";
+
+/// All constraints of one table, with names preserved and the body from
+/// `pg_get_constraintdef`. Ordered primary-key-first for conventional
+/// output; constraint order does not affect the DDL's validity.
+const DDL_CONSTRAINTS_SQL: &str = "SELECT con.conname::TEXT, pg_get_constraintdef(con.oid)::TEXT \
+     FROM pg_catalog.pg_constraint con \
+     JOIN pg_catalog.pg_class c ON c.oid = con.conrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND c.relname = $2 \
+     ORDER BY (con.contype <> 'p'), con.conname";
+
+/// Standalone indexes of one table — those *not* backing a constraint,
+/// which are recreated implicitly by their constraint. Body verbatim from
+/// `pg_get_indexdef`.
+const DDL_INDEXES_SQL: &str = "SELECT pg_get_indexdef(idx.indexrelid)::TEXT \
+     FROM pg_catalog.pg_index idx \
+     JOIN pg_catalog.pg_class ic ON ic.oid = idx.indexrelid \
+     JOIN pg_catalog.pg_class tc ON tc.oid = idx.indrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = tc.relnamespace \
+     WHERE n.nspname = $1 AND tc.relname = $2 \
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint con \
+                       WHERE con.conindid = idx.indexrelid) \
+     ORDER BY ic.relname";
+
+/// Sequences owned by a column of one table (a `SERIAL`/`GENERATED`
+/// column's backing sequence). Emitted ahead of the table. Aurora DSQL has
+/// no sequences, so this query is skipped there (ADR-0021).
+const DDL_SEQUENCES_SQL: &str = "SELECT sn.nspname::TEXT, s.relname::TEXT, \
+     format_type(seq.seqtypid, NULL)::TEXT, \
+     seq.seqstart, seq.seqincrement, seq.seqmin, seq.seqmax, seq.seqcache, seq.seqcycle \
+     FROM pg_catalog.pg_class s \
+     JOIN pg_catalog.pg_namespace sn ON sn.oid = s.relnamespace \
+     JOIN pg_catalog.pg_sequence seq ON seq.seqrelid = s.oid \
+     JOIN pg_catalog.pg_depend d ON d.objid = s.oid \
+       AND d.classid = 'pg_class'::regclass AND d.deptype = 'a' \
+     JOIN pg_catalog.pg_class t ON t.oid = d.refobjid \
+     JOIN pg_catalog.pg_namespace tn ON tn.oid = t.relnamespace \
+     WHERE s.relkind = 'S' AND tn.nspname = $1 AND t.relname = $2 \
+     ORDER BY s.relname";
 
 /// Connection parameters for a PostgreSQL-wire database.
 ///
@@ -415,6 +472,7 @@ impl DatabaseAdapter for PostgresAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_describe_table: true,
+            has_table_ddl: true,
             ..Capabilities::default()
         }
     }
@@ -511,6 +569,106 @@ impl DatabaseAdapter for PostgresAdapter {
             columns,
             primary_key,
         })
+    }
+
+    async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
+        // Unqualified `TableInfo` defaults to `public`, matching
+        // `describe_table` and where unqualified DDL lands.
+        let schema = table.schema.as_deref().unwrap_or("public");
+        let pool = self.pool.current();
+
+        // Columns first: an empty set means the table does not exist
+        // (pg_catalog returns no rows rather than erroring), surfaced the
+        // same way `describe_table` reports a missing relation.
+        let column_rows = sqlx::query(DDL_COLUMNS_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        if column_rows.is_empty() {
+            return Err(DbError::Query(format!(
+                "relation \"{schema}.{}\" does not exist",
+                table.name
+            )));
+        }
+        let columns = column_rows
+            .iter()
+            .map(|row| -> DbResult<ColumnDef> {
+                Ok(ColumnDef {
+                    name: row.try_get(0).map_err(|e| classify_error(&e))?,
+                    type_name: row.try_get(1).map_err(|e| classify_error(&e))?,
+                    not_null: row.try_get(2).map_err(|e| classify_error(&e))?,
+                    default_expr: row.try_get(3).map_err(|e| classify_error(&e))?,
+                })
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+
+        let constraint_rows = sqlx::query(DDL_CONSTRAINTS_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        let constraints = constraint_rows
+            .iter()
+            .map(|row| -> DbResult<ConstraintDef> {
+                Ok(ConstraintDef {
+                    name: row.try_get(0).map_err(|e| classify_error(&e))?,
+                    def: row.try_get(1).map_err(|e| classify_error(&e))?,
+                })
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+
+        let index_rows = sqlx::query(DDL_INDEXES_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        let indexes = index_rows
+            .iter()
+            .map(|row| row.try_get::<String, _>(0).map_err(|e| classify_error(&e)))
+            .collect::<DbResult<Vec<_>>>()?;
+
+        // Aurora DSQL has no sequences (ADR-0021): skip the query rather
+        // than depend on it returning empty against a catalog that may not
+        // model `pg_sequence`. Other flavors run it.
+        let sequences = if self.flavor == FLAVOR_AURORA_DSQL {
+            Vec::new()
+        } else {
+            let seq_rows = sqlx::query(DDL_SEQUENCES_SQL)
+                .bind(schema)
+                .bind(&table.name)
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| classify_error(&e))?;
+            seq_rows
+                .iter()
+                .map(|row| -> DbResult<SequenceDef> {
+                    Ok(SequenceDef {
+                        schema: row.try_get(0).map_err(|e| classify_error(&e))?,
+                        name: row.try_get(1).map_err(|e| classify_error(&e))?,
+                        type_name: row.try_get(2).map_err(|e| classify_error(&e))?,
+                        start: row.try_get(3).map_err(|e| classify_error(&e))?,
+                        increment: row.try_get(4).map_err(|e| classify_error(&e))?,
+                        min_value: row.try_get(5).map_err(|e| classify_error(&e))?,
+                        max_value: row.try_get(6).map_err(|e| classify_error(&e))?,
+                        cache: row.try_get(7).map_err(|e| classify_error(&e))?,
+                        cycle: row.try_get(8).map_err(|e| classify_error(&e))?,
+                    })
+                })
+                .collect::<DbResult<Vec<_>>>()?
+        };
+
+        Ok(assemble_table_ddl(&TableDdlParts {
+            schema: schema.to_owned(),
+            table: table.name.clone(),
+            columns,
+            constraints,
+            indexes,
+            sequences,
+        }))
     }
 
     async fn query(&self, sql: &str) -> DbResult<QueryResult> {
@@ -908,6 +1066,21 @@ mod tests {
             flavor: FLAVOR_POSTGRES,
         };
         assert!(adapter.capabilities().has_describe_table);
+    }
+
+    /// The DDL-reconstruction capability (ADR-0049) is advertised by every
+    /// Postgres-wire flavor, including Aurora DSQL — DSQL degrades the
+    /// *contents* (no FK/sequence sections), not the capability itself.
+    #[tokio::test]
+    async fn capabilities_advertise_table_ddl() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_AURORA_DSQL] {
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool.clone()),
+                flavor,
+            };
+            assert!(adapter.capabilities().has_table_ddl);
+        }
     }
 
     /// A `Static` handle hands back exactly the pool it wraps. `max_connections`

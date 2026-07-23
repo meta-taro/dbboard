@@ -147,3 +147,25 @@ edit-set-null = Establecer NULL
 edit-revert-cell = Revertir celda
 edit-cell-hint = Doble clic para editar · clic derecho para NULL
 edit-save-unexpected-rows = Guardado detenido: se esperaba 1 fila, { $rows } afectadas
+
+# ADR-0049 backup (logical dump).
+backup-button = Copia de seguridad…
+backup-button-hint = Volcar las tablas de esta base de datos a un archivo SQL
+backup-planning = Preparando la copia de seguridad…
+backup-warn-title = Base de datos grande
+backup-warn-body = Esta base de datos tiene { $rows } filas en todas sus tablas. El volcado puede tardar y generar un archivo grande.
+backup-warn-continue = Hacer copia igualmente
+backup-warn-cancel = Cancelar
+backup-dialog-title = Guardar copia de seguridad como
+backup-progress-title = Creando copia de seguridad
+backup-progress-table = Tabla { $done } de { $total }
+backup-progress-rows = { $done } / { $total } filas
+backup-progress-current = Actual: { $table }
+backup-cancel-button = Cancelar
+backup-done-title = Copia de seguridad completada
+backup-done-summary = Se volcaron { $tables } tabla(s), { $rows } filas.
+backup-done-cancelled = Copia de seguridad cancelada — el archivo contiene un volcado parcial.
+backup-done-failures = No se pudieron leer { $count } tabla(s) y se omitieron.
+backup-done-truncations = { $count } tabla(s) se truncaron a medias.
+backup-failed-title = Error en la copia de seguridad
+backup-close-button = Cerrar

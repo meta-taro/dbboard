@@ -147,3 +147,25 @@ edit-set-null = Definir NULL
 edit-revert-cell = Reverter célula
 edit-cell-hint = Clique duplo para editar · clique direito para NULL
 edit-save-unexpected-rows = Salvamento interrompido: esperava 1 linha, { $rows } afetadas
+
+# ADR-0049 backup (logical dump).
+backup-button = Backup…
+backup-button-hint = Exportar as tabelas deste banco de dados para um arquivo SQL
+backup-planning = Preparando o backup…
+backup-warn-title = Banco de dados grande
+backup-warn-body = Este banco de dados tem { $rows } linhas em todas as suas tabelas. O despejo pode demorar e gerar um arquivo grande.
+backup-warn-continue = Fazer backup mesmo assim
+backup-warn-cancel = Cancelar
+backup-dialog-title = Salvar backup como
+backup-progress-title = Fazendo backup
+backup-progress-table = Tabela { $done } de { $total }
+backup-progress-rows = { $done } / { $total } linhas
+backup-progress-current = Atual: { $table }
+backup-cancel-button = Cancelar
+backup-done-title = Backup concluído
+backup-done-summary = { $tables } tabela(s), { $rows } linhas exportadas.
+backup-done-cancelled = Backup cancelado — o arquivo contém um despejo parcial.
+backup-done-failures = Não foi possível ler { $count } tabela(s), que foram ignoradas.
+backup-done-truncations = { $count } tabela(s) foram truncadas no meio.
+backup-failed-title = Falha no backup
+backup-close-button = Fechar
