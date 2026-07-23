@@ -13,14 +13,22 @@
 //!   splitter that carves a script into individual statements, correctly
 //!   ignoring `;` inside strings, quoted identifiers, dollar-quoted bodies,
 //!   and comments. It classifies nothing and rejects nothing.
-//! - **Layer 2 (a later slice)**: an sqlparser-based classifier that labels
-//!   each statement and downgrades gracefully when a statement will not
-//!   parse, so a best-effort restore of hand-written SQL still runs.
+//! - **Layer 2 — [`classify_script`]**: an sqlparser-based classifier that
+//!   labels each statement and downgrades gracefully when a statement will
+//!   not parse, so a best-effort restore of hand-written SQL still runs.
 //!
-//! This slice lands Layer 1 only.
+//! The [`run_restore`] orchestrator drives both layers against a
+//! [`DatabaseAdapter`](crate::DatabaseAdapter): it enforces the empty-target
+//! safety gate and applies the runnable statements either atomically or
+//! per-statement, depending on the adapter's capabilities.
 
 mod plan;
+mod run;
 mod split;
 
 pub use plan::{classify_script, RestoreStatement, StatementKind};
+pub use run::{
+    plan_restore, run_restore, OnError, RestoreControl, RestoreError, RestoreOptions,
+    RestoreOutcome, RestorePlan, RestoreProgress, RestoreResult, StatementFailure,
+};
 pub use split::split_statements;
