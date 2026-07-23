@@ -170,6 +170,25 @@ backup-done-truncations = { $count } Tabelle(n) wurden vorzeitig abgeschnitten.
 backup-failed-title = Sicherung fehlgeschlagen
 backup-close-button = Schließen
 
+# ADR-0051: logische Wiederherstellung (Import).
+restore-button = Wiederherstellen…
+restore-button-hint = Eine SQL-Datei auf diese Datenbank anwenden
+restore-planning = Datei wird gelesen…
+restore-dialog-title = SQL-Datei zum Wiederherstellen auswählen
+restore-warn-title = Ziel ist nicht leer
+restore-warn-body = Diese Datenbank enthält bereits { $tables } Tabelle(n). Das Wiederherstellen von { $statements } Anweisung(en) kann fehlschlagen oder vorhandene Daten überschreiben.
+restore-warn-continue = Trotzdem wiederherstellen
+restore-warn-cancel = Abbrechen
+restore-progress-title = Wiederherstellung läuft
+restore-progress-statements = Anweisung { $done } von { $total }
+restore-cancel-button = Abbrechen
+restore-done-title = Wiederherstellung abgeschlossen
+restore-done-summary = { $statements } Anweisung(en) angewendet: { $ddl } Schema, { $data } Daten.
+restore-done-cancelled = Wiederherstellung abgebrochen — das Ziel enthält eine unvollständige Wiederherstellung.
+restore-done-failures = { $count } Anweisung(en) sind fehlgeschlagen und wurden übersprungen.
+restore-close-button = Schließen
+restore-failed-title = Wiederherstellung fehlgeschlagen
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = Sicherung
 backup-threshold-label = Warnen ab (Zeilen)

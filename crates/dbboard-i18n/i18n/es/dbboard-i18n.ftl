@@ -170,6 +170,25 @@ backup-done-truncations = { $count } tabla(s) se truncaron a medias.
 backup-failed-title = Error en la copia de seguridad
 backup-close-button = Cerrar
 
+# ADR-0051: restauración lógica (importación).
+restore-button = Restaurar…
+restore-button-hint = Aplicar un archivo SQL a esta base de datos
+restore-planning = Leyendo el archivo…
+restore-dialog-title = Elegir un archivo SQL para restaurar
+restore-warn-title = El destino no está vacío
+restore-warn-body = Esta base de datos ya tiene { $tables } tabla(s). Restaurar { $statements } instrucción(es) puede fallar o sobrescribir datos existentes.
+restore-warn-continue = Restaurar igualmente
+restore-warn-cancel = Cancelar
+restore-progress-title = Restaurando
+restore-progress-statements = Instrucción { $done } de { $total }
+restore-cancel-button = Cancelar
+restore-done-title = Restauración completada
+restore-done-summary = Se aplicaron { $statements } instrucción(es): { $ddl } de esquema, { $data } de datos.
+restore-done-cancelled = Restauración cancelada — el destino contiene una restauración parcial.
+restore-done-failures = { $count } instrucción(es) fallaron y se omitieron.
+restore-close-button = Cerrar
+restore-failed-title = Error en la restauración
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = Copia de seguridad
 backup-threshold-label = Advertir a partir de (filas)

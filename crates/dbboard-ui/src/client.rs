@@ -75,6 +75,9 @@ pub(crate) fn request_for(command: &Command) -> HttpRequest {
         Command::PlanBackup | Command::StartBackup { .. } | Command::CancelBackup => {
             unreachable!("Backup commands are handled in the worker before request_for")
         }
+        Command::PlanRestore { .. } | Command::StartRestore { .. } | Command::CancelRestore => {
+            unreachable!("Restore commands are handled in the worker before request_for")
+        }
     }
 }
 

@@ -169,6 +169,25 @@ backup-done-truncations = 有 { $count } 個資料表被中途截斷。
 backup-failed-title = 備份失敗
 backup-close-button = 關閉
 
+# ADR-0051：邏輯還原（匯入）。
+restore-button = 還原…
+restore-button-hint = 將 SQL 檔案套用到此資料庫
+restore-planning = 正在讀取檔案…
+restore-dialog-title = 選擇要還原的 SQL 檔案
+restore-warn-title = 目標非空
+restore-warn-body = 此資料庫已有 { $tables } 個資料表。還原 { $statements } 條陳述式可能會失敗或覆寫現有資料。
+restore-warn-continue = 仍然還原
+restore-warn-cancel = 取消
+restore-progress-title = 正在還原
+restore-progress-statements = 陳述式 { $done } / { $total }
+restore-cancel-button = 取消
+restore-done-title = 還原完成
+restore-done-summary = 已套用 { $statements } 條陳述式：{ $ddl } 條結構，{ $data } 條資料。
+restore-done-cancelled = 還原已取消 — 目標包含部分還原內容。
+restore-done-failures = 有 { $count } 條陳述式失敗，已略過。
+restore-close-button = 關閉
+restore-failed-title = 還原失敗
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = 備份
 backup-threshold-label = 警告閾值（列數）
