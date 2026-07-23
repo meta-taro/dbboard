@@ -6339,3 +6339,90 @@ Implementation lands in ordered TDD slices; this ADR is written at slice 1
 - Sibling `dbboard-web`: shares the *concept* (two-layer split, empty-target
   safety) but not code; if web grows a restore path, coordinate the adapter
   contract shape here.
+
+## ADR-0052 — OpenAI (ChatGPT) provider
+
+- **Status**: Accepted 2026-07-23
+- **Builds on**: ADR-0023 (the `AiProvider` trait + `dbboard-anthropic` this
+  mirrors), ADR-0025 (the `ai-providers.toml` store + settings admin this adds a
+  second `AiProviderKind` variant to), ADR-0026 (the streaming `StreamEvent`
+  surface this implements for a second wire protocol), ADR-0027 (the
+  `(provider_id, model_id)` identity stamped on history)
+
+### Context
+
+The AI layer has shipped as a single-provider design since ADR-0023: one
+`AiProvider` trait, one concrete crate (`dbboard-anthropic`), and an
+`ai-providers.toml` store whose `kind` discriminator has had exactly one variant
+(`anthropic`). ADR-0025 §Out-of-scope explicitly deferred `openai`/`ollama` to a
+follow-up. This is that follow-up: the maintainer wants ChatGPT selectable
+alongside Claude, which is the whole reason the provider layer was built as a
+trait rather than a hard-coded client.
+
+Adding a second provider exercises every seam the earlier ADRs designed for it —
+the trait is already object-safe behind `Arc<dyn AiProvider>`, the store already
+`serde(tag = "kind")`-dispatches, the switcher already rebuilds providers from a
+`kind`. The only genuinely new surface is (a) a second wire protocol and (b) a
+`kind` *selector* in the settings UI, which until now had nothing to choose
+between.
+
+### Decision
+
+1. **New crate `dbboard-openai`**, sibling to `dbboard-anthropic`, depending on
+   `dbboard-ai` only (same dependency rule as ADR-0023 Decision 1 — never on
+   `dbboard-core` or `dbboard-ui` directly).
+
+2. **Chat Completions API** (`POST /v1/chat/completions`), not the newer
+   Responses API. Chat Completions is the stable, widely-compatible surface and
+   maps one-to-one onto the existing explain/suggest shape: a `system` message
+   plus a `user` message, and `usage.prompt_tokens` / `usage.completion_tokens`
+   for the token meter. The Responses API's extra machinery buys nothing for
+   two single-turn prompts.
+
+3. **Full streaming parity.** The provider advertises
+   `AiCapabilities { has_streaming: true }` and implements a real SSE parser,
+   so ChatGPT streams token-by-token exactly like Claude. OpenAI's stream
+   differs from Anthropic's: plain `data:` frames with no `event:` type, a
+   `data: [DONE]` sentinel terminator, and `usage` delivered only when the
+   request sets `stream_options.include_usage = true` (a final choices-empty
+   frame). The parser normalizes all of this into the same `StreamEvent`
+   sequence the UI already consumes.
+
+4. **Default model `gpt-4o`** when the entry's `model` field is empty, mirroring
+   Anthropic's `with_default_model`. Any model id typed into the settings form
+   overrides it. `gpt-4o` is chosen for broad account availability; a newer
+   model that 400s on an account without access would be a worse default.
+
+5. **Auth via `Authorization: Bearer <key>`** (OpenAI's scheme) rather than
+   Anthropic's `x-api-key` + `anthropic-version` headers. The key still lives
+   only in the OS keyring, referenced by `keyring_api_key_ref`; it never appears
+   in `Debug`, logs, or errors, and TLS stays pinned to rustls with `https_only`
+   (localhost-exempt for wiremock tests) exactly as ADR-0023.
+
+6. **`AiProviderKind::OpenAi { model, keyring_api_key_ref }`** added to
+   `ai-providers.toml` — additive, same shape as `Anthropic`. The settings Add
+   and Edit forms gain a kind selector (they previously hard-coded the single
+   Anthropic variant); the reconcile/keyring-ref plumbing extends to the new
+   variant.
+
+### Out of scope
+
+- **Function calling / tools.** `has_function_calling` stays `false` for both
+  providers; that is a later, cross-provider concern.
+- **Azure OpenAI, Ollama, and other OpenAI-compatible endpoints.** The
+  `base_url` override exists (tests use it) but no UI surfaces it; a
+  configurable endpoint is a separate decision.
+- **Per-provider capability divergence in the UI.** Both providers stream and
+  neither does tools, so the panel needs no capability-conditional rendering
+  beyond what ADR-0026 already built.
+
+### Consequences
+
+- A second concrete provider crate proves the ADR-0023 trait boundary holds:
+  the only files that learned OpenAI exists are the new crate, the `kind` enum
+  and its drafts, the binary's `build_provider_for_kind`, and the settings UI's
+  kind selector. The worker, panel, history, and switcher are untouched.
+- Sibling `dbboard-web`: shares the *concept* (provider trait, `kind`-dispatched
+  store) but not code. If web adds ChatGPT, keep the `kind` string (`openai`)
+  and the keyring-ref shape aligned so an exported `ai-providers.toml` reads the
+  same on both.
