@@ -1065,6 +1065,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbboard-openai"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "dbboard-ai",
+ "futures-util",
+ "reqwest",
+ "reqwest-eventsource",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "dbboard-postgres"
 version = "0.3.0"
 dependencies = [
