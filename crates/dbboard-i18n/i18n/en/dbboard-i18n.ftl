@@ -302,3 +302,8 @@ backup-done-failures = { $count } table(s) could not be read and were skipped.
 backup-done-truncations = { $count } table(s) were truncated part-way.
 backup-failed-title = Backup failed
 backup-close-button = Close
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Backup
+backup-threshold-label = Warn above (rows)
+backup-threshold-hint = Show the large-database warning before dumping when the total row count exceeds this. Saved to ui-settings.toml.

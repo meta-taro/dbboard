@@ -221,10 +221,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // default (Auto) and a `None` path rather than aborting. A malformed
     // file degrades to the default inside `load_ui_settings`.
     let ui_settings_path = default_ui_settings_path().ok();
-    let theme = ui_settings_path
+    let ui_settings = ui_settings_path
         .as_deref()
-        .map_or_else(UiSettingsFile::default, load_ui_settings)
-        .theme;
+        .map_or_else(UiSettingsFile::default, load_ui_settings);
+    let theme = ui_settings.theme;
+    // ADR-0050: the persisted backup warn threshold, if any. `None` means the
+    // user never changed it, so `DesktopApp::new` falls back to the inner
+    // app's built-in default — the core constant stays single-sourced.
+    let backup_warn_rows = ui_settings.backup_warn_rows;
 
     let result = eframe::run_native(
         "dbboard",
@@ -261,6 +265,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 update,
                 theme,
                 ui_settings_path,
+                backup_warn_rows,
             )))
         }),
     );
@@ -313,10 +318,17 @@ struct DesktopApp {
     /// Current colour-theme choice (ADR-0041). Drives the ✓ in the Theme
     /// menu and is written to [`Self::ui_settings_path`] on every change.
     theme: ThemePreference,
-    /// Where to persist [`Self::theme`]. `None` when the OS reported no
-    /// per-user config dir — the Theme menu still works for the session,
-    /// the choice just is not remembered across restarts.
+    /// Where to persist [`Self::theme`] and [`Self::backup_warn_rows`].
+    /// `None` when the OS reported no per-user config dir — the menus still
+    /// work for the session, the choices just are not remembered across
+    /// restarts.
     ui_settings_path: Option<PathBuf>,
+    /// Editable backup large-database warn threshold in total rows
+    /// (ADR-0050). Seeded from the persisted `ui-settings.toml` value or the
+    /// inner app's built-in default; the Backup menu edits it, pushes it to
+    /// the inner app, and persists it. Held here (not just on the inner app)
+    /// because persistence + the menu bar live on this wrapper.
+    backup_warn_rows: u64,
     /// Parsed-Markdown cache for the update notice's release notes
     /// (ADR-0043). `egui_commonmark` re-parses `&str` every frame otherwise;
     /// the cache lives on the app so an open Help menu stays cheap. Empty
@@ -326,13 +338,20 @@ struct DesktopApp {
 
 impl DesktopApp {
     fn new(
-        inner: DbboardApp,
+        mut inner: DbboardApp,
         admin: Option<Arc<Mutex<ConnectionAdmin>>>,
         ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>,
         update: update_check::SharedUpdateState,
         theme: ThemePreference,
         ui_settings_path: Option<PathBuf>,
+        backup_warn_rows_override: Option<u64>,
     ) -> Self {
+        // ADR-0050: resolve the threshold once. A persisted value wins; with
+        // none, fall back to the inner app's built-in default (which it
+        // seeded from the core constant) rather than re-importing it here.
+        let backup_warn_rows =
+            backup_warn_rows_override.unwrap_or_else(|| inner.backup_warn_rows());
+        inner.set_backup_warn_rows(backup_warn_rows);
         Self {
             inner,
             connections: ConnectionsView::new(),
@@ -343,6 +362,7 @@ impl DesktopApp {
             update,
             theme,
             ui_settings_path,
+            backup_warn_rows,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
@@ -387,10 +407,59 @@ impl DesktopApp {
             return;
         }
         self.theme = pref;
-        if let Some(path) = &self.ui_settings_path {
-            if let Err(e) = save_ui_settings(path, &UiSettingsFile::with_theme(pref)) {
-                eprintln!("dbboard: could not persist theme preference: {e}");
+        // Load-modify-save so a persisted backup threshold (ADR-0050) is not
+        // clobbered — `UiSettingsFile::with_theme` would reset every sibling
+        // field to its default.
+        self.persist_ui_settings(|file| file.theme = pref);
+    }
+
+    /// Render the Backup settings submenu (ADR-0050): a numeric editor for
+    /// the large-database warn threshold. A change applies live to the inner
+    /// app (so the next preflight uses it) and persists to `ui-settings.toml`
+    /// when the interaction settles.
+    fn backup_settings_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button(t!("backup-settings-menu"), |ui| {
+            ui.label(t!("backup-threshold-label"));
+            let resp = ui
+                .add(
+                    egui::DragValue::new(&mut self.backup_warn_rows)
+                        .speed(1000.0)
+                        // Floor at 1: a 0 threshold would warn on every
+                        // non-empty dump, which is never the intent here.
+                        .range(1..=u64::MAX),
+                )
+                .on_hover_text(t!("backup-threshold-hint"));
+            if resp.changed() {
+                // Reflect the edit immediately so a Backup started this frame
+                // already compares against the new value.
+                self.inner.set_backup_warn_rows(self.backup_warn_rows);
             }
+            // Persist the moment the value settles — a keyboard edit commits
+            // (`changed` while not mid-drag) or a drag is released. Guarding
+            // on `!dragged()` keeps a scrub from writing the file every frame,
+            // while `drag_stopped()` catches the release; neither depends on
+            // the widget losing focus, so quitting right after an edit cannot
+            // drop it.
+            if (resp.changed() && !resp.dragged()) || resp.drag_stopped() {
+                let rows = self.backup_warn_rows;
+                self.persist_ui_settings(|file| file.backup_warn_rows = Some(rows));
+            }
+        });
+    }
+
+    /// Persist a change to `ui-settings.toml` without clobbering sibling
+    /// fields (ADR-0050). Loads the current file (or default), applies
+    /// `edit`, and writes it back atomically. Best-effort: a missing config
+    /// path or a write failure is logged, never surfaced — a settings write
+    /// must not block the UI. A no-op when no config dir is known.
+    fn persist_ui_settings(&self, edit: impl FnOnce(&mut UiSettingsFile)) {
+        let Some(path) = &self.ui_settings_path else {
+            return;
+        };
+        let mut file = load_ui_settings(path);
+        edit(&mut file);
+        if let Err(e) = save_ui_settings(path, &file) {
+            eprintln!("dbboard: could not persist ui settings: {e}");
         }
     }
 }
@@ -481,6 +550,7 @@ impl eframe::App for DesktopApp {
                 }
                 language_menu(ui);
                 self.theme_menu(ui);
+                self.backup_settings_menu(ui);
                 help_menu(ui, &self.update, &mut self.commonmark_cache);
             });
         });
