@@ -5,6 +5,41 @@
 
 ## 最終更新
 
+- 日付: 2026-07-22 (**論理バックアップ (ダンプ) を実装 = ADR-0049。** 経緯:
+  maintainer の「バックアップ (ダンプ/リストア) があってもいい、巨大 DB では
+  非現実なら警告、実行中は進行 % / バーも、完了後は md-business 用の検証シート」
+  という要望。仕様不明時は止めて確認する方針で事前に合意した設計: v1 = **prod3
+  完全 (dump-only、restore は将来 ADR)**、対応 = Turso/D1 (SQLite) + Postgres 系
+  (Neon/Supabase/Aurora DSQL、フル DDL 再構築)、閾値 = 定数 `DEFAULT_BACKUP_WARN_
+  ROWS = 500_000` (後で設定化)。**実装スライス a→f:** (a) `dbboard-core::dump`
+  = 純直列化 (Value→SQL リテラル + `INSERT` 組立、`write_back` の
+  `quote_ident`/`quote_str`/`SqlDialect` を再利用、I/O・adapter 非依存でユニット
+  テスト) + (b) adapter の `table_ddl` trait メソッド (SQLite は
+  `sqlite_master.sql` 逐語、Postgres 系は catalog からカラム/PK/unique/check/
+  index/FK/sequence を依存順に再構築、DSQL は FK/sequence 空で degrade) + (c1)
+  keyset ページングでの全行読み出し (PK 順、PK 無しは rowid/ctid/OFFSET) を
+  ファイルシンクへ直書き + (c2) preflight `COUNT(*)` 合算で進行総数 + 閾値
+  warn-and-allow + (d) `run_dump` の進捗コールバック/キャンセル + (e) UI 配線 +
+  (f) i18n 11 ロケール + docs。**UI (slice e、commit `22e8533`):** `BackupState`
+  を純粋な状態機械 (Idle/Planning/Confirming/ReadyToSave/Running/Done/Failed) に
+  設計 = drain_replies は状態遷移のみ、UI 専用の 2 ステップ (警告モーダル =
+  Confirming、保存ダイアログ = ReadyToSave) は render 経路 (CSV export の
+  ブロッキング rfd と同型) に置き、egui/ファイルダイアログ無しで 12 テスト。
+  worker に PlanBackup/StartBackup/CancelBackup の 3 arm を追加、AI streaming
+  (`spawn_ai_task` + `CancellationToken`) をテンプレに `tokio::spawn(backup::
+  run_backup)`。`tokio::spawn` の Send 要件で `DumpSink: Send` supertrait を追加。
+  進行ウィンドウは table/row カウンタ + `ProgressBar::show_percentage` + Cancel
+  (ファイルは部分ダンプを保持)、完了サマリは skip/truncate/cancel を表出。binary
+  は既に `SchemaSource` を注入済 = apps/dbboard 無改変で Backup ボタンが出る。
+  **slice f (本セッション):** 20 個の `backup-*` キーを en 以外 10 ロケール
+  (de/es/fr/it/ja/ko/pt-BR/ru/zh-CN/zh-TW) に翻訳追加、Fluent プレースホルダ
+  (`{ $rows }`/`{ $done }`/`{ $total }`/`{ $table }`/`{ $tables }`/`{ $count }`)
+  を逐語保持、全ロケール key parity を diff で確認 (各 20 = en と一致)。
+  `cargo test -p dbboard-i18n` 緑 = ftl パース OK。docs = roadmap の Phase 5 に
+  backup 項目 tick + README の Run 節に Backup 段落 + 本ファイル + next-actions。
+  ADR-0049 は既に Accepted 2026-07-22 で記載済 (append-only、無改変)。
+  **未了:** md-business 用の**検証シート**作成 (機能完成後)、post-merge の
+  chore doc-sync。dbboard-ui 304 tests / dbboard-core 147 tests。)
 - 日付: 2026-07-22 (**DL ページ live 化 (#104) + 結果グリッドの実利用摩擦 2 件を
   補完: マルチカラムソート (#106) と MSI ショートカット (#105)。** 経緯: v0.3.0
   リリース後、in-app update 通知が「download page」へリンクするのに実ページが
