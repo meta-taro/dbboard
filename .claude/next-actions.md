@@ -7,17 +7,26 @@
 
 ## 最終更新
 
-- 日付: 2026-07-23 (**バックアップ警告閾値の設定化 ADR-0050 が PR #110 で develop
-  着地。** 500k 定数を `ui-settings.toml` の永続設定に昇格 = メニューバー Backup
-  から変更・再起動後も保持。core 定数は dbboard-core に一本化のまま (config は
-  `Option<u64>`、`None` はアプリ層でフォールバック解決)。ついでに `set_theme` の
-  兄弟フィールド clobber バグも load-modify-save 化で解消。次の user 側ボール =
-  (1) この chore doc-sync PR のマージ、(2) backup の実地確認 (D1/Supabase/DSQL・
-  巨大 DB 警告・進捗/キャンセル・部分ダンプ)、(3) 本命 = **restore/import**
-  (ADR-0051、設計調査済) の着手。)
-- develop tip: PR #110 (backup 閾値設定化 ADR-0050, merge `6116d1e`) が最新。
-  直前は #108 (backup dump `190526e`) → #109 (doc-sync)。
-  main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup)。
+- 日付: 2026-07-23 (**論理リストア/インポート ADR-0051 が PR #112 で develop 着地。**
+  ADR-0049 ダンプの読み側 = ツールバー **Restore…** で `.sql` を現接続へ流し込む。
+  6 スライス (core 2層パイプライン `split_statements`+`classify_script` → 空
+  ターゲットゲート付きオーケストレータ → 全 3 エンジンの execute/transaction →
+  `RestoreState` UI) + ADR + README。**空 DB 限定** (既存ありは強制確認モーダル)、
+  同ファミリのみ (クロスエンジン変換なし)、foreign `pg_dump`/`sqlite3 .dump` も可、
+  Aurora DSQL と D1 は per-statement fallback。i18n 17 キー全 11 ロケール。**今の
+  user 側ボール = (1) この chore doc-sync PR (`chore/post-pr112-doc-sync`) のマージ、
+  (2) restore の実地確認 (下記)、(3) 次の実利用摩擦テーマの選択。**)
+- develop tip: PR #112 (restore/import ADR-0051, merge `e624bbb`) が最新。
+  直前は #110 (backup 閾値設定化 ADR-0050 `6116d1e`) → #111 (doc-sync)。
+  main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup + restore)。
+- **✅ 論理リストア/インポート (PR #112, ADR-0051):** ツールバー **Restore…** で
+  `.sql` を現接続へ流し込む (ADR-0049 backup の読み側)。core = 字句スプリッタ
+  `split_statements` + sqlparser `classify_script` の 2 層 (他形式 `.sql` も受容、
+  パース不能文は degrade-open)、`run_restore` が空ターゲットゲート + エンジン別
+  トランザクション。Turso/Postgres = アトミック、**Aurora DSQL / D1 = per-statement
+  fallback**。UI = `BackupState` 鏡写しの `RestoreState` + worker plumbing、
+  進捗/確認/完了/失敗パネル。**空 DB 限定** = 既存テーブルありは強制確認 (merge/diff
+  なし)。i18n 17 キー全 11 ロケール。全ゲート green。**実地確認は user 側ボール (下記)。**
 - **✅ バックアップ警告閾値の設定化 (PR #110, ADR-0050):** メニューバー Theme 隣の
   **Backup** サブメニュー (`DragValue`、下限 1) で warn 閾値を変更でき、
   `ui-settings.toml` に保存され再起動後も保持。既定 500k は dbboard-core の定数に
@@ -46,11 +55,14 @@
   - **MSI ショートカット (PR #105):** スタートメニュー + デスクトップ。非アドバタイズ
     型 (Shortcut + HKCU RegistryValue key-path + RemoveFolder)、ICE69 回避のため
     Binaries フィーチャに同居。アンインストールで削除。
-- **▶ 今の user 側ボール:** (1) この chore doc-sync PR (`chore/post-pr108-doc-sync`)
-  を push → PR 作成待ち。(2) backup の実地確認 = D1/Supabase/DSQL をダンプ、巨大 DB
-  警告 (500k)、進捗バー/キャンセル (部分ダンプ)、`.sql` の再取り込み。検証は
-  `.claude/verification/adr-0049-backup.md` の 33 ケースを md-business に。(3) 次の
-  実利用摩擦テーマ、または backup の restore (別 ADR) の選択 (下記 候補)。
+- **▶ 今の user 側ボール:** (1) この chore doc-sync PR (`chore/post-pr112-doc-sync`)
+  を push → PR 作成待ち。(2) **restore の実地確認** = 空 DB への取り込み (Turso/D1/
+  Postgres 系)、既存テーブルありでの強制確認モーダル、進捗/キャンセル (部分適用保持)、
+  foreign `pg_dump`/`sqlite3 .dump` の取り込み、ADR-0049 backup で出した `.sql` の
+  往復。(3) backup 側の実地確認も未消化なら継続 (D1/Supabase/DSQL・500k 警告・部分
+  ダンプ)。(4) 次の実利用摩擦テーマの選択 (下記 候補)。**検証シート = restore/backup
+  とも md-business 用は「ちょい待ち」で保留中** (`.claude/verification/adr-0049-
+  backup.md` の 33 ケースは既存、restore 用シートは未着手)。
 - **MSI アンインストールの残留 (user 質問への回答済み):** MSI は exe/PATH/フォルダ/
   ARP エントリを削除するが、`%APPDATA%\dbboard\dbboard\` の設定ファイルと Windows
   資格情報マネージャーのエントリは残す (仕様どおり)。クリーンアップ手順は口頭提示済。
