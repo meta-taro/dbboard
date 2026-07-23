@@ -5,6 +5,30 @@
 
 ## 最終更新
 
+- 日付: 2026-07-23 (**バックアップ警告閾値を設定化 = ADR-0050、PR #110 マージ済
+  (develop tip `6116d1e`)。** 経緯: maintainer の「500k 閾値はソフト側で利用者が
+  変えられた方がいい」+「restore より先に単独で (設定永続化の基盤を先に用意)」。
+  **設計 = 既存 `ui-settings.toml` (ADR-0041) を再利用、新ストアなし:**
+  `UiSettingsFile` に `backup_warn_rows: Option<u64>` を
+  `#[serde(default, skip_serializing_if = "Option::is_none")]` で追加 =
+  version 据え置き、ADR-0050 以前のファイルは `None` として読め、theme のみ保存は
+  バイト不変。**ドメイン定数 500_000 は dbboard-core に一本化**したまま:
+  dbboard-config は core 非依存なので `None` はアプリ層で
+  `DbboardApp::backup_warn_rows()` (core 定数から seed) にフォールバック解決 =
+  binary は定数を再 import しない。**core 無改変** (`exceeds_threshold(threshold)`
+  は元々引数)、UI preflight が per-app フィールドを読むだけ。**UI:** メニューバー
+  Theme 隣に **Backup** サブメニュー (`DragValue`、下限 1) = 変更は即 inner に反映、
+  値確定時 (`(changed() && !dragged()) || drag_stopped()`) に永続化 (focus 喪失に
+  依存しないので編集直後の終了でも取りこぼさない)。**clobber バグ修正:**
+  設定保存を全て load-modify-save (`persist_ui_settings`) 経由に = 旧
+  `set_theme` の `UiSettingsFile::with_theme` が兄弟フィールドを毎回既定に戻す
+  潜在バグを解消 (`with_theme` はテスト専用化)。i18n = 3 キー
+  (`backup-settings-menu`/`backup-threshold-label`/`backup-threshold-hint`) を
+  全 11 ロケールに追加、parity 確認済。テスト = config 4 + ui 3 追加、pre-commit /
+  release ゲート両 green、rust-reviewer Approve (MEDIUM=persist-on-settle の
+  取りこぼしを修正、LOW=下限追加)。**次:** restore/import (任意 .sql / 全エンジン
+  DSQL best-effort / 空ターゲットのみ、新規 ADR-0051) の設計調査を先行中。
+
 - 日付: 2026-07-22 (**論理バックアップ (ダンプ) を実装 = ADR-0049。** 経緯:
   maintainer の「バックアップ (ダンプ/リストア) があってもいい、巨大 DB では
   非現実なら警告、実行中は進行 % / バーも、完了後は md-business 用の検証シート」
