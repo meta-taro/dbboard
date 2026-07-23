@@ -492,11 +492,21 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       giant DB isn't started blindly, a live progress window shows table/row
       counters + a percent bar and can **Cancel** mid-dump (the file keeps the
       partial dump), and the completion summary surfaces any skipped/truncated
-      tables. Dump-only for v1; restore is deferred ([ADR-0049](decisions.md)).
+      tables. The read side ships as restore below ([ADR-0049](decisions.md)).
 - [x] Configurable backup warn threshold — the 500k dump warn limit is now a
       persisted, user-editable setting under the **Backup** menu (stored in
       `ui-settings.toml`, remembered across restarts) instead of a hard-coded
       constant ([ADR-0050](decisions.md), PR #110).
+- [x] Logical restore (import) — a **Restore…** toolbar button plays a `.sql`
+      file back into the active connection: a two-layer core pipeline (lexical
+      `split_statements` + sqlparser `classify_script`) accepts foreign
+      `pg_dump` / `sqlite3 .dump` scripts too, and runs whole-script against an
+      engine of the matching family (atomic transaction on Turso/Postgres,
+      per-statement on Aurora DSQL and D1). Restore targets **empty** databases
+      — a populated target raises a strong-confirm modal rather than merging or
+      diffing — and a live progress window can **Cancel** mid-run, with a
+      completion summary of applied schema/data statements and failures
+      ([ADR-0051](decisions.md), PR #112).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections

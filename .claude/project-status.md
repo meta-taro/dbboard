@@ -5,6 +5,29 @@
 
 ## 最終更新
 
+- 日付: 2026-07-23 (**論理リストア/インポート = ADR-0051、PR #112 マージ済
+  (develop tip `e624bbb`)。** ADR-0049 ダンプの読み側 = クエリツールバーの
+  **Restore…** で `.sql` を現接続へ流し込む。**6 スライスで着地 (core→adapters→
+  UI):** (1) `split_statements` = 字句スプリッタ (文字列/識別子/ドル/コメントを
+  尊重、`pg_dump`/`sqlite3 .dump` の他形式 `.sql` も分割可)、(3) `classify_script`
+  = sqlparser で DDL/Data/TransactionControl/Other/Unparsed にタグ付け
+  (パース不能文は abort せず degrade-open)、(4) オーケストレータ `run_restore` =
+  空ターゲットゲート + エンジン別トランザクション戦略、`plan_restore` が生スキーマ
+  相手に preflight。(2) adapter trait に加算メソッド `execute` /
+  `execute_in_transaction`。**エンジン別 (5a-c):** Turso/libSQL = アトミック、
+  Postgres/Neon/Supabase = トランザクション・**Aurora DSQL は per-statement
+  fallback** (複文トランザクション非対応)、**D1 = per-statement** (アトミック無)。
+  (6) UI = `BackupState` を鏡写しにした `RestoreState` マシン + worker
+  `PlanRestore`/`StartRestore`/`CancelRestore`、ツールバー **Restore…** ボタン
+  (`has_execute` + 既知 dialect でゲート)、progress/confirm/done/failed パネル。
+  **安全性 = 空 DB 限定:** 既存テーブルありは強制確認モーダル (merge/diff はしない)、
+  クロスエンジン変換なし (同ファミリのみ)、実行中 `CancellationToken` でキャンセル可
+  (部分適用を保持)。i18n = 17 `restore-*` キーを全 11 ロケール。**docs:** ADR-0051
+  追記 (append-only)、README に Restore… 段落。**次の user 側ボール:** restore の
+  実地確認 (空 DB 取り込み Turso/D1/Postgres 系・既存ありモーダル・進捗/キャンセル・
+  foreign `pg_dump`/`sqlite3 .dump`・ADR-0049 backup の `.sql` 往復)。検証シート
+  (md-business 用) は「ちょい待ち」で保留のまま。)
+
 - 日付: 2026-07-23 (**バックアップ警告閾値を設定化 = ADR-0050、PR #110 マージ済
   (develop tip `6116d1e`)。** 経緯: maintainer の「500k 閾値はソフト側で利用者が
   変えられた方がいい」+「restore より先に単独で (設定永続化の基盤を先に用意)」。
