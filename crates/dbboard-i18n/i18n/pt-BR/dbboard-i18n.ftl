@@ -170,6 +170,25 @@ backup-done-truncations = { $count } tabela(s) foram truncadas no meio.
 backup-failed-title = Falha no backup
 backup-close-button = Fechar
 
+# ADR-0051: restauração lógica (importação).
+restore-button = Restaurar…
+restore-button-hint = Aplicar um arquivo SQL a este banco de dados
+restore-planning = Lendo o arquivo…
+restore-dialog-title = Escolher um arquivo SQL para restaurar
+restore-warn-title = O destino não está vazio
+restore-warn-body = Este banco de dados já tem { $tables } tabela(s). Restaurar { $statements } instrução(ões) pode falhar ou sobrescrever dados existentes.
+restore-warn-continue = Restaurar mesmo assim
+restore-warn-cancel = Cancelar
+restore-progress-title = Restaurando
+restore-progress-statements = Instrução { $done } de { $total }
+restore-cancel-button = Cancelar
+restore-done-title = Restauração concluída
+restore-done-summary = { $statements } instrução(ões) aplicada(s): { $ddl } de esquema, { $data } de dados.
+restore-done-cancelled = Restauração cancelada — o destino contém uma restauração parcial.
+restore-done-failures = { $count } instrução(ões) falharam e foram ignoradas.
+restore-close-button = Fechar
+restore-failed-title = Falha na restauração
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = Backup
 backup-threshold-label = Avisar acima de (linhas)

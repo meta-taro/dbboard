@@ -47,6 +47,19 @@ pub struct Capabilities {
     /// payloads parseable — the flag reads as `false`.
     #[serde(default)]
     pub has_table_ddl: bool,
+    /// The adapter implements `DatabaseAdapter::execute` (ADR-0051) — it can
+    /// run a single write/DDL statement, which the restore/import path needs.
+    /// `#[serde(default)]` keeps pre-ADR-0051 payloads parseable — the flag
+    /// reads as `false`.
+    #[serde(default)]
+    pub has_execute: bool,
+    /// The adapter implements `DatabaseAdapter::execute_in_transaction`
+    /// (ADR-0051) — it can run a batch of statements atomically, so a restore
+    /// is all-or-nothing. Engines without a multi-statement transaction (D1)
+    /// leave this `false` and the restore falls back to per-statement
+    /// execution. `#[serde(default)]` keeps older payloads parseable.
+    #[serde(default)]
+    pub has_atomic_restore: bool,
 }
 
 #[cfg(test)]
@@ -63,6 +76,8 @@ mod tests {
         assert!(!caps.has_realtime);
         assert!(!caps.has_describe_table);
         assert!(!caps.has_table_ddl);
+        assert!(!caps.has_execute);
+        assert!(!caps.has_atomic_restore);
     }
 
     #[test]
@@ -78,6 +93,8 @@ mod tests {
         assert!(!caps.has_realtime);
         assert!(!caps.has_describe_table);
         assert!(!caps.has_table_ddl);
+        assert!(!caps.has_execute);
+        assert!(!caps.has_atomic_restore);
     }
 
     #[test]
@@ -102,7 +119,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false}"#
         );
     }
 
@@ -116,6 +133,8 @@ mod tests {
             has_realtime: true,
             has_describe_table: true,
             has_table_ddl: true,
+            has_execute: true,
+            has_atomic_restore: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();
@@ -139,5 +158,16 @@ mod tests {
         let caps: Capabilities = serde_json::from_str(json).unwrap();
         assert!(caps.has_describe_table);
         assert!(!caps.has_table_ddl);
+    }
+
+    #[test]
+    fn legacy_json_without_restore_flags_deserializes_as_false() {
+        // Pre-ADR-0051 payloads carry table_ddl but neither restore flag; the
+        // newer flags must still default to false (additive wire contract).
+        let json = r#"{"has_views":false,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":false,"has_describe_table":true,"has_table_ddl":true}"#;
+        let caps: Capabilities = serde_json::from_str(json).unwrap();
+        assert!(caps.has_table_ddl);
+        assert!(!caps.has_execute);
+        assert!(!caps.has_atomic_restore);
     }
 }

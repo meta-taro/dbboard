@@ -473,6 +473,13 @@ impl DatabaseAdapter for PostgresAdapter {
         Capabilities {
             has_describe_table: true,
             has_table_ddl: true,
+            has_execute: true,
+            // Aurora DSQL rejects mixed DDL+DML in one transaction and caps a
+            // transaction at a single DDL statement (ADR-0021), so it cannot
+            // honour an atomic multi-statement restore — it falls back to
+            // per-statement, best-effort execution (ADR-0051). Every other
+            // Postgres flavor has ordinary multi-statement transactions.
+            has_atomic_restore: self.flavor != FLAVOR_AURORA_DSQL,
             ..Capabilities::default()
         }
     }
@@ -726,6 +733,61 @@ impl DatabaseAdapter for PostgresAdapter {
         // error, which a plain async fn with concrete lifetimes avoids.
         run_read_only_txn(self.pool.current(), sql, max_rows, kind).await
     }
+
+    async fn execute(&self, sql: &str) -> DbResult<u64> {
+        // Reuse the simple-query path: it already streams command-completion
+        // counts, so a DML statement reports its affected count and a
+        // row-returning statement (rare in a restore) runs and reports 0.
+        self.query(sql).await.map(|result| result.rows_affected)
+    }
+
+    async fn execute_in_transaction(&self, statements: &[String]) -> DbResult<()> {
+        // An empty batch would open and commit an empty transaction; skip it.
+        if statements.is_empty() {
+            return Ok(());
+        }
+        run_restore_txn(self.pool.current(), statements).await
+    }
+}
+
+/// Apply `statements` as one atomic transaction on a pooled connection.
+///
+/// The sqlx `Transaction` rolls back on drop, so an early `?` return from a
+/// failed statement leaves the target untouched rather than half-populated —
+/// the all-or-nothing guarantee ADR-0051 relies on for `has_atomic_restore`
+/// engines. Lives as a free `async fn` for the same reason as
+/// [`run_read_only_txn`]: borrowing the sqlx `Executor` inside an
+/// `#[async_trait]` method trips the "implementation of `Executor` is not
+/// general enough" HRTB error.
+async fn run_restore_txn(pool: PgPool, statements: &[String]) -> DbResult<()> {
+    let mut tx = pool.begin().await.map_err(|e| classify_error(&e))?;
+    for stmt in statements {
+        // Deref-coerce `&mut Transaction` to a concrete `&mut PgConnection`
+        // so the executor borrow has a single nameable lifetime, the same
+        // reason `fetch_via_cursor` takes a concrete connection.
+        exec_in_txn(&mut tx, stmt).await?;
+    }
+    tx.commit().await.map_err(|e| classify_error(&e))?;
+    Ok(())
+}
+
+/// Run one statement inside the restore transaction via the extended query
+/// protocol.
+///
+/// The read-only path uses the same protocol for the same reason: a held
+/// `Transaction` future must stay `Send` across the `#[async_trait]`
+/// boundary, and `raw_sql`'s simple-protocol executor bound trips the sqlx
+/// `Executor`/`Send` HRTB error there. The extended protocol carries exactly
+/// one command per round-trip, which the restore splitter already guarantees.
+/// (The per-statement, non-atomic path — used by Aurora DSQL — goes through
+/// [`PostgresAdapter::query`]'s `raw_sql`, so it keeps the simple protocol's
+/// broader statement support.)
+async fn exec_in_txn(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<()> {
+    sqlx::query(sql)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| classify_error(&e))?;
+    Ok(())
 }
 
 /// Execute a validated read-only statement inside a server-side
@@ -1081,6 +1143,48 @@ mod tests {
             };
             assert!(adapter.capabilities().has_table_ddl);
         }
+    }
+
+    /// Per-statement `execute` (ADR-0051) is advertised by every Postgres-wire
+    /// flavor, Aurora DSQL included — a single statement runs everywhere.
+    #[tokio::test]
+    async fn capabilities_advertise_execute_on_every_flavor() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        for flavor in [
+            FLAVOR_POSTGRES,
+            FLAVOR_NEON,
+            FLAVOR_SUPABASE,
+            FLAVOR_AURORA_DSQL,
+        ] {
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool.clone()),
+                flavor,
+            };
+            assert!(adapter.capabilities().has_execute, "flavor {flavor}");
+        }
+    }
+
+    /// Atomic restore (ADR-0051) is advertised by ordinary Postgres flavors
+    /// but *not* Aurora DSQL, which cannot mix DDL and DML in one transaction
+    /// (ADR-0021) and so falls back to per-statement execution.
+    #[tokio::test]
+    async fn only_non_dsql_flavors_advertise_atomic_restore() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_NEON, FLAVOR_SUPABASE] {
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool.clone()),
+                flavor,
+            };
+            assert!(adapter.capabilities().has_atomic_restore, "flavor {flavor}");
+        }
+        let dsql = super::PostgresAdapter {
+            pool: super::PoolHandle::Static(pool),
+            flavor: FLAVOR_AURORA_DSQL,
+        };
+        assert!(
+            !dsql.capabilities().has_atomic_restore,
+            "Aurora DSQL must not advertise atomic restore"
+        );
     }
 
     /// A `Static` handle hands back exactly the pool it wraps. `max_connections`

@@ -170,6 +170,25 @@ backup-done-truncations = { $count } tabella/e sono state troncate a metà.
 backup-failed-title = Backup non riuscito
 backup-close-button = Chiudi
 
+# ADR-0051: ripristino logico (importazione).
+restore-button = Ripristina…
+restore-button-hint = Applica un file SQL a questo database
+restore-planning = Lettura del file…
+restore-dialog-title = Scegli un file SQL da ripristinare
+restore-warn-title = La destinazione non è vuota
+restore-warn-body = Questo database contiene già { $tables } tabella/e. Il ripristino di { $statements } istruzione/i potrebbe non riuscire o sovrascrivere dati esistenti.
+restore-warn-continue = Ripristina comunque
+restore-warn-cancel = Annulla
+restore-progress-title = Ripristino in corso
+restore-progress-statements = Istruzione { $done } di { $total }
+restore-cancel-button = Annulla
+restore-done-title = Ripristino completato
+restore-done-summary = Applicate { $statements } istruzione/i: { $ddl } schema, { $data } dati.
+restore-done-cancelled = Ripristino annullato — la destinazione contiene un ripristino parziale.
+restore-done-failures = { $count } istruzione/i non riuscite e saltate.
+restore-close-button = Chiudi
+restore-failed-title = Ripristino non riuscito
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = Backup
 backup-threshold-label = Avvisa oltre (righe)

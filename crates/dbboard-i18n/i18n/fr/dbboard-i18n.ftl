@@ -170,6 +170,25 @@ backup-done-truncations = { $count } table(s) ont été tronquées en cours de r
 backup-failed-title = Échec de la sauvegarde
 backup-close-button = Fermer
 
+# ADR-0051 : restauration logique (import).
+restore-button = Restaurer…
+restore-button-hint = Appliquer un fichier SQL à cette base de données
+restore-planning = Lecture du fichier…
+restore-dialog-title = Choisir un fichier SQL à restaurer
+restore-warn-title = La cible n'est pas vide
+restore-warn-body = Cette base de données contient déjà { $tables } table(s). Restaurer { $statements } instruction(s) peut échouer ou écraser des données existantes.
+restore-warn-continue = Restaurer quand même
+restore-warn-cancel = Annuler
+restore-progress-title = Restauration en cours
+restore-progress-statements = Instruction { $done } sur { $total }
+restore-cancel-button = Annuler
+restore-done-title = Restauration terminée
+restore-done-summary = { $statements } instruction(s) appliquée(s) : { $ddl } schéma, { $data } données.
+restore-done-cancelled = Restauration annulée — la cible contient une restauration partielle.
+restore-done-failures = { $count } instruction(s) ont échoué et ont été ignorées.
+restore-close-button = Fermer
+restore-failed-title = Échec de la restauration
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = Sauvegarde
 backup-threshold-label = Avertir au-delà de (lignes)

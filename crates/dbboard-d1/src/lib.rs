@@ -129,6 +129,12 @@ impl DatabaseAdapter for D1Adapter {
         Capabilities {
             has_describe_table: true,
             has_table_ddl: true,
+            has_execute: true,
+            // D1's HTTP API exposes no multi-statement transaction over
+            // `/raw`, so restore cannot run atomically — it falls back to
+            // per-statement execution (ADR-0051). `has_atomic_restore` stays
+            // false and `execute_in_transaction` keeps its default
+            // capability-error impl, which the orchestrator never calls.
             ..Capabilities::default()
         }
     }
@@ -198,6 +204,14 @@ impl DatabaseAdapter for D1Adapter {
         );
         let envelope = self.post_raw(&sql).await?;
         envelope_to_table_ddl(table, envelope)
+    }
+
+    async fn execute(&self, sql: &str) -> DbResult<u64> {
+        // `/raw` returns the same envelope for DML and DDL; the affected
+        // count comes from `meta.changes`, which `envelope_to_query_result`
+        // already surfaces as `rows_affected`. Restore never expects rows
+        // back, so the row payload is simply discarded.
+        self.query(sql).await.map(|result| result.rows_affected)
     }
 }
 
@@ -991,6 +1005,32 @@ mod tests {
             base_url: None,
         })
         .expect("build adapter")
+    }
+
+    /// D1 offers per-statement `execute` (ADR-0051) but not atomic restore:
+    /// its HTTP `/raw` API has no multi-statement transaction, so the runner
+    /// applies statements one at a time.
+    #[test]
+    fn capabilities_advertise_execute_but_not_atomic_restore() {
+        let caps = adapter().capabilities();
+        assert!(caps.has_execute);
+        assert!(
+            !caps.has_atomic_restore,
+            "D1 cannot run an atomic multi-statement restore"
+        );
+    }
+
+    /// The orchestrator must never reach `execute_in_transaction` on D1 (it
+    /// gates on `has_atomic_restore`), so the method keeps its default
+    /// capability-error impl — asserted here so a future accidental override
+    /// without flipping the flag is caught.
+    #[tokio::test]
+    async fn execute_in_transaction_is_unsupported_on_d1() {
+        let err = adapter()
+            .execute_in_transaction(&["INSERT INTO t VALUES (1)".to_owned()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
     }
 
     /// D1 has no engine read-only mode, so the classifier is the whole

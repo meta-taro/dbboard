@@ -22,6 +22,7 @@ mod edit;
 mod errors;
 mod export;
 mod history;
+mod restore;
 mod selection;
 mod worker;
 
@@ -58,8 +59,9 @@ use std::time::Instant;
 
 use dbboard_config::{table_key as annotation_table_key, AnnotationsAdmin};
 use dbboard_core::{
-    sorted_row_order, ColumnInfo, DbResult, DumpOutcome, DumpPlan, DumpProgress, QueryResult, Row,
-    SortKey, SqlDialect, TableInfo, TableSchema, Value, DEFAULT_BACKUP_WARN_ROWS,
+    sorted_row_order, ColumnInfo, DbResult, DumpOutcome, DumpPlan, DumpProgress, OnError,
+    QueryResult, RestoreOptions, RestoreOutcome, RestorePlan, RestoreProgress, Row, SortKey,
+    SqlDialect, TableInfo, TableSchema, Value, DEFAULT_BACKUP_WARN_ROWS,
 };
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
@@ -163,6 +165,29 @@ pub enum Command {
     /// [`Reply::BackupComplete`] whose outcome is marked cancelled, so the
     /// partial file is surfaced honestly rather than as an error.
     CancelBackup,
+    /// Preflight a logical restore of the `.sql` file at `path` (ADR-0051):
+    /// read it, classify its statements, and list the target's existing
+    /// tables. In-process via the injected [`worker::SchemaSource`], answered
+    /// with [`Reply::RestorePlanned`]. The UI uses the returned plan to size
+    /// the progress bar and — when the target is not empty — to require the
+    /// caller's confirmation before it sends [`Command::StartRestore`].
+    PlanRestore { path: PathBuf },
+    /// Apply the plan a preceding [`Command::PlanRestore`] produced (ADR-0051).
+    /// The worker snapshots the live adapter and spawns the restore task —
+    /// emitting [`Reply::RestoreProgress`] as it applies statements and a
+    /// terminal [`Reply::RestoreComplete`] / [`Reply::RestoreFailed`].
+    /// Cancellable via [`Command::CancelRestore`]. `options.confirmed` carries
+    /// the empty-target-gate acknowledgement the UI collected.
+    StartRestore {
+        plan: RestorePlan,
+        options: RestoreOptions,
+    },
+    /// Cancel the in-flight restore, if any (ADR-0051). The restore stops at
+    /// the next statement boundary (per-statement engines) and still reports a
+    /// [`Reply::RestoreComplete`] whose outcome is marked cancelled, so a
+    /// partial restore is surfaced honestly rather than as an error. An atomic
+    /// engine that has not yet committed unwinds cleanly.
+    CancelRestore,
 }
 
 /// Result flowing worker → UI.
@@ -305,6 +330,34 @@ pub enum Reply {
     /// Adapter-side per-table failures are *not* here — those ride in
     /// [`Reply::BackupComplete`]'s outcome and never abort the run.
     BackupFailed {
+        message: String,
+    },
+    /// Result of a [`Command::PlanRestore`] preflight (ADR-0051). `Ok` carries
+    /// the classified plan plus the target's existing tables, which the UI
+    /// uses to size the progress bar and decide whether the empty-target
+    /// confirmation is needed; `Err` surfaces an unreadable file, an
+    /// unsupported connection, or a listing failure so the UI can abandon the
+    /// restore.
+    RestorePlanned {
+        result: DbResult<RestorePlan>,
+    },
+    /// One progress snapshot of an in-flight restore (ADR-0051). The UI
+    /// replaces its running meter with `progress` and repaints.
+    RestoreProgress {
+        progress: RestoreProgress,
+    },
+    /// Terminal marker for a finished restore (ADR-0051). Carries the outcome —
+    /// statements applied, per-statement failures, and whether it was
+    /// cancelled — so the UI can render an honest summary.
+    RestoreComplete {
+        outcome: RestoreOutcome,
+    },
+    /// The restore could not be applied (ADR-0051): a non-empty target the
+    /// caller did not confirm, an adapter that cannot execute writes, or an
+    /// atomic batch that unwound. `message` is the fatal error. Per-statement
+    /// failures on the non-atomic path are *not* here — those ride in
+    /// [`Reply::RestoreComplete`]'s outcome and never abort the run.
+    RestoreFailed {
         message: String,
     },
 }
@@ -481,6 +534,36 @@ enum ConfirmAction {
     Cancel,
 }
 
+/// Restore (logical import) state machine (ADR-0051, slice 6). Mirrors
+/// [`BackupState`], but its first step is the file *picker* rather than a
+/// preflight query: the toolbar Restore button opens the open-file dialog, and
+/// only a chosen `.sql` path advances to [`RestoreState::Planning`].
+///
+/// The transitions are pure and testable — `drain_replies` only *moves
+/// between* states. The one UI-only step is the [`RestoreState::Confirming`]
+/// modal, the ADR-0051 strong-confirm shown when the target is not empty; an
+/// empty target skips it and runs straight from the preflight reply.
+#[derive(Debug, Default)]
+enum RestoreState {
+    /// No restore activity.
+    #[default]
+    Idle,
+    /// A file was picked and `PlanRestore` sent; awaiting
+    /// [`Reply::RestorePlanned`].
+    Planning,
+    /// Preflight came back against a non-empty target; the render path shows
+    /// the strong-confirm modal before proceeding (ADR-0051 empty/new-target
+    /// safety model). Carries the plan so a "Restore anyway" advances it.
+    Confirming { plan: RestorePlan },
+    /// Restore running; carries the latest progress snapshot for the bar.
+    Running(RestoreProgress),
+    /// Terminal: the restore finished (possibly cancelled, or with
+    /// per-statement failures recorded in the outcome).
+    Done(RestoreOutcome),
+    /// Terminal: a fatal error prevented (or unwound) the restore.
+    Failed(String),
+}
+
 pub struct DbboardApp {
     sql: String,
     tables: DbResult<Vec<TableInfo>>,
@@ -570,6 +653,9 @@ pub struct DbboardApp {
     /// [`Self::set_backup_warn_rows`]. The preflight compares the plan's
     /// total against this, not the constant.
     backup_warn_rows: u64,
+    /// Restore (logical import) state machine (ADR-0051 slice 6). `Idle` until
+    /// the toolbar Restore button picks a `.sql` file and fires a preflight.
+    restore: RestoreState,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -699,6 +785,7 @@ impl DbboardApp {
             edit: EditGrid::default(),
             backup: BackupState::Idle,
             backup_warn_rows: DEFAULT_BACKUP_WARN_ROWS,
+            restore: RestoreState::Idle,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -756,6 +843,11 @@ impl DbboardApp {
         }
     }
 
+    // Central reply dispatcher: one arm per `Reply` variant, mirroring the
+    // command side in `worker::handle_command`. It grows one arm per feature
+    // (ADR-0051 restore added four), so the line lint is not a useful signal
+    // here — the same allow guards the sibling dispatcher.
+    #[allow(clippy::too_many_lines)]
     fn drain_replies(&mut self) {
         while let Ok(reply) = self.reply_rx.try_recv() {
             match reply {
@@ -915,6 +1007,10 @@ impl DbboardApp {
                 Reply::BackupProgress { progress } => self.on_backup_progress(progress),
                 Reply::BackupComplete { outcome } => self.backup = BackupState::Done(outcome),
                 Reply::BackupFailed { message } => self.backup = BackupState::Failed(message),
+                Reply::RestorePlanned { result } => self.on_restore_planned(result),
+                Reply::RestoreProgress { progress } => self.on_restore_progress(progress),
+                Reply::RestoreComplete { outcome } => self.restore = RestoreState::Done(outcome),
+                Reply::RestoreFailed { message } => self.restore = RestoreState::Failed(message),
             }
         }
     }
@@ -1652,6 +1748,269 @@ impl DbboardApp {
         }
     }
 
+    /// Whether the active connection can be restored into (ADR-0051): a live
+    /// adapter is wired, its id maps to a SQL dialect the classifier knows, and
+    /// it advertises `has_execute` so statements can actually be applied. Read
+    /// per frame to gate the toolbar button, mirroring [`Self::can_backup`];
+    /// `false` in tests / in-memory flows, which simply hides the button.
+    #[must_use]
+    pub fn can_restore(&self) -> bool {
+        self.schema_source.as_ref().is_some_and(|s| {
+            let adapter = s.current_adapter();
+            edit::dialect_for_adapter_id(adapter.id()).is_some()
+                && adapter.capabilities().has_execute
+        })
+    }
+
+    /// Whether a restore is mid-flight (planning, confirming, or applying) —
+    /// used to gate the toolbar button so a second click cannot start a
+    /// parallel run. A terminal state (`Done`/`Failed`) does not count as busy:
+    /// its summary window is dismissible and a fresh restore may start behind
+    /// it.
+    #[must_use]
+    fn restore_in_progress(&self) -> bool {
+        matches!(
+            self.restore,
+            RestoreState::Planning | RestoreState::Confirming { .. } | RestoreState::Running(_)
+        )
+    }
+
+    /// Start a restore by picking a `.sql` file and asking the worker to
+    /// preflight it (ADR-0051). No-op if one is already in flight or the
+    /// connection cannot be restored into — the toolbar already gates on both,
+    /// so this is defence-in-depth. A cancelled file dialog leaves the state
+    /// untouched; a closed channel does too (the UI is shutting down anyway).
+    fn start_restore(&mut self) {
+        if self.restore_in_progress() || !self.can_restore() {
+            return;
+        }
+        let download_dir = directories::UserDirs::new()
+            .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf));
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(t!("restore-dialog-title"))
+            .add_filter("SQL", &["sql"]);
+        if let Some(dir) = download_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return; // user cancelled; state stays Idle
+        };
+        if self.cmd_tx.send(Command::PlanRestore { path }).is_ok() {
+            self.restore = RestoreState::Planning;
+        }
+    }
+
+    /// Fold a preflight reply into the state machine. A late reply that arrives
+    /// after the user dismissed the flow (state no longer `Planning`) is
+    /// ignored so a stale plan cannot reopen a modal. An empty target runs
+    /// straight away; a non-empty one raises the strong-confirm modal first.
+    fn on_restore_planned(&mut self, result: DbResult<RestorePlan>) {
+        if !matches!(self.restore, RestoreState::Planning) {
+            return;
+        }
+        match result {
+            Ok(plan) if plan.is_target_empty() => self.launch_restore(plan, false),
+            Ok(plan) => self.restore = RestoreState::Confirming { plan },
+            Err(e) => self.restore = RestoreState::Failed(e.message().to_string()),
+        }
+    }
+
+    /// Hand a confirmed (or empty-target) plan to the worker (ADR-0051).
+    /// `confirmed` carries the empty-target-gate acknowledgement — always
+    /// `true` on the non-empty path the modal drives, ignored by the runner on
+    /// an already-empty target. A closed channel is reported as a failure
+    /// rather than silently dropped.
+    fn launch_restore(&mut self, plan: RestorePlan, confirmed: bool) {
+        let options = RestoreOptions {
+            confirmed,
+            on_error: OnError::Stop,
+        };
+        if self
+            .cmd_tx
+            .send(Command::StartRestore { plan, options })
+            .is_ok()
+        {
+            self.restore = RestoreState::Running(RestoreProgress::default());
+        } else {
+            self.restore = RestoreState::Failed("restore worker unavailable".to_string());
+        }
+    }
+
+    /// Apply a progress tick. Ticks only matter while a restore is running; one
+    /// arriving after cancellation/completion (state already terminal) is
+    /// dropped so it cannot resurrect the progress window.
+    fn on_restore_progress(&mut self, progress: RestoreProgress) {
+        if matches!(self.restore, RestoreState::Running(_)) {
+            self.restore = RestoreState::Running(progress);
+        }
+    }
+
+    /// Ask the worker to cancel the in-flight restore (ADR-0051). The task
+    /// still reports a (cancelled) `RestoreComplete`, so the state stays
+    /// `Running` until that terminal reply lands.
+    fn cancel_restore(&mut self) {
+        let _ = self.cmd_tx.send(Command::CancelRestore);
+    }
+
+    /// Dismiss a terminal restore summary, returning the slot to idle.
+    fn dismiss_restore(&mut self) {
+        self.restore = RestoreState::Idle;
+    }
+
+    /// Render whichever restore window the current state calls for. `Idle`/
+    /// `Planning` own no window — the toolbar carries their affordance (button
+    /// / spinner). Matching on a place with non-binding patterns lets each arm
+    /// freely re-borrow `self` for its sub-render.
+    fn render_restore(&mut self, ctx: &egui::Context) {
+        match self.restore {
+            RestoreState::Idle | RestoreState::Planning => {}
+            RestoreState::Confirming { .. } => self.render_restore_confirm(ctx),
+            RestoreState::Running(_) => self.render_restore_running(ctx),
+            RestoreState::Done(_) => self.render_restore_done(ctx),
+            RestoreState::Failed(_) => self.render_restore_failed(ctx),
+        }
+    }
+
+    /// The non-empty-target strong-confirm (ADR-0051 empty/new-target safety
+    /// model). Names how many tables the target already holds; "Restore
+    /// anyway" launches with `confirmed = true`, "Cancel" abandons the flow.
+    fn render_restore_confirm(&mut self, ctx: &egui::Context) {
+        let RestoreState::Confirming { plan } = &self.restore else {
+            return;
+        };
+        let existing = plan.existing_tables.len();
+        let statements = plan.runnable_count();
+        let mut action = ConfirmAction::None;
+        egui::Window::new(t!("restore-warn-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(t_args!(
+                    "restore-warn-body",
+                    tables = existing,
+                    statements = statements
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t!("restore-warn-continue")).clicked() {
+                        action = ConfirmAction::Continue;
+                    }
+                    if ui.button(t!("restore-warn-cancel")).clicked() {
+                        action = ConfirmAction::Cancel;
+                    }
+                });
+            });
+        match action {
+            ConfirmAction::Continue => {
+                if let RestoreState::Confirming { plan } =
+                    std::mem::replace(&mut self.restore, RestoreState::Idle)
+                {
+                    self.launch_restore(plan, true);
+                }
+            }
+            ConfirmAction::Cancel => self.restore = RestoreState::Idle,
+            ConfirmAction::None => {}
+        }
+    }
+
+    /// The live progress window: a bar plus a statement counter and a Cancel
+    /// button. Cancel only signals the worker; the terminal reply flips the
+    /// state, so the window stays up (showing the last progress) until then.
+    fn render_restore_running(&mut self, ctx: &egui::Context) {
+        let RestoreState::Running(progress) = &self.restore else {
+            return;
+        };
+        let fraction = restore_fraction(progress);
+        let statements_line = t_args!(
+            "restore-progress-statements",
+            done = progress.statements_done,
+            total = progress.statements_total
+        );
+        let mut cancel = false;
+        egui::Window::new(t!("restore-progress-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                ui.label(statements_line);
+                ui.add_space(8.0);
+                if ui.button(t!("restore-cancel-button")).clicked() {
+                    cancel = true;
+                }
+            });
+        // Keep the frame ticking so progress replies keep draining.
+        ctx.request_repaint();
+        if cancel {
+            self.cancel_restore();
+        }
+    }
+
+    /// Completion summary. Names the applied totals and surfaces the honest
+    /// caveats — cancellation and per-statement failures — so a partial restore
+    /// is never mistaken for a clean one. Close returns to idle.
+    fn render_restore_done(&mut self, ctx: &egui::Context) {
+        let RestoreState::Done(outcome) = &self.restore else {
+            return;
+        };
+        let summary = t_args!(
+            "restore-done-summary",
+            statements = outcome.statements_run,
+            ddl = outcome.ddl_run,
+            data = outcome.data_run
+        );
+        let cancelled = outcome.cancelled;
+        let failures = outcome.failures.len();
+        let mut close = false;
+        egui::Window::new(t!("restore-done-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(summary);
+                if cancelled {
+                    ui.label(t!("restore-done-cancelled"));
+                }
+                if failures > 0 {
+                    ui.label(t_args!("restore-done-failures", count = failures));
+                }
+                ui.add_space(8.0);
+                if ui.button(t!("restore-close-button")).clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.dismiss_restore();
+        }
+    }
+
+    /// Failure window: a fatal error prevented (or unwound) the restore. Close
+    /// returns to idle.
+    fn render_restore_failed(&mut self, ctx: &egui::Context) {
+        let RestoreState::Failed(message) = &self.restore else {
+            return;
+        };
+        // A raw error string has no separate localized/original halves, so both
+        // slots carry the same text (only one line renders).
+        let display = errors::DisplayError::new(message.clone(), message.clone());
+        let mut close = false;
+        egui::Window::new(t!("restore-failed-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                errors::render_error(ui, Some(&display));
+                ui.add_space(8.0);
+                if ui.button(t!("restore-close-button")).clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.dismiss_restore();
+        }
+    }
+
     /// Toggle the AI panel window. Noop when no provider is wired —
     /// callers do not need to gate this themselves, but in practice the
     /// menu bar already hides the button so this is defence-in-depth.
@@ -1809,7 +2168,10 @@ fn pending_ai_from_command(cmd: &Command, conn_label: &str) -> Option<PendingAiS
         | Command::DescribeTable { .. }
         | Command::PlanBackup
         | Command::StartBackup { .. }
-        | Command::CancelBackup => return None,
+        | Command::CancelBackup
+        | Command::PlanRestore { .. }
+        | Command::StartRestore { .. }
+        | Command::CancelRestore => return None,
     };
     let conn = if conn_label.is_empty() {
         None
@@ -1996,11 +2358,15 @@ impl eframe::App for DbboardApp {
         // on top.
         self.render_backup(ui.ctx());
 
-        // Egui is event-driven, so request a follow-up frame while a query
-        // or a backup is in flight to keep draining the reply channel. The
-        // running-progress window also requests repaints itself; this
-        // covers the Planning gap before its window exists.
-        if self.busy || self.backup_in_progress() {
+        // ADR-0051 slice 6: restore modals/progress float over everything,
+        // like the backup ones.
+        self.render_restore(ui.ctx());
+
+        // Egui is event-driven, so request a follow-up frame while a query,
+        // a backup, or a restore is in flight to keep draining the reply
+        // channel. The running-progress windows also request repaints
+        // themselves; this covers the Planning gap before their window exists.
+        if self.busy || self.backup_in_progress() || self.restore_in_progress() {
             ui.ctx().request_repaint();
         }
     }
@@ -2109,6 +2475,25 @@ impl DbboardApp {
                     }
                     if matches!(self.backup, BackupState::Planning) {
                         ui.label(t!("backup-planning"));
+                    }
+                }
+                // ADR-0051 restore: shown only when the live connection can be
+                // restored into (dialect known + `has_execute`), and disabled
+                // while any restore is in flight so a second click cannot start
+                // a parallel run.
+                if self.can_restore() {
+                    if ui
+                        .add_enabled(
+                            !self.restore_in_progress(),
+                            egui::Button::new(t!("restore-button")),
+                        )
+                        .on_hover_text(t!("restore-button-hint"))
+                        .clicked()
+                    {
+                        self.start_restore();
+                    }
+                    if matches!(self.restore, RestoreState::Planning) {
+                        ui.label(t!("restore-planning"));
                     }
                 }
                 if self.busy {
@@ -2683,6 +3068,20 @@ fn backup_fraction(progress: &DumpProgress) -> f32 {
     }
 }
 
+/// Progress-bar fraction for a running restore, in `[0.0, 1.0]`. Statements are
+/// the only signal restore has, so they drive the bar directly; the
+/// pre-first-report snapshot (`statements_total == 0`) sits at zero.
+#[allow(clippy::cast_precision_loss)]
+fn restore_fraction(progress: &RestoreProgress) -> f32 {
+    if progress.statements_total == 0 {
+        0.0
+    } else {
+        // total > 0, so the clamp only guards the (shouldn't-happen)
+        // done > total case.
+        (progress.statements_done as f32 / progress.statements_total as f32).clamp(0.0, 1.0)
+    }
+}
+
 /// Most sort levels the grid tracks at once — a primary, secondary, and
 /// tertiary key. Matches what a user can reasonably reason about and keeps
 /// the header indicator (level numbers 1–3) legible.
@@ -3205,9 +3604,10 @@ mod tests {
     use super::errors::db_error_display;
     use super::{
         apply_auto_limit, backup_fraction, cell_preview, is_bare_select, is_long_cell,
-        quick_count_sql, quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot,
-        AnnotationsAdmin, BackupState, Command, DbboardApp, HistoryStatus, NoteTarget,
-        PersistentHistoryStore, Reply, ResultTab, CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
+        quick_count_sql, quick_select_sql, quote_ident, restore_fraction, should_run_from_keys,
+        AiProviderSlot, AnnotationsAdmin, BackupState, Command, DbboardApp, HistoryStatus,
+        NoteTarget, PersistentHistoryStore, Reply, RestoreState, ResultTab, CELL_PREVIEW_CHARS,
+        DEFAULT_CAPACITY,
     };
     use dbboard_core::{
         Column, ColumnInfo, DbError, DumpOutcome, DumpPlan, DumpProgress, QueryResult, Row,
@@ -4969,6 +5369,221 @@ mod tests {
             );
             // Nothing counted yet: zero.
             assert!(backup_fraction(&DumpProgress::default()).abs() < f32::EPSILON);
+        }
+    }
+
+    // ADR-0051 slice 6: the restore state machine. Like the backup tests these
+    // exercise the pure transitions `drain_replies` drives — no egui, no file
+    // dialog — so the plan/confirm/progress/terminal flow is verified without a
+    // live adapter.
+    mod restore {
+        use super::{build, restore_fraction, Command, Reply, RestoreState};
+        use dbboard_core::{
+            OnError, RestoreOutcome, RestorePlan, RestoreProgress, RestoreStatement,
+            StatementFailure, StatementKind,
+        };
+
+        /// A plan whose target holds `existing` tables and whose script is
+        /// `statements` runnable `INSERT`s. Enough to drive the empty/non-empty
+        /// branch and the progress-bar denominator.
+        fn plan_of(existing: &[&str], statements: usize) -> RestorePlan {
+            RestorePlan {
+                statements: (0..statements)
+                    .map(|i| RestoreStatement {
+                        sql: format!("INSERT INTO t VALUES ({i});"),
+                        kind: StatementKind::Data,
+                    })
+                    .collect(),
+                existing_tables: existing.iter().map(|s| (*s).to_string()).collect(),
+            }
+        }
+
+        #[test]
+        fn planned_empty_target_runs_and_emits_start() {
+            let (mut app, cmd_rx, reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+            app.restore = RestoreState::Planning;
+            reply_tx
+                .send(Reply::RestorePlanned {
+                    result: Ok(plan_of(&[], 3)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.restore, RestoreState::Running(_)));
+            match cmd_rx.try_recv() {
+                Ok(Command::StartRestore { options, .. }) => {
+                    // An empty target needs no confirmation.
+                    assert!(!options.confirmed);
+                    assert_eq!(options.on_error, OnError::Stop);
+                }
+                other => panic!("expected StartRestore, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn planned_non_empty_target_asks_for_confirmation() {
+            let (mut app, cmd_rx, reply_tx) = build();
+            let _ = cmd_rx.try_recv();
+            app.restore = RestoreState::Planning;
+            reply_tx
+                .send(Reply::RestorePlanned {
+                    result: Ok(plan_of(&["users", "orders"], 2)),
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.restore {
+                RestoreState::Confirming { plan } => {
+                    assert_eq!(plan.existing_tables.len(), 2);
+                }
+                other => panic!("expected Confirming, got {other:?}"),
+            }
+            // No StartRestore until the user confirms.
+            assert!(cmd_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn planned_error_surfaces_as_failed() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.restore = RestoreState::Planning;
+            reply_tx
+                .send(Reply::RestorePlanned {
+                    result: Err(dbboard_core::DbError::Query("could not read x.sql".into())),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.restore, RestoreState::Failed(_)));
+        }
+
+        #[test]
+        fn a_stale_plan_after_dismissal_is_ignored() {
+            // The user dismissed the flow (state back to Idle) before the
+            // preflight reply arrived; it must not resurrect a modal or run.
+            let (mut app, cmd_rx, reply_tx) = build();
+            let _ = cmd_rx.try_recv();
+            app.restore = RestoreState::Idle;
+            reply_tx
+                .send(Reply::RestorePlanned {
+                    result: Ok(plan_of(&[], 1)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.restore, RestoreState::Idle));
+            assert!(cmd_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn progress_updates_only_while_running() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.restore = RestoreState::Running(RestoreProgress::default());
+            reply_tx
+                .send(Reply::RestoreProgress {
+                    progress: RestoreProgress {
+                        statements_done: 7,
+                        statements_total: 10,
+                        current_index: Some(7),
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.restore {
+                RestoreState::Running(p) => assert_eq!(p.statements_done, 7),
+                other => panic!("expected Running, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_late_progress_tick_after_completion_is_dropped() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.restore = RestoreState::Done(RestoreOutcome::default());
+            reply_tx
+                .send(Reply::RestoreProgress {
+                    progress: RestoreProgress {
+                        statements_done: 3,
+                        ..RestoreProgress::default()
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.restore, RestoreState::Done(_)));
+        }
+
+        #[test]
+        fn complete_and_failed_land_on_terminal_states() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.restore = RestoreState::Running(RestoreProgress::default());
+            reply_tx
+                .send(Reply::RestoreComplete {
+                    outcome: RestoreOutcome {
+                        statements_run: 4,
+                        failures: vec![StatementFailure {
+                            index: 2,
+                            message: "boom".into(),
+                        }],
+                        ..RestoreOutcome::default()
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.restore {
+                RestoreState::Done(o) => assert_eq!(o.statements_run, 4),
+                other => panic!("expected Done, got {other:?}"),
+            }
+
+            app.restore = RestoreState::Running(RestoreProgress::default());
+            reply_tx
+                .send(Reply::RestoreFailed {
+                    message: "target not empty".into(),
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.restore {
+                RestoreState::Failed(m) => assert_eq!(m, "target not empty"),
+                other => panic!("expected Failed, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn start_restore_without_a_restorable_connection_is_a_noop() {
+            // build() wires no schema source, so can_restore() is false and no
+            // PlanRestore should be emitted (only the bootstrap ListTables).
+            let (mut app, cmd_rx, _reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+            app.start_restore();
+            assert!(matches!(app.restore, RestoreState::Idle));
+            assert!(cmd_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn cancel_restore_signals_the_worker() {
+            let (mut app, cmd_rx, _reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap
+            app.cancel_restore();
+            assert!(matches!(cmd_rx.try_recv(), Ok(Command::CancelRestore)));
+        }
+
+        #[test]
+        fn launch_restore_with_a_closed_channel_fails_cleanly() {
+            // A closed command channel (UI shutting down) surfaces a failure
+            // rather than a phantom Running with no worker behind it.
+            let (mut app, cmd_rx, _reply_tx) = build();
+            drop(cmd_rx);
+            app.launch_restore(plan_of(&[], 1), true);
+            assert!(matches!(app.restore, RestoreState::Failed(_)));
+        }
+
+        #[test]
+        fn fraction_is_statements_done_over_total_then_zero() {
+            assert!(
+                (restore_fraction(&RestoreProgress {
+                    statements_done: 1,
+                    statements_total: 4,
+                    current_index: Some(1),
+                }) - 0.25)
+                    .abs()
+                    < f32::EPSILON
+            );
+            // Nothing counted yet: zero.
+            assert!(restore_fraction(&RestoreProgress::default()).abs() < f32::EPSILON);
         }
     }
 }
