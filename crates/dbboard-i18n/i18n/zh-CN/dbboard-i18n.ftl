@@ -169,6 +169,25 @@ backup-done-truncations = 有 { $count } 个表被中途截断。
 backup-failed-title = 备份失败
 backup-close-button = 关闭
 
+# ADR-0051：逻辑恢复（导入）。
+restore-button = 恢复…
+restore-button-hint = 将 SQL 文件应用到此数据库
+restore-planning = 正在读取文件…
+restore-dialog-title = 选择要恢复的 SQL 文件
+restore-warn-title = 目标非空
+restore-warn-body = 此数据库已有 { $tables } 个表。恢复 { $statements } 条语句可能会失败或覆盖现有数据。
+restore-warn-continue = 仍然恢复
+restore-warn-cancel = 取消
+restore-progress-title = 正在恢复
+restore-progress-statements = 语句 { $done } / { $total }
+restore-cancel-button = 取消
+restore-done-title = 恢复完成
+restore-done-summary = 已应用 { $statements } 条语句：{ $ddl } 条结构，{ $data } 条数据。
+restore-done-cancelled = 恢复已取消 — 目标包含部分恢复内容。
+restore-done-failures = 有 { $count } 条语句失败，已跳过。
+restore-close-button = 关闭
+restore-failed-title = 恢复失败
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = 备份
 backup-threshold-label = 警告阈值（行数）

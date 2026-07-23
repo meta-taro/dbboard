@@ -303,6 +303,29 @@ backup-done-truncations = { $count } table(s) were truncated part-way.
 backup-failed-title = Backup failed
 backup-close-button = Close
 
+# ADR-0051: logical restore (import). The Restore button picks a .sql file,
+# the worker classifies it, and — when the target is not empty — a strong
+# confirm guards the empty/new-target safety model before statements are
+# applied. The completion summary surfaces partial failures and cancellation
+# honestly.
+restore-button = Restore…
+restore-button-hint = Apply a SQL file to this database
+restore-planning = Reading file…
+restore-dialog-title = Choose a SQL file to restore
+restore-warn-title = Target is not empty
+restore-warn-body = This database already has { $tables } table(s). Restoring { $statements } statement(s) may fail or overwrite existing data.
+restore-warn-continue = Restore anyway
+restore-warn-cancel = Cancel
+restore-progress-title = Restoring
+restore-progress-statements = Statement { $done } of { $total }
+restore-cancel-button = Cancel
+restore-done-title = Restore complete
+restore-done-summary = Applied { $statements } statement(s): { $ddl } schema, { $data } data.
+restore-done-cancelled = Restore cancelled — the target holds a partial restore.
+restore-done-failures = { $count } statement(s) failed and were skipped.
+restore-close-button = Close
+restore-failed-title = Restore failed
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = Backup
 backup-threshold-label = Warn above (rows)

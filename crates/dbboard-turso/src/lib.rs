@@ -58,6 +58,8 @@ impl DatabaseAdapter for TursoAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_describe_table: true,
+            has_execute: true,
+            has_atomic_restore: true,
             ..Capabilities::default()
         }
     }
@@ -173,6 +175,58 @@ impl DatabaseAdapter for TursoAdapter {
             columns,
             primary_key: pk_parts.into_iter().map(|(_, name)| name).collect(),
         })
+    }
+
+    async fn execute(&self, sql: &str) -> DbResult<u64> {
+        // Mirror `query`'s routing: libSQL rejects a row-returning statement
+        // sent through `execute`. A restore script is overwhelmingly DDL/DML,
+        // but an incidental row-returning statement still runs — it changes
+        // nothing, so report zero rows affected.
+        if is_row_returning(sql) {
+            run_select(&self.conn, sql).await.map(|r| r.rows_affected)
+        } else {
+            self.conn
+                .execute(sql, ())
+                .await
+                .map_err(|e| DbError::Query(e.to_string()))
+        }
+    }
+
+    async fn execute_in_transaction(&self, statements: &[String]) -> DbResult<()> {
+        // An empty batch would leave a dangling `BEGIN`, so treat it as a
+        // no-op — the runner never hands us one, but a caller might.
+        if statements.is_empty() {
+            return Ok(());
+        }
+
+        self.conn
+            .execute("BEGIN", ())
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        for stmt in statements {
+            let step = if is_row_returning(stmt) {
+                run_select(&self.conn, stmt).await.map(|_| ())
+            } else {
+                self.conn
+                    .execute(stmt, ())
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| DbError::Query(e.to_string()))
+            };
+            if let Err(e) = step {
+                // Best-effort rollback; surface the original failure. A failed
+                // rollback would only compound the same error, so it is dropped.
+                let _ = self.conn.execute("ROLLBACK", ()).await;
+                return Err(e);
+            }
+        }
+
+        self.conn
+            .execute("COMMIT", ())
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(())
     }
 }
 
@@ -591,5 +645,77 @@ mod tests {
         // rather than replacing every empty-string match.
         let msg = "boom".to_string();
         assert_eq!(redact_path(msg.clone(), ""), msg);
+    }
+
+    #[tokio::test]
+    async fn capabilities_report_execute_and_atomic_restore() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        let caps = adapter.capabilities();
+        assert!(caps.has_execute);
+        assert!(caps.has_atomic_restore);
+    }
+
+    #[tokio::test]
+    async fn execute_runs_ddl_and_dml_and_reports_rows_affected() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        let affected = adapter
+            .execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+            .await
+            .unwrap();
+        assert_eq!(affected, 0, "DDL affects no rows");
+
+        let inserted = adapter
+            .execute("INSERT INTO t (id, label) VALUES (1, 'a'), (2, 'b')")
+            .await
+            .unwrap();
+        assert_eq!(inserted, 2);
+        assert_eq!(row_count(&adapter).await, 2);
+    }
+
+    #[tokio::test]
+    async fn execute_in_transaction_commits_all_statements() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .execute_in_transaction(&[
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)".to_owned(),
+                "INSERT INTO t (id, label) VALUES (1, 'a')".to_owned(),
+                "INSERT INTO t (id, label) VALUES (2, 'b')".to_owned(),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(row_count(&adapter).await, 2);
+    }
+
+    #[tokio::test]
+    async fn execute_in_transaction_rolls_back_on_a_failed_statement() {
+        let adapter = seeded(0).await; // table t exists, empty
+        let err = adapter
+            .execute_in_transaction(&[
+                "INSERT INTO t (id, label) VALUES (1, 'a')".to_owned(),
+                // Duplicate primary key: fails, and the whole batch unwinds.
+                "INSERT INTO t (id, label) VALUES (1, 'dup')".to_owned(),
+            ])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+        // Nothing committed: the first insert was rolled back with the second.
+        assert_eq!(row_count(&adapter).await, 0);
+        // The connection is not stuck mid-transaction — a later write succeeds.
+        adapter
+            .execute("INSERT INTO t (id, label) VALUES (9, 'ok')")
+            .await
+            .unwrap();
+        assert_eq!(row_count(&adapter).await, 1);
+    }
+
+    #[tokio::test]
+    async fn execute_in_transaction_treats_an_empty_batch_as_a_noop() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter.execute_in_transaction(&[]).await.unwrap();
+        // The connection is still usable (no dangling BEGIN).
+        adapter
+            .execute("CREATE TABLE t (id INTEGER)")
+            .await
+            .unwrap();
     }
 }

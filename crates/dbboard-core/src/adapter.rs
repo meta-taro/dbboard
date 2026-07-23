@@ -101,6 +101,42 @@ pub trait DatabaseAdapter: Send + Sync {
         ))
     }
 
+    /// Execute one write/DDL statement, returning the number of rows it
+    /// affected (0 for DDL). This is the per-statement primitive the
+    /// restore/import path (ADR-0051) drives — unlike [`query`](Self::query),
+    /// the caller expects it to *change* the database.
+    ///
+    /// `sql` must be a single statement; splitting a script into statements
+    /// is the restore layer's job (`dbboard_core::split_statements`), not the
+    /// adapter's.
+    ///
+    /// The default returns [`DbError::Capability`] so adapters that pre-date
+    /// ADR-0051 compile unchanged and miss at runtime rather than at build
+    /// time. Implementors must also flip [`Capabilities::has_execute`].
+    async fn execute(&self, sql: &str) -> DbResult<u64> {
+        let _ = sql;
+        Err(DbError::Capability(
+            "execute not supported by this adapter".into(),
+        ))
+    }
+
+    /// Execute `statements` as one atomic unit: either every statement
+    /// commits or none does. Restore uses this so a failed import leaves the
+    /// target untouched rather than half-populated.
+    ///
+    /// Only engines with a real multi-statement transaction implement this.
+    /// Cloudflare D1 (no transaction over its HTTP API) leaves it unset and
+    /// the restore path falls back to per-statement [`execute`](Self::execute).
+    ///
+    /// The default returns [`DbError::Capability`]. Implementors must also
+    /// flip [`Capabilities::has_atomic_restore`].
+    async fn execute_in_transaction(&self, statements: &[String]) -> DbResult<()> {
+        let _ = statements;
+        Err(DbError::Capability(
+            "execute_in_transaction not supported by this adapter".into(),
+        ))
+    }
+
     fn views(&self) -> Option<&dyn ViewIntrospection> {
         None
     }
@@ -180,6 +216,8 @@ mod tests {
                 has_realtime: true,
                 has_describe_table: true,
                 has_table_ddl: true,
+                has_execute: true,
+                has_atomic_restore: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -210,6 +248,17 @@ mod tests {
                 "CREATE TABLE {} (id INTEGER PRIMARY KEY);",
                 table.name
             ))
+        }
+        async fn execute(&self, _sql: &str) -> DbResult<u64> {
+            Ok(1)
+        }
+        async fn execute_in_transaction(&self, statements: &[String]) -> DbResult<()> {
+            // Echo a trivial success unless handed an empty batch, which the
+            // restore path should never do.
+            if statements.is_empty() {
+                return Err(DbError::Query("empty transaction".into()));
+            }
+            Ok(())
         }
         fn views(&self) -> Option<&dyn ViewIntrospection> {
             Some(self)
@@ -322,6 +371,61 @@ mod tests {
     fn table_ddl_capability_flag_matches_support() {
         assert!(!NoopAdapter.capabilities().has_table_ddl);
         assert!(FullAdapter.capabilities().has_table_ddl);
+    }
+
+    #[tokio::test]
+    async fn default_execute_surfaces_capability_error() {
+        let err = NoopAdapter
+            .execute("INSERT INTO t VALUES (1)")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(err.message(), "execute not supported by this adapter");
+    }
+
+    #[tokio::test]
+    async fn overridden_execute_reports_rows_affected() {
+        let affected = FullAdapter
+            .execute("INSERT INTO t VALUES (1)")
+            .await
+            .unwrap();
+        assert_eq!(affected, 1);
+    }
+
+    #[test]
+    fn execute_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_execute);
+        assert!(FullAdapter.capabilities().has_execute);
+    }
+
+    #[tokio::test]
+    async fn default_execute_in_transaction_surfaces_capability_error() {
+        let err = NoopAdapter
+            .execute_in_transaction(&["INSERT INTO t VALUES (1)".to_owned()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(
+            err.message(),
+            "execute_in_transaction not supported by this adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn overridden_execute_in_transaction_runs_a_batch() {
+        FullAdapter
+            .execute_in_transaction(&[
+                "CREATE TABLE t (id INTEGER)".to_owned(),
+                "INSERT INTO t VALUES (1)".to_owned(),
+            ])
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn atomic_restore_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_atomic_restore);
+        assert!(FullAdapter.capabilities().has_atomic_restore);
     }
 
     /// An adapter whose `query` always returns `row_count` single-cell

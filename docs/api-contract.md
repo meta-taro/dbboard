@@ -168,13 +168,19 @@ other variant maps to a native JSON scalar.
   "has_functions": false,
   "has_auth": false,
   "has_storage": false,
-  "has_realtime": false
+  "has_realtime": false,
+  "has_describe_table": false,  // ADR-0028
+  "has_table_ddl": false,       // ADR-0049 (dump)
+  "has_execute": false,         // ADR-0051 (restore)
+  "has_atomic_restore": false   // ADR-0051 (restore)
 }
 ```
 
 - A flat object of `snake_case` boolean flags, one per optional
-  capability defined in ADR-0012. The set may grow over time; clients
-  must tolerate unknown flags (see `GET /capabilities`).
+  capability defined in ADR-0012 and its successors. The set grows over
+  time (`has_describe_table`, `has_table_ddl`, and the restore flags were
+  each added by a later ADR); clients must tolerate unknown flags (see
+  `GET /capabilities`).
 - Each `true` flag promises a corresponding capability surface (e.g.
   `has_views` → view introspection endpoints). Phase 2 ships every
   flag as `false`; per-feature endpoints land in later phases.

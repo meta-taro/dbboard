@@ -169,6 +169,25 @@ backup-done-truncations = { $count }개 테이블이 도중에 잘렸습니다.
 backup-failed-title = 백업 실패
 backup-close-button = 닫기
 
+# ADR-0051: 논리적 복원(가져오기).
+restore-button = 복원…
+restore-button-hint = 이 데이터베이스에 SQL 파일을 적용합니다
+restore-planning = 파일 읽는 중…
+restore-dialog-title = 복원할 SQL 파일 선택
+restore-warn-title = 대상이 비어 있지 않음
+restore-warn-body = 이 데이터베이스에는 이미 { $tables }개 테이블이 있습니다. { $statements }개 문을 복원하면 실패하거나 기존 데이터를 덮어쓸 수 있습니다.
+restore-warn-continue = 그래도 복원
+restore-warn-cancel = 취소
+restore-progress-title = 복원 중
+restore-progress-statements = 문 { $done } / { $total }
+restore-cancel-button = 취소
+restore-done-title = 복원 완료
+restore-done-summary = { $statements }개 문을 적용했습니다: 스키마 { $ddl }개, 데이터 { $data }개.
+restore-done-cancelled = 복원이 취소되었습니다 — 대상에는 부분 복원이 포함되어 있습니다.
+restore-done-failures = { $count }개 문이 실패하여 건너뛰었습니다.
+restore-close-button = 닫기
+restore-failed-title = 복원 실패
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = 백업
 backup-threshold-label = 경고 기준 행 수
