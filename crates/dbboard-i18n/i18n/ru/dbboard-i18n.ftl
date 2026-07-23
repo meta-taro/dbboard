@@ -170,6 +170,25 @@ backup-done-truncations = { $count } таблиц(ы) обрезаны на се
 backup-failed-title = Ошибка резервного копирования
 backup-close-button = Закрыть
 
+# ADR-0051: логическое восстановление (импорт).
+restore-button = Восстановить…
+restore-button-hint = Применить файл SQL к этой базе данных
+restore-planning = Чтение файла…
+restore-dialog-title = Выберите файл SQL для восстановления
+restore-warn-title = Цель не пуста
+restore-warn-body = В этой базе данных уже есть { $tables } таблиц(ы). Восстановление { $statements } операторов(а) может завершиться ошибкой или перезаписать существующие данные.
+restore-warn-continue = Всё равно восстановить
+restore-warn-cancel = Отмена
+restore-progress-title = Восстановление
+restore-progress-statements = Оператор { $done } из { $total }
+restore-cancel-button = Отмена
+restore-done-title = Восстановление завершено
+restore-done-summary = Применено { $statements } операторов(а): { $ddl } схемы, { $data } данных.
+restore-done-cancelled = Восстановление отменено — цель содержит частичное восстановление.
+restore-done-failures = { $count } операторов(а) завершились ошибкой и были пропущены.
+restore-close-button = Закрыть
+restore-failed-title = Ошибка восстановления
+
 # ADR-0050: persisted, user-editable backup warn threshold.
 backup-settings-menu = Резервная копия
 backup-threshold-label = Предупреждать свыше (строк)
