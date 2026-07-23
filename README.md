@@ -184,9 +184,20 @@ if the database is bigger than a threshold (500k rows by default, adjustable
 under the **Backup** menu and remembered across restarts) so a giant dump
 isn't kicked off blindly; while running, a window shows table/row progress and
 a percentage bar and can **Cancel** at any time (the file keeps the partial
-dump). It is **dump-only** — restore is deferred to a later release. See
-[ADR-0049](docs/decisions.md) and [ADR-0050](docs/decisions.md) (the
+dump). See [ADR-0049](docs/decisions.md) and [ADR-0050](docs/decisions.md) (the
 configurable threshold).
+
+A **Restore…** button on the same toolbar plays a `.sql` file back into the
+active connection — the read side of the backup above, and it also accepts
+foreign scripts (`pg_dump`, `sqlite3 .dump`). It runs whole-script against an
+engine of the matching family (SQLite for Turso/D1, Postgres for Neon,
+Supabase, and Aurora DSQL) and applies statements inside a transaction where
+the engine supports one (Aurora DSQL falls back to per-statement). To stay
+safe, restore targets **empty** databases: loading into a connection that
+already holds tables raises a confirmation rather than merging or diffing.
+A window shows per-statement progress and can **Cancel** mid-run; the summary
+reports how many schema and data statements applied and which failed. See
+[ADR-0051](docs/decisions.md).
 
 ### Local Turso/libSQL (default)
 
