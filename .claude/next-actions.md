@@ -7,11 +7,22 @@
 
 ## 最終更新
 
-- 日付: 2026-07-22 (**DL ページ + 結果グリッド強化 (ソート/MSI ショートカット) が
-  develop 着地。次の user 側ボール = マージ済み機能の実地確認、または実利用摩擦の
-  次テーマ選択。**)
-- develop tip: PR #104 (DL ページ) → #105 (MSI ショートカット) → #106 (ソート) まで
-  merged。main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり)。
+- 日付: 2026-07-23 (**論理バックアップ (ダンプ) ADR-0049 が PR #108 で develop 着地。**
+  次の user 側ボール = (1) この chore doc-sync PR のマージ、(2) 実地確認
+  (D1/Supabase/DSQL をダンプ・巨大 DB 警告・進捗/キャンセル・部分ダンプ)、
+  (3) 次テーマ = restore (別 ADR) か次の実利用摩擦。)
+- develop tip: PR #108 (backup dump, merge `190526e`) が最新。直前は
+  #104 (DL ページ) → #105 (MSI ショートカット) → #106 (ソート)。
+  main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup)。
+- **✅ 論理バックアップ = dump-only (PR #108, ADR-0049):** クエリツールバーの
+  **Backup…** で接続全体を 1 つの `.sql` にダンプ。SQLite 系 (Turso/D1) は
+  `sqlite_master` 逐語 DDL、Postgres 系 (Neon/Supabase/Aurora DSQL) は catalog
+  から DDL 再構築 (DSQL は FK/sequence 省略で degrade)。keyset ページングで
+  ストリーム書き出し、preflight `COUNT(*)` が 500k 行超で warn-and-allow、進捗
+  ウィンドウ (table/row カウンタ + % バー + Cancel = 部分ダンプ保持)、完了
+  サマリが skip/truncate を表出。i18n 全 11 ロケール。**restore は将来 ADR。**
+  md-business 用検証シート = `.claude/verification/adr-0049-backup.md` (33 ケース)。
+  rust-reviewer Approve (LOW 2・非ブロッキング)、リリースゲート緑、cargo deny clean。
 - **✅ DL ページ (GitHub Pages) 完了 (PR #104, ADR-0047):**
   https://meta-taro.github.io/dbboard/ が live。Pages workflow は `site/**` 変更を
   検知して develop merge で自動デプロイ。`.exe` = primary (塗り) / `.msi` =
@@ -25,9 +36,11 @@
   - **MSI ショートカット (PR #105):** スタートメニュー + デスクトップ。非アドバタイズ
     型 (Shortcut + HKCU RegistryValue key-path + RemoveFolder)、ICE69 回避のため
     Binaries フィーチャに同居。アンインストールで削除。
-- **▶ 今の user 側ボール:** (1) マージ済み機能の実地確認 = MSI 再ビルドで
-  ショートカット出現/アンインストール消去、ソート UX (多段・矢印/レベル番号・
-  ソート後も編集が正しい行を指すか)。(2) 次の実利用摩擦テーマの選択 (下記 候補)。
+- **▶ 今の user 側ボール:** (1) この chore doc-sync PR (`chore/post-pr108-doc-sync`)
+  を push → PR 作成待ち。(2) backup の実地確認 = D1/Supabase/DSQL をダンプ、巨大 DB
+  警告 (500k)、進捗バー/キャンセル (部分ダンプ)、`.sql` の再取り込み。検証は
+  `.claude/verification/adr-0049-backup.md` の 33 ケースを md-business に。(3) 次の
+  実利用摩擦テーマ、または backup の restore (別 ADR) の選択 (下記 候補)。
 - **MSI アンインストールの残留 (user 質問への回答済み):** MSI は exe/PATH/フォルダ/
   ARP エントリを削除するが、`%APPDATA%\dbboard\dbboard\` の設定ファイルと Windows
   資格情報マネージャーのエントリは残す (仕様どおり)。クリーンアップ手順は口頭提示済。
@@ -60,7 +73,8 @@
 配布 (#14) は 2026-07-16 に完了済、v0.3.0 公開済、DL ページも live。今は
 「配布済 exe を担当が実際に使うか」を update-check で観測しつつ、次の実利用改善
 (下記の user 側ボール) を摩擦順に進めるフェーズ。直近は結果グリッドのソート漏れと
-MSI ショートカット漏れを実地で発見して補完した。
+MSI ショートカット漏れを補完し、次いで maintainer 要望の**論理バックアップ
+(ダンプ)** を ADR-0049 として実装・着地 (PR #108)。
 
 ---
 
