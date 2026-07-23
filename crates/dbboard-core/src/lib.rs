@@ -37,7 +37,7 @@ pub use read_only::{
     check_read_only, classify_read_only, is_single_read_only_statement, ReadOnlyStatement,
     ReadOnlyViolation,
 };
-pub use restore::split_statements;
+pub use restore::{classify_script, split_statements, RestoreStatement, StatementKind};
 pub use row::{Column, QueryResult, Row};
 pub use schema::{ColumnInfo, TableInfo, TableSchema};
 pub use sort::{compare_values, sorted_row_order, SortKey};
