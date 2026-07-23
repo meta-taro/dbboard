@@ -19,6 +19,8 @@
 //!
 //! This slice lands Layer 1 only.
 
+mod plan;
 mod split;
 
+pub use plan::{classify_script, RestoreStatement, StatementKind};
 pub use split::split_statements;
