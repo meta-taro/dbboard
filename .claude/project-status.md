@@ -5,6 +5,23 @@
 
 ## 最終更新
 
+- 日付: 2026-07-24 (**OpenAI/ChatGPT プロバイダ = ADR-0052、PR #114 マージ済**
+  (develop tip `ba54d02`)。ADR-0025 §Out-of-scope が defer した 2 つ目の
+  プロバイダ。**新クレート `dbboard-openai`** (dbboard-anthropic の兄弟、
+  dbboard-ai のみ依存) が **Chat Completions** (`POST /v1/chat/completions`) を
+  実装。**ストリーミング parity** = 実 SSE パーサ (`data:` フレーム・`[DONE]`
+  センチネル・`stream_options.include_usage` 経由の usage) を既存の `StreamEvent`
+  列に正規化。**既定モデル `gpt-4o`** (model 空欄時)、認証は `Authorization:
+  Bearer`、キーは keyring のみ (Debug/log/error に出さない)。**配線:** config =
+  `AiProviderKind::OpenAi` (`kind = "openai"` に serde rename) + add/edit ドラフト
+  + keyring-ref + reconcile、kind 切替は従来通り `KindMismatch` (delete+add)。
+  ui = Add フォームに kind セレクタ ComboBox、Edit は kind 読み取り専用。app =
+  `build_provider_for_kind` が keyring から `OpenAiProvider` を構築 (env フォール
+  バックは Anthropic 専用のまま)。i18n = `ai-settings-kind-openai` 全 11 ロケール。
+  docs = ADR-0052 追記 + README に 2 プロバイダ記載 & toml 例をフラット `kind`
+  スキーマに修正。全ゲート green (release 含む)。**次の user 側ボール:** 実キーで
+  の実地スモーク (Settings で openai 追加 → Use → Explain/Suggest のトークン
+  逐次表示 + トークンメータ + Cancel)。restore 実地確認 (ADR-0051) は未消化のまま。)
 - 日付: 2026-07-23 (**論理リストア/インポート = ADR-0051、PR #112 マージ済
   (develop tip `e624bbb`)。** ADR-0049 ダンプの読み側 = クエリツールバーの
   **Restore…** で `.sql` を現接続へ流し込む。**6 スライスで着地 (core→adapters→

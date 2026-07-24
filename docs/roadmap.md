@@ -260,6 +260,14 @@ work without it. Trait + first-provider shape locked in
       against `POST /v1/messages`, `explain` / `suggest_sql`,
       construction-time key/model validation, redacted `Debug`,
       24 unit + 7 wiremock round-trip tests, no live network.)
+- [x] Second provider: ChatGPT (OpenAI API) — `dbboard-openai`
+      crate (ADR-0052; landed via PR #114 on 2026-07-24 — `reqwest`
+      against `POST /v1/chat/completions`, `explain` / `suggest_sql`
+      + full SSE streaming parity (`has_streaming: true`), Bearer
+      auth, default model `gpt-4o`, redacted `Debug`, 48 unit +
+      wiremock tests, no live network). Selectable alongside Anthropic
+      via the AI Providers settings window (`kind = "openai"`); the
+      `DBBOARD_ANTHROPIC_*` env path stays Anthropic-only.)
 - [x] `apps/dbboard` env-var wiring (ADR-0023; landed via PR #24
       on 2026-06-17 — `DBBOARD_ANTHROPIC_API_KEY` (required gate) +
       optional `DBBOARD_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
