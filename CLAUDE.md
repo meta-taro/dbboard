@@ -191,6 +191,22 @@ Suggested tooling:
 - `cargo deny check` for license and advisory checks.
 - `cargo audit` for known vulnerabilities.
 
+### PII / secret leak scanning (ADR-0055)
+
+This repo is public but developed against real, business-identifying
+databases. `scripts/pii-scan.sh` blocks real store names, credentials, and
+maintainer PII from entering the repo — on every commit (pre-commit hook),
+every commit message (commit-msg hook), and daily in CI (`pii-scan.yml`).
+
+- Real store names / personal email / OS username go ONLY in the untracked
+  `.pii-denylist` (locally) and the `PII_DENYLIST` CI secret — never in a
+  tracked file, a commit message, or a PR body. Template:
+  `.pii-denylist.example`.
+- A blocked commit means a real leak (remove it) or a false positive (add a
+  narrow regex to `scripts/pii-scan.allow`). Never `--no-verify` past a PII
+  finding — the only sanctioned bypass is the Windows libSQL teardown segfault.
+- Operator guide: `docs/maintainer/pii-scanning.md`.
+
 ## Progress Tracking
 
 - Update `.claude/project-status.md` at the end of each working session.
