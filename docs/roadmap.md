@@ -472,15 +472,19 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 - [x] Read-only MCP server (`dbboard-mcp`) — dbboard now doubles as a
       headless [MCP](https://modelcontextprotocol.io) server that hands its
       already-configured databases to an external AI agent (Claude Desktop /
-      Claude Code) over stdio as a small **read-only** tool surface. Five
-      fixed tools (`list_connections`, `list_tables`, `describe_table`,
-      `run_read_query`, `get_annotations`), reusing the exact
-      `connections.toml` + OS-keychain machinery as the GUI. Secrets never
+      Claude Code) over stdio as a small **read-only** tool surface. Seven
+      read-only tools (`list_connections`, `list_tables`, `describe_table`,
+      `search_schema`, `list_relationships`, `run_read_query`,
+      `get_annotations`) — the surface opened at five and grew by
+      `search_schema` ([ADR-0053](decisions.md), PR #118) then
+      `list_relationships` ([ADR-0054](decisions.md), PR #120) — reusing the
+      exact `connections.toml` + OS-keychain machinery as the GUI. Secrets never
       cross the wire (only `{id,name,kind}` is serialized); read-only is
       **engine-enforced** (`BEGIN TRANSACTION READ ONLY` / `PRAGMA
       query_only` / D1 AST classification), not string-matched; result sets
       clamp to 1000 rows; stdout is reserved for JSON-RPC and all logs go to
-      stderr. The v0.3.0 headline feature ([ADR-0046](decisions.md),
+      stderr. The v0.3.0 headline feature ([ADR-0046](decisions.md), extended
+      by [ADR-0053](decisions.md) and [ADR-0054](decisions.md);
       `crates/dbboard-mcp/`). This closes dbboard's AI story in both
       directions: AI *client* (Phase 4) and AI *server* (here).
 - [x] Multi-column result sort — click a column header to sort it
