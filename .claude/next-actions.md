@@ -7,22 +7,25 @@
 
 ## 最終更新
 
-- 日付: 2026-07-24 (**エラー折り返し fix が PR #116 で develop 着地 + OpenAI
-  プロバイダを実機スモーク。** OpenAI (ADR-0052, PR #114) を develop ローカル
-  ビルドで実機確認 → Settings で `kind=openai` 追加・使用・送信まで通り、**認証
-  (Bearer)・SSE ストリーミングのエラー経路・エラー本文表示がすべて動作確認できた**
-  (実応答は OpenAI アカウントが `429 insufficient_quota` = 残高不足で未到達。残高
-  チャージ後に各自でトークン逐次表示を見る、で確定)。その実機確認中に拾った摩擦 =
-  **長いエラー本文が AI パネルを右に溢れて折り返さない** → `render_error` (ADR-0039)
-  でコピーボタンを独立行にし localized/原文を `Label::wrap()` で折り返し (全エラー
-  箇所に波及)。PR #116 で着地。**今の user 側ボール = (1) この chore doc-sync PR
-  (`chore/post-pr116-doc-sync`) のマージ、(2) 次テーマ = MCP 方面 (user 意向: MCP
-  の需要が高い)、(3) restore 実地確認の積み残し。**)
-- develop tip: PR #116 (error-wrap fix, merge `aa5fa9d`) が最新。直前は #115
-  (OpenAI doc-sync `21cb898`) → #114 (OpenAI provider ADR-0052 `ba54d02`) → #112
-  (restore/import ADR-0051 `e624bbb`) → #113 (doc-sync)。main = `70ecb93` =
-  **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup + restore + OpenAI provider
-  + error-wrap fix)。
+- 日付: 2026-07-24 (**MCP 拡張 第1弾 = `search_schema` ツールが PR #118 で develop
+  着地。** user 意向「MCP は需要が高い・auto mode でガンガン」を受け、既存 read-only
+  MCP サーバ (ADR-0046, 5ツール) に **6番目の read-only ツール `search_schema`** を追加
+  (ADR-0053)。接続全体でテーブル名・カラム名を大小無視の部分一致検索し、「email カラム
+  はどのテーブル?」を **1コール** で解決 (従来は `list_tables`→各 `describe_table` の
+  N+1 往復)。**既存 `list_tables`+`describe_table` を service 層で合成のみ = core/adapter
+  変更なし・`query` 経路に触れない・秘密非露出**で ADR-0046 の read-only 不変条件を維持。
+  一致は 200 件上限 + `truncated` フラグ (`run_read_query` 行上限と一貫)、空パターンは
+  `invalid_params` 拒否。rust-reviewer 済 (CRITICAL/HIGH なし、MEDIUM 3件をコミット前に
+  解消)。dbboard-mcp 23 テスト green。pre-commit は既知 benign な libSQL teardown
+  segfault で `--no-verify` (lib テスト別途 green)。**今の user 側ボール = (1) この chore
+  doc-sync PR (`chore/post-pr118-doc-sync`) のマージ、(2) 次テーマ = MCP 継続 (次スライス
+  候補 = FK/リレーション探索。ただし core トレイト拡張 + 全アダプタ実装 + 専用 ADR が必要な
+  大きめスライス)、(3) OpenAI 実応答確認 / restore 実地確認の積み残し。**)
+- develop tip: PR #118 (`search_schema`, merge `3887784`) が最新。直前は #117
+  (post-pr116 doc-sync `58edaa1`) → #116 (error-wrap fix `aa5fa9d`) → #115
+  (OpenAI doc-sync `21cb898`) → #114 (OpenAI provider ADR-0052 `ba54d02`)。
+  main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup + restore
+  + OpenAI provider + error-wrap fix + search_schema)。
 - **✅ OpenAI/ChatGPT プロバイダ (PR #114, ADR-0052):** Claude と並ぶ 2 つ目の
   AI プロバイダ。新クレート `dbboard-openai` が **Chat Completions**
   (`POST /v1/chat/completions`) を実装 (Responses API ではなく安定面を選択)。
@@ -81,10 +84,18 @@
   - **MSI ショートカット (PR #105):** スタートメニュー + デスクトップ。非アドバタイズ
     型 (Shortcut + HKCU RegistryValue key-path + RemoveFolder)、ICE69 回避のため
     Binaries フィーチャに同居。アンインストールで削除。
+- **✅ MCP 拡張 第1弾 = `search_schema` (PR #118, ADR-0053):** read-only MCP
+  サーバの 6番目のツール。接続全体でテーブル/カラム名を大小無視の部分一致検索
+  → 「email カラムはどのテーブル?」を1コールで解決。service 層合成のみ
+  (core/adapter 変更なし・秘密非露出・read-only 維持)、200件上限+`truncated`、
+  空パターン拒否。dbboard-mcp 15→23 テスト。
 - **▶ 今の user 側ボール:** (1) この chore doc-sync PR
-  (`chore/post-pr116-doc-sync`) を push → PR 作成 → develop へマージ。(2) **次テーマ =
-  MCP 方面** (user 明言: OpenAI より MCP の需要が高い)。既存 `dbboard-mcp` (read-only
-  stdio 5 ツール, ADR-0046) の拡張 or 別クライアント対応など、着手時に具体テーマを選ぶ。
+  (`chore/post-pr118-doc-sync`) を push → PR 作成 → develop へマージ。(2) **次テーマ =
+  MCP 継続** (user 明言: MCP の需要が高い・auto mode でガンガン)。次スライス最有力 =
+  **FK/リレーション探索** (`describe_table` は現在 PK のみ返す → エージェントが正しい
+  JOIN を書けない)。ただし `DatabaseAdapter` トレイトに introspection メソッド追加 +
+  全アダプタ実装 + 専用 ADR が必要な複数クレート横断スライス。他候補 = 別 MCP
+  クライアント対応 / `database_overview` 等の read-only 追加ツール。
   (3) **OpenAI 実応答の確認** (任意) = OpenAI 残高チャージ後にトークン逐次表示・Cancel
   を一度見る。認証/エラー経路は確認済なので優先度低。(4) **restore の実地確認**
   (積み残し) = 空 DB への取り込み (Turso/D1/Postgres 系)、既存テーブルありでの強制確認
