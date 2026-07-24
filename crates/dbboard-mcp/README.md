@@ -17,13 +17,15 @@ desktop GUI: the `connections.toml` entry store plus the OS keychain
 adds no new place to keep credentials — it reads the ones dbboard already
 holds.
 
-Five tools, fixed (ADR-0046 Decision 5):
+Six read-only tools (ADR-0046 Decision 5, extended by
+[ADR-0053](../../docs/decisions.md)):
 
 | Tool | What it returns |
 |---|---|
 | `list_connections` | Every configured connection as `{ id, name, kind }`. **No** keyring references, URLs, or tokens — secrets are never serialized. |
 | `list_tables` | The tables in a connection's database. |
 | `describe_table` | One table's columns (name, type, nullability, PK flag, ordinal) and primary key. `schema` is optional (the Postgres schema namespace; omit for SQLite/libSQL/D1). |
+| `search_schema` | The tables and columns across a connection whose **name** contains a case-insensitive substring — the fast "which table has the email column?" lookup, without `describe_table` on every table. Matches identifiers, not row data. Capped at 200 matched tables with a `truncated` flag. |
 | `run_read_query` | The rows from a single read-only SQL statement (`SELECT` / `WITH` / `EXPLAIN`), capped at `max_rows` (default 200, hard cap 1000) with a `truncated` flag. |
 | `get_annotations` | dbboard's local table/column notes ([ADR-0045](../../docs/decisions.md)) for a connection, optionally filtered to one table and/or column. |
 
@@ -131,7 +133,7 @@ receives Ctrl-C.
 
 - `service.rs` — `McpService`, the transport-independent tool logic.
   Resolves a connection + keyring secret into a cached adapter, runs the
-  five read-only operations, and enforces the row cap and secret
+  six read-only operations, and enforces the row cap and secret
   redaction. Testable against a real (in-memory) adapter with no MCP
   wiring.
 - `server.rs` — `DbboardMcp`, the thin `rmcp` `ServerHandler` that wraps
@@ -143,7 +145,8 @@ receives Ctrl-C.
 ## See also
 
 - [ADR-0046](../../docs/decisions.md) — the dbboard-mcp read-only MCP
-  server decision, including the five-tool surface.
+  server decision, and [ADR-0053](../../docs/decisions.md) — the
+  `search_schema` tool that extends the surface to six.
 - [ADR-0045](../../docs/decisions.md) — local table/column annotations,
   surfaced by `get_annotations`.
 - [`docs/connections.md`](../../docs/connections.md) — `connections.toml`
