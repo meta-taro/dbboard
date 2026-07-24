@@ -17,7 +17,9 @@ use crate::capabilities::{
     AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
     ViewIntrospection,
 };
-use crate::{check_read_only, DbError, DbResult, QueryResult, SqlDialect, TableInfo, TableSchema};
+use crate::{
+    check_read_only, DbError, DbResult, ForeignKey, QueryResult, SqlDialect, TableInfo, TableSchema,
+};
 
 #[async_trait]
 pub trait DatabaseAdapter: Send + Sync {
@@ -78,6 +80,36 @@ pub trait DatabaseAdapter: Send + Sync {
         let _ = table;
         Err(DbError::Capability(
             "describe_table not supported by this adapter".into(),
+        ))
+    }
+
+    /// The foreign-key constraints declared on `table` — the outbound
+    /// edges of the relationship graph (ADR-0054). Each [`ForeignKey`]
+    /// pairs this table's referencing columns with the referenced
+    /// table's columns; a composite key is one `ForeignKey` with several
+    /// aligned column pairs.
+    ///
+    /// Returns an empty vector for a table with no foreign keys, and for
+    /// engines that model no foreign keys at all (Aurora DSQL, ADR-0021)
+    /// — an empty result, not a capability error, so a relationship
+    /// walk over a mixed connection set does not have to special-case
+    /// them.
+    ///
+    /// The default returns [`DbError::Capability`] so adapters that
+    /// pre-date ADR-0054 compile unchanged and miss at runtime rather
+    /// than at build time. Implementors must also flip
+    /// [`Capabilities::has_foreign_keys`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if `table` does not exist, plus any
+    /// error the underlying introspection query surfaces.
+    ///
+    /// [`Capabilities::has_foreign_keys`]: crate::Capabilities::has_foreign_keys
+    async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+        let _ = table;
+        Err(DbError::Capability(
+            "foreign_keys not supported by this adapter".into(),
         ))
     }
 
@@ -170,7 +202,8 @@ mod tests {
         ViewIntrospection,
     };
     use crate::{
-        Column, ColumnInfo, DbError, DbResult, QueryResult, Row, TableInfo, TableSchema, Value,
+        Column, ColumnInfo, DbError, DbResult, ForeignKey, QueryResult, Row, TableInfo,
+        TableSchema, Value,
     };
 
     struct NoopAdapter;
@@ -218,6 +251,7 @@ mod tests {
                 has_table_ddl: true,
                 has_execute: true,
                 has_atomic_restore: true,
+                has_foreign_keys: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -242,6 +276,14 @@ mod tests {
                 }],
                 primary_key: vec!["id".into()],
             })
+        }
+        async fn foreign_keys(&self, _table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+            Ok(vec![ForeignKey {
+                columns: vec!["owner_id".into()],
+                referenced_table: TableInfo::qualified("public", "users"),
+                referenced_columns: vec!["id".into()],
+                constraint_name: Some("fk_owner".into()),
+            }])
         }
         async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
             Ok(format!(
@@ -345,6 +387,36 @@ mod tests {
     fn describe_table_capability_flag_matches_support() {
         assert!(!NoopAdapter.capabilities().has_describe_table);
         assert!(FullAdapter.capabilities().has_describe_table);
+    }
+
+    #[tokio::test]
+    async fn default_foreign_keys_surfaces_capability_error() {
+        let err = NoopAdapter
+            .foreign_keys(&TableInfo::unqualified("orders"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(err.message(), "foreign_keys not supported by this adapter");
+    }
+
+    #[tokio::test]
+    async fn overridden_foreign_keys_returns_the_edge() {
+        let fks = FullAdapter
+            .foreign_keys(&TableInfo::unqualified("widgets"))
+            .await
+            .unwrap();
+        assert_eq!(fks.len(), 1);
+        assert_eq!(fks[0].columns, vec!["owner_id".to_owned()]);
+        assert_eq!(
+            fks[0].referenced_table,
+            TableInfo::qualified("public", "users")
+        );
+    }
+
+    #[test]
+    fn foreign_keys_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_foreign_keys);
+        assert!(FullAdapter.capabilities().has_foreign_keys);
     }
 
     #[tokio::test]

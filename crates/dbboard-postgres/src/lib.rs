@@ -28,8 +28,8 @@ use std::sync::{Arc, PoisonError, RwLock, Weak};
 use async_trait::async_trait;
 use dbboard_core::{
     classify_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
-    DbError, DbResult, QueryResult, ReadOnlyStatement, Row, SqlDialect, TableInfo, TableSchema,
-    Value, MAX_RESULT_ROWS,
+    DbError, DbResult, ForeignKey, QueryResult, ReadOnlyStatement, Row, SqlDialect, TableInfo,
+    TableSchema, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
@@ -121,6 +121,32 @@ const DESCRIBE_PK_SQL: &str = "SELECT kcu.column_name::TEXT \
      WHERE tc.constraint_type = 'PRIMARY KEY' \
        AND tc.table_schema = $1 AND tc.table_name = $2 \
      ORDER BY kcu.ordinal_position";
+
+/// Foreign keys of one table, one row per key column in key order
+/// (ADR-0054). Read from `pg_catalog` so composite keys keep their column
+/// order: `con.conkey`/`con.confkey` are parallel `smallint[]` arrays of
+/// local/referenced attribute numbers, unnested `WITH ORDINALITY` and
+/// re-joined on the shared position so local and referenced columns stay
+/// aligned. `contype = 'f'` selects foreign keys; the referenced table is
+/// resolved from `con.confrelid`. Grouped by constraint in the assembler.
+/// Names are cast to `TEXT` and the ordinal to `INT4` for the same
+/// cross-flavor decode reasons as [`DESCRIBE_COLUMNS_SQL`].
+const FOREIGN_KEYS_SQL: &str = "SELECT con.conname::TEXT, \
+     latt.attname::TEXT, \
+     fn.nspname::TEXT, \
+     fc.relname::TEXT, \
+     fatt.attname::TEXT \
+     FROM pg_catalog.pg_constraint con \
+     JOIN pg_catalog.pg_class c ON c.oid = con.conrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     JOIN pg_catalog.pg_class fc ON fc.oid = con.confrelid \
+     JOIN pg_catalog.pg_namespace fn ON fn.oid = fc.relnamespace \
+     JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS lk(attnum, ord) ON TRUE \
+     JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS rk(attnum, ord) ON rk.ord = lk.ord \
+     JOIN pg_catalog.pg_attribute latt ON latt.attrelid = con.conrelid AND latt.attnum = lk.attnum \
+     JOIN pg_catalog.pg_attribute fatt ON fatt.attrelid = con.confrelid AND fatt.attnum = rk.attnum \
+     WHERE con.contype = 'f' AND n.nspname = $1 AND c.relname = $2 \
+     ORDER BY con.conname, lk.ord";
 
 /// Columns of one table for DDL reconstruction (ADR-0049), read from
 /// `pg_catalog` so the type comes back canonicalised by `format_type` and
@@ -474,6 +500,11 @@ impl DatabaseAdapter for PostgresAdapter {
             has_describe_table: true,
             has_table_ddl: true,
             has_execute: true,
+            // Foreign keys are read from `pg_catalog` (ADR-0054). Aurora DSQL
+            // does not support foreign-key constraints, so the query simply
+            // returns no rows there — the capability stays advertised because
+            // the introspection path itself works on every flavor.
+            has_foreign_keys: true,
             // Aurora DSQL rejects mixed DDL+DML in one transaction and caps a
             // transaction at a single DDL statement (ADR-0021), so it cannot
             // honour an atomic multi-statement restore — it falls back to
@@ -576,6 +607,40 @@ impl DatabaseAdapter for PostgresAdapter {
             columns,
             primary_key,
         })
+    }
+
+    async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+        // Unqualified `TableInfo` defaults to `public`, mirroring
+        // `describe_table`. Unlike SQLite, a table without foreign keys is
+        // simply an empty result — not an error — so no missing-table check
+        // is needed here; the caller already holds the table from
+        // `list_tables`.
+        let schema = table.schema.as_deref().unwrap_or("public");
+        let pool = self.pool.current();
+
+        // Extended protocol with binds: the schema/table names are
+        // introspection data and stay out of the SQL text.
+        let rows = sqlx::query(FOREIGN_KEYS_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+
+        let fk_rows = rows
+            .iter()
+            .map(|row| -> DbResult<FkRow> {
+                Ok(FkRow {
+                    constraint_name: row.try_get(0).map_err(|e| classify_error(&e))?,
+                    local_column: row.try_get(1).map_err(|e| classify_error(&e))?,
+                    referenced_schema: row.try_get(2).map_err(|e| classify_error(&e))?,
+                    referenced_table: row.try_get(3).map_err(|e| classify_error(&e))?,
+                    referenced_column: row.try_get(4).map_err(|e| classify_error(&e))?,
+                })
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+
+        Ok(assemble_foreign_keys(fk_rows))
     }
 
     async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
@@ -943,6 +1008,46 @@ fn tuple_to_table(schema: String, name: String) -> TableInfo {
     TableInfo::qualified(schema, name)
 }
 
+/// One decoded row of [`FOREIGN_KEYS_SQL`], before rows are grouped into
+/// composite [`ForeignKey`]s. Rows arrive ordered by constraint name then
+/// key position, so a composite key's columns are consecutive and in order.
+struct FkRow {
+    constraint_name: String,
+    local_column: String,
+    referenced_schema: String,
+    referenced_table: String,
+    referenced_column: String,
+}
+
+/// Fold [`FOREIGN_KEYS_SQL`] rows into one [`ForeignKey`] per constraint.
+///
+/// Rows are pre-sorted by `(conname, key position)`, and a constraint name
+/// is unique within a single relation, so every row of one constraint is
+/// consecutive and in key order — folding against the last-built edge is
+/// enough to assemble composite keys without a secondary group pass.
+fn assemble_foreign_keys(rows: Vec<FkRow>) -> Vec<ForeignKey> {
+    let mut out: Vec<ForeignKey> = Vec::new();
+    for r in rows {
+        let extends_last = out
+            .last()
+            .and_then(|fk| fk.constraint_name.as_deref())
+            .is_some_and(|name| name == r.constraint_name);
+        if extends_last {
+            let last = out.last_mut().expect("extends_last implies a last edge");
+            last.columns.push(r.local_column);
+            last.referenced_columns.push(r.referenced_column);
+        } else {
+            out.push(ForeignKey {
+                columns: vec![r.local_column],
+                referenced_table: tuple_to_table(r.referenced_schema, r.referenced_table),
+                referenced_columns: vec![r.referenced_column],
+                constraint_name: Some(r.constraint_name),
+            });
+        }
+    }
+    out
+}
+
 /// Assemble a [`ColumnInfo`] from one `information_schema.columns` row.
 ///
 /// `is_nullable` is the SQL-standard `"YES"`/`"NO"` string, compared
@@ -1056,10 +1161,11 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_error, column_from_parts, harden_ssl_mode, reclassify_schema, truncate,
-        tuple_to_table, FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        assemble_foreign_keys, classify_error, column_from_parts, harden_ssl_mode,
+        reclassify_schema, truncate, tuple_to_table, FkRow, FLAVOR_AURORA_DSQL, FLAVOR_NEON,
+        FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
-    use dbboard_core::{DatabaseAdapter, DbError};
+    use dbboard_core::{DatabaseAdapter, DbError, ForeignKey, TableInfo};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 
     /// `id()` is part of the public contract documented in
@@ -1185,6 +1291,97 @@ mod tests {
             !dsql.capabilities().has_atomic_restore,
             "Aurora DSQL must not advertise atomic restore"
         );
+    }
+
+    /// Every flavor advertises foreign-key introspection (ADR-0054),
+    /// including Aurora DSQL — the `pg_catalog` query works there and just
+    /// returns no rows, since DSQL has no foreign-key constraints.
+    #[tokio::test]
+    async fn every_flavor_advertises_foreign_keys() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        for flavor in [
+            FLAVOR_POSTGRES,
+            FLAVOR_NEON,
+            FLAVOR_SUPABASE,
+            FLAVOR_AURORA_DSQL,
+        ] {
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool.clone()),
+                flavor,
+            };
+            assert!(adapter.capabilities().has_foreign_keys, "flavor {flavor}");
+        }
+    }
+
+    fn fk_row(
+        constraint: &str,
+        local: &str,
+        ref_schema: &str,
+        ref_table: &str,
+        ref_col: &str,
+    ) -> FkRow {
+        FkRow {
+            constraint_name: constraint.into(),
+            local_column: local.into(),
+            referenced_schema: ref_schema.into(),
+            referenced_table: ref_table.into(),
+            referenced_column: ref_col.into(),
+        }
+    }
+
+    #[test]
+    fn assemble_foreign_keys_builds_one_edge_per_constraint() {
+        let edges = assemble_foreign_keys(vec![fk_row(
+            "orders_customer_id_fkey",
+            "customer_id",
+            "public",
+            "customers",
+            "id",
+        )]);
+        assert_eq!(
+            edges,
+            vec![ForeignKey {
+                columns: vec!["customer_id".into()],
+                referenced_table: TableInfo::qualified("public", "customers"),
+                referenced_columns: vec!["id".into()],
+                constraint_name: Some("orders_customer_id_fkey".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn assemble_foreign_keys_folds_a_composite_key_in_order() {
+        // Two consecutive rows sharing a constraint name are one composite
+        // edge; the SQL orders them by key position.
+        let edges = assemble_foreign_keys(vec![
+            fk_row("fk_ab", "a", "public", "parent", "pa"),
+            fk_row("fk_ab", "b", "public", "parent", "pb"),
+        ]);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].columns, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            edges[0].referenced_columns,
+            vec!["pa".to_string(), "pb".to_string()]
+        );
+    }
+
+    #[test]
+    fn assemble_foreign_keys_separates_distinct_constraints() {
+        let edges = assemble_foreign_keys(vec![
+            fk_row("fk_one", "customer_id", "public", "customers", "id"),
+            fk_row("fk_two", "product_id", "sales", "products", "id"),
+        ]);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].constraint_name.as_deref(), Some("fk_one"));
+        assert_eq!(
+            edges[1].referenced_table,
+            TableInfo::qualified("sales", "products")
+        );
+    }
+
+    #[test]
+    fn assemble_foreign_keys_is_empty_without_rows() {
+        assert!(assemble_foreign_keys(vec![]).is_empty());
     }
 
     /// A `Static` handle hands back exactly the pool it wraps. `max_connections`
