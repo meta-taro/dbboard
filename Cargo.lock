@@ -942,6 +942,7 @@ dependencies = [
  "dbboard-anthropic",
  "dbboard-config",
  "dbboard-i18n",
+ "dbboard-openai",
  "dbboard-server",
  "dbboard-ui",
  "eframe",
