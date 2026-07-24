@@ -349,7 +349,7 @@ impl AiSettingsView {
             }
             Mode::ConfirmDelete { id: _, name } => {
                 ui.colored_label(
-                    egui::Color32::LIGHT_RED,
+                    crate::theme::danger(ui.visuals().dark_mode),
                     format!("{}: {name}", t!("ai-settings-confirm-delete")),
                 );
                 errors::render_error(ui, self.last_error.as_ref());

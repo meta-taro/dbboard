@@ -6700,3 +6700,155 @@ and a `pii-scan.yml` GitHub Actions workflow (push/PR/daily-cron) running
 - Advisory findings need periodic human review of the daily run; they do not
   gate merges by design.
 
+## ADR-0056 — dbboard design system: branded egui theme
+
+- **Status**: Accepted 2026-07-24
+- **Relates to**: `DESIGN.md` (the token spec this fills in), ADR-0041 (Light /
+  Dark / Auto theme selection — the switch this theme plugs into), ADR-0015
+  (CJK fallback font install, which the new `install_look` sequences before the
+  theme)
+
+### Context
+
+Until now the UI ran on **stock egui styling**: the bundled `Ubuntu-Light`
+font, egui's built-in blue-grey palette, and a handful of ad-hoc
+`Color32::{LIGHT_RED, LIGHT_GREEN, YELLOW}` literals at five call sites that
+ignored the active theme (a `LIGHT_RED` error label stayed the same washed-out
+red on both grounds). `DESIGN.md` was a placeholder: every palette, type, and
+spacing slot read `TBD`, with only the brand accent (`#4F46E5`, from the logo)
+pinned. The app looked generic — not because egui is limiting, but because we
+had never applied a design.
+
+The maintainer asked to raise the visual quality after an initial
+performance-first framing. An HTML before/after mock was approved as the
+direction; this ADR records the Rust side of it.
+
+### Decision
+
+A central `dbboard-ui::theme` module owns one branded palette and applies it
+once at startup via `theme::apply(ctx)`:
+
+1. **Both themes registered up front.** `apply` calls
+   `Context::set_visuals_of` for *both* `Theme::Dark` and `Theme::Light` with a
+   customised `Visuals`, then sets shared spacing/radius tokens through
+   `all_styles_mut`. Auto (follow-OS) therefore keeps working for free — egui
+   swaps between the two registered visuals as the OS theme changes, with no
+   per-frame reapplication. The existing theme *pick* (ADR-0041) just selects
+   which registered visuals are active.
+
+2. **Indigo-tinted neutrals, indigo accent, separate semantic axis.** Grounds
+   are tinted toward the accent rather than pure grey (`canvas`/`surface`/
+   `surface.alt` per theme). The accent is the brand indigo — `#4F46E5` on
+   light, a brighter `#6366F1` on the dark ground so it keeps its punch.
+   Danger/warning/success are a *separate* axis from the accent and are exposed
+   as theme-aware accessors (`theme::danger(dark_mode)` etc.) that map onto
+   egui's own `error_fg_color` / `warn_fg_color`.
+
+3. **The five ad-hoc colour sites now read the palette.** `ai.rs` (prefetch
+   warning), `ai_settings.rs` + `connections.rs` (delete confirmations),
+   `connections.rs` (export summary), and `errors.rs` (error label) call the
+   accessors instead of hard-coding one RGB. The staged-edit dirty-cell tint
+   (previously derived from `selection.bg_fill`) now keys off the accent
+   directly: a premultiplied *translucent* `Color32` reads its channels back
+   *dimmed*, so a translucent selection fill could not double as the tint
+   source — the accent is opaque and keeps its RGB across themes.
+
+4. **Fonts are deferred to a fast-follow (Phase 2).** Bundling Inter +
+   JetBrains Mono is a separable concern (binary assets under version control,
+   OFL licence text, ~hundreds of KB) and the approved mock itself approximated
+   the UI face with the platform system font — the palette, spacing, and
+   semantic colours are what carried the look. Shipping the theme first keeps
+   this change reviewable; the font install will extend `install_look`.
+
+### Consequences
+
+- The app is branded and theme-consistent; no call site hard-codes a
+  theme-blind colour. New UI reads `ui.visuals()` or the `theme::*` accessors.
+- `apps/dbboard` gains a single `install_look(ctx, theme)` seam that sequences
+  fonts → design system → theme pick before the first paint (no flash), the
+  natural place the Phase 2 font bundle will hook into.
+- egui's premultiplied-alpha `Color32` is a standing gotcha: reading `.r()/.g()
+  /.b()` off a translucent colour returns dimmed channels. Colours meant to be
+  sampled must be opaque.
+- `DESIGN.md`'s palette / typography / spacing tables move from `TBD` to the
+  locked tokens; the module is the single source and the doc mirrors it.
+
+## ADR-0057 — Design system, applied: primary CTA, header identity, count badge, unit-aware threshold
+
+- **Status**: Accepted 2026-07-24
+- **Relates to**: ADR-0056 (the branded theme this consumes — palette, spacing,
+  radius tokens), ADR-0050 (the backup warn threshold this re-skins), ADR-0041
+  (Light / Dark / Auto pick — now a segmented control), ADR-0030 (auto-limit
+  guard living on the same toolbar), `DESIGN.md`
+
+### Context
+
+ADR-0056 locked the palette, spacing, and semantic colours but stopped at
+"apply the tokens." Standing next to the approved HTML mock, the running app
+still read flat: every button was the same neutral grey (the primary **Run**
+action no more prominent than a checkbox), the theme picker was a dropdown
+buried in the menu bar, there was no at-a-glance signal of *which connection is
+live* or *how many tables it has*, and the backup warn threshold was a bare
+six-digit `DragValue` the maintainer called fiddly to adjust. The mock's edge
+over ours was **structural, not chromatic** — hierarchy, identity, and
+affordance — so this ADR records the component-level application of the theme
+rather than any new colour.
+
+### Decision
+
+Four slices, all built on ADR-0056 tokens, adding **no new i18n strings** (they
+reuse existing keys or locale-neutral proper nouns / multiplier symbols):
+
+1. **Primary call-to-action.** `theme::primary_button(dark_mode, text)` returns
+   an `egui::Button` filled with the brand accent and an opaque `ON_ACCENT`
+   label — the one filled button on the query toolbar. Every sibling control
+   (auto-limit, backup, restore) stays a neutral secondary, so **Run** now reads
+   as the primary action. A new `ON_ACCENT` constant is opaque by construction
+   (the premultiplied-alpha gotcha from ADR-0056 would otherwise dim a sampled
+   label).
+
+2. **Header identity: pill + segmented theme toggle.** `theme::pill(ui, text,
+   accent_dot)` draws a rounded chip (faint fill, hairline stroke, optional
+   status dot) at the ADR-0056 widget radius. The menu bar now ends with a
+   right-aligned group: an **active-connection pill** (`name · adapter`, accent
+   dot) and an inline **Auto | Light | Dark** segmented control replacing the
+   old `theme_menu` dropdown. The dot signals *active*, not health — there is no
+   live probe, so it deliberately does not claim connectivity.
+
+3. **Sidebar table-count badge.** The Tables heading carries a count pill
+   (`self.tables` length). This is the row of information the mock's sidebar
+   badges implied *that we can source honestly*: table count is already in hand.
+   **Per-table row-count badges are explicitly deferred** — they need a
+   per-table `COUNT(*)` we do not fetch and which is heavy on large DBs; showing
+   a fabricated or blocking number would be worse than showing none.
+
+4. **Unit-aware backup threshold (ADR-0050 re-skin).** The raw `DragValue`
+   becomes a mantissa editor plus a `×1 | ×1K | ×1M` unit selector. `split_rows`
+   seeds the editor from the stored count (largest evenly-dividing unit, so a
+   round `500_000` reads `500 ×1K`); `compose_rows` recombines with a saturating
+   multiply so an extreme mantissa cannot wrap the threshold to a small number
+   and silently disable the huge-DB warning. **The metric stays a row count**
+   throughout — the maintainer asked for byte units, but `DumpPlan` carries no
+   byte estimate, so units here are multipliers on rows, not bytes.
+
+Supporting move: `ConnectionKind::adapter_label()` moves to the config layer
+(`dbboard-config::store`) as the single source of the display name per adapter;
+`connections::kind_label` now delegates to it, so the header pill and the
+connections window cannot drift apart.
+
+### Consequences
+
+- The query view has one visually primary action; the header answers "which
+  connection, which theme" without opening a menu. New primary actions call
+  `theme::primary_button`; new chips call `theme::pill`.
+- Zebra striping on the result grid was already enabled (`.striped(true)`) and
+  now reads correctly off the ADR-0056 faint-row tint — no code change, recorded
+  so it is not re-litigated.
+- Two honesty boundaries are load-bearing and intentional: the status dot means
+  *active-not-health*, and the sidebar shows *table count only* (row counts
+  await a lazy `COUNT(*)` design). Both were chosen over fabricating a number.
+- Threshold semantics are unchanged for existing `ui-settings.toml` files:
+  `split_rows`/`compose_rows` round-trip any stored value exactly; a
+  non-round count simply shows under `×1`.
+- Still deferred from ADR-0056: the Phase 2 font bundle (Inter + JetBrains
+  Mono), a separable binary-asset change.

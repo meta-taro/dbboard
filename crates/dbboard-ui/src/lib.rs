@@ -24,6 +24,9 @@ mod export;
 mod history;
 mod restore;
 mod selection;
+/// Central design system: branded palette, theme-aware semantic colours,
+/// and the [`theme::apply`] entry point the binary calls at startup.
+pub mod theme;
 mod worker;
 
 pub use ai::{AiMode, AiPanel, AiResponseView};
@@ -2388,8 +2391,20 @@ impl DbboardApp {
         // than a bare SQL string so provenance survives. "Count" stays a
         // plain read-only starter.
         let mut quick_browse: Option<TableInfo> = None;
+        // Table count for the section badge (ADR-0057), known only once the
+        // list has loaded. `Option<usize>` is Copy, so this borrow of
+        // `self.tables` ends before the `match` below re-borrows it.
+        let table_count = self.tables.as_ref().ok().map(Vec::len);
         egui::Panel::left("tables").show_inside(ui, |ui| {
-            ui.heading(t!("tables-heading"));
+            ui.horizontal(|ui| {
+                ui.heading(t!("tables-heading"));
+                // A count chip beside the heading — the number of tables is
+                // already in hand (no extra query), unlike per-table row
+                // counts which would each need a COUNT(*).
+                if let Some(n) = table_count {
+                    theme::pill(ui, &n.to_string(), None);
+                }
+            });
             ui.separator();
             match &self.tables {
                 Ok(tables) if tables.is_empty() => {
@@ -2447,8 +2462,15 @@ impl DbboardApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(t!("sql-heading"));
+                // The Run action is the view's primary call-to-action, so it
+                // gets the filled accent button (ADR-0057); every other
+                // control here stays a neutral secondary.
+                let dark = ui.visuals().dark_mode;
                 if ui
-                    .add_enabled(!self.busy, egui::Button::new(t!("sql-run-button")))
+                    .add_enabled(
+                        !self.busy,
+                        theme::primary_button(dark, t!("sql-run-button")),
+                    )
                     .clicked()
                 {
                     self.run_sql();
@@ -2524,44 +2546,49 @@ impl DbboardApp {
                 self.run_sql();
             }
 
-            // Recently-run statements; click one to refill the editor
-            // (ADR-0014). Restore is captured here and applied after the
-            // immutable iter() borrow ends, sidestepping the borrow
-            // checker without cloning the whole store.
-            let mut restore: Option<String> = None;
-            {
-                let history = self.history.store();
-                egui::CollapsingHeader::new(t_args!("history-title", count = history.len()))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        if history.is_empty() {
-                            ui.label(t!("history-empty"));
-                        } else {
-                            egui::ScrollArea::vertical()
-                                .max_height(160.0)
-                                .show(ui, |ui| {
-                                    // Slice (a) only surfaces query entries
-                                    // in the legacy history panel; the AI
-                                    // record viewer lands in slice (c).
-                                    for entry in history.iter() {
-                                        let HistoryEntry::Query(q) = entry else {
-                                            continue;
-                                        };
-                                        if ui.small_button(history_button_label(&q.sql)).clicked() {
-                                            restore = Some(q.sql.clone());
-                                        }
-                                    }
-                                });
-                        }
-                    });
-            }
-            if let Some(sql) = restore {
-                self.sql = sql;
-            }
+            self.render_history(ui);
 
             ui.separator();
             self.render_result_area(ui);
         });
+    }
+
+    /// Recently-run statements; click one to refill the editor (ADR-0014).
+    /// Split out of `render_query_panel` to keep each function focused. The
+    /// restore is captured inside the immutable `iter()` borrow and applied
+    /// after it ends, sidestepping the borrow checker without cloning the
+    /// whole store.
+    fn render_history(&mut self, ui: &mut egui::Ui) {
+        let mut restore: Option<String> = None;
+        {
+            let history = self.history.store();
+            egui::CollapsingHeader::new(t_args!("history-title", count = history.len()))
+                .default_open(false)
+                .show(ui, |ui| {
+                    if history.is_empty() {
+                        ui.label(t!("history-empty"));
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(160.0)
+                            .show(ui, |ui| {
+                                // Slice (a) only surfaces query entries in the
+                                // legacy history panel; the AI record viewer
+                                // lands in slice (c).
+                                for entry in history.iter() {
+                                    let HistoryEntry::Query(q) = entry else {
+                                        continue;
+                                    };
+                                    if ui.small_button(history_button_label(&q.sql)).clicked() {
+                                        restore = Some(q.sql.clone());
+                                    }
+                                }
+                            });
+                    }
+                });
+        }
+        if let Some(sql) = restore {
+            self.sql = sql;
+        }
     }
 
     /// Result/structure tab body and the inline-edit action handoff
@@ -3475,11 +3502,14 @@ fn render_editable_cell(
         None => (value.map(ToString::to_string).unwrap_or_default(), false),
     };
 
-    // Faint dirty tint pulled from the active Visuals so it holds up in
-    // both light and dark themes (ADR-0041) instead of a hard-coded RGB.
+    // Faint dirty tint keyed off the brand accent so it holds up in both
+    // light and dark themes (ADR-0041/ADR-0056) instead of a hard-coded
+    // RGB. The accent keeps its full RGB across themes (it is opaque),
+    // unlike `selection.bg_fill` whose premultiplied translucent value
+    // would read back dimmed.
     if is_staged {
-        let sel = ui.visuals().selection.bg_fill;
-        let tint = egui::Color32::from_rgba_unmultiplied(sel.r(), sel.g(), sel.b(), 48);
+        let accent = crate::theme::accent(ui.visuals().dark_mode);
+        let tint = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 48);
         ui.painter().rect_filled(ui.max_rect(), 2.0, tint);
     }
 
