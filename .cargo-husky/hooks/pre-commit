@@ -12,6 +12,19 @@ set -e
 # rustup location so the hook works regardless of the launching shell.
 export PATH="$HOME/.cargo/bin:$PATH"
 
+# PII / secret leak scan first — fail fast before the slower cargo gates so a
+# leaked store name or credential never reaches a commit. --reveal is safe
+# here: local hook output is not a public log. See docs/maintainer/pii-scanning.md.
+# Fail CLOSED: if the scanner is tracked but missing from the working tree
+# (bad rebase, partial checkout, tampering) do NOT silently skip the scan.
+if [ -f scripts/pii-scan.sh ]; then
+    echo "[pre-commit] scripts/pii-scan.sh --staged"
+    sh scripts/pii-scan.sh --staged --reveal
+elif git ls-files --error-unmatch scripts/pii-scan.sh >/dev/null 2>&1; then
+    echo "[pre-commit] ERROR: scripts/pii-scan.sh is tracked but missing — refusing to commit without the PII scan." >&2
+    exit 1
+fi
+
 echo "[pre-commit] cargo fmt --all -- --check"
 cargo fmt --all -- --check
 

@@ -1,0 +1,50 @@
+# pii-scan allowlist — extended regexes for known-safe matches.
+#
+# scripts/pii-scan.sh matches by shape and will occasionally hit a
+# placeholder or a documentation example. List those safe shapes here so the
+# scanner stays quiet on a clean tree. Each line is an ERE tested against a
+# "file:line:content" (tree) or "label:line:content" (message) string; a
+# match drops the finding.
+#
+# Section markers are LOAD-BEARING: only entries under `# === BLOCKING` are
+# consulted for blocking findings (private-key / aws-access-key-id). Advisory
+# findings consult every entry. This is why a broad advisory entry can never
+# silence a real key — put an entry under the wrong marker and it simply will
+# not apply to the block tier.
+#
+# Keep BLOCKING entries NARROW — a broad allow rule silences a real leak.
+# Advisory entries (db-url / email / home-path shapes) can be a little
+# broader since advisory findings never fail a build; they only tune the
+# daily review summary. Never add a real store name or credential here —
+# that would put the very string we hide into a tracked, public file.
+# Denylisted literals are matched separately and cannot be allowlisted.
+
+# === BLOCKING-tier allows (keep narrow) ===================================
+# Canonical synthetic AWS key ids always carry the word EXAMPLE.
+AKIA[0-9A-Z]*EXAMPLE
+
+# === Advisory-tier allows (documentation / test fixtures) ================
+# --- placeholder / example email addresses --------------------------------
+noreply@anthropic\.com
+@users\.noreply\.github\.com
+@example\.(com|org|net)
+@.*\bexample\b
+you@example
+user@host
+git@github\.com
+# `victim.` marks a deliberately fake target host in security docs/tests.
+@[A-Za-z0-9.-]*victim\.
+
+# --- synthetic connection strings in tests / docs -------------------------
+# Fixtures use example / *.supabase.co / *.neon.tech / dsql / localhost /
+# db.internal hosts with throwaway credentials. Real credentials never live
+# in a tracked file (they are in the OS keyring), so a passworded URL here is
+# always a fixture.
+(postgres|postgresql|mysql|libsql|mongodb)://[^ "']*@[^ "']*(example|supabase\.co|neon\.tech|dsql|\.on\.aws|localhost|127\.0\.0\.1|db\.internal|:memory:)
+# Bare literal placeholder hosts and <angle-bracket> tokens in docs.
+(postgres|postgresql|mysql|libsql|mongodb)://[^ "']*@host[:/ ]
+(postgres|postgresql|mysql|libsql|mongodb)://[^ "']*<[A-Za-z]
+
+# --- documentation / test home paths --------------------------------------
+# `C:\path\to\...`, `C:\Users\you|<user>|USERNAME|me|alice` are docs/tests.
+[Cc]:\\+[Uu]sers\\+(you|me|user|USERNAME|<user>|<name>|youruser|alice|bob|test)\b

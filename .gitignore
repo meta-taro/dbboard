@@ -49,3 +49,10 @@ desktop.ini
 # 万一リポジトリ配下にコピーされても実店舗名・参照が漏れないよう保険で除外。
 connections.toml
 !*.template.toml
+
+# --- PII scan denylist (ADR-0055) ---
+# The real store names / maintainer PII the scanner blocks on. Kept ONLY
+# here locally and in the PII_DENYLIST CI secret — committing it would put
+# the very strings we hide back into a tracked, public file. Template:
+# .pii-denylist.example (format only, no real names).
+.pii-denylist
