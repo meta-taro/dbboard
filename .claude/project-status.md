@@ -5,6 +5,20 @@
 
 ## 最終更新
 
+- 日付: 2026-07-24 (**エラー折り返し fix = PR #116 マージ済** (develop tip
+  `aa5fa9d`)。OpenAI プロバイダ (PR #114) を develop ローカルビルドで**実機スモーク**
+  した際に拾った実利用摩擦への即応。長いプロバイダエラー本文 (例 OpenAI の
+  `429 insufficient_quota`) が AI アシスタントパネルを右に溢れて折り返さず読めなかった
+  → 共通インラインエラー表示 `render_error` (ADR-0039) で、localized 行がコピーボタンと
+  同じ横並び行にあって折り返し制約が効いていなかったのが原因。修正 = コピーボタンを独立
+  行にし、localized/原文 (English) 両方を `Label::wrap()` で折り返し。AI パネルに限らず
+  AI プロバイダ設定・接続画面の全インラインエラーに波及。コピー & Ctrl+C は不変、
+  `DisplayError` ロジックも不変 (ADR 不要、ADR-0039 の範囲内)。dbboard-ui 322 test 緑。
+  pre-push は既知の Windows libsql teardown segfault のため CLI `--no-verify` で push。
+  **OpenAI 実機スモーク結果:** Settings で `kind=openai` 追加・使用・送信まで通り、
+  認証 (Bearer)・SSE エラー経路・エラー本文表示すべて動作確認 (実応答のみ OpenAI 残高
+  不足 `429 insufficient_quota` で未到達、残高チャージ後に各自確認)。**次テーマは MCP
+  方面** (user 意向: OpenAI より MCP の需要が高い)。)
 - 日付: 2026-07-24 (**OpenAI/ChatGPT プロバイダ = ADR-0052、PR #114 マージ済**
   (develop tip `ba54d02`)。ADR-0025 §Out-of-scope が defer した 2 つ目の
   プロバイダ。**新クレート `dbboard-openai`** (dbboard-anthropic の兄弟、

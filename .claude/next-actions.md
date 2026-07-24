@@ -7,20 +7,22 @@
 
 ## 最終更新
 
-- 日付: 2026-07-24 (**OpenAI/ChatGPT プロバイダ ADR-0052 が PR #114 で develop 着地。**
-  ADR-0025 §Out-of-scope が defer した 2 つ目の AI プロバイダ = 新クレート
-  `dbboard-openai` (dbboard-anthropic の兄弟) が **Chat Completions**
-  (`POST /v1/chat/completions`) を実装。**フル SSE ストリーミング parity**、既定
-  モデル `gpt-4o`、Bearer 認証、キーは keyring のみ。config/ui/app/i18n に配線
-  (`kind = "openai"`、Add フォームに kind セレクタ ComboBox、env フォールバックは
-  Anthropic 専用のまま)。ADR + README 同梱。48 unit+wiremock、全ゲート green。**今の
-  user 側ボール = (1) この chore doc-sync PR (`chore/post-pr114-doc-sync`) のマージ、
-  (2) OpenAI の実地スモーク (下記)、(3) restore 実地確認の積み残し、(4) 次の実利用
-  摩擦テーマの選択。**)
-- develop tip: PR #114 (OpenAI provider ADR-0052, merge `ba54d02`) が最新。
-  直前は #112 (restore/import ADR-0051 `e624bbb`) → #113 (doc-sync)。
-  main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup +
-  restore + OpenAI provider)。
+- 日付: 2026-07-24 (**エラー折り返し fix が PR #116 で develop 着地 + OpenAI
+  プロバイダを実機スモーク。** OpenAI (ADR-0052, PR #114) を develop ローカル
+  ビルドで実機確認 → Settings で `kind=openai` 追加・使用・送信まで通り、**認証
+  (Bearer)・SSE ストリーミングのエラー経路・エラー本文表示がすべて動作確認できた**
+  (実応答は OpenAI アカウントが `429 insufficient_quota` = 残高不足で未到達。残高
+  チャージ後に各自でトークン逐次表示を見る、で確定)。その実機確認中に拾った摩擦 =
+  **長いエラー本文が AI パネルを右に溢れて折り返さない** → `render_error` (ADR-0039)
+  でコピーボタンを独立行にし localized/原文を `Label::wrap()` で折り返し (全エラー
+  箇所に波及)。PR #116 で着地。**今の user 側ボール = (1) この chore doc-sync PR
+  (`chore/post-pr116-doc-sync`) のマージ、(2) 次テーマ = MCP 方面 (user 意向: MCP
+  の需要が高い)、(3) restore 実地確認の積み残し。**)
+- develop tip: PR #116 (error-wrap fix, merge `aa5fa9d`) が最新。直前は #115
+  (OpenAI doc-sync `21cb898`) → #114 (OpenAI provider ADR-0052 `ba54d02`) → #112
+  (restore/import ADR-0051 `e624bbb`) → #113 (doc-sync)。main = `70ecb93` =
+  **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup + restore + OpenAI provider
+  + error-wrap fix)。
 - **✅ OpenAI/ChatGPT プロバイダ (PR #114, ADR-0052):** Claude と並ぶ 2 つ目の
   AI プロバイダ。新クレート `dbboard-openai` が **Chat Completions**
   (`POST /v1/chat/completions`) を実装 (Responses API ではなく安定面を選択)。
@@ -34,7 +36,15 @@
   (`DBBOARD_ANTHROPIC_*`) は Anthropic 専用のまま** — OpenAI は
   `ai-providers.toml` か Settings 窓で設定。i18n `ai-settings-kind-openai` 全 11
   ロケール。README の toml 例をフラット `kind` スキーマに修正 (旧 nested
-  `[providers.kind]` は serde 実体と不一致だった)。**実地スモークは user 側ボール (下記)。**
+  `[providers.kind]` は serde 実体と不一致だった)。**実機スモーク済** = 認証・SSE
+  エラー経路・エラー本文表示 OK、実応答のみ残高不足 (429) で未到達。
+- **✅ エラー折り返し fix (PR #116):** 長いプロバイダエラー本文 (例 OpenAI の
+  `429 insufficient_quota`) が AI アシスタントパネルを右に溢れて折り返さず読めなかった。
+  原因 = 共通インラインエラー表示 `render_error` (ADR-0039) で localized 行がコピー
+  ボタンと同じ横並び行にあり折り返し制約が効いていなかった。修正 = コピーボタンを独立
+  行にし、localized/原文 (English) 両方を `Label::wrap()` で折り返し。AI パネルに限らず
+  AI プロバイダ設定・接続画面の全インラインエラーに波及。コピー & Ctrl+C 選択は不変、
+  `DisplayError` ロジックも不変 (ADR 不要 = ADR-0039 の範囲内)。dbboard-ui 322 test 緑。
 - **✅ 論理リストア/インポート (PR #112, ADR-0051):** ツールバー **Restore…** で
   `.sql` を現接続へ流し込む (ADR-0049 backup の読み側)。core = 字句スプリッタ
   `split_statements` + sqlparser `classify_script` の 2 層 (他形式 `.sql` も受容、
@@ -71,16 +81,16 @@
   - **MSI ショートカット (PR #105):** スタートメニュー + デスクトップ。非アドバタイズ
     型 (Shortcut + HKCU RegistryValue key-path + RemoveFolder)、ICE69 回避のため
     Binaries フィーチャに同居。アンインストールで削除。
-- **▶ 今の user 側ボール:** (1) この chore doc-sync PR (`chore/post-pr114-doc-sync`)
-  を push → PR 作成 → develop へマージ。(2) **OpenAI/ChatGPT の実地スモーク** =
-  Settings 窓で `kind = openai` プロバイダを Add (実キー) → Use に切替 → AI パネルで
-  ストリーミング逐次表示・Cancel・エラー本文が出ることを確認。model 空欄で `gpt-4o`
-  既定、model 明示で上書き。keyring にキーが入り Debug/log に漏れないこと。(3)
-  **restore の実地確認** (積み残し) = 空 DB への取り込み (Turso/D1/Postgres 系)、既存
-  テーブルありでの強制確認モーダル、進捗/キャンセル (部分適用保持)、foreign
-  `pg_dump`/`sqlite3 .dump` の取り込み、ADR-0049 backup で出した `.sql` の往復。(4)
-  backup 側の実地確認も未消化なら継続 (D1/Supabase/DSQL・500k 警告・部分ダンプ)。(5)
-  次の実利用摩擦テーマの選択 (下記 候補)。**検証シート = restore/backup とも
+- **▶ 今の user 側ボール:** (1) この chore doc-sync PR
+  (`chore/post-pr116-doc-sync`) を push → PR 作成 → develop へマージ。(2) **次テーマ =
+  MCP 方面** (user 明言: OpenAI より MCP の需要が高い)。既存 `dbboard-mcp` (read-only
+  stdio 5 ツール, ADR-0046) の拡張 or 別クライアント対応など、着手時に具体テーマを選ぶ。
+  (3) **OpenAI 実応答の確認** (任意) = OpenAI 残高チャージ後にトークン逐次表示・Cancel
+  を一度見る。認証/エラー経路は確認済なので優先度低。(4) **restore の実地確認**
+  (積み残し) = 空 DB への取り込み (Turso/D1/Postgres 系)、既存テーブルありでの強制確認
+  モーダル、進捗/キャンセル (部分適用保持)、foreign `pg_dump`/`sqlite3 .dump` の取り込み、
+  ADR-0049 backup で出した `.sql` の往復。(5) backup 側の実地確認も未消化なら継続
+  (D1/Supabase/DSQL・500k 警告・部分ダンプ)。**検証シート = restore/backup とも
   md-business 用は「ちょい待ち」で保留中** (`.claude/verification/adr-0049-backup.md`
   の 33 ケースは既存、restore 用シートは未着手)。
 - **MSI アンインストールの残留 (user 質問への回答済み):** MSI は exe/PATH/フォルダ/
