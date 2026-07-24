@@ -7,6 +7,19 @@
 
 ## 最終更新
 
+- 日付: 2026-07-24 (**OSS 個人情報除去ワークフロー = PR #122 マージ済 (ADR-0055)。**
+  user 依頼「OSS は個人情報を除去するワークフロー (日次・コミット時・コミットコメント
+  も)」。`scripts/pii-scan.sh` を pre-commit (`--staged`)・新 commit-msg (`--message`)・
+  CI `pii-scan.yml` (push/PR/**日次 cron**) の 3 経路で起動。**二層:** BLOCKING = 非
+  コミット denylist (実店舗名・maintainer 実 PII) + private-key/AWS 形状、ADVISORY
+  (非ブロック) = パスワード付き URL・個人メール・ホームパス (テスト fixture 多発ゆえ)。
+  denylist ヒットと CI 出力は redact、実 literal は gitignore `.pii-denylist` + CI
+  secret `PII_DENYLIST` のみ。allowlist は tier 分離、履歴全体は対象外 (別途 runbook
+  の人手 rewrite)。security-reviewer の HIGH (allowlist tier 分離) + MEDIUM 2 + LOW 済。
+  `--no-verify` = 既知 libSQL segfault。**今の user 側ボール = (1) この chore doc-sync
+  PR (`chore/post-pr122-doc-sync`) のマージ、(2) PII 運用セットアップ [`.pii-denylist`
+  記入 + `PII_DENYLIST` secret 追加 + `cargo test` でフック再インストール]、(3) 次の
+  実利用摩擦テーマ選定、(4) OpenAI 実応答・restore/backup 実地確認の積み残し。**)
 - 日付: 2026-07-24 (**MCP ツール面を 5→7 に拡張 (PR #118 + PR #120 マージ済)。**
   user 意向「OpenAI より MCP の需要が高い」を受けた MCP 方面の 2 スライス。
   **`search_schema` (ADR-0053, PR #118, 6 つ目)** = 名前部分一致でテーブル/カラムを
@@ -30,8 +43,9 @@
   箇所に波及)。PR #116 で着地。**今の user 側ボール = (1) この chore doc-sync PR
   (`chore/post-pr116-doc-sync`) のマージ、(2) 次テーマ = MCP 方面 (user 意向: MCP
   の需要が高い)、(3) restore 実地確認の積み残し。**)
-- develop tip: PR #120 (list_relationships, ADR-0054, merge `fa378c5`) が最新。
-  直前は #118 (search_schema, ADR-0053 `3887784`) → #116 (error-wrap fix
+- develop tip: PR #122 (PII scan, ADR-0055, merge `d3ee8dd`) が最新。
+  直前は #121 (MCP 5→7 doc-sync `95b6922`) → #120 (list_relationships, ADR-0054
+  `fa378c5`) → #118 (search_schema, ADR-0053 `3887784`) → #116 (error-wrap fix
   `aa5fa9d`) → #115
   (OpenAI doc-sync `21cb898`) → #114 (OpenAI provider ADR-0052 `ba54d02`) → #112
   (restore/import ADR-0051 `e624bbb`) → #113 (doc-sync)。main = `70ecb93` =

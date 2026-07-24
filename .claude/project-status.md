@@ -5,6 +5,31 @@
 
 ## 最終更新
 
+- 日付: 2026-07-24 (**OSS 個人情報除去ワークフロー = PR #122 マージ済**
+  (develop tip `d3ee8dd`, ADR-0055)。user 依頼「OSS は個人情報を除去するワーク
+  フロー (日次・コミット時・コミットコメントも)」への回答。**`scripts/pii-scan.sh`**
+  (POSIX sh) を **3 経路**で起動: pre-commit フック (`--staged`)・新 commit-msg
+  フック (`--message`)・CI `pii-scan.yml` (push/PR/**日次 cron** で `--selftest`
+  `--tree` `--range`)。**二層重大度** — このリポは DB クライアントでテストが合成
+  接続文字列だらけなので、形状ルールで全ブロックすると偽陽性の壁になる: **BLOCKING**
+  (コミット/CI を落とす) = 非コミットの denylist (実店舗名・maintainer 実メール/
+  氏名/ユーザ名) + `private-key`/AWS キー形状、**ADVISORY** (日次で列挙・非ブロック)
+  = パスワード付き URL・個人メール・Windows ホームパス。**漏洩防止:** denylist ヒット
+  と CI 出力は常に redact (`[denylist#<sha8>] file:line`)、公開ログに隠したい文字列
+  自体が出ない。実 literal は gitignore の `.pii-denylist` (ローカル) と CI secret
+  `PII_DENYLIST` のみ、CI が secret から生成して実行後に破棄。**allowlist は tier
+  分離** (`# === BLOCKING` セクションのみブロック判定に参照 → 広い advisory エントリ
+  が実キーを握り潰せない)。**scope:** HEAD + 新規コミットメッセージのみで**履歴全体は
+  対象外** (履歴には未除去の実名が残存 = 別途 runbook の人手 rewrite ボール、日次で
+  永久 red を避ける)。security-reviewer 1 周: **HIGH** (allowlist tier 非分離) + MEDIUM
+  2 件 (フック fail-closed 化・selftest の exit-code 経路テスト) + LOW (`persist-
+  credentials: false`) を修正。commit は既知の Windows libSQL teardown segfault で
+  `--no-verify` (Rust 変更なし・全テスト ok・staged スキャン手動 clean)。**運用 TODO
+  (user 側):** (1) `.pii-denylist.example`→`.pii-denylist` に実 literal 記入、(2)
+  GitHub に `PII_DENYLIST` secret 追加、(3) `cargo test` 1 回で新フック再インストール。
+  **今の user 側ボール = (1) この chore doc-sync PR (`chore/post-pr122-doc-sync`) の
+  マージ、(2) 上記 PII 運用セットアップ、(3) 次テーマ選定 (MCP 継続 / Export / Saved
+  queries / Schema diff 等)、(4) OpenAI 実応答・restore/backup 実地確認の積み残し。**)
 - 日付: 2026-07-24 (**MCP ツール面を 5→7 に拡張 = PR #118 + PR #120 マージ済**
   (develop tip `fa378c5`)。user 意向「OpenAI より MCP の需要が高い」を受けた
   MCP 方面の 2 スライス。**(1) `search_schema` (ADR-0053, PR #118) = 6 つ目**:

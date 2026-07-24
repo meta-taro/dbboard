@@ -557,6 +557,17 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       hygiene) plus a tester onboarding guide (`docs/internal-testing.md`),
       and `.gitignore` rules that keep `*.dbbx` / `/dist/` /
       `connections.toml` out of the public repo (PR #72).
+- [x] PII / secret leak scanning — `scripts/pii-scan.sh` blocks real store
+      names, credentials, and maintainer PII from entering the public repo on
+      every commit (pre-commit), every commit message (commit-msg), and daily
+      in CI (`pii-scan.yml`). Two severities: a never-committed denylist
+      (`.pii-denylist` local / `PII_DENYLIST` CI secret) plus private-key/AWS
+      shapes BLOCK; the false-positive-prone shapes (passworded URL, personal
+      email, home path) are advisory-only. Matches are redacted so a public log
+      never echoes a hidden string. The preventive companion to the one-time
+      history rewrite (`docs/maintainer/history-sanitize-runbook.md`), which
+      remains the human's pending destructive ball ([ADR-0055](decisions.md),
+      PR #122).
 - [x] Build & hand off the collector release exe from develop — the
       ADR-0038-inclusive `dbboard.exe` was rebuilt and physically handed
       off to the data-collection operator (2026-07-16).
