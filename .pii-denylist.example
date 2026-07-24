@@ -1,0 +1,31 @@
+# .pii-denylist — template (ADR-0055)
+#
+# Copy to `.pii-denylist` (gitignored) and fill with the REAL literals that
+# must never enter the public repo, one per line. scripts/pii-scan.sh matches
+# these case-insensitively as fixed strings and BLOCKS on any hit — in tracked
+# files, staged changes, and commit messages. Matches are always redacted in
+# output (printed as `[denylist#<sha8>] file:line`) so neither a local hook nor
+# a public CI log ever echoes the string itself.
+#
+# In CI the real list lives in the `PII_DENYLIST` repo secret (Settings →
+# Secrets and variables → Actions), one entry per line, materialized into
+# `.pii-denylist` for the run. Keep this file and the secret in sync.
+#
+# Rules:
+#   * Blank lines and lines starting with `#` are ignored.
+#   * Fixed strings, not regexes. Case-insensitive.
+#   * NEVER commit the filled-in `.pii-denylist` — it is gitignored for a reason.
+#
+# What belongs here (examples of CATEGORIES — do NOT put real values in THIS
+# template file; it is tracked and public):
+#   - Real business / store names that appear as connection ids or sample data.
+#   - The maintainer's real personal email address.
+#   - The maintainer's real full name, if it should not be in the public repo.
+#   - The maintainer's real OS username (as it appears in machine paths).
+#   - Any real hostname / cluster id that identifies a production system.
+#
+# Example lines (illustrative placeholders — replace, do not keep):
+# AcmeMegaStore
+# jane.doe@somecorp.co.jp
+# Jane Doe
+# jdoe
