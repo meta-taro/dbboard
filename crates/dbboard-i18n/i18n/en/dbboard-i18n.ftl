@@ -252,6 +252,7 @@ ai-settings-field-model = Model (optional)
 ai-settings-field-api-key = API key
 ai-settings-replace-api-key = Replace API key
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 # Subtitle on the AI assistant panel showing which provider is bound
 # to the in-process slot right now. Rendered only when a provider is
 # active (i.e. the panel is visible).

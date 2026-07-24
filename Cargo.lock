@@ -942,6 +942,7 @@ dependencies = [
  "dbboard-anthropic",
  "dbboard-config",
  "dbboard-i18n",
+ "dbboard-openai",
  "dbboard-server",
  "dbboard-ui",
  "eframe",
@@ -1062,6 +1063,21 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "dbboard-openai"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "dbboard-ai",
+ "futures-util",
+ "reqwest",
+ "reqwest-eventsource",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

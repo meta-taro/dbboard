@@ -303,7 +303,8 @@ the dbboard-web HTTP contract — they go directly from the desktop
 binary's worker thread to the provider over `reqwest`.
 
 Responses stream incrementally for providers that advertise the
-capability (the wired Anthropic provider does — ADR-0026). Text
+capability (both wired providers do — the Anthropic provider per
+ADR-0026, the OpenAI provider per ADR-0052). Text
 appears chunk by chunk as the model generates it, and a running
 **Tokens: N in / M out** meter updates from the cumulative usage
 chunks. While a request is in flight the Send button is replaced
@@ -325,9 +326,10 @@ reset each session) for large schemas or metered keys. If some tables
 fail to describe, a warning shows the count and the suggestion
 proceeds with the rest.
 
-A single provider (Anthropic Messages API) is wired today, configured
-via **either** of two paths. They are evaluated in the order below;
-the first to resolve wins.
+Two providers are wired today — the **Anthropic** Messages API and
+the **OpenAI** Chat Completions API (ADR-0052, default model
+`gpt-4o`). Both are configured via **either** of two paths, evaluated
+in the order below; the first to resolve wins.
 
 #### 1. `ai-providers.toml` + OS keychain (recommended)
 
@@ -346,6 +348,10 @@ and its secret together. A hand-edited TOML works too — useful for
 seeding a new machine without opening the window — provided the
 `keyring_api_key_ref` it names has a matching keychain entry:
 
+The `kind` discriminator sits inline on each `[[providers]]` entry
+(`"anthropic"` or `"openai"`); `model` is optional and falls back to
+the provider's default when omitted:
+
 ```toml
 # ai-providers.toml
 version = 1
@@ -354,11 +360,20 @@ active_id = "primary"
 [[providers]]
 id = "primary"
 name = "Anthropic"
-[providers.kind]
-type = "anthropic"
+kind = "anthropic"
 model = "claude-sonnet-5"             # optional; omitted = default
 keyring_api_key_ref = "dbboard.ai.primary.api_key"
+
+[[providers]]
+id = "gpt"
+name = "ChatGPT"
+kind = "openai"
+model = "gpt-4o"                      # optional; omitted = gpt-4o
+keyring_api_key_ref = "dbboard.ai.gpt.api_key"
 ```
+
+The env-variable path below stays Anthropic-only; configure OpenAI
+through `ai-providers.toml` (or the **AI Providers** Settings window).
 
 #### 2. Environment variables (back-compat / CI)
 
