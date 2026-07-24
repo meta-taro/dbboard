@@ -109,6 +109,7 @@ ai-settings-field-model = Modell (optional)
 ai-settings-field-api-key = API-Schlüssel
 ai-settings-replace-api-key = API-Schlüssel ersetzen
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = Aktiv: { $name }
 
 ai-include-details = Spaltendetails einbeziehen

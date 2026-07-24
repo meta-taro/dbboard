@@ -21,9 +21,9 @@
 //!   written; the active pointer is just a label.
 //!
 //! Kind changes are intentionally rejected on update (same posture as
-//! [`crate::ConnectionAdmin::update`]). When a second `AiProviderKind`
-//! variant lands, switching between them must be `delete` + `add` so
-//! the keyring reference is re-derived rather than migrated mid-flight.
+//! [`crate::ConnectionAdmin::update`]). Switching between the
+//! `Anthropic` and `OpenAi` kinds must be `delete` + `add` so the
+//! keyring reference is re-derived rather than migrated mid-flight.
 //!
 //! The AI keyring namespace is `dbboard.ai.<id>.api_key` — distinct
 //! from the connection namespace `dbboard.<id>.<field>` so an AI
@@ -59,6 +59,10 @@ pub enum AiProviderKindDraft {
         model: Option<String>,
         api_key: String,
     },
+    OpenAi {
+        model: Option<String>,
+        api_key: String,
+    },
 }
 
 /// User-supplied draft for **editing** an existing AI provider entry.
@@ -79,6 +83,10 @@ pub struct AiProviderEditDraft {
 #[derive(Debug, Clone)]
 pub enum AiProviderKindEditDraft {
     Anthropic {
+        model: Option<String>,
+        api_key: SecretField,
+    },
+    OpenAi {
         model: Option<String>,
         api_key: SecretField,
     },
@@ -346,15 +354,29 @@ impl AiSettingsAdmin {
                     keyring_api_key_ref: keyring_api_key_ref.clone(),
                 }
             }
+            (
+                AiProviderKind::OpenAi {
+                    keyring_api_key_ref,
+                    ..
+                },
+                AiProviderKindEditDraft::OpenAi { model, api_key },
+            ) => {
+                if let SecretField::Set(new_value) = api_key {
+                    self.apply_secret_write(keyring_api_key_ref, &new_value, &mut applied)?;
+                }
+                AiProviderKind::OpenAi {
+                    model,
+                    keyring_api_key_ref: keyring_api_key_ref.clone(),
+                }
+            }
+            // Kind changes are rejected on update (ADR-0025 posture):
+            // switching provider kind must be `delete` + `add` so the
+            // keyring reference is re-derived rather than migrated
+            // mid-flight. `applied` is still empty here, so nothing to
+            // roll back.
+            _ => return Err(AiSettingsError::KindMismatch { id: id.to_string() }),
         };
 
-        // Discriminant changes between variants would fall through to
-        // this arm once a second variant lands. The current single-
-        // variant enum means rustc proves the match exhaustive without
-        // needing it, but `(_, _)` here would make it dead code.
-        // Documenting the intent so the next variant can add the
-        // mismatch branch without thinking about it again.
-        let _ = id;
         Ok((new_kind, applied))
     }
 
@@ -393,6 +415,10 @@ fn keyring_refs_in(kind: &AiProviderKind) -> Vec<String> {
         AiProviderKind::Anthropic {
             keyring_api_key_ref,
             ..
+        }
+        | AiProviderKind::OpenAi {
+            keyring_api_key_ref,
+            ..
         } => vec![keyring_api_key_ref.clone()],
     }
 }
@@ -419,6 +445,18 @@ fn build_kind_for_add(
         AiProviderKindDraft::Anthropic { model, api_key } => {
             let api_key_ref = keyring_ref(id, "api_key");
             let kind = AiProviderKind::Anthropic {
+                model,
+                keyring_api_key_ref: api_key_ref.clone(),
+            };
+            let writes = vec![PendingSecretWrite {
+                key_ref: api_key_ref,
+                value: api_key,
+            }];
+            (kind, writes)
+        }
+        AiProviderKindDraft::OpenAi { model, api_key } => {
+            let api_key_ref = keyring_ref(id, "api_key");
+            let kind = AiProviderKind::OpenAi {
                 model,
                 keyring_api_key_ref: api_key_ref.clone(),
             };
@@ -457,6 +495,17 @@ mod tests {
         }
     }
 
+    fn openai_draft(id: &str, name: &str, api_key: &str) -> AiProviderDraft {
+        AiProviderDraft {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind: AiProviderKindDraft::OpenAi {
+                model: None,
+                api_key: api_key.to_string(),
+            },
+        }
+    }
+
     #[test]
     fn open_on_missing_file_yields_an_empty_admin() {
         let (_dir, _secrets, admin) = fresh_admin();
@@ -479,11 +528,109 @@ mod tests {
                 assert_eq!(keyring_api_key_ref, "dbboard.ai.main.api_key");
                 assert!(model.is_none());
             }
+            other @ AiProviderKind::OpenAi { .. } => {
+                panic!("expected Anthropic kind, got {other:?}")
+            }
         }
         assert_eq!(
             secrets.get("dbboard.ai.main.api_key").expect("api key"),
             "sk-test-1"
         );
+    }
+
+    #[test]
+    fn add_openai_routes_api_key_through_secret_store() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(openai_draft("gpt", "ChatGPT", "sk-openai-1"))
+            .expect("add");
+        let entry = &admin.entries()[0];
+        match &entry.kind {
+            AiProviderKind::OpenAi {
+                keyring_api_key_ref,
+                model,
+            } => {
+                // Same `dbboard.ai.<id>.api_key` namespace as Anthropic —
+                // the keyring ref is derived from the id, not the kind.
+                assert_eq!(keyring_api_key_ref, "dbboard.ai.gpt.api_key");
+                assert!(model.is_none());
+            }
+            other @ AiProviderKind::Anthropic { .. } => {
+                panic!("expected OpenAi kind, got {other:?}")
+            }
+        }
+        assert_eq!(
+            secrets.get("dbboard.ai.gpt.api_key").expect("api key"),
+            "sk-openai-1"
+        );
+    }
+
+    #[test]
+    fn update_openai_with_secret_set_overwrites_the_keyring_entry() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(openai_draft("gpt", "ChatGPT", "sk-old"))
+            .expect("add");
+
+        admin
+            .update(
+                "gpt",
+                AiProviderEditDraft {
+                    name: "ChatGPT".to_string(),
+                    kind: AiProviderKindEditDraft::OpenAi {
+                        model: Some("gpt-4o-mini".to_string()),
+                        api_key: SecretField::Set("sk-new".to_string()),
+                    },
+                },
+            )
+            .expect("update with set");
+
+        assert_eq!(
+            secrets.get("dbboard.ai.gpt.api_key").expect("api key"),
+            "sk-new"
+        );
+        match &admin.entries()[0].kind {
+            AiProviderKind::OpenAi { model, .. } => {
+                assert_eq!(model.as_deref(), Some("gpt-4o-mini"));
+            }
+            other @ AiProviderKind::Anthropic { .. } => {
+                panic!("expected OpenAi kind, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn update_rejects_switching_kind_between_anthropic_and_openai() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(anthropic_draft("main", "Claude", "sk-claude"))
+            .expect("add anthropic");
+
+        // Feeding an OpenAi edit draft to an Anthropic entry must be
+        // rejected rather than silently migrating the keyring ref.
+        let err = admin
+            .update(
+                "main",
+                AiProviderEditDraft {
+                    name: "Switcheroo".to_string(),
+                    kind: AiProviderKindEditDraft::OpenAi {
+                        model: None,
+                        api_key: SecretField::Set("sk-openai".to_string()),
+                    },
+                },
+            )
+            .expect_err("kind switch must fail");
+        match &err {
+            AiSettingsError::KindMismatch { id } => assert_eq!(id, "main"),
+            other => panic!("expected KindMismatch, got {other:?}"),
+        }
+        // The original secret is untouched — the mismatch is detected
+        // before any keyring write.
+        assert_eq!(
+            secrets.get("dbboard.ai.main.api_key").expect("api key"),
+            "sk-claude"
+        );
+        assert_eq!(admin.entries()[0].name, "Claude");
     }
 
     #[test]
@@ -597,6 +744,9 @@ mod tests {
         match &admin.entries()[0].kind {
             AiProviderKind::Anthropic { model, .. } => {
                 assert_eq!(model.as_deref(), Some("claude-opus-4-8"));
+            }
+            other @ AiProviderKind::OpenAi { .. } => {
+                panic!("expected Anthropic kind, got {other:?}")
             }
         }
     }

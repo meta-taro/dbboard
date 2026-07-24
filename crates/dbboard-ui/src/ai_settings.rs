@@ -75,13 +75,25 @@ pub enum Mode {
     ConfirmDelete { id: String, name: String },
 }
 
-/// Backing buffers for the Add form. Single kind (Anthropic) in
-/// Stage 2; additional variants land as additive fields when their
-/// provider crates ship.
+/// Which provider kind an Add/Edit form is shaped for. Selectable on
+/// Add (ADR-0052); read-only on Edit because a kind switch must be
+/// `delete` + `add` so the keyring reference is re-derived.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKindChoice {
+    #[default]
+    Anthropic,
+    OpenAi,
+}
+
+/// Backing buffers for the Add form. The `kind` selector chooses which
+/// provider variant the draft targets; the remaining fields are shared
+/// across kinds (both `Anthropic` and `OpenAi` carry an optional model
+/// plus a single api-key).
 #[derive(Debug, Default, Clone)]
 pub struct AddFormState {
     pub id: String,
     pub name: String,
+    pub kind: ProviderKindChoice,
     /// Empty string maps to `None` — fall back to the provider crate's
     /// compile-time default model (ADR-0025 Decision 8).
     pub model: String,
@@ -98,6 +110,10 @@ pub struct AddFormState {
 #[derive(Debug, Clone)]
 pub struct EditFormState {
     pub name: String,
+    /// Read-only reflection of the entry's kind. Not user-editable (a
+    /// kind change is `delete` + `add`), but kept so [`Self::to_draft`]
+    /// builds the matching edit-draft variant.
+    pub kind: ProviderKindChoice,
     pub model: String,
     pub replace_api_key: bool,
     pub new_api_key: String,
@@ -423,13 +439,16 @@ impl AddFormState {
     /// TOML schema's `#[serde(skip_serializing_if = "Option::is_none")]`.
     #[must_use]
     pub fn to_draft(&self) -> AiProviderDraft {
+        let model = optional(&self.model);
+        let api_key = self.api_key.clone();
+        let kind = match self.kind {
+            ProviderKindChoice::Anthropic => AiProviderKindDraft::Anthropic { model, api_key },
+            ProviderKindChoice::OpenAi => AiProviderKindDraft::OpenAi { model, api_key },
+        };
         AiProviderDraft {
             id: self.id.clone(),
             name: self.name.clone(),
-            kind: AiProviderKindDraft::Anthropic {
-                model: optional(&self.model),
-                api_key: self.api_key.clone(),
-            },
+            kind,
         }
     }
 }
@@ -441,17 +460,19 @@ impl EditFormState {
     /// re-applied to AI keys per ADR-0025 §Decision 4).
     #[must_use]
     pub fn from_entry(entry: &AiProviderEntry) -> Self {
-        let (model, _api_key_ref) = match &entry.kind {
-            AiProviderKind::Anthropic {
-                model,
-                keyring_api_key_ref,
-            } => (
+        let (kind, model) = match &entry.kind {
+            AiProviderKind::Anthropic { model, .. } => (
+                ProviderKindChoice::Anthropic,
                 model.clone().unwrap_or_default(),
-                keyring_api_key_ref.clone(),
+            ),
+            AiProviderKind::OpenAi { model, .. } => (
+                ProviderKindChoice::OpenAi,
+                model.clone().unwrap_or_default(),
             ),
         };
         Self {
             name: entry.name.clone(),
+            kind,
             model,
             replace_api_key: false,
             new_api_key: String::new(),
@@ -469,12 +490,14 @@ impl EditFormState {
         } else {
             SecretField::Keep
         };
+        let model = optional(&self.model);
+        let kind = match self.kind {
+            ProviderKindChoice::Anthropic => AiProviderKindEditDraft::Anthropic { model, api_key },
+            ProviderKindChoice::OpenAi => AiProviderKindEditDraft::OpenAi { model, api_key },
+        };
         AiProviderEditDraft {
             name: self.name.clone(),
-            kind: AiProviderKindEditDraft::Anthropic {
-                model: optional(&self.model),
-                api_key,
-            },
+            kind,
         }
     }
 }
@@ -491,6 +514,14 @@ fn optional(s: &str) -> Option<String> {
 fn kind_label(kind: &AiProviderKind) -> String {
     match kind {
         AiProviderKind::Anthropic { .. } => t!("ai-settings-kind-anthropic"),
+        AiProviderKind::OpenAi { .. } => t!("ai-settings-kind-openai"),
+    }
+}
+
+fn kind_choice_label(choice: ProviderKindChoice) -> String {
+    match choice {
+        ProviderKindChoice::Anthropic => t!("ai-settings-kind-anthropic"),
+        ProviderKindChoice::OpenAi => t!("ai-settings-kind-openai"),
     }
 }
 
@@ -515,7 +546,20 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) {
             ui.text_edit_singleline(&mut form.name);
             ui.end_row();
             ui.label(t!("ai-settings-field-kind"));
-            ui.label(t!("ai-settings-kind-anthropic"));
+            egui::ComboBox::from_id_salt("ai-settings-kind-selector")
+                .selected_text(kind_choice_label(form.kind))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut form.kind,
+                        ProviderKindChoice::Anthropic,
+                        t!("ai-settings-kind-anthropic"),
+                    );
+                    ui.selectable_value(
+                        &mut form.kind,
+                        ProviderKindChoice::OpenAi,
+                        t!("ai-settings-kind-openai"),
+                    );
+                });
             ui.end_row();
             ui.label(t!("ai-settings-field-model"));
             ui.text_edit_singleline(&mut form.model);
@@ -535,6 +579,14 @@ fn render_edit_form(ui: &mut egui::Ui, id: &str, form: &mut EditFormState) {
             ui.end_row();
             ui.label(t!("ai-settings-field-name"));
             ui.text_edit_singleline(&mut form.name);
+            ui.end_row();
+            // Kind is read-only on edit: a kind switch is delete + add so
+            // the keyring reference is re-derived rather than migrated.
+            ui.label(t!("ai-settings-field-kind"));
+            ui.add_enabled(
+                false,
+                egui::TextEdit::singleline(&mut kind_choice_label(form.kind)),
+            );
             ui.end_row();
             ui.label(t!("ai-settings-field-model"));
             ui.text_edit_singleline(&mut form.model);
@@ -701,6 +753,7 @@ mod tests {
             *form = AddFormState {
                 id: "claude".into(),
                 name: "Claude".into(),
+                kind: ProviderKindChoice::Anthropic,
                 model: "claude-sonnet-4-6".into(),
                 api_key: "sk-abc".into(),
             };
@@ -722,6 +775,7 @@ mod tests {
             *form = AddFormState {
                 id: "dup".into(),
                 name: "Other".into(),
+                kind: ProviderKindChoice::Anthropic,
                 model: String::new(),
                 api_key: "sk-zzz".into(),
             };
@@ -767,6 +821,60 @@ mod tests {
         view.submit_edit(&mut admin).expect("edit should succeed");
         let post_key = secrets.get("dbboard.ai.claude.api_key").expect("read key");
         assert_eq!(post_key, "sk-rotated");
+    }
+
+    #[test]
+    fn submit_add_openai_kind_persists_an_openai_entry() {
+        let (mut admin, _secrets, _tmp) = new_admin();
+        let mut view = AiSettingsView::new();
+        view.start_add();
+        if let Mode::Add(form) = &mut view.mode {
+            *form = AddFormState {
+                id: "gpt".into(),
+                name: "ChatGPT".into(),
+                kind: ProviderKindChoice::OpenAi,
+                model: "gpt-4o-mini".into(),
+                api_key: "sk-openai".into(),
+            };
+        }
+        view.submit_add(&mut admin).expect("add should succeed");
+        match &admin.entries()[0].kind {
+            AiProviderKind::OpenAi { model, .. } => {
+                assert_eq!(model.as_deref(), Some("gpt-4o-mini"));
+            }
+            other @ AiProviderKind::Anthropic { .. } => {
+                panic!("expected OpenAi kind, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn start_edit_on_an_openai_entry_reflects_the_openai_kind() {
+        let entry = AiProviderEntry {
+            id: "gpt".into(),
+            name: "ChatGPT".into(),
+            kind: AiProviderKind::OpenAi {
+                model: Some("gpt-4o".into()),
+                keyring_api_key_ref: "dbboard.ai.gpt.api_key".into(),
+            },
+        };
+        let mut view = AiSettingsView::new();
+        view.start_edit(&entry);
+        match view.mode() {
+            Mode::Edit { form, .. } => {
+                assert_eq!(form.kind, ProviderKindChoice::OpenAi);
+                assert_eq!(form.model, "gpt-4o");
+            }
+            other => panic!("expected Edit, got {other:?}"),
+        }
+        // The edit draft must round-trip back to the OpenAi variant so an
+        // unrelated name edit does not silently rewrite the kind.
+        if let Mode::Edit { form, .. } = view.mode() {
+            assert!(matches!(
+                form.to_draft().kind,
+                AiProviderKindEditDraft::OpenAi { .. }
+            ));
+        }
     }
 
     #[test]

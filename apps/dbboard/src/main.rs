@@ -51,6 +51,7 @@ use dbboard_config::{
     UiSettingsFile,
 };
 use dbboard_i18n::{t, t_args};
+use dbboard_openai::OpenAiProvider;
 use dbboard_server::{
     backend_config_for_entry, backend_config_from_env_and_store, build_adapter,
     resolved_connection_label, serve, swap_backend, AppState, BackendConfig, ServerError,
@@ -838,6 +839,21 @@ fn build_provider_for_kind(
             let provider = match model.as_deref().filter(|m| !m.trim().is_empty()) {
                 Some(m) => AnthropicProvider::new(key, m)?,
                 None => AnthropicProvider::with_default_model(key)?,
+            };
+            Ok(Arc::new(provider))
+        }
+        AiProviderKind::OpenAi {
+            model,
+            keyring_api_key_ref,
+        } => {
+            let key = secrets.get(keyring_api_key_ref).map_err(|e| {
+                AiError::Configuration(format!(
+                    "api key lookup failed for {keyring_api_key_ref}: {e}"
+                ))
+            })?;
+            let provider = match model.as_deref().filter(|m| !m.trim().is_empty()) {
+                Some(m) => OpenAiProvider::new(key, m)?,
+                None => OpenAiProvider::with_default_model(key)?,
             };
             Ok(Arc::new(provider))
         }
