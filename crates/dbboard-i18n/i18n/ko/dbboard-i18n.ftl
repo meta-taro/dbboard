@@ -108,6 +108,7 @@ ai-settings-field-model = 모델 (선택)
 ai-settings-field-api-key = API 키
 ai-settings-replace-api-key = API 키 교체
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = 사용 중: { $name }
 
 ai-include-details = 컬럼 상세 정보 포함

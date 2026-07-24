@@ -178,6 +178,7 @@ ai-settings-field-model = モデル（任意）
 ai-settings-field-api-key = API キー
 ai-settings-replace-api-key = API キーを置換
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = 使用中：{ $name }
 
 ai-include-details = カラム詳細を含める
