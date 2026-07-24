@@ -3,9 +3,11 @@
 This file captures the visual direction of dbboard. It is a living
 document: fill in concrete values as the UI phase progresses.
 
-> Status: **placeholder** — UI work has not started yet. The intent is to
-> lock direction here before writing UI code so that egui styling stays
-> consistent.
+> Status: **locked (v1)** — the palette, spacing, and radius tokens below are
+> implemented by the `dbboard-ui::theme` module (ADR-0056), which is the single
+> source of truth; this document mirrors it. Typography is specced but bundled
+> fonts land in a Phase 2 fast-follow (until then the platform system font is
+> used). Update this file and the module together.
 
 ## Vibe
 
@@ -18,19 +20,29 @@ document: fill in concrete values as the UI phase progresses.
 
 ## Color Palette
 
-To be defined. Slots:
+Neutrals are tinted toward the accent (not pure grey) so the ground reads as
+chosen. Each token has a **Dark** and a **Light** value; egui picks per active
+theme. Values are the ones in `dbboard-ui::theme` (ADR-0056).
 
-| Token | Role | Value |
-|---|---|---|
-| `bg.canvas` | App background | TBD |
-| `bg.surface` | Panels, cards | TBD |
-| `bg.surface.alt` | Alternate row, hover | TBD |
-| `fg.primary` | Body text | TBD |
-| `fg.muted` | Secondary text | TBD |
-| `accent` | Primary action, links | `#4F46E5` (brand indigo, from the logo) |
-| `danger` | Destructive, errors | TBD |
-| `warning` | Caution, slow queries | TBD |
-| `success` | Healthy connection, OK | TBD |
+| Token | Role | Dark | Light |
+|---|---|---|---|
+| `bg.canvas` | App background (`panel_fill`) | `#0C0E14` | `#F4F5F8` |
+| `bg.surface` | Panels, dialogs (`window_fill`) | `#171922` | `#FFFFFF` |
+| `bg.surface.alt` | Zebra row, hover, fields | `#1E2130` | `#F0F1F5` |
+| `bg.code` | Inline code (`code_bg_color`) | `#12141C` | `#FAFBFC` |
+| `border` | Separators, hairlines | `#282C39` | `#E2E4EC` |
+| `border.strong` | Hovered edge | `#333849` | `#D3D6E0` |
+| `accent` | Primary action, links, selection | `#6366F1` | `#4F46E5` |
+| `danger` | Destructive, errors | `#F87171` | `#DC2626` |
+| `warning` | Caution, slow queries | `#FBBF24` | `#B45309` |
+| `success` | Healthy connection, OK | `#34D399` | `#059669` |
+
+The accent is the brand indigo from the logo (light) and a brighter sibling on
+the dark ground so it keeps its punch. Semantic colours (danger/warning/
+success) are a **separate axis** from the accent and never double as it; they
+map onto egui's `error_fg_color` / `warn_fg_color` and are exposed as
+`theme::danger(dark_mode)` / `warning` / `success` for call sites that need a
+colour but only know the mode.
 
 We offer a **Light**, **Dark**, and **Auto** (follow-OS) theme; Auto is the
 default (ADR-0041). Any brand-tinted UI colour (e.g. the accent, or the
@@ -67,18 +79,21 @@ used for the schema browser.
 
 ## Typography
 
-- **UI sans**: TBD (egui default acceptable for v0).
-- **Code / SQL / results**: monospace, TBD.
-- **Sizes** (rem-equivalent in egui px):
-  - body: TBD
-  - heading: TBD
-  - small / hint: TBD
+- **UI sans**: **Inter** (OFL) — bundled in a Phase 2 fast-follow. Until then
+  the platform system font is used; the palette and spacing carry the look.
+- **Code / SQL / results**: **JetBrains Mono** (OFL) — same Phase 2 bundle.
+  Numeric columns use tabular figures so digits align.
+- **Sizes** (egui px):
+  - body: 13
+  - small / hint: 11–12
+  - heading: 15
 
 ## Spacing & Radius
 
-- Base unit: TBD (likely 4px).
-- Card radius: TBD.
-- Button radius: TBD.
+- Base unit: **4px**. Item spacing `8×6`, button padding `10×6`, menu margin
+  `6` (see `theme::apply_spacing`).
+- Window / dialog / menu radius: **8px** (`window_corner_radius`).
+- Widget radius (buttons, fields, rows): **6px**.
 
 ## Components (initial scope)
 

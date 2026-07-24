@@ -24,6 +24,9 @@ mod export;
 mod history;
 mod restore;
 mod selection;
+/// Central design system: branded palette, theme-aware semantic colours,
+/// and the [`theme::apply`] entry point the binary calls at startup.
+pub mod theme;
 mod worker;
 
 pub use ai::{AiMode, AiPanel, AiResponseView};
@@ -3475,11 +3478,14 @@ fn render_editable_cell(
         None => (value.map(ToString::to_string).unwrap_or_default(), false),
     };
 
-    // Faint dirty tint pulled from the active Visuals so it holds up in
-    // both light and dark themes (ADR-0041) instead of a hard-coded RGB.
+    // Faint dirty tint keyed off the brand accent so it holds up in both
+    // light and dark themes (ADR-0041/ADR-0056) instead of a hard-coded
+    // RGB. The accent keeps its full RGB across themes (it is opaque),
+    // unlike `selection.bg_fill` whose premultiplied translucent value
+    // would read back dimmed.
     if is_staged {
-        let sel = ui.visuals().selection.bg_fill;
-        let tint = egui::Color32::from_rgba_unmultiplied(sel.r(), sel.g(), sel.b(), 48);
+        let accent = crate::theme::accent(ui.visuals().dark_mode);
+        let tint = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 48);
         ui.painter().rect_filled(ui.max_rect(), 2.0, tint);
     }
 

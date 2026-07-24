@@ -6700,3 +6700,76 @@ and a `pii-scan.yml` GitHub Actions workflow (push/PR/daily-cron) running
 - Advisory findings need periodic human review of the daily run; they do not
   gate merges by design.
 
+## ADR-0056 — dbboard design system: branded egui theme
+
+- **Status**: Accepted 2026-07-24
+- **Relates to**: `DESIGN.md` (the token spec this fills in), ADR-0041 (Light /
+  Dark / Auto theme selection — the switch this theme plugs into), ADR-0015
+  (CJK fallback font install, which the new `install_look` sequences before the
+  theme)
+
+### Context
+
+Until now the UI ran on **stock egui styling**: the bundled `Ubuntu-Light`
+font, egui's built-in blue-grey palette, and a handful of ad-hoc
+`Color32::{LIGHT_RED, LIGHT_GREEN, YELLOW}` literals at five call sites that
+ignored the active theme (a `LIGHT_RED` error label stayed the same washed-out
+red on both grounds). `DESIGN.md` was a placeholder: every palette, type, and
+spacing slot read `TBD`, with only the brand accent (`#4F46E5`, from the logo)
+pinned. The app looked generic — not because egui is limiting, but because we
+had never applied a design.
+
+The maintainer asked to raise the visual quality after an initial
+performance-first framing. An HTML before/after mock was approved as the
+direction; this ADR records the Rust side of it.
+
+### Decision
+
+A central `dbboard-ui::theme` module owns one branded palette and applies it
+once at startup via `theme::apply(ctx)`:
+
+1. **Both themes registered up front.** `apply` calls
+   `Context::set_visuals_of` for *both* `Theme::Dark` and `Theme::Light` with a
+   customised `Visuals`, then sets shared spacing/radius tokens through
+   `all_styles_mut`. Auto (follow-OS) therefore keeps working for free — egui
+   swaps between the two registered visuals as the OS theme changes, with no
+   per-frame reapplication. The existing theme *pick* (ADR-0041) just selects
+   which registered visuals are active.
+
+2. **Indigo-tinted neutrals, indigo accent, separate semantic axis.** Grounds
+   are tinted toward the accent rather than pure grey (`canvas`/`surface`/
+   `surface.alt` per theme). The accent is the brand indigo — `#4F46E5` on
+   light, a brighter `#6366F1` on the dark ground so it keeps its punch.
+   Danger/warning/success are a *separate* axis from the accent and are exposed
+   as theme-aware accessors (`theme::danger(dark_mode)` etc.) that map onto
+   egui's own `error_fg_color` / `warn_fg_color`.
+
+3. **The five ad-hoc colour sites now read the palette.** `ai.rs` (prefetch
+   warning), `ai_settings.rs` + `connections.rs` (delete confirmations),
+   `connections.rs` (export summary), and `errors.rs` (error label) call the
+   accessors instead of hard-coding one RGB. The staged-edit dirty-cell tint
+   (previously derived from `selection.bg_fill`) now keys off the accent
+   directly: a premultiplied *translucent* `Color32` reads its channels back
+   *dimmed*, so a translucent selection fill could not double as the tint
+   source — the accent is opaque and keeps its RGB across themes.
+
+4. **Fonts are deferred to a fast-follow (Phase 2).** Bundling Inter +
+   JetBrains Mono is a separable concern (binary assets under version control,
+   OFL licence text, ~hundreds of KB) and the approved mock itself approximated
+   the UI face with the platform system font — the palette, spacing, and
+   semantic colours are what carried the look. Shipping the theme first keeps
+   this change reviewable; the font install will extend `install_look`.
+
+### Consequences
+
+- The app is branded and theme-consistent; no call site hard-codes a
+  theme-blind colour. New UI reads `ui.visuals()` or the `theme::*` accessors.
+- `apps/dbboard` gains a single `install_look(ctx, theme)` seam that sequences
+  fonts → design system → theme pick before the first paint (no flash), the
+  natural place the Phase 2 font bundle will hook into.
+- egui's premultiplied-alpha `Color32` is a standing gotcha: reading `.r()/.g()
+  /.b()` off a translucent colour returns dimmed channels. Colours meant to be
+  sampled must be opaque.
+- `DESIGN.md`'s palette / typography / spacing tables move from `TBD` to the
+  locked tokens; the module is the single source and the doc mirrors it.
+

@@ -235,15 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "dbboard",
         native_options,
         Box::new(move |cc| {
-            install_cjk_font(&cc.egui_ctx);
-            // ADR-0041: apply the persisted theme before the first paint so
-            // there is no dark→light flash. `System` (our `Auto`) tracks the
-            // OS setting live for the rest of the session.
-            cc.egui_ctx.set_theme(egui_theme(theme));
-            // Also push the theme to the OS window chrome so the Windows
-            // title bar matches from the first frame (see `set_theme`).
-            cc.egui_ctx
-                .send_viewport_cmd(egui::ViewportCommand::SetTheme(viewport_theme(theme)));
+            install_look(&cc.egui_ctx, theme);
             // Fire the best-effort update check as the window opens. It is
             // fully non-blocking: the state starts Idle/Checking and the
             // task flips it (and requests a repaint) when the GET lands.
@@ -1167,6 +1159,24 @@ fn language_menu(ui: &mut egui::Ui) {
     });
 }
 
+/// Install dbboard's look before the first paint: CJK fallback font, the
+/// design system (branded palette + spacing/radius tokens, ADR-0056), then
+/// the persisted theme pick.
+///
+/// Order matters. Fonts first. `theme::apply` next: it registers a
+/// customised [`egui::Visuals`] for *both* Light and Dark, so the theme
+/// pick that follows only selects which one is active — Auto keeps swapping
+/// between them as the OS theme changes (ADR-0041). Applying the theme here
+/// (rather than on the first frame) avoids a dark→light flash, and the
+/// `ViewportCommand::SetTheme` keeps the OS window chrome (the Windows title
+/// bar) in step from frame one (see [`DesktopApp::set_theme`]).
+fn install_look(ctx: &egui::Context, theme: ThemePreference) {
+    install_cjk_font(ctx);
+    dbboard_ui::theme::apply(ctx);
+    ctx.set_theme(egui_theme(theme));
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(viewport_theme(theme)));
+}
+
 /// Look up an OS-installed CJK font and append it to egui's font stack
 /// (ADR-0015). egui's bundled `Ubuntu-Light` covers Latin + Cyrillic
 /// but renders CJK as tofu; appending a CJK font as a *fallback* (not a
@@ -1349,6 +1359,25 @@ mod tests {
         assert_eq!(
             viewport_theme(ThemePreference::Dark),
             egui::SystemTheme::Dark
+        );
+    }
+
+    #[test]
+    fn install_look_brands_both_registered_themes() {
+        use dbboard_config::ThemePreference;
+        // The one integration seam (fonts → design system → theme pick) is
+        // easy to reorder by accident. Assert the branded palette actually
+        // reaches *both* registered styles, independent of the active pick,
+        // so Auto has a customised Visuals to swap to either way.
+        let ctx = egui::Context::default();
+        super::install_look(&ctx, ThemePreference::Auto);
+        assert_eq!(
+            ctx.style_of(egui::Theme::Dark).visuals.panel_fill,
+            dbboard_ui::theme::dark_visuals().panel_fill
+        );
+        assert_eq!(
+            ctx.style_of(egui::Theme::Light).visuals.panel_fill,
+            dbboard_ui::theme::light_visuals().panel_fill
         );
     }
 
