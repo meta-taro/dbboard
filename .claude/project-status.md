@@ -5,6 +5,31 @@
 
 ## 最終更新
 
+- 日付: 2026-07-24 (**MCP ツール面を 5→7 に拡張 = PR #118 + PR #120 マージ済**
+  (develop tip `fa378c5`)。user 意向「OpenAI より MCP の需要が高い」を受けた
+  MCP 方面の 2 スライス。**(1) `search_schema` (ADR-0053, PR #118) = 6 つ目**:
+  接続内の全テーブル/カラムを **名前** の大文字小文字無視部分一致で横断検索する
+  「email カラムはどのテーブル?」の高速版 (`describe_table` を全テーブルに投げず
+  に済む)。行データではなく識別子を対象、200 テーブルで truncate。**(2)
+  `list_relationships` (ADR-0054, PR #120) = 7 つ目**: FK 結合グラフを有向エッジ
+  (`from_table.from_columns → to_table.to_columns`) で返す。`table` 無指定で全体、
+  指定で **両側** に触れる全エッジ (「orders はどう繋がってる?」)。**core 契約
+  (ADR-0012 型):** `DatabaseAdapter::foreign_keys` メソッド + `has_foreign_keys`
+  フラグ、既定メソッドは `DbError::Capability`、`ForeignKey` は複合キーを 1 エッジで
+  持つ (local/referenced カラム対を整列)。参照アクション (`ON DELETE`/`ON UPDATE`)
+  は範囲外 (`table_ddl` を読む)。**エンジン別:** Turso/D1 = `PRAGMA
+  foreign_key_list` を fk id でグループ化・seq 順、暗黙参照 (親 PK) は共有ヘルパー
+  `resolve_referenced_columns` で解決 (rowid フォールバック)、削除済みテーブルへの
+  stale 参照は当該エッジのみ degrade して探索全体は継続。Postgres 系 =
+  `pg_catalog.pg_constraint` + `unnest WITH ORDINALITY` を序数で再 join し複合カラム
+  整列、`conname` が制約名、**Aurora DSQL は FK 無しで空結果** (capability エラー
+  ではない)。結果は `MAX_RELATIONSHIPS = 500` で bound + `truncated` フラグ、他 read
+  ツールと同じ偵察用途の姿勢。秘密は一切ワイヤに出ない (keyring のみ)。ライブ統合
+  テストは `DBBOARD_PG_URL`/`DBBOARD_D1_*` 無しで self-skip。rust-reviewer の H1
+  (stale 参照で接続全体が abort) を degrade で修正・回帰テスト追加、M1 (rowid 参照が
+  空文字) を共有ヘルパーで修正、M2 (Turso/D1 重複) を core に集約。全ゲート green
+  (fmt/clippy/check/test)。**次の user 側ボール = この doc-sync PR のマージ + 次の
+  実利用摩擦テーマ選定** (MCP 継続 or Export/Saved queries/Schema diff 等)。)
 - 日付: 2026-07-24 (**エラー折り返し fix = PR #116 マージ済** (develop tip
   `aa5fa9d`)。OpenAI プロバイダ (PR #114) を develop ローカルビルドで**実機スモーク**
   した際に拾った実利用摩擦への即応。長いプロバイダエラー本文 (例 OpenAI の
