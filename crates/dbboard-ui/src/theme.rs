@@ -60,6 +60,12 @@ const BORDER_STRONG_DARK: Color32 = Color32::from_rgb(0x33, 0x38, 0x49);
 const WIDGET_RADIUS: u8 = 6;
 const WINDOW_RADIUS: u8 = 8;
 
+/// Text/glyph colour for filled accent surfaces (the primary button, a
+/// selected segment). Near-white in both themes: the accent indigo is
+/// saturated enough that white clears contrast on either shade, so one
+/// token serves both rather than a per-theme pair.
+const ON_ACCENT: Color32 = Color32::from_rgb(0xFA, 0xFB, 0xFF);
+
 /// Brand accent for the active theme.
 ///
 /// These accessors are the canonical palette source: [`brand`] sets the
@@ -108,6 +114,40 @@ pub fn success(dark_mode: bool) -> Color32 {
     } else {
         SUCCESS_LIGHT
     }
+}
+
+/// A filled, accent-coloured primary button — the one call-to-action per
+/// view (Run). egui ships no "primary" button style, so this composes one:
+/// the [`accent`] as the fill with a near-white bold label on top, matching
+/// the mock's Run affordance. `dark_mode` selects the accent shade; take it
+/// from `ui.visuals().dark_mode` at the call site.
+pub fn primary_button(dark_mode: bool, text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text.into()).color(ON_ACCENT).strong())
+        .fill(accent(dark_mode))
+}
+
+/// A compact rounded "chip" — a faint-filled, bordered badge for a short
+/// status label (the header's active-connection pill, a sidebar count).
+/// When `accent_dot` is `Some`, a small coloured dot prefixes the text
+/// (e.g. the brand accent marking the live connection); `None` draws a
+/// plain chip. Corner radius and colours come from the active theme's
+/// tokens so the chip matches the surrounding chrome in both themes.
+pub fn pill(ui: &mut egui::Ui, text: &str, accent_dot: Option<Color32>) {
+    egui::Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .corner_radius(CornerRadius::same(WIDGET_RADIUS))
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(dot) = accent_dot {
+                    // U+25CF BLACK CIRCLE: a glyph dot avoids hand-painting a
+                    // circle and is covered by the bundled fonts.
+                    ui.label(egui::RichText::new("\u{25CF}").small().color(dot));
+                }
+                ui.label(egui::RichText::new(text).small());
+            });
+        });
 }
 
 /// Apply the dbboard design system to `ctx`.
@@ -280,6 +320,17 @@ mod tests {
             assert_eq!(w.corner_radius, expect);
         }
         assert_eq!(v.window_corner_radius, CornerRadius::same(WINDOW_RADIUS));
+    }
+
+    #[test]
+    fn on_accent_is_opaque_and_distinct_from_the_accent() {
+        // The primary button paints ON_ACCENT text over an `accent` fill, so
+        // the two must differ (contrast) and the text must be fully opaque
+        // (a translucent label would read dimmed over the fill).
+        assert_eq!(ON_ACCENT.a(), 255);
+        for dark in [true, false] {
+            assert_ne!(ON_ACCENT, accent(dark));
+        }
     }
 
     #[test]

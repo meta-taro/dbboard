@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use dbboard_ai::{AiError, AiProvider};
 use dbboard_anthropic::AnthropicProvider;
-use dbboard_config::store::{default_history_path, default_path, load_or_empty};
+use dbboard_config::store::{default_history_path, default_path, load_or_empty, ConnectionEntry};
 use dbboard_config::{
     default_ai_providers_path, default_annotations_path, default_ui_settings_path,
     load_ui_settings, save_ui_settings, secure_fs, AiProviderKind, AiSettingsAdmin,
@@ -322,6 +322,14 @@ struct DesktopApp {
     /// the inner app, and persists it. Held here (not just on the inner app)
     /// because persistence + the menu bar live on this wrapper.
     backup_warn_rows: u64,
+    /// The Backup-menu editor's split view of [`Self::backup_warn_rows`]
+    /// (ADR-0057): a small mantissa plus a ×1/×1K/×1M unit, so the user
+    /// enters "500 ×1K" instead of scrubbing a raw 500000. Seeded from
+    /// `backup_warn_rows` via [`split_rows`] and recombined via
+    /// [`compose_rows`] on every edit; `backup_warn_rows` stays the source
+    /// of truth that is applied and persisted.
+    backup_threshold_mantissa: u64,
+    backup_threshold_unit: RowUnit,
     /// Parsed-Markdown cache for the update notice's release notes
     /// (ADR-0043). `egui_commonmark` re-parses `&str` every frame otherwise;
     /// the cache lives on the app so an open Help menu stays cheap. Empty
@@ -345,6 +353,7 @@ impl DesktopApp {
         let backup_warn_rows =
             backup_warn_rows_override.unwrap_or_else(|| inner.backup_warn_rows());
         inner.set_backup_warn_rows(backup_warn_rows);
+        let (backup_threshold_mantissa, backup_threshold_unit) = split_rows(backup_warn_rows);
         Self {
             inner,
             connections: ConnectionsView::new(),
@@ -356,30 +365,31 @@ impl DesktopApp {
             theme,
             ui_settings_path,
             backup_warn_rows,
+            backup_threshold_mantissa,
+            backup_threshold_unit,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
 
-    /// Render the Theme submenu and apply a pick immediately (ADR-0041).
-    /// Selecting a theme retints the running UI this frame via
-    /// [`egui::Context::set_theme`] and best-effort-persists the choice;
-    /// a persistence failure is logged, never surfaced, because the theme
-    /// already applied and the app must not block on a settings write.
-    fn theme_menu(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button(t!("theme-menu"), |ui| {
-            // Fixed order (Auto default first) so the submenu never
-            // reshuffles as the active choice changes. Labels are looked
-            // up with literal keys because `t!` only accepts literals.
+    /// Render the theme picker as an inline segmented toggle and apply a
+    /// pick immediately (ADR-0041, ADR-0057). Replaces the old Theme submenu:
+    /// the three choices are always visible in the header, matching the mock,
+    /// with the active one highlighted. Selecting retints the running UI this
+    /// frame via [`egui::Context::set_theme`] and best-effort-persists the
+    /// choice; a persistence failure is logged, never surfaced, because the
+    /// theme already applied and the app must not block on a settings write.
+    fn theme_segmented(&mut self, ui: &mut egui::Ui) {
+        // A left-to-right group so the segments read Auto | Light | Dark even
+        // when the parent lays out right-to-left. Labels use literal keys
+        // because `t!` only accepts literals.
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             for (pref, label) in [
                 (ThemePreference::Auto, t!("theme-auto")),
                 (ThemePreference::Light, t!("theme-light")),
                 (ThemePreference::Dark, t!("theme-dark")),
             ] {
-                let active = self.theme == pref;
-                let prefix = if active { "✓ " } else { "    " };
-                if ui.button(format!("{prefix}{label}")).clicked() {
+                if ui.selectable_label(self.theme == pref, label).clicked() {
                     self.set_theme(ui.ctx(), pref);
-                    ui.close();
                 }
             }
         });
@@ -406,34 +416,54 @@ impl DesktopApp {
         self.persist_ui_settings(|file| file.theme = pref);
     }
 
-    /// Render the Backup settings submenu (ADR-0050): a numeric editor for
-    /// the large-database warn threshold. A change applies live to the inner
-    /// app (so the next preflight uses it) and persists to `ui-settings.toml`
-    /// when the interaction settles.
+    /// Render the Backup settings submenu (ADR-0050, ADR-0057): a mantissa
+    /// editor plus a ×1/×1K/×1M unit selector for the large-database warn
+    /// threshold. Editing a raw six-digit row count by scrubbing a bare
+    /// `DragValue` was fiddly; the unit lets round thresholds read as "500 ×1K".
+    /// A change applies live to the inner app (so the next preflight uses it)
+    /// and persists to `ui-settings.toml` when the interaction settles.
     fn backup_settings_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button(t!("backup-settings-menu"), |ui| {
             ui.label(t!("backup-threshold-label"));
-            let resp = ui
-                .add(
-                    egui::DragValue::new(&mut self.backup_warn_rows)
-                        .speed(1000.0)
-                        // Floor at 1: a 0 threshold would warn on every
-                        // non-empty dump, which is never the intent here.
-                        .range(1..=u64::MAX),
-                )
-                .on_hover_text(t!("backup-threshold-hint"));
-            if resp.changed() {
-                // Reflect the edit immediately so a Backup started this frame
-                // already compares against the new value.
-                self.inner.set_backup_warn_rows(self.backup_warn_rows);
+            let mut changed = false;
+            let mut settled = false;
+            ui.horizontal(|ui| {
+                let resp = ui
+                    .add(
+                        // Mantissa floored at 1: with the unit multiplier the
+                        // composed threshold is then always ≥ 1, so a 0
+                        // threshold (which would warn on every non-empty dump)
+                        // is unreachable.
+                        egui::DragValue::new(&mut self.backup_threshold_mantissa)
+                            .speed(1.0)
+                            .range(1..=u64::MAX),
+                    )
+                    .on_hover_text(t!("backup-threshold-hint"));
+                changed |= resp.changed();
+                // Settle = a keyboard edit committed (changed while not
+                // dragging) or a drag released; guarding on `!dragged()` keeps
+                // a scrub from writing the file every frame.
+                settled |= (resp.changed() && !resp.dragged()) || resp.drag_stopped();
+                for unit in RowUnit::ALL {
+                    if ui
+                        .selectable_label(self.backup_threshold_unit == unit, unit.label())
+                        .clicked()
+                    {
+                        self.backup_threshold_unit = unit;
+                        changed = true;
+                        // A click is instantaneous — always a settle point.
+                        settled = true;
+                    }
+                }
+            });
+            if changed {
+                // Recompose and apply immediately so a Backup started this
+                // frame already compares against the new value.
+                let rows = compose_rows(self.backup_threshold_mantissa, self.backup_threshold_unit);
+                self.backup_warn_rows = rows;
+                self.inner.set_backup_warn_rows(rows);
             }
-            // Persist the moment the value settles — a keyboard edit commits
-            // (`changed` while not mid-drag) or a drag is released. Guarding
-            // on `!dragged()` keeps a scrub from writing the file every frame,
-            // while `drag_stopped()` catches the release; neither depends on
-            // the widget losing focus, so quitting right after an edit cannot
-            // drop it.
-            if (resp.changed() && !resp.dragged()) || resp.drag_stopped() {
+            if settled {
                 let rows = self.backup_warn_rows;
                 self.persist_ui_settings(|file| file.backup_warn_rows = Some(rows));
             }
@@ -455,6 +485,74 @@ impl DesktopApp {
             eprintln!("dbboard: could not persist ui settings: {e}");
         }
     }
+}
+
+/// Multiplier unit for the backup row-threshold editor (ADR-0057). Lets the
+/// user enter "500 ×1K" instead of scrubbing a raw 500000 on a bare
+/// `DragValue`. The threshold stays a row count throughout — this is only how
+/// the number is split for editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowUnit {
+    Ones,
+    Thousands,
+    Millions,
+}
+
+impl RowUnit {
+    /// Selector order, coarsest last, so the row reads ×1 | ×1K | ×1M.
+    const ALL: [RowUnit; 3] = [RowUnit::Ones, RowUnit::Thousands, RowUnit::Millions];
+
+    fn multiplier(self) -> u64 {
+        match self {
+            RowUnit::Ones => 1,
+            RowUnit::Thousands => 1_000,
+            RowUnit::Millions => 1_000_000,
+        }
+    }
+
+    /// Locale-neutral symbol for the selector — proper multiplier notation,
+    /// so it is not routed through the i18n catalogue.
+    fn label(self) -> &'static str {
+        match self {
+            RowUnit::Ones => "×1",
+            RowUnit::Thousands => "×1K",
+            RowUnit::Millions => "×1M",
+        }
+    }
+}
+
+/// Split a raw row threshold into a `(mantissa, unit)` pair for editing: the
+/// largest unit that divides `rows` evenly, so a round `500_000` shows as
+/// `(500, Thousands)` rather than `(500000, Ones)`. Values that aren't a
+/// clean multiple (and 0) fall back to `Ones`, preserving the exact number.
+fn split_rows(rows: u64) -> (u64, RowUnit) {
+    for unit in [RowUnit::Millions, RowUnit::Thousands] {
+        let m = unit.multiplier();
+        if rows != 0 && rows.is_multiple_of(m) {
+            return (rows / m, unit);
+        }
+    }
+    (rows, RowUnit::Ones)
+}
+
+/// Recombine an edited `(mantissa, unit)` into a raw row threshold,
+/// saturating so an extreme mantissa can't wrap (a wrapped threshold would
+/// silently disable the huge-DB warning).
+fn compose_rows(mantissa: u64, unit: RowUnit) -> u64 {
+    mantissa.saturating_mul(unit.multiplier())
+}
+
+/// Text for the header's active-connection pill: `"<name> · <adapter>"`
+/// (e.g. `"store-a · Turso"`), looked up from the connection entries by the
+/// active id. `None` when nothing matches — no store configured, or an
+/// active id that isn't in the list (mid-switch, or an env-only connection).
+/// A free function so the pill text is unit-testable without egui or a live
+/// admin lock.
+fn active_connection_pill(entries: &[ConnectionEntry], active_id: &str) -> Option<String> {
+    entries
+        .iter()
+        .find(|e| e.id == active_id)
+        .map(|e| format!("{} · {}", e.name, e.kind.adapter_label()))
 }
 
 /// Outcome of polling a dispatched-but-unresolved connection switch
@@ -520,6 +618,16 @@ fn viewport_theme(pref: ThemePreference) -> egui::SystemTheme {
 
 impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // Active-connection label for the header pill (ADR-0057). Resolved up
+        // front so the short-lived admin lock is released before the menu bar
+        // renders (which locks admin again for the Connections window). The
+        // id is materialised first so the guard doesn't span an `&self.inner`
+        // borrow.
+        let active_id = self.inner.active_connection_id().to_owned();
+        let active_pill = self.admin.as_ref().and_then(|admin| {
+            let guard = admin.lock().unwrap_or_else(PoisonError::into_inner);
+            active_connection_pill(guard.entries(), &active_id)
+        });
         egui::Panel::top("dbboard-menu").show_inside(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 if self.admin.is_some() && ui.button(t!("connections-window-title")).clicked() {
@@ -542,9 +650,21 @@ impl eframe::App for DesktopApp {
                     self.ai_settings.open();
                 }
                 language_menu(ui);
-                self.theme_menu(ui);
                 self.backup_settings_menu(ui);
                 help_menu(ui, &self.update, &mut self.commonmark_cache);
+                // Trailing header controls, right-aligned (ADR-0057): the
+                // theme segmented toggle and the active-connection pill. They
+                // live in the menu bar's leftover space so they cost no extra
+                // vertical band. In a right-to-left layout the first-added
+                // widget sits rightmost, so the toggle is added before the
+                // pill to keep [pill] [Auto|Light|Dark] reading order.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.theme_segmented(ui);
+                    if let Some(pill) = &active_pill {
+                        let accent = dbboard_ui::theme::accent(ui.visuals().dark_mode);
+                        dbboard_ui::theme::pill(ui, pill, Some(accent));
+                    }
+                });
             });
         });
         if let Some(admin) = &self.admin {
@@ -1318,6 +1438,58 @@ mod tests {
 
     fn empty_slot() -> AiProviderSlot {
         Arc::new(RwLock::new(None))
+    }
+
+    #[test]
+    fn split_rows_picks_the_largest_even_unit() {
+        use super::{split_rows, RowUnit};
+        assert_eq!(split_rows(500_000), (500, RowUnit::Thousands));
+        assert_eq!(split_rows(3_000_000), (3, RowUnit::Millions));
+        // Not a clean multiple of 1000 → stays in ones, exact value kept.
+        assert_eq!(split_rows(1024), (1024, RowUnit::Ones));
+        assert_eq!(split_rows(0), (0, RowUnit::Ones));
+    }
+
+    #[test]
+    fn compose_rows_is_the_inverse_of_split_and_saturates() {
+        use super::{compose_rows, split_rows, RowUnit};
+        assert_eq!(compose_rows(500, RowUnit::Thousands), 500_000);
+        for r in [1_u64, 999, 1000, 500_000, 3_000_000, 123_456] {
+            let (m, u) = split_rows(r);
+            assert_eq!(compose_rows(m, u), r, "round-trip failed for {r}");
+        }
+        // A huge mantissa can't wrap the threshold to a tiny number.
+        assert_eq!(compose_rows(u64::MAX, RowUnit::Millions), u64::MAX);
+    }
+
+    #[test]
+    fn active_connection_pill_labels_the_matching_entry() {
+        use super::active_connection_pill;
+        use dbboard_config::store::{ConnectionEntry, ConnectionKind};
+        let entries = vec![
+            ConnectionEntry {
+                id: "store-a".into(),
+                name: "Store A".into(),
+                kind: ConnectionKind::Turso {
+                    path: ":memory:".into(),
+                },
+            },
+            ConnectionEntry {
+                id: "store-b".into(),
+                name: "Store B".into(),
+                kind: ConnectionKind::Neon {
+                    keyring_url_ref: "r".into(),
+                },
+            },
+        ];
+        assert_eq!(
+            active_connection_pill(&entries, "store-b").as_deref(),
+            Some("Store B · Neon")
+        );
+        // An id that isn't in the list (mid-switch, or env-only) yields no
+        // pill rather than a misleading label.
+        assert_eq!(active_connection_pill(&entries, "ghost"), None);
+        assert_eq!(active_connection_pill(&[], "store-a"), None);
     }
 
     #[test]

@@ -996,15 +996,9 @@ pub fn row_connect_action(is_active: bool) -> RowConnectAction {
 }
 
 fn kind_label(kind: &ConnectionKind) -> &'static str {
-    match kind {
-        ConnectionKind::Turso { .. } => "Turso",
-        ConnectionKind::D1 { .. } => "Cloudflare D1",
-        ConnectionKind::Postgres { .. } => "Postgres",
-        ConnectionKind::Neon { .. } => "Neon",
-        ConnectionKind::Supabase { .. } => "Supabase",
-        ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
-        ConnectionKind::AuroraDsqlIam { .. } => "Aurora DSQL (IAM)",
-    }
+    // The mapping now lives on the enum so the header pill (in the binary)
+    // and this list read one definition (ADR-0057).
+    kind.adapter_label()
 }
 
 /// Whether the UI offers an Edit form for `kind`. The Aurora DSQL IAM
