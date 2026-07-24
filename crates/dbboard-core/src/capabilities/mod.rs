@@ -60,6 +60,14 @@ pub struct Capabilities {
     /// execution. `#[serde(default)]` keeps older payloads parseable.
     #[serde(default)]
     pub has_atomic_restore: bool,
+    /// The adapter implements `DatabaseAdapter::foreign_keys` (ADR-0054) — it
+    /// can enumerate a table's foreign-key constraints, which the MCP
+    /// relationship-discovery tool needs. Engines that model no foreign keys
+    /// (Aurora DSQL) may still advertise this and return an empty result.
+    /// `#[serde(default)]` keeps pre-ADR-0054 payloads parseable — the flag
+    /// reads as `false`.
+    #[serde(default)]
+    pub has_foreign_keys: bool,
 }
 
 #[cfg(test)]
@@ -78,6 +86,7 @@ mod tests {
         assert!(!caps.has_table_ddl);
         assert!(!caps.has_execute);
         assert!(!caps.has_atomic_restore);
+        assert!(!caps.has_foreign_keys);
     }
 
     #[test]
@@ -95,6 +104,7 @@ mod tests {
         assert!(!caps.has_table_ddl);
         assert!(!caps.has_execute);
         assert!(!caps.has_atomic_restore);
+        assert!(!caps.has_foreign_keys);
     }
 
     #[test]
@@ -119,7 +129,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false}"#
         );
     }
 
@@ -135,6 +145,7 @@ mod tests {
             has_table_ddl: true,
             has_execute: true,
             has_atomic_restore: true,
+            has_foreign_keys: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();
@@ -169,5 +180,15 @@ mod tests {
         assert!(caps.has_table_ddl);
         assert!(!caps.has_execute);
         assert!(!caps.has_atomic_restore);
+    }
+
+    #[test]
+    fn legacy_json_without_foreign_keys_flag_deserializes_as_false() {
+        // Pre-ADR-0054 payloads carry the restore flags but not
+        // has_foreign_keys; the newer flag must still default to false.
+        let json = r#"{"has_views":false,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":false,"has_describe_table":true,"has_table_ddl":true,"has_execute":true,"has_atomic_restore":true}"#;
+        let caps: Capabilities = serde_json::from_str(json).unwrap();
+        assert!(caps.has_execute);
+        assert!(!caps.has_foreign_keys);
     }
 }

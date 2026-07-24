@@ -73,9 +73,64 @@ pub struct TableSchema {
     pub primary_key: Vec<String>,
 }
 
+/// One foreign-key constraint on a table, returned by
+/// [`DatabaseAdapter::foreign_keys`] (ADR-0054).
+///
+/// A composite key spans several columns: `columns` and
+/// `referenced_columns` are aligned 1:1 in key order (the first local
+/// column references the first referenced column, and so on). Both are
+/// non-empty for a well-formed constraint.
+///
+/// This carries only what relationship discovery needs — the endpoints
+/// of the edge. Referential actions (`ON DELETE` / `ON UPDATE`) are
+/// deliberately out of scope (ADR-0054); a caller that needs them can
+/// read the table's DDL via [`DatabaseAdapter::table_ddl`].
+///
+/// [`DatabaseAdapter::foreign_keys`]: crate::DatabaseAdapter::foreign_keys
+/// [`DatabaseAdapter::table_ddl`]: crate::DatabaseAdapter::table_ddl
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForeignKey {
+    /// Local (referencing) columns, in key order.
+    pub columns: Vec<String>,
+    /// The referenced (parent) table. Schema-qualified only where the
+    /// engine has schemas — SQLite/libSQL/D1 references stay unqualified.
+    pub referenced_table: TableInfo,
+    /// Referenced (parent) columns, aligned 1:1 with [`columns`](Self::columns).
+    pub referenced_columns: Vec<String>,
+    /// The constraint name where the engine reports one (Postgres);
+    /// `None` for SQLite/libSQL/D1, whose `PRAGMA foreign_key_list` does
+    /// not name the constraint.
+    pub constraint_name: Option<String>,
+}
+
+/// Resolve the referenced (parent) columns of a SQLite-family foreign key.
+///
+/// `PRAGMA foreign_key_list` reports each referenced column in `to`, but
+/// leaves it `None` when the DDL omitted the parent column list — an
+/// implicit reference to the parent's primary key. `to` and `parent_pk` are
+/// both in key order; for each position this prefers the explicit `to`
+/// value, falls back to the parent PK at that position, and finally to
+/// `"rowid"` — SQLite's actual implicit reference target for a rowid table
+/// that declares no named primary key.
+///
+/// Shared by the Turso and D1 adapters so their identical PRAGMA-shaped
+/// resolution cannot drift. Postgres reports referenced columns directly and
+/// does not use this.
+#[must_use]
+pub fn resolve_referenced_columns(to: &[Option<String>], parent_pk: &[String]) -> Vec<String> {
+    to.iter()
+        .enumerate()
+        .map(|(i, col)| {
+            col.clone()
+                .or_else(|| parent_pk.get(i).cloned())
+                .unwrap_or_else(|| "rowid".to_string())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ColumnInfo, TableInfo, TableSchema};
+    use super::{resolve_referenced_columns, ColumnInfo, ForeignKey, TableInfo, TableSchema};
 
     #[test]
     fn unqualified_table_has_no_schema() {
@@ -171,5 +226,66 @@ mod tests {
         };
         assert!(schema.primary_key.is_empty());
         assert!(!schema.columns[0].primary_key);
+    }
+
+    #[test]
+    fn foreign_key_round_trips_through_json() {
+        let fk = ForeignKey {
+            columns: vec!["customer_id".into()],
+            referenced_table: TableInfo::qualified("public", "customers"),
+            referenced_columns: vec!["id".into()],
+            constraint_name: Some("orders_customer_id_fkey".into()),
+        };
+        let json = serde_json::to_string(&fk).unwrap();
+        assert_eq!(serde_json::from_str::<ForeignKey>(&json).unwrap(), fk);
+    }
+
+    #[test]
+    fn foreign_key_carries_composite_key_columns_in_order() {
+        // A two-column key: the local/referenced columns are paired by
+        // position, so order is load-bearing.
+        let fk = ForeignKey {
+            columns: vec!["order_id".into(), "line_no".into()],
+            referenced_table: TableInfo::unqualified("order_lines"),
+            referenced_columns: vec!["order".into(), "line".into()],
+            constraint_name: None,
+        };
+        assert_eq!(fk.columns.len(), fk.referenced_columns.len());
+        assert_eq!(fk.columns[1], "line_no");
+        assert_eq!(fk.referenced_columns[1], "line");
+        assert_eq!(fk.referenced_table.name, "order_lines");
+    }
+
+    #[test]
+    fn resolve_referenced_columns_uses_explicit_targets() {
+        // Every column named explicitly (the DDL gave a parent column list):
+        // the parent PK is not consulted.
+        let to = [Some("a".to_string()), Some("b".to_string())];
+        assert_eq!(
+            resolve_referenced_columns(&to, &[]),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_referenced_columns_falls_back_to_parent_pk_in_order() {
+        // Implicit reference (parent column list omitted): resolve each
+        // position against the parent's primary key, in key order.
+        let to = [None, None];
+        let pk = ["id".to_string(), "region".to_string()];
+        assert_eq!(
+            resolve_referenced_columns(&to, &pk),
+            vec!["id".to_string(), "region".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_referenced_columns_defaults_to_rowid_without_a_named_pk() {
+        // A rowid table has no named primary key, so an implicit single-column
+        // reference targets SQLite's rowid rather than an empty string.
+        assert_eq!(
+            resolve_referenced_columns(&[None], &[]),
+            vec!["rowid".to_string()]
+        );
     }
 }
