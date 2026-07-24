@@ -124,6 +124,27 @@ pub enum ConnectionKind {
     },
 }
 
+impl ConnectionKind {
+    /// Short human label for the adapter behind this kind — the brand name
+    /// the connection picker and the header pill show (e.g. `Turso`,
+    /// `Neon`, `Aurora DSQL`). These are proper nouns, identical across
+    /// locales, so they are not routed through the i18n catalogue. Lives on
+    /// the enum (not the UI) so every surface that labels a connection reads
+    /// one definition.
+    #[must_use]
+    pub fn adapter_label(&self) -> &'static str {
+        match self {
+            ConnectionKind::Turso { .. } => "Turso",
+            ConnectionKind::D1 { .. } => "Cloudflare D1",
+            ConnectionKind::Postgres { .. } => "Postgres",
+            ConnectionKind::Neon { .. } => "Neon",
+            ConnectionKind::Supabase { .. } => "Supabase",
+            ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
+            ConnectionKind::AuroraDsqlIam { .. } => "Aurora DSQL (IAM)",
+        }
+    }
+}
+
 impl ConnectionFile {
     /// Parse and validate a `connections.toml` payload.
     ///
@@ -273,6 +294,36 @@ fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_label_names_each_kind() {
+        assert_eq!(
+            ConnectionKind::Turso {
+                path: ":memory:".into()
+            }
+            .adapter_label(),
+            "Turso"
+        );
+        assert_eq!(
+            ConnectionKind::Neon {
+                keyring_url_ref: "r".into()
+            }
+            .adapter_label(),
+            "Neon"
+        );
+        // Postgres and Neon share a shape but not a label — the discriminator
+        // is the whole point of the separate kind.
+        assert_ne!(
+            ConnectionKind::Postgres {
+                keyring_url_ref: "r".into()
+            }
+            .adapter_label(),
+            ConnectionKind::Neon {
+                keyring_url_ref: "r".into()
+            }
+            .adapter_label()
+        );
+    }
 
     #[test]
     fn empty_constructor_uses_the_current_schema_version() {

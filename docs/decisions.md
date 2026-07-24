@@ -6773,3 +6773,82 @@ once at startup via `theme::apply(ctx)`:
 - `DESIGN.md`'s palette / typography / spacing tables move from `TBD` to the
   locked tokens; the module is the single source and the doc mirrors it.
 
+## ADR-0057 — Design system, applied: primary CTA, header identity, count badge, unit-aware threshold
+
+- **Status**: Accepted 2026-07-24
+- **Relates to**: ADR-0056 (the branded theme this consumes — palette, spacing,
+  radius tokens), ADR-0050 (the backup warn threshold this re-skins), ADR-0041
+  (Light / Dark / Auto pick — now a segmented control), ADR-0030 (auto-limit
+  guard living on the same toolbar), `DESIGN.md`
+
+### Context
+
+ADR-0056 locked the palette, spacing, and semantic colours but stopped at
+"apply the tokens." Standing next to the approved HTML mock, the running app
+still read flat: every button was the same neutral grey (the primary **Run**
+action no more prominent than a checkbox), the theme picker was a dropdown
+buried in the menu bar, there was no at-a-glance signal of *which connection is
+live* or *how many tables it has*, and the backup warn threshold was a bare
+six-digit `DragValue` the maintainer called fiddly to adjust. The mock's edge
+over ours was **structural, not chromatic** — hierarchy, identity, and
+affordance — so this ADR records the component-level application of the theme
+rather than any new colour.
+
+### Decision
+
+Four slices, all built on ADR-0056 tokens, adding **no new i18n strings** (they
+reuse existing keys or locale-neutral proper nouns / multiplier symbols):
+
+1. **Primary call-to-action.** `theme::primary_button(dark_mode, text)` returns
+   an `egui::Button` filled with the brand accent and an opaque `ON_ACCENT`
+   label — the one filled button on the query toolbar. Every sibling control
+   (auto-limit, backup, restore) stays a neutral secondary, so **Run** now reads
+   as the primary action. A new `ON_ACCENT` constant is opaque by construction
+   (the premultiplied-alpha gotcha from ADR-0056 would otherwise dim a sampled
+   label).
+
+2. **Header identity: pill + segmented theme toggle.** `theme::pill(ui, text,
+   accent_dot)` draws a rounded chip (faint fill, hairline stroke, optional
+   status dot) at the ADR-0056 widget radius. The menu bar now ends with a
+   right-aligned group: an **active-connection pill** (`name · adapter`, accent
+   dot) and an inline **Auto | Light | Dark** segmented control replacing the
+   old `theme_menu` dropdown. The dot signals *active*, not health — there is no
+   live probe, so it deliberately does not claim connectivity.
+
+3. **Sidebar table-count badge.** The Tables heading carries a count pill
+   (`self.tables` length). This is the row of information the mock's sidebar
+   badges implied *that we can source honestly*: table count is already in hand.
+   **Per-table row-count badges are explicitly deferred** — they need a
+   per-table `COUNT(*)` we do not fetch and which is heavy on large DBs; showing
+   a fabricated or blocking number would be worse than showing none.
+
+4. **Unit-aware backup threshold (ADR-0050 re-skin).** The raw `DragValue`
+   becomes a mantissa editor plus a `×1 | ×1K | ×1M` unit selector. `split_rows`
+   seeds the editor from the stored count (largest evenly-dividing unit, so a
+   round `500_000` reads `500 ×1K`); `compose_rows` recombines with a saturating
+   multiply so an extreme mantissa cannot wrap the threshold to a small number
+   and silently disable the huge-DB warning. **The metric stays a row count**
+   throughout — the maintainer asked for byte units, but `DumpPlan` carries no
+   byte estimate, so units here are multipliers on rows, not bytes.
+
+Supporting move: `ConnectionKind::adapter_label()` moves to the config layer
+(`dbboard-config::store`) as the single source of the display name per adapter;
+`connections::kind_label` now delegates to it, so the header pill and the
+connections window cannot drift apart.
+
+### Consequences
+
+- The query view has one visually primary action; the header answers "which
+  connection, which theme" without opening a menu. New primary actions call
+  `theme::primary_button`; new chips call `theme::pill`.
+- Zebra striping on the result grid was already enabled (`.striped(true)`) and
+  now reads correctly off the ADR-0056 faint-row tint — no code change, recorded
+  so it is not re-litigated.
+- Two honesty boundaries are load-bearing and intentional: the status dot means
+  *active-not-health*, and the sidebar shows *table count only* (row counts
+  await a lazy `COUNT(*)` design). Both were chosen over fabricating a number.
+- Threshold semantics are unchanged for existing `ui-settings.toml` files:
+  `split_rows`/`compose_rows` round-trip any stored value exactly; a
+  non-round count simply shows under `×1`.
+- Still deferred from ADR-0056: the Phase 2 font bundle (Inter + JetBrains
+  Mono), a separable binary-asset change.

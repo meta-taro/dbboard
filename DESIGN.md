@@ -106,6 +106,21 @@ used for the schema browser.
 
 Each component will get a small style spec in this file once it is built.
 
+### Built (ADR-0057)
+
+- **Primary button** — the one filled accent button per view, reserved for the
+  view's primary action (e.g. **Run**). Accent fill, opaque `ON_ACCENT` label,
+  bold. All sibling actions stay neutral secondaries. `theme::primary_button`.
+- **Pill** — rounded chip at the widget radius: faint fill, hairline stroke,
+  optional leading status dot. Used for the header active-connection pill and
+  the sidebar table-count badge. Small text. `theme::pill`.
+- **Segmented theme toggle** — inline **Auto | Light | Dark** selectable group
+  in the menu bar, replacing the old dropdown. Selected segment reads active.
+- **Status dot** — the pill's leading dot signals *active*, not health; there
+  is no live connectivity probe, so it never claims a connection is reachable.
+- **Count badge** — table-count pill on the Tables heading. Table count only;
+  per-table row counts are deferred (they need a heavy per-table `COUNT(*)`).
+
 ## Layout
 
 - Default: three-pane (sidebar / editor / results) inspired by classic
