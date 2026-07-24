@@ -472,9 +472,11 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 - [x] Read-only MCP server (`dbboard-mcp`) — dbboard now doubles as a
       headless [MCP](https://modelcontextprotocol.io) server that hands its
       already-configured databases to an external AI agent (Claude Desktop /
-      Claude Code) over stdio as a small **read-only** tool surface. Five
-      fixed tools (`list_connections`, `list_tables`, `describe_table`,
-      `run_read_query`, `get_annotations`), reusing the exact
+      Claude Code) over stdio as a small **read-only** tool surface. Six
+      read-only tools (`list_connections`, `list_tables`, `describe_table`,
+      `run_read_query`, `get_annotations`, plus `search_schema` — a
+      case-insensitive table/column name search added post-v0.3.0,
+      [ADR-0053](decisions.md)), reusing the exact
       `connections.toml` + OS-keychain machinery as the GUI. Secrets never
       cross the wire (only `{id,name,kind}` is serialized); read-only is
       **engine-enforced** (`BEGIN TRANSACTION READ ONLY` / `PRAGMA

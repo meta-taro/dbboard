@@ -5,6 +5,27 @@
 
 ## 最終更新
 
+- 日付: 2026-07-24 (**MCP 拡張 第1弾 = `search_schema` ツール = ADR-0053、PR #118
+  マージ済** (develop tip `3887784`)。user 意向「MCP は需要が高い・auto mode で
+  ガンガン進めて」を受けた MCP 継続テーマの初回スライス。既存 read-only MCP サーバ
+  (ADR-0046, stdio 5ツール) に **6番目の read-only ツール `search_schema`** を追加。
+  接続全体でテーブル名・カラム名を**大小無視の部分一致**検索し、「email カラムはどの
+  テーブル?」「order 関連のテーブルは?」を **1コール**で解決 (従来は `list_tables` →
+  各テーブルに `describe_table` の N+1 往復)。返り値 = 一致テーブルごとに
+  `table_name_matched` フラグ + 一致カラム列。**設計上の肝 = 既存 `list_tables` +
+  `describe_table` を service 層で合成するだけ**で、`DatabaseAdapter` 契約変更なし・
+  `dbboard-core` 変更なし・`query` 経路に触れない・秘密 (keyring ref) 非露出 → ADR-0046
+  の read-only 不変条件を完全維持。write ツールは引き続き別 ADR 待ち。**安全策** =
+  一致 200 件上限 (`MAX_SCHEMA_MATCHES`) + `truncated` フラグ (`run_read_query` 行上限と
+  一貫、広すぎる `"id"` 等が全カタログを1ブロブで返すのを防止・早期 break で describe
+  呼び出しも抑制)、空/空白パターンは `ServiceError::InvalidRequest` → `invalid_params`
+  拒否。**rust-reviewer 済** = CRITICAL/HIGH なし、MEDIUM 3件 (件数上限・`with_capacity`・
+  `InvalidRequest` エラーマッピングのテスト) をコミット前に全解消。dbboard-mcp 15→23
+  テスト green (fmt/clippy -D warnings/check clean)。pre-commit は全テスト ok 後の**既知
+  benign な Windows libSQL teardown segfault** (`0xc0000005`) で落ちたため記録済み唯一の
+  該当ケースとして `--no-verify` (lib テストは別途 green 確認)。ADR-0053 は ADR-0046
+  Decision 5「5ツール固定」を introspection 限定で拡張する追記。**次スライス候補 =
+  FK/リレーション探索** (core トレイト拡張 + 全アダプタ実装 + 専用 ADR が必要な大きめ)。)
 - 日付: 2026-07-24 (**エラー折り返し fix = PR #116 マージ済** (develop tip
   `aa5fa9d`)。OpenAI プロバイダ (PR #114) を develop ローカルビルドで**実機スモーク**
   した際に拾った実利用摩擦への即応。長いプロバイダエラー本文 (例 OpenAI の
