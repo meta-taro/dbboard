@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+#
+# dbboard commit-msg hook
+#
+# Installed automatically by cargo-husky on first `cargo test`.
+# Scans the commit message itself for PII / credential material before the
+# commit is recorded. The user asked commit comments to be covered too:
+# a real store name pasted into a message is as much a leak as one in a file.
+#
+# $1 is the path to the file holding the prospective commit message.
+# --reveal is safe here: local hook output is not a public log.
+# See docs/maintainer/pii-scanning.md.
+
+set -e
+
+# Fail CLOSED: if the scanner is tracked but missing, refuse rather than
+# silently letting an unscanned message through.
+if [ -f scripts/pii-scan.sh ]; then
+    sh scripts/pii-scan.sh --message "$1" --reveal
+elif git ls-files --error-unmatch scripts/pii-scan.sh >/dev/null 2>&1; then
+    echo "[commit-msg] ERROR: scripts/pii-scan.sh is tracked but missing — refusing the commit." >&2
+    exit 1
+fi

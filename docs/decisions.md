@@ -6618,3 +6618,85 @@ through a new MCP tool.
 - Cost note: the no-`table` graph walk issues one `foreign_keys` call per table,
   the same N-call shape as `search_schema`. Acceptable for the collector
   databases in scope; the `MAX_RELATIONSHIPS` cap bounds the output.
+
+## ADR-0055 — Automated PII / secret leak scanning
+
+- **Status**: Accepted 2026-07-24
+- **Relates to**: `docs/maintainer/history-sanitize-runbook.md` (the one-time
+  *remediation* of names already in history — this ADR is the ongoing
+  *prevention*), ADR-0038 (encrypted connection bundles — why real secrets are
+  never in tracked files in the first place)
+
+### Context
+
+dbboard is developed against real, business-identifying databases (store
+connection names, sample rows, the maintainer's machine paths) but published as
+a public repository. Real store names have already reached tracked test
+fixtures once; the history rewrite runbook removes what landed, but nothing
+*prevents the next one*. We need a guard that runs on every commit, on every
+commit message (a real name pasted into a message leaks exactly as badly as one
+in a file), and on a daily schedule so an out-of-band merge or direct push is
+caught within a day.
+
+The tension: this is a database client, so its own test suite is legitimately
+full of *synthetic* connection strings and example emails. A scanner that
+blocks on every passworded-URL shape would be a false-positive wall that trains
+everyone to `--no-verify`.
+
+### Decision
+
+A single POSIX-sh scanner, `scripts/pii-scan.sh`, invoked three ways: local
+`pre-commit` (`--staged`) and `commit-msg` (`--message`) hooks via cargo-husky,
+and a `pii-scan.yml` GitHub Actions workflow (push/PR/daily-cron) running
+`--selftest`, `--tree`, and `--range origin/main..HEAD`.
+
+1. **Two severities, because fixtures are noisy.**
+   - **Blocking** (fails commit/CI): a *denylist* of real literals, plus
+     `private-key` and `aws-access-key-id` shapes. These almost never appear as
+     fixtures.
+   - **Advisory** (printed in the daily scan, never fails): `passworded-db-url`,
+     `personal-email`, `windows-home-path`. By project invariant real secrets
+     live only in the OS keyring, so a passworded URL in a tracked file is a
+     fixture — worth review, not a build break. Known real values are promoted
+     to blocking by adding them to the denylist.
+2. **The denylist is never committed.** Committing the real names would put the
+   very strings we hide back into a tracked, public file. It lives in an
+   untracked `.pii-denylist` (gitignored) locally and the `PII_DENYLIST` repo
+   secret in CI, materialized per-run and shredded after. A tracked
+   `.pii-denylist.example` documents the format only.
+3. **Matches are redacted.** Denylist hits print `[denylist#<sha8>] file:line
+   (match redacted)`; CI runs without `--reveal`. A public Actions log never
+   echoes a string the scanner exists to hide. Local hooks pass `--reveal`
+   because a private terminal is not a public log.
+4. **A narrow allowlist** (`scripts/pii-scan.allow`) drops known-safe shapes
+   (placeholder emails, example DB URLs, `C:\Users\<placeholder>` docs paths)
+   so a clean tree scans green. Denylist literals cannot be allowlisted.
+5. **History is out of scope.** CI scans HEAD and *new* commit messages only.
+   Full history still holds un-remediated names pending the runbook rewrite;
+   scanning it would be permanently red and bury the live signal.
+
+### Alternatives considered
+
+- **A third-party secret scanner (gitleaks/trufflehog).** Strong on generic
+  credential shapes, but the actual leak here is *business names* — arbitrary
+  literals only the maintainer knows — which a denylist expresses directly. A
+  20-line sh script with a private denylist fits the threat; a vendored binary
+  action would also widen the CI supply-chain surface (CLAUDE.md flags new
+  Actions/deps). Revisit if generic-credential coverage becomes the priority.
+- **Block on every passworded-URL shape.** Rejected: false-positive wall against
+  this codebase's fixtures; would erode the hook's credibility. Advisory tier
+  keeps the signal without the noise.
+- **Commit the denylist.** Self-defeating — it publishes the hidden strings.
+
+### Consequences
+
+- A leaked store name/credential is caught before it enters a commit, a commit
+  message, or (within a day) an out-of-band update — closing the gap the
+  history runbook can only clean up after the fact.
+- Operators must maintain the denylist in two places (local file + CI secret);
+  `docs/maintainer/pii-scanning.md` is the operator guide. Absent a denylist the
+  scan degrades to generic rules, it does not break.
+- The hooks reinstall from `.cargo-husky/hooks/` on the next `cargo test`.
+- Advisory findings need periodic human review of the daily run; they do not
+  gate merges by design.
+

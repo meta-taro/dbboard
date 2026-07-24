@@ -1,0 +1,94 @@
+# PII / secret leak scan (ADR-0055).
+#
+# The preventive half of dbboard's leak defence. `scripts/pii-scan.sh` runs
+# locally on every commit (pre-commit + commit-msg hooks); this workflow runs
+# the same scanner in CI on every push/PR to the integration branches, plus
+# once a day on a schedule so a leak that lands out-of-band (a merge, a direct
+# push, a rebase) is caught within 24h even if nobody commits.
+#
+# What it scans:
+#   * `--selftest`   — proves the rules still fire (guards against a broken edit).
+#   * `--tree`       — tracked files at HEAD: blocking rules + denylist fail the
+#                      job; the high-false-positive shape rules print as advisory.
+#   * `--range`      — commit MESSAGES new on this ref vs origin/main. Commit
+#                      comments were explicitly in scope for this request.
+# It does NOT scan full history: history still contains un-remediated real
+# names pending the one-time rewrite (docs/maintainer/history-sanitize-runbook.md),
+# so a full-history scan would be permanently red and drown the signal.
+#
+# The denylist (the real store names / maintainer PII, never committed) is
+# materialized from the `PII_DENYLIST` repo secret into an untracked file for
+# the run. When the secret is absent (forks, first-run) the scan degrades to
+# generic rules only rather than failing. CI runs WITHOUT `--reveal`: matches
+# are redacted so a public Actions log never echoes the very strings we hide.
+#
+# Security posture (CLAUDE.md "Adding GitHub Actions workflows"): least
+# privilege — `contents: read` only, no write scope, no third-party action
+# (only first-party `actions/checkout`, pinned by major tag). The scanner is a
+# POSIX sh script in-repo; no untrusted code is built or executed.
+name: pii-scan
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  schedule:
+    # 06:00 UTC daily (~15:00 JST). Cron has no access to secrets on forks;
+    # on this repo it materializes PII_DENYLIST like the other triggers.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pii-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for commit-message range scan)
+        uses: actions/checkout@v4
+        with:
+          # Need history so `origin/main..HEAD` resolves; the scan itself only
+          # reads messages in that range, not the full tree history.
+          fetch-depth: 0
+          # No git operation here needs the token stored in .git/config.
+          persist-credentials: false
+
+      - name: Materialize denylist from secret (if present)
+        env:
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
+        run: |
+          if [ -n "$PII_DENYLIST" ]; then
+            printf '%s\n' "$PII_DENYLIST" > .pii-denylist
+            echo "denylist: materialized from secret"
+          else
+            echo "denylist: PII_DENYLIST secret absent — generic rules only"
+          fi
+
+      - name: Selftest
+        run: sh scripts/pii-scan.sh --selftest
+
+      - name: Scan tracked files at HEAD
+        run: sh scripts/pii-scan.sh --tree
+
+      - name: Scan commit messages new on this ref
+        run: |
+          # Compare against origin/main; if unavailable, fall back to this
+          # push's before..after so the step still scans new messages.
+          git fetch --no-tags origin main >/dev/null 2>&1 || true
+          if git rev-parse --verify -q origin/main >/dev/null; then
+            RANGE="origin/main..HEAD"
+          else
+            RANGE="HEAD~20..HEAD"
+          fi
+          echo "range: $RANGE"
+          sh scripts/pii-scan.sh --range "$RANGE"
+
+      - name: Shred denylist
+        if: always()
+        run: rm -f .pii-denylist
