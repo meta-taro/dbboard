@@ -7,9 +7,9 @@
 
 use async_trait::async_trait;
 use dbboard_core::{
-    check_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
-    DbError, DbResult, QueryResult, Row, SqlDialect, TableInfo, TableSchema, Value,
-    MAX_RESULT_ROWS,
+    check_read_only, resolve_referenced_columns, too_many_rows_error, Capabilities, Column,
+    ColumnInfo, DatabaseAdapter, DbError, DbResult, ForeignKey, QueryResult, Row, SqlDialect,
+    TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 
 pub struct TursoAdapter {
@@ -47,6 +47,57 @@ impl TursoAdapter {
             .map_err(|e| DbError::Connection(redact_path(e.to_string(), path)))?;
         Ok(Self { conn, _db: db })
     }
+
+    /// Group raw `PRAGMA foreign_key_list` rows into composite
+    /// [`ForeignKey`]s. Rows sharing an `id` form one constraint, ordered
+    /// by `seq`; a row whose `to` is `None` referenced the parent's
+    /// primary key implicitly, resolved here against the parent's PK in
+    /// key order.
+    async fn assemble_foreign_keys(&self, raw: Vec<RawFk>) -> DbResult<Vec<ForeignKey>> {
+        // Group by fk id, preserving first-seen order so the output order
+        // is stable rather than dependent on SQLite's row ordering.
+        let mut groups: Vec<(i64, Vec<RawFk>)> = Vec::new();
+        for r in raw {
+            match groups.iter_mut().find(|(id, _)| *id == r.id) {
+                Some((_, rows)) => rows.push(r),
+                None => groups.push((r.id, vec![r])),
+            }
+        }
+
+        let mut out = Vec::with_capacity(groups.len());
+        for (_, mut rows) in groups {
+            rows.sort_by_key(|r| r.seq);
+            let referenced_table = TableInfo::unqualified(rows[0].referenced_table.clone());
+            let columns: Vec<String> = rows.iter().map(|r| r.from.clone()).collect();
+
+            // A `NULL` in `to` means the DDL omitted the parent column
+            // list, so the reference is to the parent's primary key. One
+            // describe of the parent resolves every such column at once.
+            let to: Vec<Option<String>> = rows.iter().map(|r| r.to.clone()).collect();
+            let referenced_columns = if to.iter().any(Option::is_none) {
+                // A stale reference to a since-dropped table (SQLite does not
+                // require the parent to exist) must not abort the whole
+                // relationship walk — degrade to an unresolved PK for this one
+                // edge instead of propagating the `describe_table` error.
+                let pk = match self.describe_table(&referenced_table).await {
+                    Ok(schema) => schema.primary_key,
+                    Err(_) => Vec::new(),
+                };
+                resolve_referenced_columns(&to, &pk)
+            } else {
+                resolve_referenced_columns(&to, &[])
+            };
+
+            out.push(ForeignKey {
+                columns,
+                referenced_table,
+                referenced_columns,
+                // SQLite's PRAGMA does not report the constraint name.
+                constraint_name: None,
+            });
+        }
+        Ok(out)
+    }
 }
 
 #[async_trait]
@@ -60,6 +111,7 @@ impl DatabaseAdapter for TursoAdapter {
             has_describe_table: true,
             has_execute: true,
             has_atomic_restore: true,
+            has_foreign_keys: true,
             ..Capabilities::default()
         }
     }
@@ -177,6 +229,31 @@ impl DatabaseAdapter for TursoAdapter {
         })
     }
 
+    async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+        // `PRAGMA foreign_key_list('t')` rows: (id, seq, table, from, to,
+        // on_update, on_delete, match). One row per key column; a composite
+        // key shares an `id` across rows ordered by `seq`. As with
+        // `describe_table`, the name is embedded with single quotes doubled —
+        // it is not a bindable PRAGMA argument.
+        let escaped = table.name.replace('\'', "''");
+        let mut rows = self
+            .conn
+            .query(&format!("PRAGMA foreign_key_list('{escaped}')"), ())
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut raw = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?
+        {
+            raw.push(raw_fk_from_pragma_row(&row)?);
+        }
+
+        self.assemble_foreign_keys(raw).await
+    }
+
     async fn execute(&self, sql: &str) -> DbResult<u64> {
         // Mirror `query`'s routing: libSQL rejects a row-returning statement
         // sent through `execute`. A restore script is overwhelmingly DDL/DML,
@@ -265,6 +342,34 @@ fn column_from_pragma_row(
         primary_key: pk > 0,
         ordinal,
         default_value,
+    })
+}
+
+/// One row of `PRAGMA foreign_key_list`, before rows are grouped into
+/// composite constraints. `to` is `None` when the referencing DDL omitted
+/// the parent column list (an implicit reference to the parent's primary
+/// key), which [`TursoAdapter::assemble_foreign_keys`] resolves.
+struct RawFk {
+    id: i64,
+    seq: i64,
+    referenced_table: String,
+    from: String,
+    to: Option<String>,
+}
+
+fn raw_fk_from_pragma_row(row: &libsql::Row) -> DbResult<RawFk> {
+    let type_error = |e: libsql::Error| DbError::TypeConversion(e.to_string());
+    let to = match row.get_value(4).map_err(type_error)? {
+        libsql::Value::Null => None,
+        libsql::Value::Text(s) => Some(s),
+        other => Some(format!("{other:?}")),
+    };
+    Ok(RawFk {
+        id: row.get(0).map_err(type_error)?,
+        seq: row.get(1).map_err(type_error)?,
+        referenced_table: row.get(2).map_err(type_error)?,
+        from: row.get(3).map_err(type_error)?,
+        to,
     })
 }
 
@@ -461,7 +566,7 @@ fn format_column_type(t: libsql::ValueType) -> String {
 #[cfg(test)]
 mod tests {
     use super::{convert_value, is_row_returning, redact_path, TursoAdapter, Value};
-    use dbboard_core::{DatabaseAdapter, DbError};
+    use dbboard_core::{DatabaseAdapter, DbError, TableInfo};
 
     /// Open an in-memory adapter seeded with a `t(id INTEGER, label TEXT)`
     /// table holding `count` rows.
@@ -653,6 +758,147 @@ mod tests {
         let caps = adapter.capabilities();
         assert!(caps.has_execute);
         assert!(caps.has_atomic_restore);
+        assert!(caps.has_foreign_keys);
+    }
+
+    /// Open an in-memory adapter with a `parent` table and a `child`
+    /// table carrying `child_ddl`'s foreign key(s).
+    async fn with_child_fk(child_ddl: &str) -> TursoAdapter {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT)")
+            .await
+            .unwrap();
+        adapter.query(child_ddl).await.unwrap();
+        adapter
+    }
+
+    #[tokio::test]
+    async fn foreign_keys_reports_a_single_column_reference() {
+        let adapter = with_child_fk(
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, \
+             parent_id INTEGER REFERENCES parent(id))",
+        )
+        .await;
+        let fks = adapter
+            .foreign_keys(&TableInfo::unqualified("child"))
+            .await
+            .unwrap();
+        assert_eq!(fks.len(), 1);
+        assert_eq!(fks[0].columns, vec!["parent_id".to_owned()]);
+        assert_eq!(fks[0].referenced_table, TableInfo::unqualified("parent"));
+        assert_eq!(fks[0].referenced_columns, vec!["id".to_owned()]);
+        // SQLite's PRAGMA does not name the constraint.
+        assert_eq!(fks[0].constraint_name, None);
+    }
+
+    #[tokio::test]
+    async fn foreign_keys_reports_composite_key_columns_in_order() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE parent (a INTEGER, b INTEGER, PRIMARY KEY (a, b))")
+            .await
+            .unwrap();
+        adapter
+            .query(
+                "CREATE TABLE child (x INTEGER, y INTEGER, \
+                 FOREIGN KEY (x, y) REFERENCES parent(a, b))",
+            )
+            .await
+            .unwrap();
+        let fks = adapter
+            .foreign_keys(&TableInfo::unqualified("child"))
+            .await
+            .unwrap();
+        assert_eq!(fks.len(), 1);
+        assert_eq!(fks[0].columns, vec!["x".to_owned(), "y".to_owned()]);
+        assert_eq!(
+            fks[0].referenced_columns,
+            vec!["a".to_owned(), "b".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn foreign_keys_resolves_an_implicit_reference_to_the_parent_primary_key() {
+        // `REFERENCES parent` with no column list — SQLite reports `to` as
+        // NULL; the adapter fills it from the parent's primary key.
+        let adapter = with_child_fk(
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, \
+             parent_id INTEGER REFERENCES parent)",
+        )
+        .await;
+        let fks = adapter
+            .foreign_keys(&TableInfo::unqualified("child"))
+            .await
+            .unwrap();
+        assert_eq!(fks.len(), 1);
+        assert_eq!(fks[0].referenced_columns, vec!["id".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn foreign_keys_degrades_to_rowid_for_a_dangling_implicit_reference() {
+        // A child with an implicit reference to a table that does not exist
+        // (foreign-key enforcement is off by default, so the DDL is accepted).
+        // `describe_table` on the missing parent fails; the edge must still be
+        // reported — degraded to `rowid` — rather than aborting the whole call.
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE child (id INTEGER PRIMARY KEY, ghost_id INTEGER REFERENCES ghost)")
+            .await
+            .unwrap();
+        let fks = adapter
+            .foreign_keys(&TableInfo::unqualified("child"))
+            .await
+            .unwrap();
+        assert_eq!(fks.len(), 1);
+        assert_eq!(fks[0].referenced_table, TableInfo::unqualified("ghost"));
+        assert_eq!(fks[0].referenced_columns, vec!["rowid".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn foreign_keys_is_empty_for_a_table_without_references() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE solo (id INTEGER PRIMARY KEY)")
+            .await
+            .unwrap();
+        let fks = adapter
+            .foreign_keys(&TableInfo::unqualified("solo"))
+            .await
+            .unwrap();
+        assert!(fks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn foreign_keys_reports_multiple_distinct_references() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE a (id INTEGER PRIMARY KEY)")
+            .await
+            .unwrap();
+        adapter
+            .query("CREATE TABLE b (id INTEGER PRIMARY KEY)")
+            .await
+            .unwrap();
+        adapter
+            .query(
+                "CREATE TABLE j (id INTEGER PRIMARY KEY, \
+                 a_id INTEGER REFERENCES a(id), \
+                 b_id INTEGER REFERENCES b(id))",
+            )
+            .await
+            .unwrap();
+        let fks = adapter
+            .foreign_keys(&TableInfo::unqualified("j"))
+            .await
+            .unwrap();
+        assert_eq!(fks.len(), 2);
+        let mut targets: Vec<&str> = fks
+            .iter()
+            .map(|f| f.referenced_table.name.as_str())
+            .collect();
+        targets.sort_unstable();
+        assert_eq!(targets, vec!["a", "b"]);
     }
 
     #[tokio::test]

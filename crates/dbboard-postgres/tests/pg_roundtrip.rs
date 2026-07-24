@@ -151,6 +151,96 @@ async fn describe_table_round_trips_columns_and_composite_pk() {
     );
 }
 
+/// `foreign_keys` round-trip (ADR-0054): a child table with a single-column
+/// and a composite reference reports both, with local/referenced columns
+/// aligned in key order and the constraint name preserved. A table without
+/// references reports none.
+#[tokio::test]
+async fn foreign_keys_round_trip_reports_single_and_composite_edges() {
+    use dbboard_core::TableInfo;
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+
+    let pid = std::process::id();
+    let parent = format!("dbboard_pg_fk_parent_{pid}");
+    let composite = format!("dbboard_pg_fk_composite_{pid}");
+    let child = format!("dbboard_pg_fk_child_{pid}");
+    // Drop children before parents to satisfy referential order.
+    let drop_all = format!(
+        "DROP TABLE IF EXISTS {child}; DROP TABLE IF EXISTS {composite}; \
+         DROP TABLE IF EXISTS {parent}"
+    );
+
+    // Statements run one at a time — the read-only batch guard only applies
+    // to the query path, and `query` here drives plain DDL sequentially.
+    for stmt in [
+        format!("DROP TABLE IF EXISTS {child}"),
+        format!("DROP TABLE IF EXISTS {composite}"),
+        format!("DROP TABLE IF EXISTS {parent}"),
+        format!("CREATE TABLE {parent} (id INT PRIMARY KEY)"),
+        format!("CREATE TABLE {composite} (a INT, b INT, PRIMARY KEY (a, b))"),
+        format!(
+            "CREATE TABLE {child} (\
+             id INT PRIMARY KEY, \
+             parent_id INT REFERENCES {parent} (id), \
+             ca INT, cb INT, \
+             CONSTRAINT {child}_composite_fk FOREIGN KEY (ca, cb) \
+             REFERENCES {composite} (a, b))"
+        ),
+    ] {
+        adapter.query(&stmt).await.expect("setup ddl");
+    }
+
+    let edges = adapter
+        .foreign_keys(&TableInfo::qualified("public", &child))
+        .await
+        .expect("foreign_keys");
+    assert_eq!(edges.len(), 2, "expected two edges, got {edges:?}");
+
+    let single = edges
+        .iter()
+        .find(|e| e.columns == vec!["parent_id".to_string()])
+        .expect("single-column edge");
+    assert_eq!(
+        single.referenced_table,
+        TableInfo::qualified("public", &parent)
+    );
+    assert_eq!(single.referenced_columns, vec!["id".to_string()]);
+
+    let comp = edges
+        .iter()
+        .find(|e| e.columns == vec!["ca".to_string(), "cb".to_string()])
+        .expect("composite edge");
+    assert_eq!(
+        comp.referenced_table,
+        TableInfo::qualified("public", &composite)
+    );
+    assert_eq!(
+        comp.referenced_columns,
+        vec!["a".to_string(), "b".to_string()]
+    );
+    assert_eq!(
+        comp.constraint_name.as_deref(),
+        Some(format!("{child}_composite_fk").as_str())
+    );
+
+    // A table with no outbound references reports none.
+    let parent_edges = adapter
+        .foreign_keys(&TableInfo::qualified("public", &parent))
+        .await
+        .expect("foreign_keys on parent");
+    assert!(
+        parent_edges.is_empty(),
+        "parent has no FKs: {parent_edges:?}"
+    );
+
+    adapter.query(&drop_all).await.expect("cleanup drop");
+}
+
 /// Exactly at the row cap: `generate_series(1, MAX_RESULT_ROWS)` returns
 /// `MAX_RESULT_ROWS` rows and must succeed.
 #[tokio::test]

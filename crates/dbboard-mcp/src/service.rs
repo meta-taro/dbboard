@@ -2,8 +2,8 @@
 //!
 //! [`McpService`] owns the security-sensitive work — resolving a
 //! `connections.toml` entry plus its keyring secret into a connected
-//! adapter, and running the six read-only operations exposed to an
-//! external agent (ADR-0046 Decision 5, ADR-0053). It knows nothing about `rmcp`,
+//! adapter, and running the seven read-only operations exposed to an
+//! external agent (ADR-0046 Decision 5, ADR-0053, ADR-0054). It knows nothing about `rmcp`,
 //! JSON-RPC, or stdio: [`crate::server`] wraps each method as a tool and
 //! translates errors onto the MCP envelope. Keeping the logic here means
 //! it is testable against a real (in-memory) adapter with no transport.
@@ -27,7 +27,9 @@ use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
 use dbboard_config::store::{self, ConnectionKind};
 use dbboard_config::{ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
-use dbboard_core::{Column, ColumnInfo, DatabaseAdapter, DbError, Row, TableInfo, TableSchema};
+use dbboard_core::{
+    Column, ColumnInfo, DatabaseAdapter, DbError, ForeignKey, Row, TableInfo, TableSchema,
+};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -48,6 +50,13 @@ pub const MAX_MAX_ROWS: usize = 1000;
 /// blob; the search stops here and flags `truncated`, mirroring
 /// `run_read_query`'s row cap. Reconnaissance, not export.
 pub const MAX_SCHEMA_MATCHES: usize = 200;
+
+/// Hard ceiling on the number of relationship edges
+/// [`McpService::list_relationships`] returns. A wide schema can declare
+/// far more foreign keys than it has tables; the walk stops here and flags
+/// `truncated` rather than return an unbounded blob. Reconnaissance, not
+/// export — an agent that hits the cap should filter to one table.
+pub const MAX_RELATIONSHIPS: usize = 500;
 
 /// A connection as an agent is allowed to see it: the stable id, the
 /// human label, and the adapter kind. Deliberately **not** the keyring
@@ -96,6 +105,32 @@ pub struct SchemaSearchView {
     pub truncated: bool,
 }
 
+/// One foreign-key relationship as a directed edge, flattened from a
+/// [`ForeignKey`] for [`McpService::list_relationships`]: the child
+/// (`from`) table's columns point at the parent (`to`) table's columns.
+/// `from_columns` and `to_columns` are aligned 1:1 in key order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Relationship {
+    pub from_table: TableInfo,
+    pub from_columns: Vec<String>,
+    pub to_table: TableInfo,
+    pub to_columns: Vec<String>,
+    pub constraint_name: Option<String>,
+}
+
+/// Result of [`McpService::list_relationships`]: the foreign-key edges of
+/// a connection, optionally filtered to those touching one table (either
+/// endpoint). `table` echoes the applied filter; `truncated` is set when
+/// the edge cap ([`MAX_RELATIONSHIPS`]) was hit and further tables were
+/// left unexamined.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RelationshipView {
+    pub connection_id: String,
+    pub table: Option<String>,
+    pub relationships: Vec<Relationship>,
+    pub truncated: bool,
+}
+
 /// Result of [`McpService::get_annotations`]: the local table/column
 /// notes (ADR-0045) for one connection, filtered to the requested table
 /// and/or column. Empty `tables` when the connection has no notes.
@@ -135,6 +170,34 @@ pub enum ServiceError {
     /// A `spawn_blocking` task panicked or was cancelled.
     #[error("background task failed: {0}")]
     Task(String),
+}
+
+/// Flatten one [`ForeignKey`] on `from_table` into a directed edge.
+fn relationship_from_fk(from_table: &TableInfo, fk: ForeignKey) -> Relationship {
+    Relationship {
+        from_table: from_table.clone(),
+        from_columns: fk.columns,
+        to_table: fk.referenced_table,
+        to_columns: fk.referenced_columns,
+        constraint_name: fk.constraint_name,
+    }
+}
+
+/// Does `edge` touch the table named `want` (already lower-cased) at
+/// either endpoint? Matches the bare name and the `schema.name` key, so a
+/// filter of `orders` finds `public.orders` too.
+fn edge_touches(edge: &Relationship, want: &str) -> bool {
+    table_matches(&edge.from_table, want) || table_matches(&edge.to_table, want)
+}
+
+fn table_matches(table: &TableInfo, want: &str) -> bool {
+    if table.name.to_lowercase() == want {
+        return true;
+    }
+    match &table.schema {
+        Some(schema) => format!("{}.{}", schema.to_lowercase(), table.name.to_lowercase()) == want,
+        None => false,
+    }
 }
 
 /// The stable, agent-facing kind label for a connection.
@@ -381,6 +444,68 @@ impl McpService {
             connection_id: connection_id.to_string(),
             pattern: pattern.to_string(),
             matches,
+            truncated,
+        })
+    }
+
+    /// Discover the foreign-key relationships in `connection_id` (ADR-0054):
+    /// the directed edges of the schema, optionally filtered to those
+    /// touching `table_filter` at *either* endpoint — so one call answers
+    /// both "what does `orders` reference?" and "what references `orders`?".
+    ///
+    /// Composed from [`DatabaseAdapter::list_tables`] +
+    /// [`DatabaseAdapter::foreign_keys`] — no `query` path, no secret ever
+    /// serialized. A blank filter is treated as no filter.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] for an unknown id, or
+    /// [`ServiceError::Db`] if the adapter cannot list tables or introspect
+    /// a table's foreign keys.
+    pub async fn list_relationships(
+        &self,
+        connection_id: &str,
+        table_filter: Option<&str>,
+    ) -> Result<RelationshipView, ServiceError> {
+        // A blank filter means "no filter" — the tool takes an optional
+        // string and an agent passing "" should not silently match nothing.
+        let filter = table_filter
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_lowercase);
+
+        let adapter = self.adapter_for(connection_id).await?;
+        let tables = adapter.list_tables().await?;
+
+        let mut relationships = Vec::new();
+        let mut truncated = false;
+        'outer: for table in &tables {
+            if relationships.len() >= MAX_RELATIONSHIPS {
+                truncated = true;
+                break;
+            }
+            for fk in adapter.foreign_keys(table).await? {
+                let edge = relationship_from_fk(table, fk);
+                // Keep an edge only if it touches the requested table at
+                // either endpoint (a relationship is inherently two-sided).
+                if filter
+                    .as_deref()
+                    .is_some_and(|want| !edge_touches(&edge, want))
+                {
+                    continue;
+                }
+                relationships.push(edge);
+                if relationships.len() >= MAX_RELATIONSHIPS {
+                    truncated = true;
+                    break 'outer;
+                }
+            }
+        }
+
+        Ok(RelationshipView {
+            connection_id: connection_id.to_string(),
+            table: filter,
+            relationships,
             truncated,
         })
     }
@@ -885,6 +1010,175 @@ keyring_url_ref = "dbboard.prod-pg.url"
         assert!(
             out.truncated,
             "more tables than the cap must flag truncated"
+        );
+    }
+
+    /// A three-table chain with two foreign keys:
+    /// `order_items` → `orders` → `customers`.
+    async fn seeded_relationship_fixture() -> Fixture {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
+        adapter
+            .query("CREATE TABLE customers (id INTEGER PRIMARY KEY, email TEXT)")
+            .await
+            .expect("create customers");
+        adapter
+            .query(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, \
+                 customer_id INTEGER REFERENCES customers(id))",
+            )
+            .await
+            .expect("create orders");
+        adapter
+            .query(
+                "CREATE TABLE order_items (id INTEGER PRIMARY KEY, \
+                 order_id INTEGER REFERENCES orders(id), sku TEXT)",
+            )
+            .await
+            .expect("create order_items");
+        fx
+    }
+
+    /// Find the edge from `from` (child) to `to` (parent) in a view.
+    fn edge<'a>(view: &'a RelationshipView, from: &str, to: &str) -> &'a Relationship {
+        view.relationships
+            .iter()
+            .find(|r| r.from_table.name == from && r.to_table.name == to)
+            .unwrap_or_else(|| panic!("edge {from} -> {to} not found in {:?}", view.relationships))
+    }
+
+    #[tokio::test]
+    async fn list_relationships_reports_every_foreign_key_edge() {
+        let fx = seeded_relationship_fixture().await;
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert_eq!(view.connection_id, "mem");
+        assert_eq!(view.table, None);
+        assert!(!view.truncated);
+        assert_eq!(view.relationships.len(), 2);
+
+        let o = edge(&view, "orders", "customers");
+        assert_eq!(o.from_columns, vec!["customer_id".to_owned()]);
+        assert_eq!(o.to_columns, vec!["id".to_owned()]);
+
+        let oi = edge(&view, "order_items", "orders");
+        assert_eq!(oi.from_columns, vec!["order_id".to_owned()]);
+        assert_eq!(oi.to_columns, vec!["id".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn list_relationships_filter_matches_edges_on_either_side() {
+        let fx = seeded_relationship_fixture().await;
+
+        // `orders` is a child of `customers` and a parent of `order_items`,
+        // so filtering on it must surface both edges (inbound + outbound).
+        let view = fx
+            .service
+            .list_relationships("mem", Some("orders"))
+            .await
+            .expect("filtered");
+        assert_eq!(view.table.as_deref(), Some("orders"));
+        assert_eq!(view.relationships.len(), 2);
+        edge(&view, "orders", "customers");
+        edge(&view, "order_items", "orders");
+
+        // `customers` is only ever a parent — one inbound edge.
+        let leaf = fx
+            .service
+            .list_relationships("mem", Some("customers"))
+            .await
+            .expect("leaf");
+        assert_eq!(leaf.relationships.len(), 1);
+        edge(&leaf, "orders", "customers");
+    }
+
+    #[tokio::test]
+    async fn list_relationships_filter_is_case_insensitive() {
+        let fx = seeded_relationship_fixture().await;
+        let view = fx
+            .service
+            .list_relationships("mem", Some("CUSTOMERS"))
+            .await
+            .expect("filtered");
+        assert_eq!(view.relationships.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_relationships_blank_filter_is_treated_as_no_filter() {
+        let fx = seeded_relationship_fixture().await;
+        for blank in ["", "   ", "\t"] {
+            let view = fx
+                .service
+                .list_relationships("mem", Some(blank))
+                .await
+                .expect("blank filter");
+            assert_eq!(view.table, None, "blank {blank:?} should clear the filter");
+            assert_eq!(view.relationships.len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn list_relationships_is_empty_when_no_foreign_keys() {
+        let fx = seeded_turso_fixture().await; // one table, no FKs
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert!(view.relationships.is_empty());
+        assert!(!view.truncated);
+    }
+
+    #[tokio::test]
+    async fn list_relationships_unknown_connection_is_not_found() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        let err = fx
+            .service
+            .list_relationships("nope", None)
+            .await
+            .expect_err("unknown id");
+        assert!(matches!(err, ServiceError::ConnectionNotFound(id) if id == "nope"));
+    }
+
+    #[tokio::test]
+    async fn list_relationships_caps_edges_and_flags_truncation() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
+        adapter
+            .query("CREATE TABLE hub (id INTEGER PRIMARY KEY)")
+            .await
+            .expect("create hub");
+        // One more child table than the cap, each with a single FK to hub.
+        for i in 0..=MAX_RELATIONSHIPS {
+            adapter
+                .query(&format!(
+                    "CREATE TABLE child_{i} (id INTEGER PRIMARY KEY, \
+                     hub_id INTEGER REFERENCES hub(id))"
+                ))
+                .await
+                .expect("create child");
+        }
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert_eq!(view.relationships.len(), MAX_RELATIONSHIPS);
+        assert!(
+            view.truncated,
+            "more edges than the cap must flag truncated"
         );
     }
 }
