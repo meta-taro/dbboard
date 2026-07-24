@@ -1,4 +1,4 @@
-//! The MCP wire layer: wrap [`McpService`] as six read-only tools.
+//! The MCP wire layer: wrap [`McpService`] as seven read-only tools.
 //!
 //! This is a thin adapter over [`crate::service`]. Each `#[tool]` method
 //! deserializes its typed parameters, calls the matching service method,
@@ -9,7 +9,8 @@
 //!
 //! The tool set: `list_connections`, `list_tables`, `describe_table`,
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5) plus
-//! `search_schema` (ADR-0053). All read-only — there is no write path.
+//! `search_schema` (ADR-0053) and `list_relationships` (ADR-0054). All
+//! read-only — there is no write path.
 
 use std::sync::Arc;
 
@@ -79,6 +80,18 @@ pub struct SearchSchemaParams {
     /// Case-insensitive substring to match against table and column
     /// names. Must not be blank.
     pub pattern: String,
+}
+
+/// Parameters for [`DbboardMcp::list_relationships`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListRelationshipsParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// Restrict to relationships touching this table at either endpoint
+    /// (the bare name, or the schema-qualified `public.orders` key).
+    /// Case-insensitive. Omit for every relationship in the connection.
+    #[serde(default)]
+    pub table: Option<String>,
 }
 
 /// The MCP server: holds the shared [`McpService`] plus the generated
@@ -202,6 +215,24 @@ impl DbboardMcp {
             .map_err(|e| to_mcp(&e))?;
         json_block(&out)
     }
+
+    #[tool(
+        description = "Discover the foreign-key relationships in a connection — the schema's join graph. Returns directed edges (from child columns to the parent table's columns) so you can plan JOINs and understand the data model without reading DDL. Pass a `table` to get every relationship touching it on EITHER side at once: both what it references (its parents) and what references it (its children) — the fast way to answer 'how is orders connected?'. Omit `table` for the whole graph. Engines without foreign keys (Aurora DSQL) return no edges. Results are capped with a `truncated` flag."
+    )]
+    async fn list_relationships(
+        &self,
+        Parameters(ListRelationshipsParams {
+            connection_id,
+            table,
+        }): Parameters<ListRelationshipsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self
+            .service
+            .list_relationships(&connection_id, table.as_deref())
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&out)
+    }
 }
 
 // `router = self.tool_router` points the generated `call_tool`/`list_tools`
@@ -220,7 +251,8 @@ impl ServerHandler for DbboardMcp {
                 "Read-only access to the databases dbboard is configured with. \
                  Start with list_connections to discover connection ids, then \
                  list_tables / describe_table to explore a schema (or search_schema \
-                 to jump straight to the tables/columns whose name matches a term), \
+                 to jump straight to the tables/columns whose name matches a term, \
+                 or list_relationships to map the foreign-key join graph), \
                  run_read_query to read data (SELECT/WITH/EXPLAIN only — writes are \
                  rejected), and get_annotations for dbboard's local notes on tables \
                  and columns.",

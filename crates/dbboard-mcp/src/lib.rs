@@ -11,7 +11,7 @@
 //!
 //! - [`service`] — [`McpService`], the transport-independent tool logic.
 //!   Resolves a connection + keyring secret into an adapter, runs the
-//!   six read-only operations, enforces the row cap and secret
+//!   seven read-only operations, enforces the row cap and secret
 //!   redaction. Testable without any MCP wiring.
 //! - [`server`] — [`DbboardMcp`], the `rmcp` `ServerHandler` that wraps
 //!   each service method as a `#[tool]` and translates errors onto the

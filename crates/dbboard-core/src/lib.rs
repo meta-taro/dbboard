@@ -43,7 +43,7 @@ pub use restore::{
     RestoreStatement, StatementFailure, StatementKind,
 };
 pub use row::{Column, QueryResult, Row};
-pub use schema::{ColumnInfo, TableInfo, TableSchema};
+pub use schema::{resolve_referenced_columns, ColumnInfo, ForeignKey, TableInfo, TableSchema};
 pub use sort::{compare_values, sorted_row_order, SortKey};
 pub use value::Value;
 pub use write_back::{

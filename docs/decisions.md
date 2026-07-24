@@ -6516,3 +6516,105 @@ Add a sixth tool, **`search_schema`**, alongside the existing five.
   or return one giant blob — the search stops at the cap, and the early break
   bounds the `describe_table` calls too. A truncated result means "narrow the
   pattern", the same guidance the row cap gives.
+
+## ADR-0054 — Foreign-key introspection and `list_relationships`: a seventh read-only MCP tool
+
+- **Status**: Accepted 2026-07-24
+- **Builds on / amends**: ADR-0053 (its "Out of scope" explicitly deferred
+  foreign-key / relationship discovery to "its own slice, tracked separately" —
+  this is that slice), ADR-0046 (the read-only MCP server — this adds the
+  seventh tool), ADR-0012 (the capability model — this adds one adapter method
+  and one capability flag), ADR-0028 (`describe_table` — the introspection this
+  reuses to resolve implicit primary-key references)
+
+### Context
+
+An agent writing a JOIN needs to know how tables connect. `search_schema`
+(ADR-0053) finds tables and columns *by name*, but a foreign key is structural,
+not lexical: `orders.customer_id → customers.id` is invisible to a name search
+unless the columns happen to share a substring. Today an agent guesses join
+keys from naming conventions, or reads full DDL per table (`table_ddl`) and
+parses the `REFERENCES` clauses itself — brittle, and impossible on engines
+where the DDL is reconstructed rather than verbatim. The primitive an agent
+wants — *what does this table reference, and what references it* — does not
+exist on the adapter contract.
+
+Unlike `search_schema`, this cannot be composed from existing primitives: the
+foreign-key graph is not derivable from `list_tables` + `describe_table`, which
+report columns and primary keys but not references. It needs a real
+introspection call per engine.
+
+### Decision
+
+Add a foreign-key introspection primitive to the adapter contract and expose it
+through a new MCP tool.
+
+1. **One new adapter method, one new capability flag (ADR-0012 shape).**
+   `DatabaseAdapter::foreign_keys(&TableInfo) -> Vec<ForeignKey>` joins
+   `table_ddl`/`execute` as a per-capability method with a default that returns
+   `DbError::Capability`, gated by `Capabilities::has_foreign_keys`. Pre-ADR
+   adapters compile unchanged. `ForeignKey` is a new `dbboard-core` value type:
+   local `columns`, `referenced_table` (`TableInfo`), `referenced_columns`
+   (aligned 1:1 and in key order), and an optional `constraint_name`.
+
+2. **Extend `TableSchema`? No — a separate method.** Attaching foreign keys to
+   `describe_table`'s result would churn every `TableSchema { .. }` construction
+   site across the workspace and force the cost of an extra introspection query
+   onto every describe, most of which don't want it. A separate method keeps
+   `describe_table` cheap and matches the granularity ADR-0012 already uses for
+   `table_ddl`/`execute`.
+
+3. **Per-engine introspection, mapped to the same shape.**
+   - **SQLite/libSQL/D1** (Turso, D1): `PRAGMA foreign_key_list('t')`, grouped
+     by the PRAGMA's `id` into composite keys ordered by `seq`. A `NULL` parent
+     column (`to`) means the DDL omitted the parent column list — an implicit
+     reference to the parent's primary key — resolved with one `describe_table`
+     of the parent. No `constraint_name` (SQLite does not report one).
+   - **Postgres-wire** (Postgres/Neon/Supabase/CockroachDB/Aurora DSQL):
+     `pg_catalog.pg_constraint` where `contype = 'f'`, with `conkey`/`confkey`
+     unnested `WITH ORDINALITY` and re-joined on position so local and
+     referenced columns stay aligned for composite keys. `conname` is the
+     `constraint_name`. Aurora DSQL has no foreign keys, so the query simply
+     returns no rows — the capability is still advertised because the
+     introspection path itself works.
+
+4. **A seventh MCP tool, `list_relationships`.** Params
+   `{ connection_id, table? }`. With no `table`, it maps the connection's whole
+   foreign-key graph; with a `table`, it returns edges touching that table on
+   *either side* ("how is `orders` connected?" wants both its outbound
+   references and the tables that reference it). Composed in the service layer
+   over `foreign_keys` across `list_tables`, so the either-side filter and the
+   directed-edge shape live in one place. Blank `table` is normalized to "no
+   filter" (not rejected — an empty graph request is meaningful, unlike a blank
+   search needle). Still read-only, secrets still never serialized: the
+   ADR-0046 invariants hold.
+
+5. **Bounded output.** Edges are capped at `MAX_RELATIONSHIPS` (500) with a
+   `truncated` flag, the same posture as `run_read_query` and `search_schema`.
+
+### Out of scope
+
+- **Referential actions** (`ON DELETE CASCADE`, `ON UPDATE`, `MATCH`, deferrable
+  state). The join graph — which columns reference which — is what a query-writing
+  agent needs; action semantics are a schema-editing concern and would widen the
+  `ForeignKey` type for no read-side gain. They can follow if asked for.
+- **Inferred / logical relationships** (naming-convention guesses where no
+  declared FK exists). This tool reports *declared* constraints only; guessing is
+  a separate, lossy heuristic.
+- **Cross-database references.** Every edge is within one connection.
+
+### Consequences
+
+- The MCP surface is now **seven tools**; the ADR-0053 "six tools" language in
+  `server.rs`/`lib.rs` and its consequences are superseded by this entry. The
+  tool is additive — existing clients are unaffected.
+- Every shipping adapter advertises `has_foreign_keys`, so `list_relationships`
+  works across the whole internal-distribution connection set (Turso, D1,
+  Postgres-wire including Aurora DSQL). DSQL returns an empty graph rather than
+  erroring.
+- The adapter contract grew a method; the `dbboard-core` `ForeignKey` type is
+  now part of the shared vocabulary the sibling `dbboard-web` repo should track
+  for feature parity (per CLAUDE.md), though no code is shared.
+- Cost note: the no-`table` graph walk issues one `foreign_keys` call per table,
+  the same N-call shape as `search_schema`. Acceptable for the collector
+  databases in scope; the `MAX_RELATIONSHIPS` cap bounds the output.

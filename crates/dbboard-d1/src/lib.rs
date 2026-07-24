@@ -15,9 +15,9 @@
 
 use async_trait::async_trait;
 use dbboard_core::{
-    check_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
-    DbError, DbResult, QueryResult, Row, SqlDialect, TableInfo, TableSchema, Value,
-    MAX_RESULT_ROWS,
+    check_read_only, resolve_referenced_columns, too_many_rows_error, Capabilities, Column,
+    ColumnInfo, DatabaseAdapter, DbError, DbResult, ForeignKey, QueryResult, Row, SqlDialect,
+    TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -117,6 +117,58 @@ impl D1Adapter {
             Err(error_from_response(status, &envelope.errors))
         }
     }
+
+    /// Group raw `PRAGMA foreign_key_list` rows into composite
+    /// [`ForeignKey`]s, mirroring the Turso adapter: rows sharing an `id`
+    /// form one constraint ordered by `seq`, and a `None` `to` (the
+    /// referencing DDL omitted the parent column list) resolves against
+    /// the parent's primary key in key order. Kept as a method because
+    /// that resolution needs a `describe_table` round-trip.
+    async fn assemble_foreign_keys(&self, raw: Vec<RawFk>) -> DbResult<Vec<ForeignKey>> {
+        // Group by fk id, preserving first-seen order so the output is
+        // stable rather than dependent on SQLite's row ordering.
+        let mut groups: Vec<(i64, Vec<RawFk>)> = Vec::new();
+        for r in raw {
+            match groups.iter_mut().find(|(id, _)| *id == r.id) {
+                Some((_, rows)) => rows.push(r),
+                None => groups.push((r.id, vec![r])),
+            }
+        }
+
+        let mut out = Vec::with_capacity(groups.len());
+        for (_, mut rows) in groups {
+            rows.sort_by_key(|r| r.seq);
+            let referenced_table = TableInfo::unqualified(rows[0].referenced_table.clone());
+            let columns: Vec<String> = rows.iter().map(|r| r.from.clone()).collect();
+
+            // A `NULL` in `to` means the DDL omitted the parent column
+            // list, so the reference is to the parent's primary key. One
+            // describe of the parent resolves every such column at once.
+            let to: Vec<Option<String>> = rows.iter().map(|r| r.to.clone()).collect();
+            let referenced_columns = if to.iter().any(Option::is_none) {
+                // A stale reference to a since-dropped table (SQLite does not
+                // require the parent to exist) must not abort the whole
+                // relationship walk — degrade to an unresolved PK for this one
+                // edge instead of propagating the `describe_table` error.
+                let pk = match self.describe_table(&referenced_table).await {
+                    Ok(schema) => schema.primary_key,
+                    Err(_) => Vec::new(),
+                };
+                resolve_referenced_columns(&to, &pk)
+            } else {
+                resolve_referenced_columns(&to, &[])
+            };
+
+            out.push(ForeignKey {
+                columns,
+                referenced_table,
+                referenced_columns,
+                // SQLite's PRAGMA does not report the constraint name.
+                constraint_name: None,
+            });
+        }
+        Ok(out)
+    }
 }
 
 #[async_trait]
@@ -130,6 +182,9 @@ impl DatabaseAdapter for D1Adapter {
             has_describe_table: true,
             has_table_ddl: true,
             has_execute: true,
+            // Foreign keys come from `PRAGMA foreign_key_list` over the same
+            // `/raw` envelope as `describe_table` (ADR-0054).
+            has_foreign_keys: true,
             // D1's HTTP API exposes no multi-statement transaction over
             // `/raw`, so restore cannot run atomically — it falls back to
             // per-statement execution (ADR-0051). `has_atomic_restore` stays
@@ -184,6 +239,20 @@ impl DatabaseAdapter for D1Adapter {
             .post_raw(&format!("PRAGMA table_info('{escaped}')"))
             .await?;
         envelope_to_table_schema(table, envelope)
+    }
+
+    async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+        // Same PRAGMA as the Turso adapter, over the /raw envelope:
+        // `foreign_key_list('t')` returns (id, seq, table, from, to,
+        // on_update, on_delete, match), one row per key column. The name
+        // is embedded with single quotes doubled — it is not a bindable
+        // PRAGMA argument.
+        let escaped = table.name.replace('\'', "''");
+        let envelope = self
+            .post_raw(&format!("PRAGMA foreign_key_list('{escaped}')"))
+            .await?;
+        let raw = envelope_to_raw_fks(envelope)?;
+        self.assemble_foreign_keys(raw).await
     }
 
     async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
@@ -434,6 +503,62 @@ fn envelope_to_table_schema(table: &TableInfo, envelope: D1Envelope) -> DbResult
     })
 }
 
+/// One row of `PRAGMA foreign_key_list`, before rows are grouped into
+/// composite constraints. `to` is `None` when the referencing DDL omitted
+/// the parent column list (an implicit reference to the parent's primary
+/// key), which [`D1Adapter::assemble_foreign_keys`] resolves.
+struct RawFk {
+    id: i64,
+    seq: i64,
+    referenced_table: String,
+    from: String,
+    to: Option<String>,
+}
+
+/// Map a `PRAGMA foreign_key_list` envelope (`id, seq, table, from, to,
+/// on_update, on_delete, match`) onto raw rows. Columns are located by
+/// name rather than position so a reordered envelope still maps correctly;
+/// an empty result (a table without foreign keys) yields no rows.
+fn envelope_to_raw_fks(envelope: D1Envelope) -> DbResult<Vec<RawFk>> {
+    let result = envelope_to_query_result(envelope)?;
+
+    let position = |field: &str| -> DbResult<usize> {
+        result
+            .columns
+            .iter()
+            .position(|c| c.name == field)
+            .ok_or_else(|| {
+                DbError::Schema(format!(
+                    "PRAGMA foreign_key_list result is missing the '{field}' column"
+                ))
+            })
+    };
+    let id_at = position("id")?;
+    let seq_at = position("seq")?;
+    let table_at = position("table")?;
+    let from_at = position("from")?;
+    let to_at = position("to")?;
+
+    let mut raw = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        // An omitted parent column list stores NULL in `to`; anything else
+        // is the referenced column name.
+        let to = match row.get(to_at) {
+            Some(Value::Text(s)) => Some(s.clone()),
+            Some(Value::Null) | None => None,
+            Some(other) => Some(other.to_string()),
+        };
+        raw.push(RawFk {
+            id: pragma_int(row, id_at, "id")?,
+            seq: pragma_int(row, seq_at, "seq")?,
+            referenced_table: pragma_text(row, table_at, "table")?,
+            from: pragma_text(row, from_at, "from")?,
+            to,
+        });
+    }
+    Ok(raw)
+}
+
 /// Assemble a table's `CREATE` DDL from a `SELECT type, sql FROM
 /// sqlite_master` envelope: the `type='table'` row's statement first, then
 /// each `type='index'` row's statement, every one terminated with `;`.
@@ -621,9 +746,9 @@ fn reclassify_schema(err: DbError) -> DbError {
 mod tests {
     use super::{
         build_raw_url, convert_json_value, envelope_to_query_result,
-        envelope_to_query_result_capped, envelope_to_table_ddl, envelope_to_table_schema,
-        envelope_to_tables, error_from_response, reclassify_schema, D1Adapter, D1ApiError,
-        D1Config, D1Envelope,
+        envelope_to_query_result_capped, envelope_to_raw_fks, envelope_to_table_ddl,
+        envelope_to_table_schema, envelope_to_tables, error_from_response, reclassify_schema,
+        D1Adapter, D1ApiError, D1Config, D1Envelope,
     };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo, Value};
     use serde_json::json;
@@ -860,6 +985,96 @@ mod tests {
         })
         .expect("build adapter");
         assert!(adapter.capabilities().has_table_ddl);
+    }
+
+    #[test]
+    fn connect_advertises_foreign_keys_capability() {
+        let adapter = D1Adapter::connect(D1Config {
+            account_id: "acc".into(),
+            database_id: "db".into(),
+            api_token: "token".into(),
+            base_url: None,
+        })
+        .expect("build adapter");
+        assert!(adapter.capabilities().has_foreign_keys);
+    }
+
+    fn fk_envelope(rows: &serde_json::Value) -> D1Envelope {
+        parse(json!({
+            "success": true,
+            "result": [{
+                "results": {
+                    "columns": ["id", "seq", "table", "from", "to", "on_update", "on_delete", "match"],
+                    "rows": rows
+                },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }))
+    }
+
+    #[test]
+    fn foreign_key_list_maps_a_single_column_reference() {
+        // orders.customer_id -> customers.id
+        let envelope = fk_envelope(&json!([[
+            0,
+            0,
+            "customers",
+            "customer_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION",
+            "NONE"
+        ]]));
+        let raw = envelope_to_raw_fks(envelope).expect("map fk rows");
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].id, 0);
+        assert_eq!(raw[0].seq, 0);
+        assert_eq!(raw[0].referenced_table, "customers");
+        assert_eq!(raw[0].from, "customer_id");
+        assert_eq!(raw[0].to.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn foreign_key_list_maps_a_null_parent_column_to_none() {
+        // A DDL that omits the parent column list stores NULL in `to`;
+        // the implicit primary-key reference is resolved later.
+        let envelope = fk_envelope(&json!([[
+            0,
+            0,
+            "customers",
+            "customer_id",
+            null,
+            "NO ACTION",
+            "NO ACTION",
+            "NONE"
+        ]]));
+        let raw = envelope_to_raw_fks(envelope).expect("map fk rows");
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].to, None);
+    }
+
+    #[test]
+    fn foreign_key_list_maps_composite_key_rows() {
+        // A composite key shares one id across rows ordered by seq.
+        let envelope = fk_envelope(&json!([
+            [0, 0, "parent", "a", "pa", "NO ACTION", "NO ACTION", "NONE"],
+            [0, 1, "parent", "b", "pb", "NO ACTION", "NO ACTION", "NONE"]
+        ]));
+        let raw = envelope_to_raw_fks(envelope).expect("map fk rows");
+        assert_eq!(raw.len(), 2);
+        assert!(raw
+            .iter()
+            .all(|r| r.id == 0 && r.referenced_table == "parent"));
+        assert_eq!(raw[0].from, "a");
+        assert_eq!(raw[1].from, "b");
+    }
+
+    #[test]
+    fn foreign_key_list_is_empty_for_a_table_without_references() {
+        let raw = envelope_to_raw_fks(fk_envelope(&json!([]))).expect("map fk rows");
+        assert!(raw.is_empty());
     }
 
     fn master_envelope(rows: &serde_json::Value) -> D1Envelope {
