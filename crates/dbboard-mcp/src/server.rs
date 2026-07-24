@@ -1,4 +1,4 @@
-//! The MCP wire layer: wrap [`McpService`] as five read-only tools.
+//! The MCP wire layer: wrap [`McpService`] as six read-only tools.
 //!
 //! This is a thin adapter over [`crate::service`]. Each `#[tool]` method
 //! deserializes its typed parameters, calls the matching service method,
@@ -7,9 +7,9 @@
 //! all the security invariants (read-only enforcement, secret redaction)
 //! — live in the service; keeping this layer trivial is deliberate.
 //!
-//! The tool set is fixed at five (ADR-0046 Decision 5): `list_connections`,
-//! `list_tables`, `describe_table`, `run_read_query`, `get_annotations`.
-//! There is no write path.
+//! The tool set: `list_connections`, `list_tables`, `describe_table`,
+//! `run_read_query`, `get_annotations` (ADR-0046 Decision 5) plus
+//! `search_schema` (ADR-0053). All read-only — there is no write path.
 
 use std::sync::Arc;
 
@@ -69,6 +69,16 @@ pub struct GetAnnotationsParams {
     /// Restrict to one column (keeps the table-level note as context).
     #[serde(default)]
     pub column: Option<String>,
+}
+
+/// Parameters for [`DbboardMcp::search_schema`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchSchemaParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// Case-insensitive substring to match against table and column
+    /// names. Must not be blank.
+    pub pattern: String,
 }
 
 /// The MCP server: holds the shared [`McpService`] plus the generated
@@ -174,6 +184,24 @@ impl DbboardMcp {
             .map_err(|e| to_mcp(&e))?;
         json_block(&out)
     }
+
+    #[tool(
+        description = "Find the tables and columns whose NAME contains a substring (case-insensitive) across a whole connection — the fast way to answer 'which table has the email column?' or 'which tables relate to orders?' without describe_table on every table. Returns each matching table with a `table_name_matched` flag and the list of matched columns (empty when only the table name matched — call describe_table for its full columns). Matches identifiers only, not row data. On a very large schema, narrow with a specific substring."
+    )]
+    async fn search_schema(
+        &self,
+        Parameters(SearchSchemaParams {
+            connection_id,
+            pattern,
+        }): Parameters<SearchSchemaParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self
+            .service
+            .search_schema(&connection_id, &pattern)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&out)
+    }
 }
 
 // `router = self.tool_router` points the generated `call_tool`/`list_tools`
@@ -191,9 +219,11 @@ impl ServerHandler for DbboardMcp {
             .with_instructions(
                 "Read-only access to the databases dbboard is configured with. \
                  Start with list_connections to discover connection ids, then \
-                 list_tables / describe_table to explore a schema, run_read_query \
-                 to read data (SELECT/WITH/EXPLAIN only — writes are rejected), and \
-                 get_annotations for dbboard's local notes on tables and columns.",
+                 list_tables / describe_table to explore a schema (or search_schema \
+                 to jump straight to the tables/columns whose name matches a term), \
+                 run_read_query to read data (SELECT/WITH/EXPLAIN only — writes are \
+                 rejected), and get_annotations for dbboard's local notes on tables \
+                 and columns.",
             )
     }
 }
@@ -220,9 +250,9 @@ fn to_mcp(err: &ServiceError) -> McpError {
         // An unknown id, or any other DbError (rejected write, bad SQL,
         // unknown table, unsupported capability), is attributable to what
         // the caller sent.
-        ServiceError::ConnectionNotFound(_) | ServiceError::Db(_) => {
-            McpError::invalid_params(message, None)
-        }
+        ServiceError::ConnectionNotFound(_)
+        | ServiceError::InvalidRequest(_)
+        | ServiceError::Db(_) => McpError::invalid_params(message, None),
         ServiceError::Config(_) | ServiceError::Annotations(_) | ServiceError::Task(_) => {
             McpError::internal_error(message, None)
         }
@@ -239,6 +269,12 @@ mod tests {
     #[test]
     fn unknown_connection_is_a_bad_request() {
         let err = to_mcp(&ServiceError::ConnectionNotFound("nope".into()));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn a_blank_search_pattern_is_a_bad_request() {
+        let err = to_mcp(&ServiceError::InvalidRequest("blank".into()));
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 

@@ -6426,3 +6426,93 @@ between.
   store) but not code. If web adds ChatGPT, keep the `kind` string (`openai`)
   and the keyring-ref shape aligned so an exported `ai-providers.toml` reads the
   same on both.
+
+## ADR-0053 — `search_schema`: a sixth read-only MCP tool
+
+- **Status**: Accepted 2026-07-24
+- **Builds on / amends**: ADR-0046 (the read-only MCP server — this adds one
+  tool to the surface its Decision 5 "fixed at five" fixed), ADR-0028
+  (`describe_table` full schema — the introspection this composes), ADR-0045
+  (local annotations — the notes an agent reaches for once search points it at
+  a table)
+
+### Context
+
+`dbboard-mcp` shipped (ADR-0046) with five read-only tools. Driving it against
+a real collector database surfaced a concrete N+1 friction: an agent asked
+"which table holds the customer email?" has to `list_tables`, then
+`describe_table` on *every* table, then scan each result — a dozen-plus
+round-trips against an unfamiliar schema before it can write a single query.
+"Which tables relate to orders?" is the same shape. The primitive an agent
+wants — *find the tables and columns whose name matches X* — does not exist,
+so it re-implements it badly, one describe call at a time, on every session.
+
+ADR-0046 deliberately fixed the surface at five to keep the initial read-only
+posture crisp. That posture is about **not writing** (no SQL writes, no DDL, no
+annotation writes); it says nothing against *more introspection*. A name search
+over tables and columns is strictly the same class of operation as
+`list_tables` + `describe_table` — pure catalog reads — so it extends the
+surface without touching the read-only boundary the ADR actually protects.
+
+### Decision
+
+Add a sixth tool, **`search_schema`**, alongside the existing five.
+
+1. **Composed in the service layer, not the adapter.** `McpService::search_schema`
+   iterates the existing `list_tables` + `describe_table` primitives and filters
+   by a case-insensitive substring. No new method on the `DatabaseAdapter`
+   contract, no per-engine code, no `dbboard-core` change — the adapter surface
+   is untouched and every engine gets the tool for free. (A future engine-native
+   `information_schema` fast path is a possible optimization, not a v1
+   requirement.)
+
+2. **Params `{ connection_id, pattern }`; returns matched tables with their
+   matched columns.** For each table whose name matches, or which has ≥1 column
+   whose name matches, the result carries the `TableInfo`, a `table_name_matched`
+   flag, and the list of matched `ColumnInfo`. A table-name match with no column
+   match returns an empty `matched_columns` (the flag tells the agent to
+   `describe_table` for the full column list) — keeping the payload lean rather
+   than echoing every column of every hit.
+
+3. **Empty/whitespace `pattern` is rejected**, not treated as "match
+   everything". A blank needle would substring-match every table and column and
+   haul the whole catalog back through one tool call; that is what `list_tables`
+   is for. The rejection is a clean `invalid_params` (new
+   `ServiceError::InvalidRequest`), symmetric with an unknown `connection_id`.
+
+4. **Still read-only, secrets still never serialized.** `search_schema` reads
+   only catalog metadata through the same cached adapter as the other tools; it
+   never touches the `query` path and never sees a keyring reference. The
+   ADR-0046 invariants hold unchanged.
+
+### Out of scope
+
+- **Value search** (matching row *data*, not identifiers). That is a
+  `run_read_query` job and would defeat the row-cap/read-only reconnaissance
+  framing; `search_schema` is metadata-only.
+- **Foreign-key / relationship discovery.** Genuinely valuable for an agent
+  writing JOINs, but it needs a new adapter introspection method across every
+  engine — its own slice, tracked separately.
+- **Regex / glob patterns.** Case-insensitive substring covers the real
+  "where is X" question; a richer matcher can follow if it is ever asked for.
+
+### Consequences
+
+- The MCP surface is now **six tools**; the "fixed at five" language in
+  `server.rs` and the ADR-0046 table is superseded by this entry. The tool is
+  additive — existing clients are unaffected, new clients discover it via
+  `list_tools`.
+- One N+1 exploration pattern collapses to a single call, the most common
+  first thing an agent does against an unfamiliar collector database.
+- Cost note: the v1 implementation still issues N `describe_table` calls under
+  the hood (one per table). Acceptable for the collector databases in scope
+  (dozens of tables); documented in the tool description so an agent on a
+  thousand-table schema knows to narrow first. An engine-native
+  `information_schema` path can replace the loop later without changing the
+  tool's shape.
+- Bounded output, like `run_read_query`: matches are capped at
+  `MAX_SCHEMA_MATCHES` (200) and the result carries a `truncated` flag. A
+  deliberately-broad pattern (`"id"`, `"a"`) cannot walk an unbounded catalog
+  or return one giant blob — the search stops at the cap, and the early break
+  bounds the `describe_table` calls too. A truncated result means "narrow the
+  pattern", the same guidance the row cap gives.

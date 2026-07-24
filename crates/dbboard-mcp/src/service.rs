@@ -2,8 +2,8 @@
 //!
 //! [`McpService`] owns the security-sensitive work — resolving a
 //! `connections.toml` entry plus its keyring secret into a connected
-//! adapter, and running the five read-only operations exposed to an
-//! external agent (ADR-0046 Decision 5). It knows nothing about `rmcp`,
+//! adapter, and running the six read-only operations exposed to an
+//! external agent (ADR-0046 Decision 5, ADR-0053). It knows nothing about `rmcp`,
 //! JSON-RPC, or stdio: [`crate::server`] wraps each method as a tool and
 //! translates errors onto the MCP envelope. Keeping the logic here means
 //! it is testable against a real (in-memory) adapter with no transport.
@@ -27,7 +27,7 @@ use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
 use dbboard_config::store::{self, ConnectionKind};
 use dbboard_config::{ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
-use dbboard_core::{Column, DatabaseAdapter, DbError, Row, TableInfo, TableSchema};
+use dbboard_core::{Column, ColumnInfo, DatabaseAdapter, DbError, Row, TableInfo, TableSchema};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -41,6 +41,13 @@ pub const DEFAULT_MAX_ROWS: usize = 200;
 /// clamped to this — the read path is for reconnaissance, not bulk
 /// export, and an unbounded fetch could exhaust memory on a wide table.
 pub const MAX_MAX_ROWS: usize = 1000;
+
+/// Hard ceiling on the number of table matches [`McpService::search_schema`]
+/// returns. A deliberately-broad pattern (`"id"`, `"a"`) on a large schema
+/// would otherwise walk every table and return the whole catalog in one
+/// blob; the search stops here and flags `truncated`, mirroring
+/// `run_read_query`'s row cap. Reconnaissance, not export.
+pub const MAX_SCHEMA_MATCHES: usize = 200;
 
 /// A connection as an agent is allowed to see it: the stable id, the
 /// human label, and the adapter kind. Deliberately **not** the keyring
@@ -64,6 +71,31 @@ pub struct QueryOutput {
     pub truncated: bool,
 }
 
+/// One table returned by [`McpService::search_schema`]: the table itself,
+/// whether its *name* matched the pattern, and the columns whose name
+/// matched. A table-name-only hit carries empty `matched_columns` — the
+/// flag is the signal, and the agent can `describe_table` for the full
+/// column list rather than have every column echoed here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SchemaMatch {
+    pub table: TableInfo,
+    pub table_name_matched: bool,
+    pub matched_columns: Vec<ColumnInfo>,
+}
+
+/// Result of [`McpService::search_schema`]: every table in the connection
+/// whose name — or one of whose column names — contains the pattern.
+/// `truncated` is set when the match cap ([`MAX_SCHEMA_MATCHES`]) was hit
+/// and further tables were left unexamined, telling the agent to narrow
+/// the pattern rather than assume it saw the whole schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SchemaSearchView {
+    pub connection_id: String,
+    pub pattern: String,
+    pub matches: Vec<SchemaMatch>,
+    pub truncated: bool,
+}
+
 /// Result of [`McpService::get_annotations`]: the local table/column
 /// notes (ADR-0045) for one connection, filtered to the requested table
 /// and/or column. Empty `tables` when the connection has no notes.
@@ -81,6 +113,11 @@ pub enum ServiceError {
     /// The requested `connection_id` is not present in `connections.toml`.
     #[error("no connection with id {0:?} in the connection store")]
     ConnectionNotFound(String),
+
+    /// The caller's arguments were malformed (e.g. a blank search pattern).
+    /// Distinct from a `Db` rejection: nothing reached the engine.
+    #[error("{0}")]
+    InvalidRequest(String),
 
     /// Reading `connections.toml` or resolving a keyring secret failed.
     #[error(transparent)]
@@ -281,6 +318,70 @@ impl McpService {
         Ok(AnnotationsView {
             connection_id: connection_id.to_string(),
             tables,
+        })
+    }
+
+    /// Find the tables and columns in `connection_id` whose name contains
+    /// `pattern` (case-insensitive substring). Collapses the common
+    /// `list_tables` + N×`describe_table` exploration an agent otherwise
+    /// runs by hand (ADR-0053).
+    ///
+    /// Composed from the existing read-only introspection primitives — no
+    /// `query` path, no secret ever serialized.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::InvalidRequest`] if `pattern` is blank (a blank
+    /// needle would match the entire catalog — use `list_tables` for that).
+    /// [`ServiceError::ConnectionNotFound`] for an unknown id, or
+    /// [`ServiceError::Db`] if the adapter's catalog read fails.
+    pub async fn search_schema(
+        &self,
+        connection_id: &str,
+        pattern: &str,
+    ) -> Result<SchemaSearchView, ServiceError> {
+        let needle = pattern.trim().to_lowercase();
+        if needle.is_empty() {
+            return Err(ServiceError::InvalidRequest(
+                "search pattern must not be blank".to_string(),
+            ));
+        }
+
+        let adapter = self.adapter_for(connection_id).await?;
+        let tables = adapter.list_tables().await?;
+
+        let cap = tables.len().min(MAX_SCHEMA_MATCHES);
+        let mut matches = Vec::with_capacity(cap);
+        let mut truncated = false;
+        for table in tables {
+            // Stop once the cap is hit: further tables are left unexamined
+            // and the agent is told to narrow, rather than paying N more
+            // `describe_table` calls to build an oversized blob.
+            if matches.len() >= MAX_SCHEMA_MATCHES {
+                truncated = true;
+                break;
+            }
+            let table_name_matched = table.name.to_lowercase().contains(&needle);
+            let schema = adapter.describe_table(&table).await?;
+            let matched_columns: Vec<ColumnInfo> = schema
+                .columns
+                .into_iter()
+                .filter(|c| c.name.to_lowercase().contains(&needle))
+                .collect();
+            if table_name_matched || !matched_columns.is_empty() {
+                matches.push(SchemaMatch {
+                    table,
+                    table_name_matched,
+                    matched_columns,
+                });
+            }
+        }
+
+        Ok(SchemaSearchView {
+            connection_id: connection_id.to_string(),
+            pattern: pattern.to_string(),
+            matches,
+            truncated,
         })
     }
 
@@ -632,5 +733,158 @@ keyring_url_ref = "dbboard.prod-pg.url"
             .await
             .expect("empty ok");
         assert!(out.tables.is_empty());
+    }
+
+    /// A two-table schema so search can distinguish a table-name hit from a
+    /// column-name hit, and match a column that lives in only one table.
+    async fn seeded_search_fixture() -> Fixture {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
+        adapter
+            .query("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+            .await
+            .expect("create items");
+        adapter
+            .query(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, item_id INTEGER, customer_email TEXT)",
+            )
+            .await
+            .expect("create orders");
+        fx
+    }
+
+    fn matched_col_names(m: &SchemaMatch) -> Vec<&str> {
+        m.matched_columns.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn search_schema_matches_a_column_name() {
+        let fx = seeded_search_fixture().await;
+        let out = fx
+            .service
+            .search_schema("mem", "email")
+            .await
+            .expect("search");
+        assert_eq!(out.matches.len(), 1, "only orders has an email column");
+        let m = &out.matches[0];
+        assert_eq!(m.table.name, "orders");
+        assert!(
+            !m.table_name_matched,
+            "the table name does not contain 'email'"
+        );
+        assert_eq!(matched_col_names(m), vec!["customer_email"]);
+    }
+
+    #[tokio::test]
+    async fn search_schema_matches_table_name_and_column_across_tables() {
+        let fx = seeded_search_fixture().await;
+        let out = fx
+            .service
+            .search_schema("mem", "item")
+            .await
+            .expect("search");
+        // `items` matches by table name; `orders` matches via `item_id`.
+        assert_eq!(out.matches.len(), 2);
+        let items = out
+            .matches
+            .iter()
+            .find(|m| m.table.name == "items")
+            .expect("items present");
+        assert!(items.table_name_matched);
+        assert!(
+            items.matched_columns.is_empty(),
+            "no `items` column name contains 'item'; the flag carries the hit"
+        );
+        let orders = out
+            .matches
+            .iter()
+            .find(|m| m.table.name == "orders")
+            .expect("orders present");
+        assert!(!orders.table_name_matched);
+        assert_eq!(matched_col_names(orders), vec!["item_id"]);
+    }
+
+    #[tokio::test]
+    async fn search_schema_is_case_insensitive() {
+        let fx = seeded_search_fixture().await;
+        let out = fx
+            .service
+            .search_schema("mem", "EMAIL")
+            .await
+            .expect("search");
+        assert_eq!(out.matches.len(), 1);
+        assert_eq!(matched_col_names(&out.matches[0]), vec!["customer_email"]);
+    }
+
+    #[tokio::test]
+    async fn search_schema_no_match_is_empty() {
+        let fx = seeded_search_fixture().await;
+        let out = fx
+            .service
+            .search_schema("mem", "zzz")
+            .await
+            .expect("search");
+        assert!(out.matches.is_empty());
+        assert_eq!(out.pattern, "zzz");
+        assert_eq!(out.connection_id, "mem");
+    }
+
+    #[tokio::test]
+    async fn search_schema_rejects_a_blank_pattern() {
+        let fx = seeded_search_fixture().await;
+        for blank in ["", "   ", "\t"] {
+            let err = fx
+                .service
+                .search_schema("mem", blank)
+                .await
+                .expect_err("blank pattern must be rejected");
+            assert!(
+                matches!(err, ServiceError::InvalidRequest(_)),
+                "blank {blank:?} should be InvalidRequest, got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn search_schema_unknown_connection_is_not_found() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        let err = fx
+            .service
+            .search_schema("nope", "x")
+            .await
+            .expect_err("unknown id");
+        assert!(matches!(err, ServiceError::ConnectionNotFound(id) if id == "nope"));
+    }
+
+    #[tokio::test]
+    async fn search_schema_caps_matches_and_flags_truncation() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
+        // One more table than the cap, every name containing the needle.
+        for i in 0..=MAX_SCHEMA_MATCHES {
+            adapter
+                .query(&format!("CREATE TABLE match_{i} (id INTEGER PRIMARY KEY)"))
+                .await
+                .expect("create");
+        }
+        let out = fx
+            .service
+            .search_schema("mem", "match")
+            .await
+            .expect("search");
+        assert_eq!(out.matches.len(), MAX_SCHEMA_MATCHES);
+        assert!(
+            out.truncated,
+            "more tables than the cap must flag truncated"
+        );
     }
 }
