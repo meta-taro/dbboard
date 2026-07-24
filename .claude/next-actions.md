@@ -7,18 +7,34 @@
 
 ## 最終更新
 
-- 日付: 2026-07-23 (**論理リストア/インポート ADR-0051 が PR #112 で develop 着地。**
-  ADR-0049 ダンプの読み側 = ツールバー **Restore…** で `.sql` を現接続へ流し込む。
-  6 スライス (core 2層パイプライン `split_statements`+`classify_script` → 空
-  ターゲットゲート付きオーケストレータ → 全 3 エンジンの execute/transaction →
-  `RestoreState` UI) + ADR + README。**空 DB 限定** (既存ありは強制確認モーダル)、
-  同ファミリのみ (クロスエンジン変換なし)、foreign `pg_dump`/`sqlite3 .dump` も可、
-  Aurora DSQL と D1 は per-statement fallback。i18n 17 キー全 11 ロケール。**今の
-  user 側ボール = (1) この chore doc-sync PR (`chore/post-pr112-doc-sync`) のマージ、
-  (2) restore の実地確認 (下記)、(3) 次の実利用摩擦テーマの選択。**)
-- develop tip: PR #112 (restore/import ADR-0051, merge `e624bbb`) が最新。
-  直前は #110 (backup 閾値設定化 ADR-0050 `6116d1e`) → #111 (doc-sync)。
-  main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup + restore)。
+- 日付: 2026-07-24 (**OpenAI/ChatGPT プロバイダ ADR-0052 が PR #114 で develop 着地。**
+  ADR-0025 §Out-of-scope が defer した 2 つ目の AI プロバイダ = 新クレート
+  `dbboard-openai` (dbboard-anthropic の兄弟) が **Chat Completions**
+  (`POST /v1/chat/completions`) を実装。**フル SSE ストリーミング parity**、既定
+  モデル `gpt-4o`、Bearer 認証、キーは keyring のみ。config/ui/app/i18n に配線
+  (`kind = "openai"`、Add フォームに kind セレクタ ComboBox、env フォールバックは
+  Anthropic 専用のまま)。ADR + README 同梱。48 unit+wiremock、全ゲート green。**今の
+  user 側ボール = (1) この chore doc-sync PR (`chore/post-pr114-doc-sync`) のマージ、
+  (2) OpenAI の実地スモーク (下記)、(3) restore 実地確認の積み残し、(4) 次の実利用
+  摩擦テーマの選択。**)
+- develop tip: PR #114 (OpenAI provider ADR-0052, merge `ba54d02`) が最新。
+  直前は #112 (restore/import ADR-0051 `e624bbb`) → #113 (doc-sync)。
+  main = `70ecb93` = **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup +
+  restore + OpenAI provider)。
+- **✅ OpenAI/ChatGPT プロバイダ (PR #114, ADR-0052):** Claude と並ぶ 2 つ目の
+  AI プロバイダ。新クレート `dbboard-openai` が **Chat Completions**
+  (`POST /v1/chat/completions`) を実装 (Responses API ではなく安定面を選択)。
+  **フル SSE ストリーミング** = 実パーサ (`data:` フレーム・`[DONE]` センチネル・
+  `stream_options.include_usage` 経由の usage) を既存 `StreamEvent` 列に正規化、
+  Claude 同様トークン逐次表示。既定モデル `gpt-4o` (model 空欄時)、認証は
+  `Authorization: Bearer`、キーは keyring のみ (Debug/log/error に非露出)。
+  **配線:** `AiProviderKind::OpenAi` (`kind = "openai"`)、Add フォームの kind
+  セレクタ ComboBox、Edit は kind 読み取り専用、kind 切替は `KindMismatch`
+  (delete+add)。`build_provider_for_kind` が keyring から構築。**env
+  (`DBBOARD_ANTHROPIC_*`) は Anthropic 専用のまま** — OpenAI は
+  `ai-providers.toml` か Settings 窓で設定。i18n `ai-settings-kind-openai` 全 11
+  ロケール。README の toml 例をフラット `kind` スキーマに修正 (旧 nested
+  `[providers.kind]` は serde 実体と不一致だった)。**実地スモークは user 側ボール (下記)。**
 - **✅ 論理リストア/インポート (PR #112, ADR-0051):** ツールバー **Restore…** で
   `.sql` を現接続へ流し込む (ADR-0049 backup の読み側)。core = 字句スプリッタ
   `split_statements` + sqlparser `classify_script` の 2 層 (他形式 `.sql` も受容、
@@ -55,14 +71,18 @@
   - **MSI ショートカット (PR #105):** スタートメニュー + デスクトップ。非アドバタイズ
     型 (Shortcut + HKCU RegistryValue key-path + RemoveFolder)、ICE69 回避のため
     Binaries フィーチャに同居。アンインストールで削除。
-- **▶ 今の user 側ボール:** (1) この chore doc-sync PR (`chore/post-pr112-doc-sync`)
-  を push → PR 作成待ち。(2) **restore の実地確認** = 空 DB への取り込み (Turso/D1/
-  Postgres 系)、既存テーブルありでの強制確認モーダル、進捗/キャンセル (部分適用保持)、
-  foreign `pg_dump`/`sqlite3 .dump` の取り込み、ADR-0049 backup で出した `.sql` の
-  往復。(3) backup 側の実地確認も未消化なら継続 (D1/Supabase/DSQL・500k 警告・部分
-  ダンプ)。(4) 次の実利用摩擦テーマの選択 (下記 候補)。**検証シート = restore/backup
-  とも md-business 用は「ちょい待ち」で保留中** (`.claude/verification/adr-0049-
-  backup.md` の 33 ケースは既存、restore 用シートは未着手)。
+- **▶ 今の user 側ボール:** (1) この chore doc-sync PR (`chore/post-pr114-doc-sync`)
+  を push → PR 作成 → develop へマージ。(2) **OpenAI/ChatGPT の実地スモーク** =
+  Settings 窓で `kind = openai` プロバイダを Add (実キー) → Use に切替 → AI パネルで
+  ストリーミング逐次表示・Cancel・エラー本文が出ることを確認。model 空欄で `gpt-4o`
+  既定、model 明示で上書き。keyring にキーが入り Debug/log に漏れないこと。(3)
+  **restore の実地確認** (積み残し) = 空 DB への取り込み (Turso/D1/Postgres 系)、既存
+  テーブルありでの強制確認モーダル、進捗/キャンセル (部分適用保持)、foreign
+  `pg_dump`/`sqlite3 .dump` の取り込み、ADR-0049 backup で出した `.sql` の往復。(4)
+  backup 側の実地確認も未消化なら継続 (D1/Supabase/DSQL・500k 警告・部分ダンプ)。(5)
+  次の実利用摩擦テーマの選択 (下記 候補)。**検証シート = restore/backup とも
+  md-business 用は「ちょい待ち」で保留中** (`.claude/verification/adr-0049-backup.md`
+  の 33 ケースは既存、restore 用シートは未着手)。
 - **MSI アンインストールの残留 (user 質問への回答済み):** MSI は exe/PATH/フォルダ/
   ARP エントリを削除するが、`%APPDATA%\dbboard\dbboard\` の設定ファイルと Windows
   資格情報マネージャーのエントリは残す (仕様どおり)。クリーンアップ手順は口頭提示済。
