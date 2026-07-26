@@ -7,6 +7,20 @@
 
 ## 最終更新
 
+- 日付: 2026-07-26 (**ブランド design system = PR #123 マージ済 (ADR-0056 + ADR-0057)。**
+  user 依頼「デザインをモックに寄せたい」。**ADR-0056** = `dbboard-ui::theme` が
+  stock egui を置換 (インディゴ基調パレット Light/Dark 両登録・Auto 追従、spacing/
+  radius トークン、意味色軸)。**ADR-0057** = 塗りつぶし **実行** 主ボタン・`theme::pill`・
+  テーブル数バッジ・バックアップしきい値の `×1/×1K/×1M` 単位エディタ (指標は行数のまま)。
+  ヘッダー識別子 (接続ピル + Auto|Light|Dark トグル) は狭幅でメニュー重なり → **メニュー
+  バー直下の独立行に移動**で解消。新規 i18n 文字列ゼロ。`--no-verify` = 既知 libSQL
+  segfault。**技術スタック議論:** 「egui 継続か Tauri 等デザイン重視スタックへ根本変更
+  か」→ 重なりは egui 限界でなくレイアウトミス (修正済)、乗り換えるなら UI 層だけ Tauri
+  差し替えが筋 (Rust コア 100% 再利用可) だが本番無人依存中 + 数週間規模。**user 選択 =
+  「egui 磨きだけ完了・Tauri は据え置き」**。**今の user 側ボール = (1) この chore
+  doc-sync PR (`chore/post-pr123-doc-sync`) のマージ、(2) 次の実利用摩擦テーマ選定
+  (Export / Saved queries / Schema diff / MCP 継続 等)、(3) PII 運用セットアップ・
+  OpenAI 実応答・restore/backup 実地確認の積み残し。**)
 - 日付: 2026-07-24 (**OSS 個人情報除去ワークフロー = PR #122 マージ済 (ADR-0055)。**
   user 依頼「OSS は個人情報を除去するワークフロー (日次・コミット時・コミットコメント
   も)」。`scripts/pii-scan.sh` を pre-commit (`--staged`)・新 commit-msg (`--message`)・
@@ -43,7 +57,8 @@
   箇所に波及)。PR #116 で着地。**今の user 側ボール = (1) この chore doc-sync PR
   (`chore/post-pr116-doc-sync`) のマージ、(2) 次テーマ = MCP 方面 (user 意向: MCP
   の需要が高い)、(3) restore 実地確認の積み残し。**)
-- develop tip: PR #122 (PII scan, ADR-0055, merge `d3ee8dd`) が最新。
+- develop tip: PR #123 (design system, ADR-0056 + ADR-0057, merge `4e5623c`) が最新。
+  直前は #122 (PII scan, ADR-0055, merge `d3ee8dd`)。
   直前は #121 (MCP 5→7 doc-sync `95b6922`) → #120 (list_relationships, ADR-0054
   `fa378c5`) → #118 (search_schema, ADR-0053 `3887784`) → #116 (error-wrap fix
   `aa5fa9d`) → #115
