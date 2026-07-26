@@ -6809,11 +6809,14 @@ reuse existing keys or locale-neutral proper nouns / multiplier symbols):
 
 2. **Header identity: pill + segmented theme toggle.** `theme::pill(ui, text,
    accent_dot)` draws a rounded chip (faint fill, hairline stroke, optional
-   status dot) at the ADR-0056 widget radius. The menu bar now ends with a
-   right-aligned group: an **active-connection pill** (`name · adapter`, accent
-   dot) and an inline **Auto | Light | Dark** segmented control replacing the
-   old `theme_menu` dropdown. The dot signals *active*, not health — there is no
-   live probe, so it deliberately does not claim connectivity.
+   status dot) at the ADR-0056 widget radius. A slim **header strip below the
+   menu bar** carries an **active-connection pill** (`name · adapter`, accent
+   dot) on the left and an inline **Auto | Light | Dark** segmented control on
+   the right, replacing the old `theme_menu` dropdown. The strip is a dedicated
+   row rather than the menu bar's leftover space: sharing the menu row let the
+   long pill and toggle overlap the menus on a narrow window (egui menu bars do
+   not wrap). The dot signals *active*, not health — there is no live probe, so
+   it deliberately does not claim connectivity.
 
 3. **Sidebar table-count badge.** The Tables heading carries a count pill
    (`self.tables` length). This is the row of information the mock's sidebar

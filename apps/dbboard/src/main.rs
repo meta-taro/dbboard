@@ -652,18 +652,21 @@ impl eframe::App for DesktopApp {
                 language_menu(ui);
                 self.backup_settings_menu(ui);
                 help_menu(ui, &self.update, &mut self.commonmark_cache);
-                // Trailing header controls, right-aligned (ADR-0057): the
-                // theme segmented toggle and the active-connection pill. They
-                // live in the menu bar's leftover space so they cost no extra
-                // vertical band. In a right-to-left layout the first-added
-                // widget sits rightmost, so the toggle is added before the
-                // pill to keep [pill] [Auto|Light|Dark] reading order.
+            });
+        });
+        // Header strip below the menu bar (ADR-0057): the active-connection
+        // pill on the left, the theme segmented toggle on the right. Kept off
+        // the menu bar itself — sharing that row let the long pill + toggle
+        // overlap the menus on a narrow window (egui menu bars do not wrap).
+        // A dedicated row cannot collide and reads like a context breadcrumb.
+        egui::Panel::top("dbboard-header").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(pill) = &active_pill {
+                    let accent = dbboard_ui::theme::accent(ui.visuals().dark_mode);
+                    dbboard_ui::theme::pill(ui, pill, Some(accent));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     self.theme_segmented(ui);
-                    if let Some(pill) = &active_pill {
-                        let accent = dbboard_ui::theme::accent(ui.visuals().dark_mode);
-                        dbboard_ui::theme::pill(ui, pill, Some(accent));
-                    }
                 });
             });
         });
