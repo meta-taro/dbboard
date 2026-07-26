@@ -115,7 +115,11 @@ Each component will get a small style spec in this file once it is built.
   optional leading status dot. Used for the header active-connection pill and
   the sidebar table-count badge. Small text. `theme::pill`.
 - **Segmented theme toggle** — inline **Auto | Light | Dark** selectable group
-  in the menu bar, replacing the old dropdown. Selected segment reads active.
+  on the header strip below the menu bar, replacing the old dropdown. Selected
+  segment reads active.
+- **Header strip** — a slim row under the menu bar: active-connection pill on
+  the left, theme toggle on the right. Kept off the menu bar so the two never
+  overlap the menus on a narrow window (egui menu bars do not wrap).
 - **Status dot** — the pill's leading dot signals *active*, not health; there
   is no live connectivity probe, so it never claims a connection is reachable.
 - **Count badge** — table-count pill on the Tables heading. Table count only;
