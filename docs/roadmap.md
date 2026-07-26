@@ -461,6 +461,16 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 - [x] Official logo — formalised the hand-authored, original app icon
       (ADR-0032) as the project logo: canonical asset, DESIGN.md +
       README usage, kept-source master (issue 0015, PR #78).
+- [x] Branded design system — a central `dbboard-ui::theme` module replaces
+      stock egui styling: one indigo-tinted palette registered for both Light
+      and Dark (Auto swaps for free), spacing/radius tokens, and a semantic
+      colour axis (`danger`/`warning`/`success`) so no call site hard-codes a
+      theme-blind colour ([ADR-0056](decisions.md)). Applied at the component
+      level: a filled accent **Run** primary button, a header strip below the
+      menu bar (active-connection pill + inline Auto | Light | Dark toggle), a
+      sidebar table-count badge, and a `×1/×1K/×1M` unit editor for the backup
+      warn threshold ([ADR-0057](decisions.md), PR #123). Font bundling (Inter +
+      JetBrains Mono) stays a deferred Phase 2 fast-follow.
 - [x] Local table/column annotations — an editable **Note** column in the
       Structure tab, stored per-user in `annotations.toml` (keyed on the
       stable connection id, so a rename keeps the notes) and written through
@@ -508,7 +518,9 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 - [x] Configurable backup warn threshold — the 500k dump warn limit is now a
       persisted, user-editable setting under the **Backup** menu (stored in
       `ui-settings.toml`, remembered across restarts) instead of a hard-coded
-      constant ([ADR-0050](decisions.md), PR #110).
+      constant ([ADR-0050](decisions.md), PR #110). Editing follow-up
+      (PR #123): a `×1/×1K/×1M` unit selector so a round 500k reads "500 ×1K"
+      instead of scrubbing a raw six-digit `DragValue` ([ADR-0057](decisions.md)).
 - [x] Logical restore (import) — a **Restore…** toolbar button plays a `.sql`
       file back into the active connection: a two-layer core pipeline (lexical
       `split_statements` + sqlparser `classify_script`) accepts foreign
