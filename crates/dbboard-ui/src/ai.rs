@@ -582,7 +582,7 @@ impl AiPanel {
                 });
                 if let Some(count) = self.prefetch_failed {
                     ui.colored_label(
-                        egui::Color32::YELLOW,
+                        crate::theme::warning(ui.visuals().dark_mode),
                         t_args!("ai-prefetch-warning", count = count),
                     );
                 }
