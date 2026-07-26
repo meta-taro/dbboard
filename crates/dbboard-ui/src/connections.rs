@@ -584,7 +584,7 @@ impl ConnectionsView {
         // A completed export/import leaves a green summary here (ADR-0038)
         // until the next mode transition clears it.
         if let Some(info) = &self.last_info {
-            ui.colored_label(egui::Color32::LIGHT_GREEN, info);
+            ui.colored_label(crate::theme::success(ui.visuals().dark_mode), info);
         }
 
         match &mut self.mode {
@@ -621,7 +621,7 @@ impl ConnectionsView {
             }
             Mode::ConfirmDelete { id: _, name } => {
                 ui.colored_label(
-                    egui::Color32::LIGHT_RED,
+                    crate::theme::danger(ui.visuals().dark_mode),
                     format!("{}: {name}", t!("connections-confirm-delete")),
                 );
                 errors::render_error(ui, self.last_error.as_ref());
@@ -996,15 +996,9 @@ pub fn row_connect_action(is_active: bool) -> RowConnectAction {
 }
 
 fn kind_label(kind: &ConnectionKind) -> &'static str {
-    match kind {
-        ConnectionKind::Turso { .. } => "Turso",
-        ConnectionKind::D1 { .. } => "Cloudflare D1",
-        ConnectionKind::Postgres { .. } => "Postgres",
-        ConnectionKind::Neon { .. } => "Neon",
-        ConnectionKind::Supabase { .. } => "Supabase",
-        ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
-        ConnectionKind::AuroraDsqlIam { .. } => "Aurora DSQL (IAM)",
-    }
+    // The mapping now lives on the enum so the header pill (in the binary)
+    // and this list read one definition (ADR-0057).
+    kind.adapter_label()
 }
 
 /// Whether the UI offers an Edit form for `kind`. The Aurora DSQL IAM

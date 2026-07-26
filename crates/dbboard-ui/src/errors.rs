@@ -239,9 +239,12 @@ pub fn render_error(ui: &mut egui::Ui, err: Option<&DisplayError>) {
             ui.ctx().copy_text(err.clipboard_text());
         }
         ui.add(
-            egui::Label::new(egui::RichText::new(err.localized()).color(egui::Color32::LIGHT_RED))
-                .selectable(true)
-                .wrap(),
+            egui::Label::new(
+                egui::RichText::new(err.localized())
+                    .color(crate::theme::danger(ui.visuals().dark_mode)),
+            )
+            .selectable(true)
+            .wrap(),
         );
         if err.has_distinct_original() {
             ui.add(
