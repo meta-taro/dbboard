@@ -5,6 +5,33 @@
 
 ## 最終更新
 
+- 日付: 2026-07-26 (**ブランド design system = PR #123 マージ済**
+  (develop tip `4e5623c`, ADR-0056 + ADR-0057)。user 依頼「デザインをモックに
+  寄せたい」への回答。**Phase 1 = ADR-0056**: `dbboard-ui::theme` モジュールが
+  stock egui を置換 — インディゴ基調パレットを Light/Dark 両方に登録 (Auto は
+  無償で追従)、spacing/radius トークン、`danger`/`warning`/`success` の意味色軸で
+  テーマ盲な色ハードコードを排除。**適用 = ADR-0057**: 塗りつぶしアクセントの
+  **実行** 主ボタン (`theme::primary_button`)、`theme::pill` チップ、サイドバーの
+  テーブル数バッジ、バックアップしきい値の `×1/×1K/×1M` 単位エディタ (指標は行数
+  のまま — `DumpPlan` にバイト推定なし)。**ヘッダー識別子は当初メニューバー右寄せ
+  だったが、狭幅で長い接続ピル+トグルがメニューに重なった (egui メニューバーは
+  折り返さない) ため、メニューバー直下の独立ヘッダー行に移動** (左=接続ピル `名前 ·
+  アダプタ`・accent ドット=*active* であって health ではない、右=Auto|Light|Dark
+  トグル)。新規 i18n 文字列ゼロ (既存キー + ロケール中立の固有名詞/乗数記号)。
+  `ConnectionKind::adapter_label` を config 層へ集約 (ヘッダーピルと接続ウィンドウが
+  単一定義)。実機で 3 回起動確認: 初回=変更前バイナリ (テーマがまだドロップダウン)、
+  2 回目=反映済だがヘッダー重なり、3 回目=重なり解消。commit は既知 Windows libSQL
+  teardown segfault で `--no-verify` (全ゲート別途 green)。**技術スタック議論:** user
+  が「egui で苦労するより md-business のようにデザイン重視スタックへ根本変更すべきか」
+  と質問 → 結論 = **今回の重なりは egui の限界でなく私のレイアウトミス (修正済)。
+  乗り換えるなら「根本から」でなく UI 層 (`dbboard-ui`) だけ Tauri 差し替えが筋
+  (core/adapters/config/ai/server は egui 非依存の純 Rust で 100% 再利用可、モックは
+  既に HTML)。だが本番無人依存中 + webview 化トレードオフ + 数週間規模。user 選択 =
+  「egui 磨きだけ完了・Tauri は据え置き」**。フォント同梱 (Inter + JetBrains Mono) は
+  引き続き Phase 2 保留。**今の user 側ボール = (1) この chore doc-sync PR
+  (`chore/post-pr123-doc-sync`) のマージ、(2) 次テーマ選定 (Export / Saved queries /
+  Schema diff / MCP 継続 等)、(3) PII 運用セットアップ・OpenAI 実応答・restore/backup
+  実地確認の積み残し。**)
 - 日付: 2026-07-24 (**OSS 個人情報除去ワークフロー = PR #122 マージ済**
   (develop tip `d3ee8dd`, ADR-0055)。user 依頼「OSS は個人情報を除去するワーク
   フロー (日次・コミット時・コミットコメントも)」への回答。**`scripts/pii-scan.sh`**
