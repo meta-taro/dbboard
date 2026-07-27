@@ -183,6 +183,13 @@ export const runReadQuery = (
 // first-run empty state and the connection manager's footer.
 export const configPath = (): Promise<string> => invoke('config_path');
 
+// Write a UTF-8 text file to a user-chosen `path` (ADR-0035 result export).
+// The caller builds the delimited body (BOM-prefixed for the `.csv` form via
+// `toDelimitedFile`) and picks `path` with the native save dialog; the write
+// happens in Rust so the file lands at the chosen path.
+export const saveTextFile = (path: string, contents: string): Promise<void> =>
+  invoke('save_text_file', { path, contents });
+
 // --- Connection management (write path, ADR-0062) -----------------------
 //
 // `kind` is a tagged object shaped by `$lib/connections/draft` — its snake_case
