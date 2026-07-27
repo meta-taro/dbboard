@@ -143,10 +143,22 @@ pub fn run() {
             get_annotations,
             search_schema,
             list_relationships,
-            run_read_query
+            run_read_query,
+            config_path
         ])
         .run(tauri::generate_context!())
         .expect("start the dbboard-desktop Tauri app");
+}
+
+/// Absolute path of the `connections.toml` this app reads. Pure lookup —
+/// resolves the platform config path without touching the file — so the
+/// frontend can tell a first-run user *where* to register a connection
+/// while the app itself still has no write surface (ADR-0046/0059).
+#[tauri::command]
+fn config_path() -> Result<String, String> {
+    dbboard_config::default_path()
+        .map(|p| p.display().to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Run a single read-only statement. Read-only is engine-enforced inside

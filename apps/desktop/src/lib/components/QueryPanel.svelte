@@ -1,6 +1,6 @@
 <script lang="ts">
   import { workspace } from '$lib/state/workspace.svelte';
-  import { runReadQuery, type QueryOutput } from '$lib/api';
+  import { runReadQuery, configPath, type QueryOutput } from '$lib/api';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import { queryHistory } from '$lib/history/history.svelte';
   import {
@@ -25,6 +25,21 @@
 
   let rowLimit = $state(loadRowLimit());
   let historyOpen = $state(false);
+
+  // First-run guidance: with no connection configured the Run button can only
+  // stay disabled, so we explain *why* and *where* to register one. The path
+  // is resolved lazily — only fetched while the empty state is actually shown.
+  let configFilePath = $state('');
+  $effect(() => {
+    if (workspace.connections.length === 0 && !configFilePath) {
+      configPath()
+        .then((p) => (configFilePath = p))
+        .catch(() => {
+          // Outside a Tauri runtime the command is unavailable; the empty
+          // state still explains the situation without the concrete path.
+        });
+    }
+  });
 
   // Recent queries for the active connection, most-recent-first (reactive).
   const history = $derived(
@@ -80,6 +95,19 @@
 </script>
 
 <div class="panel">
+  {#if workspace.connections.length === 0}
+    <div class="empty" role="note">
+      <h2 class="empty-title">{i18n.t('empty-no-connection-title')}</h2>
+      <p class="empty-body">{i18n.t('empty-no-connection-body')}</p>
+      <div class="empty-path">
+        <span class="empty-path-label">{i18n.t('empty-config-path-label')}</span>
+        <code class="empty-path-value"
+          >{configFilePath || i18n.t('empty-config-path-loading')}</code
+        >
+      </div>
+    </div>
+  {/if}
+
   <div class="editor">
     <SqlEditor bind:value={sql} onRun={run} />
     <div class="editor-bar">
@@ -189,6 +217,50 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+
+  /* First-run empty state: quiet, explanatory card above the (inert) editor. */
+  .empty {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-4);
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-window);
+  }
+  .empty-title {
+    margin: 0;
+    font-size: var(--text-heading);
+    font-weight: 600;
+    color: var(--text);
+  }
+  .empty-body {
+    margin: 0;
+    max-width: 68ch;
+    color: var(--text-muted);
+    font-size: var(--text-small);
+    line-height: 1.6;
+  }
+  .empty-path {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: var(--space-1);
+  }
+  .empty-path-label {
+    font-size: var(--text-hint);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .empty-path-value {
+    font-family: var(--font-mono);
+    font-size: var(--text-small);
+    color: var(--text-accent);
+    user-select: all;
+    word-break: break-all;
   }
 
   .editor-bar {

@@ -84,6 +84,10 @@ export const en = {
   "win-maximize": "Maximize",
   "win-restore": "Restore",
   "win-close": "Close",
+  "empty-no-connection-title": "No connection to run against",
+  "empty-no-connection-body": "This window reads its connections from the shared connections.toml — it has no in-app connection editor yet. Register a connection in the egui app (or edit the file below), then reopen this window. The Run button stays disabled until a connection is available.",
+  "empty-config-path-label": "connections.toml",
+  "empty-config-path-loading": "Resolving path…",
 } as const;
 
 export type Messages = typeof en;
@@ -151,6 +155,10 @@ const ja: Partial<Record<MessageKey, string>> = {
   "history-clear-confirm": "すべてのクエリ履歴を削除しますか？",
   "structure-empty-hint": "サイドバーからテーブルを選択すると構造が表示されます。",
   "structure-pk-summary": "PK: { $cols }",
+  "empty-no-connection-title": "実行対象の接続がありません",
+  "empty-no-connection-body": "このウィンドウは共有の connections.toml から接続を読み込みます。アプリ内に接続エディタはまだありません。egui 版で接続を登録するか、下記ファイルを直接編集してから、このウィンドウを開き直してください。接続が用意されるまで実行ボタンは押せません。",
+  "empty-config-path-label": "connections.toml",
+  "empty-config-path-loading": "パスを解決中…",
   "structure-relationships": "リレーション",
   "about-title": "dbboard について",
   "about-version": "バージョン",
