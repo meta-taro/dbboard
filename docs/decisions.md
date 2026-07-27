@@ -7073,3 +7073,106 @@ never a cursor source.
   the same as "supported". The authoritative source for what DSQL rejects is
   the unsupported-features page, which lists `DECLARE CURSOR` explicitly. The
   original ADR trusted the wrong list.
+
+## ADR-0062 — Connection management write path (Tauri desktop, v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-27
+- **Relates to**: ADR-0016 (the original connection-management UI model),
+  ADR-0020 (in-process connection switching), ADR-0038 (passphrase-encrypted
+  bundle export/import), ADR-0046 / ADR-0059 (the read-only Tauri spike this
+  lifts the write ban from), and the ADR-0016 secrets-in-keyring rule.
+
+### Context
+
+The Tauri 2 + SvelteKit rewrite (ADR-0059) shipped as a deliberately
+**read-only** spike: it could browse connections defined in `connections.toml`
+but could not create, edit, or delete them, and had no bundle import/export.
+That was fine for a spike but is a **regression against the egui build**, which
+has full connection CRUD *and* passphrase-encrypted bundle transfer. A user
+upgrading from the egui app to the Tauri app would lose the ability to add a
+connection from inside the app and — worse — lose import/export entirely, which
+is how connections move between machines.
+
+It also surfaced as two concrete bug reports that both root-cause to
+"no connection configured, and no in-app way to add one": *Select top 100*
+produced no SQL and the *Run* button could not be pressed, because both require
+a selected connection that a fresh install has no way to create.
+
+The read path (`McpService`, reads `connections.toml` fresh, caches adapters)
+must not be the thing that writes: mixing a cache with a mutator invites stale
+credentials. The egui build already solved this with `ConnectionAdmin` in
+`dbboard-config` — a CRUD facade that owns `connections.toml` + the OS keyring
+with rollback discipline. The Tauri app should reuse it verbatim, not
+reimplement it.
+
+### Decision
+
+Lift the read-only boundary for connection management and wire the existing
+`dbboard-config::ConnectionAdmin` into the Tauri app as the **sole writer**.
+
+- **`AppState` gains `admin: Mutex<ConnectionAdmin>`** alongside the existing
+  `service: McpService`. The two share one `connections.toml`; after any write
+  the app calls `service.invalidate(connection_id)` to evict the matching
+  cached adapter so the read path can never serve stale credentials.
+- **Six new commands**: `add_connection`, `update_connection`,
+  `delete_connection`, `connection_edit_fields`, `export_connections`,
+  `import_connections`.
+- **DTO boundary.** `dbboard-config`'s draft enums carry inline secrets and do
+  not derive `Serialize`/`Deserialize`, so the app defines thin Tauri DTOs
+  (`KindInput` / `KindEditInput`, tagged `#[serde(tag = "kind",
+  rename_all = "snake_case")]`) that the frontend speaks, and maps them to the
+  draft types. The Svelte contract stays decoupled from the config internals.
+- **Secrets are never read back (ADR-0016).** `connection_edit_fields` returns
+  an `EditFieldsDto` with **non-secret fields only**. The edit form leaves
+  secret inputs blank; a blank secret on save means "keep the stored secret"
+  (`SecretField::Keep`), never "clear it" (`SecretField::Set`).
+- **Bundle file I/O stays in Rust.** The frontend uses the Tauri dialog plugin
+  only to pick a save/open path; the encrypted blob and the passphrase never
+  round-trip through the WebView. `export_connections` writes the ciphertext,
+  `import_connections` reads it, and both call `ConnectionAdmin`'s
+  `export_bundle` / `import_bundle` (ADR-0038). Import is additive: ids already
+  present are **skipped, never overwritten**, and the `ImportReportDto` reports
+  imported vs skipped ids.
+- **Pure frontend draft module.** Validation and DTO-shaping live in an
+  I/O-free `$lib/connections/draft.ts` (mirroring the egui form/admin split),
+  so the Svelte `ConnectionManager.svelte` only binds inputs and the command
+  only receives an already-validated payload.
+
+### Consequences
+
+- The two upgrade-blocking bugs are fixed at the root: a fresh install can now
+  add a connection from inside the app, so *Select top 100* and *Run* have a
+  connection to act on.
+- Import/export parity with the egui build is restored, so upgrading users keep
+  the workflow that moves connections between machines.
+- `connections.toml` + `annotations.toml` remain the shared source of truth
+  between the egui and Tauri builds (both resolve
+  `ProjectDirs::from("dev", "dbboard", "dbboard")`), so a connection added in
+  one build appears in the other.
+- Coverage: the DTO↔draft mapping (blank-handling for optional/secret fields),
+  the add/update/delete flow over a temp store, duplicate-id rejection, and the
+  export→import file round-trip are unit-tested in the desktop crate (12
+  tests); the pure draft module is unit-tested on the frontend (22 tests).
+
+### v0.4.0 desktop-parity scope map
+
+This ADR is the connection vertical. The **directive is full egui parity in
+one release — no segmentation, no "this is also missing" follow-ups.** The
+remaining verticals below are tracked here so the whole scope is visible; each
+lands as its own focused, tested commit under this parity effort, and each gets
+its own ADR entry where it introduces a new decision.
+
+| Vertical | egui source | Status |
+|---|---|---|
+| Connection CRUD + bundle import/export | `ConnectionsView` + `ConnectionAdmin` | **This ADR — done** |
+| Inline cell editing (UPDATE-only, declared PK, `rows_affected == 1` gate) | ADR-0042 | Pending |
+| Local annotation editing (table/column notes, empty = delete) | ADR-0045 | Pending |
+| Dataset export (CSV / CSV-with-BOM / TSV, row selection) | ADR-0049 helpers | Pending |
+| Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | Pending |
+| Logical restore / import (empty-target confirm; per-engine txn strategy) | ADR-0051 | Pending |
+| AI assistant (provider trait; explain/suggest; never runs SQL, never sends rows) | ADR-0052 | Pending |
+| Auto-update (updater plugin + signed `latest.json`; bump 0.3.0 → 0.4.0) | ADR-0044 / ADR-0043 | Pending |
+
+The read-only enforcement of the *query* path (ADR-0046 §8, ADR-0061) is
+unchanged: lifting the write ban applies to connection **management**, not to
+arbitrary SQL — user SQL still runs through the read-only classifier.

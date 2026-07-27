@@ -6,6 +6,7 @@
 // so the interfaces below keep snake_case to match the JSON on the wire.
 // Command *arguments*, by contrast, follow Tauri's camelCase IPC convention.
 import { invoke } from '@tauri-apps/api/core';
+import type { EditFields } from '$lib/connections/draft';
 
 export interface ConnectionView {
   id: string;
@@ -160,6 +161,52 @@ export const runReadQuery = (
   invoke('run_read_query', { connectionId, sql, maxRows: maxRows ?? null });
 
 // Absolute path of the connections.toml this app reads — shown in the
-// first-run empty state so a user can hand-register a connection (there is
-// no in-app connection editor yet).
+// first-run empty state and the connection manager's footer.
 export const configPath = (): Promise<string> => invoke('config_path');
+
+// --- Connection management (write path, ADR-0062) -----------------------
+//
+// `kind` is a tagged object shaped by `$lib/connections/draft` — its snake_case
+// discriminator matches the backend's KindInput/KindEditInput DTOs. These
+// mutate `connections.toml` + the OS keyring; callers refresh the connection
+// list from `listConnections` afterwards.
+
+// Non-secret editable fields for the edit form (ADR-0016: secrets are never
+// read back out of the keyring). The shape lives in the pure `draft` module.
+export const connectionEditFields = (id: string): Promise<EditFields> =>
+  invoke('connection_edit_fields', { id });
+
+export const addConnection = (
+  id: string,
+  name: string,
+  kind: Record<string, unknown>,
+): Promise<void> => invoke('add_connection', { id, name, kind });
+
+export const updateConnection = (
+  id: string,
+  name: string,
+  kind: Record<string, unknown>,
+): Promise<void> => invoke('update_connection', { id, name, kind });
+
+export const deleteConnection = (id: string): Promise<void> =>
+  invoke('delete_connection', { id });
+
+// Additive, non-destructive import: ids already present are skipped, never
+// overwritten (ADR-0038). Mirrors the backend `ImportReportDto`.
+export interface ImportReport {
+  imported: string[];
+  skipped: string[];
+}
+
+// Encrypt all connections to a passphrase-protected `.dbbx` bundle at `path`
+// (chosen via the native save dialog). Returns the exported connection count.
+export const exportConnections = (
+  path: string,
+  passphrase: string,
+): Promise<number> => invoke('export_connections', { path, passphrase });
+
+// Decrypt and merge a `.dbbx` bundle at `path` into the local store.
+export const importConnections = (
+  path: string,
+  passphrase: string,
+): Promise<ImportReport> => invoke('import_connections', { path, passphrase });

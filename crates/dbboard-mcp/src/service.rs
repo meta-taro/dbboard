@@ -544,6 +544,16 @@ impl McpService {
         Ok(adapter)
     }
 
+    /// Evict any cached adapter for `connection_id`, forcing the next
+    /// access to rebuild it from the current config and keyring.
+    ///
+    /// Call this after a connection's credentials change or it is
+    /// removed, so a stale adapter (old password, or one pointing at a
+    /// now-deleted entry) is never handed back. A miss is a no-op.
+    pub async fn invalidate(&self, connection_id: &str) {
+        self.cache.lock().await.remove(connection_id);
+    }
+
     async fn load_connection_file(&self) -> Result<store::ConnectionFile, ServiceError> {
         let path = self.config_path.clone();
         tokio::task::spawn_blocking(move || store::load_or_empty(&path))
@@ -733,6 +743,26 @@ keyring_url_ref = "dbboard.prod-pg.url"
                 .expect("insert");
         }
         fx
+    }
+
+    #[tokio::test]
+    async fn invalidate_drops_the_cached_adapter() {
+        // The seeded fixture holds a cached in-memory adapter with one table.
+        let fx = seeded_turso_fixture().await;
+        assert_eq!(
+            fx.service.list_tables("mem").await.expect("seeded").len(),
+            1
+        );
+        // After invalidation the next access rebuilds a fresh `:memory:`
+        // adapter — the seeded table is gone, proving the stale instance was
+        // evicted rather than reused.
+        fx.service.invalidate("mem").await;
+        assert!(fx
+            .service
+            .list_tables("mem")
+            .await
+            .expect("rebuilt")
+            .is_empty());
     }
 
     #[tokio::test]

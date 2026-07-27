@@ -1,0 +1,653 @@
+<script lang="ts">
+  import { save, open } from '@tauri-apps/plugin-dialog';
+  import { workspace } from '$lib/state/workspace.svelte';
+  import { i18n } from '$lib/i18n/i18n.svelte';
+  import type { MessageKey } from '$lib/i18n/messages';
+  import {
+    addConnection,
+    updateConnection,
+    deleteConnection,
+    connectionEditFields,
+    exportConnections,
+    importConnections,
+    type ConnectionView,
+  } from '$lib/api';
+  import {
+    emptyForm,
+    formForEdit,
+    fieldsForKind,
+    secretFields,
+    validate,
+    buildKindInput,
+    buildKindEditInput,
+    CONNECTION_KINDS,
+    type ConnectionForm,
+    type ConnectionKind,
+    type FormField,
+    type EditorMode,
+  } from '$lib/connections/draft';
+
+  interface Props {
+    onClose: () => void;
+  }
+  let { onClose }: Props = $props();
+
+  type Mode = 'list' | 'form' | 'export' | 'import';
+  let mode = $state<Mode>('list');
+  let editorMode = $state<EditorMode>('add');
+  let form = $state<ConnectionForm>(emptyForm());
+  let invalid = $state<FormField[]>([]);
+  let busy = $state(false);
+  let error = $state('');
+  let info = $state('');
+
+  // Bundle passphrase buffers, cleared on every mode change so a secret never
+  // lingers in a hidden form.
+  let passphrase = $state('');
+  let passphraseConfirm = $state('');
+  let importPath = $state('');
+  let importFileName = $state('');
+
+  const KIND_LABEL: Record<ConnectionKind, MessageKey> = {
+    turso: 'conn-kind-turso',
+    d1: 'conn-kind-d1',
+    postgres: 'conn-kind-postgres',
+    neon: 'conn-kind-neon',
+    supabase: 'conn-kind-supabase',
+    aurora_dsql: 'conn-kind-aurora_dsql',
+  };
+
+  const FIELD_LABEL: Record<FormField, MessageKey> = {
+    id: 'conn-field-id',
+    name: 'conn-field-name',
+    path: 'conn-field-path',
+    account_id: 'conn-field-account-id',
+    database_id: 'conn-field-database-id',
+    base_url: 'conn-field-base-url',
+    token: 'conn-field-token',
+    url: 'conn-field-url',
+  };
+
+  function resetTransient() {
+    error = '';
+    info = '';
+    invalid = [];
+    passphrase = '';
+    passphraseConfirm = '';
+    importPath = '';
+    importFileName = '';
+  }
+
+  function goList() {
+    resetTransient();
+    mode = 'list';
+  }
+
+  function startAdd() {
+    resetTransient();
+    form = emptyForm();
+    editorMode = 'add';
+    mode = 'form';
+  }
+
+  async function startEdit(c: ConnectionView) {
+    resetTransient();
+    busy = true;
+    try {
+      const fields = await connectionEditFields(c.id);
+      form = formForEdit(c.id, c.name, fields);
+      editorMode = 'edit';
+      mode = 'form';
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function isSecret(f: FormField): boolean {
+    return secretFields(form.kind).includes(f);
+  }
+
+  function setField(f: FormField, value: string) {
+    form[f] = value;
+  }
+
+  async function saveForm() {
+    invalid = validate(form, editorMode);
+    if (invalid.length > 0) return;
+    busy = true;
+    error = '';
+    try {
+      if (editorMode === 'add') {
+        await addConnection(form.id, form.name, buildKindInput(form));
+      } else {
+        await updateConnection(form.id, form.name, buildKindEditInput(form));
+      }
+      await workspace.refreshConnections();
+      goList();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function remove(c: ConnectionView) {
+    if (!confirm(i18n.t('conn-delete-confirm', { name: c.name }))) return;
+    busy = true;
+    error = '';
+    try {
+      await deleteConnection(c.id);
+      await workspace.refreshConnections();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function startExport() {
+    resetTransient();
+    mode = 'export';
+  }
+
+  function startImport() {
+    resetTransient();
+    mode = 'import';
+  }
+
+  async function runExport() {
+    error = '';
+    if (passphrase !== passphraseConfirm) {
+      error = i18n.t('conn-passphrase-mismatch');
+      return;
+    }
+    if (passphrase.trim().length === 0) {
+      error = i18n.t('conn-required');
+      return;
+    }
+    let path: string | null;
+    try {
+      path = await save({
+        title: i18n.t('conn-export-heading'),
+        defaultPath: 'dbboard-connections.dbbx',
+        filters: [{ name: i18n.t('conn-manager-title'), extensions: ['dbbx'] }],
+      });
+    } catch (e) {
+      error = String(e);
+      return;
+    }
+    if (!path) return; // user cancelled the dialog
+    busy = true;
+    try {
+      const count = await exportConnections(path, passphrase);
+      passphrase = '';
+      passphraseConfirm = '';
+      info = i18n.t('conn-export-ok', { count });
+      mode = 'list';
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function chooseImportFile() {
+    error = '';
+    try {
+      const picked = await open({
+        title: i18n.t('conn-import-heading'),
+        multiple: false,
+        directory: false,
+        filters: [{ name: i18n.t('conn-manager-title'), extensions: ['dbbx'] }],
+      });
+      if (typeof picked === 'string') {
+        importPath = picked;
+        importFileName = picked.split(/[\\/]/).pop() ?? picked;
+      }
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function runImport() {
+    error = '';
+    if (!importPath) {
+      error = i18n.t('conn-required');
+      return;
+    }
+    busy = true;
+    try {
+      const report = await importConnections(importPath, passphrase);
+      await workspace.refreshConnections();
+      passphrase = '';
+      let summary = i18n.t('conn-import-ok', {
+        imported: report.imported.length,
+        skipped: report.skipped.length,
+      });
+      if (report.skipped.length > 0) {
+        summary +=
+          ' ' + i18n.t('conn-import-skipped-ids', { ids: report.skipped.join(', ') });
+      }
+      info = summary;
+      mode = 'list';
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      if (mode === 'list') onClose();
+      else goList();
+    }
+  }
+</script>
+
+<svelte:window onkeydown={onKeydown} />
+
+<div
+  class="backdrop"
+  onclick={(e) => {
+    if (e.target === e.currentTarget) onClose();
+  }}
+  role="presentation"
+>
+  <div
+    class="dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-label={i18n.t('conn-manager-title')}
+  >
+    <header class="head">
+      <h2 class="title">{i18n.t('conn-manager-title')}</h2>
+      <button type="button" class="icon-btn" onclick={onClose} title={i18n.t('conn-close')}>
+        ✕
+      </button>
+    </header>
+
+    {#if error}<p class="banner error">{error}</p>{/if}
+    {#if info && mode === 'list'}<p class="banner info">{info}</p>{/if}
+
+    {#if mode === 'list'}
+      <div class="list">
+        {#if workspace.connections.length === 0}
+          <p class="empty">{i18n.t('conn-empty')}</p>
+        {:else}
+          {#each workspace.connections as c (c.id)}
+            <div class="row">
+              <div class="row-main">
+                <span class="row-name">{c.name}</span>
+                <span class="row-meta">{c.kind} · {c.id}</span>
+              </div>
+              <div class="row-actions">
+                <button type="button" class="ghost" disabled={busy} onclick={() => startEdit(c)}>
+                  {i18n.t('conn-edit')}
+                </button>
+                <button type="button" class="ghost danger" disabled={busy} onclick={() => remove(c)}>
+                  {i18n.t('conn-delete')}
+                </button>
+              </div>
+            </div>
+          {/each}
+        {/if}
+      </div>
+
+      <footer class="foot">
+        <div class="foot-left">
+          <button type="button" class="ghost" onclick={startImport}>{i18n.t('conn-import')}</button>
+          <button
+            type="button"
+            class="ghost"
+            disabled={workspace.connections.length === 0}
+            onclick={startExport}
+          >
+            {i18n.t('conn-export')}
+          </button>
+        </div>
+        <button type="button" class="primary" onclick={startAdd}>{i18n.t('conn-add')}</button>
+      </footer>
+    {:else if mode === 'form'}
+      <div class="form">
+        <h3 class="sub">
+          {editorMode === 'add' ? i18n.t('conn-add-title') : i18n.t('conn-edit-title')}
+        </h3>
+
+        {#if editorMode === 'add'}
+          <label class="field">
+            <span class="label">{i18n.t('conn-field-id')}</span>
+            <input
+              class:bad={invalid.includes('id')}
+              value={form.id}
+              oninput={(e) => setField('id', e.currentTarget.value)}
+              spellcheck="false"
+            />
+            <span class="hint">{i18n.t('conn-field-id-hint')}</span>
+          </label>
+        {/if}
+
+        <label class="field">
+          <span class="label">{i18n.t('conn-field-name')}</span>
+          <input
+            class:bad={invalid.includes('name')}
+            value={form.name}
+            oninput={(e) => setField('name', e.currentTarget.value)}
+          />
+        </label>
+
+        <label class="field">
+          <span class="label">{i18n.t('conn-field-kind')}</span>
+          {#if editorMode === 'add'}
+            <select value={form.kind} onchange={(e) => (form.kind = e.currentTarget.value as ConnectionKind)}>
+              {#each CONNECTION_KINDS as k (k)}
+                <option value={k}>{i18n.t(KIND_LABEL[k])}</option>
+              {/each}
+            </select>
+          {:else}
+            <input class="readonly" value={i18n.t(KIND_LABEL[form.kind])} readonly />
+          {/if}
+        </label>
+
+        {#each fieldsForKind(form.kind) as f (f)}
+          <label class="field">
+            <span class="label">{i18n.t(FIELD_LABEL[f])}</span>
+            <input
+              class:bad={invalid.includes(f)}
+              type={isSecret(f) ? 'password' : 'text'}
+              value={form[f]}
+              oninput={(e) => setField(f, e.currentTarget.value)}
+              spellcheck="false"
+              autocomplete="off"
+            />
+            {#if isSecret(f) && editorMode === 'edit'}
+              <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
+            {/if}
+          </label>
+        {/each}
+
+        <div class="actions">
+          <button type="button" class="ghost" disabled={busy} onclick={goList}>
+            {i18n.t('conn-cancel')}
+          </button>
+          <button type="button" class="primary" disabled={busy} onclick={saveForm}>
+            {i18n.t('conn-save')}
+          </button>
+        </div>
+      </div>
+    {:else if mode === 'export'}
+      <div class="form">
+        <h3 class="sub">{i18n.t('conn-export-heading')}</h3>
+        <p class="note">{i18n.t('conn-bundle-note')}</p>
+        <label class="field">
+          <span class="label">{i18n.t('conn-passphrase')}</span>
+          <input type="password" value={passphrase} oninput={(e) => (passphrase = e.currentTarget.value)} autocomplete="off" />
+        </label>
+        <label class="field">
+          <span class="label">{i18n.t('conn-passphrase-confirm')}</span>
+          <input type="password" value={passphraseConfirm} oninput={(e) => (passphraseConfirm = e.currentTarget.value)} autocomplete="off" />
+        </label>
+        <div class="actions">
+          <button type="button" class="ghost" disabled={busy} onclick={goList}>{i18n.t('conn-cancel')}</button>
+          <button type="button" class="primary" disabled={busy} onclick={runExport}>{i18n.t('conn-export')}</button>
+        </div>
+      </div>
+    {:else if mode === 'import'}
+      <div class="form">
+        <h3 class="sub">{i18n.t('conn-import-heading')}</h3>
+        <div class="field">
+          <button type="button" class="ghost" disabled={busy} onclick={chooseImportFile}>
+            {i18n.t('conn-choose-file')}
+          </button>
+          {#if importFileName}<code class="file-name">{importFileName}</code>{/if}
+        </div>
+        <label class="field">
+          <span class="label">{i18n.t('conn-passphrase')}</span>
+          <input type="password" value={passphrase} oninput={(e) => (passphrase = e.currentTarget.value)} autocomplete="off" />
+        </label>
+        <div class="actions">
+          <button type="button" class="ghost" disabled={busy} onclick={goList}>{i18n.t('conn-cancel')}</button>
+          <button type="button" class="primary" disabled={busy || !importPath} onclick={runImport}>
+            {i18n.t('conn-import')}
+          </button>
+        </div>
+      </div>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-6);
+    z-index: 50;
+  }
+  .dialog {
+    width: min(560px, 94vw);
+    max-height: 86vh;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-window);
+    box-shadow: var(--shadow-popover);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    overflow: hidden;
+  }
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .title {
+    margin: 0;
+    font-size: var(--text-heading);
+    font-weight: 600;
+    color: var(--text);
+  }
+  .icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: var(--text-body);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-widget);
+  }
+  .icon-btn:hover {
+    background: var(--bg-surface-alt);
+    color: var(--text);
+  }
+
+  .banner {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-widget);
+    font-size: var(--text-small);
+    white-space: pre-wrap;
+  }
+  .banner.error {
+    background: var(--danger-weak, rgba(220, 38, 38, 0.12));
+    color: var(--danger);
+    font-family: var(--font-mono);
+  }
+  .banner.info {
+    background: var(--accent-weak);
+    color: var(--text-accent);
+  }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .empty {
+    margin: 0;
+    padding: var(--space-4);
+    text-align: center;
+    color: var(--text-muted);
+    font-size: var(--text-small);
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-widget);
+  }
+  .row:hover {
+    background: var(--bg-surface-alt);
+  }
+  .row-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .row-name {
+    color: var(--text);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row-meta {
+    font-size: var(--text-hint);
+    color: var(--faint);
+    font-family: var(--font-mono);
+  }
+  .row-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex: none;
+  }
+
+  .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--border);
+  }
+  .foot-left {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .sub {
+    margin: 0;
+    font-size: var(--text-body);
+    font-weight: 600;
+    color: var(--text);
+  }
+  .note {
+    margin: 0;
+    font-size: var(--text-small);
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .label {
+    font-size: var(--text-hint);
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .hint {
+    font-size: var(--text-hint);
+    color: var(--faint);
+  }
+  .field input,
+  .field select {
+    width: 100%;
+    background: var(--bg-surface-alt);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+    padding: 7px 10px;
+    font-size: var(--text-body);
+  }
+  .field input:focus-visible,
+  .field select:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .field input.bad {
+    border-color: var(--danger);
+  }
+  .field input.readonly {
+    color: var(--text-muted);
+    background: var(--bg-surface);
+  }
+  .file-name {
+    font-family: var(--font-mono);
+    font-size: var(--text-small);
+    color: var(--text-accent);
+    word-break: break-all;
+  }
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    padding-top: var(--space-1);
+  }
+  .primary {
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+    border: none;
+    border-radius: var(--radius-widget);
+    padding: 7px 20px;
+    cursor: pointer;
+  }
+  .primary:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .ghost {
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+    padding: 6px 14px;
+    font-size: var(--text-small);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .ghost:hover:not(:disabled) {
+    border-color: var(--border-strong);
+  }
+  .ghost:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .ghost.danger {
+    color: var(--danger);
+  }
+  .ghost.danger:hover:not(:disabled) {
+    border-color: var(--danger);
+  }
+</style>
