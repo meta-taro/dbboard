@@ -27,10 +27,11 @@
 //! so the worker thread sees the change on the next AI command.
 //!
 //! Locale resolution (ADR-0015) runs here too: `DBBOARD_LANG` > OS
-//! locale > `en`. The binary also registers an OS CJK font into the
-//! egui font stack so `ja` / `ko` / `zh-CN` / `zh-TW` users do not see
-//! tofu — egui's bundled Ubuntu-Light covers Latin + Cyrillic but no
-//! CJK ranges.
+//! locale > `en`. The binary also registers OS CJK fonts into the egui
+//! font stack so `ja` / `ko` / `zh-CN` / `zh-TW` users do not see tofu —
+//! egui's bundled Ubuntu-Light covers Latin + Cyrillic but no CJK ranges.
+//! No single Windows system font covers Japanese, Korean and Chinese at
+//! once, so one font per script is appended to the fallback chain.
 
 // Suppress the console window on Windows release builds: this is a GUI
 // app, so a flashing terminal behind it is pure noise for end users.
@@ -1300,65 +1301,90 @@ fn install_look(ctx: &egui::Context, theme: ThemePreference) {
     ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(viewport_theme(theme)));
 }
 
-/// Look up an OS-installed CJK font and append it to egui's font stack
+/// Look up OS-installed CJK fonts and append them to egui's font stack
 /// (ADR-0015). egui's bundled `Ubuntu-Light` covers Latin + Cyrillic
-/// but renders CJK as tofu; appending a CJK font as a *fallback* (not a
+/// but renders CJK as tofu; appending CJK fonts as *fallbacks* (not a
 /// replacement) keeps the existing look for Latin while resolving the
 /// CJK ranges from the system.
 ///
-/// We probe one path per family and stop at the first hit. A miss is
-/// logged but non-fatal — bundling Noto CJK ourselves is a deferred
-/// Stage 2 decision (~20 MB per script).
+/// One font per script (Japanese / Korean / Chinese) is appended, not
+/// just the first found: no single Windows system font covers all three,
+/// so a Japanese-only Yu Gothic left Korean Hangul and simplified-only
+/// Han as tofu. egui walks the fallback chain per glyph, so a Hangul
+/// glyph missing from Yu Gothic now falls through to Malgun Gothic. A
+/// total miss is logged but non-fatal — bundling Noto CJK ourselves is a
+/// deferred Stage 2 decision (~20 MB per script).
 fn install_cjk_font(ctx: &egui::Context) {
-    let Some((name, bytes)) = load_first_cjk_font() else {
+    let loaded = load_cjk_fonts();
+    if loaded.is_empty() {
         eprintln!(
             "dbboard: no CJK system font found; ja/ko/zh users may see \
              tofu. Install Noto Sans CJK (Linux) or Yu Gothic / PingFang \
              / Hiragino (Windows/macOS) to fix."
         );
         return;
-    };
+    }
 
     let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .font_data
-        .insert(name.to_owned(), egui::FontData::from_owned(bytes).into());
-    // Append, do not replace. Egui walks the family in order; Latin
-    // glyphs keep coming from Ubuntu-Light, CJK glyphs fall through.
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+    let names: Vec<String> = loaded.iter().map(|(name, _)| (*name).to_owned()).collect();
+    for (name, bytes) in loaded {
         fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push(name.to_owned());
+            .font_data
+            .insert(name.to_owned(), egui::FontData::from_owned(bytes).into());
+    }
+    // Append, do not replace. Egui walks the family in order; Latin
+    // glyphs keep coming from Ubuntu-Light, CJK glyphs fall through the
+    // appended fonts in script order (Japanese, then Korean, then Chinese).
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let entry = fonts.families.entry(family).or_default();
+        for name in &names {
+            entry.push(name.clone());
+        }
     }
     ctx.set_fonts(fonts);
 }
 
-/// Probe a small per-OS candidate list. The first readable file wins —
-/// we do not try to pick "the best" CJK font, only "any CJK font" so
-/// the user does not see tofu.
-fn load_first_cjk_font() -> Option<(&'static str, Vec<u8>)> {
-    #[cfg(target_os = "windows")]
-    const CANDIDATES: &[(&str, &str)] = &[
+/// One candidate group per script (or a single all-CJK Noto on Linux).
+/// Grouping is the whole point: the first readable font *within* a group
+/// wins, but every group that resolves contributes a font, so Japanese,
+/// Korean and Chinese each get coverage instead of only the first hit.
+#[cfg(target_os = "windows")]
+const CJK_FONT_GROUPS: &[&[(&str, &str)]] = &[
+    // Japanese (also supplies the shared Han range).
+    &[
         ("YuGothic", r"C:\Windows\Fonts\YuGothM.ttc"),
         ("YuGothicUI", r"C:\Windows\Fonts\YuGothR.ttc"),
         ("Meiryo", r"C:\Windows\Fonts\meiryo.ttc"),
         ("MSGothic", r"C:\Windows\Fonts\msgothic.ttc"),
+    ],
+    // Korean — Hangul is absent from the Japanese fonts above.
+    &[
         ("MalgunGothic", r"C:\Windows\Fonts\malgun.ttf"),
+        ("Gulim", r"C:\Windows\Fonts\gulim.ttc"),
+    ],
+    // Simplified Chinese — simplified-only Han is absent from Yu Gothic.
+    &[
         ("MicrosoftYaHei", r"C:\Windows\Fonts\msyh.ttc"),
-    ];
-    #[cfg(target_os = "macos")]
-    const CANDIDATES: &[(&str, &str)] = &[
+        ("SimSun", r"C:\Windows\Fonts\simsun.ttc"),
+    ],
+];
+#[cfg(target_os = "macos")]
+const CJK_FONT_GROUPS: &[&[(&str, &str)]] = &[
+    // Japanese / Chinese / shared Han (also carries kana).
+    &[
         ("HiraginoSans", "/System/Library/Fonts/Hiragino Sans GB.ttc"),
         ("PingFang", "/System/Library/Fonts/PingFang.ttc"),
-        (
-            "AppleSDGothicNeo",
-            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-        ),
-    ];
-    #[cfg(all(unix, not(target_os = "macos")))]
-    const CANDIDATES: &[(&str, &str)] = &[
+    ],
+    // Korean.
+    &[(
+        "AppleSDGothicNeo",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    )],
+];
+#[cfg(all(unix, not(target_os = "macos")))]
+const CJK_FONT_GROUPS: &[&[(&str, &str)]] = &[
+    // Combined Noto CJK covers JA + KO + ZH in one file when present.
+    &[
         (
             "NotoSansCJK",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -1371,20 +1397,45 @@ fn load_first_cjk_font() -> Option<(&'static str, Vec<u8>)> {
             "NotoSansCJKJP",
             "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
         ),
-        (
-            "NotoSansCJKKR",
-            "/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf",
-        ),
-    ];
-    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
-    const CANDIDATES: &[(&str, &str)] = &[];
+    ],
+    // Korean-only, for installs that ship the split per-script OTFs
+    // without the combined ttc.
+    &[(
+        "NotoSansCJKKR",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf",
+    )],
+];
+#[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+const CJK_FONT_GROUPS: &[&[(&str, &str)]] = &[];
 
-    for (name, path) in CANDIDATES {
-        if let Ok(bytes) = std::fs::read(path) {
-            return Some((*name, bytes));
+/// Read the OS CJK fonts, one per script group. Thin wrapper over
+/// [`select_cjk_fonts`] that binds the real filesystem reader.
+fn load_cjk_fonts() -> Vec<(&'static str, Vec<u8>)> {
+    select_cjk_fonts(CJK_FONT_GROUPS, |path| std::fs::read(path).ok())
+}
+
+/// Pure selection over the candidate groups: within each group take the
+/// first font `read` resolves, skip a family already loaded (so the two
+/// Noto ttc paths don't double-load), and return one font per resolved
+/// group in group order. Split out from the filesystem so it is unit
+/// testable with a fake reader.
+fn select_cjk_fonts(
+    groups: &[&[(&'static str, &'static str)]],
+    mut read: impl FnMut(&str) -> Option<Vec<u8>>,
+) -> Vec<(&'static str, Vec<u8>)> {
+    let mut loaded: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    for group in groups {
+        for (name, path) in *group {
+            if loaded.iter().any(|(seen, _)| seen == name) {
+                continue;
+            }
+            if let Some(bytes) = read(path) {
+                loaded.push((name, bytes));
+                break;
+            }
         }
     }
-    None
+    loaded
 }
 
 #[cfg(test)]
@@ -1493,6 +1544,65 @@ mod tests {
         // pill rather than a misleading label.
         assert_eq!(active_connection_pill(&entries, "ghost"), None);
         assert_eq!(active_connection_pill(&[], "store-a"), None);
+    }
+
+    #[test]
+    fn select_cjk_fonts_takes_one_font_per_script_group() {
+        use super::select_cjk_fonts;
+        // Three groups (JA / KO / ZH), every candidate present. We must
+        // get exactly one font per group — the tofu bug was taking only
+        // the first group's font, leaving Korean and simplified-Han bare.
+        let groups: &[&[(&str, &str)]] = &[
+            &[("JaA", "ja-a"), ("JaB", "ja-b")],
+            &[("KoA", "ko-a")],
+            &[("ZhA", "zh-a")],
+        ];
+        let picked = select_cjk_fonts(groups, |_| Some(vec![1]));
+        let names: Vec<&str> = picked.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["JaA", "KoA", "ZhA"]);
+    }
+
+    #[test]
+    fn select_cjk_fonts_falls_back_within_a_group() {
+        use super::select_cjk_fonts;
+        // First candidate in each group is missing; the second must win.
+        let groups: &[&[(&str, &str)]] = &[
+            &[("JaA", "ja-a"), ("JaB", "ja-b")],
+            &[("KoA", "ko-a"), ("KoB", "ko-b")],
+        ];
+        let picked = select_cjk_fonts(groups, |path| (!path.ends_with("-a")).then(|| vec![1]));
+        let names: Vec<&str> = picked.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["JaB", "KoB"]);
+    }
+
+    #[test]
+    fn select_cjk_fonts_skips_a_group_with_no_readable_font() {
+        use super::select_cjk_fonts;
+        // The Korean group resolves nothing (font not installed); the
+        // other groups still contribute rather than aborting the whole set.
+        let groups: &[&[(&str, &str)]] = &[
+            &[("JaA", "ja-a")],
+            &[("KoA", "ko-a"), ("KoB", "ko-b")],
+            &[("ZhA", "zh-a")],
+        ];
+        let picked = select_cjk_fonts(groups, |path| (!path.starts_with("ko")).then(|| vec![1]));
+        let names: Vec<&str> = picked.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["JaA", "ZhA"]);
+    }
+
+    #[test]
+    fn select_cjk_fonts_dedupes_a_family_shared_across_paths() {
+        use super::select_cjk_fonts;
+        // The Linux groups list "NotoSansCJK" under two paths; if the
+        // first path hits we still must not re-add the same family name
+        // from a later group that reuses it.
+        let groups: &[&[(&str, &str)]] = &[
+            &[("NotoSansCJK", "path-a"), ("NotoSansCJK", "path-b")],
+            &[("NotoSansCJK", "path-c")],
+        ];
+        let picked = select_cjk_fonts(groups, |_| Some(vec![1]));
+        let names: Vec<&str> = picked.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["NotoSansCJK"]);
     }
 
     #[test]

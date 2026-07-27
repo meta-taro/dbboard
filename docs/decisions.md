@@ -6855,3 +6855,46 @@ connections window cannot drift apart.
   non-round count simply shows under `×1`.
 - Still deferred from ADR-0056: the Phase 2 font bundle (Inter + JetBrains
   Mono), a separable binary-asset change.
+
+## ADR-0058 — CJK fallback loads one font per script, not the first found
+
+- **Status**: Accepted 2026-07-27
+- **Relates to**: ADR-0015 (the original OS-CJK-font fallback decision this
+  corrects), the i18n locale set (ja / ko / zh-CN / zh-TW among 11 locales)
+
+### Context
+
+The egui UI renders Korean (한국어) and simplified Chinese (中文(简体)) as
+tofu (□) — and when the active locale is `ko`, the *whole* UI is tofu. This has
+now regressed **twice**. Root cause both times: `install_cjk_font` loaded only
+the **first** matching OS CJK font. On Windows the probe finds Yu Gothic
+(Japanese) first, and Yu Gothic carries neither Hangul nor simplified-only Han,
+so every glyph outside Japanese falls through to nothing. egui walks a font
+family in order and resolves each glyph from the first font that has it, so a
+single appended font can only ever cover one script's private range.
+
+### Decision
+
+Load **one font per script group**, not one font total.
+`CJK_FONT_GROUPS` (per-OS) lists Japanese, Korean, and Chinese groups (Windows:
+Yu Gothic / Meiryo / MS Gothic — Malgun Gothic / Gulim — Microsoft YaHei /
+SimSun; macOS: Hiragino/PingFang — Apple SD Gothic Neo; Linux: the combined
+Noto CJK ttc, then the split KR OTF). A pure `select_cjk_fonts(groups, read)`
+takes the first readable font *within* each group, skips a family already
+loaded (the two Noto ttc paths must not double-load), and returns one font per
+resolved group. `install_cjk_font` appends **all** of them to egui's
+Proportional and Monospace fallback chains, so Hangul missing from Yu Gothic
+falls through to Malgun Gothic and simplified Han to YaHei.
+
+### Notes
+
+- The selection is split from the filesystem (`read` is injected) so it is unit
+  tested without touching disk: one-per-group, within-group fallback,
+  missing-group skip, and dedupe. These tests are the regression guard — the bug
+  recurred precisely because nothing pinned the "one per script" invariant.
+- **Do not** collapse this back to a single `load_first_cjk_font`. That is the
+  exact shape that has failed twice.
+- Latin/Cyrillic still come from egui's bundled `Ubuntu-Light`; CJK fonts are
+  appended as fallbacks, never a replacement, so the non-CJK look is unchanged.
+- Still deferred (unchanged from ADR-0015 / ADR-0056): bundling Noto CJK
+  ourselves (~20 MB per script) instead of relying on OS fonts.
