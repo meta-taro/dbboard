@@ -6855,3 +6855,65 @@ connections window cannot drift apart.
   non-round count simply shows under `×1`.
 - Still deferred from ADR-0056: the Phase 2 font bundle (Inter + JetBrains
   Mono), a separable binary-asset change.
+
+## ADR-0059 — Tauri 2 + SvelteKit spike for the presentation-layer rewrite
+
+- **Status**: Accepted 2026-07-27 (spike — not a commitment to migrate)
+- **Relates to**: ADR-0056 / ADR-0057 (the egui design system this would
+  eventually replace), the `dbboard-mcp` `McpService` (the egui-free core the
+  spike reuses verbatim), and the sibling `dbboard-web` (Nuxt + NestJS) whose
+  stack this is deliberately *not* copying
+
+### Context
+
+The maintainer runs md-business (a separate project) on **Tauri 2 + SvelteKit**
+and asked for dbboard's desktop UI to move to "the same mechanism." That is a
+presentation-layer rewrite — weeks of work — so before committing we build a
+**thin vertical spike**: one screen (pick a connection → run a SELECT → see a
+result grid) that exercises the whole WebView↔Rust↔core path against the real
+3-store `connections.toml`. If the spike is honest end-to-end, the full
+migration is de-risked; if the WebView↔core boundary fights us, we learn it for
+the cost of one screen instead of the whole app.
+
+The egui coupling is confined to `dbboard-ui` + `apps/dbboard`. `dbboard-core`,
+the adapters, `dbboard-config`, and `dbboard-mcp` are already egui-free, so the
+spike is a shell swap, not a rewrite of the data path.
+
+### Decision
+
+New crate `apps/desktop/src-tauri` (`dbboard-desktop`) + a SvelteKit frontend in
+`apps/desktop`, added as a workspace member. Key choices:
+
+1. **Reuse `McpService` as the backend.** The spike's three Tauri commands
+   (`list_connections`, `list_tables`, `run_read_query`) are thin wrappers over
+   the same transport-agnostic `McpService` the MCP server already ships —
+   config loading, keychain secrets, adapter connect, and read-only query are
+   all solved. The spike inherits the engine-enforced read-only guarantee for
+   free; it adds **no new DB code**.
+2. **SvelteKit as a static SPA** (`adapter-static`, `ssr = false`,
+   `prerender = true`). The desktop app has no server; the WebView loads the
+   prerendered shell off disk and talks to Rust via `invoke`. A typed
+   `$lib/api.ts` mirrors the `McpService` JSON shapes so components never touch
+   `invoke` string names.
+3. **pnpm, not npm** (per policy), with the supply-chain guards in
+   `pnpm-workspace.yaml` — `minimumReleaseAge: 1440` and an explicit
+   `onlyBuiltDependencies` / `allowBuilds` allowlist (only esbuild runs an
+   install script, and only to link its already-present prebuilt binary).
+
+### Consequences
+
+- Adds a **JS/TS toolchain** to a so-far Rust-only repo, scoped entirely under
+  `apps/desktop`. `node_modules/`, `build/`, `.svelte-kit/`, and Tauri's
+  `gen/` are git-ignored; the committed surface is source + config + the five
+  desktop icon sizes `tauri.conf.json` references.
+- **pnpm 11 gotcha, recorded so we don't relearn it**: pnpm 11 reads
+  project settings from `pnpm-workspace.yaml`, **not** package.json's `pnpm`
+  field or `.npmrc`. Build scripts are gated behind `allowBuilds`; esbuild's
+  platform binary arrives via the `@esbuild/win32-x64` optional dep, so the
+  script only needs allowing to silence pnpm's ignored-build error.
+- **Icons are reused** from `apps/dbboard/assets/dbboard-logo-256.png` via
+  `tauri icon`; the unused mobile/Store tile outputs were pruned.
+- This is a **spike, not a decision to migrate**. The two UIs (egui + Tauri)
+  coexist in the workspace until the maintainer evaluates the running spike.
+  If migration is rejected, `apps/desktop` is deleted and the workspace member
+  removed — nothing in the core depends on it.

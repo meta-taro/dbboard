@@ -1,0 +1,31 @@
+# Tauri 2 + SvelteKit spike (spike/tauri-sveltekit). Proves the WebView↔core
+# path by wrapping the already-transport-agnostic McpService (config + keychain
+# + adapter + read-only query) in Tauri commands. No new DB logic lives here.
+[package]
+name = "dbboard-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Tauri takes the main-binary + shared-lib shape (the lib is what mobile /
+# tests would link); we keep it for parity with the reference stack even though
+# the spike is desktop-only.
+[lib]
+name = "dbboard_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The spike's whole backend: the read-only service the MCP server already
+# uses, plus the OS keychain store it reads secrets from. Same crates, new
+# transport (Tauri IPC instead of stdio JSON-RPC).
+dbboard-mcp = { path = "../../../crates/dbboard-mcp" }
+dbboard-config = { path = "../../../crates/dbboard-config" }

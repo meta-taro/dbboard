@@ -2,6 +2,9 @@
 resolver = "2"
 members = [
     "apps/dbboard",
+    # Spike (spike/tauri-sveltekit): a Tauri 2 + SvelteKit shell reusing the
+    # egui-free core. Presentation-layer proof only; the egui app stays live.
+    "apps/desktop/src-tauri",
     "crates/dbboard-ai",
     "crates/dbboard-anthropic",
     "crates/dbboard-config",
