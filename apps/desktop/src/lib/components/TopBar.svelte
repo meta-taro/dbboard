@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { titlebarController } from '$lib/window/titlebar.svelte';
+  import ThemeToggle from './ThemeToggle.svelte';
 
-  // Frameless (decorations:false): this bar IS the OS title bar. The header
-  // ground is the drag region (data-tauri-drag-region); .lead is pointer-events
-  // transparent so you can grab the bar anywhere, while the window controls on
-  // the right stay clickable.
+  // Frameless (decorations:false): this bar IS the OS title bar. The bar itself
+  // is the drag region (data-tauri-drag-region); .lead is pointer-events
+  // transparent so you can grab the bar there, while the theme toggle and the
+  // window controls stay interactive.
   onMount(() => {
     titlebarController.init();
   });
@@ -16,6 +17,10 @@
     <span class="brand-dot" aria-hidden="true"></span>
     <span class="brand">dbboard</span>
     <span class="tag">Tauri + SvelteKit spike</span>
+  </div>
+
+  <div class="actions">
+    <ThemeToggle />
   </div>
 
   <div class="window-controls">
@@ -50,16 +55,13 @@
 </header>
 
 <style>
-  /* Dark-only, matching the spike palette in +page.svelte (a full theme system
-     is out of scope for the spike). The point of this bar is that the whole
-     window frame is now dbboard-dark, not the OS light chrome. */
   .topbar {
     height: 40px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    background: #0c0e14;
-    border-bottom: 1px solid #1e2130;
+    gap: var(--space-3);
+    background: var(--bg-canvas);
+    border-bottom: 1px solid var(--border);
     user-select: none;
   }
 
@@ -67,7 +69,7 @@
   .lead {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     padding-left: 14px;
     min-width: 0;
     pointer-events: none;
@@ -76,25 +78,34 @@
   .brand-dot {
     width: 10px;
     height: 10px;
-    border-radius: 999px;
-    background: linear-gradient(135deg, #818cf8, #6366f1);
+    border-radius: var(--radius-pill);
+    background: linear-gradient(135deg, #818cf8, var(--accent));
     flex: none;
   }
 
   .brand {
-    font-size: 13px;
+    font-size: var(--text-body);
     font-weight: 600;
-    color: #e6e8f0;
+    color: var(--text);
     letter-spacing: -0.01em;
   }
 
   .tag {
-    font-size: 11px;
+    font-size: var(--text-hint);
     font-weight: 600;
-    color: #a5b4fc;
-    border: 1px solid #282c39;
-    border-radius: 6px;
+    color: var(--text-accent);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
     padding: 1px 8px;
+  }
+
+  /* Pushed to the right, just left of the window controls. Interactive, so it
+     opts back into pointer events that .lead gave up. */
+  .actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    padding-right: var(--space-2);
   }
 
   /* Windows convention: controls flush to the top-right corner, full height. */
@@ -108,8 +119,8 @@
     width: 46px;
     border: none;
     background: transparent;
-    color: #8b90a3;
-    font-size: 13px;
+    color: var(--text-muted);
+    font-size: var(--text-body);
     line-height: 1;
     display: inline-flex;
     align-items: center;
@@ -121,8 +132,8 @@
   }
 
   .wc:hover {
-    background: #171922;
-    color: #e6e8f0;
+    background: var(--bg-surface-alt);
+    color: var(--text);
   }
 
   .wc.close:hover {
@@ -132,7 +143,7 @@
 
   .wc:focus-visible {
     outline: none;
-    box-shadow: inset 0 0 0 2px #6366f1;
-    color: #e6e8f0;
+    box-shadow: inset 0 0 0 2px var(--accent);
+    color: var(--text);
   }
 </style>
