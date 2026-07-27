@@ -1,8 +1,11 @@
 <script lang="ts">
   import { workspace } from '$lib/state/workspace.svelte';
   import { searchSchema, type SchemaMatch, type TableInfo } from '$lib/api';
+  import { selectTopN } from '$lib/sql/build';
+  import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
 
   let query = $state('');
+  let menu = $state<{ x: number; y: number; table: TableInfo } | null>(null);
   // null = not searching (show the full table list); an array = search results.
   let matches = $state<SchemaMatch[] | null>(null);
   let searching = $state(false);
@@ -50,6 +53,27 @@
       !!workspace.selectedTable &&
       workspace.key(workspace.selectedTable) === workspace.key(t)
     );
+  }
+
+  function openMenu(e: MouseEvent, table: TableInfo) {
+    e.preventDefault();
+    menu = { x: e.clientX, y: e.clientY, table };
+  }
+
+  // Read-only actions only: inspect, or generate a bounded SELECT to run.
+  function menuItems(table: TableInfo): MenuItem[] {
+    return [
+      { label: 'Open structure', onSelect: () => workspace.selectTable(table) },
+      {
+        label: 'Select top 100',
+        onSelect: () => workspace.runInEditor(selectTopN(table, 100)),
+      },
+      {
+        label: 'Copy name',
+        separatorBefore: true,
+        onSelect: () => navigator.clipboard.writeText(workspace.key(table)),
+      },
+    ];
   }
 </script>
 
@@ -124,6 +148,7 @@
               class="nav-row"
               class:active={isSelected(t)}
               onclick={() => workspace.selectTable(t)}
+              oncontextmenu={(e) => openMenu(e, t)}
               title={workspace.key(t)}
             >
               {@render tableIcon()}
@@ -154,6 +179,7 @@
               class="nav-row match"
               class:active={isSelected(m.table)}
               onclick={() => workspace.selectTable(m.table)}
+              oncontextmenu={(e) => openMenu(e, m.table)}
               title={workspace.key(m.table)}
             >
               <span class="match-name">
@@ -179,6 +205,15 @@
     {/if}
   </div>
 </aside>
+
+{#if menu}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    items={menuItems(menu.table)}
+    onClose={() => (menu = null)}
+  />
+{/if}
 
 <style>
   .sidebar {

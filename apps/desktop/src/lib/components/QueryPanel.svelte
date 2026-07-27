@@ -2,6 +2,7 @@
   import { workspace } from '$lib/state/workspace.svelte';
   import { runReadQuery, type QueryOutput } from '$lib/api';
   import ResultGrid from './ResultGrid.svelte';
+  import SqlEditor from './SqlEditor.svelte';
 
   // Local to the panel: the SQL you typed and the last result persist across
   // tab switches because the shell keeps this panel mounted (display:none),
@@ -25,24 +26,22 @@
     }
   }
 
-  // Cmd/Ctrl+Enter runs, the editor convention.
-  function onKeydown(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault();
+  // Consume a query the sidebar context menu pushed in ("Select top 100"):
+  // load it into the editor and run it, exactly once per request.
+  let lastSeq = 0;
+  $effect(() => {
+    const req = workspace.queryRequest;
+    if (req && req.seq !== lastSeq) {
+      lastSeq = req.seq;
+      sql = req.sql;
       run();
     }
-  }
+  });
 </script>
 
 <div class="panel">
   <div class="editor">
-    <textarea
-      bind:value={sql}
-      spellcheck="false"
-      rows="5"
-      placeholder="SELECT …"
-      onkeydown={onKeydown}
-    ></textarea>
+    <SqlEditor bind:value={sql} onRun={run} />
     <div class="editor-bar">
       <span class="kbd-hint">⌘/Ctrl + Enter</span>
       <button
@@ -50,7 +49,7 @@
         onclick={run}
         disabled={!workspace.connectionId || busy}
       >
-        {busy ? 'Running…' : 'Run'}
+        {busy ? 'Running…' : '▸ Run'}
       </button>
     </div>
   </div>
@@ -84,23 +83,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-  }
-
-  textarea {
-    width: 100%;
-    background: var(--bg-surface);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-widget);
-    padding: var(--space-3);
-    font-family: var(--font-mono);
-    font-size: var(--text-body);
-    line-height: 1.55;
-    resize: vertical;
-  }
-  textarea:focus-visible {
-    border-color: var(--accent);
-    outline: none;
   }
 
   .editor-bar {
