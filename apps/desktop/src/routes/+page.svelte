@@ -1,236 +1,148 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import {
-    listConnections,
-    listTables,
-    runReadQuery,
-    displayCell,
-    type ConnectionView,
-    type QueryOutput,
-    type TableInfo,
-  } from '$lib/api';
+  import { workspace, type MainTab } from '$lib/state/workspace.svelte';
+  import Sidebar from '$lib/components/Sidebar.svelte';
+  import QueryPanel from '$lib/components/QueryPanel.svelte';
+  import StructurePanel from '$lib/components/StructurePanel.svelte';
 
-  // The spike's whole state: which connections exist, which is selected, the
-  // SQL in the box, the last result, and any error surfaced from the core.
-  let connections = $state<ConnectionView[]>([]);
-  let selectedId = $state('');
-  let tables = $state<TableInfo[]>([]);
-  let sql = $state('SELECT 1 AS hello;');
-  let result = $state<QueryOutput | null>(null);
-  let error = $state('');
-  let busy = $state(false);
+  const tabs: { id: MainTab; label: string }[] = [
+    { id: 'query', label: 'Query' },
+    { id: 'structure', label: 'Structure' },
+  ];
 
-  onMount(async () => {
-    try {
-      connections = await listConnections();
-      if (connections.length > 0) {
-        selectedId = connections[0].id;
-        await refreshTables();
-      }
-    } catch (e) {
-      error = String(e);
-    }
-  });
-
-  async function refreshTables() {
-    tables = [];
-    if (!selectedId) return;
-    try {
-      tables = await listTables(selectedId);
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function onConnectionChange() {
-    result = null;
-    error = '';
-    await refreshTables();
-  }
-
-  async function run() {
-    if (!selectedId || busy) return;
-    busy = true;
-    error = '';
-    try {
-      result = await runReadQuery(selectedId, sql);
-    } catch (e) {
-      result = null;
-      error = String(e);
-    } finally {
-      busy = false;
-    }
-  }
+  onMount(() => workspace.init());
 </script>
 
-<main>
-  <p class="sub">
-    Same egui-free core (McpService), new webview shell. Read-only, engine-enforced.
-  </p>
+<div class="shell">
+  <Sidebar />
 
-  <section class="bar">
-    <label>
-      Connection
-      <select bind:value={selectedId} onchange={onConnectionChange}>
-        {#if connections.length === 0}
-          <option value="">(none configured)</option>
-        {/if}
-        {#each connections as c (c.id)}
-          <option value={c.id}>{c.name} · {c.kind}</option>
-        {/each}
-      </select>
-    </label>
-    {#if tables.length > 0}
-      <span class="badge">{tables.length} tables</span>
+  <main class="main">
+    <nav class="tabbar" aria-label="View">
+      {#each tabs as t (t.id)}
+        <button
+          type="button"
+          class="tab"
+          class:active={workspace.activeTab === t.id}
+          aria-current={workspace.activeTab === t.id ? 'page' : undefined}
+          onclick={() => workspace.setTab(t.id)}
+        >
+          {t.label}
+        </button>
+      {/each}
+
+      {#if workspace.connection}
+        <span class="conn-pill" title={workspace.connection.id}>
+          <span class="dot" aria-hidden="true"></span>
+          {workspace.connection.name}
+        </span>
+      {/if}
+    </nav>
+
+    {#if workspace.error}
+      <p class="shell-error">{workspace.error}</p>
     {/if}
-  </section>
 
-  <section class="editor">
-    <textarea bind:value={sql} spellcheck="false" rows="4"></textarea>
-    <button class="run" onclick={run} disabled={!selectedId || busy}>
-      {busy ? 'Running…' : 'Run'}
-    </button>
-  </section>
-
-  {#if error}
-    <p class="error">{error}</p>
-  {/if}
-
-  {#if result}
-    <section class="result">
-      <p class="meta">
-        {result.row_count} rows{result.truncated ? ' (truncated)' : ''}
-      </p>
-      <div class="grid-wrap">
-        <table>
-          <thead>
-            <tr>
-              {#each result.columns as col (col.name)}
-                <th>{col.name}</th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each result.rows as row, i (i)}
-              <tr>
-                {#each row as cell, j (j)}
-                  <td>{displayCell(cell)}</td>
-                {/each}
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+    <!-- Both panels stay mounted; hiding (not unmounting) preserves the SQL
+         you typed and the last result when you flip tabs. -->
+    <div class="content">
+      <div class="tabpane" hidden={workspace.activeTab !== 'query'}>
+        <QueryPanel />
       </div>
-    </section>
-  {/if}
-</main>
+      <div class="tabpane" hidden={workspace.activeTab !== 'structure'}>
+        <StructurePanel />
+      </div>
+    </div>
+  </main>
+</div>
 
 <style>
-  /* Palette/spacing come from the token layer (src/lib/styles/tokens.css); this
-     view only references tokens so it flips with the Auto/Light/Dark theme. */
-  main {
-    max-width: 1000px;
-    margin: 0 auto;
-    padding: var(--space-6);
+  .shell {
+    display: flex;
+    height: 100%;
+    min-height: 0;
   }
-  .sub {
-    margin: 0 0 var(--space-5);
-    color: var(--text-muted);
-    font-size: var(--text-small);
+
+  .main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
-  .bar {
+
+  .tabbar {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
-    margin-bottom: var(--space-3);
-  }
-  label {
-    display: flex;
-    flex-direction: column;
     gap: var(--space-1);
+    padding: 0 var(--space-3);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+
+  .tab {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-body);
+    font-weight: 500;
+    padding: 10px var(--space-3);
+    cursor: pointer;
+    /* Selected tab is marked by an accent underline, not a fill. */
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.active {
+    color: var(--text-accent);
+    border-bottom-color: var(--accent);
+  }
+
+  .conn-pill {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-size: var(--text-hint);
     color: var(--text-muted);
-  }
-  select,
-  textarea {
-    background: var(--bg-surface);
-    color: var(--text);
     border: 1px solid var(--border);
-    border-radius: var(--radius-widget);
-    padding: var(--space-2);
-    font-size: var(--text-body);
+    border-radius: var(--radius-pill);
+    padding: 2px 10px;
   }
-  select:hover,
-  textarea:hover {
-    border-color: var(--border-strong);
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-pill);
+    background: var(--success);
+    flex: none;
   }
-  textarea {
-    width: 100%;
-    font-family: var(--font-mono);
-    resize: vertical;
-  }
-  .badge {
-    font-size: var(--text-hint);
-    color: var(--text-accent);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-widget);
-    padding: 2px 8px;
-    align-self: end;
-  }
-  .editor {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    margin-bottom: var(--space-4);
-  }
-  .run {
-    align-self: flex-start;
-    background: var(--accent);
-    color: var(--on-accent);
-    font-weight: 600;
-    border: none;
-    border-radius: var(--radius-widget);
-    padding: var(--space-2) var(--space-5);
-    cursor: pointer;
-  }
-  .run:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .error {
+
+  .shell-error {
+    margin: 0;
+    padding: var(--space-2) var(--space-4);
     color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border-bottom: 1px solid var(--border);
     font-family: var(--font-mono);
     font-size: var(--text-small);
     white-space: pre-wrap;
   }
-  .meta {
-    color: var(--text-muted);
-    font-size: var(--text-small);
-    margin: 0 0 var(--space-2);
+
+  .content {
+    flex: 1;
+    min-height: 0;
+    position: relative;
   }
-  .grid-wrap {
-    overflow-x: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-window);
+
+  /* Each pane owns the full content box and its own scroll. */
+  .tabpane {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
   }
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    font-size: var(--text-body);
-  }
-  th,
-  td {
-    text-align: left;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-  }
-  th {
-    background: var(--bg-code);
-    color: var(--text-accent);
-    font-weight: 600;
-  }
-  tbody tr:nth-child(even) {
-    background: var(--bg-surface-alt);
+  .tabpane[hidden] {
+    display: none;
   }
 </style>

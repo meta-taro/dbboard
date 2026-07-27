@@ -30,6 +30,8 @@
   .body {
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    /* The app shell inside owns its scroll regions (sidebar list, result
+       grid), so the body itself never scrolls. */
+    overflow: hidden;
   }
 </style>
