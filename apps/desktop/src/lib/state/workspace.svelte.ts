@@ -29,6 +29,12 @@ class Workspace {
   error = $state('');
   loadingTables = $state(false);
 
+  /** A request to load SQL into the query editor and run it — raised by the
+   *  sidebar context menu ("Select top 100"), consumed by the Query panel.
+   *  The seq lets the panel apply each request exactly once, even when the
+   *  same SQL text is requested twice in a row. */
+  queryRequest = $state<{ sql: string; seq: number } | null>(null);
+
   /** The currently selected connection, or undefined if none. */
   get connection(): ConnectionView | undefined {
     return this.connections.find((c) => c.id === this.connectionId);
@@ -63,6 +69,13 @@ class Workspace {
 
   setTab(tab: MainTab): void {
     this.activeTab = tab;
+  }
+
+  /** Load SQL into the Query editor and switch to it; the panel runs it. */
+  runInEditor(sql: string): void {
+    const seq = (this.queryRequest?.seq ?? 0) + 1;
+    this.queryRequest = { sql, seq };
+    this.activeTab = 'query';
   }
 
   /** Stable key for a table, used for list keying and equality. */

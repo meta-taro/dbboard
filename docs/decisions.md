@@ -6917,3 +6917,48 @@ New crate `apps/desktop/src-tauri` (`dbboard-desktop`) + a SvelteKit frontend in
   coexist in the workspace until the maintainer evaluates the running spike.
   If migration is rejected, `apps/desktop` is deleted and the workspace member
   removed — nothing in the core depends on it.
+
+## ADR-0060 — CodeMirror 6 for the desktop SQL editor
+
+**Status:** Accepted · **Date:** 2026-07-27 · **Scope:** `apps/desktop` frontend
+
+### Context
+
+The Tauri query editor started as a plain `<textarea>`. To match the
+visual-direction mock and to be usable for real work (the maintainer wants the
+Tauri build releasable as v0.4.0), the editor needs SQL syntax highlighting,
+line numbers, bracket matching, and room to grow into autocomplete against the
+live schema. Hand-rolling a highlighter overlay would re-implement a solved
+problem and cap out well short of autocomplete.
+
+### Decision
+
+Adopt **CodeMirror 6** (modular `@codemirror/*` packages, not the `codemirror`
+meta-bundle) behind a single `SqlEditor.svelte` wrapper:
+
+1. **Composed, not `basicSetup`.** Only the extensions we use are imported
+   (line numbers, active line, history, close-brackets, autocomplete, `lang-sql`,
+   syntax highlighting). This keeps the bundle honest and the config legible.
+2. **Themed through the design tokens.** The CM theme and `HighlightStyle`
+   reference `var(--...)` (keyword = accent, string = success, number = warning,
+   comment = faint), so the editor re-themes on the same light↔dark token swap
+   as everything else — no editor-specific theme switching.
+3. **Two-way bind with an equality guard.** An `updateListener` pushes edits to
+   the bound `value`; an `$effect` adopts external sets (the sidebar's "Select
+   top 100" injecting a query) only when the text actually differs, avoiding a
+   feedback loop.
+4. **Cmd/Ctrl-Enter to run** is registered as a highest-precedence keymap so it
+   is never swallowed by the default bindings.
+
+### Consequences
+
+- Adds seven `@codemirror/*` / `@lezer/highlight` runtime deps to
+  `apps/desktop`. All are stable, widely used, and clear `minimumReleaseAge`.
+- **vitest is pinned to v2** (`^2.1.9`), not v4: vitest 4 requires Vite 6, and
+  the app is on Vite 5 (SvelteKit 2.9). Revisit when the app moves to Vite 6.
+- Pure SQL-text generation (`quoteIdent`, `qualifiedName`, `selectTopN`) lives
+  in `$lib/sql/build.ts` and is unit-tested (`build.test.ts`) independent of
+  CodeMirror — identifiers are always double-quoted (Postgres + SQLite/libSQL
+  safe), the one injection surface.
+- Still within the ADR-0059 spike: if the Tauri UI is dropped, this goes with
+  `apps/desktop`.
