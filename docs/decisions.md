@@ -6917,3 +6917,66 @@ New crate `apps/desktop/src-tauri` (`dbboard-desktop`) + a SvelteKit frontend in
   coexist in the workspace until the maintainer evaluates the running spike.
   If migration is rejected, `apps/desktop` is deleted and the workspace member
   removed — nothing in the core depends on it.
+
+## ADR-0061 — Aurora DSQL cannot take the read-only transaction preamble
+
+- **Status**: Accepted 2026-07-27
+- **Relates to**: ADR-0046 §8 (the read-only enforcement this amends for one
+  flavor) and ADR-0021 (the Aurora DSQL divergence log this extends)
+
+### Context
+
+ADR-0046 §8 hardens the MCP read path with a two-part backstop: every
+read-only statement runs inside a transaction opened with
+`SET TRANSACTION READ ONLY` (the engine then rejects every write for the
+transaction's life) plus `SET LOCAL statement_timeout = '30s'` (a server-side
+cancellation backstop for an abandoned query). This shipped for all Postgres
+flavors alike.
+
+Aurora DSQL rejects **both** statements:
+
+- `SET TRANSACTION READ ONLY` — DSQL does not implement the `SET TRANSACTION`
+  command form. It parses the word `TRANSACTION` as a GUC name and fails with
+  `ERROR: setting configuration parameter "TRANSACTION" not supported`. This
+  is the error a user hit running `SELECT * FROM … LIMIT 100` against a live
+  Aurora DSQL IAM connection — a query that worked before ADR-0046 added the
+  preamble.
+- `statement_timeout` — DSQL manages transaction duration itself and lists
+  `statement_timeout` (with `lock_timeout`, `idle_in_transaction_session_timeout`)
+  among the parameters it does not accept via `SET` / `SET LOCAL`.
+
+DSQL's supported-session-parameter list and its fixed `REPEATABLE READ`
+isolation are documented at
+<https://docs.aws.amazon.com/aurora-dsql/latest/userguide/accessing.html>.
+Server-side cursors (`DECLARE` / `FETCH`), the other half of the read path,
+are **not** on DSQL's unsupported list, so the cursor row-cap is kept.
+
+### Decision
+
+Gate the preamble on the flavor. A pure `read_only_preamble(flavor)` helper
+returns the two `SET` statements for the standard flavors
+(`postgres` / `neon` / `supabase`) and an **empty preamble** for
+`aurora-dsql`. `run_read_only_txn` still opens a transaction, still runs the
+query through the server-side cursor, and still rolls back on drop — only the
+two unsupported `SET` statements are skipped for DSQL.
+
+### Consequences
+
+- **DSQL loses the transaction-level read-only backstop.** There, the sole
+  read-only guarantee is the pre-connection `classify_read_only` AST guard,
+  which already rejects every write, multi-statement batch, and
+  data-modifying CTE before a connection is opened — so the app-layer
+  guarantee is unchanged; only the engine-level belt is absent on DSQL. This
+  is strictly safer than the pre-ADR-0046 DSQL read path, which ran the query
+  with no transaction wrapper and no classifier at all.
+- **DSQL loses the `statement_timeout` cancellation backstop**, but DSQL
+  enforces its own transaction-duration limits, so an abandoned query cannot
+  pin a connection indefinitely regardless.
+- Restoring a begin-time read-only transaction on DSQL
+  (`BEGIN READ ONLY` / `START TRANSACTION READ ONLY`) is a possible follow-up
+  once verified against a live cluster; it is deliberately out of scope here
+  to keep the fix to the minimal change that unblocks the connection without
+  risking another unsupported-statement rejection.
+- The helper is unit-tested (`read_only_preamble_*`); the flavor-gated read
+  path itself is exercised end-to-end only against a live DSQL cluster, which
+  no CI runner has — that verification is the maintainer's.
