@@ -16,7 +16,6 @@
   <div class="lead">
     <span class="brand-dot" aria-hidden="true"></span>
     <span class="brand">dbboard</span>
-    <span class="tag">Tauri + SvelteKit spike</span>
   </div>
 
   <div class="actions">
@@ -90,15 +89,6 @@
     font-weight: 600;
     color: var(--text);
     letter-spacing: -0.01em;
-  }
-
-  .tag {
-    font-size: var(--text-hint);
-    font-weight: 600;
-    color: var(--text-accent);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-widget);
-    padding: 1px 8px;
   }
 
   /* Pushed to the right, just left of the window controls. Interactive, so it
