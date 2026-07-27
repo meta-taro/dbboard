@@ -1617,6 +1617,77 @@ mod tests {
         assert_eq!(names, vec!["NotoSansCJK"]);
     }
 
+    // Regression guard for the tofu bug (ADR-0058) at the layer the pure
+    // `select_cjk_fonts` tests above cannot reach. Those feed fake bytes, so
+    // they prove *selection* (one font per group) but not *coverage* — and the
+    // bug was never a selection bug: Yu Gothic loaded fine yet lacks Hangul and
+    // simplified-only Han, so "a font loaded" was mistaken for "the script
+    // renders" and tofu shipped twice. Here we build the exact stack
+    // `install_cjk_font` assembles from the *real* system fonts and assert
+    // egui's per-glyph fallback resolves each script. Keyed on the font file
+    // existing on disk, not on what the selector returned: if msyh.ttc is
+    // present but a future edit drops the Chinese group, `简` stops resolving
+    // and this fails — which the selector-only tests would sail past.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_cjk_stack_resolves_each_installed_script() {
+        use egui::epaint::text::{Fonts, TextOptions};
+        use egui::{FontData, FontDefinitions, FontFamily, FontId};
+
+        let loaded = super::load_cjk_fonts();
+        let mut defs = FontDefinitions::default();
+        let names: Vec<String> = loaded.iter().map(|(n, _)| (*n).to_owned()).collect();
+        for (name, bytes) in &loaded {
+            defs.font_data.insert(
+                (*name).to_owned(),
+                FontData::from_owned(bytes.clone()).into(),
+            );
+        }
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            let entry = defs.families.entry(family).or_default();
+            for name in &names {
+                entry.push(name.clone());
+            }
+        }
+        let mut fonts = Fonts::new(TextOptions::default(), defs);
+        fonts.begin_pass(TextOptions::default());
+        let id = FontId::proportional(16.0);
+
+        // (script, representative glyph, the font file that must supply it).
+        // `簡` (U+7B80) is the load-bearing case: Yu Gothic — the font that won
+        // the old first-match probe — does not have it, so only a real Chinese
+        // font in the stack makes it resolve. Traditional Han is deliberately
+        // omitted: Yu Gothic covers most of it, so it cannot detect a dropped
+        // Chinese group. `한` guards the Korean regression the same way.
+        let cases = [
+            (
+                "Japanese kana あ",
+                '\u{3042}',
+                r"C:\Windows\Fonts\YuGothM.ttc",
+            ),
+            (
+                "Korean Hangul 한",
+                '\u{D55C}',
+                r"C:\Windows\Fonts\malgun.ttf",
+            ),
+            (
+                "simplified Han 简",
+                '\u{7B80}',
+                r"C:\Windows\Fonts\msyh.ttc",
+            ),
+        ];
+        for (script, ch, required_font) in cases {
+            if std::path::Path::new(required_font).exists() {
+                assert!(
+                    fonts.has_glyph(&id, ch),
+                    "{script}: {required_font} is installed but the assembled \
+                     font stack renders it as tofu — the CJK fallback is \
+                     missing this script (ADR-0058 regression)"
+                );
+            }
+        }
+    }
+
     #[test]
     fn theme_preference_maps_onto_egui_theme() {
         use super::egui_theme;
