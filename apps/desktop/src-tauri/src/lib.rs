@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use dbboard_config::secrets::{KeyringStore, SecretStore};
 use dbboard_config::{
-    ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKind, ConnectionKindDraft,
-    ConnectionKindEditDraft, SecretField,
+    AnnotationsAdmin, ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKind,
+    ConnectionKindDraft, ConnectionKindEditDraft, SecretField,
 };
 use dbboard_core::{TableInfo, TableSchema};
 use dbboard_mcp::service::{
@@ -32,9 +32,16 @@ use dbboard_mcp::McpService;
 /// one `connections.toml`, so after a write we evict the matching cached
 /// adapter from `service` to keep the read path from serving stale
 /// credentials.
+///
+/// `annotations` is the note write path: [`AnnotationsAdmin`] owns
+/// `annotations.toml` (the same file `service` reads, and the egui app and
+/// MCP server share). Notes never touch the database or the read adapters,
+/// so — unlike a connection write — a note write needs no cache eviction;
+/// `service` re-reads the file on the next `get_annotations` (ADR-0045).
 struct AppState {
     service: McpService,
     admin: Mutex<ConnectionAdmin>,
+    annotations: Mutex<AnnotationsAdmin>,
 }
 
 /// List every configured connection (id / name / adapter kind). Never
@@ -100,6 +107,41 @@ async fn get_annotations(
         .map_err(|e| e.to_string())
 }
 
+/// Set (or clear) the local note for a table (ADR-0045). `table` is the
+/// schema-qualified key the frontend already builds (`tableKey()` →
+/// "schema.name" / bare name), matching `dbboard-config`'s `table_key`. A
+/// blank/whitespace `note` deletes the note — the admin trims and prunes,
+/// so callers pass the raw editor text straight through. Written to
+/// `annotations.toml`, never to the database.
+#[tauri::command]
+async fn set_table_note(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+    table: String,
+    note: String,
+) -> Result<(), String> {
+    let mut admin = state.annotations.lock().map_err(|_| lock_poisoned())?;
+    admin
+        .set_table_note(&connection_id, &table, &note)
+        .map_err(|e| e.to_string())
+}
+
+/// Set (or clear) the local note for one column of a table (ADR-0045).
+/// Same key/blank-deletes semantics as [`set_table_note`].
+#[tauri::command]
+async fn set_column_note(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+    table: String,
+    column: String,
+    note: String,
+) -> Result<(), String> {
+    let mut admin = state.annotations.lock().map_err(|_| lock_poisoned())?;
+    admin
+        .set_column_note(&connection_id, &table, &column, &note)
+        .map_err(|e| e.to_string())
+}
+
 /// Find tables (and columns) whose name contains `pattern`. Blank
 /// patterns are rejected by the service, not matched to everything.
 #[tauri::command]
@@ -146,6 +188,8 @@ pub fn run() {
         dbboard_config::default_path().expect("resolve platform config paths for connections.toml");
     let admin = ConnectionAdmin::open(path, Arc::clone(&secrets))
         .expect("open connections.toml for connection management");
+    let annotations =
+        AnnotationsAdmin::open_default().expect("open annotations.toml for local note editing");
     let service = McpService::with_default_paths(secrets)
         .expect("resolve platform config paths for connections.toml");
 
@@ -154,12 +198,15 @@ pub fn run() {
         .manage(AppState {
             service,
             admin: Mutex::new(admin),
+            annotations: Mutex::new(annotations),
         })
         .invoke_handler(tauri::generate_handler![
             list_connections,
             list_tables,
             describe_table,
             get_annotations,
+            set_table_note,
+            set_column_note,
             search_schema,
             list_relationships,
             run_read_query,
@@ -570,6 +617,97 @@ mod tests {
         let json = serde_json::to_value(&view).expect("serialize");
         assert!(json.get("connection_id").is_some());
         assert!(json.get("tables").is_some());
+    }
+
+    // --- Local annotation editing (write path, ADR-0045) -----------------
+    //
+    // The `set_table_note`/`set_column_note` commands are one-line
+    // delegations to `AnnotationsAdmin` (whose trim/prune/empty-delete
+    // discipline is covered by `dbboard-config`'s own suite). What *this*
+    // crate owns is the wiring: the write admin and the read service point
+    // at ONE `annotations.toml`, so a note written through the admin is
+    // visible to `get_annotations` on the next call, with no cache to evict.
+    // These tests pin exactly that shared-file contract.
+    use dbboard_config::AnnotationsAdmin;
+
+    /// A read `service` and a write `admin` over a *shared* `annotations.toml`,
+    /// plus a temp `connections.toml` with one in-memory connection.
+    fn service_and_annotations_admin() -> (tempfile::TempDir, McpService, AnnotationsAdmin) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("connections.toml");
+        let annotations = dir.path().join("annotations.toml");
+        std::fs::write(
+            &config,
+            "version = 1\n\n[[connections]]\nid = \"mem\"\nname = \"Mem\"\nkind = \"turso\"\npath = \":memory:\"\n",
+        )
+        .expect("write config");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let service = McpService::new(config, annotations.clone(), secrets);
+        let admin = AnnotationsAdmin::new_with_file(annotations).expect("open annotations admin");
+        (dir, service, admin)
+    }
+
+    #[tokio::test]
+    async fn a_table_note_written_by_the_admin_is_visible_to_the_read_service() {
+        let (_dir, service, mut admin) = service_and_annotations_admin();
+        admin
+            .set_table_note("mem", "orders", "the live orders table")
+            .expect("set table note");
+        let view = service
+            .get_annotations("mem", Some("orders"), None)
+            .await
+            .expect("get_annotations");
+        let ta = view.tables.first().expect("one annotated table");
+        assert_eq!(ta.note.as_deref(), Some("the live orders table"));
+    }
+
+    #[tokio::test]
+    async fn an_emptied_table_note_is_deleted_not_stored_blank() {
+        let (_dir, service, mut admin) = service_and_annotations_admin();
+        admin.set_table_note("mem", "orders", "note").expect("set");
+        // A whitespace-only note clears it — the admin trims, so the command
+        // hands raw editor text through and an emptied field deletes.
+        admin
+            .set_table_note("mem", "orders", "   ")
+            .expect("clear with blanks");
+        let view = service
+            .get_annotations("mem", None, None)
+            .await
+            .expect("get_annotations");
+        assert!(
+            view.tables.is_empty(),
+            "clearing the last note prunes the whole stanza"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_column_note_round_trips_and_empties_delete() {
+        let (_dir, service, mut admin) = service_and_annotations_admin();
+        admin
+            .set_column_note("mem", "orders", "status", "enum-ish free text")
+            .expect("set column note");
+        let view = service
+            .get_annotations("mem", Some("orders"), None)
+            .await
+            .expect("get");
+        let note = view
+            .tables
+            .first()
+            .and_then(|t| t.columns.iter().find(|c| c.name == "status"))
+            .map(|c| c.note.clone());
+        assert_eq!(note.as_deref(), Some("enum-ish free text"));
+
+        admin
+            .set_column_note("mem", "orders", "status", "")
+            .expect("clear column note");
+        let view = service
+            .get_annotations("mem", None, None)
+            .await
+            .expect("get");
+        assert!(
+            view.tables.is_empty(),
+            "clearing the only column prunes the table and connection stanzas"
+        );
     }
 
     // --- Connection management (write path, ADR-0062) --------------------
