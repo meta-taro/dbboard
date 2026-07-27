@@ -158,3 +158,8 @@ export const runReadQuery = (
   maxRows?: number,
 ): Promise<QueryOutput> =>
   invoke('run_read_query', { connectionId, sql, maxRows: maxRows ?? null });
+
+// Absolute path of the connections.toml this app reads — shown in the
+// first-run empty state so a user can hand-register a connection (there is
+// no in-app connection editor yet).
+export const configPath = (): Promise<string> => invoke('config_path');

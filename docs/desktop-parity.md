@@ -9,13 +9,14 @@ new ADR — see "Deliberately out of scope" below.
 Legend: ✅ done · 🟦 done this pass · ⛔ not yet (needs an ADR / write surface) ·
 ➖ intentionally omitted.
 
-_Last updated: 2026-07-27._
+_Last updated: 2026-07-27 (added first-run empty state)._
 
 ## Read / inspect (the spike's remit)
 
 | Feature | egui | Tauri | Notes |
 |---|---|---|---|
 | List connections | ✅ | ✅ | Read-only view; no add/edit/delete (see below). |
+| First-run empty state | ✅ | ✅ | With zero connections the Query panel explains where to register one and shows the resolved `connections.toml` path (read-only `config_path` command). |
 | Browse tables | ✅ | ✅ | Sidebar list with count. |
 | Schema search (tables + columns) | ✅ | ✅ | Debounced `search_schema`. |
 | Table structure (columns / types / PK) | ✅ | ✅ | Structure tab. |
