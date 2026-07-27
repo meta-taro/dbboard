@@ -168,6 +168,7 @@
             {#each rows[origIdx] as cell, ci (ci)}
               <td
                 class:null-cell={cell === null}
+                class:num-cell={typeof cell === 'number'}
                 title={cell === null ? 'NULL' : displayCell(cell)}
                 ondblclick={() => openCell(columns[ci].name, cell)}
               >
@@ -306,11 +307,23 @@
     background: color-mix(in srgb, var(--accent) 8%, transparent);
   }
   tbody tr.selected {
-    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    background: var(--accent-weak);
+  }
+  /* Inset accent bar on the leading cell marks the selected row — reliable
+     under border-collapse, where an inset box-shadow on <tr> is not. */
+  tbody tr.selected td:first-child {
+    box-shadow: inset 2px 0 0 var(--accent);
   }
   .null-cell {
     color: var(--text-muted);
     font-style: italic;
+  }
+  /* Numeric columns right-align with figure-aligned digits so the ones, tens
+     and hundreds stack — detected from the JSON scalar, never fabricated. */
+  .num-cell {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
   .backdrop {
