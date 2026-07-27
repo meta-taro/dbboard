@@ -68,6 +68,7 @@ help-repo-link = GitHub 上的專案
 help-ai-about-title = 關於 AI 助理
 help-ai-about-body = AI 助理會用淺白的語言解釋 SQL 陳述式，並根據你輸入的描述草擬 SQL 查詢；在提供建議時也會讀取你的資料表與欄位名稱。它絕不會執行 SQL，絕不會寫入你的資料庫，也絕不會將資料列傳送到任何地方——在你將草稿複製到編輯器並自行執行之前，什麼都不會發生。需要 API 金鑰，金鑰會儲存在作業系統的認證管理員中。
 
+ai-menu = AI
 ai-menu-button = AI 助理
 ai-panel-title = AI 助理
 ai-scope-hint = 解釋 SQL 並根據描述草擬查詢。它絕不會執行 SQL 或變更資料——一切都由你自己檢查並執行。

@@ -135,6 +135,7 @@ help-update-available = アップデートがあります: { $version }
 help-update-link = 新しいバージョンを入手
 help-update-notes = 変更点
 
+ai-menu = AI
 ai-menu-button = AI アシスタント
 ai-panel-title = AI アシスタント
 ai-scope-hint = SQL の説明と、説明文からのクエリ下書きを行います。SQL を自動実行したりデータを変更したりはせず、確認と実行はすべて自分で行います。

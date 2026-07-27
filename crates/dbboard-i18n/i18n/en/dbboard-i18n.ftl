@@ -200,6 +200,7 @@ help-update-notes = What's changed
 # these keys are only ever rendered behind that gate. Error prefixes
 # mirror the `AiError` variants; the body of each error stays in the
 # language the provider returned it in (typically English).
+ai-menu = AI
 ai-menu-button = AI Assistant
 ai-panel-title = AI Assistant
 # One-line scope caption under the panel title. Keep the meaning aligned

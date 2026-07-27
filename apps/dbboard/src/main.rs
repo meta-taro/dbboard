@@ -634,21 +634,33 @@ impl eframe::App for DesktopApp {
                 if self.admin.is_some() && ui.button(t!("connections-window-title")).clicked() {
                     self.connections.open();
                 }
-                // ADR-0023 Decision 11: the AI menu entry is hidden
-                // entirely when no provider was wired at startup
-                // (graceful degradation = absence). When present, the
-                // button toggles the panel open/closed; the open state
-                // lives on `DbboardApp::ai_panel`.
-                if self.inner.has_ai_provider() && ui.button(t!("ai-menu-button")).clicked() {
-                    self.inner.toggle_ai_panel();
-                }
-                // ADR-0025 slice (b): the AI Settings menu is shown
-                // whenever an `ai-providers.toml` admin is available,
-                // independent of whether a provider is currently bound
-                // — the whole point of the window is to bind one when
-                // none is yet active.
-                if self.ai_admin.is_some() && ui.button(t!("ai-settings-menu-button")).clicked() {
-                    self.ai_settings.open();
+                // The AI Assistant and AI Providers entries share one "AI"
+                // menu — they are the same concern (they even read alike in
+                // the bar), so nesting them mirrors how Help groups its
+                // items and stops the top bar from sprouting two near-
+                // identical buttons. Rendered only when at least one of the
+                // two is available; each item keeps its own visibility rule.
+                let has_ai_assistant = self.inner.has_ai_provider();
+                let has_ai_settings = self.ai_admin.is_some();
+                if has_ai_assistant || has_ai_settings {
+                    ui.menu_button(t!("ai-menu"), |ui| {
+                        // ADR-0023 Decision 11: the Assistant item is present
+                        // only when a provider was wired at startup (graceful
+                        // degradation = absence). It toggles the panel; the
+                        // open state lives on `DbboardApp::ai_panel`.
+                        if has_ai_assistant && ui.button(t!("ai-menu-button")).clicked() {
+                            self.inner.toggle_ai_panel();
+                            ui.close();
+                        }
+                        // ADR-0025 slice (b): Providers is shown whenever an
+                        // `ai-providers.toml` admin exists, independent of
+                        // whether a provider is currently bound — the window
+                        // is how you bind one when none is active yet.
+                        if has_ai_settings && ui.button(t!("ai-settings-menu-button")).clicked() {
+                            self.ai_settings.open();
+                            ui.close();
+                        }
+                    });
                 }
                 language_menu(ui);
                 self.backup_settings_menu(ui);
