@@ -75,11 +75,13 @@
     pointer-events: none;
   }
 
+  /* Rounded-square gradient logo mark, matching the design mock. */
   .brand-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: var(--radius-pill);
-    background: linear-gradient(135deg, #818cf8, var(--accent));
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: linear-gradient(150deg, #6366f1, #4f46e5);
+    box-shadow: 0 1px 3px rgba(79, 70, 229, 0.4);
     flex: none;
   }
 
