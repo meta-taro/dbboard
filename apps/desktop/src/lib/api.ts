@@ -141,6 +141,25 @@ export const getAnnotations = (
     column: column ?? null,
   });
 
+// Set (or clear) a table's local note (ADR-0045). `table` is the
+// schema-qualified key from `tableKey()`. A blank `note` deletes it — the
+// backend trims and treats empty as delete, so pass raw editor text.
+export const setTableNote = (
+  connectionId: string,
+  table: string,
+  note: string,
+): Promise<void> => invoke('set_table_note', { connectionId, table, note });
+
+// Set (or clear) one column's local note (ADR-0045). Same key/blank-deletes
+// semantics as `setTableNote`.
+export const setColumnNote = (
+  connectionId: string,
+  table: string,
+  column: string,
+  note: string,
+): Promise<void> =>
+  invoke('set_column_note', { connectionId, table, column, note });
+
 export const searchSchema = (
   connectionId: string,
   pattern: string,

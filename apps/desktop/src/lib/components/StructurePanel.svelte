@@ -5,6 +5,8 @@
     describeTable,
     getAnnotations,
     listRelationships,
+    setColumnNote,
+    setTableNote,
     tableKey,
     type Relationship,
     type TableSchema,
@@ -76,6 +78,53 @@
       }
     })();
   });
+
+  // Commit a note edit (ADR-0045). The backend trims and treats blank as
+  // delete, so we pass the raw text and only skip a write when nothing
+  // changed (compared trimmed, since the store keeps a trimmed value). On
+  // success we update local state optimistically — the note write never
+  // touches the DB, so there's nothing else to refresh.
+  async function commitTableNote(value: string) {
+    const table = workspace.selectedTable;
+    const connId = workspace.connectionId;
+    if (!table || !connId) return;
+    if (value.trim() === (tableNote ?? '').trim()) return;
+    try {
+      await setTableNote(connId, tableKey(table), value);
+      tableNote = value.trim() === '' ? null : value.trim();
+      error = '';
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function commitColumnNote(column: string, value: string) {
+    const table = workspace.selectedTable;
+    const connId = workspace.connectionId;
+    if (!table || !connId) return;
+    if (value.trim() === (columnNotes.get(column) ?? '').trim()) return;
+    try {
+      await setColumnNote(connId, tableKey(table), column, value);
+      const next = new Map(columnNotes);
+      if (value.trim() === '') next.delete(column);
+      else next.set(column, value.trim());
+      columnNotes = next;
+      error = '';
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  // Enter commits (blur fires the handler); Escape restores the stored value.
+  function onNoteKeydown(e: KeyboardEvent, stored: string) {
+    const input = e.currentTarget as HTMLInputElement;
+    if (e.key === 'Enter') {
+      input.blur();
+    } else if (e.key === 'Escape') {
+      input.value = stored;
+      input.blur();
+    }
+  }
 </script>
 
 <div class="panel">
@@ -93,9 +142,16 @@
       {/if}
     </header>
 
-    {#if tableNote}
-      <p class="table-note">{tableNote}</p>
-    {/if}
+    <div class="table-note-row">
+      <input
+        class="note-input table-note-input"
+        placeholder={i18n.t('note-add-placeholder')}
+        value={tableNote ?? ''}
+        onblur={(e) => commitTableNote(e.currentTarget.value)}
+        onkeydown={(e) => onNoteKeydown(e, tableNote ?? '')}
+        spellcheck="false"
+      />
+    </div>
 
     {#if error}
       <p class="error">{error}</p>
@@ -126,7 +182,17 @@
                   {#if col.primary_key}<span class="pk">PK</span>{/if}
                 </td>
                 <td class="mono muted">{col.default_value ?? '—'}</td>
-                <td class="note">{columnNotes.get(col.name) ?? ''}</td>
+                <td class="note">
+                  <input
+                    class="note-input"
+                    placeholder={i18n.t('note-add-placeholder')}
+                    value={columnNotes.get(col.name) ?? ''}
+                    onblur={(e) => commitColumnNote(col.name, e.currentTarget.value)}
+                    onkeydown={(e) =>
+                      onNoteKeydown(e, columnNotes.get(col.name) ?? '')}
+                    spellcheck="false"
+                  />
+                </td>
               </tr>
             {/each}
           </tbody>
@@ -190,13 +256,37 @@
     font-family: var(--font-mono);
   }
 
-  .table-note {
-    margin: 0;
-    padding: var(--space-2) var(--space-3);
-    background: var(--bg-surface-alt);
-    border-left: 2px solid var(--accent);
+  .table-note-row {
+    display: flex;
+  }
+  /* Editable notes read as plain text until focused — a borderless field that
+     grows a surface and ring on hover/focus, so the Structure tab stays calm
+     but every note is obviously editable (ADR-0045). */
+  .note-input {
+    width: 100%;
+    background: transparent;
+    border: 1px solid transparent;
     border-radius: var(--radius-widget);
     color: var(--text);
+    font-family: inherit;
+    font-size: var(--text-small);
+    padding: 3px 6px;
+  }
+  .note-input::placeholder {
+    color: var(--faint);
+  }
+  .note-input:hover {
+    border-color: var(--border);
+  }
+  .note-input:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--bg-surface-alt);
+  }
+  .table-note-input {
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius-widget);
+    background: var(--bg-surface-alt);
     font-size: var(--text-small);
   }
 
