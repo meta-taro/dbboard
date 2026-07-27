@@ -2,6 +2,7 @@
   import { workspace } from '$lib/state/workspace.svelte';
   import { searchSchema, type SchemaMatch, type TableInfo } from '$lib/api';
   import { selectTopN } from '$lib/sql/build';
+  import { i18n } from '$lib/i18n/i18n.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
 
   let query = $state('');
@@ -63,13 +64,13 @@
   // Read-only actions only: inspect, or generate a bounded SELECT to run.
   function menuItems(table: TableInfo): MenuItem[] {
     return [
-      { label: 'Open structure', onSelect: () => workspace.selectTable(table) },
+      { label: i18n.t('menu-open-structure'), onSelect: () => workspace.selectTable(table) },
       {
-        label: 'Select top 100',
+        label: i18n.t('menu-select-top', { n: 100 }),
         onSelect: () => workspace.runInEditor(selectTopN(table, 100)),
       },
       {
-        label: 'Copy name',
+        label: i18n.t('menu-copy-name'),
         separatorBefore: true,
         onSelect: () => navigator.clipboard.writeText(workspace.key(table)),
       },
@@ -95,10 +96,10 @@
 
 <aside class="sidebar">
   <div class="section">
-    <div class="eyebrow">Connections</div>
-    <nav class="nav-list" aria-label="Connections">
+    <div class="eyebrow">{i18n.t('connections-window-title')}</div>
+    <nav class="nav-list" aria-label={i18n.t('connections-window-title')}>
       {#if workspace.connections.length === 0}
-        <p class="hint">No connections configured</p>
+        <p class="hint">{i18n.t('sidebar-connections-empty')}</p>
       {:else}
         {#each workspace.connections as c (c.id)}
           <button
@@ -121,7 +122,7 @@
     <div class="search">
       <input
         type="search"
-        placeholder="Search tables &amp; columns…"
+        placeholder={i18n.t('sidebar-search-placeholder')}
         bind:value={query}
         disabled={!workspace.connectionId}
         spellcheck="false"
@@ -131,16 +132,16 @@
     {#if matches === null}
       <!-- Normal browse mode: the full table list. -->
       <div class="heading">
-        <span class="eyebrow">Tables</span>
+        <span class="eyebrow">{i18n.t('tables-heading')}</span>
         {#if workspace.tables.length > 0}
           <span class="badge">{workspace.tables.length}</span>
         {/if}
       </div>
       <div class="list">
         {#if workspace.loadingTables}
-          <p class="hint">Loading…</p>
+          <p class="hint">{i18n.t('sidebar-loading')}</p>
         {:else if workspace.tables.length === 0}
-          <p class="hint">No tables</p>
+          <p class="hint">{i18n.t('sidebar-tables-empty')}</p>
         {:else}
           {#each workspace.tables as t (workspace.key(t))}
             <button
@@ -162,16 +163,16 @@
     {:else}
       <!-- Search mode. -->
       <div class="heading">
-        <span class="eyebrow">Matches</span>
+        <span class="eyebrow">{i18n.t('sidebar-matches')}</span>
         {#if !searching}<span class="badge">{matches.length}</span>{/if}
       </div>
       <div class="list">
         {#if searching}
-          <p class="hint">Searching…</p>
+          <p class="hint">{i18n.t('sidebar-searching')}</p>
         {:else if searchError}
           <p class="error">{searchError}</p>
         {:else if matches.length === 0}
-          <p class="hint">No matches</p>
+          <p class="hint">{i18n.t('sidebar-no-matches')}</p>
         {:else}
           {#each matches as m (workspace.key(m.table))}
             <button

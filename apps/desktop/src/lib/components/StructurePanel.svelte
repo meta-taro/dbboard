@@ -1,5 +1,6 @@
 <script lang="ts">
   import { workspace } from '$lib/state/workspace.svelte';
+  import { i18n } from '$lib/i18n/i18n.svelte';
   import {
     describeTable,
     getAnnotations,
@@ -80,14 +81,14 @@
 <div class="panel">
   {#if !workspace.selectedTable}
     <div class="empty">
-      <p>Select a table from the sidebar to inspect its structure.</p>
+      <p>{i18n.t('structure-empty-hint')}</p>
     </div>
   {:else}
     <header class="head">
       <h2 class="title">{tableKey(workspace.selectedTable)}</h2>
       {#if schema && schema.primary_key.length > 0}
         <span class="pk-summary">
-          PK: {schema.primary_key.join(', ')}
+          {i18n.t('structure-pk-summary', { cols: schema.primary_key.join(', ') })}
         </span>
       {/if}
     </header>
@@ -99,19 +100,19 @@
     {#if error}
       <p class="error">{error}</p>
     {:else if loading && !schema}
-      <p class="hint">Loading…</p>
+      <p class="hint">{i18n.t('structure-loading')}</p>
     {:else if schema}
       <div class="grid-wrap">
         <table>
           <thead>
             <tr>
-              <th class="num">#</th>
-              <th>Column</th>
-              <th>Type</th>
-              <th>Nullable</th>
-              <th>Key</th>
-              <th>Default</th>
-              <th>Note</th>
+              <th class="num">{i18n.t('structure-col-ordinal')}</th>
+              <th>{i18n.t('structure-col-name')}</th>
+              <th>{i18n.t('structure-col-type')}</th>
+              <th>{i18n.t('structure-col-nullable')}</th>
+              <th>{i18n.t('structure-col-pk')}</th>
+              <th>{i18n.t('structure-col-default')}</th>
+              <th>{i18n.t('structure-col-note')}</th>
             </tr>
           </thead>
           <tbody>
@@ -134,7 +135,7 @@
 
       {#if relationships.length > 0}
         <section class="rels">
-          <h3 class="section-title">Relationships</h3>
+          <h3 class="section-title">{i18n.t('structure-relationships')}</h3>
           <ul class="rel-list">
             {#each relationships as r, i (r.constraint_name ?? i)}
               {@const outgoing = isCurrent(r.from_table)}

@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { titlebarController } from '$lib/window/titlebar.svelte';
+  import { i18n } from '$lib/i18n/i18n.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
+  import LanguageMenu from './LanguageMenu.svelte';
+  import AboutDialog from './AboutDialog.svelte';
+
+  let aboutOpen = $state(false);
 
   // Frameless (decorations:false): this bar IS the OS title bar. The bar itself
   // is the drag region (data-tauri-drag-region); .lead is pointer-events
@@ -19,6 +24,16 @@
   </div>
 
   <div class="actions">
+    <button
+      type="button"
+      class="help"
+      onclick={() => (aboutOpen = true)}
+      title={i18n.t('help-menu')}
+      aria-label={i18n.t('about-title')}
+    >
+      ?
+    </button>
+    <LanguageMenu />
     <ThemeToggle />
   </div>
 
@@ -27,8 +42,8 @@
       class="wc"
       type="button"
       onclick={() => titlebarController.minimize()}
-      title="Minimize"
-      aria-label="Minimize"
+      title={i18n.t('win-minimize')}
+      aria-label={i18n.t('win-minimize')}
     >
       ─
     </button>
@@ -36,8 +51,8 @@
       class="wc"
       type="button"
       onclick={() => titlebarController.toggleMaximize()}
-      title={titlebarController.isMaximized ? 'Restore' : 'Maximize'}
-      aria-label={titlebarController.isMaximized ? 'Restore' : 'Maximize'}
+      title={titlebarController.isMaximized ? i18n.t('win-restore') : i18n.t('win-maximize')}
+      aria-label={titlebarController.isMaximized ? i18n.t('win-restore') : i18n.t('win-maximize')}
     >
       {titlebarController.maxGlyph}
     </button>
@@ -45,13 +60,17 @@
       class="wc close"
       type="button"
       onclick={() => titlebarController.close()}
-      title="Close"
-      aria-label="Close"
+      title={i18n.t('win-close')}
+      aria-label={i18n.t('win-close')}
     >
       ✕
     </button>
   </div>
 </header>
+
+{#if aboutOpen}
+  <AboutDialog onClose={() => (aboutOpen = false)} />
+{/if}
 
 <style>
   .topbar {
@@ -97,7 +116,29 @@
     margin-left: auto;
     display: flex;
     align-items: center;
+    gap: var(--space-2);
     padding-right: var(--space-2);
+  }
+
+  /* Circular ghost help button — quiet until hovered. */
+  .help {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-surface-alt);
+    color: var(--text-muted);
+    font-size: var(--text-hint);
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .help:hover {
+    color: var(--text);
+    border-color: var(--border-strong);
   }
 
   /* Windows convention: controls flush to the top-right corner, full height. */
