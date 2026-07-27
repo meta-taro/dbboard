@@ -7166,8 +7166,8 @@ its own ADR entry where it introduces a new decision.
 |---|---|---|
 | Connection CRUD + bundle import/export | `ConnectionsView` + `ConnectionAdmin` | **This ADR — done** |
 | Inline cell editing (UPDATE-only, declared PK, `rows_affected == 1` gate) | ADR-0042 | Pending |
-| Local annotation editing (table/column notes, empty = delete) | ADR-0045 | Pending |
-| Dataset export (CSV / CSV-with-BOM / TSV, row selection) | ADR-0049 helpers | Pending |
+| Local annotation editing (table/column notes, empty = delete) | ADR-0045 | **Done** |
+| Dataset export (CSV / CSV-with-BOM / TSV, row selection) | ADR-0035 | **Done** |
 | Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | Pending |
 | Logical restore / import (empty-target confirm; per-engine txn strategy) | ADR-0051 | Pending |
 | AI assistant (provider trait; explain/suggest; never runs SQL, never sends rows) | ADR-0052 | Pending |

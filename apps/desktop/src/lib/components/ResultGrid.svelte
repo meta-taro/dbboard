@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { displayCell, type Cell, type Column } from '$lib/api';
+  import { save } from '@tauri-apps/plugin-dialog';
+  import { displayCell, saveTextFile, type Cell, type Column } from '$lib/api';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import {
     nextSortKeys,
     sortedIndices,
     toDelimited,
+    toDelimitedFile,
     type SortKey,
   } from '$lib/grid/format';
 
@@ -86,16 +88,33 @@
     }
   }
 
-  function download() {
-    const text = toDelimited(columns, rowsForExport(), ',');
-    const url = URL.createObjectURL(
-      new Blob([text], { type: 'text/csv;charset=utf-8' }),
-    );
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'result.csv';
-    a.click();
-    URL.revokeObjectURL(url);
+  // Save the export (selection or all rows) to a file the user names in the
+  // native "Save As" dialog. The chosen extension picks the delimiter (.tsv →
+  // tab, anything else → comma); the file always carries a UTF-8 BOM so Excel
+  // on a non-UTF-8 code page opens it without mojibake (ADR-0035). Cancelling
+  // the dialog is a silent no-op.
+  async function saveFile() {
+    const path = await save({
+      defaultPath: 'dbboard-result.csv',
+      filters: [
+        { name: 'CSV', extensions: ['csv'] },
+        { name: 'TSV', extensions: ['tsv'] },
+      ],
+    });
+    if (!path) return;
+    const sep = path.toLowerCase().endsWith('.tsv') ? '\t' : ',';
+    try {
+      await saveTextFile(path, toDelimitedFile(columns, rowsForExport(), sep));
+      flash(i18n.t('result-saved', { name: baseName(path) }));
+    } catch {
+      flash(i18n.t('result-save-failed'));
+    }
+  }
+
+  // Last path segment for the success toast — the dialog returns an absolute
+  // path, and only the file name is worth surfacing.
+  function baseName(path: string): string {
+    return path.split(/[\\/]/).pop() ?? path;
   }
 
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
@@ -139,8 +158,8 @@
       <button type="button" onclick={() => copy(',')} title={i18n.t('result-copy-csv-title')}>
         {i18n.t('result-copy-csv')}
       </button>
-      <button type="button" class="ghost" onclick={download} title={i18n.t('result-download-title')}>
-        ↓ .csv
+      <button type="button" class="ghost" onclick={saveFile} title={i18n.t('result-save-title')}>
+        {i18n.t('result-save')}
       </button>
     </div>
   </div>

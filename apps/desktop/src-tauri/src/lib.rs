@@ -216,7 +216,8 @@ pub fn run() {
             update_connection,
             delete_connection,
             export_connections,
-            import_connections
+            import_connections,
+            save_text_file
         ])
         .run(tauri::generate_context!())
         .expect("start the dbboard-desktop Tauri app");
@@ -532,6 +533,18 @@ fn import_connections(
         imported: report.imported,
         skipped: report.skipped,
     })
+}
+
+/// Write a UTF-8 text file to `path` (ADR-0035 result-set export). The
+/// frontend builds the delimited body (with its leading BOM for the `.csv`
+/// form) and picks `path` with the native save dialog, so this is a thin,
+/// deliberate writer — nothing here is fabricated and the path is always a
+/// destination the user just chose. Kept in Rust (rather than a WebView blob
+/// download) so the save lands at the chosen path with a real "Save As"
+/// dialog, mirroring the connection-bundle export.
+#[tauri::command]
+fn save_text_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Serialize-only mirror of `dbboard_config::ImportReport` (which is
