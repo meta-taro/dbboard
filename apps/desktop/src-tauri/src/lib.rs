@@ -10,20 +10,31 @@
 //! `Err` to the frontend as JSON; the frontend only needs the message,
 //! not the typed variant.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use dbboard_config::secrets::KeyringStore;
+use dbboard_config::secrets::{KeyringStore, SecretStore};
+use dbboard_config::{
+    ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKind, ConnectionKindDraft,
+    ConnectionKindEditDraft, SecretField,
+};
 use dbboard_core::{TableInfo, TableSchema};
 use dbboard_mcp::service::{
     AnnotationsView, ConnectionView, QueryOutput, RelationshipView, SchemaSearchView,
 };
 use dbboard_mcp::McpService;
 
-/// The one managed instance backing every command. `McpService` reads
-/// `connections.toml` fresh on each call and caches adapters internally,
-/// so a single instance is correct for the whole app lifetime.
+/// The managed state backing every command.
+///
+/// `service` is the read path: [`McpService`] reads `connections.toml`
+/// fresh on each call and caches adapters. `admin` is the write path:
+/// [`ConnectionAdmin`] owns the same `connections.toml` plus the keyring
+/// and is the *only* thing that mutates them (ADR-0062). The two share
+/// one `connections.toml`, so after a write we evict the matching cached
+/// adapter from `service` to keep the read path from serving stale
+/// credentials.
 struct AppState {
     service: McpService,
+    admin: Mutex<ConnectionAdmin>,
 }
 
 /// List every configured connection (id / name / adapter kind). Never
@@ -130,12 +141,20 @@ async fn list_relationships(
 /// runtime fails to start — both are unrecoverable at launch and there is
 /// no UI yet to surface them.
 pub fn run() {
-    let secrets = Arc::new(KeyringStore::new());
+    let secrets: Arc<dyn SecretStore> = Arc::new(KeyringStore::new());
+    let path =
+        dbboard_config::default_path().expect("resolve platform config paths for connections.toml");
+    let admin = ConnectionAdmin::open(path, Arc::clone(&secrets))
+        .expect("open connections.toml for connection management");
     let service = McpService::with_default_paths(secrets)
         .expect("resolve platform config paths for connections.toml");
 
     tauri::Builder::default()
-        .manage(AppState { service })
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState {
+            service,
+            admin: Mutex::new(admin),
+        })
         .invoke_handler(tauri::generate_handler![
             list_connections,
             list_tables,
@@ -144,7 +163,13 @@ pub fn run() {
             search_schema,
             list_relationships,
             run_read_query,
-            config_path
+            config_path,
+            connection_edit_fields,
+            add_connection,
+            update_connection,
+            delete_connection,
+            export_connections,
+            import_connections
         ])
         .run(tauri::generate_context!())
         .expect("start the dbboard-desktop Tauri app");
@@ -176,6 +201,302 @@ async fn run_read_query(
         .run_read_query(&connection_id, &sql, max_rows)
         .await
         .map_err(|e| e.to_string())
+}
+
+// --- Connection management (write path, ADR-0062) ------------------------
+//
+// The frontend speaks these Deserialize DTOs; we map them to the
+// `dbboard-config` draft types so the Svelte contract stays decoupled from
+// the crate's internal enums. `#[serde(tag = "kind")]` matches the same
+// `kind` discriminator the read-side `ConnectionView` already carries.
+
+/// Add-time kind + inline secret, as the connection form submits it.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum KindInput {
+    Turso {
+        path: String,
+    },
+    D1 {
+        account_id: String,
+        database_id: String,
+        base_url: Option<String>,
+        token: String,
+    },
+    Postgres {
+        url: String,
+    },
+    Neon {
+        url: String,
+    },
+    Supabase {
+        url: String,
+    },
+    AuroraDsql {
+        url: String,
+    },
+}
+
+/// Edit-time kind. Secret fields are `Option`: absent or blank means
+/// "keep the stored secret" (the existing value is never sent back to the
+/// UI, ADR-0016); a non-blank value replaces it.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum KindEditInput {
+    Turso {
+        path: String,
+    },
+    D1 {
+        account_id: String,
+        database_id: String,
+        base_url: Option<String>,
+        token: Option<String>,
+    },
+    Postgres {
+        url: Option<String>,
+    },
+    Neon {
+        url: Option<String>,
+    },
+    Supabase {
+        url: Option<String>,
+    },
+    AuroraDsql {
+        url: Option<String>,
+    },
+}
+
+/// Treat a blank/whitespace optional field as absent (matches the egui
+/// form's `optional()` helper for D1's `base_url`).
+fn none_if_blank(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.trim().is_empty())
+}
+
+/// A blank secret input means "leave the keyring entry alone"; anything
+/// else overwrites it. The value is stored verbatim (never trimmed) —
+/// only the blank check trims.
+fn secret_field(v: Option<String>) -> SecretField {
+    match v {
+        Some(s) if !s.trim().is_empty() => SecretField::Set(s),
+        _ => SecretField::Keep,
+    }
+}
+
+fn to_add_draft(id: String, name: String, kind: KindInput) -> ConnectionDraft {
+    let kind = match kind {
+        KindInput::Turso { path } => ConnectionKindDraft::Turso { path },
+        KindInput::D1 {
+            account_id,
+            database_id,
+            base_url,
+            token,
+        } => ConnectionKindDraft::D1 {
+            account_id,
+            database_id,
+            base_url: none_if_blank(base_url),
+            token,
+        },
+        KindInput::Postgres { url } => ConnectionKindDraft::Postgres { url },
+        KindInput::Neon { url } => ConnectionKindDraft::Neon { url },
+        KindInput::Supabase { url } => ConnectionKindDraft::Supabase { url },
+        KindInput::AuroraDsql { url } => ConnectionKindDraft::AuroraDsql { url },
+    };
+    ConnectionDraft { id, name, kind }
+}
+
+fn to_edit_draft(name: String, kind: KindEditInput) -> ConnectionEditDraft {
+    let kind = match kind {
+        KindEditInput::Turso { path } => ConnectionKindEditDraft::Turso { path },
+        KindEditInput::D1 {
+            account_id,
+            database_id,
+            base_url,
+            token,
+        } => ConnectionKindEditDraft::D1 {
+            account_id,
+            database_id,
+            base_url: none_if_blank(base_url),
+            token: secret_field(token),
+        },
+        KindEditInput::Postgres { url } => ConnectionKindEditDraft::Postgres {
+            url: secret_field(url),
+        },
+        KindEditInput::Neon { url } => ConnectionKindEditDraft::Neon {
+            url: secret_field(url),
+        },
+        KindEditInput::Supabase { url } => ConnectionKindEditDraft::Supabase {
+            url: secret_field(url),
+        },
+        KindEditInput::AuroraDsql { url } => ConnectionKindEditDraft::AuroraDsql {
+            url: secret_field(url),
+        },
+    };
+    ConnectionEditDraft { name, kind }
+}
+
+/// The non-secret editable fields of one connection, so the edit form can
+/// prefill without ever reading a secret back out of the keyring (ADR-0016).
+/// Secret fields (D1 token, the Postgres-family URL) are intentionally
+/// absent — the form leaves them blank, meaning "keep the stored secret".
+/// The `kind` discriminator is snake_case to match the frontend's draft
+/// model (and `AuroraDsql` → `aurora_dsql`).
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum EditFieldsDto {
+    Turso {
+        path: String,
+    },
+    D1 {
+        account_id: String,
+        database_id: String,
+        base_url: Option<String>,
+    },
+    Postgres {},
+    Neon {},
+    Supabase {},
+    AuroraDsql {},
+}
+
+/// Read the non-secret editable fields for `id` so the edit form can prefill.
+/// Aurora DSQL (IAM) is config-file-only and has no in-app editor (parity
+/// with egui), so it is rejected here rather than silently mis-rendered.
+#[tauri::command]
+fn connection_edit_fields(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<EditFieldsDto, String> {
+    let admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    let entry = admin
+        .entries()
+        .iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| format!("no connection with id \"{id}\""))?;
+    let dto = match &entry.kind {
+        ConnectionKind::Turso { path } => EditFieldsDto::Turso { path: path.clone() },
+        ConnectionKind::D1 {
+            account_id,
+            database_id,
+            base_url,
+            ..
+        } => EditFieldsDto::D1 {
+            account_id: account_id.clone(),
+            database_id: database_id.clone(),
+            base_url: base_url.clone(),
+        },
+        ConnectionKind::Postgres { .. } => EditFieldsDto::Postgres {},
+        ConnectionKind::Neon { .. } => EditFieldsDto::Neon {},
+        ConnectionKind::Supabase { .. } => EditFieldsDto::Supabase {},
+        ConnectionKind::AuroraDsql { .. } => EditFieldsDto::AuroraDsql {},
+        ConnectionKind::AuroraDsqlIam { .. } => {
+            return Err(
+                "Aurora DSQL (IAM) connections are configured in connections.toml \
+                 and cannot be edited in-app"
+                    .to_string(),
+            )
+        }
+    };
+    Ok(dto)
+}
+
+/// Add a connection: writes the non-secret entry to `connections.toml`
+/// and the secret to the OS keyring atomically (rolled back together on
+/// failure). Fails with `DuplicateId` if the id is taken.
+#[tauri::command]
+fn add_connection(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    name: String,
+    kind: KindInput,
+) -> Result<(), String> {
+    let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    admin
+        .add(to_add_draft(id, name, kind))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Edit an existing connection. The id and kind are immutable here (a
+/// kind change is a delete + re-add); a blank secret keeps the stored
+/// one. Evicts the read path's cached adapter so the next query rebuilds
+/// with the new credentials.
+#[tauri::command]
+async fn update_connection(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    name: String,
+    kind: KindEditInput,
+) -> Result<(), String> {
+    {
+        let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+        admin
+            .update(&id, to_edit_draft(name, kind))
+            .map_err(|e| e.to_string())?;
+    } // drop the guard before awaiting — keeps the command future Send.
+    state.service.invalidate(&id).await;
+    Ok(())
+}
+
+/// Delete a connection and purge its keyring secrets, then evict any
+/// cached adapter for it.
+#[tauri::command]
+async fn delete_connection(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    {
+        let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+        admin.delete(&id).map_err(|e| e.to_string())?;
+    }
+    state.service.invalidate(&id).await;
+    Ok(())
+}
+
+/// Export every connection (entries + secrets) to a passphrase-encrypted
+/// `.dbbx` bundle at `path` (ADR-0038). The frontend picks `path` with the
+/// native save dialog; the encrypted blob and passphrase never cross back
+/// through the WebView — we write the file here. Refuses a passphrase weaker
+/// than the bundle minimum before touching the keychain.
+#[tauri::command]
+fn export_connections(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    passphrase: String,
+) -> Result<usize, String> {
+    let admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    let blob = admin
+        .export_bundle(&passphrase)
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&path, &blob).map_err(|e| e.to_string())?;
+    Ok(admin.entries().len())
+}
+
+/// Import connections from a `.dbbx` bundle at `path` (ADR-0038). Additive
+/// and non-destructive: an incoming id that already exists is skipped, never
+/// overwritten. Returns the imported/skipped id lists for the UI to report.
+#[tauri::command]
+fn import_connections(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    passphrase: String,
+) -> Result<ImportReportDto, String> {
+    let blob = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    let report = admin
+        .import_bundle(&blob, &passphrase)
+        .map_err(|e| e.to_string())?;
+    Ok(ImportReportDto {
+        imported: report.imported,
+        skipped: report.skipped,
+    })
+}
+
+/// Serialize-only mirror of `dbboard_config::ImportReport` (which is
+/// Deserialize-oriented internally) so the frontend gets a stable JSON shape.
+#[derive(serde::Serialize)]
+struct ImportReportDto {
+    imported: Vec<String>,
+    skipped: Vec<String>,
+}
+
+fn lock_poisoned() -> String {
+    "connection store lock was poisoned by a previous panic".to_string()
 }
 
 #[cfg(test)]
@@ -249,5 +570,227 @@ mod tests {
         let json = serde_json::to_value(&view).expect("serialize");
         assert!(json.get("connection_id").is_some());
         assert!(json.get("tables").is_some());
+    }
+
+    // --- Connection management (write path, ADR-0062) --------------------
+    //
+    // These pin the two things *this* crate owns on the write side: the
+    // DTO→draft mapping (blank-handling for optional/secret fields) and the
+    // add/update/delete flow driving a real `ConnectionAdmin` over a temp
+    // store. The commit discipline (keyring/TOML rollback) is covered by
+    // `dbboard-config`'s own suite; here we prove our wiring reaches it.
+    use super::{
+        none_if_blank, secret_field, to_add_draft, to_edit_draft, EditFieldsDto, ImportReportDto,
+        KindEditInput, KindInput,
+    };
+    use dbboard_config::{ConnectionAdmin, ConnectionKindDraft, SecretField};
+
+    #[test]
+    fn none_if_blank_treats_whitespace_as_absent() {
+        assert_eq!(none_if_blank(None), None);
+        assert_eq!(none_if_blank(Some("   ".to_string())), None);
+        assert_eq!(none_if_blank(Some("\t\n".to_string())), None);
+        assert_eq!(
+            none_if_blank(Some(" v ".to_string())),
+            Some(" v ".to_string()),
+            "a non-blank value is passed through verbatim, not trimmed"
+        );
+    }
+
+    #[test]
+    fn secret_field_keeps_on_blank_and_sets_verbatim_otherwise() {
+        assert!(matches!(secret_field(None), SecretField::Keep));
+        assert!(matches!(
+            secret_field(Some("  ".to_string())),
+            SecretField::Keep
+        ));
+        // A real secret is stored exactly as typed — surrounding spaces can
+        // be significant in a URL/token, so only the blank check trims.
+        match secret_field(Some(" tok ".to_string())) {
+            SecretField::Set(v) => assert_eq!(v, " tok "),
+            SecretField::Keep => panic!("a non-blank secret must Set, not Keep"),
+        }
+    }
+
+    #[test]
+    fn to_add_draft_maps_d1_and_drops_a_blank_base_url() {
+        let draft = to_add_draft(
+            "d".to_string(),
+            "D".to_string(),
+            KindInput::D1 {
+                account_id: "acct".to_string(),
+                database_id: "db".to_string(),
+                base_url: Some("   ".to_string()),
+                token: "t".to_string(),
+            },
+        );
+        assert_eq!(draft.id, "d");
+        assert_eq!(draft.name, "D");
+        match draft.kind {
+            ConnectionKindDraft::D1 {
+                account_id,
+                database_id,
+                base_url,
+                token,
+            } => {
+                assert_eq!(account_id, "acct");
+                assert_eq!(database_id, "db");
+                assert!(base_url.is_none(), "blank base_url collapses to None");
+                assert_eq!(token, "t");
+            }
+            _ => panic!("expected a D1 draft"),
+        }
+    }
+
+    /// A `ConnectionAdmin` over a throwaway `connections.toml` paired with an
+    /// in-memory keyring, so add/update/delete never touch the real OS store.
+    fn admin_over_temp() -> (tempfile::TempDir, ConnectionAdmin) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let admin = ConnectionAdmin::open(path, secrets).expect("open admin");
+        (dir, admin)
+    }
+
+    #[test]
+    fn add_update_delete_flow_over_a_temp_store() {
+        let (_dir, mut admin) = admin_over_temp();
+
+        admin
+            .add(to_add_draft(
+                "t".to_string(),
+                "Turso".to_string(),
+                KindInput::Turso {
+                    path: ":memory:".to_string(),
+                },
+            ))
+            .expect("add turso");
+        admin
+            .add(to_add_draft(
+                "p".to_string(),
+                "PG".to_string(),
+                KindInput::Postgres {
+                    url: "postgres://u:pw@h/db".to_string(),
+                },
+            ))
+            .expect("add postgres");
+        assert_eq!(admin.entries().len(), 2);
+
+        // Rename only (blank secret → Keep the stored URL). Must not error
+        // for lack of a resupplied secret.
+        admin
+            .update(
+                "p",
+                to_edit_draft(
+                    "PG-renamed".to_string(),
+                    KindEditInput::Postgres { url: None },
+                ),
+            )
+            .expect("rename postgres, keep secret");
+        let pg = admin
+            .entries()
+            .iter()
+            .find(|e| e.id == "p")
+            .expect("postgres still present");
+        assert_eq!(pg.name, "PG-renamed");
+
+        admin.delete("t").expect("delete turso");
+        let ids: Vec<&str> = admin.entries().iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["p"], "only the postgres entry survives");
+    }
+
+    #[test]
+    fn add_rejects_a_duplicate_id() {
+        let (_dir, mut admin) = admin_over_temp();
+        let mk = || {
+            to_add_draft(
+                "dup".to_string(),
+                "One".to_string(),
+                KindInput::Turso {
+                    path: ":memory:".to_string(),
+                },
+            )
+        };
+        admin.add(mk()).expect("first add");
+        assert!(admin.add(mk()).is_err(), "a taken id must be rejected");
+    }
+
+    #[test]
+    fn export_then_import_roundtrips_through_a_file() {
+        // Mirrors the export_connections/import_connections command bodies:
+        // encrypt one store to a `.dbbx` file, import it into a fresh store,
+        // and confirm the entry crosses over intact.
+        let (src_dir, mut src) = admin_over_temp();
+        src.add(to_add_draft(
+            "t".to_string(),
+            "Turso".to_string(),
+            KindInput::Turso {
+                path: ":memory:".to_string(),
+            },
+        ))
+        .expect("seed source");
+
+        let passphrase = "correct horse battery staple";
+        let blob = src.export_bundle(passphrase).expect("export");
+        let bundle_path = src_dir.path().join("bundle.dbbx");
+        std::fs::write(&bundle_path, &blob).expect("write bundle");
+
+        let (_dst_dir, mut dst) = admin_over_temp();
+        let disk = std::fs::read(&bundle_path).expect("read bundle");
+        let report = dst.import_bundle(&disk, passphrase).expect("import");
+        assert_eq!(report.imported, vec!["t".to_string()]);
+        assert!(report.skipped.is_empty());
+        assert_eq!(dst.entries().len(), 1);
+    }
+
+    #[test]
+    fn edit_fields_dto_matches_the_frontend_draft_shape() {
+        // The `kind` tag must be snake_case (draft.ts keys off it), and D1
+        // must carry its non-secret fields but never the token.
+        let turso = serde_json::to_value(EditFieldsDto::Turso {
+            path: ":memory:".to_string(),
+        })
+        .expect("serialize turso");
+        assert_eq!(turso.get("kind").unwrap(), "turso");
+        assert_eq!(turso.get("path").unwrap(), ":memory:");
+
+        let d1 = serde_json::to_value(EditFieldsDto::D1 {
+            account_id: "a".to_string(),
+            database_id: "b".to_string(),
+            base_url: None,
+        })
+        .expect("serialize d1");
+        assert_eq!(d1.get("kind").unwrap(), "d1");
+        assert!(
+            d1.get("token").is_none(),
+            "a secret must never be serialized"
+        );
+
+        // AuroraDsql collapses to the snake_case discriminator the form uses.
+        let aurora = serde_json::to_value(EditFieldsDto::AuroraDsql {}).expect("serialize aurora");
+        assert_eq!(aurora.get("kind").unwrap(), "aurora_dsql");
+    }
+
+    #[test]
+    fn import_report_dto_keeps_its_frontend_json_shape() {
+        let dto = ImportReportDto {
+            imported: vec!["a".to_string()],
+            skipped: vec!["b".to_string()],
+        };
+        let json = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(
+            json.get("imported")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            json.get("skipped")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

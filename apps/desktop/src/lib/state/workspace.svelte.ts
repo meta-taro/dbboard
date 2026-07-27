@@ -52,6 +52,28 @@ class Workspace {
     }
   }
 
+  /** Reload the connection list after an add/edit/delete. Preserves the
+   *  current selection when it survives (re-selecting it so changed
+   *  credentials take effect); otherwise falls back to the first connection,
+   *  or clears everything when none remain. */
+  async refreshConnections(): Promise<void> {
+    try {
+      this.connections = await listConnections();
+      const survived = this.connections.some((c) => c.id === this.connectionId);
+      if (survived) {
+        await this.selectConnection(this.connectionId);
+      } else if (this.connections.length > 0) {
+        await this.selectConnection(this.connections[0].id);
+      } else {
+        this.connectionId = '';
+        this.selectedTable = null;
+        this.tables = [];
+      }
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
   async selectConnection(id: string): Promise<void> {
     this.connectionId = id;
     this.selectedTable = null;

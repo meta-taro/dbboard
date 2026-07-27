@@ -4,8 +4,10 @@
   import { selectTopN } from '$lib/sql/build';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
+  import ConnectionManager from './ConnectionManager.svelte';
 
   let query = $state('');
+  let managerOpen = $state(false);
   let menu = $state<{ x: number; y: number; table: TableInfo } | null>(null);
   // null = not searching (show the full table list); an array = search results.
   let matches = $state<SchemaMatch[] | null>(null);
@@ -96,7 +98,12 @@
 
 <aside class="sidebar">
   <div class="section">
-    <div class="eyebrow">{i18n.t('connections-window-title')}</div>
+    <div class="section-head">
+      <div class="eyebrow">{i18n.t('connections-window-title')}</div>
+      <button type="button" class="manage" onclick={() => (managerOpen = true)}>
+        {i18n.t('conn-manage')}
+      </button>
+    </div>
     <nav class="nav-list" aria-label={i18n.t('connections-window-title')}>
       {#if workspace.connections.length === 0}
         <p class="hint">{i18n.t('sidebar-connections-empty')}</p>
@@ -216,6 +223,10 @@
   />
 {/if}
 
+{#if managerOpen}
+  <ConnectionManager onClose={() => (managerOpen = false)} />
+{/if}
+
 <style>
   .sidebar {
     width: 260px;
@@ -239,6 +250,27 @@
     display: flex;
     flex-direction: column;
     padding-bottom: var(--space-2);
+  }
+
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+  /* Quiet text trigger, aligned with the section eyebrow. */
+  .manage {
+    background: transparent;
+    border: none;
+    color: var(--text-accent);
+    font-size: var(--text-hint);
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: var(--radius-widget);
+  }
+  .manage:hover {
+    background: var(--bg-surface-alt);
   }
 
   /* Uppercase section label — one step quieter than muted body text. */
