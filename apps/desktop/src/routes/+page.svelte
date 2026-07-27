@@ -126,74 +126,71 @@
 </main>
 
 <style>
-  /* dbboard dark palette (DESIGN.md / ADR-0056) so the spike reads as dbboard,
-     not default-Svelte. A full theme system is out of scope for the spike. */
-  :global(body) {
-    margin: 0;
-    background: #0c0e14;
-    color: #e6e8f0;
-    font: 14px/1.5 system-ui, sans-serif;
-  }
+  /* Palette/spacing come from the token layer (src/lib/styles/tokens.css); this
+     view only references tokens so it flips with the Auto/Light/Dark theme. */
   main {
     max-width: 1000px;
     margin: 0 auto;
-    padding: 24px;
+    padding: var(--space-6);
   }
   .sub {
-    margin: 0 0 20px;
-    color: #8b90a3;
-    font-size: 12px;
+    margin: 0 0 var(--space-5);
+    color: var(--text-muted);
+    font-size: var(--text-small);
   }
   .bar {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
   }
   label {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    font-size: 11px;
-    color: #8b90a3;
+    gap: var(--space-1);
+    font-size: var(--text-hint);
+    color: var(--text-muted);
   }
   select,
   textarea {
-    background: #171922;
-    color: #e6e8f0;
-    border: 1px solid #282c39;
-    border-radius: 6px;
-    padding: 8px;
-    font-size: 13px;
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+    padding: var(--space-2);
+    font-size: var(--text-body);
+  }
+  select:hover,
+  textarea:hover {
+    border-color: var(--border-strong);
   }
   textarea {
     width: 100%;
-    box-sizing: border-box;
-    font-family: ui-monospace, "Cascadia Code", monospace;
+    font-family: var(--font-mono);
     resize: vertical;
   }
   .badge {
-    font-size: 11px;
-    color: #a5b4fc;
-    border: 1px solid #282c39;
-    border-radius: 6px;
+    font-size: var(--text-hint);
+    color: var(--text-accent);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
     padding: 2px 8px;
     align-self: end;
   }
   .editor {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin-bottom: 16px;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
   }
   .run {
     align-self: flex-start;
-    background: #6366f1;
-    color: #fafbff;
+    background: var(--accent);
+    color: var(--on-accent);
     font-weight: 600;
     border: none;
-    border-radius: 6px;
-    padding: 8px 20px;
+    border-radius: var(--radius-widget);
+    padding: var(--space-2) var(--space-5);
     cursor: pointer;
   }
   .run:disabled {
@@ -201,39 +198,39 @@
     cursor: default;
   }
   .error {
-    color: #f87171;
-    font-family: ui-monospace, monospace;
-    font-size: 12px;
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: var(--text-small);
     white-space: pre-wrap;
   }
   .meta {
-    color: #8b90a3;
-    font-size: 12px;
-    margin: 0 0 8px;
+    color: var(--text-muted);
+    font-size: var(--text-small);
+    margin: 0 0 var(--space-2);
   }
   .grid-wrap {
     overflow-x: auto;
-    border: 1px solid #282c39;
-    border-radius: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-window);
   }
   table {
     border-collapse: collapse;
     width: 100%;
-    font-size: 13px;
+    font-size: var(--text-body);
   }
   th,
   td {
     text-align: left;
     padding: 6px 10px;
-    border-bottom: 1px solid #1e2130;
+    border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
   th {
-    background: #12141c;
-    color: #a5b4fc;
+    background: var(--bg-code);
+    color: var(--text-accent);
     font-weight: 600;
   }
   tbody tr:nth-child(even) {
-    background: #12141c;
+    background: var(--bg-surface-alt);
   }
 </style>
