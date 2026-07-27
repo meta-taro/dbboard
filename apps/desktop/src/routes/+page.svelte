@@ -7,13 +7,14 @@
     displayCell,
     type ConnectionView,
     type QueryOutput,
+    type TableInfo,
   } from '$lib/api';
 
   // The spike's whole state: which connections exist, which is selected, the
   // SQL in the box, the last result, and any error surfaced from the core.
   let connections = $state<ConnectionView[]>([]);
   let selectedId = $state('');
-  let tables = $state<string[]>([]);
+  let tables = $state<TableInfo[]>([]);
   let sql = $state('SELECT 1 AS hello;');
   let result = $state<QueryOutput | null>(null);
   let error = $state('');
@@ -63,12 +64,9 @@
 </script>
 
 <main>
-  <header>
-    <h1>dbboard <span class="tag">Tauri + SvelteKit spike</span></h1>
-    <p class="sub">
-      Same egui-free core (McpService), new webview shell. Read-only, engine-enforced.
-    </p>
-  </header>
+  <p class="sub">
+    Same egui-free core (McpService), new webview shell. Read-only, engine-enforced.
+  </p>
 
   <section class="bar">
     <label>
@@ -140,19 +138,6 @@
     max-width: 1000px;
     margin: 0 auto;
     padding: 24px;
-  }
-  h1 {
-    font-size: 20px;
-    margin: 0 0 4px;
-  }
-  .tag {
-    font-size: 11px;
-    font-weight: 600;
-    color: #a5b4fc;
-    border: 1px solid #282c39;
-    border-radius: 6px;
-    padding: 2px 8px;
-    vertical-align: middle;
   }
   .sub {
     margin: 0 0 20px;

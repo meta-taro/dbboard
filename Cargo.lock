@@ -1308,11 +1308,14 @@ name = "dbboard-desktop"
 version = "0.3.0"
 dependencies = [
  "dbboard-config",
+ "dbboard-core",
  "dbboard-mcp",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

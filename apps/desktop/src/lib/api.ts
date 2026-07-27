@@ -1,12 +1,95 @@
 // Typed wrappers over the Tauri command surface (src-tauri/src/lib.rs). These
 // mirror the McpService return shapes; keeping them here means the Svelte
 // components never touch `invoke` string names directly.
+//
+// The Rust structs derive `Serialize` with default (snake_case) field names,
+// so the interfaces below keep snake_case to match the JSON on the wire.
+// Command *arguments*, by contrast, follow Tauri's camelCase IPC convention.
 import { invoke } from '@tauri-apps/api/core';
 
 export interface ConnectionView {
   id: string;
   name: string;
   kind: string;
+}
+
+// A table as `list_tables` returns it: `schema` is null on schemaless engines
+// (SQLite/libSQL) and set on Postgres-family ones (e.g. "public"). Pass it back
+// verbatim to `describeTable`/`listRelationships` — never reconstruct it.
+export interface TableInfo {
+  schema: string | null;
+  name: string;
+}
+
+// Address a table for display/keying: "schema.name" when schema-qualified,
+// bare name otherwise. Mirrors the backend's `schema.name` match key.
+export function tableKey(t: TableInfo): string {
+  return t.schema ? `${t.schema}.${t.name}` : t.name;
+}
+
+export interface ColumnInfo {
+  name: string;
+  declared_type: string | null;
+  nullable: boolean;
+  primary_key: boolean;
+  ordinal: number;
+  default_value: string | null;
+}
+
+export interface TableSchema {
+  table: TableInfo;
+  columns: ColumnInfo[];
+  primary_key: string[];
+}
+
+export interface ColumnAnnotation {
+  name: string;
+  note: string | null;
+}
+
+export interface TableAnnotations {
+  key: string;
+  note: string | null;
+  columns: ColumnAnnotation[];
+}
+
+export interface AnnotationsView {
+  connection_id: string;
+  tables: TableAnnotations[];
+}
+
+// One table (and/or one of its columns) matched by `search_schema`. The
+// backend flags whether the table *name* itself matched; `matched_columns`
+// carries the full column info for each column whose name matched (empty on a
+// name-only hit).
+export interface SchemaMatch {
+  table: TableInfo;
+  table_name_matched: boolean;
+  matched_columns: ColumnInfo[];
+}
+
+export interface SchemaSearchView {
+  connection_id: string;
+  pattern: string;
+  matches: SchemaMatch[];
+  truncated: boolean;
+}
+
+// One foreign-key edge: child (`from`) columns point at parent (`to`) columns,
+// aligned 1:1 in key order.
+export interface Relationship {
+  from_table: TableInfo;
+  from_columns: string[];
+  to_table: TableInfo;
+  to_columns: string[];
+  constraint_name: string | null;
+}
+
+export interface RelationshipView {
+  connection_id: string;
+  table: string | null;
+  relationships: Relationship[];
+  truncated: boolean;
 }
 
 export interface Column {
@@ -36,8 +119,38 @@ export interface QueryOutput {
 export const listConnections = (): Promise<ConnectionView[]> =>
   invoke('list_connections');
 
-export const listTables = (connectionId: string): Promise<string[]> =>
+export const listTables = (connectionId: string): Promise<TableInfo[]> =>
   invoke('list_tables', { connectionId });
+
+export const describeTable = (
+  connectionId: string,
+  table: string,
+  schema?: string | null,
+): Promise<TableSchema> =>
+  invoke('describe_table', { connectionId, schema: schema ?? null, table });
+
+export const getAnnotations = (
+  connectionId: string,
+  table?: string | null,
+  column?: string | null,
+): Promise<AnnotationsView> =>
+  invoke('get_annotations', {
+    connectionId,
+    table: table ?? null,
+    column: column ?? null,
+  });
+
+export const searchSchema = (
+  connectionId: string,
+  pattern: string,
+): Promise<SchemaSearchView> =>
+  invoke('search_schema', { connectionId, pattern });
+
+export const listRelationships = (
+  connectionId: string,
+  table?: string | null,
+): Promise<RelationshipView> =>
+  invoke('list_relationships', { connectionId, table: table ?? null });
 
 export const runReadQuery = (
   connectionId: string,
