@@ -3,15 +3,26 @@
   import {
     describeTable,
     getAnnotations,
+    listRelationships,
     tableKey,
+    type Relationship,
     type TableSchema,
   } from '$lib/api';
 
   let schema = $state<TableSchema | null>(null);
   let tableNote = $state<string | null>(null);
   let columnNotes = $state<Map<string, string>>(new Map());
+  let relationships = $state<Relationship[]>([]);
   let loading = $state(false);
   let error = $state('');
+
+  // Is this edge endpoint the table currently being viewed?
+  function isCurrent(table: { schema: string | null; name: string }): boolean {
+    return (
+      !!workspace.selectedTable &&
+      tableKey(table) === tableKey(workspace.selectedTable)
+    );
+  }
 
   // A monotonic token so a response for an older selection can't overwrite a
   // newer one (fast clicking down the table list).
@@ -25,6 +36,7 @@
       schema = null;
       tableNote = null;
       columnNotes = new Map();
+      relationships = [];
       return;
     }
 
@@ -33,12 +45,14 @@
       loading = true;
       error = '';
       try {
-        // Structure (columns/PK) and the local notes are independent reads;
-        // fetch them together. The note key matches dbboard-config's
-        // `table_key` (schema.name / bare name), which is exactly tableKey().
-        const [s, ann] = await Promise.all([
+        // Structure (columns/PK), local notes, and foreign keys are all
+        // independent reads; fetch them together. The note/FK filter key
+        // matches dbboard-config's `table_key` (schema.name / bare name),
+        // which is exactly tableKey().
+        const [s, ann, rel] = await Promise.all([
           describeTable(connId, table.name, table.schema),
           getAnnotations(connId, tableKey(table)),
+          listRelationships(connId, tableKey(table)),
         ]);
         if (mine !== seq) return; // superseded by a newer selection
 
@@ -50,10 +64,12 @@
           if (c.note) notes.set(c.name, c.note);
         }
         columnNotes = notes;
+        relationships = rel.relationships;
       } catch (e) {
         if (mine !== seq) return;
         error = String(e);
         schema = null;
+        relationships = [];
       } finally {
         if (mine === seq) loading = false;
       }
@@ -115,6 +131,32 @@
           </tbody>
         </table>
       </div>
+
+      {#if relationships.length > 0}
+        <section class="rels">
+          <h3 class="section-title">Relationships</h3>
+          <ul class="rel-list">
+            {#each relationships as r, i (r.constraint_name ?? i)}
+              {@const outgoing = isCurrent(r.from_table)}
+              <li class="rel">
+                <span class="dir" class:out={outgoing} class:in={!outgoing}>
+                  {outgoing ? 'FK →' : '← ref'}
+                </span>
+                <span class="mono">
+                  <span class="tbl">{tableKey(r.from_table)}</span
+                  >(<span class="cols">{r.from_columns.join(', ')}</span>)
+                  →
+                  <span class="tbl">{tableKey(r.to_table)}</span
+                  >(<span class="cols">{r.to_columns.join(', ')}</span>)
+                </span>
+                {#if r.constraint_name}
+                  <span class="constraint">{r.constraint_name}</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
     {/if}
   {/if}
 </div>
@@ -216,6 +258,67 @@
     border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
     border-radius: var(--radius-widget);
     padding: 0 6px;
+  }
+
+  .rels {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .section-title {
+    margin: 0;
+    font-size: var(--text-hint);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .rel-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .rel {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    padding: 5px var(--space-2);
+    border-radius: var(--radius-widget);
+    font-size: var(--text-small);
+  }
+  .rel:nth-child(even) {
+    background: var(--bg-surface-alt);
+  }
+  .dir {
+    flex: none;
+    font-size: var(--text-hint);
+    font-weight: 700;
+    border-radius: var(--radius-widget);
+    padding: 0 6px;
+  }
+  .dir.out {
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  .dir.in {
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  .rel .tbl {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .rel .cols {
+    color: var(--text-accent);
+  }
+  .constraint {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-hint);
   }
 
   .hint,
