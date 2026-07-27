@@ -796,7 +796,7 @@ impl DatabaseAdapter for PostgresAdapter {
         // sqlx `Executor` borrows inside an `#[async_trait]` method trips
         // the "implementation of `Executor` is not general enough" HRTB
         // error, which a plain async fn with concrete lifetimes avoids.
-        run_read_only_txn(self.pool.current(), sql, max_rows, kind).await
+        run_read_only_txn(self.pool.current(), self.flavor, sql, max_rows, kind).await
     }
 
     async fn execute(&self, sql: &str) -> DbResult<u64> {
@@ -855,35 +855,58 @@ async fn exec_in_txn(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<()> {
     Ok(())
 }
 
+/// Session statements that turn an open transaction into the read-only,
+/// self-cancelling one ADR-0046 §8 relies on: `SET TRANSACTION READ ONLY`
+/// (the engine rejects every write for the transaction's life) and a
+/// `SET LOCAL statement_timeout` (the server-side cancellation backstop).
+///
+/// Aurora DSQL supports neither: it parses `SET TRANSACTION` as a request
+/// to set a GUC named `TRANSACTION` and rejects it
+/// (`setting configuration parameter "TRANSACTION" not supported`), and it
+/// manages `statement_timeout` itself (both are engine-managed, ADR-0021).
+/// So it gets an empty preamble and the read-only guarantee rests solely on
+/// the pre-connection [`classify_read_only`] AST guard — which already
+/// rejects every write, multi-statement batch, and data-modifying CTE
+/// before a connection is even opened.
+fn read_only_preamble(flavor: &str) -> Vec<String> {
+    if flavor == FLAVOR_AURORA_DSQL {
+        return Vec::new();
+    }
+    vec![
+        "SET TRANSACTION READ ONLY".to_string(),
+        format!("SET LOCAL statement_timeout = '{READ_ONLY_STATEMENT_TIMEOUT_SECS}s'"),
+    ]
+}
+
 /// Execute a validated read-only statement inside a server-side
 /// `READ ONLY` transaction and return at most `max_rows` rows.
 ///
-/// A `READ ONLY` transaction makes Postgres itself reject every write for
-/// its whole duration — INSERT / UPDATE / DELETE / DDL, `nextval()`,
-/// data-modifying CTEs, and a writing `FOR UPDATE` — closing the
-/// simple-query multi-statement and CTE-DML hazards even if the
-/// classifier's grammar missed one. The sqlx `Transaction` rolls back on
-/// drop, so an early `?` return never leaves the pooled connection
-/// mid-transaction.
+/// On the standard Postgres flavors a `READ ONLY` transaction makes the
+/// engine itself reject every write for its whole duration — INSERT /
+/// UPDATE / DELETE / DDL, `nextval()`, data-modifying CTEs, and a writing
+/// `FOR UPDATE` — closing the simple-query multi-statement and CTE-DML
+/// hazards even if the classifier's grammar missed one. Aurora DSQL cannot
+/// take that preamble (see [`read_only_preamble`]), so there the
+/// classifier is the sole read-only guard. Either way the sqlx
+/// `Transaction` rolls back on drop, so an early `?` return never leaves
+/// the pooled connection mid-transaction.
 async fn run_read_only_txn(
     pool: PgPool,
+    flavor: &str,
     sql: &str,
     max_rows: usize,
     kind: ReadOnlyStatement,
 ) -> DbResult<QueryResult> {
     let mut tx = pool.begin().await.map_err(|e| classify_error(&e))?;
-    // Two single statements (not one `raw_sql` batch): the simple-query
+    // Each as a single statement (not one `raw_sql` batch): the simple-query
     // batch protocol widens the sqlx `Executor` lifetime bounds enough to
     // trip the "not general enough" HRTB error under `#[async_trait]`.
-    sqlx::query("SET TRANSACTION READ ONLY")
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| classify_error(&e))?;
-    let timeout = format!("SET LOCAL statement_timeout = '{READ_ONLY_STATEMENT_TIMEOUT_SECS}s'");
-    sqlx::query(&timeout)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| classify_error(&e))?;
+    for stmt in read_only_preamble(flavor) {
+        sqlx::query(&stmt)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| classify_error(&e))?;
+    }
 
     let fetched = match kind {
         // A plain query becomes a server-side cursor so at most
@@ -1162,8 +1185,8 @@ fn truncate(text: &str) -> String {
 mod tests {
     use super::{
         assemble_foreign_keys, classify_error, column_from_parts, harden_ssl_mode,
-        reclassify_schema, truncate, tuple_to_table, FkRow, FLAVOR_AURORA_DSQL, FLAVOR_NEON,
-        FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        read_only_preamble, reclassify_schema, truncate, tuple_to_table, FkRow, FLAVOR_AURORA_DSQL,
+        FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
     use dbboard_core::{DatabaseAdapter, DbError, ForeignKey, TableInfo};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
@@ -1406,6 +1429,35 @@ mod tests {
             pool: super::PoolHandle::Static(pool),
             flavor: FLAVOR_POSTGRES,
         }
+    }
+
+    /// The standard Postgres flavors enforce a read-only transaction with
+    /// two session statements: `SET TRANSACTION READ ONLY` (the engine
+    /// backstop) and a `SET LOCAL statement_timeout` (the cancellation
+    /// backstop). The `30s` timeout must be present so an abandoned query
+    /// cannot pin a pooled connection.
+    #[test]
+    fn read_only_preamble_sets_read_only_and_timeout_on_standard_postgres() {
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_NEON, FLAVOR_SUPABASE] {
+            let stmts = read_only_preamble(flavor);
+            assert_eq!(stmts.len(), 2, "flavor {flavor}");
+            assert_eq!(stmts[0], "SET TRANSACTION READ ONLY", "flavor {flavor}");
+            assert!(
+                stmts[1].contains("statement_timeout") && stmts[1].contains("30s"),
+                "flavor {flavor}: {}",
+                stmts[1]
+            );
+        }
+    }
+
+    /// Aurora DSQL rejects `SET TRANSACTION` (it parses the word as an
+    /// unknown GUC — `setting configuration parameter "TRANSACTION" not
+    /// supported`) and manages `statement_timeout` itself, so it gets no
+    /// preamble at all. The read-only guarantee then rests entirely on the
+    /// pre-connection classifier (ADR-0021, ADR-0046 §8).
+    #[test]
+    fn read_only_preamble_is_empty_on_aurora_dsql() {
+        assert!(read_only_preamble(FLAVOR_AURORA_DSQL).is_empty());
     }
 
     /// `query_read_only` classifies before it connects: a write is
