@@ -357,6 +357,30 @@ async fn read_only_query_truncates_to_max_rows() {
     assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
 }
 
+/// Aurora DSQL read-only cap regression (ADR-0061): DSQL rejects `DECLARE
+/// CURSOR` (`unsupported statement: DeclareCursor`), so the row-cap must
+/// take the non-cursor streaming branch. This asserts a `query_read_only`
+/// over 100 rows with `max_rows = 10` succeeds and returns exactly 10 —
+/// which it cannot do if a cursor is issued, since DSQL would error first.
+/// Gated on `DBBOARD_AURORA_DSQL_URL`.
+#[tokio::test]
+async fn aurora_dsql_read_only_caps_without_a_cursor() {
+    let Some(url) = std::env::var("DBBOARD_AURORA_DSQL_URL").ok() else {
+        eprintln!("skipping: DBBOARD_AURORA_DSQL_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url })
+        .await
+        .expect("connect_aurora_dsql");
+    let sql = "SELECT n FROM generate_series(1, 100) AS s(n) ORDER BY n";
+    let result = adapter
+        .query_read_only(sql, 10)
+        .await
+        .expect("read-only cap must not use a cursor on Aurora DSQL");
+    assert_eq!(result.rows.len(), 10);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
+}
+
 /// The engine backstop, not the classifier: `nextval()` is a *write*
 /// (it advances a sequence) wrapped in a `SELECT`, so the AST classifier
 /// waves it through as read-only — but `BEGIN READ ONLY` makes Postgres
