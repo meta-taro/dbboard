@@ -6892,6 +6892,14 @@ falls through to Malgun Gothic and simplified Han to YaHei.
   tested without touching disk: one-per-group, within-group fallback,
   missing-group skip, and dedupe. These tests are the regression guard — the bug
   recurred precisely because nothing pinned the "one per script" invariant.
+- The selector tests alone still missed the *second* recurrence (Chinese tofu):
+  they prove the ZH group is *selected*, not that a real Chinese glyph actually
+  resolves through egui's fallback chain. `windows_cjk_stack_resolves_each_installed_script`
+  closes that gap — it loads the real OS fonts, builds `egui::Fonts`, and asserts
+  `has_glyph` is true for a Japanese, Korean, and simplified-Han codepoint,
+  each gated on the required font FILE existing. Drop any script group and the
+  test goes red on a machine that has the font. This is the guard that bites end
+  to end, not just at the selector boundary.
 - **Do not** collapse this back to a single `load_first_cjk_font`. That is the
   exact shape that has failed twice.
 - Latin/Cyrillic still come from egui's bundled `Ubuntu-Light`; CJK fonts are
