@@ -6993,17 +6993,25 @@ Aurora DSQL rejects **both** statements:
 DSQL's supported-session-parameter list and its fixed `REPEATABLE READ`
 isolation are documented at
 <https://docs.aws.amazon.com/aurora-dsql/latest/userguide/accessing.html>.
-Server-side cursors (`DECLARE` / `FETCH`), the other half of the read path,
-are **not** on DSQL's unsupported list, so the cursor row-cap is kept.
+
+**Correction (2026-07-27).** The first cut of this ADR asserted that
+server-side cursors (`DECLARE` / `FETCH`) — the other half of the read path —
+were *not* on DSQL's unsupported list, so the cursor row-cap was kept. That
+was wrong. DSQL rejects `DECLARE CURSOR` with
+`ERROR: unsupported statement: DeclareCursor`, which a user hit on the very
+next query after the preamble fix shipped. `DECLARE CURSOR` is on DSQL's
+unsupported-features list
+(<https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-unsupported-features.html>).
+So the cursor row-cap cannot be used on DSQL either — see the amendment below.
 
 ### Decision
 
 Gate the preamble on the flavor. A pure `read_only_preamble(flavor)` helper
 returns the two `SET` statements for the standard flavors
 (`postgres` / `neon` / `supabase`) and an **empty preamble** for
-`aurora-dsql`. `run_read_only_txn` still opens a transaction, still runs the
-query through the server-side cursor, and still rolls back on drop — only the
-two unsupported `SET` statements are skipped for DSQL.
+`aurora-dsql`. `run_read_only_txn` still opens a transaction and still rolls
+back on drop — only the two unsupported `SET` statements are skipped for DSQL.
+The row-cap mechanism is also flavor-gated (see the amendment).
 
 ### Consequences
 
@@ -7025,3 +7033,43 @@ two unsupported `SET` statements are skipped for DSQL.
 - The helper is unit-tested (`read_only_preamble_*`); the flavor-gated read
   path itself is exercised end-to-end only against a live DSQL cluster, which
   no CI runner has — that verification is the maintainer's.
+
+### Amendment (2026-07-27) — the row-cap must also be flavor-gated
+
+The preamble fix above unblocked the `SET TRANSACTION` rejection, but the very
+next query (`SELECT * FROM … LIMIT 100`) failed with
+`ERROR: unsupported statement: DeclareCursor`. The read path caps a
+row-returning query with a server-side cursor —
+`DECLARE dbboard_ro_cursor NO SCROLL CURSOR FOR <sql>` then
+`FETCH FORWARD <max_rows>` — so that only `max_rows` rows ever cross the wire.
+Aurora DSQL does not implement `DECLARE CURSOR`, so this half of the read path
+was still broken for DSQL.
+
+**Decision.** Flavor-gate the row-cap mechanism too, via a pure
+`caps_with_cursor(flavor)` helper:
+
+- Standard flavors (`postgres` / `neon` / `supabase`) keep the cursor cap
+  (`fetch_via_cursor`).
+- `aurora-dsql` uses a new `fetch_capped_stream`: it streams the query's
+  portal with `sqlx::query(sql).fetch(...)` and stops after `max_rows` rows,
+  then drops the stream so the server stops producing more. This preserves the
+  "at most `max_rows` rows cross the wire" property **without a cursor**, and
+  without wrapping arbitrary SQL in a `LIMIT` subquery — subquery-wrapping
+  would break on a query with duplicate output column names (`SELECT id, id`).
+
+`EXPLAIN` continues to run directly (`run_capped`) on all flavors; it was
+never a cursor source.
+
+**Consequences.**
+
+- The DSQL read path is now fully functional: both the preamble and the
+  row-cap are DSQL-compatible.
+- `caps_with_cursor` is unit-tested (`caps_with_cursor_on_standard_postgres`,
+  `does_not_cap_with_cursor_on_aurora_dsql`). The streaming cap itself is
+  exercised end-to-end by `aurora_dsql_read_only_caps_without_a_cursor`, gated
+  on a live `DBBOARD_AURORA_DSQL_URL` — maintainer-run, as no CI runner has a
+  DSQL cluster.
+- Lesson: "not mentioned in the accessing.html session-parameter list" is not
+  the same as "supported". The authoritative source for what DSQL rejects is
+  the unsupported-features page, which lists `DECLARE CURSOR` explicitly. The
+  original ADR trusted the wrong list.

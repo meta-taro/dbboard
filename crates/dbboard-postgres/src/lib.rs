@@ -911,8 +911,13 @@ async fn run_read_only_txn(
     let fetched = match kind {
         // A plain query becomes a server-side cursor so at most
         // `max_rows` rows ever cross the wire — an engine-level cap,
-        // not a textual `LIMIT` wrapped around arbitrary SQL.
-        ReadOnlyStatement::Query => fetch_via_cursor(&mut tx, sql, max_rows).await,
+        // not a textual `LIMIT` wrapped around arbitrary SQL. Aurora DSQL
+        // rejects `DECLARE CURSOR`, so there we stream the portal and
+        // stop after `max_rows` instead (same wire cap, no cursor).
+        ReadOnlyStatement::Query if caps_with_cursor(flavor) => {
+            fetch_via_cursor(&mut tx, sql, max_rows).await
+        }
+        ReadOnlyStatement::Query => fetch_capped_stream(&mut tx, sql, max_rows).await,
         // EXPLAIN returns a small, bounded plan and cannot be a cursor
         // source, so run it directly and materialise its rows.
         ReadOnlyStatement::Explain => run_capped(&mut tx, sql).await,
@@ -932,6 +937,18 @@ async fn run_read_only_txn(
 /// the (already validated) statement, then `FETCH FORWARD max_rows`, so
 /// the server materialises only the rows we keep.
 ///
+/// Whether the read-only row-cap uses a server-side cursor.
+///
+/// Standard Postgres flavors cap with `DECLARE ... CURSOR` + `FETCH
+/// FORWARD` so only `max_rows` rows ever cross the wire. Aurora DSQL
+/// rejects `DECLARE CURSOR` (`unsupported statement: DeclareCursor`,
+/// ADR-0061) — cursors are on its unsupported-features list, correcting
+/// the original ADR-0061 assumption — so there the cap streams the portal
+/// and stops after `max_rows` instead ([`fetch_capped_stream`]).
+fn caps_with_cursor(flavor: &str) -> bool {
+    flavor != FLAVOR_AURORA_DSQL
+}
+
 /// Takes a concrete `&mut PgConnection` (not `&mut Transaction`) so the
 /// executor borrow has a single, nameable lifetime — passing the
 /// transaction and deref-ing inside trips the sqlx `Executor` HRTB error
@@ -952,6 +969,35 @@ async fn fetch_via_cursor(
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| classify_error(&e))?;
+    pg_rows_to_result(&rows)
+}
+
+/// Cap a read-only query without a cursor: stream the query's portal and
+/// stop after `max_rows` rows, then drop the stream so the server stops
+/// producing more. This is the Aurora DSQL path — it rejects `DECLARE
+/// CURSOR`, so the cursor cap in [`fetch_via_cursor`] is unavailable — and
+/// it keeps the same "at most `max_rows` rows cross the wire" property
+/// without wrapping arbitrary SQL in a `LIMIT` subquery (which would break
+/// on duplicate output column names).
+///
+/// Takes a concrete `&mut PgConnection` for the same `Executor` lifetime
+/// reason as [`fetch_via_cursor`].
+async fn fetch_capped_stream(
+    conn: &mut sqlx::PgConnection,
+    sql: &str,
+    max_rows: usize,
+) -> DbResult<QueryResult> {
+    let mut stream = sqlx::query(sql).fetch(&mut *conn);
+    let mut rows: Vec<PgRow> = Vec::with_capacity(max_rows.min(1024));
+    while rows.len() < max_rows {
+        match stream.try_next().await.map_err(|e| classify_error(&e))? {
+            Some(row) => rows.push(row),
+            None => break,
+        }
+    }
+    // Drop the portal stream before returning so the transaction can be
+    // rolled back cleanly without a half-consumed result set on the wire.
+    drop(stream);
     pg_rows_to_result(&rows)
 }
 
@@ -1184,9 +1230,9 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        assemble_foreign_keys, classify_error, column_from_parts, harden_ssl_mode,
-        read_only_preamble, reclassify_schema, truncate, tuple_to_table, FkRow, FLAVOR_AURORA_DSQL,
-        FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        assemble_foreign_keys, caps_with_cursor, classify_error, column_from_parts,
+        harden_ssl_mode, read_only_preamble, reclassify_schema, truncate, tuple_to_table, FkRow,
+        FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
     use dbboard_core::{DatabaseAdapter, DbError, ForeignKey, TableInfo};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
@@ -1458,6 +1504,24 @@ mod tests {
     #[test]
     fn read_only_preamble_is_empty_on_aurora_dsql() {
         assert!(read_only_preamble(FLAVOR_AURORA_DSQL).is_empty());
+    }
+
+    /// Standard Postgres flavors cap a read-only query with a server-side
+    /// cursor (`DECLARE ... CURSOR` + `FETCH FORWARD`), so only `max_rows`
+    /// rows ever cross the wire.
+    #[test]
+    fn caps_with_cursor_on_standard_postgres() {
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_NEON, FLAVOR_SUPABASE] {
+            assert!(caps_with_cursor(flavor), "flavor {flavor}");
+        }
+    }
+
+    /// Aurora DSQL rejects `DECLARE CURSOR` (`unsupported statement:
+    /// DeclareCursor`, ADR-0061), so its read-only row-cap must stream the
+    /// portal and stop after `max_rows` rather than open a cursor.
+    #[test]
+    fn does_not_cap_with_cursor_on_aurora_dsql() {
+        assert!(!caps_with_cursor(FLAVOR_AURORA_DSQL));
     }
 
     /// `query_read_only` classifies before it connects: a write is
