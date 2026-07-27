@@ -1,16 +1,21 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { workspace, type MainTab } from '$lib/state/workspace.svelte';
+  import { i18n } from '$lib/i18n/i18n.svelte';
+  import type { MessageKey } from '$lib/i18n/messages';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import QueryPanel from '$lib/components/QueryPanel.svelte';
   import StructurePanel from '$lib/components/StructurePanel.svelte';
 
-  const tabs: { id: MainTab; label: string }[] = [
-    { id: 'query', label: 'Query' },
-    { id: 'structure', label: 'Structure' },
+  const tabs: { id: MainTab; labelKey: MessageKey }[] = [
+    { id: 'query', labelKey: 'tab-query' },
+    { id: 'structure', labelKey: 'tab-structure' },
   ];
 
-  onMount(() => workspace.init());
+  onMount(() => {
+    i18n.init();
+    workspace.init();
+  });
 </script>
 
 <div class="shell">
@@ -26,7 +31,7 @@
           aria-current={workspace.activeTab === t.id ? 'page' : undefined}
           onclick={() => workspace.setTab(t.id)}
         >
-          {t.label}
+          {i18n.t(t.labelKey)}
         </button>
       {/each}
 

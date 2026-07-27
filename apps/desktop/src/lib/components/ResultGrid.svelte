@@ -1,5 +1,6 @@
 <script lang="ts">
   import { displayCell, type Cell, type Column } from '$lib/api';
+  import { i18n } from '$lib/i18n/i18n.svelte';
   import {
     nextSortKeys,
     sortedIndices,
@@ -12,8 +13,11 @@
     rows: Cell[][];
     rowCount: number;
     truncated: boolean;
+    // The row cap that was applied for this run, so a truncated result can say
+    // exactly where it stopped ("capped at 1000") instead of a vague suffix.
+    limit?: number;
   }
-  let { columns, rows, rowCount, truncated }: Props = $props();
+  let { columns, rows, rowCount, truncated, limit }: Props = $props();
 
   let sortKeys = $state<SortKey[]>([]);
   // Selection is keyed by ORIGINAL row index so it survives re-sorting.
@@ -76,9 +80,9 @@
     const text = toDelimited(columns, rowsForExport(), sep);
     try {
       await navigator.clipboard.writeText(text);
-      flash(`Copied ${sep === ',' ? 'CSV' : 'TSV'}`);
+      flash(i18n.t('result-copied', { fmt: sep === ',' ? 'CSV' : 'TSV' }));
     } catch {
-      flash('Copy failed');
+      flash(i18n.t('result-copy-failed'));
     }
   }
 
@@ -119,23 +123,23 @@
   <div class="toolbar">
     <span class="count">
       {#if selected.size > 0}
-        {selected.size} of {rowCount} selected
+        {i18n.t('result-selected', { sel: selected.size, total: rowCount })}
       {:else}
-        {rowCount} row{rowCount === 1 ? '' : 's'}{truncated
-          ? ' (truncated)'
+        {i18n.t('result-rows', { count: rowCount })}{truncated
+          ? ` (${i18n.t('result-truncated-suffix', { max: limit ?? rowCount })})`
           : ''}
       {/if}
     </span>
 
     <div class="tools">
       {#if copied}<span class="flash">{copied}</span>{/if}
-      <button type="button" onclick={() => copy('\t')} title="Copy as TSV">
-        Copy TSV
+      <button type="button" onclick={() => copy('\t')} title={i18n.t('result-copy-tsv-title')}>
+        {i18n.t('result-copy-tsv')}
       </button>
-      <button type="button" onclick={() => copy(',')} title="Copy as CSV">
-        Copy CSV
+      <button type="button" onclick={() => copy(',')} title={i18n.t('result-copy-csv-title')}>
+        {i18n.t('result-copy-csv')}
       </button>
-      <button type="button" class="ghost" onclick={download} title="Download CSV">
+      <button type="button" class="ghost" onclick={download} title={i18n.t('result-download-title')}>
         ↓ .csv
       </button>
     </div>
@@ -149,7 +153,7 @@
             <th
               class:sorted={sortKeys.some((k) => k.col === ci)}
               onclick={(e) => onHeaderClick(ci, e)}
-              title="Click to sort · Shift-click to add a key"
+              title={i18n.t('result-sort-hint')}
             >
               <span class="th-inner">
                 <span class="th-name">{col.name}</span>
@@ -190,7 +194,7 @@
     }}
     role="presentation"
   >
-    <div class="popup" role="dialog" aria-modal="true" aria-label="Cell value" tabindex="-1">
+    <div class="popup" role="dialog" aria-modal="true" aria-label={i18n.t('result-cell-dialog')} tabindex="-1">
       <div class="popup-head">
         <span class="popup-col">{popup.col}</span>
         <button
@@ -198,7 +202,7 @@
           class="ghost"
           onclick={() => navigator.clipboard.writeText(popup?.value ?? '')}
         >
-          Copy
+          {i18n.t('cell-copy')}
         </button>
       </div>
       <pre class="popup-body">{popup.value}</pre>
