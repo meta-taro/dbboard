@@ -29,3 +29,10 @@ serde_json = "1"
 # transport (Tauri IPC instead of stdio JSON-RPC).
 dbboard-mcp = { path = "../../../crates/dbboard-mcp" }
 dbboard-config = { path = "../../../crates/dbboard-config" }
+# Command return types (TableInfo / TableSchema) live in the domain crate;
+# the frontend consumes them as JSON, so they cross the Tauri boundary here.
+dbboard-core = { path = "../../../crates/dbboard-core" }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
