@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      // Apply the persisted theme before first paint so an explicit Light/Dark
+      // choice never flashes the OS theme first. `auto` (or no choice) leaves
+      // the attribute off and lets the prefers-color-scheme media query decide.
+      // Mirrors src/lib/theme/theme.svelte.ts; kept inline + tiny on purpose.
+      try {
+        var m = localStorage.getItem('dbboard-theme');
+        if (m === 'light' || m === 'dark')
+          document.documentElement.setAttribute('data-theme', m);
+      } catch (e) {
+        /* private mode / storage disabled: fall back to Auto */
+      }
+    </script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>
