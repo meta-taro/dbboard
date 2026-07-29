@@ -7,6 +7,7 @@
   import QueryPanel from '$lib/components/QueryPanel.svelte';
   import StructurePanel from '$lib/components/StructurePanel.svelte';
   import BackupDialog from '$lib/components/BackupDialog.svelte';
+  import RestoreDialog from '$lib/components/RestoreDialog.svelte';
 
   const tabs: { id: MainTab; labelKey: MessageKey }[] = [
     { id: 'query', labelKey: 'tab-query' },
@@ -14,6 +15,7 @@
   ];
 
   let backupOpen = $state(false);
+  let restoreOpen = $state(false);
 
   onMount(() => {
     i18n.init();
@@ -47,6 +49,14 @@
         >
           {i18n.t('backup-button')}
         </button>
+        <button
+          type="button"
+          class="tool-btn"
+          onclick={() => (restoreOpen = true)}
+          title={i18n.t('restore-button-title')}
+        >
+          {i18n.t('restore-button')}
+        </button>
         <span class="conn-pill" title={workspace.connection.id}>
           <span class="dot" aria-hidden="true"></span>
           {workspace.connection.name}
@@ -76,6 +86,14 @@
     connectionId={workspace.connection.id}
     connectionName={workspace.connection.name}
     onClose={() => (backupOpen = false)}
+  />
+{/if}
+
+{#if restoreOpen && workspace.connection}
+  <RestoreDialog
+    connectionId={workspace.connection.id}
+    connectionName={workspace.connection.name}
+    onClose={() => (restoreOpen = false)}
   />
 {/if}
 
@@ -130,9 +148,11 @@
   }
 
   /* Pushed to the right edge of the tabbar, just left of the connection
-     pill: a quiet ghost action that only appears with a connection. */
-  .backup {
-    margin-left: auto;
+     pill: quiet ghost actions that only appear with a connection. `.backup`
+     owns the auto margin so the whole group hugs the right edge; sibling
+     tools sit snugly beside it. */
+  .backup,
+  .tool-btn {
     border: 1px solid var(--border);
     background: transparent;
     color: var(--text-muted);
@@ -142,14 +162,18 @@
     border-radius: var(--radius-widget);
     cursor: pointer;
   }
-  .backup:hover {
+  .backup {
+    margin-left: auto;
+  }
+  .backup:hover,
+  .tool-btn:hover {
     color: var(--text);
     border-color: var(--border-strong);
   }
 
-  /* When the backup button is present it owns the auto margin; the pill then
-     sits snugly beside it. With no button the pill takes the auto margin. */
-  .backup + .conn-pill {
+  /* The restore button ends the button group and sits snugly against the
+     connection pill; with no buttons the pill takes the auto margin. */
+  .tool-btn + .conn-pill {
     margin-left: var(--space-2);
   }
 
