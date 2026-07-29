@@ -146,6 +146,16 @@ pub fn config_error_display(err: &ConfigError) -> DisplayError {
         ConfigError::KindMismatch { id } => {
             t_args!("config-error-kind-mismatch", id = id.clone())
         }
+        ConfigError::SshUnsupportedKind { id, kind } => t_args!(
+            "config-error-ssh-unsupported-kind",
+            id = id.clone(),
+            kind = *kind
+        ),
+        ConfigError::SshInvalid { id, reason } => t_args!(
+            "config-error-ssh-invalid",
+            id = id.clone(),
+            reason = reason.clone()
+        ),
         ConfigError::Bundle(e) => bundle_error_localized(e),
     };
     DisplayError::new(localized, err.to_string())

@@ -73,6 +73,29 @@ pub enum ConfigError {
     #[error("connection {id} kind cannot change on update")]
     KindMismatch { id: String },
 
+    /// A `[connections.ssh]` block was attached to a connection kind that
+    /// cannot be tunneled — a local file (Turso), an HTTPS API (D1), or the
+    /// self-signing Aurora DSQL IAM kind. SSH tunnels apply only to the
+    /// URL-bearing TCP engines (ADR-0069).
+    #[error("connection {id}: an ssh tunnel is not supported for a {kind} connection")]
+    SshUnsupportedKind {
+        /// The offending connection id.
+        id: String,
+        /// The adapter label of the kind that cannot be tunneled.
+        kind: &'static str,
+    },
+
+    /// A `[connections.ssh]` block was malformed: it must name exactly one
+    /// authentication method (`key_path` or `keyring_password_ref`) and
+    /// exactly one host-key policy (`fingerprint` or `known_hosts`) (ADR-0069).
+    #[error("connection {id}: invalid ssh tunnel: {reason}")]
+    SshInvalid {
+        /// The offending connection id.
+        id: String,
+        /// Human-readable reason the ssh block is invalid.
+        reason: String,
+    },
+
     /// Encrypting or decrypting a connection bundle failed (ADR-0038).
     /// Wraps the crypto-layer [`BundleError`] so the connection-admin
     /// export/import methods surface a single error type. Distinct from

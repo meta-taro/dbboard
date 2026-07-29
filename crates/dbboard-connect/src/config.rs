@@ -486,6 +486,7 @@ mod tests {
 
     fn turso_entry(id: &str, path: &str) -> ConnectionEntry {
         ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: format!("turso {id}"),
             kind: ConnectionKind::Turso {
@@ -496,6 +497,7 @@ mod tests {
 
     fn d1_entry(id: &str, token_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: format!("d1 {id}"),
             kind: ConnectionKind::D1 {
@@ -509,6 +511,7 @@ mod tests {
 
     fn pg_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: format!("pg {id}"),
             kind: ConnectionKind::Postgres {
@@ -519,6 +522,7 @@ mod tests {
 
     fn mysql_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: format!("mysql {id}"),
             kind: ConnectionKind::MySql {
@@ -529,6 +533,7 @@ mod tests {
 
     fn neon_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: format!("neon {id}"),
             kind: ConnectionKind::Neon {
@@ -539,6 +544,7 @@ mod tests {
 
     fn supabase_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: format!("supabase {id}"),
             kind: ConnectionKind::Supabase {
@@ -549,6 +555,7 @@ mod tests {
 
     fn aurora_dsql_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: format!("aurora-dsql {id}"),
             kind: ConnectionKind::AuroraDsql {
@@ -559,6 +566,7 @@ mod tests {
 
     fn aurora_dsql_iam_entry(id: &str, secret_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: format!("aurora-dsql-iam {id}"),
             kind: ConnectionKind::AuroraDsqlIam {

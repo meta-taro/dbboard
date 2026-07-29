@@ -246,6 +246,7 @@ impl ConnectionAdmin {
         }
 
         let new_entry = ConnectionEntry {
+            ssh: None,
             id: draft.id,
             name: draft.name,
             kind,
@@ -301,6 +302,7 @@ impl ConnectionAdmin {
         let (new_kind, applied_writes) = self.apply_update_kind(id, &existing_kind, draft.kind)?;
 
         let new_entry = ConnectionEntry {
+            ssh: None,
             id: id.to_string(),
             name: draft.name,
             kind: new_kind,
@@ -1106,6 +1108,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                ssh: None,
                 id: "dsql-iam".to_string(),
                 name: "Aurora DSQL (IAM)".to_string(),
                 kind: ConnectionKind::AuroraDsqlIam {
@@ -1141,6 +1144,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                ssh: None,
                 id: "dsql-iam".to_string(),
                 name: "Aurora DSQL (IAM)".to_string(),
                 kind: ConnectionKind::AuroraDsqlIam {
@@ -1804,6 +1808,7 @@ mod tests {
         // hijack the victim's live credentials on import.
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
+            ssh: None,
             id: "attacker".to_string(),
             name: "Attacker".to_string(),
             kind: ConnectionKind::Supabase {
