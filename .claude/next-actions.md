@@ -7,6 +7,25 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**Tauri 版 v0.4.0 フィーチャーパリティ進行中 — インライン
+  セル編集が着地 (ADR-0063, commit `c5f165f`, branch `feature/desktop-design-polish`)。**
+  上位方針は user の厳命「**小さくきらないで、機能面の仕様を全部いれる。くぎっては
+  ならない**」= egui 版の全機能を Tauri 2 + SvelteKit (`apps/desktop/`) へ一括移植し
+  v0.4.0 (パリティ + 自動更新) として出す。Tauri は元々 **読み取り専用スパイク**
+  (ADR-0046/0059) で始まり、書き込み面を 1 バーティカルずつ ADR 付きで解禁中。
+  **既着地:** 接続 CRUD + バンドル入出力 (ADR-0062)・ローカル注釈編集 (ADR-0045)・
+  データセット Export CSV/TSV (ADR-0049)・**セル編集 (今回, ADR-0063)**。
+  **セル編集の要点:** サイドバー「Select top 100」由来 (TableInfo を保持) かつ
+  **宣言済み PK** を持つ表だけ編集可。UPDATE のみ・`rows_affected == 1` コミット
+  ゲート・rowid 専用/ビューは読み取り専用 (egui パリティ)。書き込みは
+  `McpService::apply_row_update` だが **MCP ツールには未登録** = 外部エージェントは
+  読み取り専用のまま。TDD: mcp 統合 4 + `edit.test.ts` 単体 8。全ゲート green
+  (fmt/clippy/check/test・pnpm check/test/build)。**残バーティカル (未着手):**
+  論理バックアップ/ダンプ (ADR-0049/0050)・論理リストア/インポート (ADR-0051)・
+  AI アシスタント (ADR-0052)・自動更新 + リリース CI (ADR-0044/0043, 0.3.0→0.4.0)。
+  **今の user 側ボール = (1) `feature/desktop-design-polish` の push、(2) 次バーティカル
+  の選定 (backup/restore か AI か auto-update)。方針は「くぎってはならない」なので
+  最終的に全部入れる。**)
 - 日付: 2026-07-26 (**ブランド design system = PR #123 マージ済 (ADR-0056 + ADR-0057)。**
   user 依頼「デザインをモックに寄せたい」。**ADR-0056** = `dbboard-ui::theme` が
   stock egui を置換 (インディゴ基調パレット Light/Dark 両登録・Auto 追従、spacing/
