@@ -189,16 +189,81 @@ only in where the ~15-minute IAM auth token comes from:
   connection list can connect/reconnect and delete it, but not yet edit
   it.
 
+### SSH tunnel (`[connections.ssh]`)
+
+A connection to a database that only listens on a bastion's `localhost`
+can reach it through an **SSH tunnel**: dbboard opens a local port
+forward over SSH, then rewrites the connection URL's host/port to the
+local end of that forward before the adapter dials. The tunnel is a
+cross-cutting `ssh` sub-table on any connection whose `kind` supports it
+(`postgres`, `neon`, `supabase`, `aurora-dsql`, `mysql`); the D1 and
+Turso kinds do not. See [ADR-0069](decisions.md) for the design.
+
+```toml
+[[connections]]
+id              = "work-mysql"
+name            = "Work MySQL (via bastion)"
+kind            = "mysql"
+keyring_url_ref = "dbboard.work-mysql.url"
+
+  [connections.ssh]
+  host = "bastion.example.com"
+  port = 22
+  user = "deploy"
+  # --- auth: exactly one of key_path or keyring_password_ref ---
+  key_path               = "/home/user/.ssh/id_ed25519"
+  # passphrase for an encrypted key (omit for an unencrypted key):
+  keyring_passphrase_ref = "dbboard.work-mysql.ssh_passphrase"
+  # --- host-key policy: exactly one of fingerprint or known_hosts ---
+  fingerprint            = "SHA256:abc123def456..."
+```
+
+- `host` / `port` / `user` — the bastion to dial. `port` defaults to 22.
+- **Forward target** — the DB host and port to forward *to* are taken
+  from the connection URL itself (e.g. `127.0.0.1:3306` from the
+  `mysql://…@127.0.0.1:3306/…` URL in the keychain), **not** stored in
+  the `ssh` block. Point the URL at the address the DB listens on *from
+  the bastion's side* (usually `127.0.0.1`).
+- **Auth — exactly one of:**
+  - `key_path` — path to a private key for public-key auth. If the key
+    is encrypted, `keyring_passphrase_ref` names the keychain entry
+    holding its passphrase; omit it for an unencrypted key.
+  - `keyring_password_ref` — keychain reference to an SSH password for
+    password auth. Mutually exclusive with `key_path`.
+- **Host-key policy — exactly one of** (a tunnel with neither is a load
+  error; dbboard never blindly trusts an unverified host key):
+  - `fingerprint` — a pinned `SHA256:…` server host-key fingerprint. The
+    server is rejected on any mismatch.
+  - `known_hosts` — path to an OpenSSH `known_hosts` file to verify the
+    server key against.
+
+The key **passphrase** and the SSH **password** are the only secrets;
+they live in the keychain under `ssh_passphrase` / `ssh_password`
+references (e.g. `dbboard.work-mysql.ssh_passphrase`). The bastion
+host/port/user, the key **path**, and the host-key **fingerprint** are
+non-secret and stay inline.
+
+The desktop app edits all of this from the connection form: for a
+tunnel-capable kind an **SSH tunnel** section appears with an enable
+toggle, the bastion host/port/user, a key/password auth switch, and a
+fingerprint/known-hosts host-key switch. As with every other secret, an
+SSH passphrase or password field left blank when **editing** keeps the
+stored secret untouched (see [ADR-0016](decisions.md)); for an encrypted
+key, the *"key is encrypted"* checkbox tells dbboard to keep the stored
+passphrase when you leave the field blank.
+
 ### What the file never contains
 
 - D1 API tokens
 - Postgres connection URLs that embed a password
 - AWS secret access keys (for `aurora-dsql-iam`)
+- SSH key passphrases and SSH passwords (for a tunneled connection)
 
 These live only in the OS keychain. The TOML keeps the references.
 (An `aurora-dsql-iam` entry's AWS **access key id** is a public
 identifier and *is* kept inline — only the secret access key is a
-secret.)
+secret. Likewise an SSH key **path** and host-key **fingerprint** are
+non-secret and stay inline.)
 
 ## Seeding secrets
 

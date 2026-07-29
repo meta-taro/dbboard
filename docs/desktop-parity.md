@@ -14,7 +14,7 @@ their own section below.
 Legend: ✅ done · 🟦 done this pass · ⛔ not yet (needs an ADR / write surface) ·
 ➖ intentionally omitted.
 
-_Last updated: 2026-07-29 (auto-update — ADR-0067; desktop at v0.4.0 parity)._
+_Last updated: 2026-07-29 (SSH tunnel connection UI — ADR-0069; desktop leads egui on tunnel editing)._
 
 ## Read / inspect (the spike's remit)
 
@@ -55,6 +55,7 @@ registered as an MCP tool.
 | Logical restore / import (apply a `.sql` script) | ✅ (`restore.rs`) | ✅ | ADR-0065 (wires ADR-0051). Applies a chosen `.sql` file; `restore:progress` events + cancel flag; empty-target confirmation gate; per-engine transaction (atomic batch vs per-statement `on_error`); unparsed statements run best-effort. |
 | AI assistant (explain SQL / draft SQL) | ✅ (`ai.rs`, `ai_settings.rs`) | ✅ | ADR-0066 (wires ADR-0052). Streams via `ai:chunk` + cancel flag; **never runs SQL, never sends row data** — Explain sends SQL text, Suggest sends schema names only (`describe_table` on opt-in). API key keyring-only (`dbboard.ai.<id>.api_key`), never in TOML/logs/WebView. No AI command is an MCP tool. |
 | Auto-update (check + Install & Restart) | ✅ (inform-only, ADR-0040) | ✅ | ADR-0067 (wires ADR-0044/0043). `tauri-plugin-updater` verifies a signed `latest.json` and installs in place, then `tauri-plugin-process` relaunches — one step past egui's inform-only check. Same `DBBOARD_NO_UPDATE_CHECK` opt-out; minisign public key committed, private key CI-secret only; `latest.json` assembled in `release.yml`. |
+| SSH-tunnel connection editing (bastion host/port/user, key/password auth, host-key pin) | ➖ (TOML-only) | ✅ | ADR-0069 (wires ADR-0034/0016). Desktop **leads** egui: the connection form gains an SSH section for tunnel-capable kinds; the tunnel itself (russh local forward, ADR-0069) is shared, but egui has no editor UI — a tunnel is added there by hand-editing `connections.toml`. Passphrase/password keyring-only (`ssh_passphrase`/`ssh_password`), never in TOML; host-key verification mandatory (fingerprint XOR known_hosts, no blind-accept). |
 
 ## Deliberately out of scope (still pending an ADR / write surface)
 
@@ -78,6 +79,11 @@ new ADR, not folded in silently.
   ⛔ row (row insert/delete) is a genuinely new write surface in *both* clients,
   not a port. Each such addition still opens with its own ADR describing the
   surface and its safeguards.
+- **SSH-tunnel editing (ADR-0069) is the first surface where the desktop app
+  leads egui rather than catching up.** The tunnel plumbing (russh local
+  forward) is shared by both clients, but only the desktop form can create or
+  edit a tunnel; in egui a tunnel is still TOML-only. This is intentional — the
+  desktop app is now the tunnel editor of record.
 - **Before the first v0.4.0 release:** set the `TAURI_SIGNING_PRIVATE_KEY`
   GitHub Actions secret (empty `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) to the
   generated minisign private key. The public key is already embedded in

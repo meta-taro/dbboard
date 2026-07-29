@@ -43,7 +43,8 @@ pub mod ui_settings;
 
 pub use admin::{
     ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,
-    ConnectionKindEditDraft, ImportReport, SecretField,
+    ConnectionKindEditDraft, ImportReport, SecretField, SshAuthDraft, SshAuthEditDraft,
+    SshEditField, SshHostKeyDraft, SshPassphraseField, SshTunnelDraft, SshTunnelEditDraft,
 };
 pub use ai_settings::{
     AiProviderDraft, AiProviderEditDraft, AiProviderKindDraft, AiProviderKindEditDraft,

@@ -39,6 +39,38 @@ export type FormField =
   | 'token'
   | 'url';
 
+// Kinds that can front an SSH tunnel (ADR-0069): the TCP/URL-bearing engines.
+// Turso (embedded/libSQL HTTP) and D1 (HTTP) have no host:port to forward, so
+// the tunnel section is hidden for them — matching the backend's
+// `ConnectionKind::supports_ssh_tunnel`.
+export const SSH_TUNNELABLE_KINDS: readonly ConnectionKind[] = [
+  'postgres',
+  'mysql',
+  'neon',
+  'supabase',
+  'aurora_dsql',
+] as const;
+
+export function supportsSshTunnel(kind: ConnectionKind): boolean {
+  return SSH_TUNNELABLE_KINDS.includes(kind);
+}
+
+export type SshAuthMethod = 'key' | 'password';
+export type SshHostKeyPolicy = 'fingerprint' | 'known_hosts';
+
+// SSH form fields whose blank-ness `validateSsh` reports. Distinct from
+// `FormField` because the tunnel section is conditional and its required set
+// depends on the chosen auth method and host-key policy.
+export type SshFormField =
+  | 'ssh_host'
+  | 'ssh_port'
+  | 'ssh_user'
+  | 'ssh_key_path'
+  | 'ssh_passphrase'
+  | 'ssh_password'
+  | 'ssh_fingerprint'
+  | 'ssh_known_hosts';
+
 export interface ConnectionForm {
   id: string;
   name: string;
@@ -49,17 +81,63 @@ export interface ConnectionForm {
   base_url: string; // d1 (optional)
   token: string; // d1 secret
   url: string; // postgres / neon / supabase / aurora_dsql secret
+  // SSH tunnel (ADR-0069). Only meaningful for `SSH_TUNNELABLE_KINDS`; ignored
+  // by the payload builders otherwise. `port` is a string in the form and
+  // parsed to a number on submit; the passphrase/password are secrets (blank on
+  // edit means "keep the stored one").
+  ssh_enabled: boolean;
+  ssh_host: string;
+  ssh_port: string;
+  ssh_user: string;
+  ssh_auth_method: SshAuthMethod;
+  ssh_key_path: string;
+  ssh_key_encrypted: boolean; // edit prefill: does the stored key have a passphrase?
+  ssh_passphrase: string; // secret
+  ssh_password: string; // secret
+  ssh_host_key_policy: SshHostKeyPolicy;
+  ssh_fingerprint: string;
+  ssh_known_hosts: string;
+  // Edit-prefill provenance: whether the stored tunnel actually had a
+  // key-passphrase / password to *keep*. A blank secret only means "keep" when
+  // one of these is true; otherwise the field is required (mirrors the backend's
+  // `apply_update_ssh`, which rejects a keep with nothing to keep). Always false
+  // on add. Not sent to the backend.
+  ssh_had_key_passphrase: boolean;
+  ssh_had_password: boolean;
 }
+
+// Non-secret SSH prefill the backend returns alongside the edit fields. Secrets
+// (passphrase/password) are never sent back (ADR-0016); `encrypted` tells the
+// form whether a stored passphrase exists.
+export type SshAuthPrefill =
+  | { method: 'key'; key_path: string; encrypted: boolean }
+  | { method: 'password' };
+export type SshHostKeyPrefill =
+  | { policy: 'fingerprint'; fingerprint: string }
+  | { policy: 'known_hosts'; known_hosts: string };
+export interface SshPrefill {
+  host: string;
+  port: number;
+  user: string;
+  auth: SshAuthPrefill;
+  host_key: SshHostKeyPrefill;
+}
+
+export const DEFAULT_SSH_PORT = 22;
 
 export type EditorMode = 'add' | 'edit';
 
 // Non-secret editable fields the backend returns for the edit form. Secrets
 // (D1 token, the Postgres-family URL) are never included — the form leaves
-// them blank, which the backend reads as "keep the stored secret".
-export type EditFields =
+// them blank, which the backend reads as "keep the stored secret". The `ssh`
+// block is the tunnel prefill (`null` when no tunnel is configured); the
+// backend flattens the `kind` discriminator to the top level, so it sits beside
+// these kind fields (matching `EditFieldsResponse` in src-tauri/lib.rs).
+export type EditFields = (
   | { kind: 'turso'; path: string }
   | { kind: 'd1'; account_id: string; database_id: string; base_url: string | null }
-  | { kind: 'postgres' | 'mysql' | 'neon' | 'supabase' | 'aurora_dsql' };
+  | { kind: 'postgres' | 'mysql' | 'neon' | 'supabase' | 'aurora_dsql' }
+) & { ssh?: SshPrefill | null };
 
 export function emptyForm(): ConnectionForm {
   return {
@@ -72,15 +150,63 @@ export function emptyForm(): ConnectionForm {
     base_url: '',
     token: '',
     url: '',
+    ssh_enabled: false,
+    ssh_host: '',
+    ssh_port: String(DEFAULT_SSH_PORT),
+    ssh_user: '',
+    ssh_auth_method: 'key',
+    ssh_key_path: '',
+    ssh_key_encrypted: false,
+    ssh_passphrase: '',
+    ssh_password: '',
+    ssh_host_key_policy: 'fingerprint',
+    ssh_fingerprint: '',
+    ssh_known_hosts: '',
+    ssh_had_key_passphrase: false,
+    ssh_had_password: false,
   };
 }
 
 const blank = (v: string): boolean => v.trim().length === 0;
 
+// Apply the tunnel prefill (if any) onto a base form. Secrets stay blank so an
+// untouched save keeps the stored passphrase/password.
+function applySshPrefill(base: ConnectionForm, ssh: SshPrefill | null | undefined): ConnectionForm {
+  if (!ssh) return base;
+  const next: ConnectionForm = {
+    ...base,
+    ssh_enabled: true,
+    ssh_host: ssh.host,
+    ssh_port: String(ssh.port),
+    ssh_user: ssh.user,
+  };
+  if (ssh.auth.method === 'key') {
+    next.ssh_auth_method = 'key';
+    next.ssh_key_path = ssh.auth.key_path;
+    next.ssh_key_encrypted = ssh.auth.encrypted;
+    // A stored passphrase exists to keep only for an encrypted key.
+    next.ssh_had_key_passphrase = ssh.auth.encrypted;
+  } else {
+    next.ssh_auth_method = 'password';
+    next.ssh_had_password = true;
+  }
+  if (ssh.host_key.policy === 'fingerprint') {
+    next.ssh_host_key_policy = 'fingerprint';
+    next.ssh_fingerprint = ssh.host_key.fingerprint;
+  } else {
+    next.ssh_host_key_policy = 'known_hosts';
+    next.ssh_known_hosts = ssh.host_key.known_hosts;
+  }
+  return next;
+}
+
 // Seed the edit form from an existing connection's non-secret fields. Secret
 // inputs stay blank so an untouched save keeps the stored secret.
 export function formForEdit(id: string, name: string, fields: EditFields): ConnectionForm {
-  const base: ConnectionForm = { ...emptyForm(), id, name, kind: fields.kind };
+  const base: ConnectionForm = applySshPrefill(
+    { ...emptyForm(), id, name, kind: fields.kind },
+    fields.ssh,
+  );
   switch (fields.kind) {
     case 'turso':
       return { ...base, path: fields.path };
@@ -146,6 +272,117 @@ export function requiredFields(kind: ConnectionKind, mode: EditorMode): FormFiel
 // Returns the fields that fail validation (blank required). Empty ⇒ valid.
 export function validate(form: ConnectionForm, mode: EditorMode): FormField[] {
   return requiredFields(form.kind, mode).filter((f) => blank(form[f]));
+}
+
+// Parse the form's port string, defaulting a blank/invalid value to 22. The
+// caller has already validated the range via `validateSsh`; this is the
+// coercion used when building the payload.
+export function parseSshPort(raw: string): number {
+  const n = Number.parseInt(raw.trim(), 10);
+  return Number.isFinite(n) && n >= 1 && n <= 65535 ? n : DEFAULT_SSH_PORT;
+}
+
+// Validate the SSH section. Returns the invalid tunnel fields (empty ⇒ valid).
+// No-op unless the kind supports a tunnel and the toggle is on. Host-key
+// verification is mandatory, so the chosen policy's field is always required.
+// Secrets are required only on `add` (on `edit`, a blank keeps the stored one;
+// an unencrypted key never needs a passphrase).
+export function validateSsh(form: ConnectionForm, mode: EditorMode): SshFormField[] {
+  if (!supportsSshTunnel(form.kind) || !form.ssh_enabled) return [];
+  const bad: SshFormField[] = [];
+  if (blank(form.ssh_host)) bad.push('ssh_host');
+  if (blank(form.ssh_user)) bad.push('ssh_user');
+  // A non-blank port must be a valid TCP port; blank is allowed (defaults 22).
+  if (!blank(form.ssh_port)) {
+    const n = Number.parseInt(form.ssh_port.trim(), 10);
+    if (!Number.isFinite(n) || n < 1 || n > 65535) bad.push('ssh_port');
+  }
+  if (form.ssh_auth_method === 'key') {
+    if (blank(form.ssh_key_path)) bad.push('ssh_key_path');
+    // On add the encrypted checkbox is hidden and a blank passphrase means an
+    // unencrypted key, so nothing is required here. On edit, a blank passphrase
+    // means "keep" only when the stored key was already encrypted; if the user
+    // freshly marks the key encrypted (or switches auth to an encrypted key)
+    // there is nothing to keep, so the passphrase is required — matching the
+    // backend, which would otherwise reject the save.
+    if (
+      mode === 'edit' &&
+      form.ssh_key_encrypted &&
+      blank(form.ssh_passphrase) &&
+      !form.ssh_had_key_passphrase
+    ) {
+      bad.push('ssh_passphrase');
+    }
+  } else if (blank(form.ssh_password) && (mode === 'add' || !form.ssh_had_password)) {
+    // A blank password means "keep" only when a stored password exists (edit of
+    // an already password-authed tunnel); otherwise it is required.
+    bad.push('ssh_password');
+  }
+  if (form.ssh_host_key_policy === 'fingerprint') {
+    if (blank(form.ssh_fingerprint)) bad.push('ssh_fingerprint');
+  } else if (blank(form.ssh_known_hosts)) {
+    bad.push('ssh_known_hosts');
+  }
+  return bad;
+}
+
+// Shared host-key payload fragment for both add and edit.
+function buildHostKey(form: ConnectionForm): Record<string, unknown> {
+  return form.ssh_host_key_policy === 'fingerprint'
+    ? { policy: 'fingerprint', fingerprint: form.ssh_fingerprint }
+    : { policy: 'known_hosts', known_hosts: form.ssh_known_hosts };
+}
+
+// The `ssh` object the `add_connection` command expects (a tagged SshInput), or
+// `null` when the kind can't tunnel or the toggle is off. Secrets are inline; a
+// blank key passphrase is sent as `null`, meaning the key is unencrypted.
+export function buildSshInput(form: ConnectionForm): Record<string, unknown> | null {
+  if (!supportsSshTunnel(form.kind) || !form.ssh_enabled) return null;
+  const auth =
+    form.ssh_auth_method === 'key'
+      ? {
+          method: 'key',
+          key_path: form.ssh_key_path,
+          passphrase: blank(form.ssh_passphrase) ? null : form.ssh_passphrase,
+        }
+      : { method: 'password', password: form.ssh_password };
+  return {
+    host: form.ssh_host,
+    port: parseSshPort(form.ssh_port),
+    user: form.ssh_user,
+    auth,
+    host_key: buildHostKey(form),
+  };
+}
+
+// The `ssh` object the `update_connection` command expects (a tagged
+// SshEditInput). The desktop form always knows the toggle state, so it sends
+// `set` (tunnel on) or `disable` (tunnel off) — never `keep`, which exists for
+// callers with no tunnel UI. Secrets are keep-or-overwrite: a blank passphrase/
+// password is sent as `null`, which the backend reads as "keep the stored one";
+// `encrypted` distinguishes an unencrypted key from one whose passphrase is kept.
+export function buildSshEditInput(form: ConnectionForm): Record<string, unknown> {
+  if (!supportsSshTunnel(form.kind) || !form.ssh_enabled) return { action: 'disable' };
+  const auth =
+    form.ssh_auth_method === 'key'
+      ? {
+          method: 'key',
+          key_path: form.ssh_key_path,
+          encrypted: form.ssh_key_encrypted,
+          passphrase: blank(form.ssh_passphrase) ? null : form.ssh_passphrase,
+        }
+      : {
+          method: 'password',
+          password: blank(form.ssh_password) ? null : form.ssh_password,
+        };
+  return {
+    action: 'set',
+    host: form.ssh_host,
+    port: parseSshPort(form.ssh_port),
+    user: form.ssh_user,
+    auth,
+    host_key: buildHostKey(form),
+  };
 }
 
 // The `kind` object the `add_connection` command expects (a tagged KindInput).
