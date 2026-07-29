@@ -17,6 +17,7 @@ members = [
     "crates/dbboard-openai",
     "crates/dbboard-postgres",
     "crates/dbboard-server",
+    "crates/dbboard-tunnel",
     "crates/dbboard-turso",
     "crates/dbboard-ui",
 ]
@@ -61,6 +62,12 @@ dbboard-connect = { path = "crates/dbboard-connect" }
 # backslash-escaped literals) over sqlx's mysql driver. Depends on
 # dbboard-core only, mirroring the Postgres-wire adapter's shape.
 dbboard-mysql = { path = "crates/dbboard-mysql" }
+# SSH local-forward tunnel (ADR-0069): a pure-Rust SSH client (russh) that
+# opens a bastion-gated database's port on a loopback address so the ordinary
+# TCP adapters connect through it. Leaf crate — depends on russh + tokio only,
+# never on dbboard-core. Host-key verification is mandatory (Fingerprint pin
+# or known_hosts); there is no blind-accept path.
+dbboard-tunnel = { path = "crates/dbboard-tunnel" }
 # UI-only translation loader (ADR-0015). Consumed by `dbboard-ui` and
 # initialised once at startup from `apps/dbboard`.
 dbboard-i18n = { path = "crates/dbboard-i18n" }
@@ -73,6 +80,18 @@ thiserror = "2"
 # matching. default-features keeps the std dialects (Postgres, SQLite).
 sqlparser = "0.62"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Pure-Rust SSH client for the local-forward tunnel (ADR-0069). Chosen over
+# shelling out to system ssh/plink so the tunnel has no external-binary
+# dependency and dbboard controls host-key verification itself. Rides on the
+# `ring` crypto backend already in the tree via rustls-ring, adding NO
+# aws-lc-rs (ADR-0034). russh's DEFAULT features include `aws-lc-rs`, which
+# pulls `aws-lc-sys` — a C/NASM build that fails on this Windows toolchain and
+# is exactly what ADR-0034 forbids — so default-features is off and the pure-
+# Rust `ring` backend is selected instead (matching rustls-ring elsewhere).
+# `flate2` (compression) and `rsa` (RSA host/user keys) are the other two
+# default features, kept. russh-keys was folded into `russh::keys` at 0.50, so
+# this single line is the whole dependency.
+russh = { version = "0.62", default-features = false, features = ["ring", "flate2", "rsa"] }
 # libsql core only — no remote/sync/replication/tls. Phase 1.5 will
 # widen this when the local HTTP backend introduces remote Turso.
 libsql = { version = "0.9", default-features = false, features = ["core"] }

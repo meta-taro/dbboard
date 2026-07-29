@@ -7676,3 +7676,106 @@ adapters already satisfy.
   `MAX_RESULT_ROWS` boundary (built from a four-way digit cross-join, since
   MySQL has no `generate_series` and a recursive CTE would trip
   `cte_max_recursion_depth`).
+
+## ADR-0069 — SSH tunnel: pure-Rust local port forwarding (russh) with mandatory host-key verification
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0013 (the `connections.toml` + OS-keychain store this
+  extends), ADR-0016 (the `ConnectionAdmin` add/update/delete secret-committal
+  order the SSH secrets ride on), ADR-0034 (the rustls-**ring** / no-aws-lc-rs
+  crypto-backend constraint that gates the SSH crate choice), ADR-0046 (the
+  connection factory `connect_adapter` the tunnel wraps), and ADR-0068 (MySQL,
+  the engine that surfaced the need — work databases reachable only through a
+  bastion).
+
+### Context
+
+The maintainer's work MySQL/MariaDB databases live on VPS hosts and are bound to
+the server's `localhost` — they are reachable only by first opening an SSH
+connection to the box and forwarding a local port to `127.0.0.1:3306` on the far
+side. Every such database is registered in HeidiSQL as an "SSH tunnel" session
+(plink + a key file, local port → remote `127.0.0.1:3306`). dbboard could only
+accept a `mysql://…`/`postgres://…` URL pointed at an already-reachable host, so
+these databases were simply unusable without a second tool holding the tunnel
+open. For dbboard to be the maintainer's actual daily client (ADR-0068's stated
+goal) it has to open the tunnel itself.
+
+This is the first network-facing credential path dbboard adds that is *not* a
+database URL: an SSH private key (possibly passphrase-protected), an optional
+SSH password, and — critically — a **server host key** that must be verified or
+the tunnel is a silent man-in-the-middle foothold.
+
+### Decision
+
+1. **A new `dbboard-tunnel` crate over `russh` 0.62 (pure Rust), not a shell-out
+   to `ssh`/`plink`.** russh gives a self-contained SSH client with no external
+   binary dependency, matching the pure-Rust posture of the rest of the tree
+   (rustls, libsql-core, age). Shelling out to the system `ssh` — or bundling
+   plink as HeidiSQL does — would make the tunnel depend on an out-of-band binary
+   whose presence, version, and host-key store dbboard cannot control, and would
+   reintroduce exactly the "second tool" problem this ADR removes. `russh` folds
+   its former `russh-keys` crate into `russh::keys` (since 0.50) and carries its
+   own `ssh-key` fork, so the dependency is the single `russh = "0.62"` line.
+   Its crypto rides on `ring` (already in the tree via rustls-ring), so it adds
+   **no** `aws-lc-rs`, honouring ADR-0034 — verified with `cargo tree`. The
+   crate depends on `russh` + `tokio` only; it does **not** depend on
+   `dbboard-core`, so it stays a leaf utility with no knowledge of adapters.
+
+2. **Host-key verification is mandatory; blind-accept is not an option in the
+   type.** russh's `check_server_key` defaults to rejecting every key, and we
+   keep that safety: the `HostKeyPolicy` enum offers exactly two verifying
+   modes — `Fingerprint("SHA256:…")` (pin the server key's SHA-256 fingerprint,
+   deterministic and filesystem-free) and `KnownHosts(path?)` (verify against an
+   OpenSSH `known_hosts`, where a *mismatch* — russh returns `Err`, the MITM
+   signal — is a hard failure distinct from an *unknown* host). There is no
+   `AcceptAny`/TOFU-by-default variant. To make first-time pinning usable the
+   crate exposes `probe_host_key`, which connects far enough to read the server
+   key fingerprint and returns it *without authenticating* — the UI shows it the
+   way PuTTY/HeidiSQL show a host-key prompt, and the user pins it. This mirrors
+   the ADR-0034 stance that a desktop client must fail *closed* on a bad chain,
+   never wave it through.
+
+3. **The tunnel guard is bound to the adapter's lifetime via a decorator, so
+   `connect_adapter` keeps its signature.** When a resolved backend carries an
+   SSH block, `connect_adapter` opens the tunnel first, rewrites the URL's
+   `host:port` to the tunnel's ephemeral `127.0.0.1:<port>` local forward,
+   connects the ordinary adapter through it, and wraps the pair in a
+   `TunneledAdapter { inner, _tunnel }` that delegates every `DatabaseAdapter`
+   method to `inner`. Dropping the returned `Arc<dyn DatabaseAdapter>` drops the
+   pool first, then the tunnel — no reconnection, no dangling forward. Both
+   `dbboard-server` (one adapter) and `dbboard-mcp` (a per-id cache) get tunnels
+   for free with no signature change (ADR-0046).
+
+4. **SSH config is a cross-cutting `ssh` sub-table on `ConnectionEntry`, not a
+   field on each URL-bearing `ConnectionKind`.** A tunnel applies uniformly to
+   every TCP engine (the Postgres-wire family + MySQL) and to none of the others
+   (Turso is a local file, D1 is HTTPS-to-Cloudflare), so threading it through
+   five enum variants would be five copies of the same optional. Instead
+   `ConnectionEntry` grows one `#[serde(skip_serializing_if = "Option::is_none")]
+   ssh: Option<SshTunnelToml>`; parse rejects an `ssh` block paired with a
+   `turso`/`d1`/`aurora-dsql-iam` kind. Secrets stay out of the file exactly as
+   before: the key-file **path** and the non-secret SSH host/port/user live
+   inline, while the key **passphrase** and the SSH **password** are
+   `keyring_*_ref` pointers resolved through the same `SecretStore` and committed
+   through the same rollback-ordered `ConnectionAdmin` path (ADR-0016). A
+   parallel `DBBOARD_SSH_*` env surface layers a tunnel onto whichever URL
+   backend the env resolver picked, for headless/CI use and the first live test.
+
+### Consequences
+
+- dbboard can be the daily client for bastion-gated databases without a second
+  tool; the HeidiSQL SSH-tunnel sessions map one-to-one onto dbboard
+  connections.
+- A new leaf crate `dbboard-tunnel` joins the workspace (documented in
+  `docs/architecture.md`); `dbboard-connect` gains a `russh`-backed dependency
+  transitively and a `TunneledAdapter` decorator.
+- Host-key safety is enforced by construction: there is no code path that
+  connects a tunnel without either a pinned fingerprint or a known_hosts match,
+  and the mismatch case is surfaced distinctly from the unknown-host case.
+- Tested RED-first: `SshTunnelConfig`/`HostKeyPolicy`/`SshTunnelToml` parsing and
+  validation, the `host:port` URL-rewrite helper, and SHA-256 fingerprint
+  formatting are pure unit tests; the actual forward (connect → verify → auth →
+  `direct-tcpip` → `copy_bidirectional`) is covered by an env-gated
+  (`DBBOARD_SSH_*`) integration test so CI stays offline while the maintainer can
+  drive a real bastion. `serialized_toml_has_no_secret_value_keys` is extended to
+  prove the SSH passphrase/password never land in the TOML.
