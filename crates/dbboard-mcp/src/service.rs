@@ -252,6 +252,7 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::Turso { .. } => "turso",
         ConnectionKind::D1 { .. } => "d1",
         ConnectionKind::Postgres { .. } => "postgres",
+        ConnectionKind::MySql { .. } => "mysql",
         ConnectionKind::Neon { .. } => "neon",
         ConnectionKind::Supabase { .. } => "supabase",
         ConnectionKind::AuroraDsql { .. } => "aurora-dsql",

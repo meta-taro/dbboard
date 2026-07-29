@@ -22,6 +22,7 @@ const D1_TOKEN_ENV: &str = "DBBOARD_D1_TOKEN";
 const D1_BASE_URL_ENV: &str = "DBBOARD_D1_BASE_URL";
 
 const PG_URL_ENV: &str = "DBBOARD_PG_URL";
+const MYSQL_URL_ENV: &str = "DBBOARD_MYSQL_URL";
 const NEON_URL_ENV: &str = "DBBOARD_NEON_URL";
 const SUPABASE_URL_ENV: &str = "DBBOARD_SUPABASE_URL";
 const AURORA_DSQL_URL_ENV: &str = "DBBOARD_AURORA_DSQL_URL";
@@ -36,6 +37,13 @@ pub enum BackendConfig {
     },
     D1(D1Config),
     Postgres {
+        url: String,
+    },
+    /// `MySQL` connection (ADR-0068). Unlike the Postgres-wire family this
+    /// is a genuinely different SQL dialect served by the `dbboard-mysql`
+    /// adapter (back-tick quoting, backslash-escaped literals). The URL
+    /// (`mysql://…`) embeds the password, so it is redacted in `Debug`.
+    MySql {
         url: String,
     },
     /// Postgres-wire connection labelled as Neon (ADR-0018). Wire shape
@@ -101,6 +109,7 @@ impl fmt::Debug for BackendConfig {
             Self::Turso { path } => f.debug_struct("Turso").field("path", path).finish(),
             Self::D1(_) => f.write_str("D1(<redacted>)"),
             Self::Postgres { .. } => f.write_str("Postgres(<redacted>)"),
+            Self::MySql { .. } => f.write_str("MySql(<redacted>)"),
             Self::Neon { .. } => f.write_str("Neon(<redacted>)"),
             Self::Supabase { .. } => f.write_str("Supabase(<redacted>)"),
             Self::AuroraDsql { .. } => f.write_str("AuroraDsql(<redacted>)"),
@@ -124,8 +133,11 @@ impl fmt::Debug for BackendConfig {
 ///    (ADR-0019). Ranks below Neon and above generic `DBBOARD_PG_URL`.
 /// 4. `DBBOARD_PG_URL` — a PostgreSQL-wire database (`CockroachDB`,
 ///    self-hosted Postgres).
-/// 5. The `DBBOARD_D1_*` trio — Cloudflare D1 over REST.
-/// 6. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
+/// 5. `DBBOARD_MYSQL_URL` — a `MySQL` / `MariaDB` database (ADR-0068). A
+///    distinct dialect, not a pg-wire flavor; ranks just below the
+///    Postgres-wire family.
+/// 6. The `DBBOARD_D1_*` trio — Cloudflare D1 over REST.
+/// 7. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
 ///    `":memory:"`), so a fresh checkout runs without configuration.
 ///
 /// This entry point does not consult `connections.toml`; for the
@@ -148,13 +160,15 @@ pub fn backend_config_from_env() -> BackendConfig {
 /// 3. `DBBOARD_SUPABASE_URL` — wins outright (Supabase-flavored
 ///    Postgres, ADR-0019; ranks above generic `DBBOARD_PG_URL`).
 /// 4. `DBBOARD_PG_URL` — wins outright.
-/// 5. The `DBBOARD_D1_*` trio — wins outright.
-/// 6. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
-/// 7. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
-/// 8. If `file` has exactly one entry — auto-select it.
-/// 9. Otherwise Turso `:memory:` (the unchanged default).
+/// 5. `DBBOARD_MYSQL_URL` — wins outright (`MySQL` / `MariaDB`, ADR-0068;
+///    a distinct dialect ranked just below the Postgres-wire family).
+/// 6. The `DBBOARD_D1_*` trio — wins outright.
+/// 7. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
+/// 8. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
+/// 9. If `file` has exactly one entry — auto-select it.
+/// 10. Otherwise Turso `:memory:` (the unchanged default).
 ///
-/// Secret-bearing entries (D1, Postgres) resolve their credentials
+/// Secret-bearing entries (D1, Postgres, `MySQL`) resolve their credentials
 /// through `secrets`, propagating [`ConfigError::Secret`] on miss so
 /// the binary aborts before the loopback server binds.
 ///
@@ -184,6 +198,7 @@ struct EnvSnapshot {
     neon_url: Option<String>,
     supabase_url: Option<String>,
     pg_url: Option<String>,
+    mysql_url: Option<String>,
     d1_account_id: Option<String>,
     d1_database_id: Option<String>,
     d1_token: Option<String>,
@@ -199,6 +214,7 @@ impl EnvSnapshot {
             neon_url: non_empty(std::env::var(NEON_URL_ENV).ok()),
             supabase_url: non_empty(std::env::var(SUPABASE_URL_ENV).ok()),
             pg_url: non_empty(std::env::var(PG_URL_ENV).ok()),
+            mysql_url: non_empty(std::env::var(MYSQL_URL_ENV).ok()),
             d1_account_id: non_empty(std::env::var(D1_ACCOUNT_ID_ENV).ok()),
             d1_database_id: non_empty(std::env::var(D1_DATABASE_ID_ENV).ok()),
             d1_token: non_empty(std::env::var(D1_TOKEN_ENV).ok()),
@@ -225,6 +241,9 @@ fn resolve_from_env_only(env: &EnvSnapshot) -> BackendConfig {
     }
     if let Some(url) = env.pg_url.clone() {
         return BackendConfig::Postgres { url };
+    }
+    if let Some(url) = env.mysql_url.clone() {
+        return BackendConfig::MySql { url };
     }
     if let (Some(account_id), Some(database_id), Some(api_token)) = (
         env.d1_account_id.clone(),
@@ -265,6 +284,9 @@ fn resolve_backend(
         return Ok(resolve_from_env_only(env));
     }
     if env.pg_url.is_some() {
+        return Ok(resolve_from_env_only(env));
+    }
+    if env.mysql_url.is_some() {
         return Ok(resolve_from_env_only(env));
     }
     if env.d1_account_id.is_some() && env.d1_database_id.is_some() && env.d1_token.is_some() {
@@ -337,6 +359,9 @@ fn label_for(env: &EnvSnapshot, file: &ConnectionFile) -> String {
     if env.pg_url.is_some() {
         return "env:postgres".to_string();
     }
+    if env.mysql_url.is_some() {
+        return "env:mysql".to_string();
+    }
     if env.d1_account_id.is_some() && env.d1_database_id.is_some() && env.d1_token.is_some() {
         return "env:d1".to_string();
     }
@@ -399,6 +424,10 @@ fn entry_to_backend(
         ConnectionKind::Postgres { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
             Ok(BackendConfig::Postgres { url })
+        }
+        ConnectionKind::MySql { keyring_url_ref } => {
+            let url = secrets.get(keyring_url_ref)?;
+            Ok(BackendConfig::MySql { url })
         }
         ConnectionKind::Neon { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
@@ -483,6 +512,16 @@ mod tests {
             id: id.to_string(),
             name: format!("pg {id}"),
             kind: ConnectionKind::Postgres {
+                keyring_url_ref: url_ref.to_string(),
+            },
+        }
+    }
+
+    fn mysql_entry(id: &str, url_ref: &str) -> ConnectionEntry {
+        ConnectionEntry {
+            id: id.to_string(),
+            name: format!("mysql {id}"),
+            kind: ConnectionKind::MySql {
                 keyring_url_ref: url_ref.to_string(),
             },
         }
@@ -850,6 +889,41 @@ mod tests {
             matches!(cfg, BackendConfig::Neon { url } if url == "postgres://from-store-as-neon"),
             "Neon URL must be loaded from the secret store under the Neon variant"
         );
+    }
+
+    #[test]
+    fn mysql_env_var_wins_over_the_file_store() {
+        let mut env = empty_env();
+        env.mysql_url = Some("mysql://from-env".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::MySql { url } if url == "mysql://from-env"),
+            "MYSQL_URL must short-circuit the store"
+        );
+    }
+
+    #[test]
+    fn mysql_entry_resolves_url_through_the_secret_store() {
+        let file = file_with(vec![mysql_entry("shop", "dbboard.shop.url")]);
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set("dbboard.shop.url", "mysql://from-store")
+            .expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::MySql { url } if url == "mysql://from-store"),
+            "MySQL URL must be loaded from the secret store"
+        );
+    }
+
+    #[test]
+    fn resolved_label_mysql_env_wins() {
+        let mut env = empty_env();
+        env.mysql_url = Some("mysql://shop".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        assert_eq!(label_for(&env, &file), "env:mysql");
     }
 
     #[test]

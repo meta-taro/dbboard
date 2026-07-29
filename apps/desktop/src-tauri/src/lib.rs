@@ -424,6 +424,12 @@ enum KindInput {
     Postgres {
         url: String,
     },
+    // snake_case would emit `my_sql`; pin the tag to `mysql` to match the
+    // frontend draft and `ConnectionKind::MySql`'s discriminator (ADR-0068).
+    #[serde(rename = "mysql")]
+    MySql {
+        url: String,
+    },
     Neon {
         url: String,
     },
@@ -451,6 +457,10 @@ enum KindEditInput {
         token: Option<String>,
     },
     Postgres {
+        url: Option<String>,
+    },
+    #[serde(rename = "mysql")]
+    MySql {
         url: Option<String>,
     },
     Neon {
@@ -495,6 +505,7 @@ fn to_add_draft(id: String, name: String, kind: KindInput) -> ConnectionDraft {
             token,
         },
         KindInput::Postgres { url } => ConnectionKindDraft::Postgres { url },
+        KindInput::MySql { url } => ConnectionKindDraft::MySql { url },
         KindInput::Neon { url } => ConnectionKindDraft::Neon { url },
         KindInput::Supabase { url } => ConnectionKindDraft::Supabase { url },
         KindInput::AuroraDsql { url } => ConnectionKindDraft::AuroraDsql { url },
@@ -517,6 +528,9 @@ fn to_edit_draft(name: String, kind: KindEditInput) -> ConnectionEditDraft {
             token: secret_field(token),
         },
         KindEditInput::Postgres { url } => ConnectionKindEditDraft::Postgres {
+            url: secret_field(url),
+        },
+        KindEditInput::MySql { url } => ConnectionKindEditDraft::MySql {
             url: secret_field(url),
         },
         KindEditInput::Neon { url } => ConnectionKindEditDraft::Neon {
@@ -550,6 +564,8 @@ enum EditFieldsDto {
         base_url: Option<String>,
     },
     Postgres {},
+    #[serde(rename = "mysql")]
+    MySql {},
     Neon {},
     Supabase {},
     AuroraDsql {},
@@ -582,6 +598,7 @@ fn connection_edit_fields(
             base_url: base_url.clone(),
         },
         ConnectionKind::Postgres { .. } => EditFieldsDto::Postgres {},
+        ConnectionKind::MySql { .. } => EditFieldsDto::MySql {},
         ConnectionKind::Neon { .. } => EditFieldsDto::Neon {},
         ConnectionKind::Supabase { .. } => EditFieldsDto::Supabase {},
         ConnectionKind::AuroraDsql { .. } => EditFieldsDto::AuroraDsql {},

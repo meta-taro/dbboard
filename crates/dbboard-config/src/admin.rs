@@ -66,6 +66,9 @@ pub enum ConnectionKindDraft {
     Postgres {
         url: String,
     },
+    MySql {
+        url: String,
+    },
     Neon {
         url: String,
     },
@@ -106,6 +109,9 @@ pub enum ConnectionKindEditDraft {
         token: SecretField,
     },
     Postgres {
+        url: SecretField,
+    },
+    MySql {
         url: SecretField,
     },
     Neon {
@@ -567,6 +573,14 @@ impl ConnectionAdmin {
                     keyring_url_ref: keyring_url_ref.clone(),
                 }
             }
+            (ConnectionKind::MySql { keyring_url_ref }, ConnectionKindEditDraft::MySql { url }) => {
+                if let SecretField::Set(new_value) = url {
+                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
+                }
+                ConnectionKind::MySql {
+                    keyring_url_ref: keyring_url_ref.clone(),
+                }
+            }
             (ConnectionKind::Neon { keyring_url_ref }, ConnectionKindEditDraft::Neon { url }) => {
                 if let SecretField::Set(new_value) = url {
                     self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
@@ -643,9 +657,9 @@ fn zeroize_secret_writes(writes: &mut [(String, String)]) {
 }
 
 /// Enumerate every keyring ref that a given [`ConnectionKind`] points
-/// at. `Turso` has none; `D1`, `Postgres`, `Neon`, `Supabase`, and
-/// `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its AWS
-/// secret-key ref (its other fields are non-secret and live inline).
+/// at. `Turso` has none; `D1`, `Postgres`, `MySql`, `Neon`, `Supabase`,
+/// and `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its
+/// AWS secret-key ref (its other fields are non-secret and live inline).
 fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
     match kind {
         ConnectionKind::Turso { .. } => Vec::new(),
@@ -653,6 +667,7 @@ fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
             keyring_token_ref, ..
         } => vec![keyring_token_ref.clone()],
         ConnectionKind::Postgres { keyring_url_ref }
+        | ConnectionKind::MySql { keyring_url_ref }
         | ConnectionKind::Neon { keyring_url_ref }
         | ConnectionKind::Supabase { keyring_url_ref }
         | ConnectionKind::AuroraDsql { keyring_url_ref } => {
@@ -707,6 +722,17 @@ fn build_kind_for_add(
         ConnectionKindDraft::Postgres { url } => {
             let url_ref = keyring_ref(id, "url");
             let kind = ConnectionKind::Postgres {
+                keyring_url_ref: url_ref.clone(),
+            };
+            let writes = vec![PendingSecretWrite {
+                key_ref: url_ref,
+                value: url,
+            }];
+            (kind, writes)
+        }
+        ConnectionKindDraft::MySql { url } => {
+            let url_ref = keyring_ref(id, "url");
+            let kind = ConnectionKind::MySql {
                 keyring_url_ref: url_ref.clone(),
             };
             let writes = vec![PendingSecretWrite {

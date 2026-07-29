@@ -427,6 +427,7 @@ fn dump_header(dialect: SqlDialect) -> String {
     let engine = match dialect {
         SqlDialect::Sqlite => "sqlite",
         SqlDialect::Postgres => "postgres",
+        SqlDialect::MySql => "mysql",
     };
     format!("-- dbboard logical dump ({engine})\n")
 }

@@ -210,6 +210,7 @@ fn dialect_label_for_kind(kind: &ConnectionKind) -> Option<String> {
         ConnectionKind::Turso { .. } => "turso",
         ConnectionKind::D1 { .. } => "d1",
         ConnectionKind::Postgres { .. } => "postgres",
+        ConnectionKind::MySql { .. } => "mysql",
         ConnectionKind::Neon { .. } => "neon",
         ConnectionKind::Supabase { .. } => "supabase",
         ConnectionKind::AuroraDsql { .. } | ConnectionKind::AuroraDsqlIam { .. } => "aurora-dsql",
@@ -217,6 +218,7 @@ fn dialect_label_for_kind(kind: &ConnectionKind) -> Option<String> {
     dialect_for_adapter_id(adapter_id).map(|d| match d {
         SqlDialect::Sqlite => "sqlite".to_string(),
         SqlDialect::Postgres => "postgres".to_string(),
+        SqlDialect::MySql => "mysql".to_string(),
     })
 }
 

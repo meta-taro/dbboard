@@ -30,14 +30,17 @@ At startup the binary picks a backend in this order:
    [ADR-0019](decisions.md); the adapter is labelled `supabase`).
 4. `DBBOARD_PG_URL` (generic PostgreSQL-wire — CockroachDB, self-hosted
    Postgres; the adapter is labelled `postgres`).
-5. The `DBBOARD_D1_*` trio (account id + database id + token).
-6. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
-7. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
+5. `DBBOARD_MYSQL_URL` (MySQL / MariaDB — a distinct SQL dialect, not a
+   pg-wire flavor; the adapter is labelled `mysql`. See
+   [ADR-0068](decisions.md)).
+6. The `DBBOARD_D1_*` trio (account id + database id + token).
+7. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
+8. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
    missing id aborts startup — dbboard refuses to silently fall back to
    a different backend than the user asked for.
-8. If `connections.toml` contains exactly one entry, that one is
+9. If `connections.toml` contains exactly one entry, that one is
    auto-selected.
-9. Otherwise an in-memory Turso/libSQL database (`:memory:`).
+10. Otherwise an in-memory Turso/libSQL database (`:memory:`).
 
 `DBBOARD_AURORA_DSQL_URL`, `DBBOARD_NEON_URL`, and
 `DBBOARD_SUPABASE_URL` all outrank `DBBOARD_PG_URL` because they carry
@@ -107,6 +110,15 @@ kind            = "aurora-dsql"
 keyring_url_ref = "dbboard.aurora-dsql-prod.url"
 
 [[connections]]
+id              = "shop-mysql"
+name            = "Shop (MySQL)"
+kind            = "mysql"
+# MySQL / MariaDB — a genuinely different SQL dialect, not a pg-wire
+# flavor. Same secret shape as the Postgres family (the keyring carries a
+# "mysql://…" URL), but served by the dbboard-mysql adapter. See ADR-0068.
+keyring_url_ref = "dbboard.shop-mysql.url"
+
+[[connections]]
 id                     = "aurora-dsql-iam-prod"
 name                   = "Aurora DSQL (IAM, prod)"
 kind                   = "aurora-dsql-iam"
@@ -131,11 +143,14 @@ keyring_secret_key_ref = "dbboard.aurora-dsql-iam-prod.secret_key"
   are a hard error at load time.
 - `name` — display label for the (future) connection picker.
 - `kind` — `"turso"`, `"d1"`, `"postgres"`, `"neon"`, `"supabase"`,
-  `"aurora-dsql"`, or `"aurora-dsql-iam"`. `"neon"`, `"supabase"`,
-  `"aurora-dsql"`, and `"postgres"` share the same wire shape (the
-  keyring carries a `postgres://…` URL either way); the only difference
-  is the runtime adapter label, which the connection picker and history
-  records read. `"aurora-dsql-iam"` is the exception: it carries its
+  `"aurora-dsql"`, `"aurora-dsql-iam"`, or `"mysql"`. `"neon"`,
+  `"supabase"`, `"aurora-dsql"`, and `"postgres"` share the same wire
+  shape (the keyring carries a `postgres://…` URL either way); the only
+  difference is the runtime adapter label, which the connection picker and
+  history records read. `"mysql"` is a distinct dialect (ADR-0068) served
+  by its own adapter, but stores its secret the same way — the keyring
+  carries a `mysql://…` URL. `"aurora-dsql-iam"` is the exception: it
+  carries its
   fields inline (`endpoint`, `region`, `database`, `username`,
   `access_key_id`) and stores only the AWS secret access key in the
   keychain, because dbboard mints the IAM token itself (see below).
