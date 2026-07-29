@@ -9,11 +9,33 @@ import {
   buildKindEditInput,
   formForEdit,
   CONNECTION_KINDS,
+  supportsSshTunnel,
+  validateSsh,
+  buildSshInput,
+  buildSshEditInput,
+  parseSshPort,
   type ConnectionForm,
 } from './draft';
 
 function form(overrides: Partial<ConnectionForm>): ConnectionForm {
   return { ...emptyForm(), ...overrides };
+}
+
+// A complete, valid key-auth tunnel form on top of a postgres connection.
+function tunnelForm(overrides: Partial<ConnectionForm> = {}): ConnectionForm {
+  return form({
+    kind: 'postgres',
+    name: 'PG',
+    url: 'postgres://h/db',
+    ssh_enabled: true,
+    ssh_host: 'bastion.example',
+    ssh_user: 'deploy',
+    ssh_auth_method: 'key',
+    ssh_key_path: '/home/deploy/.ssh/id_ed25519',
+    ssh_host_key_policy: 'fingerprint',
+    ssh_fingerprint: 'SHA256:abc',
+    ...overrides,
+  });
 }
 
 describe('fieldsForKind', () => {
@@ -190,5 +212,219 @@ describe('CONNECTION_KINDS', () => {
       'supabase',
       'aurora_dsql',
     ]);
+  });
+});
+
+describe('supportsSshTunnel', () => {
+  it('is true only for the TCP/URL engines', () => {
+    for (const k of ['postgres', 'mysql', 'neon', 'supabase', 'aurora_dsql'] as const) {
+      expect(supportsSshTunnel(k)).toBe(true);
+    }
+    expect(supportsSshTunnel('turso')).toBe(false);
+    expect(supportsSshTunnel('d1')).toBe(false);
+  });
+});
+
+describe('parseSshPort', () => {
+  it('parses a valid port', () => {
+    expect(parseSshPort('2222')).toBe(2222);
+  });
+  it('defaults a blank or out-of-range value to 22', () => {
+    expect(parseSshPort('')).toBe(22);
+    expect(parseSshPort('  ')).toBe(22);
+    expect(parseSshPort('0')).toBe(22);
+    expect(parseSshPort('70000')).toBe(22);
+    expect(parseSshPort('nope')).toBe(22);
+  });
+});
+
+describe('validateSsh', () => {
+  it('is a no-op when the tunnel is off', () => {
+    expect(validateSsh(tunnelForm({ ssh_enabled: false }), 'add')).toEqual([]);
+  });
+  it('is a no-op for a kind that cannot tunnel even if the toggle is on', () => {
+    expect(validateSsh(form({ kind: 'turso', ssh_enabled: true }), 'add')).toEqual([]);
+  });
+  it('passes a complete key-auth tunnel', () => {
+    expect(validateSsh(tunnelForm(), 'add')).toEqual([]);
+  });
+  it('flags a missing host, user, key path and host-key fingerprint', () => {
+    const bad = validateSsh(
+      tunnelForm({ ssh_host: '', ssh_user: '', ssh_key_path: '', ssh_fingerprint: '' }),
+      'add',
+    );
+    expect(bad).toEqual(['ssh_host', 'ssh_user', 'ssh_key_path', 'ssh_fingerprint']);
+  });
+  it('rejects a non-numeric or out-of-range port but allows blank (defaults 22)', () => {
+    expect(validateSsh(tunnelForm({ ssh_port: 'abc' }), 'add')).toEqual(['ssh_port']);
+    expect(validateSsh(tunnelForm({ ssh_port: '99999' }), 'add')).toEqual(['ssh_port']);
+    expect(validateSsh(tunnelForm({ ssh_port: '' }), 'add')).toEqual([]);
+  });
+  it('requires the password on add', () => {
+    const pw = tunnelForm({ ssh_auth_method: 'password', ssh_password: '' });
+    expect(validateSsh(pw, 'add')).toEqual(['ssh_password']);
+  });
+  it('on edit keeps a stored password when one exists (blank ok)', () => {
+    const pw = tunnelForm({
+      ssh_auth_method: 'password',
+      ssh_password: '',
+      ssh_had_password: true,
+    });
+    expect(validateSsh(pw, 'edit')).toEqual([]);
+  });
+  it('on edit requires a password when switching to password auth (nothing to keep)', () => {
+    const pw = tunnelForm({
+      ssh_auth_method: 'password',
+      ssh_password: '',
+      ssh_had_password: false,
+    });
+    expect(validateSsh(pw, 'edit')).toEqual(['ssh_password']);
+  });
+  it('on edit requires a passphrase when a key is freshly marked encrypted', () => {
+    const k = tunnelForm({
+      ssh_key_encrypted: true,
+      ssh_passphrase: '',
+      ssh_had_key_passphrase: false,
+    });
+    expect(validateSsh(k, 'edit')).toEqual(['ssh_passphrase']);
+  });
+  it('on edit keeps a stored passphrase for an already-encrypted key (blank ok)', () => {
+    const k = tunnelForm({
+      ssh_key_encrypted: true,
+      ssh_passphrase: '',
+      ssh_had_key_passphrase: true,
+    });
+    expect(validateSsh(k, 'edit')).toEqual([]);
+  });
+  it('requires known_hosts when that policy is chosen', () => {
+    const kh = tunnelForm({ ssh_host_key_policy: 'known_hosts', ssh_known_hosts: '' });
+    expect(validateSsh(kh, 'add')).toEqual(['ssh_known_hosts']);
+  });
+});
+
+describe('buildSshInput', () => {
+  it('returns null when the tunnel is off', () => {
+    expect(buildSshInput(tunnelForm({ ssh_enabled: false }))).toBeNull();
+  });
+  it('returns null for a non-tunnelable kind', () => {
+    expect(buildSshInput(form({ kind: 'turso', ssh_enabled: true }))).toBeNull();
+  });
+  it('shapes a key-auth payload with a null passphrase for an unencrypted key', () => {
+    expect(buildSshInput(tunnelForm({ ssh_port: '2222' }))).toEqual({
+      host: 'bastion.example',
+      port: 2222,
+      user: 'deploy',
+      auth: { method: 'key', key_path: '/home/deploy/.ssh/id_ed25519', passphrase: null },
+      host_key: { policy: 'fingerprint', fingerprint: 'SHA256:abc' },
+    });
+  });
+  it('sends an inline passphrase when the key is encrypted', () => {
+    const p = buildSshInput(tunnelForm({ ssh_passphrase: 'unlock' }));
+    expect(p?.auth).toEqual({
+      method: 'key',
+      key_path: '/home/deploy/.ssh/id_ed25519',
+      passphrase: 'unlock',
+    });
+  });
+  it('shapes a password-auth payload', () => {
+    const p = buildSshInput(
+      tunnelForm({ ssh_auth_method: 'password', ssh_password: 's3cr3t' }),
+    );
+    expect(p?.auth).toEqual({ method: 'password', password: 's3cr3t' });
+  });
+});
+
+describe('buildSshEditInput', () => {
+  it('disables the tunnel when the toggle is off', () => {
+    expect(buildSshEditInput(tunnelForm({ ssh_enabled: false }))).toEqual({ action: 'disable' });
+  });
+  it('disables for a non-tunnelable kind', () => {
+    expect(buildSshEditInput(form({ kind: 'turso', ssh_enabled: true }))).toEqual({
+      action: 'disable',
+    });
+  });
+  it('sets a key-auth tunnel, carrying the encrypted flag and a null (keep) passphrase', () => {
+    expect(buildSshEditInput(tunnelForm({ ssh_key_encrypted: true, ssh_passphrase: '' }))).toEqual({
+      action: 'set',
+      host: 'bastion.example',
+      port: 22,
+      user: 'deploy',
+      auth: {
+        method: 'key',
+        key_path: '/home/deploy/.ssh/id_ed25519',
+        encrypted: true,
+        passphrase: null,
+      },
+      host_key: { policy: 'fingerprint', fingerprint: 'SHA256:abc' },
+    });
+  });
+  it('sends a blank password as null (keep the stored one)', () => {
+    const p = buildSshEditInput(
+      tunnelForm({ ssh_auth_method: 'password', ssh_password: '' }),
+    );
+    expect(p.auth).toEqual({ method: 'password', password: null });
+  });
+});
+
+describe('formForEdit with an SSH prefill', () => {
+  it('seeds the tunnel fields and never a secret', () => {
+    const f = formForEdit('p', 'P', {
+      kind: 'postgres',
+      ssh: {
+        host: 'bastion.example',
+        port: 2222,
+        user: 'deploy',
+        auth: { method: 'key', key_path: '/k', encrypted: true },
+        host_key: { policy: 'known_hosts', known_hosts: '/kh' },
+      },
+    });
+    expect(f.ssh_enabled).toBe(true);
+    expect(f.ssh_host).toBe('bastion.example');
+    expect(f.ssh_port).toBe('2222');
+    expect(f.ssh_user).toBe('deploy');
+    expect(f.ssh_auth_method).toBe('key');
+    expect(f.ssh_key_path).toBe('/k');
+    expect(f.ssh_key_encrypted).toBe(true);
+    expect(f.ssh_host_key_policy).toBe('known_hosts');
+    expect(f.ssh_known_hosts).toBe('/kh');
+    // Secrets are never prefilled.
+    expect(f.ssh_passphrase).toBe('');
+    expect(f.ssh_password).toBe('');
+    // An encrypted key has a stored passphrase to keep.
+    expect(f.ssh_had_key_passphrase).toBe(true);
+    expect(f.ssh_had_password).toBe(false);
+  });
+  it('records no stored passphrase for an unencrypted key prefill', () => {
+    const f = formForEdit('p', 'P', {
+      kind: 'postgres',
+      ssh: {
+        host: 'h',
+        port: 22,
+        user: 'u',
+        auth: { method: 'key', key_path: '/k', encrypted: false },
+        host_key: { policy: 'fingerprint', fingerprint: 'SHA256:abc' },
+      },
+    });
+    expect(f.ssh_key_encrypted).toBe(false);
+    expect(f.ssh_had_key_passphrase).toBe(false);
+  });
+  it('records a stored password for a password-auth prefill', () => {
+    const f = formForEdit('p', 'P', {
+      kind: 'postgres',
+      ssh: {
+        host: 'h',
+        port: 22,
+        user: 'u',
+        auth: { method: 'password' },
+        host_key: { policy: 'fingerprint', fingerprint: 'SHA256:abc' },
+      },
+    });
+    expect(f.ssh_auth_method).toBe('password');
+    expect(f.ssh_had_password).toBe(true);
+    expect(f.ssh_had_key_passphrase).toBe(false);
+  });
+  it('leaves the tunnel off when no ssh block is returned', () => {
+    const f = formForEdit('p', 'P', { kind: 'postgres' });
+    expect(f.ssh_enabled).toBe(false);
   });
 });

@@ -20,10 +20,15 @@
     validate,
     buildKindInput,
     buildKindEditInput,
+    supportsSshTunnel,
+    validateSsh,
+    buildSshInput,
+    buildSshEditInput,
     CONNECTION_KINDS,
     type ConnectionForm,
     type ConnectionKind,
     type FormField,
+    type SshFormField,
     type EditorMode,
   } from '$lib/connections/draft';
 
@@ -37,6 +42,7 @@
   let editorMode = $state<EditorMode>('add');
   let form = $state<ConnectionForm>(emptyForm());
   let invalid = $state<FormField[]>([]);
+  let invalidSsh = $state<SshFormField[]>([]);
   let busy = $state(false);
   let error = $state('');
   let info = $state('');
@@ -73,6 +79,7 @@
     error = '';
     info = '';
     invalid = [];
+    invalidSsh = [];
     passphrase = '';
     passphraseConfirm = '';
     importPath = '';
@@ -116,14 +123,20 @@
 
   async function saveForm() {
     invalid = validate(form, editorMode);
-    if (invalid.length > 0) return;
+    invalidSsh = validateSsh(form, editorMode);
+    if (invalid.length > 0 || invalidSsh.length > 0) return;
     busy = true;
     error = '';
     try {
       if (editorMode === 'add') {
-        await addConnection(form.id, form.name, buildKindInput(form));
+        await addConnection(form.id, form.name, buildKindInput(form), buildSshInput(form));
       } else {
-        await updateConnection(form.id, form.name, buildKindEditInput(form));
+        await updateConnection(
+          form.id,
+          form.name,
+          buildKindEditInput(form),
+          buildSshEditInput(form),
+        );
       }
       await workspace.refreshConnections();
       goList();
@@ -369,6 +382,161 @@
           </label>
         {/each}
 
+        {#if supportsSshTunnel(form.kind)}
+          <fieldset class="ssh">
+            <legend>{i18n.t('conn-ssh-section')}</legend>
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={form.ssh_enabled}
+                onchange={(e) => (form.ssh_enabled = e.currentTarget.checked)}
+              />
+              <span>{i18n.t('conn-ssh-enable')}</span>
+            </label>
+
+            {#if form.ssh_enabled}
+              <p class="note">{i18n.t('conn-ssh-note')}</p>
+
+              <label class="field">
+                <span class="label">{i18n.t('conn-ssh-host')}</span>
+                <input
+                  class:bad={invalidSsh.includes('ssh_host')}
+                  value={form.ssh_host}
+                  oninput={(e) => (form.ssh_host = e.currentTarget.value)}
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+              </label>
+
+              <label class="field">
+                <span class="label">{i18n.t('conn-ssh-port')}</span>
+                <input
+                  class:bad={invalidSsh.includes('ssh_port')}
+                  value={form.ssh_port}
+                  oninput={(e) => (form.ssh_port = e.currentTarget.value)}
+                  inputmode="numeric"
+                  autocomplete="off"
+                />
+              </label>
+
+              <label class="field">
+                <span class="label">{i18n.t('conn-ssh-user')}</span>
+                <input
+                  class:bad={invalidSsh.includes('ssh_user')}
+                  value={form.ssh_user}
+                  oninput={(e) => (form.ssh_user = e.currentTarget.value)}
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+              </label>
+
+              <label class="field">
+                <span class="label">{i18n.t('conn-ssh-auth')}</span>
+                <select
+                  value={form.ssh_auth_method}
+                  onchange={(e) =>
+                    (form.ssh_auth_method = e.currentTarget.value as 'key' | 'password')}
+                >
+                  <option value="key">{i18n.t('conn-ssh-auth-key')}</option>
+                  <option value="password">{i18n.t('conn-ssh-auth-password')}</option>
+                </select>
+              </label>
+
+              {#if form.ssh_auth_method === 'key'}
+                <label class="field">
+                  <span class="label">{i18n.t('conn-ssh-key-path')}</span>
+                  <input
+                    class:bad={invalidSsh.includes('ssh_key_path')}
+                    value={form.ssh_key_path}
+                    oninput={(e) => (form.ssh_key_path = e.currentTarget.value)}
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                </label>
+
+                {#if editorMode === 'edit'}
+                  <label class="check">
+                    <input
+                      type="checkbox"
+                      checked={form.ssh_key_encrypted}
+                      onchange={(e) => (form.ssh_key_encrypted = e.currentTarget.checked)}
+                    />
+                    <span>{i18n.t('conn-ssh-key-encrypted')}</span>
+                  </label>
+                {/if}
+
+                {#if editorMode === 'add' || form.ssh_key_encrypted}
+                  <label class="field">
+                    <span class="label">{i18n.t('conn-ssh-passphrase')}</span>
+                    <input
+                      class:bad={invalidSsh.includes('ssh_passphrase')}
+                      type="password"
+                      value={form.ssh_passphrase}
+                      oninput={(e) => (form.ssh_passphrase = e.currentTarget.value)}
+                      autocomplete="off"
+                    />
+                    {#if editorMode === 'edit'}
+                      <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
+                    {/if}
+                  </label>
+                {/if}
+              {:else}
+                <label class="field">
+                  <span class="label">{i18n.t('conn-ssh-password')}</span>
+                  <input
+                    class:bad={invalidSsh.includes('ssh_password')}
+                    type="password"
+                    value={form.ssh_password}
+                    oninput={(e) => (form.ssh_password = e.currentTarget.value)}
+                    autocomplete="off"
+                  />
+                  {#if editorMode === 'edit'}
+                    <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
+                  {/if}
+                </label>
+              {/if}
+
+              <label class="field">
+                <span class="label">{i18n.t('conn-ssh-host-key')}</span>
+                <select
+                  value={form.ssh_host_key_policy}
+                  onchange={(e) =>
+                    (form.ssh_host_key_policy = e.currentTarget.value as
+                      | 'fingerprint'
+                      | 'known_hosts')}
+                >
+                  <option value="fingerprint">{i18n.t('conn-ssh-host-key-fingerprint')}</option>
+                  <option value="known_hosts">{i18n.t('conn-ssh-host-key-known-hosts')}</option>
+                </select>
+              </label>
+
+              {#if form.ssh_host_key_policy === 'fingerprint'}
+                <label class="field">
+                  <span class="label">{i18n.t('conn-ssh-fingerprint')}</span>
+                  <input
+                    class:bad={invalidSsh.includes('ssh_fingerprint')}
+                    value={form.ssh_fingerprint}
+                    oninput={(e) => (form.ssh_fingerprint = e.currentTarget.value)}
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                </label>
+              {:else}
+                <label class="field">
+                  <span class="label">{i18n.t('conn-ssh-known-hosts')}</span>
+                  <input
+                    class:bad={invalidSsh.includes('ssh_known_hosts')}
+                    value={form.ssh_known_hosts}
+                    oninput={(e) => (form.ssh_known_hosts = e.currentTarget.value)}
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                </label>
+              {/if}
+            {/if}
+          </fieldset>
+        {/if}
+
         <div class="actions">
           <button type="button" class="ghost" disabled={busy} onclick={goList}>
             {i18n.t('conn-cancel')}
@@ -607,6 +775,38 @@
     font-size: var(--text-small);
     color: var(--text-accent);
     word-break: break-all;
+  }
+
+  .ssh {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin: 0;
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+  }
+  .ssh legend {
+    padding: 0 var(--space-1);
+    font-size: var(--text-hint);
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .ssh .note {
+    margin: 0;
+    font-size: var(--text-hint);
+    color: var(--faint);
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-body);
+    color: var(--text);
+  }
+  .check input {
+    width: auto;
+    margin: 0;
   }
 
   .actions {

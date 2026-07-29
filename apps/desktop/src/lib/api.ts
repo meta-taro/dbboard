@@ -316,17 +316,22 @@ export const onRestoreProgress = (
 export const connectionEditFields = (id: string): Promise<EditFields> =>
   invoke('connection_edit_fields', { id });
 
+// `ssh` is a tagged SshInput (or null for no tunnel) / SshEditInput, shaped by
+// `$lib/connections/draft`. The tunnel fronts the connection; its secrets ride
+// inline on add and keep-or-overwrite on edit (ADR-0069).
 export const addConnection = (
   id: string,
   name: string,
   kind: Record<string, unknown>,
-): Promise<void> => invoke('add_connection', { id, name, kind });
+  ssh: Record<string, unknown> | null,
+): Promise<void> => invoke('add_connection', { id, name, kind, ssh });
 
 export const updateConnection = (
   id: string,
   name: string,
   kind: Record<string, unknown>,
-): Promise<void> => invoke('update_connection', { id, name, kind });
+  ssh: Record<string, unknown>,
+): Promise<void> => invoke('update_connection', { id, name, kind, ssh });
 
 export const deleteConnection = (id: string): Promise<void> =>
   invoke('delete_connection', { id });

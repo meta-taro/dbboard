@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use dbboard_config::{
     ConfigError, ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionEntry,
-    ConnectionKind, ConnectionKindDraft, ConnectionKindEditDraft, SecretField,
+    ConnectionKind, ConnectionKindDraft, ConnectionKindEditDraft, SecretField, SshEditField,
 };
 use dbboard_i18n::t;
 use eframe::egui;
@@ -836,6 +836,10 @@ impl AddFormState {
             },
         };
         ConnectionDraft {
+            // The egui client does not expose SSH tunnel editing (ADR-0069's
+            // UI lives in the Tauri desktop); tunneled connections are added
+            // via connections.toml or the desktop app.
+            ssh: None,
             id: self.id.clone(),
             name: self.name.clone(),
             kind,
@@ -971,6 +975,11 @@ impl EditFormState {
             EditKindState::AuroraDsqlIam => ConnectionKindEditDraft::AuroraDsqlIam,
         };
         ConnectionEditDraft {
+            // egui has no tunnel UI (the desktop app is the editor), so it
+            // must not disturb a stored tunnel: `Keep` leaves the block and
+            // its secrets exactly as they are, letting a tunneled connection be
+            // renamed here without dropping the tunnel (ADR-0069).
+            ssh: SshEditField::Keep,
             name: self.name.clone(),
             kind,
         }
@@ -1565,6 +1574,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "n".into(),
                 name: "N".into(),
                 kind: ConnectionKindDraft::Neon {
@@ -1652,6 +1662,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "s".into(),
                 name: "S".into(),
                 kind: ConnectionKindDraft::Supabase {
@@ -1742,6 +1753,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "d".into(),
                 name: "D".into(),
                 kind: ConnectionKindDraft::AuroraDsql {
@@ -1776,6 +1788,7 @@ mod tests {
         // Pre-populate via admin so the second add collides.
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "dup".into(),
                 name: "First".into(),
                 kind: ConnectionKindDraft::Turso {
@@ -1802,6 +1815,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "prod".into(),
                 name: "Prod".into(),
                 kind: ConnectionKindDraft::D1 {
@@ -1833,6 +1847,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "prod".into(),
                 name: "Prod".into(),
                 kind: ConnectionKindDraft::D1 {
@@ -1866,6 +1881,7 @@ mod tests {
         let (_dir, _secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "x".into(),
                 name: "X".into(),
                 kind: ConnectionKindDraft::Turso {
@@ -1969,6 +1985,7 @@ mod tests {
     fn seed_one(admin: &mut ConnectionAdmin) {
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "local".into(),
                 name: "Local".into(),
                 kind: ConnectionKindDraft::Turso {

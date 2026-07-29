@@ -167,6 +167,16 @@ keychain. Import is skip-and-report on id/reference conflicts. See
 [ADR-0038](docs/decisions.md) and
 [`docs/connections.md`](docs/connections.md#moving-connections-between-machines-encrypted-bundle).
 
+A connection to a database that only listens on a bastion's `localhost`
+can reach it through an **SSH tunnel**: the desktop connection form has an
+**SSH tunnel** section (for the Postgres family and MySQL) to set the
+bastion host/port/user, key- or password-based auth, and a mandatory
+server host-key pin (fingerprint or `known_hosts`). dbboard opens a
+pure-Rust local port forward (russh) and rewrites the connection URL to the
+tunnel before dialing; the key passphrase / SSH password live only in the
+keychain. See [ADR-0069](docs/decisions.md) and
+[`docs/connections.md`](docs/connections.md#ssh-tunnel-connectionsssh).
+
 The same menu bar carries a **Language** / **言語** submenu listing
 the 11 shipped locales by their native names. Picking one swaps the
 UI language in place; the `DBBOARD_LANG` env var still drives the
