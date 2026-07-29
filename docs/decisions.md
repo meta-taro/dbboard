@@ -7170,7 +7170,7 @@ its own ADR entry where it introduces a new decision.
 | Dataset export (CSV / CSV-with-BOM / TSV, row selection) | ADR-0035 | **Done** |
 | Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | **Done — ADR-0064** |
 | Logical restore / import (empty-target confirm; per-engine txn strategy) | ADR-0051 | **Done — ADR-0065** |
-| AI assistant (provider trait; explain/suggest; never runs SQL, never sends rows) | ADR-0052 | Pending |
+| AI assistant (provider trait; explain/suggest; never runs SQL, never sends rows) | ADR-0052 | **Done — ADR-0066** |
 | Auto-update (updater plugin + signed `latest.json`; bump 0.3.0 → 0.4.0) | ADR-0044 / ADR-0043 | Pending |
 
 The read-only enforcement of the *query* path (ADR-0046 §8, ADR-0061) is
@@ -7410,3 +7410,85 @@ gate is the empty-target confirmation.
   progress percent incl. empty-script and over-count edges, `needsConfirmation`
   gate, `hasUnparsed`, `restoreHadFailures`, `normalizeOnError` default, file
   filter).
+
+---
+
+## ADR-0066 — Desktop AI assistant: wiring the provider layer to Tauri (v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0052 (the AI assistant design — the I/O-free provider
+  trait, the explain/suggest split, and the never-runs-SQL / never-sends-rows
+  guardrail this ports), ADR-0028 (the `describe_table` metadata prefetch this
+  fans out for Suggest), ADR-0063/0064/0065 (the desktop write verticals whose
+  *non-MCP-tool* method pattern and cancel-flag plumbing this reuses), and
+  ADR-0059 (the read-only Tauri spike this extends).
+
+### Context
+
+The AI assistant was already built and tested in the egui client: a pluggable
+provider trait (`dbboard-ai`) with two concrete providers
+(`dbboard-anthropic`, `dbboard-openai`), an explain path (send the SQL text),
+a suggest path (send the prompt + schema names), and the settings admin that
+owns `ai-providers.toml` plus the keyring. The Tauri build had none of it.
+Like the other v0.4.0 verticals this is **transport wiring only** — no new AI
+logic — plus the desktop pieces the domain layer cannot hold: streaming
+deltas to the WebView, a cancellation flag, and the provider-management
+command surface. The guardrail that defines this feature is inherited
+verbatim: the assistant never runs SQL and never sees a single row.
+
+### Decision
+
+1. **The two AI actions are Tauri commands, deliberately *not* MCP tools.**
+   `ai_explain(connection_id, sql)` and
+   `ai_suggest(connection_id, prompt, include_details)` clone the live
+   provider out of an `RwLock<Option<Arc<dyn AiProvider>>>` slot and stream
+   its output. Neither is registered in the MCP router, so external agents
+   keep the exact read-only surface — identical to the write verticals
+   (ADR-0062/0063/0064/0065). This is the enforcement point: read-only is
+   *what is registered as a tool*, not a property of the code paths.
+
+2. **The never-runs-SQL / never-sends-rows guardrail is preserved by what the
+   commands are allowed to fetch.** Explain sends only the SQL text the user
+   typed. Suggest sends the natural-language prompt plus table/column *names*
+   (`list_tables`, and — when the user ticks include-details — `describe_table`
+   metadata: names, types, PK). No `run_read_query` output ever reaches a
+   provider. A `describe_table` that fails is not fatal: it is counted into
+   `prefetch_warnings` and surfaced to the user so a partial schema is never
+   silently presented as complete.
+
+3. **Streaming uses a Tauri event; cancellation a shared `AtomicBool`.**
+   Each provider `StreamEvent` is emitted as an `ai:chunk` event carrying a
+   text delta and the running token counts; the frontend folds them through a
+   pure `accumulate()` that appends text but **replaces** the cumulative token
+   totals (the provider reports `tokens_out` cumulatively, so summing would
+   double-count). A single `cancel_ai` command flips the one
+   `AiState` cancel flag the in-flight stream polls; only one AI request runs
+   at a time, so one flag suffices, and a new request clears it first so a
+   stale cancel can't abort the next run.
+
+4. **The API key lives only in the OS keyring; the management surface never
+   returns it.** Provider CRUD (`list_ai_providers`, `add_ai_provider`,
+   `update_ai_provider`, `delete_ai_provider`, `set_active_ai_provider`) is
+   backed by `AiSettingsAdmin`, which writes `ai-providers.toml` for
+   non-secret fields and the keyring at `dbboard.ai.<id>.api_key` for the key.
+   The key is never written to TOML, never logged, never serialized back to
+   the WebView — `AiProviderView` has no key field, and an edit that leaves
+   the key blank keeps the stored one.
+
+### Consequences
+
+- The desktop gains explain-my-SQL and draft-SQL at egui parity while agents
+  stay strictly read-only and no row data can leave the machine through the
+  provider.
+- The entry-point button is always present (outside the connection gate) so a
+  first provider can be added before any connection exists; Suggest still
+  requires a connection (enforced in both the frontend `canSend` guard and the
+  command dispatch), while Explain does not.
+- Tested RED-first: 9 backend unit tests in `dbboard-desktop` (status DTO
+  shape, provider-view redaction, kind-input parse, stream accumulation
+  replace-not-sum, cancel-flag clear-on-start, prefetch-warning count), and 19
+  frontend unit tests on the pure `panel.ts` (`canSend`, `showIncludeDetails`,
+  `accumulate` append/replace/non-mutation, `validateProvider`,
+  `normalizeModel`, `providerFormForEdit`, `buildAddKindInput`). The provider
+  trait and concrete providers keep their existing `dbboard-ai` coverage,
+  unchanged.

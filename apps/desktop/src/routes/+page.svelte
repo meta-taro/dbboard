@@ -8,6 +8,7 @@
   import StructurePanel from '$lib/components/StructurePanel.svelte';
   import BackupDialog from '$lib/components/BackupDialog.svelte';
   import RestoreDialog from '$lib/components/RestoreDialog.svelte';
+  import AiPanel from '$lib/components/AiPanel.svelte';
 
   const tabs: { id: MainTab; labelKey: MessageKey }[] = [
     { id: 'query', labelKey: 'tab-query' },
@@ -16,6 +17,7 @@
 
   let backupOpen = $state(false);
   let restoreOpen = $state(false);
+  let aiOpen = $state(false);
 
   onMount(() => {
     i18n.init();
@@ -40,28 +42,42 @@
         </button>
       {/each}
 
-      {#if workspace.connection}
-        <button
-          type="button"
-          class="backup"
-          onclick={() => (backupOpen = true)}
-          title={i18n.t('backup-button-title')}
-        >
-          {i18n.t('backup-button')}
-        </button>
+      <!-- Right-side tool group. The AI button is always present so a first
+           provider can be added before any connection exists; the backup /
+           restore actions and the connection pill only appear with a
+           connection. -->
+      <div class="tools">
         <button
           type="button"
           class="tool-btn"
-          onclick={() => (restoreOpen = true)}
-          title={i18n.t('restore-button-title')}
+          onclick={() => (aiOpen = true)}
+          title={i18n.t('ai-button-title')}
         >
-          {i18n.t('restore-button')}
+          {i18n.t('ai-button')}
         </button>
-        <span class="conn-pill" title={workspace.connection.id}>
-          <span class="dot" aria-hidden="true"></span>
-          {workspace.connection.name}
-        </span>
-      {/if}
+        {#if workspace.connection}
+          <button
+            type="button"
+            class="tool-btn"
+            onclick={() => (backupOpen = true)}
+            title={i18n.t('backup-button-title')}
+          >
+            {i18n.t('backup-button')}
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
+            onclick={() => (restoreOpen = true)}
+            title={i18n.t('restore-button-title')}
+          >
+            {i18n.t('restore-button')}
+          </button>
+          <span class="conn-pill" title={workspace.connection.id}>
+            <span class="dot" aria-hidden="true"></span>
+            {workspace.connection.name}
+          </span>
+        {/if}
+      </div>
     </nav>
 
     {#if workspace.error}
@@ -94,6 +110,13 @@
     connectionId={workspace.connection.id}
     connectionName={workspace.connection.name}
     onClose={() => (restoreOpen = false)}
+  />
+{/if}
+
+{#if aiOpen}
+  <AiPanel
+    connectionId={workspace.connection?.id ?? null}
+    onClose={() => (aiOpen = false)}
   />
 {/if}
 
@@ -147,11 +170,16 @@
     background: var(--accent-weak);
   }
 
-  /* Pushed to the right edge of the tabbar, just left of the connection
-     pill: quiet ghost actions that only appear with a connection. `.backup`
-     owns the auto margin so the whole group hugs the right edge; sibling
-     tools sit snugly beside it. */
-  .backup,
+  /* The right-side tool group hugs the tabbar's right edge; its items sit
+     snugly beside each other with a shared gap. */
+  .tools {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  /* Quiet ghost actions in the tool group. */
   .tool-btn {
     border: 1px solid var(--border);
     background: transparent;
@@ -162,23 +190,12 @@
     border-radius: var(--radius-widget);
     cursor: pointer;
   }
-  .backup {
-    margin-left: auto;
-  }
-  .backup:hover,
   .tool-btn:hover {
     color: var(--text);
     border-color: var(--border-strong);
   }
 
-  /* The restore button ends the button group and sits snugly against the
-     connection pill; with no buttons the pill takes the auto margin. */
-  .tool-btn + .conn-pill {
-    margin-left: var(--space-2);
-  }
-
   .conn-pill {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 6px;

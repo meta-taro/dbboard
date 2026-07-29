@@ -13,6 +13,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+mod ai;
 mod dump;
 mod restore;
 
@@ -59,6 +60,10 @@ pub(crate) struct AppState {
     pub(crate) annotations: Mutex<AnnotationsAdmin>,
     pub(crate) dump_cancel: Arc<AtomicBool>,
     pub(crate) restore_cancel: Arc<AtomicBool>,
+    /// The AI assistant layer (ADR-0052): the live provider slot, the optional
+    /// `ai-providers.toml` admin, the shared keyring handle, and the in-flight
+    /// cancel flag. Owned by the `ai` submodule; see [`ai::AiState`].
+    pub(crate) ai: ai::AiState,
 }
 
 /// List every configured connection (id / name / adapter kind). Never
@@ -207,6 +212,11 @@ pub fn run() {
         .expect("open connections.toml for connection management");
     let annotations =
         AnnotationsAdmin::open_default().expect("open annotations.toml for local note editing");
+    // Stand up the optional AI layer before the service consumes `secrets` —
+    // both need the same keyring handle (the `ai.` keyring infix keeps their
+    // namespaces apart). A misconfigured assistant degrades to "no provider",
+    // never a launch failure (ADR-0052).
+    let ai = ai::AiState::bootstrap(&secrets);
     let service = McpService::with_default_paths(secrets)
         .expect("resolve platform config paths for connections.toml");
 
@@ -218,6 +228,7 @@ pub fn run() {
             annotations: Mutex::new(annotations),
             dump_cancel: Arc::new(AtomicBool::new(false)),
             restore_cancel: Arc::new(AtomicBool::new(false)),
+            ai,
         })
         .invoke_handler(tauri::generate_handler![
             list_connections,
@@ -243,7 +254,16 @@ pub fn run() {
             dump::cancel_dump,
             restore::plan_restore,
             restore::run_restore,
-            restore::cancel_restore
+            restore::cancel_restore,
+            ai::ai_status,
+            ai::ai_explain,
+            ai::ai_suggest,
+            ai::cancel_ai,
+            ai::list_ai_providers,
+            ai::add_ai_provider,
+            ai::update_ai_provider,
+            ai::delete_ai_provider,
+            ai::set_active_ai_provider
         ])
         .run(tauri::generate_context!())
         .expect("start the dbboard-desktop Tauri app");
