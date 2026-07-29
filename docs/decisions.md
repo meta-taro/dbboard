@@ -7171,7 +7171,7 @@ its own ADR entry where it introduces a new decision.
 | Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | **Done — ADR-0064** |
 | Logical restore / import (empty-target confirm; per-engine txn strategy) | ADR-0051 | **Done — ADR-0065** |
 | AI assistant (provider trait; explain/suggest; never runs SQL, never sends rows) | ADR-0052 | **Done — ADR-0066** |
-| Auto-update (updater plugin + signed `latest.json`; bump 0.3.0 → 0.4.0) | ADR-0044 / ADR-0043 | Pending |
+| Auto-update (updater plugin + signed `latest.json`; bump 0.3.0 → 0.4.0) | ADR-0044 / ADR-0043 | **Done — ADR-0067** |
 
 The read-only enforcement of the *query* path (ADR-0046 §8, ADR-0061) is
 unchanged: lifting the write ban applies to connection **management**, not to
@@ -7492,3 +7492,91 @@ verbatim: the assistant never runs SQL and never sees a single row.
   `normalizeModel`, `providerFormForEdit`, `buildAddKindInput`). The provider
   trait and concrete providers keep their existing `dbboard-ai` coverage,
   unchanged.
+
+## ADR-0067 — Desktop auto-update: tauri-plugin-updater + a CI-assembled `latest.json` (v0.4.0)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0040 (the egui client's inform-only update check — the
+  version-compare rules and the `DBBOARD_NO_UPDATE_CHECK` opt-out this mirrors),
+  ADR-0043 (release notes as Markdown — the notes surface this reuses),
+  ADR-0044 (the release build + checksums pipeline this extends, and its
+  deferred OS code signing), and ADR-0059/0062–0066 (the Tauri desktop app this
+  completes to v0.4.0 parity).
+
+### Context
+
+The egui client already *informs* about a newer release (ADR-0040): a
+best-effort startup check against the GitHub Releases API that surfaces a Help
+notice and the notes, with updating left entirely manual. The Tauri app had no
+update path at all. This is the last v0.4.0 parity vertical, and it goes one
+step further than egui: Tauri ships a first-party updater
+(`tauri-plugin-updater`) that can verify a signed release and install it in
+place, so the desktop app can offer **Install & Restart** rather than "go
+download it yourself". The egui binary and the Tauri app are shipped
+side-by-side — egui stays in production (it runs three store DBs and an
+unattended Aurora DSQL consumer) — so this adds a channel, it does not retire
+one.
+
+### Decision
+
+1. **`tauri-plugin-updater` + `tauri-plugin-process`, verifying a signed
+   `latest.json`.** `tauri.conf.json` points the updater at
+   `…/releases/latest/download/latest.json`, embeds the minisign **public** key,
+   and sets `createUpdaterArtifacts: true` so `tauri build` emits a `.sig` next
+   to each bundle. Windows installs via the NSIS setup `.exe` in `passive`
+   mode; macOS ships a universal `.app.tar.gz`. The frontend calls `check()`,
+   then `downloadAndInstall()`, then `relaunch()` (from the process plugin).
+
+2. **The signing PRIVATE key never enters the repo.** Only the public key is
+   committed (in `tauri.conf.json`). Signing happens in CI from the
+   `TAURI_SIGNING_PRIVATE_KEY` secret (empty password). This is the minisign
+   *updater* key only — it does not code-sign the binary, so OS code signing
+   stays deferred (ADR-0044 §Future) and the bundles still trip SmartScreen /
+   Gatekeeper on first run. Accepted trade-off: the signing key is exposed to a
+   CI job that also runs untrusted crates.io build code, which is inherent to
+   the updater's build-time-signing design (and exactly what `tauri-action`
+   does); the blast radius is "can sign an update", bounded by the human
+   holding the secret.
+
+3. **`latest.json` is assembled by CI, not by `tauri build`.** `tauri build`
+   produces the bundles and their `.sig` files but not the manifest. The
+   `release.yml` publish job builds `latest.json` from the `.sig` contents plus
+   the static, tag-derived download URLs — one universal macOS artifact serves
+   both `darwin-x86_64` and `darwin-aarch64`. Assembly fails loudly (`one()`)
+   if any bundle is missing, so a half-built release can never publish a
+   manifest that points at a nonexistent asset. No third-party release action
+   (ADR-0044): the runner-bundled `gh` CLI publishes, and — fixing the failure
+   mode recorded during the egui release work — the publish job now bootstraps
+   the release object (`gh release view … || gh release create …`) before
+   `gh release upload`, which 404s on a tag that has no release yet.
+
+4. **Opt-out and the newer-guard mirror egui (ADR-0040).** A new
+   `update_opt_out` command honours the same `DBBOARD_NO_UPDATE_CHECK` env knob,
+   so one variable silences both binaries. The pure `notice.ts` re-implements
+   egui's `parse_version`/`is_newer` (tolerate a leading `v`, fill missing
+   components with 0, drop pre-release/build metadata, treat any unparseable tag
+   as "not newer") as a defensive guard: even though the plugin gates on
+   version, a misconfigured endpoint offering a same/older build never nags. The
+   notice is a non-modal corner card, never a blocking dialog.
+
+### Consequences
+
+- The desktop app reaches v0.4.0 with full egui feature parity **plus**
+  in-place auto-update; the coordinated version bump moves the whole workspace
+  0.3.0 → 0.4.0 so both binaries and every crate share one release number.
+- The notes are rendered as plain preformatted text rather than Markdown
+  (ADR-0043 uses `egui_commonmark`, which has no WebView analogue here without a
+  new dependency, deliberately avoided under the package-manager supply-chain
+  policy). Rich Markdown notes are a possible follow-up, not a blocker.
+- **Human handoff required before the first signed release:** set the GitHub
+  Actions secret `TAURI_SIGNING_PRIVATE_KEY` to the generated minisign private
+  key with an empty `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Until then the
+  `build-tauri-*` jobs fail (updater artifacts cannot be signed). The public
+  key is already embedded, so an unsigned/mismatched build would be rejected by
+  clients anyway — signing is not optional for this channel.
+- Tested RED-first: 15 frontend unit tests on the pure `notice.ts`
+  (`normalizeVersion`, `parseVersion` incl. pre-release/empty rejection,
+  `isNewer` incl. the never-phantom guard, `foldDownload` start/progress/finish
+  non-mutation, `downloadPercent` rounding/clamp/indeterminate) plus a Rust unit
+  test pinning the `update_opt_out` policy. The download-and-install path itself
+  is thin glue over the plugin and is exercised through the UI.

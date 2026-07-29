@@ -9,6 +9,9 @@
   import BackupDialog from '$lib/components/BackupDialog.svelte';
   import RestoreDialog from '$lib/components/RestoreDialog.svelte';
   import AiPanel from '$lib/components/AiPanel.svelte';
+  import UpdateNotice from '$lib/components/UpdateNotice.svelte';
+  import { updateOptOut, checkForUpdate } from '$lib/api';
+  import type { AvailableUpdate } from '$lib/update/notice';
 
   const tabs: { id: MainTab; labelKey: MessageKey }[] = [
     { id: 'query', labelKey: 'tab-query' },
@@ -18,11 +21,25 @@
   let backupOpen = $state(false);
   let restoreOpen = $state(false);
   let aiOpen = $state(false);
+  let update = $state<AvailableUpdate | null>(null);
 
   onMount(() => {
     i18n.init();
     workspace.init();
+    void maybeCheckForUpdate();
   });
+
+  // Best-effort startup update check (ADR-0067). Honours the same
+  // DBBOARD_NO_UPDATE_CHECK opt-out as the egui client, and swallows every
+  // failure: an update check must never be able to break the app's launch.
+  async function maybeCheckForUpdate() {
+    try {
+      if (await updateOptOut()) return;
+      update = await checkForUpdate();
+    } catch {
+      update = null;
+    }
+  }
 </script>
 
 <div class="shell">
@@ -118,6 +135,10 @@
     connectionId={workspace.connection?.id ?? null}
     onClose={() => (aiOpen = false)}
   />
+{/if}
+
+{#if update}
+  <UpdateNotice {update} onDismiss={() => (update = null)} />
 {/if}
 
 <style>

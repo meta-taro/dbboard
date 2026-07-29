@@ -14,7 +14,7 @@ their own section below.
 Legend: ✅ done · 🟦 done this pass · ⛔ not yet (needs an ADR / write surface) ·
 ➖ intentionally omitted.
 
-_Last updated: 2026-07-29 (AI assistant — ADR-0066)._
+_Last updated: 2026-07-29 (auto-update — ADR-0067; desktop at v0.4.0 parity)._
 
 ## Read / inspect (the spike's remit)
 
@@ -54,6 +54,7 @@ registered as an MCP tool.
 | Logical backup / dump (whole-connection SQL) | ✅ (`backup.rs`) | ✅ | ADR-0064 (wires ADR-0049/0050). Read-only dump to a file; `dump:progress` events + cancel flag; warn-and-allow threshold (frontend-owned); SQLite/Turso data-only (no DDL). |
 | Logical restore / import (apply a `.sql` script) | ✅ (`restore.rs`) | ✅ | ADR-0065 (wires ADR-0051). Applies a chosen `.sql` file; `restore:progress` events + cancel flag; empty-target confirmation gate; per-engine transaction (atomic batch vs per-statement `on_error`); unparsed statements run best-effort. |
 | AI assistant (explain SQL / draft SQL) | ✅ (`ai.rs`, `ai_settings.rs`) | ✅ | ADR-0066 (wires ADR-0052). Streams via `ai:chunk` + cancel flag; **never runs SQL, never sends row data** — Explain sends SQL text, Suggest sends schema names only (`describe_table` on opt-in). API key keyring-only (`dbboard.ai.<id>.api_key`), never in TOML/logs/WebView. No AI command is an MCP tool. |
+| Auto-update (check + Install & Restart) | ✅ (inform-only, ADR-0040) | ✅ | ADR-0067 (wires ADR-0044/0043). `tauri-plugin-updater` verifies a signed `latest.json` and installs in place, then `tauri-plugin-process` relaunches — one step past egui's inform-only check. Same `DBBOARD_NO_UPDATE_CHECK` opt-out; minisign public key committed, private key CI-secret only; `latest.json` assembled in `release.yml`. |
 
 ## Deliberately out of scope (still pending an ADR / write surface)
 
@@ -64,15 +65,21 @@ new ADR, not folded in silently.
 | Feature | egui | Tauri | Blocker |
 |---|---|---|---|
 | Row insert / delete | ✅ (`edit.rs`) | ⛔ | Cell editing (ADR-0063) covers UPDATE only; INSERT/DELETE need their own gate. |
-| Auto-update / update-check | ✅ (release flow) | ⛔ | Tauri updater plugin + signing; targeted for the v0.4.0 release work (ADR-0044/0043). |
 
 ## Notes for the next pass
 
 - The 1000-row hard cap (`crates/dbboard-mcp/src/service.rs`) is a reconnaissance
   ceiling. Real bulk work needs either a raised cap or pagination — both are
   backend-policy changes (ADR), not a frontend tweak.
-- The **v0.4.0 feature-parity** effort is under way: each remaining ⛔ row is
-  promoted as its own vertical, opening with an ADR describing the write surface
-  and its safeguards. With the AI assistant landed (ADR-0066), auto-update
-  (ADR-0044/0043) is the last vertical and lands with the release work; the
-  About dialog can now carry the egui "About AI Assistant" text.
+- The **v0.4.0 feature-parity** effort is complete: every write/integration
+  vertical from the egui client is now ported (connections, cell edit,
+  annotations, export, backup, restore, AI assistant) and, with auto-update
+  landed (ADR-0067), the Tauri app can update itself in place. The one remaining
+  ⛔ row (row insert/delete) is a genuinely new write surface in *both* clients,
+  not a port. Each such addition still opens with its own ADR describing the
+  surface and its safeguards.
+- **Before the first v0.4.0 release:** set the `TAURI_SIGNING_PRIVATE_KEY`
+  GitHub Actions secret (empty `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) to the
+  generated minisign private key. The public key is already embedded in
+  `tauri.conf.json`; without the secret the `build-tauri-*` release jobs cannot
+  sign updater artifacts and will fail (ADR-0067).
