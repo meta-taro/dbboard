@@ -14,7 +14,7 @@ their own section below.
 Legend: ✅ done · 🟦 done this pass · ⛔ not yet (needs an ADR / write surface) ·
 ➖ intentionally omitted.
 
-_Last updated: 2026-07-29 (logical restore / import — ADR-0065)._
+_Last updated: 2026-07-29 (AI assistant — ADR-0066)._
 
 ## Read / inspect (the spike's remit)
 
@@ -53,6 +53,7 @@ registered as an MCP tool.
 | Inline cell editing (update rows) | ✅ (`edit.rs`) | ✅ | ADR-0063. UPDATE-only; requires a **declared PK**; `rows_affected == 1` commit gate; rowid-only/view results stay read-only. |
 | Logical backup / dump (whole-connection SQL) | ✅ (`backup.rs`) | ✅ | ADR-0064 (wires ADR-0049/0050). Read-only dump to a file; `dump:progress` events + cancel flag; warn-and-allow threshold (frontend-owned); SQLite/Turso data-only (no DDL). |
 | Logical restore / import (apply a `.sql` script) | ✅ (`restore.rs`) | ✅ | ADR-0065 (wires ADR-0051). Applies a chosen `.sql` file; `restore:progress` events + cancel flag; empty-target confirmation gate; per-engine transaction (atomic batch vs per-statement `on_error`); unparsed statements run best-effort. |
+| AI assistant (explain SQL / draft SQL) | ✅ (`ai.rs`, `ai_settings.rs`) | ✅ | ADR-0066 (wires ADR-0052). Streams via `ai:chunk` + cancel flag; **never runs SQL, never sends row data** — Explain sends SQL text, Suggest sends schema names only (`describe_table` on opt-in). API key keyring-only (`dbboard.ai.<id>.api_key`), never in TOML/logs/WebView. No AI command is an MCP tool. |
 
 ## Deliberately out of scope (still pending an ADR / write surface)
 
@@ -63,7 +64,6 @@ new ADR, not folded in silently.
 | Feature | egui | Tauri | Blocker |
 |---|---|---|---|
 | Row insert / delete | ✅ (`edit.rs`) | ⛔ | Cell editing (ADR-0063) covers UPDATE only; INSERT/DELETE need their own gate. |
-| AI assistant (explain / draft SQL) | ✅ (`ai.rs`, `ai_settings.rs`) | ⛔ | Provider integration + key storage (ADR-0052); the About dialog omits the egui "About AI Assistant" text because the feature is absent here. |
 | Auto-update / update-check | ✅ (release flow) | ⛔ | Tauri updater plugin + signing; targeted for the v0.4.0 release work (ADR-0044/0043). |
 
 ## Notes for the next pass
@@ -73,5 +73,6 @@ new ADR, not folded in silently.
   backend-policy changes (ADR), not a frontend tweak.
 - The **v0.4.0 feature-parity** effort is under way: each remaining ⛔ row is
   promoted as its own vertical, opening with an ADR describing the write surface
-  and its safeguards. The AI assistant is the next vertical; auto-update lands
-  with the release work.
+  and its safeguards. With the AI assistant landed (ADR-0066), auto-update
+  (ADR-0044/0043) is the last vertical and lands with the release work; the
+  About dialog can now carry the egui "About AI Assistant" text.

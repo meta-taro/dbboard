@@ -53,6 +53,14 @@
       <code class="repo-url">{REPO_URL}</code>
     </p>
 
+    <!-- The AI-assistant safeguard note, at egui parity (ADR-0066): it never
+         runs SQL, never writes, never sends rows; the key lives in the OS
+         keyring. Shown here so the promise is visible from the About dialog. -->
+    <section class="ai-about">
+      <h3 class="ai-about-title">{i18n.t('help-ai-about-title')}</h3>
+      <p class="ai-about-body">{i18n.t('help-ai-about-body')}</p>
+    </section>
+
     <div class="actions">
       <button type="button" class="primary" onclick={onClose}>
         {i18n.t('about-close')}
@@ -148,6 +156,30 @@
     color: var(--text-accent);
     user-select: all;
     word-break: break-all;
+  }
+
+  .ai-about {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--space-3);
+    background: var(--bg-surface-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+  }
+  .ai-about-title {
+    margin: 0;
+    font-size: var(--text-hint);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .ai-about-body {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: var(--text-small);
+    line-height: 1.5;
   }
 
   .actions {

@@ -16,6 +16,12 @@ import type {
   RestoreProgress,
   OnError,
 } from '$lib/restore/plan';
+import type {
+  AiStatus,
+  AiChunk,
+  AiOutcome,
+  AiProviderView,
+} from '$lib/ai/panel';
 
 export interface ConnectionView {
   id: string;
@@ -341,3 +347,85 @@ export const importConnections = (
   path: string,
   passphrase: string,
 ): Promise<ImportReport> => invoke('import_connections', { path, passphrase });
+
+// --- AI assistant (ADR-0052) --------------------------------------------
+//
+// The assistant explains SQL and drafts queries from a description. It is
+// deliberately NOT an MCP tool — external agents stay read-only. The guardrail
+// is enforced in Rust (src-tauri/src/ai.rs): Explain sends only the SQL text;
+// Suggest additionally sends table/column *names*; row data never leaves. The
+// API key lives only in the OS keyring, never in TOML or the WebView.
+
+// Whether the assistant is usable right now (a provider is active), its label,
+// and whether provider management is available on this host. Cheap read; call
+// on every panel open.
+export const aiStatus = (): Promise<AiStatus> => invoke('ai_status');
+
+// Explain the SQL the user typed. `connectionId` only supplies the dialect tag
+// (optional). Streams `ai:chunk` events; resolves with the whole answer.
+export const aiExplain = (
+  sql: string,
+  connectionId?: string | null,
+): Promise<AiOutcome> =>
+  invoke('ai_explain', { connectionId: connectionId ?? null, sql });
+
+// Draft SQL from a natural-language prompt. The backend attaches the target's
+// table/column names; with `includeDetails` it also fans out `describe_table`
+// for column metadata (still no row data). Streams `ai:chunk` events.
+export const aiSuggest = (
+  connectionId: string,
+  prompt: string,
+  includeDetails: boolean,
+): Promise<AiOutcome> =>
+  invoke('ai_suggest', { connectionId, prompt, includeDetails });
+
+// Request cancellation of the in-flight AI request. The stream stops at its
+// next event and resolves with a `cancelled` outcome holding the partial text.
+export const cancelAi = (): Promise<void> => invoke('cancel_ai');
+
+// Subscribe to streaming deltas for the duration of one request. Call the
+// returned unlisten when the request ends (or the component unmounts).
+export const onAiChunk = (
+  handler: (chunk: AiChunk) => void,
+): Promise<UnlistenFn> =>
+  listen<AiChunk>('ai:chunk', (event) => handler(event.payload));
+
+// List every configured provider (id / name / kind / model / active). Never
+// includes the api key. Rejects when provider storage is unavailable.
+export const listAiProviders = (): Promise<AiProviderView[]> =>
+  invoke('list_ai_providers');
+
+// Add a provider. `kind` is a tagged `AiKindInput` from `$lib/ai/panel`'s
+// `buildAddKindInput`; the key is written to the keyring, the rest to
+// `ai-providers.toml`. Does not auto-activate — the caller uses `setActive`.
+export const addAiProvider = (
+  id: string,
+  name: string,
+  kind: Record<string, unknown>,
+): Promise<void> => invoke('add_ai_provider', { id, name, kind });
+
+// Edit a provider's name / model / key (the id and kind are immutable). A
+// blank/absent `apiKey` keeps the stored secret. If the edited provider is
+// active, the live slot is rebuilt so the change takes effect immediately.
+export const updateAiProvider = (
+  id: string,
+  name: string,
+  model?: string,
+  apiKey?: string,
+): Promise<void> =>
+  invoke('update_ai_provider', {
+    id,
+    name,
+    model: model ?? null,
+    apiKey: apiKey ?? null,
+  });
+
+// Delete a provider and purge its keyring secret. If it was active, the live
+// slot is cleared to match.
+export const deleteAiProvider = (id: string): Promise<void> =>
+  invoke('delete_ai_provider', { id });
+
+// Activate a provider (or clear the active one with `id = null`). The provider
+// is built first, so a bad key fails without leaving a broken active id.
+export const setActiveAiProvider = (id: string | null): Promise<void> =>
+  invoke('set_active_ai_provider', { id });
