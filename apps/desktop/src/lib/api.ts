@@ -10,6 +10,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { EditFields } from '$lib/connections/draft';
 import type { CellEdit, KeyColumn } from '$lib/grid/edit';
 import type { DumpPlan, DumpOutcome, DumpProgress } from '$lib/backup/plan';
+import type {
+  RestorePlan,
+  RestoreOutcome,
+  RestoreProgress,
+  OnError,
+} from '$lib/restore/plan';
 
 export interface ConnectionView {
   id: string;
@@ -245,6 +251,49 @@ export const onDumpProgress = (
   handler: (progress: DumpProgress) => void,
 ): Promise<UnlistenFn> =>
   listen<DumpProgress>('dump:progress', (event) => handler(event.payload));
+
+// --- Logical restore / import (write-into-DB path, ADR-0051) ------------
+//
+// A restore reads a user-chosen `.sql` file and applies it to the target
+// database. Like the dump it is deliberately NOT an MCP tool — external agents
+// stay read-only; only the desktop app can trigger this write surface.
+
+// Preflight: read and classify the `.sql` file at `path` and list the target's
+// existing tables, so the UI can size the restore and decide whether the
+// empty-target confirmation is needed (`RestorePlan` is not serialisable across
+// IPC, so this flat DTO stands in). Reads only.
+export const planRestore = (
+  connectionId: string,
+  path: string,
+): Promise<RestorePlan> => invoke('plan_restore', { connectionId, path });
+
+// Apply the `.sql` file at `path` to `connectionId`, streaming
+// `restore:progress` events. The backend re-reads and re-plans internally.
+// `confirmed` must be true to write into a non-empty target; `onError`
+// (`"stop"` | `"continue"`) only affects the per-statement (non-atomic) path.
+// Resolves with the outcome (including per-statement failures and whether it
+// was cancelled); rejects only when the file cannot be read or the run errors.
+export const runRestore = (
+  connectionId: string,
+  path: string,
+  confirmed: boolean,
+  onError: OnError,
+): Promise<RestoreOutcome> =>
+  invoke('run_restore', { connectionId, path, confirmed, onError });
+
+// Request cancellation of the in-flight restore. On the per-statement path the
+// run stops at the next statement boundary and resolves with a `cancelled`
+// outcome; on the atomic path the flag is only observed before the batch starts.
+export const cancelRestore = (): Promise<void> => invoke('cancel_restore');
+
+// Subscribe to restore progress for the duration of one run. Call the returned
+// unlisten when the run ends (or the component unmounts) to detach.
+export const onRestoreProgress = (
+  handler: (progress: RestoreProgress) => void,
+): Promise<UnlistenFn> =>
+  listen<RestoreProgress>('restore:progress', (event) =>
+    handler(event.payload),
+  );
 
 // --- Connection management (write path, ADR-0062) -----------------------
 //

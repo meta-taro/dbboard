@@ -7169,7 +7169,7 @@ its own ADR entry where it introduces a new decision.
 | Local annotation editing (table/column notes, empty = delete) | ADR-0045 | **Done** |
 | Dataset export (CSV / CSV-with-BOM / TSV, row selection) | ADR-0035 | **Done** |
 | Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | **Done — ADR-0064** |
-| Logical restore / import (empty-target confirm; per-engine txn strategy) | ADR-0051 | Pending |
+| Logical restore / import (empty-target confirm; per-engine txn strategy) | ADR-0051 | **Done — ADR-0065** |
 | AI assistant (provider trait; explain/suggest; never runs SQL, never sends rows) | ADR-0052 | Pending |
 | Auto-update (updater plugin + signed `latest.json`; bump 0.3.0 → 0.4.0) | ADR-0044 / ADR-0043 | Pending |
 
@@ -7320,3 +7320,93 @@ un-serialisable plan cross IPC*, and *where does the warn threshold live*.
   on the pure frontend `plan.ts` (threshold clamp/persist, `exceedsThreshold`
   warn-and-allow boundary, progress percent incl. zero-row and over-count edge
   cases, default file-name slugify).
+
+---
+
+## ADR-0065 — Desktop logical restore: wiring the core restore to Tauri (v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0051 (the logical-restore design and the pure
+  `dbboard-core::restore` orchestrator/preflight this wires), ADR-0059 (the
+  read-only Tauri spike), ADR-0063 (inline cell editing — the *non-MCP-tool*
+  write-method pattern), and ADR-0064 (desktop logical backup — the sibling
+  vertical whose re-plan-on-run and progress/cancel shapes this mirrors).
+
+### Context
+
+The logical restore was already built and tested end-to-end in `dbboard-core`
+(`plan_restore` preflight + classifier, `run_restore` orchestrator with the
+per-engine transaction strategy and the empty-target gate) and shipped in the
+egui app via `dbboard-ui::restore`. The Tauri build had none of it. Like the
+dump (ADR-0064) this vertical is **wiring only** — no new restore logic — plus
+the desktop pieces the domain layer cannot hold: reading the chosen `.sql` file,
+a cancellation flag, and progress to the WebView. The same three questions
+ADR-0063/0064 answered recur, and are answered the same way. The one asymmetry
+with the dump: a restore has **no sink** — it writes into the target database
+through the adapter, not to a file — and no warn threshold; its single safety
+gate is the empty-target confirmation.
+
+### Decision
+
+1. **The restore is two `McpService` methods that are deliberately *not* MCP
+   tools.** `plan_restore(connection_id, script)` and
+   `run_restore(connection_id, &RestorePlan, RestoreOptions, &dyn RestoreControl)`
+   resolve the adapter and its dialect, then call the core functions. Neither is
+   registered in the MCP router, so external agents keep the exact read-only
+   surface — identical to `apply_row_update` (ADR-0063) and the dump methods
+   (ADR-0064). Two new `ServiceError` variants, `NotRestorable` (adapter has no
+   known SQL dialect) and `Restore` (the run failed), map to `invalid_params` /
+   `internal_error` in the MCP layer purely for exhaustiveness; they are
+   unreachable from a tool call.
+
+2. **`RestorePlan` never crosses IPC; the run re-plans internally.**
+   `RestorePlan`/`RestoreStatement` are not `Serialize`, so `plan_restore`
+   returns a flat `RestorePlanDto` (statement counts by kind, `existing_tables`,
+   `is_target_empty`) for the confirmation dialog, and the `run_restore`
+   **command** re-reads the file and re-runs the preflight itself before
+   applying it — the same re-plan-on-run shape ADR-0064 established for the dump.
+   The counts are of the *runnable* statements only: transaction-control
+   statements (a dump's own `BEGIN`/`COMMIT`) are stripped by the runner and
+   excluded so the numbers match what actually executes.
+
+3. **The empty-target confirmation is the one gate, collected in the frontend.**
+   A restore into a database that already has tables needs `confirmed = true`;
+   the plan DTO's `existing_tables`/`is_target_empty` drives a required checkbox
+   the run button reads (`needsConfirmation`). There is no warn threshold — that
+   was dump-specific. The `on_error` policy (`stop` | `continue`) is a frontend
+   choice that only affects the per-statement (non-atomic) path; anything but the
+   explicit `continue` is coerced to the safe `stop` at both ends.
+
+4. **Progress and cancellation use a Tauri event + a shared `AtomicBool`,
+   symmetric to the dump.** `run_restore` builds an `EventControl` (a
+   `RestoreControl`) that emits each `RestoreProgress` as a `restore:progress`
+   event and reads cancellation off an `AppState.restore_cancel:
+   Arc<AtomicBool>` a separate `cancel_restore` command flips. The flag is kept
+   distinct from `dump_cancel` even though the two are never in flight together,
+   so a cancel can never cross verticals; the run clears it first so a stale
+   cancel can't abort the next restore.
+
+### Consequences
+
+- The desktop gains one-click logical restore at egui parity while agents stay
+  strictly read-only — again enforced by *what is registered as a tool*.
+- Per-engine transaction strategy is the core's, unchanged: adapters with
+  `has_atomic_restore` run the whole script as one all-or-nothing batch (the
+  outcome's `atomic = true`); adapters with only `has_execute` (Cloudflare D1)
+  apply each statement in order, honouring `on_error`. The UI reflects which
+  path ran in its success message.
+- A cancellation mid-run is not an error: `run_restore` returns an outcome with
+  `cancelled = true` and the already-applied statements reported; on the atomic
+  path the flag is only observed before the indivisible batch starts. Only an
+  unreadable file or a hard run error fails the command.
+- Statements the classifier could not parse under the dialect still run verbatim
+  (best-effort) and are surfaced as an `unparsed_count` warning, so a restore is
+  never silently narrowed to what the parser understood.
+- Tested RED-first: 3 integration tests on the new `McpService` restore methods
+  in `dbboard-mcp` (preflight classifies and sees an empty target; unknown
+  connection is a clean not-found; a run applies the script and the rows land),
+  3 unit tests on the desktop `on_error` coercion / progress-DTO / cancel-flag
+  plumbing, and 13 unit tests on the pure frontend `plan.ts` (statement-based
+  progress percent incl. empty-script and over-count edges, `needsConfirmation`
+  gate, `hasUnparsed`, `restoreHadFailures`, `normalizeOnError` default, file
+  filter).

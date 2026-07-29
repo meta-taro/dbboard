@@ -14,6 +14,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 mod dump;
+mod restore;
 
 use dbboard_config::secrets::{KeyringStore, SecretStore};
 use dbboard_config::{
@@ -45,15 +46,19 @@ use dbboard_mcp::McpService;
 /// `dump_cancel` is the one shared cancellation flag for a logical backup
 /// (ADR-0049): [`dump::run_dump`] polls it between tables, [`dump::cancel_dump`]
 /// flips it. Only one dump runs at a time, so a single flag suffices; a new
-/// run clears it first (see `dump::run_dump`).
+/// run clears it first (see `dump::run_dump`). `restore_cancel` is the
+/// symmetric flag for a logical restore (ADR-0051), owned by the `restore`
+/// submodule — a restore and a dump are never in flight together, but keeping
+/// the flags separate avoids one cancelling the other by accident.
 ///
-/// Fields are `pub(crate)` so the `dump` submodule's commands can reach the
-/// service and the cancel flag.
+/// Fields are `pub(crate)` so the `dump` and `restore` submodules' commands
+/// can reach the service and the cancel flags.
 pub(crate) struct AppState {
     pub(crate) service: McpService,
     pub(crate) admin: Mutex<ConnectionAdmin>,
     pub(crate) annotations: Mutex<AnnotationsAdmin>,
     pub(crate) dump_cancel: Arc<AtomicBool>,
+    pub(crate) restore_cancel: Arc<AtomicBool>,
 }
 
 /// List every configured connection (id / name / adapter kind). Never
@@ -212,6 +217,7 @@ pub fn run() {
             admin: Mutex::new(admin),
             annotations: Mutex::new(annotations),
             dump_cancel: Arc::new(AtomicBool::new(false)),
+            restore_cancel: Arc::new(AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             list_connections,
@@ -234,7 +240,10 @@ pub fn run() {
             save_text_file,
             dump::plan_dump,
             dump::run_dump,
-            dump::cancel_dump
+            dump::cancel_dump,
+            restore::plan_restore,
+            restore::run_restore,
+            restore::cancel_restore
         ])
         .run(tauri::generate_context!())
         .expect("start the dbboard-desktop Tauri app");

@@ -36,9 +36,10 @@ use dbboard_config::{ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
     build_update_sql, dialect_for_adapter_id, plan_dump as core_plan_dump,
-    run_dump as core_run_dump, Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl,
-    DumpOutcome, DumpPlan, DumpSink, ForeignKey, Row, TableInfo, TableSchema, UpdatePlan,
-    WriteBackError,
+    plan_restore as core_plan_restore, run_dump as core_run_dump, run_restore as core_run_restore,
+    Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl, DumpOutcome, DumpPlan, DumpSink,
+    ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan, Row, TableInfo,
+    TableSchema, UpdatePlan, WriteBackError,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -197,6 +198,20 @@ pub enum ServiceError {
     /// Desktop dump path only.
     #[error("dump output failed: {0}")]
     Dump(String),
+
+    /// The connection's adapter has no known SQL dialect, so an incoming
+    /// `.sql` script cannot be classified for restore. Desktop restore path
+    /// only (ADR-0051).
+    #[error("adapter {0:?} has no known SQL dialect to restore into")]
+    NotRestorable(String),
+
+    /// A restore was refused or failed as a whole: a non-empty target left
+    /// unconfirmed, an adapter that cannot execute writes, or an atomic
+    /// batch that rolled back. Per-statement failures on the non-atomic path
+    /// are non-fatal and travel in the outcome instead. Desktop restore path
+    /// only.
+    #[error("restore failed: {0}")]
+    Restore(String),
 
     /// A `spawn_blocking` task panicked or was cancelled.
     #[error("background task failed: {0}")]
@@ -454,6 +469,57 @@ impl McpService {
         core_run_dump(adapter.as_ref(), dialect, plan, sink, control)
             .await
             .map_err(|e| ServiceError::Dump(e.to_string()))
+    }
+
+    /// Preflight a logical restore of `script` into `connection_id`
+    /// (ADR-0051): classify the script under the connection's dialect and
+    /// list the target's existing tables, producing the [`RestorePlan`] the
+    /// desktop uses to size progress and decide whether the empty-target
+    /// safety gate needs a typed confirmation. Reads only.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotRestorable`] if the adapter has no known SQL
+    /// dialect; otherwise whatever the connection/`list_tables` surfaces.
+    pub async fn plan_restore(
+        &self,
+        connection_id: &str,
+        script: &str,
+    ) -> Result<RestorePlan, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotRestorable(adapter.id().to_string()))?;
+        Ok(core_plan_restore(adapter.as_ref(), dialect, script).await?)
+    }
+
+    /// Apply a preflighted logical restore to `connection_id`, reporting
+    /// progress/cancellation through `control` (ADR-0051). Writes to the
+    /// target database only. The whole script runs as one atomic batch on
+    /// engines that support it, or statement-by-statement (honouring
+    /// `options.on_error`) on those that do not (Cloudflare D1).
+    ///
+    /// Like [`apply_row_update`](Self::apply_row_update) and the dump
+    /// methods, this is a desktop-only method and is deliberately **not**
+    /// exposed as an MCP tool.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Restore`] if the whole run is refused or fails — a
+    /// non-empty target without `options.confirmed`, an adapter that cannot
+    /// execute writes, or an atomic batch that rolled back. Per-statement
+    /// failures on the non-atomic path are non-fatal and land in the
+    /// returned [`RestoreOutcome`] instead.
+    pub async fn run_restore(
+        &self,
+        connection_id: &str,
+        plan: &RestorePlan,
+        options: RestoreOptions,
+        control: &dyn RestoreControl,
+    ) -> Result<RestoreOutcome, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        core_run_restore(adapter.as_ref(), plan, options, control)
+            .await
+            .map_err(|e| ServiceError::Restore(e.to_string()))
     }
 
     /// Fetch the local notes for `connection_id`, filtered to `table`
@@ -1048,6 +1114,92 @@ keyring_url_ref = "dbboard.prod-pg.url"
         for i in 1..=5 {
             assert!(sql.contains(&format!("'n{i}'")), "missing n{i} in:\n{sql}");
         }
+    }
+
+    // ---- plan_restore / run_restore (desktop import path, ADR-0051) -----
+
+    /// A `RestoreControl` that never cancels and discards progress — enough
+    /// to drive `run_restore` in a unit test.
+    struct NoopRestoreControl;
+
+    impl dbboard_core::RestoreControl for NoopRestoreControl {
+        fn report(&self, _progress: &dbboard_core::RestoreProgress) {}
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// A fresh, empty in-memory Turso connection — the unconfirmed-safe
+    /// restore target. Establishing the adapter here caches it, so a later
+    /// `run_restore` and the read-back query hit the same `:memory:` db.
+    async fn empty_turso_fixture() -> Fixture {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        fx.service.adapter_for("mem").await.expect("connect mem");
+        fx
+    }
+
+    const RESTORE_SCRIPT: &str = "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); \
+         INSERT INTO items (id, name) VALUES (1, 'a'); \
+         INSERT INTO items (id, name) VALUES (2, 'b')";
+
+    #[tokio::test]
+    async fn plan_restore_classifies_and_sees_an_empty_target() {
+        let fx = empty_turso_fixture().await;
+        let plan = fx
+            .service
+            .plan_restore("mem", RESTORE_SCRIPT)
+            .await
+            .expect("plan");
+        assert!(plan.is_target_empty(), "a fresh :memory: db has no tables");
+        assert_eq!(plan.runnable_count(), 3, "one CREATE + two INSERTs");
+    }
+
+    #[tokio::test]
+    async fn plan_restore_rejects_an_unknown_connection() {
+        let fx = empty_turso_fixture().await;
+        let err = fx
+            .service
+            .plan_restore("nope", RESTORE_SCRIPT)
+            .await
+            .expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_restore_applies_the_script_to_an_empty_target() {
+        let fx = empty_turso_fixture().await;
+        let plan = fx
+            .service
+            .plan_restore("mem", RESTORE_SCRIPT)
+            .await
+            .expect("plan");
+        let outcome = fx
+            .service
+            .run_restore("mem", &plan, RestoreOptions::default(), &NoopRestoreControl)
+            .await
+            .expect("restore");
+
+        assert_eq!(outcome.statements_run, 3);
+        assert_eq!(outcome.ddl_run, 1);
+        assert_eq!(outcome.data_run, 2);
+        assert!(!outcome.cancelled);
+        assert!(outcome.failures.is_empty(), "no per-statement failures");
+
+        // The restore landed in the same cached :memory: db: the rows are
+        // now queryable through the read path.
+        let out = fx
+            .service
+            .run_read_query("mem", "SELECT id, name FROM items ORDER BY id", None)
+            .await
+            .expect("query the restored table");
+        assert_eq!(out.row_count, 2);
     }
 
     #[tokio::test]
