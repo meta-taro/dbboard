@@ -222,6 +222,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Auto-update (ADR-0067). `updater` verifies + installs a signed
+        // release; `process` gives the frontend `relaunch()` after install.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState {
             service,
             admin: Mutex::new(admin),
@@ -263,7 +267,8 @@ pub fn run() {
             ai::add_ai_provider,
             ai::update_ai_provider,
             ai::delete_ai_provider,
-            ai::set_active_ai_provider
+            ai::set_active_ai_provider,
+            update_opt_out
         ])
         .run(tauri::generate_context!())
         .expect("start the dbboard-desktop Tauri app");
@@ -278,6 +283,26 @@ fn config_path() -> Result<String, String> {
     dbboard_config::default_path()
         .map(|p| p.display().to_string())
         .map_err(|e| e.to_string())
+}
+
+/// Env var that disables the startup auto-update check. Any non-empty value
+/// opts out — parity with the egui client (ADR-0040) so the same knob silences
+/// both binaries.
+const UPDATE_OPT_OUT_ENV: &str = "DBBOARD_NO_UPDATE_CHECK";
+
+/// Whether the auto-update check is disabled via [`UPDATE_OPT_OUT_ENV`]. The
+/// frontend calls this before `check()` so the network request is skipped
+/// entirely when the user opted out.
+#[tauri::command]
+fn update_opt_out() -> bool {
+    opt_out(std::env::var(UPDATE_OPT_OUT_ENV).ok().as_deref())
+}
+
+/// True when the opt-out env var is present and non-empty. Split out so the
+/// policy is unit-testable without mutating process env (mirrors the egui
+/// client's `opt_out`).
+fn opt_out(value: Option<&str>) -> bool {
+    matches!(value, Some(v) if !v.is_empty())
 }
 
 /// Run a single read-only statement. Read-only is engine-enforced inside
@@ -711,6 +736,16 @@ mod tests {
         .expect("write config");
         let secrets = Arc::new(InMemorySecretStore::default());
         (dir, McpService::new(config, annotations, secrets))
+    }
+
+    #[test]
+    fn update_opt_out_only_triggers_on_a_non_empty_value() {
+        // Parity with the egui client: any non-empty DBBOARD_NO_UPDATE_CHECK
+        // silences the auto-update check; absent/blank leaves it on.
+        assert!(super::opt_out(Some("1")));
+        assert!(super::opt_out(Some("anything")));
+        assert!(!super::opt_out(Some("")));
+        assert!(!super::opt_out(None));
     }
 
     #[tokio::test]

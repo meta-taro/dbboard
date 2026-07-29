@@ -7,6 +7,8 @@
 // Command *arguments*, by contrast, follow Tauri's camelCase IPC convention.
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { check, type Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import type { EditFields } from '$lib/connections/draft';
 import type { CellEdit, KeyColumn } from '$lib/grid/edit';
 import type { DumpPlan, DumpOutcome, DumpProgress } from '$lib/backup/plan';
@@ -22,6 +24,7 @@ import type {
   AiOutcome,
   AiProviderView,
 } from '$lib/ai/panel';
+import type { AvailableUpdate, DownloadEvent } from '$lib/update/notice';
 
 export interface ConnectionView {
   id: string;
@@ -429,3 +432,59 @@ export const deleteAiProvider = (id: string): Promise<void> =>
 // is built first, so a bad key fails without leaving a broken active id.
 export const setActiveAiProvider = (id: string | null): Promise<void> =>
   invoke('set_active_ai_provider', { id });
+
+// --- Auto-update (ADR-0067) ---------------------------------------------
+//
+// The updater plugin fetches the signed `latest.json` from the GitHub release,
+// verifies the minisign signature against the embedded pubkey, then downloads
+// and installs the newer bundle. The egui client only *informs* (ADR-0040);
+// here we go one step further and install in-place, then relaunch.
+//
+// `check()` returns a stateful `Update` handle that `downloadAndInstall` must
+// act on, so we stash it module-side rather than surfacing the plugin type to
+// the components — they see only our flat `AvailableUpdate` DTO.
+
+let pendingUpdate: Update | null = null;
+
+// Whether the startup check is disabled via DBBOARD_NO_UPDATE_CHECK (opt-out
+// parity with the egui client, ADR-0040). Cheap; call once before checking.
+export const updateOptOut = (): Promise<boolean> => invoke('update_opt_out');
+
+// Check the release endpoint for a newer signed bundle. Resolves to the mapped
+// update (version + notes) or null when already current. Applies the same
+// strictly-newer guard the egui client uses, so a same/older endpoint entry
+// never surfaces a phantom notice. Best-effort: a transport/verify failure
+// rejects and the caller swallows it (an update check must never break launch).
+export const checkForUpdate = async (): Promise<AvailableUpdate | null> => {
+  const update = await check();
+  pendingUpdate = update;
+  if (!update) return null;
+  // Defensive: the plugin already gates on version, but a misconfigured
+  // endpoint could still hand back a non-newer build — never nag for one.
+  const { isNewer } = await import('$lib/update/notice');
+  if (!isNewer(update.currentVersion, update.version)) {
+    pendingUpdate = null;
+    return null;
+  }
+  return {
+    version: update.version,
+    currentVersion: update.currentVersion,
+    notes: update.body ?? '',
+    date: update.date ?? null,
+  };
+};
+
+// Download and install the update found by the last `checkForUpdate`, reporting
+// progress through `onEvent`. Rejects if no update is pending or the transfer
+// fails. On success the app is installed but still running — call `relaunchApp`.
+export const installUpdate = async (
+  onEvent: (event: DownloadEvent) => void,
+): Promise<void> => {
+  if (!pendingUpdate) throw new Error('no pending update to install');
+  await pendingUpdate.downloadAndInstall((event) =>
+    onEvent(event as DownloadEvent),
+  );
+};
+
+// Relaunch the app so the freshly installed bundle takes over (ADR-0067).
+export const relaunchApp = (): Promise<void> => relaunch();
