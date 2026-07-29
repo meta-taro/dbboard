@@ -6,11 +6,14 @@
   import Sidebar from '$lib/components/Sidebar.svelte';
   import QueryPanel from '$lib/components/QueryPanel.svelte';
   import StructurePanel from '$lib/components/StructurePanel.svelte';
+  import BackupDialog from '$lib/components/BackupDialog.svelte';
 
   const tabs: { id: MainTab; labelKey: MessageKey }[] = [
     { id: 'query', labelKey: 'tab-query' },
     { id: 'structure', labelKey: 'tab-structure' },
   ];
+
+  let backupOpen = $state(false);
 
   onMount(() => {
     i18n.init();
@@ -36,6 +39,14 @@
       {/each}
 
       {#if workspace.connection}
+        <button
+          type="button"
+          class="backup"
+          onclick={() => (backupOpen = true)}
+          title={i18n.t('backup-button-title')}
+        >
+          {i18n.t('backup-button')}
+        </button>
         <span class="conn-pill" title={workspace.connection.id}>
           <span class="dot" aria-hidden="true"></span>
           {workspace.connection.name}
@@ -59,6 +70,14 @@
     </div>
   </main>
 </div>
+
+{#if backupOpen && workspace.connection}
+  <BackupDialog
+    connectionId={workspace.connection.id}
+    connectionName={workspace.connection.name}
+    onClose={() => (backupOpen = false)}
+  />
+{/if}
 
 <style>
   .shell {
@@ -108,6 +127,30 @@
   }
   .tab.active:hover {
     background: var(--accent-weak);
+  }
+
+  /* Pushed to the right edge of the tabbar, just left of the connection
+     pill: a quiet ghost action that only appears with a connection. */
+  .backup {
+    margin-left: auto;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-hint);
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: var(--radius-widget);
+    cursor: pointer;
+  }
+  .backup:hover {
+    color: var(--text);
+    border-color: var(--border-strong);
+  }
+
+  /* When the backup button is present it owns the auto margin; the pill then
+     sits snugly beside it. With no button the pill takes the auto margin. */
+  .backup + .conn-pill {
+    margin-left: var(--space-2);
   }
 
   .conn-pill {

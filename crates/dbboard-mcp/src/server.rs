@@ -276,23 +276,28 @@ fn json_block<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
 fn to_mcp(err: &ServiceError) -> McpError {
     let message = err.to_string();
     match err {
-        // A backend connection drop is an environment failure, not a bad
-        // request — matched first so it wins over the blanket `Db` arm.
-        ServiceError::Db(DbError::Connection(_)) => McpError::internal_error(message, None),
+        // Environment failures, not bad requests. `Db(Connection)` is matched
+        // here (ahead of the blanket `Db` arm below) so a backend drop never
+        // reads as a caller error. Config/Annotations/Task are local I/O; Dump
+        // is a desktop-only sink failure (a full disk, a revoked path) that
+        // never reaches an MCP tool but is an environment fault if it ever did.
+        ServiceError::Db(DbError::Connection(_))
+        | ServiceError::Config(_)
+        | ServiceError::Annotations(_)
+        | ServiceError::Task(_)
+        | ServiceError::Dump(_) => McpError::internal_error(message, None),
         // An unknown id, or any other DbError (rejected write, bad SQL,
-        // unknown table, unsupported capability), is attributable to what
-        // the caller sent.
-        // WriteBack / NotEditable belong to the desktop write path and never
-        // reach an MCP tool call, but they are still caller-attributable if
-        // they ever did — refusing a bad plan is not an environment fault.
+        // unknown table, unsupported capability), is attributable to what the
+        // caller sent. WriteBack / NotEditable / NotDumpable belong to the
+        // desktop write path and never reach an MCP tool call, but they are
+        // still caller-attributable if they ever did — refusing a bad plan or
+        // an undumpable adapter is not an environment fault.
         ServiceError::ConnectionNotFound(_)
         | ServiceError::InvalidRequest(_)
         | ServiceError::Db(_)
         | ServiceError::WriteBack(_)
-        | ServiceError::NotEditable(_) => McpError::invalid_params(message, None),
-        ServiceError::Config(_) | ServiceError::Annotations(_) | ServiceError::Task(_) => {
-            McpError::internal_error(message, None)
-        }
+        | ServiceError::NotEditable(_)
+        | ServiceError::NotDumpable(_) => McpError::invalid_params(message, None),
     }
 }
 

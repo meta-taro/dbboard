@@ -6,8 +6,10 @@
 // so the interfaces below keep snake_case to match the JSON on the wire.
 // Command *arguments*, by contrast, follow Tauri's camelCase IPC convention.
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { EditFields } from '$lib/connections/draft';
 import type { CellEdit, KeyColumn } from '$lib/grid/edit';
+import type { DumpPlan, DumpOutcome, DumpProgress } from '$lib/backup/plan';
 
 export interface ConnectionView {
   id: string;
@@ -210,6 +212,39 @@ export const configPath = (): Promise<string> => invoke('config_path');
 // happens in Rust so the file lands at the chosen path.
 export const saveTextFile = (path: string, contents: string): Promise<void> =>
   invoke('save_text_file', { path, contents });
+
+// --- Logical backup / dump (write-to-file path, ADR-0049/0050) ----------
+//
+// The dump reads the whole database and writes SQL to a user-chosen file. It
+// is deliberately NOT an MCP tool — external agents stay read-only; only the
+// desktop app can trigger it (mirroring inline cell editing, ADR-0063).
+
+// Preflight: count every table so the UI can size the dump and warn before a
+// large backup (`DumpPlan` is not serialisable across IPC, so this flat DTO
+// stands in). Reads only.
+export const planDump = (connectionId: string): Promise<DumpPlan> =>
+  invoke('plan_dump', { connectionId });
+
+// Run the dump to a user-chosen `path`, streaming `dump:progress` events. The
+// backend re-plans internally. Resolves with the outcome (including any
+// per-table failures/truncations and whether it was cancelled); rejects only
+// when the output file cannot be opened or written.
+export const runDump = (
+  connectionId: string,
+  path: string,
+): Promise<DumpOutcome> => invoke('run_dump', { connectionId, path });
+
+// Request cancellation of the in-flight dump. The run stops at its next
+// table/page checkpoint and resolves with a `cancelled` outcome, keeping the
+// partial file.
+export const cancelDump = (): Promise<void> => invoke('cancel_dump');
+
+// Subscribe to dump progress for the duration of one run. Call the returned
+// unlisten when the run ends (or the component unmounts) to detach.
+export const onDumpProgress = (
+  handler: (progress: DumpProgress) => void,
+): Promise<UnlistenFn> =>
+  listen<DumpProgress>('dump:progress', (event) => handler(event.payload));
 
 // --- Connection management (write path, ADR-0062) -----------------------
 //

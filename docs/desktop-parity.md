@@ -14,7 +14,7 @@ their own section below.
 Legend: ✅ done · 🟦 done this pass · ⛔ not yet (needs an ADR / write surface) ·
 ➖ intentionally omitted.
 
-_Last updated: 2026-07-29 (inline cell editing — ADR-0063)._
+_Last updated: 2026-07-29 (logical backup / dump — ADR-0064)._
 
 ## Read / inspect (the spike's remit)
 
@@ -51,6 +51,7 @@ registered as an MCP tool.
 | Annotation editing (table/column notes, empty = delete) | ✅ | ✅ | ADR-0045. Local-only write to `annotations.toml`; no DB write. |
 | CSV/dataset export (CSV / CSV-with-BOM / TSV, row selection) | ✅ (`export.rs`) | ✅ | ADR-0035 / ADR-0049. |
 | Inline cell editing (update rows) | ✅ (`edit.rs`) | ✅ | ADR-0063. UPDATE-only; requires a **declared PK**; `rows_affected == 1` commit gate; rowid-only/view results stay read-only. |
+| Logical backup / dump (whole-connection SQL) | ✅ (`backup.rs`) | ✅ | ADR-0064 (wires ADR-0049/0050). Read-only dump to a file; `dump:progress` events + cancel flag; warn-and-allow threshold (frontend-owned); SQLite/Turso data-only (no DDL). |
 
 ## Deliberately out of scope (still pending an ADR / write surface)
 
@@ -61,7 +62,7 @@ new ADR, not folded in silently.
 | Feature | egui | Tauri | Blocker |
 |---|---|---|---|
 | Row insert / delete | ✅ (`edit.rs`) | ⛔ | Cell editing (ADR-0063) covers UPDATE only; INSERT/DELETE need their own gate. |
-| Backup / restore | ✅ (`backup.rs`, `restore.rs`) | ⛔ | Bulk read + write; ADR-0049/0050 (dump) + ADR-0051 (restore). |
+| Logical restore / import | ✅ (`restore.rs`) | ⛔ | Bulk write; ADR-0051. Empty-target confirm + per-engine transaction. The dump half landed as ADR-0064 (above). |
 | AI assistant (explain / draft SQL) | ✅ (`ai.rs`, `ai_settings.rs`) | ⛔ | Provider integration + key storage (ADR-0052); the About dialog omits the egui "About AI Assistant" text because the feature is absent here. |
 | Auto-update / update-check | ✅ (release flow) | ⛔ | Tauri updater plugin + signing; targeted for the v0.4.0 release work (ADR-0044/0043). |
 
@@ -72,5 +73,5 @@ new ADR, not folded in silently.
   backend-policy changes (ADR), not a frontend tweak.
 - The **v0.4.0 feature-parity** effort is under way: each remaining ⛔ row is
   promoted as its own vertical, opening with an ADR describing the write surface
-  and its safeguards. Backup/restore and the AI assistant are the next verticals;
-  auto-update lands with the release work.
+  and its safeguards. Logical restore and the AI assistant are the next
+  verticals; auto-update lands with the release work.

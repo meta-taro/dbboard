@@ -10,7 +10,10 @@
 //! `Err` to the frontend as JSON; the frontend only needs the message,
 //! not the typed variant.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+
+mod dump;
 
 use dbboard_config::secrets::{KeyringStore, SecretStore};
 use dbboard_config::{
@@ -38,10 +41,19 @@ use dbboard_mcp::McpService;
 /// MCP server share). Notes never touch the database or the read adapters,
 /// so — unlike a connection write — a note write needs no cache eviction;
 /// `service` re-reads the file on the next `get_annotations` (ADR-0045).
-struct AppState {
-    service: McpService,
-    admin: Mutex<ConnectionAdmin>,
-    annotations: Mutex<AnnotationsAdmin>,
+///
+/// `dump_cancel` is the one shared cancellation flag for a logical backup
+/// (ADR-0049): [`dump::run_dump`] polls it between tables, [`dump::cancel_dump`]
+/// flips it. Only one dump runs at a time, so a single flag suffices; a new
+/// run clears it first (see `dump::run_dump`).
+///
+/// Fields are `pub(crate)` so the `dump` submodule's commands can reach the
+/// service and the cancel flag.
+pub(crate) struct AppState {
+    pub(crate) service: McpService,
+    pub(crate) admin: Mutex<ConnectionAdmin>,
+    pub(crate) annotations: Mutex<AnnotationsAdmin>,
+    pub(crate) dump_cancel: Arc<AtomicBool>,
 }
 
 /// List every configured connection (id / name / adapter kind). Never
@@ -199,6 +211,7 @@ pub fn run() {
             service,
             admin: Mutex::new(admin),
             annotations: Mutex::new(annotations),
+            dump_cancel: Arc::new(AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             list_connections,
@@ -218,7 +231,10 @@ pub fn run() {
             delete_connection,
             export_connections,
             import_connections,
-            save_text_file
+            save_text_file,
+            dump::plan_dump,
+            dump::run_dump,
+            dump::cancel_dump
         ])
         .run(tauri::generate_context!())
         .expect("start the dbboard-desktop Tauri app");
