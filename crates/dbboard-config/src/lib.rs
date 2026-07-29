@@ -65,7 +65,7 @@ pub use error::ConfigError;
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{
     default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind,
-    CONFIG_VERSION,
+    SshTunnelToml, CONFIG_VERSION,
 };
 pub use ui_settings::{
     default_ui_settings_path, load_or_default as load_ui_settings, save_atomic as save_ui_settings,

@@ -1368,6 +1368,7 @@ mod tests {
     fn start_edit_prefills_from_the_existing_entry_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "prod".into(),
             name: "Prod".into(),
             kind: ConnectionKind::D1 {
@@ -1409,6 +1410,7 @@ mod tests {
     fn start_delete_records_the_entry_id_and_name() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "x".into(),
             name: "X DB".into(),
             kind: ConnectionKind::Turso {
@@ -1532,6 +1534,7 @@ mod tests {
     fn start_edit_on_neon_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "n".into(),
             name: "N".into(),
             kind: ConnectionKind::Neon {
@@ -1618,6 +1621,7 @@ mod tests {
     fn start_edit_on_supabase_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "s".into(),
             name: "S".into(),
             kind: ConnectionKind::Supabase {
@@ -1707,6 +1711,7 @@ mod tests {
     fn start_edit_on_aurora_dsql_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "d".into(),
             name: "D".into(),
             kind: ConnectionKind::AuroraDsql {

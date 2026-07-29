@@ -52,6 +52,8 @@ config-error-serialize = 設定の書き出しに失敗しました: { $detail }
 config-error-no-config-dir = ユーザーごとの設定ディレクトリを特定できませんでした。
 config-error-not-found = 指定した id の接続が見つかりません: { $id }
 config-error-kind-mismatch = 接続 { $id } の種類は編集では変更できません。削除して追加し直してください。
+config-error-ssh-unsupported-kind = 接続 { $id }: { $kind } 接続では SSH トンネルを利用できません。
+config-error-ssh-invalid = 接続 { $id }: SSH トンネル設定が不正です: { $reason }
 
 # BundleError — 接続設定の暗号化バンドル export / import（ADR-0038）。
 config-error-bundle-passphrase-short = パスフレーズは { $min } 文字以上にしてください。
