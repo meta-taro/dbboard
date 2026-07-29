@@ -14,11 +14,20 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-07-22)**: `desktop` has shipped Phases 1 through 5
+- **Right now (2026-07-29)**: `desktop` has shipped Phases 1 through 5
   and released **v0.3.0** — all six adapters (Turso, D1, CockroachDB,
   Neon, Supabase, Aurora DSQL), the optional AI assistant (Phase 4), and
-  now a read-only MCP server (`dbboard-mcp`, ADR-0046). The workspace is
-  at `0.3.0`; the tagged Release CI is proven green (see Phase 5). The
+  a read-only MCP server (`dbboard-mcp`, ADR-0046). In flight on
+  `feature/desktop-design-polish` (not yet released): the Tauri 2 +
+  SvelteKit client (`apps/desktop/`) has reached **full v0.4.0 feature
+  parity** with the egui client — every write/integration vertical is
+  ported (connections, cell edit, annotations, export, backup, restore,
+  AI) and it now updates itself in place via `tauri-plugin-updater`
+  (ADR-0067). The workspace is bumped to `0.4.0` on that branch; the
+  remaining gate before a v0.4.0 release is setting the
+  `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret (see
+  `docs/desktop-parity.md`). The tagged Release CI is proven green (see
+  Phase 5). The
   `web` status below is **last-known as of the 2026-05-26 sync** and has
   not been re-verified this session (`dbboard-web` is a separate repo,
   not checked out here — only the HTTP contract and the history JSON
