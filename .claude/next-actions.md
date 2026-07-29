@@ -7,6 +7,23 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — 論理バックアップ/ダンプが着地
+  (ADR-0064, commit `4b53a39`, branch `feature/desktop-design-polish`)。**
+  egui の論理ダンプ (backup.rs) を Tauri へ移植 = pure な `dbboard-core` の
+  dump オーケストレータ/preflight (`plan_dump`/`run_dump`) をそのまま再利用。
+  **書き込みは `McpService::plan_dump`/`run_dump` だが MCP ツールには未登録** =
+  外部エージェントは読み取り専用のまま (セル編集 ADR-0063 と同じ分離)。
+  **要点:** `DumpPlan` は非 Serialize ゆえ IPC を渡らない → `plan_dump` はフラットな
+  `DumpPlanDto` を返し、`run_dump` コマンド側で内部再 plan。desktop `dump.rs` =
+  `FileSink` (バッファ付きファイル) + `EventControl` (`dump:progress` イベント発火 +
+  `AppState` の `Arc<AtomicBool>` でキャンセル)。**warn しきい値はフロント所有**
+  (localStorage・warn-and-allow・バックエンドは決してブロックしない)。**SQLite/Turso
+  は data-only** (DDL 無し, ADR-0049)。TDD: mcp 統合 3 + desktop 単体 3 + `plan.test.ts`
+  単体 16。全ゲート green (fmt/clippy/check/test・pnpm check/test/build)、pre-commit 通過。
+  **残バーティカル (未着手):** 論理リストア/インポート (ADR-0051)・AI アシスタント
+  (ADR-0052)・自動更新 + リリース CI (ADR-0044/0043, 0.3.0→0.4.0)。**今の user 側ボール =
+  (1) `feature/desktop-design-polish` の push、(2) 次バーティカル選定 (restore か AI か
+  auto-update)。方針は「くぎってはならない」なので最終的に全部入れる。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 フィーチャーパリティ進行中 — インライン
   セル編集が着地 (ADR-0063, commit `c5f165f`, branch `feature/desktop-design-polish`)。**
   上位方針は user の厳命「**小さくきらないで、機能面の仕様を全部いれる。くぎっては
