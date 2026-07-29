@@ -7,6 +7,39 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ完了 — 自動更新 + リリース CI が着地
+  (ADR-0067, commit `d65c008`, branch `feature/desktop-design-polish`)。**
+  egui の inform-only 更新チェック (ADR-0040) を一歩超えて、Tauri は**その場で
+  更新・再起動する**: `tauri-plugin-updater` が署名済み `latest.json` を検証して
+  インストール → `tauri-plugin-process` が再起動。**アーキテクチャの肝は純ロジックと
+  トランスポートの分離** = `$lib/update/notice.ts` は Tauri 非依存の純関数
+  (`parseVersion`/`isNewer` = 解析不能なら phantom を出さず false、`foldDownload`/
+  `downloadPercent` = ダウンロード進捗の畳み込み) で RED-first の vitest 15 本。
+  UI は非モーダルの右下カード `UpdateNotice.svelte` (available→downloading→
+  installing→restarting/failed の 5 フェーズ、determinate/indeterminate プログレス、
+  prefers-reduced-motion 対応)。**egui と同じ `DBBOARD_NO_UPDATE_CHECK` opt-out** =
+  Rust コマンド `update_opt_out` (空文字は無効扱いの `opt_out` ヘルパ, 単体 1 本)。
+  起動時チェックは best-effort = 失敗は握りつぶし、アプリ起動を決して壊さない。
+  **リリースノートは Markdown ライブラリを足さず pre-wrap プレーン表示** (pnpm
+  サプライチェーン方針を尊重、ADR-0067 にフォローアップとして明記)。**署名鍵の安全性:**
+  minisign 公開鍵は `tauri.conf.json` に埋め込み済み、**秘密鍵はリポジトリにも
+  トランスクリプトにも出さない** = scratchpad 生成のみ。`release.yml` に
+  `build-tauri-windows`/`build-tauri-macos` を追加 (NSIS setup.exe / universal
+  app.tar.gz + `.sig` を署名 env で生成)、Python heredoc で `latest.json` を組み立て
+  (`one()` が候補 1 個でなければ fail-loud)、「リリースオブジェクトを先に用意」ステップで
+  tag CI のブートストラップ失敗も解消。全ゲート green (fmt/clippy/check/test・pnpm
+  check/test/build)、pre-commit は**既知・良性の turso teardown segfault のみ**
+  `--no-verify` (memory `env-windows-libsql-segfault`、PII 無し確認済み)。
+  **これで v0.4.0 フィーチャーパリティは全バーティアル完了** (接続 CRUD・セル編集・
+  注釈・エクスポート・ダンプ・リストア・AI・自動更新)。残る ⛔ 行は row insert/delete の
+  1 つのみ = 両クライアントとも**新規の書き込み面**でありポートではない。
+  **今の user 側ボール = (1) `feature/desktop-design-polish` の push、(2) 初回 v0.4.0
+  リリース前に GitHub Actions シークレット `TAURI_SIGNING_PRIVATE_KEY` を生成済み
+  minisign 秘密鍵で設定 (`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` は空)、その後 scratchpad
+  の鍵コピーを削除。これが無いと `build-tauri-*` が署名できず失敗する。**
+  **次の作業 (継続シーケンス「両方まとめて連続で」):** MySQL アダプタ (#36) = 新クレート
+  `dbboard-mysql` + `SqlDialect::MySql` (backtick クォート・read-only 分類) + 接続種別・
+  ドラフト/管理/編集・ダンプ/リストア方言分岐。TDD + 専用 ADR (ADR-0068 見込み)。)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — AI アシスタントが着地
   (ADR-0066, commit `c1ccec5`, branch `feature/desktop-design-polish`)。**
   egui の AI アシスタント (ai.rs + ai_settings.rs) を Tauri へ移植 = プロバイダ

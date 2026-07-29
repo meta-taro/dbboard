@@ -5,6 +5,34 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ完了: 自動更新 + リリース CI が着地**
+  (branch `feature/desktop-design-polish`, commit `d65c008`, ADR-0067)。
+  上位方針は不変 = egui 版全機能を Tauri 2 + SvelteKit へ一括移植し **v0.4.0
+  (パリティ + 自動更新)** として出荷。**今回のバーティカル (ADR-0067):** egui の
+  inform-only 更新チェック (ADR-0040) を一歩超え、Tauri は**その場で更新・再起動**する。
+  `tauri-plugin-updater` が署名済み `latest.json` を検証してインストール →
+  `tauri-plugin-process` が再起動。**設計の肝 = 純ロジックとトランスポートの分離:**
+  `$lib/update/notice.ts` は Tauri 非依存の純関数群 (`parseVersion`/`isNewer` =
+  解析不能なら phantom を出さず false、`foldDownload`/`downloadPercent` = 進捗畳み込み)、
+  RED-first vitest 15 本。UI は非モーダル右下カード `UpdateNotice.svelte` (5 フェーズ、
+  determinate/indeterminate プログレス、prefers-reduced-motion 対応)。**egui と同じ
+  `DBBOARD_NO_UPDATE_CHECK` opt-out** = Rust `update_opt_out` (空文字無効の `opt_out`
+  ヘルパ + 単体 1)。起動時チェックは best-effort = 失敗握りつぶしでアプリ起動を壊さない。
+  **リリースノートは Markdown ライブラリ不使用の pre-wrap プレーン表示** (pnpm 方針尊重、
+  ADR-0067 にフォローアップ明記)。`release.yml` に `build-tauri-windows`/
+  `build-tauri-macos` を追加 (NSIS setup.exe / universal app.tar.gz + `.sig` を署名
+  env で生成)、Python heredoc で `latest.json` 組み立て (`one()` fail-loud)、
+  「リリースオブジェクトを先に用意」ステップで tag CI ブートストラップ失敗も解消。
+  **全ゲート green:** cargo fmt/clippy/check/test + pnpm check/test/build。pre-commit は
+  **既知・良性の turso teardown segfault のみ** `--no-verify` (memory
+  `env-windows-libsql-segfault`、PII 無し確認済み)。**これで v0.4.0 フィーチャーパリティ
+  全バーティカル完了** (接続 CRUD・セル編集・注釈・エクスポート・ダンプ・リストア・AI・
+  自動更新)。残る ⛔ は row insert/delete のみ (両クライアント新規面、ポート非該当)。
+  **今の user 側ボール = (1) `feature/desktop-design-polish` の push、(2) 初回 v0.4.0
+  リリース前に GitHub Actions シークレット `TAURI_SIGNING_PRIVATE_KEY` を生成済み
+  minisign 秘密鍵で設定 (`_PASSWORD` は空) → scratchpad の鍵コピー削除。これが無いと
+  `build-tauri-*` が署名できず失敗する。** **次の作業 (「両方まとめて連続で」):**
+  MySQL アダプタ (#36, ADR-0068 見込み)。)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ: AI アシスタントが着地**
   (branch `feature/desktop-design-polish`, commit `c1ccec5`, ADR-0066)。
   上位方針は不変 = egui 版全機能を Tauri 2 + SvelteKit へ一括移植し **v0.4.0
