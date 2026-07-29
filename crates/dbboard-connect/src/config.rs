@@ -13,6 +13,17 @@ use std::fmt;
 use dbboard_config::{ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind, SecretStore};
 use dbboard_d1::D1Config;
 
+use crate::ssh::{resolved_ssh_from_env, ResolvedSsh, SshEnv};
+
+const SSH_HOST_ENV: &str = "DBBOARD_SSH_HOST";
+const SSH_PORT_ENV: &str = "DBBOARD_SSH_PORT";
+const SSH_USER_ENV: &str = "DBBOARD_SSH_USER";
+const SSH_KEY_PATH_ENV: &str = "DBBOARD_SSH_KEY_PATH";
+const SSH_KEY_PASSPHRASE_ENV: &str = "DBBOARD_SSH_KEY_PASSPHRASE";
+const SSH_PASSWORD_ENV: &str = "DBBOARD_SSH_PASSWORD";
+const SSH_FINGERPRINT_ENV: &str = "DBBOARD_SSH_FINGERPRINT";
+const SSH_KNOWN_HOSTS_ENV: &str = "DBBOARD_SSH_KNOWN_HOSTS";
+
 const TURSO_PATH_ENV: &str = "DBBOARD_TURSO_PATH";
 const DEFAULT_TURSO_PATH: &str = ":memory:";
 
@@ -38,6 +49,10 @@ pub enum BackendConfig {
     D1(D1Config),
     Postgres {
         url: String,
+        /// Optional SSH tunnel to forward through (ADR-0069). When present,
+        /// [`crate::connect_adapter`] opens it and rewrites `url` to the
+        /// loopback forward before connecting.
+        ssh: Option<ResolvedSsh>,
     },
     /// `MySQL` connection (ADR-0068). Unlike the Postgres-wire family this
     /// is a genuinely different SQL dialect served by the `dbboard-mysql`
@@ -45,6 +60,8 @@ pub enum BackendConfig {
     /// (`mysql://…`) embeds the password, so it is redacted in `Debug`.
     MySql {
         url: String,
+        /// Optional SSH tunnel to forward through (ADR-0069).
+        ssh: Option<ResolvedSsh>,
     },
     /// Postgres-wire connection labelled as Neon (ADR-0018). Wire shape
     /// is identical to [`BackendConfig::Postgres`]; the distinction is
@@ -53,6 +70,8 @@ pub enum BackendConfig {
     /// "postgres".
     Neon {
         url: String,
+        /// Optional SSH tunnel to forward through (ADR-0069).
+        ssh: Option<ResolvedSsh>,
     },
     /// Postgres-wire connection labelled as Supabase (ADR-0019). Wire
     /// shape is identical to [`BackendConfig::Postgres`]; the
@@ -64,6 +83,8 @@ pub enum BackendConfig {
     /// flag extension.
     Supabase {
         url: String,
+        /// Optional SSH tunnel to forward through (ADR-0069).
+        ssh: Option<ResolvedSsh>,
     },
     /// Postgres-wire connection labelled as AWS Aurora DSQL (ADR-0021).
     /// Wire shape is identical to [`BackendConfig::Postgres`]; the
@@ -73,6 +94,8 @@ pub enum BackendConfig {
     /// AWS SDK is out of scope for v=1 and will land via a future ADR.
     AuroraDsql {
         url: String,
+        /// Optional SSH tunnel to forward through (ADR-0069).
+        ssh: Option<ResolvedSsh>,
     },
     /// AWS Aurora DSQL with agent-minted IAM auth (ADR-0036). Unlike
     /// [`BackendConfig::AuroraDsql`], the caller does not supply a
@@ -205,6 +228,7 @@ struct EnvSnapshot {
     d1_base_url: Option<String>,
     turso_path: Option<String>,
     connection_selector: Option<String>,
+    ssh: SshEnv,
 }
 
 impl EnvSnapshot {
@@ -221,6 +245,18 @@ impl EnvSnapshot {
             d1_base_url: non_empty(std::env::var(D1_BASE_URL_ENV).ok()),
             turso_path: non_empty(std::env::var(TURSO_PATH_ENV).ok()),
             connection_selector: non_empty(std::env::var(CONNECTION_SELECTOR_ENV).ok()),
+            ssh: SshEnv {
+                host: non_empty(std::env::var(SSH_HOST_ENV).ok()),
+                // A non-numeric DBBOARD_SSH_PORT is ignored (falls back to 22)
+                // rather than failing the whole boot on a typo.
+                port: non_empty(std::env::var(SSH_PORT_ENV).ok()).and_then(|p| p.parse().ok()),
+                user: non_empty(std::env::var(SSH_USER_ENV).ok()),
+                key_path: non_empty(std::env::var(SSH_KEY_PATH_ENV).ok()),
+                key_passphrase: non_empty(std::env::var(SSH_KEY_PASSPHRASE_ENV).ok()),
+                password: non_empty(std::env::var(SSH_PASSWORD_ENV).ok()),
+                fingerprint: non_empty(std::env::var(SSH_FINGERPRINT_ENV).ok()),
+                known_hosts: non_empty(std::env::var(SSH_KNOWN_HOSTS_ENV).ok()),
+            },
         }
     }
 }
@@ -229,21 +265,71 @@ fn non_empty(s: Option<String>) -> Option<String> {
     s.filter(|v| !v.trim().is_empty())
 }
 
+/// Attach an env-provided SSH tunnel (`DBBOARD_SSH_*`) to a backend resolved
+/// from an env-var URL. A no-op when no bastion host is set. Errors if the
+/// bastion env is malformed, or if it names a backend that cannot be tunneled
+/// (Turso local file, D1 HTTPS) — the same policy the stored path enforces.
+fn attach_env_ssh(backend: BackendConfig, env: &EnvSnapshot) -> Result<BackendConfig, ConfigError> {
+    let Some(resolved) = resolved_ssh_from_env(&env.ssh)? else {
+        return Ok(backend);
+    };
+    match backend {
+        BackendConfig::Postgres { url, .. } => Ok(BackendConfig::Postgres {
+            url,
+            ssh: Some(resolved),
+        }),
+        BackendConfig::MySql { url, .. } => Ok(BackendConfig::MySql {
+            url,
+            ssh: Some(resolved),
+        }),
+        BackendConfig::Neon { url, .. } => Ok(BackendConfig::Neon {
+            url,
+            ssh: Some(resolved),
+        }),
+        BackendConfig::Supabase { url, .. } => Ok(BackendConfig::Supabase {
+            url,
+            ssh: Some(resolved),
+        }),
+        BackendConfig::AuroraDsql { url, .. } => Ok(BackendConfig::AuroraDsql {
+            url,
+            ssh: Some(resolved),
+        }),
+        // Turso is a local file and D1 is an HTTPS API; neither routes through
+        // a forwarded TCP port. Mirror the stored-entry policy and refuse
+        // rather than silently ignore the tunnel the user configured.
+        BackendConfig::Turso { .. } => Err(ConfigError::SshUnsupportedKind {
+            id: "env".to_string(),
+            kind: "Turso",
+        }),
+        BackendConfig::D1(_) => Err(ConfigError::SshUnsupportedKind {
+            id: "env".to_string(),
+            kind: "Cloudflare D1",
+        }),
+        BackendConfig::AuroraDsqlIam { .. } => Err(ConfigError::SshUnsupportedKind {
+            id: "env".to_string(),
+            kind: "Aurora DSQL (IAM)",
+        }),
+    }
+}
+
 fn resolve_from_env_only(env: &EnvSnapshot) -> BackendConfig {
+    // Env-var backends carry no tunnel here; any `DBBOARD_SSH_*` bastion is
+    // attached by `attach_env_ssh` on the fallible resolver path so an invalid
+    // env tunnel surfaces as an error rather than being silently dropped.
     if let Some(url) = env.aurora_dsql_url.clone() {
-        return BackendConfig::AuroraDsql { url };
+        return BackendConfig::AuroraDsql { url, ssh: None };
     }
     if let Some(url) = env.neon_url.clone() {
-        return BackendConfig::Neon { url };
+        return BackendConfig::Neon { url, ssh: None };
     }
     if let Some(url) = env.supabase_url.clone() {
-        return BackendConfig::Supabase { url };
+        return BackendConfig::Supabase { url, ssh: None };
     }
     if let Some(url) = env.pg_url.clone() {
-        return BackendConfig::Postgres { url };
+        return BackendConfig::Postgres { url, ssh: None };
     }
     if let Some(url) = env.mysql_url.clone() {
-        return BackendConfig::MySql { url };
+        return BackendConfig::MySql { url, ssh: None };
     }
     if let (Some(account_id), Some(database_id), Some(api_token)) = (
         env.d1_account_id.clone(),
@@ -274,26 +360,23 @@ fn resolve_backend(
     // among the specific pg-wire labels), then Neon URL, then Supabase
     // URL, then generic Postgres URL, then the D1 trio, then an
     // explicit TURSO_PATH all short-circuit the file-backed store.
-    if env.aurora_dsql_url.is_some() {
-        return Ok(resolve_from_env_only(env));
-    }
-    if env.neon_url.is_some() {
-        return Ok(resolve_from_env_only(env));
-    }
-    if env.supabase_url.is_some() {
-        return Ok(resolve_from_env_only(env));
-    }
-    if env.pg_url.is_some() {
-        return Ok(resolve_from_env_only(env));
-    }
-    if env.mysql_url.is_some() {
-        return Ok(resolve_from_env_only(env));
+    if env.aurora_dsql_url.is_some()
+        || env.neon_url.is_some()
+        || env.supabase_url.is_some()
+        || env.pg_url.is_some()
+        || env.mysql_url.is_some()
+    {
+        // A URL-bearing env backend can front a `DBBOARD_SSH_*` bastion.
+        return attach_env_ssh(resolve_from_env_only(env), env);
     }
     if env.d1_account_id.is_some() && env.d1_database_id.is_some() && env.d1_token.is_some() {
-        return Ok(resolve_from_env_only(env));
+        // D1 cannot be tunneled; surface a configured bastion as an error
+        // rather than dropping it silently.
+        return attach_env_ssh(resolve_from_env_only(env), env);
     }
     if env.turso_path.is_some() {
-        return Ok(resolve_from_env_only(env));
+        // Likewise a local Turso file cannot be tunneled.
+        return attach_env_ssh(resolve_from_env_only(env), env);
     }
 
     // Rule 4: explicit selector by id. Missing id is a hard error so we
@@ -401,6 +484,20 @@ pub fn backend_config_for_entry(
     entry_to_backend(entry, secrets)
 }
 
+/// Resolve an entry's optional `[connections.ssh]` block into a
+/// [`ResolvedSsh`], pulling its passphrase/password from `secrets`. Only the
+/// URL-bearing kinds reach this with a `Some` block — the loader rejects a
+/// tunnel on an un-tunnelable kind at parse time ([`ConnectionKind::supports_ssh_tunnel`]).
+fn entry_ssh(
+    entry: &ConnectionEntry,
+    secrets: &dyn SecretStore,
+) -> Result<Option<ResolvedSsh>, ConfigError> {
+    match &entry.ssh {
+        Some(ssh) => Ok(Some(ResolvedSsh::from_toml(ssh, &entry.id, secrets)?)),
+        None => Ok(None),
+    }
+}
+
 fn entry_to_backend(
     entry: &ConnectionEntry,
     secrets: &dyn SecretStore,
@@ -423,23 +520,38 @@ fn entry_to_backend(
         }
         ConnectionKind::Postgres { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::Postgres { url })
+            Ok(BackendConfig::Postgres {
+                url,
+                ssh: entry_ssh(entry, secrets)?,
+            })
         }
         ConnectionKind::MySql { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::MySql { url })
+            Ok(BackendConfig::MySql {
+                url,
+                ssh: entry_ssh(entry, secrets)?,
+            })
         }
         ConnectionKind::Neon { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::Neon { url })
+            Ok(BackendConfig::Neon {
+                url,
+                ssh: entry_ssh(entry, secrets)?,
+            })
         }
         ConnectionKind::Supabase { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::Supabase { url })
+            Ok(BackendConfig::Supabase {
+                url,
+                ssh: entry_ssh(entry, secrets)?,
+            })
         }
         ConnectionKind::AuroraDsql { keyring_url_ref } => {
             let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::AuroraDsql { url })
+            Ok(BackendConfig::AuroraDsql {
+                url,
+                ssh: entry_ssh(entry, secrets)?,
+            })
         }
         ConnectionKind::AuroraDsqlIam {
             endpoint,
@@ -598,7 +710,7 @@ mod tests {
         let secrets = InMemorySecretStore::new();
         let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::Postgres { url } if url == "postgres://from-env"),
+            matches!(cfg, BackendConfig::Postgres { url, .. } if url == "postgres://from-env"),
             "PG_URL must short-circuit the store"
         );
     }
@@ -740,7 +852,7 @@ mod tests {
         let secrets = InMemorySecretStore::new();
         let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::Neon { url } if url == "postgres://from-neon-env"),
+            matches!(cfg, BackendConfig::Neon { url, .. } if url == "postgres://from-neon-env"),
             "NEON_URL must short-circuit the store and outrank PG_URL"
         );
     }
@@ -758,7 +870,7 @@ mod tests {
         let secrets = InMemorySecretStore::new();
         let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::Supabase { url } if url == "postgres://from-supabase-env"),
+            matches!(cfg, BackendConfig::Supabase { url, .. } if url == "postgres://from-supabase-env"),
             "SUPABASE_URL must short-circuit the store and outrank PG_URL"
         );
     }
@@ -773,7 +885,7 @@ mod tests {
         let secrets = InMemorySecretStore::new();
         let cfg = resolve_backend(&env, &empty_file(), &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::Neon { url } if url == "postgres://from-neon"),
+            matches!(cfg, BackendConfig::Neon { url, .. } if url == "postgres://from-neon"),
             "NEON_URL must outrank SUPABASE_URL"
         );
     }
@@ -790,7 +902,7 @@ mod tests {
         let secrets = InMemorySecretStore::new();
         let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::AuroraDsql { url } if url == "postgres://from-aurora-dsql-env"),
+            matches!(cfg, BackendConfig::AuroraDsql { url, .. } if url == "postgres://from-aurora-dsql-env"),
             "AURORA_DSQL_URL must short-circuit the store and outrank PG_URL"
         );
     }
@@ -806,7 +918,7 @@ mod tests {
         let secrets = InMemorySecretStore::new();
         let cfg = resolve_backend(&env, &empty_file(), &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::AuroraDsql { url } if url == "postgres://from-aurora-dsql"),
+            matches!(cfg, BackendConfig::AuroraDsql { url, .. } if url == "postgres://from-aurora-dsql"),
             "AURORA_DSQL_URL must outrank NEON_URL and SUPABASE_URL"
         );
     }
@@ -820,7 +932,7 @@ mod tests {
             .expect("seed");
         let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::AuroraDsql { url } if url == "postgres://from-store-as-aurora-dsql"),
+            matches!(cfg, BackendConfig::AuroraDsql { url, .. } if url == "postgres://from-store-as-aurora-dsql"),
             "Aurora DSQL URL must be loaded from the secret store under the AuroraDsql variant"
         );
     }
@@ -880,7 +992,7 @@ mod tests {
             .expect("seed");
         let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::Supabase { url } if url == "postgres://from-store-as-supabase"),
+            matches!(cfg, BackendConfig::Supabase { url, .. } if url == "postgres://from-store-as-supabase"),
             "Supabase URL must be loaded from the secret store under the Supabase variant"
         );
     }
@@ -894,7 +1006,7 @@ mod tests {
             .expect("seed");
         let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::Neon { url } if url == "postgres://from-store-as-neon"),
+            matches!(cfg, BackendConfig::Neon { url, .. } if url == "postgres://from-store-as-neon"),
             "Neon URL must be loaded from the secret store under the Neon variant"
         );
     }
@@ -907,7 +1019,7 @@ mod tests {
         let secrets = InMemorySecretStore::new();
         let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::MySql { url } if url == "mysql://from-env"),
+            matches!(cfg, BackendConfig::MySql { url, .. } if url == "mysql://from-env"),
             "MYSQL_URL must short-circuit the store"
         );
     }
@@ -921,7 +1033,7 @@ mod tests {
             .expect("seed");
         let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::MySql { url } if url == "mysql://from-store"),
+            matches!(cfg, BackendConfig::MySql { url, .. } if url == "mysql://from-store"),
             "MySQL URL must be loaded from the secret store"
         );
     }
@@ -943,7 +1055,7 @@ mod tests {
             .expect("seed");
         let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
         assert!(
-            matches!(cfg, BackendConfig::Postgres { url } if url == "postgres://from-store"),
+            matches!(cfg, BackendConfig::Postgres { url, .. } if url == "postgres://from-store"),
             "Postgres URL must be loaded from the secret store"
         );
     }
@@ -1092,18 +1204,21 @@ mod tests {
 
         let pg = BackendConfig::Postgres {
             url: "postgres://user:pw@host/db".to_string(),
+            ssh: None,
         };
         let rendered_pg = format!("{pg:?}");
         assert!(!rendered_pg.contains("pw@host"), "{rendered_pg}");
 
         let neon = BackendConfig::Neon {
             url: "postgres://user:neon-pw@neon.example/db".to_string(),
+            ssh: None,
         };
         let rendered_neon = format!("{neon:?}");
         assert!(!rendered_neon.contains("neon-pw"), "{rendered_neon}");
 
         let supabase = BackendConfig::Supabase {
             url: "postgres://postgres:supa-pw@db.example.supabase.co/postgres".to_string(),
+            ssh: None,
         };
         let rendered_supabase = format!("{supabase:?}");
         assert!(
@@ -1113,6 +1228,7 @@ mod tests {
 
         let aurora_dsql = BackendConfig::AuroraDsql {
             url: "postgres://admin:dsql-iam-pw@example.dsql.us-east-1.on.aws/postgres".to_string(),
+            ssh: None,
         };
         let rendered_aurora_dsql = format!("{aurora_dsql:?}");
         assert!(
