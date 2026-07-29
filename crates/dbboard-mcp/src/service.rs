@@ -13,11 +13,18 @@
 //! - **Secrets never leave.** [`list_connections`](McpService::list_connections)
 //!   projects each entry to id/name/kind only; the keyring references and
 //!   the resolved URLs/tokens are never serialized into a tool result.
-//! - **Reads only.** Every query goes through
-//!   [`DatabaseAdapter::query_read_only`], which each adapter enforces at
-//!   the engine (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`,
-//!   D1 AST classification). This layer never calls the plain `query`
-//!   path.
+//! - **Reads only, for agents.** Every method [`crate::server`] wraps as an
+//!   MCP tool goes through [`DatabaseAdapter::query_read_only`], enforced at
+//!   the engine (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`, D1
+//!   AST classification). The MCP surface never writes.
+//!
+//! The desktop app also uses this service as its shared data-access layer
+//! (it owns the adapter cache and connection resolution). For it — and only
+//! it — [`apply_row_update`](McpService::apply_row_update) is a deliberate
+//! write path (inline cell editing, ADR-0042 / ADR-0062). It is **not**
+//! wrapped as an MCP tool, so it is unreachable by an external agent; the
+//! read-only invariant above is a property of the exposed tool set, not of
+//! every method on the struct.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +35,8 @@ use dbboard_config::store::{self, ConnectionKind};
 use dbboard_config::{ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
-    Column, ColumnInfo, DatabaseAdapter, DbError, ForeignKey, Row, TableInfo, TableSchema,
+    build_update_sql, dialect_for_adapter_id, Column, ColumnInfo, DatabaseAdapter, DbError,
+    ForeignKey, Row, TableInfo, TableSchema, UpdatePlan, WriteBackError,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -166,6 +174,16 @@ pub enum ServiceError {
     /// connection failure, or a query error.
     #[error(transparent)]
     Db(#[from] DbError),
+
+    /// The core write-back layer refused to build the `UPDATE` (no edits,
+    /// empty key, or a blob identity value). Desktop write path only.
+    #[error(transparent)]
+    WriteBack(#[from] WriteBackError),
+
+    /// The connection's adapter has no known SQL dialect, so no write SQL
+    /// can be built for it. Desktop write path only.
+    #[error("adapter {0:?} has no known SQL dialect for editing")]
+    NotEditable(String),
 
     /// A `spawn_blocking` task panicked or was cancelled.
     #[error("background task failed: {0}")]
@@ -348,6 +366,37 @@ impl McpService {
             columns: result.columns,
             rows: result.rows,
         })
+    }
+
+    /// Apply one single-row `UPDATE` to `connection_id` (inline cell
+    /// editing, ADR-0042). **Desktop write path** — deliberately not an MCP
+    /// tool. Builds the fully-escaped statement from `plan` with the
+    /// adapter's dialect (never string-concatenated user text), runs it via
+    /// the adapter's `execute`, and returns the engine's affected-row count
+    /// so the caller can confirm exactly one row changed.
+    ///
+    /// The `WHERE` key comes from the row's declared primary key, so a
+    /// well-formed plan can only ever match zero or one row; the caller
+    /// (the Tauri command) treats anything other than one as a conflict and
+    /// re-reads, rather than this layer guessing.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::ConnectionNotFound`] for an unknown id.
+    /// - [`ServiceError::NotEditable`] if the adapter's dialect is unknown.
+    /// - [`ServiceError::WriteBack`] if the core refuses the plan (no
+    ///   edits, empty key, or a blob identity value).
+    /// - [`ServiceError::Db`] if the engine rejects or fails the `UPDATE`.
+    pub async fn apply_row_update(
+        &self,
+        connection_id: &str,
+        plan: &UpdatePlan,
+    ) -> Result<u64, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotEditable(adapter.id().to_string()))?;
+        let sql = build_update_sql(plan, dialect)?;
+        Ok(adapter.execute(&sql).await?)
     }
 
     /// Fetch the local notes for `connection_id`, filtered to `table`
@@ -771,6 +820,96 @@ keyring_url_ref = "dbboard.prod-pg.url"
         let tables = fx.service.list_tables("mem").await.expect("list tables");
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].name, "items");
+    }
+
+    // ---- apply_row_update (desktop write path, ADR-0042) ----------------
+
+    use dbboard_core::{CellValue, RowKey, Value};
+
+    fn update_name(id: i64, new: CellValue) -> UpdatePlan {
+        UpdatePlan {
+            table: TableInfo::unqualified("items"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Integer(id))]),
+            edits: vec![("name".to_owned(), new)],
+        }
+    }
+
+    /// Read one cell back through the read-only path so the write is
+    /// confirmed against the same cached adapter.
+    async fn name_of(fx: &Fixture, id: i64) -> Option<Value> {
+        let out = fx
+            .service
+            .run_read_query(
+                "mem",
+                &format!("SELECT name FROM items WHERE id = {id}"),
+                None,
+            )
+            .await
+            .expect("read back");
+        out.rows.first().map(|r| r.values()[0].clone())
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_writes_exactly_one_row_and_reports_it() {
+        let fx = seeded_turso_fixture().await;
+        let affected = fx
+            .service
+            .apply_row_update(
+                "mem",
+                &update_name(3, CellValue::Text("renamed".to_owned())),
+            )
+            .await
+            .expect("update");
+        assert_eq!(affected, 1);
+        assert_eq!(
+            name_of(&fx, 3).await,
+            Some(Value::Text("renamed".to_owned()))
+        );
+        // A neighbouring row is untouched — the PK `WHERE` is exact.
+        assert_eq!(name_of(&fx, 2).await, Some(Value::Text("n2".to_owned())));
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_can_clear_a_cell_to_null() {
+        let fx = seeded_turso_fixture().await;
+        let affected = fx
+            .service
+            .apply_row_update("mem", &update_name(2, CellValue::Null))
+            .await
+            .expect("update to null");
+        assert_eq!(affected, 1);
+        assert_eq!(name_of(&fx, 2).await, Some(Value::Null));
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_reports_zero_when_the_key_matches_no_row() {
+        let fx = seeded_turso_fixture().await;
+        // No row has id 999: a well-formed UPDATE simply affects nothing.
+        // The caller (Tauri command) turns a non-1 count into a conflict.
+        let affected = fx
+            .service
+            .apply_row_update("mem", &update_name(999, CellValue::Text("x".to_owned())))
+            .await
+            .expect("no-op update");
+        assert_eq!(affected, 0);
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_surfaces_a_write_back_refusal() {
+        let fx = seeded_turso_fixture().await;
+        // A blob identity value can't be a safe WHERE key — the core
+        // refuses before any SQL reaches the engine.
+        let plan = UpdatePlan {
+            table: TableInfo::unqualified("items"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Blob(vec![1, 2]))]),
+            edits: vec![("name".to_owned(), CellValue::Text("x".to_owned()))],
+        };
+        let err = fx
+            .service
+            .apply_row_update("mem", &plan)
+            .await
+            .expect_err("blob key refused");
+        assert!(matches!(err, ServiceError::WriteBack(_)), "got {err:?}");
     }
 
     #[tokio::test]

@@ -17,7 +17,7 @@ use dbboard_config::{
     AnnotationsAdmin, ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKind,
     ConnectionKindDraft, ConnectionKindEditDraft, SecretField,
 };
-use dbboard_core::{TableInfo, TableSchema};
+use dbboard_core::{CellValue, RowKey, TableInfo, TableSchema, UpdatePlan, Value};
 use dbboard_mcp::service::{
     AnnotationsView, ConnectionView, QueryOutput, RelationshipView, SchemaSearchView,
 };
@@ -210,6 +210,7 @@ pub fn run() {
             search_schema,
             list_relationships,
             run_read_query,
+            update_row,
             config_path,
             connection_edit_fields,
             add_connection,
@@ -249,6 +250,85 @@ async fn run_read_query(
         .run_read_query(&connection_id, &sql, max_rows)
         .await
         .map_err(|e| e.to_string())
+}
+
+// --- Inline cell editing (write path, ADR-0042) --------------------------
+//
+// The grid stages edits and, on Save, sends the table, the row's
+// primary-key values, and the changed cells. We map those to a core
+// `UpdatePlan` and run it through `McpService::apply_row_update`, which
+// builds one fully-escaped `UPDATE` and executes it. This is the app's
+// first DB *write* surface; it is deliberately NOT wrapped as an MCP tool,
+// so external agents stay read-only (ADR-0042 write-back, ADR-0062 parity).
+
+/// One primary-key column paired with the row's *original* value, used to
+/// build the `WHERE` key. `value` is a bare JSON scalar decoded by core's
+/// [`Value`] (number → Integer/Real, string → Text, null → Null,
+/// `{"$blob":…}` → Blob), so a key value taken straight from a query result
+/// round-trips into the update unchanged.
+#[derive(serde::Deserialize)]
+struct KeyColumnInput {
+    column: String,
+    value: Value,
+}
+
+/// One staged cell edit. An absent/`null` value means SQL `NULL`; a string
+/// (including `""`) is written as a coerced literal — the editor never
+/// conflates empty text with `NULL` (matches core's [`CellValue`]).
+#[derive(serde::Deserialize)]
+struct CellEditInput {
+    column: String,
+    value: Option<String>,
+}
+
+/// Apply one row's staged edits as a single `UPDATE`. `schema` is the
+/// optional table schema (pass the value from [`list_tables`] verbatim);
+/// `key` carries the row's primary-key columns with their original values;
+/// `edits` are the changed cells. Succeeds only when exactly one row
+/// changed — `0` means the row was deleted/changed under us, `>1` means the
+/// "key" was not unique. Both leave the caller free to reload and retry, and
+/// are surfaced to the user (parity with the egui editor's affected-row
+/// gate).
+#[tauri::command]
+async fn update_row(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+    schema: Option<String>,
+    table: String,
+    key: Vec<KeyColumnInput>,
+    edits: Vec<CellEditInput>,
+) -> Result<(), String> {
+    let plan = UpdatePlan {
+        table: match none_if_blank(schema) {
+            Some(s) => TableInfo::qualified(s, table),
+            None => TableInfo::unqualified(table),
+        },
+        key: RowKey::Columns(key.into_iter().map(|k| (k.column, k.value)).collect()),
+        edits: edits
+            .into_iter()
+            .map(|e| {
+                let value = match e.value {
+                    Some(text) => CellValue::Text(text),
+                    None => CellValue::Null,
+                };
+                (e.column, value)
+            })
+            .collect(),
+    };
+    let affected = state
+        .service
+        .apply_row_update(&connection_id, &plan)
+        .await
+        .map_err(|e| e.to_string())?;
+    match affected {
+        1 => Ok(()),
+        0 => Err(
+            "no row matched — it may have been changed or deleted since it was loaded".to_string(),
+        ),
+        n => Err(format!(
+            "expected to update exactly one row but {n} matched — the key columns are not unique"
+        )),
+    }
 }
 
 // --- Connection management (write path, ADR-0062) ------------------------

@@ -14,6 +14,7 @@ import {
   type ConnectionView,
   type TableInfo,
 } from '$lib/api';
+import { selectTopN } from '$lib/sql/build';
 
 export type MainTab = 'query' | 'structure';
 
@@ -32,8 +33,12 @@ class Workspace {
   /** A request to load SQL into the query editor and run it — raised by the
    *  sidebar context menu ("Select top 100"), consumed by the Query panel.
    *  The seq lets the panel apply each request exactly once, even when the
-   *  same SQL text is requested twice in a row. */
-  queryRequest = $state<{ sql: string; seq: number } | null>(null);
+   *  same SQL text is requested twice in a row. `table`, when present, marks
+   *  the request as an editable browse of that table: the panel loads its
+   *  primary key so the result grid can offer inline editing (ADR-0042). */
+  queryRequest = $state<{ sql: string; seq: number; table?: TableInfo } | null>(
+    null,
+  );
 
   /** The currently selected connection, or undefined if none. */
   get connection(): ConnectionView | undefined {
@@ -93,10 +98,20 @@ class Workspace {
     this.activeTab = tab;
   }
 
-  /** Load SQL into the Query editor and switch to it; the panel runs it. */
+  /** Load SQL into the Query editor and switch to it; the panel runs it. Used
+   *  for arbitrary generated SQL that is not tied to one editable table. */
   runInEditor(sql: string): void {
     const seq = (this.queryRequest?.seq ?? 0) + 1;
     this.queryRequest = { sql, seq };
+    this.activeTab = 'query';
+  }
+
+  /** Browse a table's first rows in the Query editor as an *editable* result:
+   *  a bounded `SELECT *` plus the table identity, so the panel can load the
+   *  primary key and the grid can offer inline cell editing (ADR-0042). */
+  browse(table: TableInfo): void {
+    const seq = (this.queryRequest?.seq ?? 0) + 1;
+    this.queryRequest = { sql: selectTopN(table, 100), seq, table };
     this.activeTab = 'query';
   }
 
