@@ -1539,12 +1539,16 @@ dependencies = [
 name = "dbboard-connect"
 version = "0.4.0"
 dependencies = [
+ "async-trait",
  "dbboard-config",
  "dbboard-core",
  "dbboard-d1",
  "dbboard-mysql",
  "dbboard-postgres",
+ "dbboard-tunnel",
  "dbboard-turso",
+ "tokio",
+ "url",
 ]
 
 [[package]]
