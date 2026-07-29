@@ -1,6 +1,12 @@
 <script lang="ts">
   import { save } from '@tauri-apps/plugin-dialog';
-  import { displayCell, saveTextFile, type Cell, type Column } from '$lib/api';
+  import {
+    displayCell,
+    saveTextFile,
+    updateRow,
+    type Cell,
+    type Column,
+  } from '$lib/api';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import {
     nextSortKeys,
@@ -9,6 +15,12 @@
     toDelimitedFile,
     type SortKey,
   } from '$lib/grid/format';
+  import {
+    buildRowUpdates,
+    cellKey,
+    type EditContext,
+    type StagedValue,
+  } from '$lib/grid/edit';
 
   interface Props {
     columns: Column[];
@@ -18,8 +30,22 @@
     // The row cap that was applied for this run, so a truncated result can say
     // exactly where it stopped ("capped at 1000") instead of a vague suffix.
     limit?: number;
+    // Present when the result is an editable table browse: enables inline cell
+    // editing keyed on the table's primary key (ADR-0042). Null = read-only.
+    edit?: EditContext | null;
+    // Called after a save commits, so the parent can re-run the browse and show
+    // engine-normalised values.
+    onSaved?: () => void;
   }
-  let { columns, rows, rowCount, truncated, limit }: Props = $props();
+  let {
+    columns,
+    rows,
+    rowCount,
+    truncated,
+    limit,
+    edit = null,
+    onSaved,
+  }: Props = $props();
 
   let sortKeys = $state<SortKey[]>([]);
   // Selection is keyed by ORIGINAL row index so it survives re-sorting.
@@ -28,6 +54,14 @@
   let copied = $state('');
   let popup = $state<{ col: string; value: string } | null>(null);
 
+  // Inline editing (ADR-0042). Staged edits are keyed by cellKey(origRow, col)
+  // — original row index, so they survive re-sorting — mapping to the new value
+  // (text, or null for SQL NULL). `editing` is the one open inline editor.
+  let staged = $state<Map<string, StagedValue>>(new Map());
+  let editing = $state<{ row: number; col: number; draft: string } | null>(null);
+  let saving = $state(false);
+  let saveError = $state('');
+
   // Reset transient state when a new result arrives.
   $effect(() => {
     rows; // track
@@ -35,7 +69,133 @@
     selected = new Set();
     anchor = null;
     popup = null;
+    staged = new Map();
+    editing = null;
+    saveError = '';
   });
+
+  // A column is editable when the result is an editable browse and the column
+  // is NOT part of the primary key (the key identifies the row and drives the
+  // WHERE clause, so it is held fixed — parity with the egui editor).
+  function columnEditable(ci: number): boolean {
+    return !!edit && !edit.pk.includes(columns[ci].name);
+  }
+
+  // A blob cell has no sensible text editor, so editing skips it even in an
+  // otherwise-editable column.
+  function isBlob(cell: Cell): boolean {
+    return typeof cell === 'object' && cell !== null && '$blob' in cell;
+  }
+
+  function stagedAt(origIdx: number, ci: number): StagedValue | undefined {
+    return staged.get(cellKey(origIdx, ci));
+  }
+
+  function isDirty(origIdx: number, ci: number): boolean {
+    return staged.has(cellKey(origIdx, ci));
+  }
+
+  // The text a cell shows: its staged edit (NULL rendered explicitly) if any,
+  // otherwise the original value.
+  function cellText(origIdx: number, ci: number, cell: Cell): string {
+    const s = stagedAt(origIdx, ci);
+    if (s !== undefined) return s === null ? 'NULL' : s;
+    return displayCell(cell);
+  }
+
+  function cellIsNull(origIdx: number, ci: number, cell: Cell): boolean {
+    const s = stagedAt(origIdx, ci);
+    return s !== undefined ? s === null : cell === null;
+  }
+
+  function beginEdit(origIdx: number, ci: number, cell: Cell) {
+    if (!columnEditable(ci) || isBlob(cell)) return;
+    const s = stagedAt(origIdx, ci);
+    const current = s !== undefined ? s : cell;
+    editing = {
+      row: origIdx,
+      col: ci,
+      draft: current === null ? '' : displayCell(current as Cell),
+    };
+  }
+
+  function setStaged(origIdx: number, ci: number, value: StagedValue) {
+    const next = new Map(staged);
+    next.set(cellKey(origIdx, ci), value);
+    staged = next;
+  }
+
+  // Commit the open editor's text as the cell's new value.
+  function commitEditor() {
+    if (!editing) return;
+    setStaged(editing.row, editing.col, editing.draft);
+    editing = null;
+  }
+
+  // Stage an explicit SQL NULL for the cell being edited.
+  function nullEditor() {
+    if (!editing) return;
+    setStaged(editing.row, editing.col, null);
+    editing = null;
+  }
+
+  function cancelEditor() {
+    editing = null;
+  }
+
+  function onEditorKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitEditor();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEditor();
+    }
+  }
+
+  function onCellDblClick(origIdx: number, ci: number, cell: Cell) {
+    if (columnEditable(ci) && !isBlob(cell)) {
+      beginEdit(origIdx, ci, cell);
+    } else {
+      openCell(columns[ci].name, cell);
+    }
+  }
+
+  function discardEdits() {
+    staged = new Map();
+    editing = null;
+    saveError = '';
+  }
+
+  // Save every staged edit as one UPDATE per touched row. Stops at the first
+  // failure, keeping the remaining edits staged so the user can fix and retry;
+  // on full success clears staging and asks the parent to reload.
+  async function saveEdits() {
+    if (!edit || saving) return;
+    commitEditor(); // flush an open editor into the staging map first
+    if (staged.size === 0) return;
+    let updates;
+    try {
+      updates = buildRowUpdates(staged, rows, columns, edit.pk);
+    } catch (e) {
+      saveError = String(e);
+      return;
+    }
+    saving = true;
+    saveError = '';
+    try {
+      for (const u of updates) {
+        await updateRow(edit.connectionId, edit.table, u.key, u.edits);
+      }
+      staged = new Map();
+      flash(i18n.t('edit-saved', { count: updates.length }));
+      onSaved?.();
+    } catch (e) {
+      saveError = String(e);
+    } finally {
+      saving = false;
+    }
+  }
 
   const displayOrder = $derived(sortedIndices(rows, sortKeys));
 
@@ -164,6 +324,26 @@
     </div>
   </div>
 
+  {#if edit && (staged.size > 0 || saveError)}
+    <div class="edit-bar" role="region" aria-label={i18n.t('edit-bar-label')}>
+      <span class="edit-count">{i18n.t('edit-pending', { count: staged.size })}</span>
+      {#if saveError}<span class="edit-error">{saveError}</span>{/if}
+      <div class="edit-actions">
+        <button type="button" onclick={discardEdits} disabled={saving}>
+          {i18n.t('edit-discard')}
+        </button>
+        <button
+          type="button"
+          class="primary"
+          onclick={saveEdits}
+          disabled={saving || staged.size === 0}
+        >
+          {saving ? i18n.t('edit-saving') : i18n.t('edit-save')}
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <div class="grid-wrap">
     <table>
       <thead>
@@ -190,12 +370,44 @@
           >
             {#each rows[origIdx] as cell, ci (ci)}
               <td
-                class:null-cell={cell === null}
-                class:num-cell={typeof cell === 'number'}
-                title={cell === null ? 'NULL' : displayCell(cell)}
-                ondblclick={() => openCell(columns[ci].name, cell)}
+                class:null-cell={cellIsNull(origIdx, ci, cell)}
+                class:num-cell={typeof cell === 'number' && !isDirty(origIdx, ci)}
+                class:dirty={isDirty(origIdx, ci)}
+                class:editable={columnEditable(ci) && !isBlob(cell)}
+                title={columnEditable(ci) && !isBlob(cell)
+                  ? i18n.t('edit-cell-hint')
+                  : cellIsNull(origIdx, ci, cell)
+                    ? 'NULL'
+                    : cellText(origIdx, ci, cell)}
+                ondblclick={() => onCellDblClick(origIdx, ci, cell)}
               >
-                {displayCell(cell)}
+                {#if editing && editing.row === origIdx && editing.col === ci}
+                  <!-- svelte-ignore a11y_autofocus -->
+                  <input
+                    class="cell-input"
+                    bind:value={editing.draft}
+                    autofocus
+                    spellcheck="false"
+                    onkeydown={onEditorKeydown}
+                    onblur={commitEditor}
+                    onclick={(e) => e.stopPropagation()}
+                    title={i18n.t('edit-cell-editing')}
+                  />
+                  <button
+                    type="button"
+                    class="cell-null"
+                    onmousedown={(e) => {
+                      // mousedown fires before the input's blur, so NULL wins
+                      // over the commit the blur would otherwise run.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      nullEditor();
+                    }}
+                    title={i18n.t('edit-null-title')}>∅</button
+                  >
+                {:else}
+                  {cellText(origIdx, ci, cell)}
+                {/if}
               </td>
             {/each}
           </tr>
@@ -274,6 +486,58 @@
     color: var(--success);
   }
 
+  /* Edit action bar: appears only while there are staged edits (or an error). */
+  .edit-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 6px 10px;
+    background: var(--accent-weak);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-widget);
+  }
+  .edit-count {
+    font-size: var(--text-small);
+    font-weight: 600;
+    color: var(--text-accent);
+  }
+  .edit-error {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-hint);
+    color: var(--danger);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .edit-actions {
+    margin-left: auto;
+    display: flex;
+    gap: var(--space-2);
+  }
+  .edit-actions button {
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text);
+    border-radius: var(--radius-widget);
+    padding: 4px 12px;
+    font-size: var(--text-hint);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .edit-actions button:hover:not(:disabled) {
+    border-color: var(--border-strong);
+  }
+  .edit-actions .primary {
+    background: var(--accent);
+    color: var(--on-accent);
+    border-color: var(--accent);
+  }
+  .edit-actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
   .grid-wrap {
     overflow: auto;
     border: 1px solid var(--border);
@@ -340,6 +604,47 @@
   .null-cell {
     color: var(--text-muted);
     font-style: italic;
+  }
+  /* An editable cell hints its affordance on hover; a staged (dirty) cell keeps
+     a persistent accent tint until the edit is saved or discarded. */
+  td.editable {
+    cursor: text;
+  }
+  td.editable:hover {
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  td.dirty {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    font-weight: 600;
+  }
+  .cell-input {
+    width: 100%;
+    min-width: 80px;
+    box-sizing: border-box;
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-widget);
+    padding: 2px 6px;
+    font: inherit;
+    font-family: var(--font-mono);
+  }
+  .cell-input:focus-visible {
+    outline: none;
+  }
+  .cell-null {
+    margin-left: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    border-radius: var(--radius-widget);
+    padding: 1px 6px;
+    font-size: var(--text-hint);
+    cursor: pointer;
+  }
+  .cell-null:hover {
+    color: var(--text);
+    border-color: var(--border-strong);
   }
   /* Numeric columns right-align with figure-aligned digits so the ones, tens
      and hundreds stack — detected from the JSON scalar, never fabricated. */

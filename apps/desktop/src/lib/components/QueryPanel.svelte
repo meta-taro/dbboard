@@ -1,6 +1,12 @@
 <script lang="ts">
   import { workspace } from '$lib/state/workspace.svelte';
-  import { runReadQuery, configPath, type QueryOutput } from '$lib/api';
+  import {
+    runReadQuery,
+    describeTable,
+    configPath,
+    type QueryOutput,
+    type TableInfo,
+  } from '$lib/api';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import { queryHistory } from '$lib/history/history.svelte';
   import {
@@ -25,6 +31,21 @@
 
   let rowLimit = $state(loadRowLimit());
   let historyOpen = $state(false);
+
+  // Editable-browse context. When the current result came from a sidebar
+  // "Select top 100" (a known table, not an arbitrary query), we load its
+  // primary key so the grid can offer inline cell editing (ADR-0042). A
+  // manual Run or a history replay clears this — only a browse is editable.
+  let editTable = $state<TableInfo | null>(null);
+  let editPk = $state<string[]>([]);
+  // A browsed table that has NO declared primary key: editable-intent but not
+  // safely keyable, so we show a read-only reason instead of edit affordances.
+  const noPk = $derived(editTable !== null && editPk.length === 0);
+  const editContext = $derived(
+    workspace.connectionId && editTable && editPk.length > 0
+      ? { connectionId: workspace.connectionId, table: editTable, pk: editPk }
+      : null,
+  );
 
   // First-run guidance: with no connection configured the Run button can only
   // stay disabled, so we explain *why* and *where* to register one. The path
@@ -52,22 +73,49 @@
     saveRowLimit(next);
   }
 
-  async function run() {
+  // Run the current SQL. `table` marks an editable browse of that table (from
+  // the sidebar); `null` is an arbitrary query, which is never editable. On a
+  // browse we also load the table's primary key so the grid can key its edits.
+  async function execute(table: TableInfo | null) {
     const connId = workspace.connectionId;
     if (!connId || busy) return;
     busy = true;
     error = '';
+    editTable = table;
+    editPk = [];
     const limit = rowLimit;
     try {
       result = await runReadQuery(connId, sql, limit);
       resultLimit = limit;
       queryHistory.record(connId, sql);
+      if (table) {
+        // A failed schema read just leaves the table read-only (empty PK); the
+        // rows still show. Never let it mask a successful query.
+        try {
+          const schema = await describeTable(connId, table.name, table.schema);
+          editPk = schema.primary_key;
+        } catch {
+          editPk = [];
+        }
+      }
     } catch (e) {
       result = null;
       error = String(e);
+      editTable = null;
     } finally {
       busy = false;
     }
+  }
+
+  // The Run button and history replay run arbitrary SQL — never editable.
+  function run() {
+    execute(null);
+  }
+
+  // Re-run the same browse after a committed save so the grid reflects what
+  // actually landed (a typed/triggered column may differ from the text sent).
+  function reloadAfterSave() {
+    execute(editTable);
   }
 
   function loadFromHistory(entry: string) {
@@ -82,14 +130,15 @@
   }
 
   // Consume a query the sidebar context menu pushed in ("Select top 100"):
-  // load it into the editor and run it, exactly once per request.
+  // load it into the editor and run it, exactly once per request. A request
+  // carrying a `table` is an editable browse; otherwise it is arbitrary SQL.
   let lastSeq = 0;
   $effect(() => {
     const req = workspace.queryRequest;
     if (req && req.seq !== lastSeq) {
       lastSeq = req.seq;
       sql = req.sql;
-      run();
+      execute(req.table ?? null);
     }
   });
 </script>
@@ -184,12 +233,17 @@
 
   {#if result}
     <div class="result">
+      {#if noPk}
+        <p class="readonly-note" role="note">{i18n.t('edit-readonly-no-pk')}</p>
+      {/if}
       <ResultGrid
         columns={result.columns}
         rows={result.rows}
         rowCount={result.row_count}
         truncated={result.truncated}
         limit={resultLimit}
+        edit={editContext}
+        onSaved={reloadAfterSave}
       />
     </div>
   {/if}
@@ -428,6 +482,19 @@
   .result {
     display: flex;
     flex-direction: column;
+    gap: var(--space-2);
     min-height: 0;
+  }
+
+  /* Why a browsed table isn't editable — a table with no declared primary key
+     has no safe row key, so it stays read-only (parity with the egui editor). */
+  .readonly-note {
+    margin: 0;
+    padding: 6px 10px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+    color: var(--text-muted);
+    font-size: var(--text-hint);
   }
 </style>

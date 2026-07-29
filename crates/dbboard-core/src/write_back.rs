@@ -40,6 +40,20 @@ pub enum SqlDialect {
     Postgres,
 }
 
+/// Map an adapter id ([`crate::DatabaseAdapter::id`]) to its SQL dialect
+/// family. Unknown ids yield `None` — a caller that cannot name the dialect
+/// must refuse to build write SQL rather than guess and emit the wrong
+/// escaping/qualification. Single source of truth for both the egui and the
+/// Tauri front ends (ADR-0042 write-back, ADR-0062 desktop parity).
+#[must_use]
+pub fn dialect_for_adapter_id(id: &str) -> Option<SqlDialect> {
+    match id {
+        "turso" | "d1" => Some(SqlDialect::Sqlite),
+        "postgres" | "neon" | "supabase" | "aurora-dsql" => Some(SqlDialect::Postgres),
+        _ => None,
+    }
+}
+
 /// What can identify a row for a safe `WHERE` — the *capability*, decided
 /// from the table schema and dialect by [`RowIdentity::resolve`]. A table
 /// with no resolvable identity is not editable.
@@ -526,5 +540,31 @@ mod tests {
             build_update_sql(&plan, SqlDialect::Sqlite),
             Err(WriteBackError::UnsupportedKeyType("k".to_owned()))
         );
+    }
+
+    // ---- dialect_for_adapter_id -----------------------------------------
+
+    #[test]
+    fn adapter_ids_map_to_their_dialect_family() {
+        for id in ["turso", "d1"] {
+            assert_eq!(dialect_for_adapter_id(id), Some(SqlDialect::Sqlite), "{id}");
+        }
+        // Every Postgres flavor an adapter's `id()` can report — including
+        // the aurora-dsql-iam constructor, which sets flavor "aurora-dsql".
+        for id in ["postgres", "neon", "supabase", "aurora-dsql"] {
+            assert_eq!(
+                dialect_for_adapter_id(id),
+                Some(SqlDialect::Postgres),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_adapter_id_has_no_dialect() {
+        // No dialect → the caller must refuse to build write SQL rather
+        // than guess. "aurora-dsql-iam" is deliberately NOT a real id().
+        assert_eq!(dialect_for_adapter_id("mystery"), None);
+        assert_eq!(dialect_for_adapter_id(""), None);
     }
 }

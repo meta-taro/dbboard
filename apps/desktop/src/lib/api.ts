@@ -7,6 +7,7 @@
 // Command *arguments*, by contrast, follow Tauri's camelCase IPC convention.
 import { invoke } from '@tauri-apps/api/core';
 import type { EditFields } from '$lib/connections/draft';
+import type { CellEdit, KeyColumn } from '$lib/grid/edit';
 
 export interface ConnectionView {
   id: string;
@@ -178,6 +179,26 @@ export const runReadQuery = (
   maxRows?: number,
 ): Promise<QueryOutput> =>
   invoke('run_read_query', { connectionId, sql, maxRows: maxRows ?? null });
+
+// Apply one row's staged edits as a single UPDATE (ADR-0042) — the app's first
+// DB write path, deliberately NOT exposed to MCP agents. `schema` is the
+// table's schema (null on SQLite/libSQL); `key` carries the row's primary-key
+// columns with their ORIGINAL values, `edits` the changed cells. Resolves only
+// when exactly one row changed; otherwise rejects with the backend's message
+// (0 rows = the row was changed/deleted under us, >1 = a non-unique key).
+export const updateRow = (
+  connectionId: string,
+  table: TableInfo,
+  key: KeyColumn[],
+  edits: CellEdit[],
+): Promise<void> =>
+  invoke('update_row', {
+    connectionId,
+    schema: table.schema,
+    table: table.name,
+    key,
+    edits,
+  });
 
 // Absolute path of the connections.toml this app reads — shown in the
 // first-run empty state and the connection manager's footer.

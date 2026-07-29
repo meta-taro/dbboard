@@ -282,9 +282,14 @@ fn to_mcp(err: &ServiceError) -> McpError {
         // An unknown id, or any other DbError (rejected write, bad SQL,
         // unknown table, unsupported capability), is attributable to what
         // the caller sent.
+        // WriteBack / NotEditable belong to the desktop write path and never
+        // reach an MCP tool call, but they are still caller-attributable if
+        // they ever did — refusing a bad plan is not an environment fault.
         ServiceError::ConnectionNotFound(_)
         | ServiceError::InvalidRequest(_)
-        | ServiceError::Db(_) => McpError::invalid_params(message, None),
+        | ServiceError::Db(_)
+        | ServiceError::WriteBack(_)
+        | ServiceError::NotEditable(_) => McpError::invalid_params(message, None),
         ServiceError::Config(_) | ServiceError::Annotations(_) | ServiceError::Task(_) => {
             McpError::internal_error(message, None)
         }

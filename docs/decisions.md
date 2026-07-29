@@ -7165,7 +7165,7 @@ its own ADR entry where it introduces a new decision.
 | Vertical | egui source | Status |
 |---|---|---|
 | Connection CRUD + bundle import/export | `ConnectionsView` + `ConnectionAdmin` | **This ADR — done** |
-| Inline cell editing (UPDATE-only, declared PK, `rows_affected == 1` gate) | ADR-0042 | Pending |
+| Inline cell editing (UPDATE-only, declared PK, `rows_affected == 1` gate) | ADR-0042 | **Done — ADR-0063** |
 | Local annotation editing (table/column notes, empty = delete) | ADR-0045 | **Done** |
 | Dataset export (CSV / CSV-with-BOM / TSV, row selection) | ADR-0035 | **Done** |
 | Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | Pending |
@@ -7176,3 +7176,66 @@ its own ADR entry where it introduces a new decision.
 The read-only enforcement of the *query* path (ADR-0046 §8, ADR-0061) is
 unchanged: lifting the write ban applies to connection **management**, not to
 arbitrary SQL — user SQL still runs through the read-only classifier.
+
+---
+
+## ADR-0063 — Desktop inline cell editing: the first DB-write surface (Tauri, v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0042 (the egui cell-edit model this ports — `build_update_sql`,
+  the declared-primary-key requirement, the `rows_affected == 1` commit gate),
+  ADR-0046 §8 / ADR-0061 (the read-only classifier on the *query* path, which
+  this does **not** relax), ADR-0059 (the read-only Tauri spike), and ADR-0062
+  (the connection **management** write path, whose read/write split this reuses).
+
+### Context
+
+The Tauri build could browse rows but not change them — a regression against the
+egui app, which edits a cell in place and writes it back as a single-row UPDATE.
+This is the second desktop write surface after connection management (ADR-0062),
+and the first that writes to a **user's database** rather than to local config.
+That raises two questions ADR-0062 did not: *where does the write live* relative
+to the read-only MCP tool surface, and *what stops a mis-keyed edit* from
+clobbering more than one row.
+
+`McpService` is already the shared desktop data-access layer as well as the
+read-only MCP tool surface. The temptation is to expose the write as one more
+MCP tool; that would hand external agents a mutation path, which ADR-0046 §8
+forbids. The two roles must be split at the method level, not the type level.
+
+### Decision
+
+1. **The write path is a `McpService` method that is deliberately *not* an MCP
+   tool.** `McpService::apply_row_update(connection_id, &UpdatePlan)` performs
+   the write and returns the affected-row count. It is called only from the
+   desktop Tauri command `update_row`; it is **never** registered in the MCP
+   tool router. External agents keep the exact read-only surface they had.
+   `ServiceError::WriteBack` / `NotEditable` map to `invalid_params` in the MCP
+   layer purely for exhaustiveness — they are unreachable from a tool call.
+
+2. **Editability is gated on a *declared* primary key, decided on the frontend.**
+   A result grid is editable only when it came from a sidebar *Select top 100*
+   browse (which carries the source `TableInfo`) **and** `describeTable` reports
+   a non-empty `primary_key`. An arbitrary query is never editable; a table with
+   no declared PK (including rowid-only SQLite tables) shows a read-only note.
+   The pure grouping step — matching each staged edit to its row's PK values —
+   lives in `apps/desktop/src/lib/grid/edit.ts` and is unit-tested in isolation;
+   it throws if the PK is empty or a PK column is absent from the result, so a
+   browse must `SELECT *`.
+
+3. **The command enforces the `rows_affected == 1` gate** (parity with egui's
+   `advance_save`). `update_row` returns `Ok(())` only when exactly one row
+   matched; `0` and `n > 1` both surface as an error and leave the edit staged,
+   so a stale or non-unique key can never silently write the wrong rows.
+
+### Consequences
+
+- The desktop gains in-place editing at egui parity while agents stay strictly
+  read-only — the split is enforced by *what is registered as a tool*, so it
+  cannot be bypassed by an agent crafting a request.
+- Editing requires a declared PK. rowid-only SQLite tables and view/derived
+  results are intentionally read-only in the app, matching egui.
+- Tested RED-first: 4 integration tests on `apply_row_update` in
+  `dbboard-mcp` (writes exactly one row and reports it; clears a cell to NULL;
+  reports `0` when the key matches nothing; surfaces a write-back refusal) and
+  8 unit tests on the pure `buildRowUpdates` grouping in `edit.test.ts`.

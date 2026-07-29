@@ -1,7 +1,6 @@
 <script lang="ts">
   import { workspace } from '$lib/state/workspace.svelte';
   import { searchSchema, type SchemaMatch, type TableInfo } from '$lib/api';
-  import { selectTopN } from '$lib/sql/build';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import ConnectionManager from './ConnectionManager.svelte';
@@ -69,7 +68,7 @@
       { label: i18n.t('menu-open-structure'), onSelect: () => workspace.selectTable(table) },
       {
         label: i18n.t('menu-select-top', { n: 100 }),
-        onSelect: () => workspace.runInEditor(selectTopN(table, 100)),
+        onSelect: () => workspace.browse(table),
       },
       {
         label: i18n.t('menu-copy-name'),

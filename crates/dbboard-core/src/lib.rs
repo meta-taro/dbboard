@@ -47,5 +47,6 @@ pub use schema::{resolve_referenced_columns, ColumnInfo, ForeignKey, TableInfo, 
 pub use sort::{compare_values, sorted_row_order, SortKey};
 pub use value::Value;
 pub use write_back::{
-    build_update_sql, CellValue, RowIdentity, RowKey, SqlDialect, UpdatePlan, WriteBackError,
+    build_update_sql, dialect_for_adapter_id, CellValue, RowIdentity, RowKey, SqlDialect,
+    UpdatePlan, WriteBackError,
 };

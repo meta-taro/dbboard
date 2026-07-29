@@ -6,10 +6,15 @@ spike** (ADR-0046 / ADR-0059): a static SPA over 7 read-only IPC commands
 reusing `McpService`. Write surfaces are deliberately absent and gated behind a
 new ADR — see "Deliberately out of scope" below.
 
+The read-only spike has since begun its **v0.4.0 feature-parity** effort: write
+surfaces are being promoted one vertical at a time, each behind its own ADR (see
+the ADR-0062 scope map in `decisions.md`). Landed write surfaces are listed in
+their own section below.
+
 Legend: ✅ done · 🟦 done this pass · ⛔ not yet (needs an ADR / write surface) ·
 ➖ intentionally omitted.
 
-_Last updated: 2026-07-27 (added first-run empty state)._
+_Last updated: 2026-07-29 (inline cell editing — ADR-0063)._
 
 ## Read / inspect (the spike's remit)
 
@@ -21,7 +26,7 @@ _Last updated: 2026-07-27 (added first-run empty state)._
 | Schema search (tables + columns) | ✅ | ✅ | Debounced `search_schema`. |
 | Table structure (columns / types / PK) | ✅ | ✅ | Structure tab. |
 | Foreign-key relationships | ✅ | ✅ | Shown on the Structure tab. |
-| Local annotations (table/column notes) | ✅ | ✅ (display) | egui **edits** notes (ADR-0045); Tauri only **displays** them — editing is a write surface (⛔). |
+| Local annotations (table/column notes) | ✅ | ✅ | Display **and** edit — see the write-surface section (ADR-0045). |
 | Run read-only SQL | ✅ | ✅ | SELECT/WITH/EXPLAIN; writes rejected at the engine. |
 | Aurora DSQL read path | ✅ | ✅ | Streaming row-cap instead of `DECLARE CURSOR` (854b1f2). |
 | Results grid: sort / multi-select / copy TSV·CSV / download | ✅ | ✅ | |
@@ -32,26 +37,40 @@ _Last updated: 2026-07-27 (added first-run empty state)._
 | Theme (auto/light/dark) | ✅ | ✅ | Now localized. |
 | Version + Help/About | ✅ | 🟦 | About dialog: version (`getVersion`), docs hint, repo link. |
 
-## Deliberately out of scope for the read-only spike
+## Write surfaces landed under v0.4.0 parity
 
-These are **write surfaces or external integrations**. Adding any of them
-breaches the ADR-0046/0059 boundary and must be introduced with a new ADR, not
-folded in silently.
+Each of these was a ⛔ read-only-spike boundary that has since been promoted
+behind its own ADR. The read/write split is enforced at the method level:
+external MCP agents keep the exact read-only surface — none of these writes is
+registered as an MCP tool.
+
+| Feature | egui | Tauri | ADR / safeguard |
+|---|---|---|---|
+| Connection CRUD (add/edit/delete) | ✅ (`connections.rs`) | ✅ | ADR-0062. `ConnectionAdmin` owns `connections.toml` + keyring with rollback; secrets never in TOML. |
+| Bundle import/export (passphrase-encrypted) | ✅ | ✅ | ADR-0062 / ADR-0038. |
+| Annotation editing (table/column notes, empty = delete) | ✅ | ✅ | ADR-0045. Local-only write to `annotations.toml`; no DB write. |
+| CSV/dataset export (CSV / CSV-with-BOM / TSV, row selection) | ✅ (`export.rs`) | ✅ | ADR-0035 / ADR-0049. |
+| Inline cell editing (update rows) | ✅ (`edit.rs`) | ✅ | ADR-0063. UPDATE-only; requires a **declared PK**; `rows_affected == 1` commit gate; rowid-only/view results stay read-only. |
+
+## Deliberately out of scope (still pending an ADR / write surface)
+
+These remain **write surfaces or external integrations** not yet ported. Adding
+any of them breaches the ADR-0046/0059 boundary and must be introduced with a
+new ADR, not folded in silently.
 
 | Feature | egui | Tauri | Blocker |
 |---|---|---|---|
-| Connection CRUD (add/edit/delete) | ✅ (`connections.rs`) | ⛔ | Write surface; needs credential-handling ADR + IPC. |
-| Data editing (insert/update/delete rows) | ✅ (`edit.rs`) | ⛔ | Write surface; the spike is read-only by design. |
-| Annotation editing | ✅ | ⛔ | Writes `annotations.toml`; a (local-only) write surface. |
-| Backup / restore | ✅ (`backup.rs`, `restore.rs`) | ⛔ | Bulk read + write; separate ADR. |
-| AI assistant (explain / draft SQL) | ✅ (`ai.rs`, `ai_settings.rs`) | ⛔ | Provider integration + key storage; the About dialog omits the egui "About AI Assistant" text because the feature is absent here. |
-| CSV/dataset export beyond the grid | ✅ (`export.rs`) | Partial | Grid copies/downloads the current result; no dedicated export view. |
-| Auto-update / update-check | ✅ (release flow) | ⛔ | Tauri updater plugin + signing; targeted for the v0.4.0 release work. |
+| Row insert / delete | ✅ (`edit.rs`) | ⛔ | Cell editing (ADR-0063) covers UPDATE only; INSERT/DELETE need their own gate. |
+| Backup / restore | ✅ (`backup.rs`, `restore.rs`) | ⛔ | Bulk read + write; ADR-0049/0050 (dump) + ADR-0051 (restore). |
+| AI assistant (explain / draft SQL) | ✅ (`ai.rs`, `ai_settings.rs`) | ⛔ | Provider integration + key storage (ADR-0052); the About dialog omits the egui "About AI Assistant" text because the feature is absent here. |
+| Auto-update / update-check | ✅ (release flow) | ⛔ | Tauri updater plugin + signing; targeted for the v0.4.0 release work (ADR-0044/0043). |
 
 ## Notes for the next pass
 
 - The 1000-row hard cap (`crates/dbboard-mcp/src/service.rs`) is a reconnaissance
   ceiling. Real bulk work needs either a raised cap or pagination — both are
   backend-policy changes (ADR), not a frontend tweak.
-- Promoting any ⛔ row is the natural start of a **v0.4.0 feature-parity** effort;
-  each should open with an ADR describing the write surface and its safeguards.
+- The **v0.4.0 feature-parity** effort is under way: each remaining ⛔ row is
+  promoted as its own vertical, opening with an ADR describing the write surface
+  and its safeguards. Backup/restore and the AI assistant are the next verticals;
+  auto-update lands with the release work.
