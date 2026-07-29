@@ -10,6 +10,7 @@ export type ConnectionKind =
   | 'turso'
   | 'd1'
   | 'postgres'
+  | 'mysql'
   | 'neon'
   | 'supabase'
   | 'aurora_dsql';
@@ -20,6 +21,7 @@ export const CONNECTION_KINDS: readonly ConnectionKind[] = [
   'turso',
   'd1',
   'postgres',
+  'mysql',
   'neon',
   'supabase',
   'aurora_dsql',
@@ -57,7 +59,7 @@ export type EditorMode = 'add' | 'edit';
 export type EditFields =
   | { kind: 'turso'; path: string }
   | { kind: 'd1'; account_id: string; database_id: string; base_url: string | null }
-  | { kind: 'postgres' | 'neon' | 'supabase' | 'aurora_dsql' };
+  | { kind: 'postgres' | 'mysql' | 'neon' | 'supabase' | 'aurora_dsql' };
 
 export function emptyForm(): ConnectionForm {
   return {
@@ -104,6 +106,7 @@ export function fieldsForKind(kind: ConnectionKind): FormField[] {
     case 'd1':
       return ['account_id', 'database_id', 'base_url', 'token'];
     case 'postgres':
+    case 'mysql':
     case 'neon':
     case 'supabase':
     case 'aurora_dsql':
@@ -118,6 +121,7 @@ export function secretFields(kind: ConnectionKind): FormField[] {
     case 'd1':
       return ['token'];
     case 'postgres':
+    case 'mysql':
     case 'neon':
     case 'supabase':
     case 'aurora_dsql':
@@ -160,6 +164,7 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
         token: form.token,
       };
     case 'postgres':
+    case 'mysql':
     case 'neon':
     case 'supabase':
     case 'aurora_dsql':
@@ -183,6 +188,7 @@ export function buildKindEditInput(form: ConnectionForm): Record<string, unknown
         token: form.token,
       };
     case 'postgres':
+    case 'mysql':
     case 'neon':
     case 'supabase':
     case 'aurora_dsql':

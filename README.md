@@ -7,7 +7,7 @@ distributed databases.
 
 dbboard is a learning and reference project that explores multi-database
 integration, local-first tooling, and pluggable AI-assisted workflows. It
-exposes a unified, native UI for Neon, Supabase, Aurora DSQL, and
+exposes a unified, native UI for Neon, Supabase, Aurora DSQL, MySQL, and
 Turso/libSQL, with an adapter-based architecture that makes adding new
 databases straightforward.
 
@@ -16,8 +16,9 @@ databases straightforward.
 Pre-1.0; workspace at `0.3.0`. Phases 1, 3, and the Phase 4 AI assistant
 are closed, and dbboard now doubles as a **read-only MCP server**
 (`dbboard-mcp`) for external AI agents (ADR-0046). The Turso, Cloudflare
-D1, CockroachDB, Neon, Supabase, and AWS Aurora DSQL adapters all ship
-over the local HTTP backend. See [`CHANGELOG.md`](CHANGELOG.md) for what
+D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, and MySQL / MariaDB
+adapters all ship over the local HTTP backend. See
+[`CHANGELOG.md`](CHANGELOG.md) for what
 landed and [`docs/roadmap.md`](docs/roadmap.md) for the next phase.
 
 This is the **desktop** implementation. The web counterpart lives at
@@ -51,8 +52,9 @@ and [ADR-0044](docs/decisions.md)).
 - Neon (managed PostgreSQL)
 - Supabase (managed PostgreSQL)
 - AWS Aurora DSQL (managed PostgreSQL-wire)
+- MySQL / MariaDB (`mysql://…`, its own SQL dialect)
 
-All six adapters ship today. The four pg-wire flavors share the
+All seven adapters ship today. The four pg-wire flavors share the
 generic `dbboard-postgres` adapter (`sqlx` + `tls-rustls-ring`),
 differing only in the runtime label exposed by `DatabaseAdapter::id()`
 (`"postgres"`, `"neon"`, `"supabase"`, `"aurora-dsql"`) so the
@@ -60,6 +62,12 @@ connection picker and history records can label each connection
 precisely. See [ADR-0018](docs/decisions.md) (Neon),
 [ADR-0019](docs/decisions.md) (Supabase), and
 [ADR-0021](docs/decisions.md) (Aurora DSQL).
+
+MySQL / MariaDB is the first engine on a genuinely different SQL dialect
+(back-tick identifiers, back-slash string escapes, `X'…'` blobs, no
+`NaN`/`±Inf` in `DOUBLE`): it has its own `dbboard-mysql` adapter over
+`sqlx`'s MySQL driver and a distinct `SqlDialect::MySql`. See
+[ADR-0068](docs/decisions.md).
 
 Aurora DSQL also has a second connection kind, `aurora-dsql-iam`
 ([ADR-0036](docs/decisions.md)): instead of a manually supplied URL
@@ -131,8 +139,9 @@ with no configuration. The backend is chosen by, in priority order:
 
 1. The environment variables documented below
    (`DBBOARD_AURORA_DSQL_URL` > `DBBOARD_NEON_URL` >
-   `DBBOARD_SUPABASE_URL` > `DBBOARD_PG_URL` > `DBBOARD_D1_*` >
-   `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors the order is
+   `DBBOARD_SUPABASE_URL` > `DBBOARD_PG_URL` > `DBBOARD_MYSQL_URL` >
+   `DBBOARD_D1_*` > `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors
+   the order is
    alphabetical — setting two flavored vars at once is unusual but
    the precedence is fully defined.
 2. `DBBOARD_CONNECTION=<id>` resolved against `connections.toml` — the

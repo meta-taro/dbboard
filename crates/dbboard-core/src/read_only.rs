@@ -20,7 +20,7 @@
 //! input and shareable with the `dbboard-web` sibling.
 
 use sqlparser::ast::{Query, SetExpr, Statement};
-use sqlparser::dialect::{Dialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 
 use crate::{DbError, SqlDialect};
@@ -135,6 +135,7 @@ fn parse(sql: &str, dialect: SqlDialect) -> Result<Vec<Statement>, ReadOnlyViola
     let parser_dialect: Box<dyn Dialect> = match dialect {
         SqlDialect::Postgres => Box::new(PostgreSqlDialect {}),
         SqlDialect::Sqlite => Box::new(SQLiteDialect {}),
+        SqlDialect::MySql => Box::new(MySqlDialect {}),
     };
     Parser::parse_sql(parser_dialect.as_ref(), sql)
         .map_err(|e| ReadOnlyViolation::new(format!("could not parse SQL ({e})")))
@@ -266,9 +267,32 @@ mod tests {
     }
 
     #[test]
+    fn accepts_read_only_statements_under_mysql() {
+        // A MySQL-appropriate subset (`VALUES (…)` is `VALUES ROW(…)` in
+        // MySQL, so it is excluded here) plus a backtick-quoted identifier
+        // that only parses under the MySQL grammar.
+        let mysql_read_only = [
+            "SELECT 1",
+            "SELECT * FROM users",
+            "SELECT id, name FROM users WHERE active = TRUE ORDER BY id LIMIT 10",
+            "WITH recent AS (SELECT * FROM orders WHERE ts > 0) SELECT * FROM recent",
+            "SELECT * FROM a UNION SELECT * FROM b",
+            "EXPLAIN SELECT * FROM users",
+            "SELECT `id`, `name` FROM `users`",
+        ];
+        for sql in mysql_read_only {
+            assert!(
+                is_single_read_only_statement(sql, SqlDialect::MySql),
+                "should accept under MySQL: {sql:?} -> {:?}",
+                check_read_only(sql, SqlDialect::MySql)
+            );
+        }
+    }
+
+    #[test]
     fn rejects_writes_and_multi_statements_in_both_dialects() {
         for sql in WRITES_BOTH {
-            for dialect in [SqlDialect::Postgres, SqlDialect::Sqlite] {
+            for dialect in [SqlDialect::Postgres, SqlDialect::Sqlite, SqlDialect::MySql] {
                 assert!(
                     !is_single_read_only_statement(sql, dialect),
                     "should reject under {dialect:?}: {sql:?}"

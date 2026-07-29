@@ -29,7 +29,7 @@ describe('fieldsForKind', () => {
     ]);
   });
   it('every postgres-family kind is a single url', () => {
-    for (const k of ['postgres', 'neon', 'supabase', 'aurora_dsql'] as const) {
+    for (const k of ['postgres', 'mysql', 'neon', 'supabase', 'aurora_dsql'] as const) {
       expect(fieldsForKind(k)).toEqual(['url']);
     }
   });
@@ -131,6 +131,12 @@ describe('buildKindInput', () => {
       url: 'postgres://h/db',
     });
   });
+  it('tags a mysql payload with the mysql discriminator', () => {
+    expect(buildKindInput(form({ kind: 'mysql', url: 'mysql://h/db' }))).toEqual({
+      kind: 'mysql',
+      url: 'mysql://h/db',
+    });
+  });
 });
 
 describe('buildKindEditInput', () => {
@@ -174,11 +180,12 @@ describe('formForEdit', () => {
 });
 
 describe('CONNECTION_KINDS', () => {
-  it('lists all six kinds with turso first', () => {
+  it('lists all seven kinds with turso first', () => {
     expect(CONNECTION_KINDS).toEqual([
       'turso',
       'd1',
       'postgres',
+      'mysql',
       'neon',
       'supabase',
       'aurora_dsql',

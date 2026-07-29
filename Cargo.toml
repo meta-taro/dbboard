@@ -13,6 +13,7 @@ members = [
     "crates/dbboard-d1",
     "crates/dbboard-i18n",
     "crates/dbboard-mcp",
+    "crates/dbboard-mysql",
     "crates/dbboard-openai",
     "crates/dbboard-postgres",
     "crates/dbboard-server",
@@ -56,6 +57,10 @@ dbboard-config = { path = "crates/dbboard-config" }
 # construction, extracted from dbboard-server so the headless MCP server
 # reuses it without depending on axum. dbboard-server re-exports it.
 dbboard-connect = { path = "crates/dbboard-connect" }
+# MySQL adapter (ADR-0068): a genuinely new SQL dialect (back-tick quoting,
+# backslash-escaped literals) over sqlx's mysql driver. Depends on
+# dbboard-core only, mirroring the Postgres-wire adapter's shape.
+dbboard-mysql = { path = "crates/dbboard-mysql" }
 # UI-only translation loader (ADR-0015). Consumed by `dbboard-ui` and
 # initialised once at startup from `apps/dbboard`.
 dbboard-i18n = { path = "crates/dbboard-i18n" }
@@ -105,7 +110,7 @@ serde_json = "1"
 # system OpenSSL. `-native-roots` (not the default `-webpki`) so the
 # Postgres-family adapters trust the OS store and survive the same
 # TLS-inspecting middleboxes described on `reqwest` above. See ADR-0034.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres", "mysql"] }
 # Consumes the `raw_sql(...).fetch_many(...)` result stream. Also drives
 # the dbboard-anthropic SSE stream wrapper (ADR-0026 Decision 4).
 futures-util = "0.3"

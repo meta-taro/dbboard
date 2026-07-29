@@ -7580,3 +7580,99 @@ one.
   non-mutation, `downloadPercent` rounding/clamp/indeterminate) plus a Rust unit
   test pinning the `update_opt_out` policy. The download-and-install path itself
   is thin glue over the plugin and is exercised through the UI.
+
+## ADR-0068 — MySQL adapter: a fourth engine and the first genuinely new SQL dialect
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0012 (the `DatabaseAdapter` trait this implements),
+  ADR-0028 (the `describe_table` column/PK contract), ADR-0046 (the read-only
+  transaction guarantee for the MCP/AI surface), ADR-0049/0050/0051 (the logical
+  dump/restore contract and the per-dialect value literals), ADR-0054 (the
+  `foreign_keys` edge contract), and the write-back dialect rules in
+  `dbboard-core::write_back` (ADR-0042). Unlike the Postgres-wire family
+  (ADR-0018/0019/0021), MySQL is not another flavor of an existing dialect.
+
+### Context
+
+A maintainer uses MySQL at work and asked for it as a first-class engine. Every
+adapter so far has been either SQLite-wire (Turso/libSQL, D1) or Postgres-wire
+(CockroachDB, Neon, Supabase, Aurora DSQL) — MySQL is the first engine whose SQL
+text differs enough to need its own `SqlDialect` variant. The mandate was full
+parity, not a read-only preview: connect, query, introspection
+(`list_tables`/`describe_table`/`foreign_keys`/`table_ddl`), inline cell
+write-back, CSV/TSV export, logical dump, atomic restore, the read-only MCP/AI
+surface, and the desktop connection-manager UI — every vertical the other
+adapters already satisfy.
+
+### Decision
+
+1. **A new `SqlDialect::MySql`, not a reuse of an existing one.** MySQL quotes
+   identifiers with back-ticks (`` `x` ``, doubling an embedded back-tick), not
+   double-quotes; escapes string literals with both back-slash *and* doubled
+   single-quote (`'a\\b''c'`); cannot store `NaN`/`±Inf` in a `DOUBLE`, so those
+   dump as `NULL`; and shares SQLite's `X'…'` hex blob literal. These live as
+   `SqlDialect::MySql` arms in `dbboard-core` (`write_back`, `dump::literal`),
+   and `read_only`/`restore::plan` map it to sqlparser's `MySqlDialect` so the
+   AST read-only guard parses MySQL grammar. The wire/adapter id is the string
+   `"mysql"` throughout.
+
+2. **`dbboard-mysql`, a sibling adapter crate over `sqlx`'s MySQL driver.** It
+   depends on `dbboard-core` only, mirroring the Postgres adapter's structure:
+   a `MySqlConfig { url }` secret that never lands in `Debug`/`DbError`, a
+   pool built through `harden_ssl_mode` (a bare `mysql://…` is upgraded off
+   `Disabled`), and `classify_error` reducing every driver error to a fixed
+   string so a URL password cannot leak. Introspection reads
+   `information_schema` bound through the prepared protocol (`COALESCE(?,
+   DATABASE())` — an unqualified `TableInfo` resolves to the connection's single
+   database); `table_ddl` uses `SHOW CREATE TABLE` with a back-tick-quoted
+   identifier. The `query` path uses the text protocol, so every value arrives
+   as `Value::Text` (NULL as `Value::Null`), consistent with the Postgres
+   adapter.
+
+3. **Read-only enforced at the engine, not just the AST.** `query_read_only`
+   opens a `SET TRANSACTION READ ONLY` transaction (next-transaction scope, no
+   SESSION/GLOBAL leak) behind the pre-connection `classify_read_only` guard, and
+   sets a session `max_execution_time` backstop. A plain query is capped by
+   streaming and dropping after `max_rows` rather than wrapping arbitrary SQL in
+   a `LIMIT` subquery (which breaks on duplicate output columns); EXPLAIN runs
+   directly. The sqlx `Transaction` rolls back on drop, so an early return never
+   strands a pooled connection mid-transaction. Restore runs as one InnoDB
+   transaction; the logical dump is data-only (INSERTs), so MySQL's
+   DDL-implicit-commit does not break the all-or-nothing guarantee behind
+   `has_atomic_restore`.
+
+4. **The variant is threaded top to bottom, compiler-guided.**
+   `ConnectionKind::MySql { keyring_url_ref }` (config) → `BackendConfig::MySql`
+   + `DBBOARD_MYSQL_URL` env resolution (connect) → the connection-manager add/
+   edit forms (egui + the SvelteKit desktop UI) → the Tauri command DTOs → MCP
+   `kind_label`. Because `#[serde(tag = "kind", rename_all = "snake_case")]`
+   would render the Rust `MySql` variant as `my_sql`, every serde-tagged enum
+   carrying it pins `#[serde(rename = "mysql")]` so the wire discriminator stays
+   `mysql`; the untagged Rust draft/UI enums need no rename. The URL is the
+   secret and lives in the OS keychain like the Postgres family; the store keeps
+   only a `keyring_url_ref`. The connection-URL form field reuses the existing
+   engine-neutral `connections-field-pg-url` i18n key; only a `conn-kind-mysql`
+   brand label is added.
+
+### Consequences
+
+- dbboard supports four engine families across three dialects
+  (SQLite-wire, Postgres-wire, and now MySQL). Adding a genuinely new dialect
+  exercised — and validated — the `SqlDialect` seam: identifier quoting, literal
+  escaping, float handling, and the read-only/restore AST all fanned out from
+  one enum variant.
+- A new `DBBOARD_MYSQL_URL` env var joins the resolution chain (documented in
+  `docs/architecture.md`); it takes precedence over a file-store MySQL entry the
+  same way `DBBOARD_PG_URL` does.
+- Tested RED-first: dialect rules unit-tested in `dbboard-core`
+  (`write_back`/`dump::literal` MySQL arms — back-tick quoting, back-slash +
+  doubled-quote escaping, NaN/Inf → NULL, `X'…'` blobs), adapter behaviour
+  unit-tested in `dbboard-mysql` (SSL hardening, identifier quoting, FK
+  assembly, column parsing, error classification), config/connect propagation
+  covered in their existing round-trip suites, and a live, env-gated
+  `mysql_roundtrip.rs` integration test (`DBBOARD_MYSQL_URL`) covering
+  connect/ping/DML/SELECT, `describe_table` with a composite PK, single +
+  composite `foreign_keys`, the read-only truncating cap, and the 10_000-row
+  `MAX_RESULT_ROWS` boundary (built from a four-way digit cross-join, since
+  MySQL has no `generate_series` and a recursive CTE would trip
+  `cte_max_recursion_depth`).

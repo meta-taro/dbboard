@@ -71,6 +71,17 @@ pub enum ConnectionKind {
     Postgres {
         keyring_url_ref: String,
     },
+    /// A `MySQL` connection (ADR-0068). Like [`ConnectionKind::Postgres`] it
+    /// stores only a keychain reference to a `mysql://…` URL; the difference is
+    /// a genuinely different SQL dialect (back-tick quoting, backslash-escaped
+    /// literals) behind the `dbboard-mysql` adapter. The variant is spelled
+    /// `MySql` in Rust, but `rename_all = "snake_case"` would emit `my_sql`, so
+    /// the TOML discriminator is pinned to `kind = "mysql"` to match
+    /// `dbboard_mysql::FLAVOR_MYSQL`.
+    #[serde(rename = "mysql")]
+    MySql {
+        keyring_url_ref: String,
+    },
     /// A Neon connection (ADR-0018). Shape is byte-identical to
     /// [`ConnectionKind::Postgres`]; the discriminator is the only
     /// distinction so the connection picker and capability output can
@@ -137,6 +148,7 @@ impl ConnectionKind {
             ConnectionKind::Turso { .. } => "Turso",
             ConnectionKind::D1 { .. } => "Cloudflare D1",
             ConnectionKind::Postgres { .. } => "Postgres",
+            ConnectionKind::MySql { .. } => "MySQL",
             ConnectionKind::Neon { .. } => "Neon",
             ConnectionKind::Supabase { .. } => "Supabase",
             ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
@@ -527,14 +539,37 @@ keyring_url_ref = "dbboard.neon-staging.url"
     }
 
     #[test]
+    fn parses_a_mysql_entry() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id              = "shop-mysql"
+name            = "Shop MySQL"
+kind            = "mysql"
+keyring_url_ref = "dbboard.shop-mysql.url"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("mysql entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::MySql {
+                keyring_url_ref: "dbboard.shop-mysql.url".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn unknown_kind_is_a_parse_error() {
+        // `oracle` is a genuinely unsupported engine — using a real-but-absent
+        // adapter name keeps this a true "unknown kind" test even as new kinds
+        // (mysql, …) graduate into the enum.
         let toml_src = r#"
 version = 1
 
 [[connections]]
 id   = "bogus"
 name = "Bogus"
-kind = "mysql"
+kind = "oracle"
 "#;
         let err = ConnectionFile::parse(toml_src).expect_err("unknown kind must fail");
         assert!(matches!(err, ConfigError::Parse(_)));
@@ -622,6 +657,13 @@ path = ":memory:"
                     name: "Neon".to_string(),
                     kind: ConnectionKind::Postgres {
                         keyring_url_ref: "dbboard.neon.url".to_string(),
+                    },
+                },
+                ConnectionEntry {
+                    id: "shop-mysql".to_string(),
+                    name: "Shop MySQL".to_string(),
+                    kind: ConnectionKind::MySql {
+                        keyring_url_ref: "dbboard.shop-mysql.url".to_string(),
                     },
                 },
                 ConnectionEntry {

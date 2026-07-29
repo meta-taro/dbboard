@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use dbboard_core::{DatabaseAdapter, DbResult};
 use dbboard_d1::D1Adapter;
+use dbboard_mysql::{MySqlAdapter, MySqlConfig};
 use dbboard_postgres::{AuroraDsqlIamParams, PostgresAdapter, PostgresConfig};
 use dbboard_turso::TursoAdapter;
 
@@ -53,6 +54,15 @@ pub async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn Database
             // sqlx lazily verifies the pool; force the first round-trip
             // here so a bad URL or rejected credentials surface as a
             // startup connection error.
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
+        }
+        BackendConfig::MySql { url } => {
+            // A genuinely different dialect served by the dbboard-mysql
+            // adapter (ADR-0068), not a Postgres-wire flavor. sqlx lazily
+            // verifies the pool, so force the first round-trip here to
+            // surface a bad URL or rejected credentials at startup.
+            let adapter = MySqlAdapter::connect(MySqlConfig { url }).await?;
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }

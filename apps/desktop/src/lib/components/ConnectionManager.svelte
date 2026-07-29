@@ -52,6 +52,7 @@
     turso: 'conn-kind-turso',
     d1: 'conn-kind-d1',
     postgres: 'conn-kind-postgres',
+    mysql: 'conn-kind-mysql',
     neon: 'conn-kind-neon',
     supabase: 'conn-kind-supabase',
     aurora_dsql: 'conn-kind-aurora_dsql',

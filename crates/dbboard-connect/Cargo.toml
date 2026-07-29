@@ -17,6 +17,7 @@ dbboard-config = { workspace = true }
 # path (not workspace deps) exactly as `dbboard-server` did before the
 # ADR-0046 extraction.
 dbboard-d1 = { path = "../dbboard-d1" }
+dbboard-mysql = { path = "../dbboard-mysql" }
 dbboard-postgres = { path = "../dbboard-postgres" }
 dbboard-turso = { path = "../dbboard-turso" }
 

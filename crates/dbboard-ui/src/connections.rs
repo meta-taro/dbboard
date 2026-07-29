@@ -118,6 +118,7 @@ pub enum KindSelector {
     Turso,
     D1,
     Postgres,
+    MySql,
     Neon,
     Supabase,
     AuroraDsql,
@@ -137,6 +138,7 @@ pub struct AddFormState {
     pub d1_base_url: String,
     pub d1_token: String,
     pub pg_url: String,
+    pub mysql_url: String,
     pub neon_url: String,
     pub supabase_url: String,
     pub aurora_dsql_url: String,
@@ -169,6 +171,10 @@ pub enum EditKindState {
         new_token: String,
     },
     Postgres {
+        replace_url: bool,
+        new_url: String,
+    },
+    MySql {
         replace_url: bool,
         new_url: String,
     },
@@ -816,6 +822,9 @@ impl AddFormState {
             KindSelector::Postgres => ConnectionKindDraft::Postgres {
                 url: self.pg_url.clone(),
             },
+            KindSelector::MySql => ConnectionKindDraft::MySql {
+                url: self.mysql_url.clone(),
+            },
             KindSelector::Neon => ConnectionKindDraft::Neon {
                 url: self.neon_url.clone(),
             },
@@ -856,6 +865,10 @@ impl EditFormState {
                 new_token: String::new(),
             },
             ConnectionKind::Postgres { keyring_url_ref: _ } => EditKindState::Postgres {
+                replace_url: false,
+                new_url: String::new(),
+            },
+            ConnectionKind::MySql { keyring_url_ref: _ } => EditKindState::MySql {
                 replace_url: false,
                 new_url: String::new(),
             },
@@ -906,6 +919,16 @@ impl EditFormState {
                 replace_url,
                 new_url,
             } => ConnectionKindEditDraft::Postgres {
+                url: if *replace_url {
+                    SecretField::Set(new_url.clone())
+                } else {
+                    SecretField::Keep
+                },
+            },
+            EditKindState::MySql {
+                replace_url,
+                new_url,
+            } => ConnectionKindEditDraft::MySql {
                 url: if *replace_url {
                     SecretField::Set(new_url.clone())
                 } else {
@@ -1036,6 +1059,7 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) -> bool {
                     ui.selectable_value(&mut form.kind, KindSelector::Turso, "Turso");
                     ui.selectable_value(&mut form.kind, KindSelector::D1, "Cloudflare D1");
                     ui.selectable_value(&mut form.kind, KindSelector::Postgres, "Postgres");
+                    ui.selectable_value(&mut form.kind, KindSelector::MySql, "MySQL");
                     ui.selectable_value(&mut form.kind, KindSelector::Neon, "Neon");
                     ui.selectable_value(&mut form.kind, KindSelector::Supabase, "Supabase");
                     ui.selectable_value(&mut form.kind, KindSelector::AuroraDsql, "Aurora DSQL");
@@ -1061,6 +1085,14 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) -> bool {
         KindSelector::Postgres => {
             ui.label(t!("connections-field-pg-url"));
             ui.add(egui::TextEdit::singleline(&mut form.pg_url).password(true));
+        }
+        KindSelector::MySql => {
+            // MySQL is a distinct dialect (ADR-0068), but the field is
+            // still a generic connection URL — reuse the shared,
+            // engine-neutral `connections-field-pg-url` key ("Connection
+            // URL" in all 11 locales) rather than fan out a synonym.
+            ui.label(t!("connections-field-pg-url"));
+            ui.add(egui::TextEdit::singleline(&mut form.mysql_url).password(true));
         }
         KindSelector::Neon => {
             // Neon shares the Postgres URL field semantically; we just
@@ -1131,6 +1163,10 @@ fn render_edit_form(ui: &mut egui::Ui, id: &str, form: &mut EditFormState) {
             replace_url,
             new_url,
         }
+        | EditKindState::MySql {
+            replace_url,
+            new_url,
+        }
         | EditKindState::Neon {
             replace_url,
             new_url,
@@ -1160,6 +1196,7 @@ fn kind_selector_label(kind: KindSelector) -> &'static str {
         KindSelector::Turso => "Turso",
         KindSelector::D1 => "Cloudflare D1",
         KindSelector::Postgres => "Postgres",
+        KindSelector::MySql => "MySQL",
         KindSelector::Neon => "Neon",
         KindSelector::Supabase => "Supabase",
         KindSelector::AuroraDsql => "Aurora DSQL",
