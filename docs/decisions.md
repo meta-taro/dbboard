@@ -7168,7 +7168,7 @@ its own ADR entry where it introduces a new decision.
 | Inline cell editing (UPDATE-only, declared PK, `rows_affected == 1` gate) | ADR-0042 | **Done — ADR-0063** |
 | Local annotation editing (table/column notes, empty = delete) | ADR-0045 | **Done** |
 | Dataset export (CSV / CSV-with-BOM / TSV, row selection) | ADR-0035 | **Done** |
-| Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | Pending |
+| Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | **Done — ADR-0064** |
 | Logical restore / import (empty-target confirm; per-engine txn strategy) | ADR-0051 | Pending |
 | AI assistant (provider trait; explain/suggest; never runs SQL, never sends rows) | ADR-0052 | Pending |
 | Auto-update (updater plugin + signed `latest.json`; bump 0.3.0 → 0.4.0) | ADR-0044 / ADR-0043 | Pending |
@@ -7239,3 +7239,84 @@ forbids. The two roles must be split at the method level, not the type level.
   `dbboard-mcp` (writes exactly one row and reports it; clears a cell to NULL;
   reports `0` when the key matches nothing; surfaces a write-back refusal) and
   8 unit tests on the pure `buildRowUpdates` grouping in `edit.test.ts`.
+
+---
+
+## ADR-0064 — Desktop logical backup: wiring the core dump to Tauri (v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0049 (the logical-dump design and the pure
+  `dbboard-core::dump` orchestrator/preflight this wires), ADR-0050 (the
+  user-configurable warn threshold), ADR-0059 (the read-only Tauri spike),
+  ADR-0062 (connection-management write path), and ADR-0063 (inline cell
+  editing — the *non-MCP-tool* write-method pattern this reuses).
+
+### Context
+
+The logical dump was already built and tested end-to-end in `dbboard-core`
+(`plan_dump` preflight, `run_dump` orchestrator, Value→SQL serialization) and
+shipped in the egui app via `dbboard-ui::backup`. The Tauri build had none of
+it. This vertical is **wiring only** — no new dump logic — plus the desktop
+pieces the domain layer cannot hold: file I/O, a cancellation flag, progress to
+the WebView, and the confirmation/threshold UX. Three questions had to be
+answered the same way ADR-0063 answered them for cell editing: *where does the
+write method live* relative to the read-only MCP tool surface, *how does an
+un-serialisable plan cross IPC*, and *where does the warn threshold live*.
+
+### Decision
+
+1. **The dump is two `McpService` methods that are deliberately *not* MCP
+   tools.** `plan_dump(connection_id)` and
+   `run_dump(connection_id, &DumpPlan, &mut dyn DumpSink, &dyn DumpControl)`
+   resolve the adapter and its dialect, then call the core functions. Neither is
+   registered in the MCP router, so external agents keep the exact read-only
+   surface — identical to `apply_row_update` (ADR-0063). Two new
+   `ServiceError` variants, `NotDumpable` (adapter has no known SQL dialect) and
+   `Dump` (the output sink failed), map to `invalid_params` / `internal_error`
+   in the MCP layer purely for exhaustiveness; they are unreachable from a tool
+   call.
+
+2. **`DumpPlan` never crosses IPC; the run re-plans internally.** `DumpPlan` is
+   not `Serialize` (it holds `TableInfo`), so `plan_dump` returns a flat
+   `DumpPlanDto` (table names + counts + `total_rows` + `is_empty_data`) for the
+   confirmation dialog, and the `run_dump` **command** re-runs the preflight
+   itself before dumping. A dump's preflight is cheap (one `COUNT(*)` per table)
+   relative to the dump, so re-planning is preferable to inventing a
+   serialisable plan handle or caching plans across commands.
+
+3. **The warn threshold is frontend-owned (localStorage), like theme and
+   language.** ADR-0050 requires a *user-configurable* threshold; the desktop
+   satisfies that without a `ui-settings.toml` by persisting it in the frontend
+   and applying it there (`exceedsThreshold`). The backend never blocks a dump —
+   warn-and-allow (ADR-0049 Decision 8) is a UI prompt, not a server gate — so
+   the threshold does not belong in the adapter or dump contract.
+
+4. **Progress and cancellation use a Tauri event + a shared `AtomicBool`.**
+   The `run_dump` command builds an `EventControl` (a `DumpControl`) that emits
+   each `DumpProgress` as a `dump:progress` event and reads cancellation off an
+   `AppState.dump_cancel: Arc<AtomicBool>` that a separate `cancel_dump` command
+   flips. Only one dump runs at a time, so a single flag suffices; the run
+   clears it first so a stale cancel can't abort the next dump. This mirrors the
+   egui `ChannelControl`/`CancellationToken`, swapping the mpsc channel for the
+   Tauri event bus. The output is a buffered `FileSink` whose sole write is to
+   the user-chosen `.sql` path.
+
+### Consequences
+
+- The desktop gains one-click logical backup at egui parity while agents stay
+  strictly read-only — again enforced by *what is registered as a tool*.
+- A cancellation mid-run is not an error: `run_dump` returns an outcome with
+  `cancelled = true` and the partial file is kept and reported honestly; only an
+  unopenable/unwritable output fails the command. Per-table read failures and
+  keyless-table truncations are surfaced in the outcome, not hidden.
+- For SQLite/libSQL the dump is **data-only** (no `CREATE TABLE`) — the
+  `table_ddl` capability is Postgres-only in v1 (ADR-0049 Decision 6/9). The UI
+  says so, and a test pins that the Turso dump emits `INSERT`s under a header
+  comment and no DDL.
+- Tested RED-first: 3 integration tests on the new `McpService` dump methods in
+  `dbboard-mcp` (preflight counts the seeded rows; unknown connection is a clean
+  not-found; a run emits data inserts and reports the table with no DDL), 3
+  unit tests on the desktop `FileSink`/cancel-flag plumbing, and 16 unit tests
+  on the pure frontend `plan.ts` (threshold clamp/persist, `exceedsThreshold`
+  warn-and-allow boundary, progress percent incl. zero-row and over-count edge
+  cases, default file-name slugify).

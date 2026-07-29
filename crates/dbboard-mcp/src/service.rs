@@ -35,8 +35,10 @@ use dbboard_config::store::{self, ConnectionKind};
 use dbboard_config::{ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
-    build_update_sql, dialect_for_adapter_id, Column, ColumnInfo, DatabaseAdapter, DbError,
-    ForeignKey, Row, TableInfo, TableSchema, UpdatePlan, WriteBackError,
+    build_update_sql, dialect_for_adapter_id, plan_dump as core_plan_dump,
+    run_dump as core_run_dump, Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl,
+    DumpOutcome, DumpPlan, DumpSink, ForeignKey, Row, TableInfo, TableSchema, UpdatePlan,
+    WriteBackError,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -184,6 +186,17 @@ pub enum ServiceError {
     /// can be built for it. Desktop write path only.
     #[error("adapter {0:?} has no known SQL dialect for editing")]
     NotEditable(String),
+
+    /// The connection's adapter has no known SQL dialect, so no dump can be
+    /// produced for it. Desktop dump path only (ADR-0049).
+    #[error("adapter {0:?} has no known SQL dialect to dump")]
+    NotDumpable(String),
+
+    /// Writing the dump's output file failed (a full disk, a revoked path).
+    /// Fatal to a dump — a backup that cannot be written is worthless.
+    /// Desktop dump path only.
+    #[error("dump output failed: {0}")]
+    Dump(String),
 
     /// A `spawn_blocking` task panicked or was cancelled.
     #[error("background task failed: {0}")]
@@ -397,6 +410,50 @@ impl McpService {
             .ok_or_else(|| ServiceError::NotEditable(adapter.id().to_string()))?;
         let sql = build_update_sql(plan, dialect)?;
         Ok(adapter.execute(&sql).await?)
+    }
+
+    /// Preflight a logical dump of `connection_id` (ADR-0049): list its
+    /// tables and `COUNT(*)` each, producing the [`DumpPlan`] the desktop
+    /// uses to size progress and warn on a large database. Reads only.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotDumpable`] if the adapter has no known SQL
+    /// dialect; otherwise whatever the connection/`list_tables` surfaces.
+    pub async fn plan_dump(&self, connection_id: &str) -> Result<DumpPlan, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotDumpable(adapter.id().to_string()))?;
+        Ok(core_plan_dump(adapter.as_ref(), dialect).await?)
+    }
+
+    /// Run a whole-connection logical dump described by `plan`, writing SQL
+    /// text to `sink` and reporting progress/cancellation through `control`
+    /// (ADR-0049). Reads the database only; the sole write is to the
+    /// caller-supplied output sink (a file on the desktop).
+    ///
+    /// Returns the [`DumpOutcome`] — including any per-table failures and
+    /// truncations — unless the sink itself fails, which is fatal. Like
+    /// [`apply_row_update`](Self::apply_row_update), this is a desktop-only
+    /// method and is deliberately **not** exposed as an MCP tool.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotDumpable`] if the adapter has no known SQL
+    /// dialect; [`ServiceError::Dump`] if writing to `sink` fails.
+    pub async fn run_dump(
+        &self,
+        connection_id: &str,
+        plan: &DumpPlan,
+        sink: &mut dyn DumpSink,
+        control: &dyn DumpControl,
+    ) -> Result<DumpOutcome, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotDumpable(adapter.id().to_string()))?;
+        core_run_dump(adapter.as_ref(), dialect, plan, sink, control)
+            .await
+            .map_err(|e| ServiceError::Dump(e.to_string()))
     }
 
     /// Fetch the local notes for `connection_id`, filtered to `table`
@@ -910,6 +967,87 @@ keyring_url_ref = "dbboard.prod-pg.url"
             .await
             .expect_err("blob key refused");
         assert!(matches!(err, ServiceError::WriteBack(_)), "got {err:?}");
+    }
+
+    // ---- plan_dump / run_dump (desktop backup path, ADR-0049) -----------
+
+    /// Collect dump SQL into memory so a test can assert on its content
+    /// without touching the filesystem.
+    #[derive(Default)]
+    struct VecSink(String);
+
+    impl dbboard_core::DumpSink for VecSink {
+        fn write_str(&mut self, s: &str) -> Result<(), dbboard_core::DumpError> {
+            self.0.push_str(s);
+            Ok(())
+        }
+    }
+
+    /// A `DumpControl` that never cancels and discards progress — enough to
+    /// drive `run_dump` in a unit test.
+    struct NoopControl;
+
+    impl dbboard_core::DumpControl for NoopControl {
+        fn report(&self, _progress: &dbboard_core::DumpProgress) {}
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_dump_counts_the_seeded_rows() {
+        let fx = seeded_turso_fixture().await;
+        let plan = fx.service.plan_dump("mem").await.expect("plan");
+        assert_eq!(plan.tables.len(), 1, "one seeded table");
+        assert_eq!(plan.tables[0].table.name, "items");
+        assert_eq!(plan.total_rows(), 5, "5 seeded rows");
+    }
+
+    #[tokio::test]
+    async fn plan_dump_rejects_an_unknown_connection() {
+        let fx = seeded_turso_fixture().await;
+        let err = fx.service.plan_dump("nope").await.expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_dump_emits_data_inserts_and_reports_the_table() {
+        let fx = seeded_turso_fixture().await;
+        let plan = fx.service.plan_dump("mem").await.expect("plan");
+        let mut sink = VecSink::default();
+        let outcome = fx
+            .service
+            .run_dump("mem", &plan, &mut sink, &NoopControl)
+            .await
+            .expect("dump");
+
+        assert_eq!(outcome.tables_dumped, 1);
+        assert_eq!(outcome.rows_written, 5);
+        assert!(!outcome.cancelled);
+        assert!(outcome.failures.is_empty(), "no per-table failures");
+
+        let sql = sink.0;
+        // The SQLite/Turso dump is data-only by design (ADR-0049): no
+        // CREATE TABLE, just the INSERTs, under a dialect header comment.
+        assert!(
+            !sql.contains("CREATE TABLE"),
+            "sqlite dump must not emit DDL, got:\n{sql}"
+        );
+        assert!(
+            sql.contains("dbboard logical dump"),
+            "missing header:\n{sql}"
+        );
+        assert!(
+            sql.contains("INSERT INTO") && sql.contains("items"),
+            "expected inserts for items, got:\n{sql}"
+        );
+        // Every seeded value must appear in the dumped inserts.
+        for i in 1..=5 {
+            assert!(sql.contains(&format!("'n{i}'")), "missing n{i} in:\n{sql}");
+        }
     }
 
     #[tokio::test]
