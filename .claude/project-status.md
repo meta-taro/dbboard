@@ -5,6 +5,33 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ: インラインセル編集が着地**
+  (branch `feature/desktop-design-polish`, commit `c5f165f`, ADR-0063)。
+  上位方針 = user 厳命「小さくきらないで機能面の仕様を全部いれる。くぎっては
+  ならない」= egui 版全機能を Tauri 2 + SvelteKit (`apps/desktop/`) へ一括移植し
+  **v0.4.0 (パリティ + 自動更新)** として出荷する。Tauri は読み取り専用スパイク
+  (ADR-0046/0059) から出発し、書き込み面を 1 バーティカルずつ ADR 付きで解禁中。
+  **v0.4.0 で既に着地したバーティカル:** 接続 CRUD + バンドル入出力 (ADR-0062)・
+  ローカル注釈編集 (ADR-0045)・データセット Export (ADR-0049)・**セル編集 (今回)**。
+  **今回の設計判断 (ADR-0063):** ①書き込み経路 `McpService::apply_row_update` は
+  共有データアクセス層のメソッドだが **MCP ツールには意図的に未登録** → 外部
+  エージェントは読み取り専用のまま (ADR-0046 §8 の禁止を維持)。②編集可否は
+  **宣言済み PK** で判定 (フロント): サイドバー「Select top 100」由来 (TableInfo
+  を保持) かつ `describeTable` の `primary_key` が非空の表のみ編集可。任意クエリ・
+  rowid 専用 SQLite・ビューは読み取り専用 (egui パリティ)。③`update_row` コマンドが
+  `rows_affected == 1` コミットゲートを強制 (0/n>1 はエラーで staged 維持 = egui
+  `advance_save` パリティ)。純粋なグルーピング (staged セル→行単位 UPDATE) は
+  `apps/desktop/src/lib/grid/edit.ts` に切り出し単体テスト。**TDD (RED-first):**
+  `dbboard-mcp` 統合 4 (1 行だけ書いて報告・NULL クリア・キー不一致で 0・書き戻し
+  拒否) + `edit.test.ts` 単体 8。**副次リファクタ:** `dialect_for_adapter_id` を
+  `dbboard-core` に単一定義化 (egui `edit.rs` は `pub use` で委譲)。**全ゲート
+  green:** cargo fmt/clippy/check/test + pnpm check/test(70)/build。pre-commit
+  フックも通過 (`--no-verify` 不使用)。**残バーティカル (未着手):** 論理バックアップ/
+  ダンプ (ADR-0049/0050)・論理リストア/インポート (ADR-0051)・AI アシスタント
+  (ADR-0052)・自動更新 + リリース CI (ADR-0044/0043, 0.3.0→0.4.0)。**今の user 側
+  ボール = (1) `feature/desktop-design-polish` の push、(2) 次バーティカル選定
+  (backup/restore か AI か auto-update)。方針「くぎってはならない」ゆえ最終的に全部
+  入れる。**)
 - 日付: 2026-07-26 (**ブランド design system = PR #123 マージ済**
   (develop tip `4e5623c`, ADR-0056 + ADR-0057)。user 依頼「デザインをモックに
   寄せたい」への回答。**Phase 1 = ADR-0056**: `dbboard-ui::theme` モジュールが
