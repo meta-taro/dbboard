@@ -7,6 +7,30 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — AI アシスタントが着地
+  (ADR-0066, commit `c1ccec5`, branch `feature/desktop-design-polish`)。**
+  egui の AI アシスタント (ai.rs + ai_settings.rs) を Tauri へ移植 = プロバイダ
+  トレイトと 2 実装 (dbboard-ai / dbboard-anthropic / dbboard-openai) をそのまま
+  再利用。**トランスポートだけが変わる** = egui のワーカーチャネル → Tauri コマンド、
+  ストリーミングデルタ → `ai:chunk` イベント (pure な `accumulate()` で畳む =
+  テキストは追記・トークン累計は **加算でなく置換**)。**核となるガードレールは不変:
+  SQL を実行せず、行データを一切見ない** = Explain は打った SQL テキストのみ、Suggest
+  はプロンプト + テーブル/カラム名 (`list_tables`、opt-in で `describe_table` メタ) を
+  送る。`run_read_query` の出力はプロバイダに一切届かない。**API キーは OS キーリング
+  (`dbboard.ai.<id>.api_key`) のみ** — TOML/ログ/WebView には決して出さない
+  (`AiProviderView` にキーフィールド無し、編集で空欄なら既存キー維持)。**9 個の AI
+  コマンドはどれも MCP ツール未登録** = 外部エージェントは読み取り専用のまま (他の書き込み
+  バーティカルと同じ分離)。エントリボタンは常時表示 (接続ゲート外) = 接続前でも最初の
+  プロバイダを追加可能。Suggest は接続必須 (フロント `canSend` とコマンド dispatch の両方で
+  強制)、Explain は不要。TDD: desktop 単体 9 (DTO 形状/キー秘匿/stream 置換/cancel フラグ/
+  prefetch 警告) + フロント pure `panel.test.ts` 単体 19。About ダイアログに「About AI
+  Assistant」の安全性ブロックを追加 (egui パリティ)。全ゲート green
+  (fmt/clippy/check/test・pnpm check/test/build)、pre-commit 通過 (desktop 34 テスト)。
+  **残バーティカル (未着手):** 自動更新 + リリース CI (ADR-0044/0043, 0.3.0→0.4.0) の
+  1 本のみ。**既知の技術的負債 (今回の新規ではない):** `dbboard-mcp/src/service.rs` が
+  800 行のハード上限超過 → サブモジュール分割のフォローアップが望ましい。**今の user 側
+  ボール = (1) `feature/desktop-design-polish` の push、(2) 最後のバーティカル =
+  auto-update + release CI へ着手。方針は「くぎってはならない」なので全部入れる。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — 論理リストア/インポートが着地
   (ADR-0065, commit `0f8194d`, branch `feature/desktop-design-polish`)。**
   egui の論理リストア (restore.rs) を Tauri へ移植 = pure な `dbboard-core` の
