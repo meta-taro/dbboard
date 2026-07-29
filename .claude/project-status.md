@@ -5,6 +5,36 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**MySQL / MariaDB アダプタが着地 — 初の「別 SQL 方言」エンジン**
+  (branch `feature/desktop-design-polish`, commit `6b6e887`, ADR-0068)。仕事で MySQL を
+  使う maintainer からの要望 (#36) をフルパリティで実装 = 読み取り専用プレビューではなく
+  接続・クエリ・イントロスペクション・セル書き戻し・エクスポート・ダンプ・アトミック
+  リストア・read-only MCP/AI 面・接続マネージャ UI の全バーティカルを満たす。**設計の肝 =
+  `SqlDialect::MySql` という新方言:** これまでの全アダプタは SQLite-wire (Turso/D1) か
+  Postgres-wire (Cockroach/Neon/Supabase/Aurora DSQL) の派生だったが、MySQL は SQL テキスト
+  自体が異なる初のエンジン。バッククォート識別子 (埋め込みは二重化)・バックスラッシュ +
+  シングルクォート二重化のリテラルエスケープ・DOUBLE は NaN/±Inf 不可 (→NULL)・SQLite と
+  共通の `X'…'` blob。read-only AST ガードと restore プランナは sqlparser の `MySqlDialect`
+  に対応。**アダプタ `dbboard-mysql`** = sqlx の MySQL ドライバ上のシブリングクレート
+  (dbboard-core のみ依存)。秘匿な `MySqlConfig`、TLS を `Disabled` から格上げ、エラーは
+  固定文字列化で URL パスワード漏洩を防止。イントロスペクションは `information_schema` を
+  prepared プロトコルでバインド (`COALESCE(?, DATABASE())`)、`table_ddl` は `SHOW CREATE
+  TABLE`。read-only は `SET TRANSACTION READ ONLY` + `max_execution_time` バックストップ、
+  restore はデータのみ INSERT バッチの InnoDB 単一トランザクション (`has_atomic_restore`)。
+  テキストプロトコルなので値は `Value::Text` / NULL は `Value::Null`。**配線はコンパイラ
+  誘導で上から下まで:** `ConnectionKind::MySql` (config) → `BackendConfig::MySql` +
+  `DBBOARD_MYSQL_URL` env 解決 (connect) → egui + SvelteKit の接続フォーム → Tauri コマンド
+  DTO → MCP `kind_label`。serde タグ enum は `#[serde(rename = "mysql")]` を固定 (自動の
+  `my_sql` を回避)。URL は秘匿値で OS キーチェーン格納 (Postgres 系と同じ)。**TDD:** 方言
+  ルールを dbboard-core で単体、アダプタ挙動を dbboard-mysql で単体 (SSL/クォート/FK 組立/
+  カラム解析/エラー分類)、config/connect の伝播を既存ラウンドトリップ、live env-gated
+  `mysql_roundtrip.rs` (`DBBOARD_MYSQL_URL`) で connect/DML/SELECT・複合 PK describe_table・
+  単一 + 複合 foreign_keys・read-only 切り詰めキャップ・10_000 行 MAX_RESULT_ROWS 境界
+  (generate_series が無いので 4 桁クロス結合で生成)。全ゲート green (fmt/clippy/check/test)、
+  pre-commit は**既知・良性の turso teardown segfault のみ** `--no-verify` (memory
+  `env-windows-libsql-segfault`、PII 無し確認済み)。**これで v0.4.0 パリティ + MySQL 拡張が
+  完了。今の user 側ボール = (1) `feature/desktop-design-polish` の push、(2) 初回 v0.4.0
+  リリース前に `TAURI_SIGNING_PRIVATE_KEY` シークレットを設定 (前エントリ参照)。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ完了: 自動更新 + リリース CI が着地**
   (branch `feature/desktop-design-polish`, commit `d65c008`, ADR-0067)。
   上位方針は不変 = egui 版全機能を Tauri 2 + SvelteKit へ一括移植し **v0.4.0

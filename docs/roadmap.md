@@ -23,7 +23,11 @@ focus:
   parity** with the egui client — every write/integration vertical is
   ported (connections, cell edit, annotations, export, backup, restore,
   AI) and it now updates itself in place via `tauri-plugin-updater`
-  (ADR-0067). The workspace is bumped to `0.4.0` on that branch; the
+  (ADR-0067). On the same branch a **seventh adapter landed: MySQL /
+  MariaDB** (`dbboard-mysql`, ADR-0068) — the first engine on a genuinely
+  different SQL dialect (`SqlDialect::MySql`) rather than a SQLite- or
+  Postgres-wire flavor, wired through both clients with full parity. The
+  workspace is bumped to `0.4.0` on that branch; the
   remaining gate before a v0.4.0 release is setting the
   `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret (see
   `docs/desktop-parity.md`). The tagged Release CI is proven green (see

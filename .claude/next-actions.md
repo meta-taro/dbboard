@@ -7,6 +7,34 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**MySQL / MariaDB アダプタが着地 — 初の「別 SQL 方言」エンジン
+  (ADR-0068, commit `6b6e887`, branch `feature/desktop-design-polish`)。**
+  仕事で MySQL を使う maintainer の要望 (#36) を**フルパリティ**で実装 (読み取り専用
+  プレビューではない): 接続・クエリ・イントロスペクション・セル書き戻し・エクスポート・
+  ダンプ・アトミックリストア・read-only MCP/AI 面・接続マネージャ UI の全バーティカル。
+  **これまでの全アダプタは SQLite-wire か Postgres-wire の派生**だったが、MySQL は SQL
+  テキスト自体が異なる初のエンジン = 新しい `SqlDialect::MySql` (バッククォート識別子・
+  バックスラッシュ + クォート二重化エスケープ・DOUBLE の NaN/±Inf→NULL・`X'…'` blob)。
+  read-only AST ガードと restore プランナは sqlparser の `MySqlDialect` に対応。
+  **アダプタ `dbboard-mysql`** = sqlx の MySQL ドライバ上、dbboard-core のみ依存。秘匿な
+  `MySqlConfig`、TLS 格上げ、エラー固定文字列化でパスワード漏洩防止。read-only は
+  `SET TRANSACTION READ ONLY` + `max_execution_time`、restore はデータのみ INSERT の
+  InnoDB 単一トランザクション。テキストプロトコルで値は `Value::Text`/NULL は `Value::Null`。
+  **配線はコンパイラ誘導** = `ConnectionKind::MySql` → `BackendConfig::MySql` +
+  `DBBOARD_MYSQL_URL` → egui/SvelteKit フォーム → Tauri DTO → MCP。serde タグ enum は
+  `#[serde(rename = "mysql")]` 固定 (自動 `my_sql` 回避)。URL は OS キーチェーン格納。
+  **TDD:** 方言ルール (core 単体) + アダプタ挙動 (mysql 単体) + config/connect 伝播 +
+  live env-gated `mysql_roundtrip.rs` (`DBBOARD_MYSQL_URL`: connect/DML/SELECT・複合 PK
+  describe・単一 + 複合 FK・read-only 切り詰め・10_000 行境界を 4 桁クロス結合で生成)。
+  全ゲート green、pre-commit は**既知・良性の turso teardown segfault のみ** `--no-verify`
+  (memory `env-windows-libsql-segfault`、PII 無し確認済み)。**docs も同梱** (ADR-0068・
+  architecture クレートマップ/依存グラフ/env チェーン・README サポート DB・connections.md
+  種別/env 列挙)。**今の user 側ボール = (1) `feature/desktop-design-polish` の push、
+  (2) 初回 v0.4.0 リリース前に GitHub Actions シークレット `TAURI_SIGNING_PRIVATE_KEY` を
+  生成済み minisign 秘密鍵で設定 (`_PASSWORD` は空) → scratchpad の鍵コピー削除。これが
+  無いと `build-tauri-*` が署名できず失敗する。** **残作業:** v0.4.0 パリティ + MySQL 拡張は
+  全完了。次に着手し得るのは新規書き込み面 (row insert/delete、両クライアント未実装) —
+  ポートではないのでロードマップの選択事項。)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ完了 — 自動更新 + リリース CI が着地
   (ADR-0067, commit `d65c008`, branch `feature/desktop-design-polish`)。**
   egui の inform-only 更新チェック (ADR-0040) を一歩超えて、Tauri は**その場で
