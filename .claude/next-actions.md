@@ -7,6 +7,30 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — 論理リストア/インポートが着地
+  (ADR-0065, commit `0f8194d`, branch `feature/desktop-design-polish`)。**
+  egui の論理リストア (restore.rs) を Tauri へ移植 = pure な `dbboard-core` の
+  restore オーケストレータ/preflight (`plan_restore`/`run_restore`) をそのまま再利用。
+  **書き込みは `McpService::plan_restore`/`run_restore` だが MCP ツールには未登録** =
+  外部エージェントは読み取り専用のまま (ダンプ ADR-0064・セル編集 ADR-0063 と同じ分離)。
+  **ダンプとの非対称:** sink 無し (アダプタ経由で DB へ直書き) / warn しきい値無し。
+  唯一の安全ゲート = **空でないターゲットへの確認** (`confirmed=true` 必須, フロントの
+  チェックボックスで収集, `needsConfirmation`)。**要点:** `RestorePlan` は非 Serialize
+  ゆえ IPC を渡らない → `plan_restore` はフラットな `RestorePlanDto` を返し、
+  `run_restore` コマンド側でファイル再読込 + 再 plan。desktop `restore.rs` =
+  `EventControl` (`restore:progress` イベント発火 + `dump_cancel` とは別の
+  `restore_cancel` AtomicBool でキャンセル・実行前にクリア)。エンジン別 txn 戦略は
+  core 側: atomic restore 対応はオール・オア・ナッシングの 1 バッチ、非対応 (D1) は
+  `on_error` を尊重して 1 文ずつ。`on_error` は "continue" 以外すべて安全側 "stop" に
+  丸める (Rust/TS 両端)。TDD: mcp 統合 3 + desktop 単体 3 + `plan.test.ts` 単体 13。
+  全ゲート green (fmt/clippy/check/test・pnpm check/test/build)、pre-commit 通過。
+  code-reviewer レビュー = CRITICAL/HIGH ゼロ (APPROVE)。**残バーティカル (未着手):**
+  AI アシスタント (ADR-0052)・自動更新 + リリース CI (ADR-0044/0043, 0.3.0→0.4.0)。
+  **既知の技術的負債 (今回の新規ではない):** `dbboard-mcp/src/service.rs` が 800 行の
+  ハード上限超過 (現 ~1650 行) → dump/restore メソッドをサブモジュール分割する
+  フォローアップが望ましい。**今の user 側ボール = (1) `feature/desktop-design-polish`
+  の push、(2) 次バーティカル選定 (AI か auto-update)。方針は「くぎってはならない」なので
+  最終的に全部入れる。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — 論理バックアップ/ダンプが着地
   (ADR-0064, commit `4b53a39`, branch `feature/desktop-design-polish`)。**
   egui の論理ダンプ (backup.rs) を Tauri へ移植 = pure な `dbboard-core` の
