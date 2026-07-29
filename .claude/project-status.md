@@ -5,6 +5,27 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ: AI アシスタントが着地**
+  (branch `feature/desktop-design-polish`, commit `c1ccec5`, ADR-0066)。
+  上位方針は不変 = egui 版全機能を Tauri 2 + SvelteKit へ一括移植し **v0.4.0
+  (パリティ + 自動更新)** として出荷。**今回のバーティカル (ADR-0066):** egui の
+  AI アシスタント (ai.rs + ai_settings.rs) をトランスポートだけ差し替えて移植。
+  プロバイダトレイト + 2 実装 (dbboard-ai / dbboard-anthropic / dbboard-openai) は
+  そのまま再利用。egui のワーカーチャネル → Tauri コマンド、ストリーミングデルタ →
+  `ai:chunk` イベント (pure `accumulate()` = テキスト追記・トークン累計は置換)。
+  **核ガードレール不変: SQL を実行せず行データを一切見ない** = Explain は SQL テキスト
+  のみ、Suggest はプロンプト + テーブル/カラム名 (`list_tables` / opt-in で
+  `describe_table`)。`run_read_query` 出力はプロバイダに届かない。**API キーは
+  keyring (`dbboard.ai.<id>.api_key`) のみ** = TOML/ログ/WebView に出さず、`AiProviderView`
+  にキーフィールド無し。**9 AI コマンドはどれも MCP ツール未登録** = 外部エージェントは
+  読み取り専用のまま。エントリボタン常時表示 (接続前でもプロバイダ追加可)、Suggest のみ
+  接続必須。**TDD (RED-first):** desktop 単体 9 + フロント pure `panel.test.ts` 単体 19。
+  About ダイアログに「About AI Assistant」安全性ブロックを追加 (egui パリティ)。**全ゲート
+  green:** cargo fmt/clippy/check/test + pnpm check/test(118)/build。pre-commit 通過
+  (desktop 34 テスト, `--no-verify` 不使用)。**残バーティカル (未着手):** 自動更新 +
+  リリース CI (ADR-0044/0043, 0.3.0→0.4.0) の 1 本のみ。**今の user 側ボール =
+  (1) `feature/desktop-design-polish` の push、(2) 最後のバーティカル auto-update +
+  release CI へ着手。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ: インラインセル編集が着地**
   (branch `feature/desktop-design-polish`, commit `c5f165f`, ADR-0063)。
   上位方針 = user 厳命「小さくきらないで機能面の仕様を全部いれる。くぎっては
