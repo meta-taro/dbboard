@@ -26,8 +26,13 @@ focus:
   (ADR-0067). On the same branch a **seventh adapter landed: MySQL /
   MariaDB** (`dbboard-mysql`, ADR-0068) — the first engine on a genuinely
   different SQL dialect (`SqlDialect::MySql`) rather than a SQLite- or
-  Postgres-wire flavor, wired through both clients with full parity. The
-  workspace is bumped to `0.4.0` on that branch; the
+  Postgres-wire flavor, wired through both clients with full parity. Also
+  on that branch, **SSH tunnelling** landed (`dbboard-tunnel`, a pure-Rust
+  russh local forward with mandatory host-key verification, ADR-0069) —
+  and its **editing UI is the first surface where the desktop client leads
+  egui** rather than catching up: the Tauri connection form can add and
+  edit a tunnel, while egui still needs `connections.toml` edited by hand.
+  The workspace is bumped to `0.4.0` on that branch; the
   remaining gate before a v0.4.0 release is setting the
   `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret (see
   `docs/desktop-parity.md`). The tagged Release CI is proven green (see

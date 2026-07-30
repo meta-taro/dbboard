@@ -7,6 +7,25 @@
 
 ## 最終更新
 
+- 日付: 2026-07-30 (**ドキュメント同期の chore + push 前の PII 除去。** コード変更なし。
+  (1) 前セッションで作業ツリーに残っていた `docs/internal-release-v0.4.0.md` (新デザイン
+  desktop v0.4.0 の**内々配布用リリースノート** = 配布物・外形機能・操作手順・
+  フィードバック依頼・秘匿情報の置き場) をコミット。(2) ADR-0069 の反映漏れを解消 =
+  `docs/roadmap.md` の Pacing Note に SSH トンネル + 「desktop が egui を先行」を追記、
+  `.claude/project-status.md` に ADR-0069 エントリを追加。(3) **⚠ 実 bastion の
+  `user@IP:port` が tracked な `.claude/next-actions.md` に生で入っていた** (前セッションの
+  handoff コミット `d9e26f5`)。**未 push だったので `--amend` で履歴ごと除去** (新ハッシュ
+  `671d805`、force-push 不要 = そのコミットは一度も push されていない)。`git log --all -S`
+  で全 ref 検索 → 0 件を確認。実 host/user は非公開メモリ側にのみ保持。
+  **なぜすり抜けたか = `.pii-denylist` がこのマシンに存在しないため** literal 検出が
+  丸ごと OFF (`[pii-scan] note: no denylist file — literal name detection off`)。
+  `apps/desktop/src-tauri/Cargo.toml` の作業ツリー差分は**改行コード (LF↔CRLF) のみで
+  内容差分ゼロ**なので据え置き。**今の user 側ボール = (1) `.pii-denylist` の作成
+  (`.pii-denylist.example` をコピーして実店舗名・maintainer PII・bastion host/user を記入)
+  + CI secret `PII_DENYLIST` の設定 — これが無い限り BLOCKING 層は実質無効、
+  (2) `feature/desktop-design-polish` の push (25 コミット)、(3) v0.4.0 リリース前に
+  `TAURI_SIGNING_PRIVATE_KEY` シークレット設定、(4) #42 = 外部 bastion 経由の live MySQL
+  検証 (**実接続 = 明示的な GO と認証情報が必要。エージェントは勝手に接続しない**)。)
 - 日付: 2026-07-29 (**デスクトップの SSH トンネル編集 UI が着地 — ここで初めて
   Tauri 版が egui を追い越した (ADR-0069, commit `22892b6`, branch
   `feature/desktop-design-polish`)。** バスチオン越しにしか届かない DB

@@ -5,6 +5,42 @@
 
 ## 最終更新
 
+- 日付: 2026-07-29 (**SSH トンネルが着地 — デスクトップ (Tauri) が初めて egui を追い越した**
+  (branch `feature/desktop-design-polish`, commits `8bfe07b`→`22892b6`, ADR-0069)。
+  **動機:** バスチオン越しにしか届かない DB (VPS 側が `localhost` のみ listen) は、これまで
+  第二のツールでトンネルを張らないと dbboard から一切使えなかった。dbboard が単体で完結する
+  クライアントであるためには**自分でトンネルを開く**必要がある。**設計の肝 = 純 Rust の
+  `dbboard-tunnel` クレート (russh 0.62)** — `ssh`/`plink` へのシェルアウトではないので
+  外部バイナリに依存せず、ADR-0034 の rustls-**ring** 制約 (aws-lc-rs 不可) も満たす。
+  **ホスト鍵検証は必須 = 盲信経路を一切持たない:** 固定 fingerprint XOR OpenSSH
+  `known_hosts` のどちらかで検証し、不一致は `Err` = 接続断 (MITM は静かな足がかりになる)。
+  **ライフタイム束縛:** `connect_adapter` がトンネルを先に開き、URL の `host:port` を
+  `127.0.0.1:<ephemeral>` に書き換えてから内側アダプタを作り、`TunneledAdapter { inner,
+  _tunnel }` デコレータで包む → drop 順でプール → トンネルの順に落ちるので dangling
+  フォワードが残らない。`dbboard-server` (単一アダプタ) と `dbboard-mcp` (id ごとのキャッシュ)
+  の両方に配線。**設定は `ConnectionEntry` の横断的な `ssh` サブテーブル** (URL を持つ
+  各 `ConnectionKind` のフィールドではない) = トンネルは種別によらず一様に効く。
+  **秘匿情報は ADR-0016 と同じ扱い:** 鍵ファイルの**パス**と非秘匿な host/port/user は
+  TOML インライン、鍵**パスフレーズ**と SSH **パスワード**は OS キーチェーンのみ
+  (`ssh_passphrase`/`ssh_password` ref)。env 面 `DBBOARD_SSH_*` も並行提供。
+  **編集 UI (`22892b6`) は desktop のみ = ここで初めて desktop が egui を先行**。
+  対象は tunnel 可能な種別 (Postgres ファミリ + MySQL)。egui は `connections.toml` 手編集の
+  まま (意図的、desktop が「トンネル編集の正本」)。**3 人の並列レビュー
+  (security/rust/typescript) が同一の実バグに独立収束** → 「維持すべきものが無いのに keep」
+  (認証方式の切替、または未暗号化鍵に暗号化フラグを新たに ON) が、書き込まれていない
+  keyring ref を永続化していた。**両層で拒否**するよう修正 = config 層 `apply_update_ssh` は
+  既存ブロックから keep を解決 (id からの再導出をやめる)、フォーム `validateSsh` は
+  edit-prefill provenance フラグで秘匿情報を必須化。保存経路に belt-and-suspenders な
+  `SshTunnelToml::validate()` も追加。**TDD:** config に RED-first で 3 テスト (keep/switch の
+  2 バグ + 安全な password-keep)、TS に 6 テスト。live 検証は env-gated (`DBBOARD_SSH_*`) で
+  CI はオフラインのまま。全ゲート green (fmt/clippy clean・config 187・ui 329・desktop 38・
+  svelte-check 0・vitest 161)、pre-commit は**既知・良性の turso teardown segfault のみ**
+  `--no-verify` (memory `env-windows-libsql-segfault`、PII 無し確認済み)。**docs 同梱** =
+  ADR-0069・connections.md の SSH セクション・README・architecture.md (dbboard-tunnel
+  クレート + 依存ルール)・desktop-parity.md。**今の user 側ボール = (1)
+  `feature/desktop-design-polish` の push、(2) v0.4.0 リリース前に
+  `TAURI_SIGNING_PRIVATE_KEY` シークレット設定、(3) #42 = 外部 bastion 経由の live MySQL
+  検証 — **実接続なので user の明示的 GO と認証情報が必要。エージェントは勝手に接続しない**。)
 - 日付: 2026-07-29 (**MySQL / MariaDB アダプタが着地 — 初の「別 SQL 方言」エンジン**
   (branch `feature/desktop-design-polish`, commit `6b6e887`, ADR-0068)。仕事で MySQL を
   使う maintainer からの要望 (#36) をフルパリティで実装 = 読み取り専用プレビューではなく
