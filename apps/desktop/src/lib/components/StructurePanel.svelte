@@ -18,6 +18,9 @@
   let relationships = $state<Relationship[]>([]);
   let loading = $state(false);
   let error = $state('');
+  // A non-fatal gap: the columns rendered, but the relationship section is
+  // incomplete or missing. Shown as a warning, never in place of the panel.
+  let partial = $state('');
 
   // Is this edge endpoint the table currently being viewed?
   function isCurrent(table: { schema: string | null; name: string }): boolean {
@@ -52,27 +55,46 @@
         // independent reads; fetch them together. The note/FK filter key
         // matches dbboard-config's `table_key` (schema.name / bare name),
         // which is exactly tableKey().
-        const [s, ann, rel] = await Promise.all([
+        //
+        // Settled, not `Promise.all`: only the column read is load-bearing.
+        // With `all`, a foreign-key sweep that failed on some *other* table
+        // (a D1 database's reserved `_cf_%` denies the PRAGMA) blanked the
+        // whole panel — no columns, no notes, just the engine's error, on a
+        // table that was perfectly readable. A side read that fails now costs
+        // only its own section.
+        const [s, ann, rel] = await Promise.allSettled([
           describeTable(connId, table.name, table.schema),
           getAnnotations(connId, tableKey(table)),
           listRelationships(connId, tableKey(table)),
         ]);
         if (mine !== seq) return; // superseded by a newer selection
 
-        schema = s;
-        const ta = ann.tables[0];
+        if (s.status === 'rejected') throw s.reason;
+        schema = s.value;
+
+        const ta = ann.status === 'fulfilled' ? ann.value.tables[0] : undefined;
         tableNote = ta?.note ?? null;
         const notes = new Map<string, string>();
         for (const c of ta?.columns ?? []) {
           if (c.note) notes.set(c.name, c.note);
         }
         columnNotes = notes;
-        relationships = rel.relationships;
+
+        relationships = rel.status === 'fulfilled' ? rel.value.relationships : [];
+        partial =
+          rel.status === 'rejected'
+            ? String(rel.reason)
+            : rel.value.unreadable_tables.length > 0
+              ? i18n.t('structure-relationships-partial', {
+                  tables: rel.value.unreadable_tables.map((t) => t.name).join(', '),
+                })
+              : '';
       } catch (e) {
         if (mine !== seq) return;
         error = String(e);
         schema = null;
         relationships = [];
+        partial = '';
       } finally {
         if (mine === seq) loading = false;
       }
@@ -198,6 +220,10 @@
           </tbody>
         </table>
       </div>
+
+      {#if partial}
+        <p class="warn">{partial}</p>
+      {/if}
 
       {#if relationships.length > 0}
         <section class="rels">
@@ -413,12 +439,18 @@
   }
 
   .hint,
-  .error {
+  .error,
+  .warn {
     margin: 0;
     font-size: var(--text-small);
   }
   .hint {
     color: var(--text-muted);
+  }
+  /* A gap in the panel, not a failure of it — warning, not danger. */
+  .warn {
+    color: var(--warning);
+    white-space: pre-wrap;
   }
   .error {
     color: var(--danger);

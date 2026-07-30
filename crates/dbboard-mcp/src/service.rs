@@ -140,6 +140,11 @@ pub struct RelationshipView {
     pub table: Option<String>,
     pub relationships: Vec<Relationship>,
     pub truncated: bool,
+    /// Tables the sweep could list but not introspect — a denied `PRAGMA`,
+    /// a permission-restricted table, one dropped mid-sweep. Their edges are
+    /// missing from `relationships`, so this is reported rather than swallowed:
+    /// "no foreign keys" and "we could not look" are different answers.
+    pub unreadable_tables: Vec<TableInfo>,
 }
 
 /// Result of [`McpService::get_annotations`]: the local table/column
@@ -651,13 +656,29 @@ impl McpService {
         let tables = adapter.list_tables().await?;
 
         let mut relationships = Vec::new();
+        let mut unreadable_tables = Vec::new();
         let mut truncated = false;
         'outer: for table in &tables {
             if relationships.len() >= MAX_RELATIONSHIPS {
                 truncated = true;
                 break;
             }
-            for fk in adapter.foreign_keys(table).await? {
+            // One unreadable table must not take the whole schema with it.
+            // Cloudflare's reserved `_cf_%` tables are listed by
+            // `sqlite_master` but denied by the Workers authorizer, so this
+            // sweep used to abort with `SQLITE_AUTH` and blank the structure
+            // view for every *readable* table in the database. The same shape
+            // shows up wherever a listed table is not introspectable: a
+            // revoked grant, a table dropped between the list and the sweep.
+            let fks = match adapter.foreign_keys(table).await {
+                Ok(fks) => fks,
+                Err(e) => {
+                    tracing::debug!(table = %table.name, error = %e, "skipping unreadable table");
+                    unreadable_tables.push(table.clone());
+                    continue;
+                }
+            };
+            for fk in fks {
                 let edge = relationship_from_fk(table, fk);
                 // Keep an edge only if it touches the requested table at
                 // either endpoint (a relationship is inherently two-sided).
@@ -680,6 +701,7 @@ impl McpService {
             table: filter,
             relationships,
             truncated,
+            unreadable_tables,
         })
     }
 
@@ -767,6 +789,9 @@ mod tests {
     use super::*;
     use dbboard_config::annotations::AnnotationsAdmin;
     use dbboard_config::InMemorySecretStore;
+    use dbboard_core::{
+        Capabilities, DbResult, ForeignKey as CoreForeignKey, QueryResult as CoreQueryResult,
+    };
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -1582,6 +1607,91 @@ keyring_url_ref = "dbboard.prod-pg.url"
             assert_eq!(view.table, None, "blank {blank:?} should clear the filter");
             assert_eq!(view.relationships.len(), 2);
         }
+    }
+
+    /// An adapter whose `foreign_keys` fails for exactly one table, the way a
+    /// D1 database's reserved `_cf_KV` does: `sqlite_master` lists it, but the
+    /// Workers authorizer denies the `PRAGMA`, so the lookup comes back as
+    /// `[7500] not authorized: SQLITE_AUTH`.
+    struct OneDeniedTable;
+
+    #[async_trait::async_trait]
+    impl DatabaseAdapter for OneDeniedTable {
+        fn id(&self) -> &'static str {
+            "denied"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                has_foreign_keys: true,
+                ..Default::default()
+            }
+        }
+        async fn ping(&self) -> DbResult<()> {
+            Ok(())
+        }
+        async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+            Ok(vec![
+                TableInfo::unqualified("_cf_KV"),
+                TableInfo::unqualified("orders"),
+            ])
+        }
+        async fn query(&self, _sql: &str) -> DbResult<CoreQueryResult> {
+            Ok(CoreQueryResult::empty())
+        }
+        async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<CoreForeignKey>> {
+            if table.name == "_cf_KV" {
+                return Err(DbError::Query("[7500] not authorized: SQLITE_AUTH".into()));
+            }
+            Ok(vec![CoreForeignKey {
+                columns: vec!["customer_id".into()],
+                referenced_table: TableInfo::unqualified("customers"),
+                referenced_columns: vec!["id".into()],
+                constraint_name: None,
+            }])
+        }
+    }
+
+    /// One unreadable table must not take the whole schema down with it. The
+    /// sweep visits every table, so aborting on the first error meant a single
+    /// reserved D1 table blanked the desktop structure view for the *entire*
+    /// database — the user saw nothing but `SQLITE_AUTH`, on tables that were
+    /// perfectly readable. Skip what we cannot read; report the rest.
+    #[tokio::test]
+    async fn list_relationships_skips_a_table_whose_foreign_keys_are_denied() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        fx.service
+            .cache
+            .lock()
+            .await
+            .insert("denied".to_string(), Arc::new(OneDeniedTable));
+
+        let view = fx
+            .service
+            .list_relationships("denied", None)
+            .await
+            .expect("one denied table must not fail the whole call");
+        assert_eq!(view.relationships.len(), 1);
+        edge(&view, "orders", "customers");
+        // Skipping must not be silent: the caller has to be able to tell
+        // "this table has no foreign keys" from "we could not look".
+        assert_eq!(
+            view.unreadable_tables,
+            vec![TableInfo::unqualified("_cf_KV")]
+        );
+    }
+
+    /// The happy path reports nothing unreadable — the field is a real signal,
+    /// not something that is always populated.
+    #[tokio::test]
+    async fn list_relationships_reports_no_unreadable_tables_when_all_succeed() {
+        let fx = seeded_relationship_fixture().await;
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert!(view.unreadable_tables.is_empty());
     }
 
     #[tokio::test]
