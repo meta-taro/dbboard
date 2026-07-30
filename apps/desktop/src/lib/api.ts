@@ -109,6 +109,10 @@ export interface RelationshipView {
   table: string | null;
   relationships: Relationship[];
   truncated: boolean;
+  // Tables the sweep could list but not introspect (a denied PRAGMA, a revoked
+  // grant). Their edges are missing from `relationships` — reported rather
+  // than swallowed, because "no foreign keys" and "we could not look" differ.
+  unreadable_tables: TableInfo[];
 }
 
 export interface Column {

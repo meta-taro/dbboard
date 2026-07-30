@@ -7876,3 +7876,69 @@ text-format invariant in `decode_cell` never ran for the same reason.
   a whole class of wire-level regression can ship green. Running them against
   a real database before a release is a release-checklist item, not something
   CI can do offline.
+
+---
+
+## ADR-0071 — A listed table nobody can read must degrade, not fail the sweep
+
+- **Status**: Accepted 2026-07-30
+- **Relates to**: ADR-0054 (`list_relationships`, the sweep this fixes),
+  ADR-0025 (the D1 adapter and its `sqlite_master` introspection), and
+  ADR-0046 (the MCP read-only tool surface that exposes the view).
+
+### Context
+
+The desktop Structure tab was blank for **every** table of a Cloudflare D1
+connection, showing only `query failed: [7500] not authorized: SQLITE_AUTH` —
+including for tables that read perfectly well from the query editor.
+
+Three separate things had to line up:
+
+1. Every D1 database carries Cloudflare's own bookkeeping table `_cf_KV`.
+   `sqlite_master` lists it, so `LIST_TABLES_SQL` returned it and the sidebar
+   showed it.
+2. `list_relationships` walks *every* listed table and runs
+   `PRAGMA foreign_key_list` against each. The Workers SQLite authorizer denies
+   any access to `_cf_%`, so that PRAGMA returns `SQLITE_AUTH`, and the `?` on
+   the loop body aborted the whole call.
+3. The Structure panel fetched columns, notes, and relationships with
+   `Promise.all`. One rejection discarded the two results that had succeeded,
+   so the panel rendered the error *instead of* the column list.
+
+Each layer is individually defensible; together they turn one unreadable table
+into a database-wide outage of a read-only view. The same shape recurs whenever
+a listed table is not introspectable — a revoked grant, a table dropped between
+the list and the sweep, a future engine with reserved names of its own.
+
+### Decision
+
+1. **Do not list what cannot be read.** `dbboard-d1`'s `LIST_TABLES_SQL`
+   excludes `_cf_%` alongside `sqlite_%`, with `ESCAPE '\'` so LIKE's `_`
+   wildcard cannot swallow an unrelated name such as `acf_log`.
+2. **The sweep skips, it does not abort.** `list_relationships` catches a
+   per-table `foreign_keys` failure, logs it at debug, and carries on.
+3. **Skipping is reported, not silent.** `RelationshipView` gains
+   `unreadable_tables`. "This table has no foreign keys" and "we could not
+   look" are different answers, and the caller — agent or UI — is entitled to
+   tell them apart.
+4. **Only the load-bearing read is fatal to the panel.** The Structure panel
+   uses `Promise.allSettled`; a failed column read still blanks it (there is
+   nothing to show), while a failed note or relationship read costs only its
+   own section and surfaces as a warning line.
+
+### Consequences
+
+- Decision 1 alone would have fixed the reported symptom. It is deliberately
+  not the only fix: it addresses one engine's reserved prefix, while 2–4
+  address the class.
+- `unreadable_tables` is an additive field on an MCP tool result. Agents that
+  ignore it behave as before; the desktop renders it as a warning naming the
+  tables.
+- Tested RED-first offline: a stub adapter seeded into the service's adapter
+  cache lists two tables and denies `foreign_keys` for one, asserting the other
+  table's edge still comes back and the denied table is named in
+  `unreadable_tables`. A unit test pins the D1 `LIKE` pattern including its
+  `ESCAPE` clause.
+- Still uncovered: no test drives the Svelte panel's `allSettled` branching —
+  the desktop test setup is node-environment unit tests with no component
+  renderer. That gap is recorded, not closed.

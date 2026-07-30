@@ -1613,6 +1613,7 @@ dependencies = [
 name = "dbboard-mcp"
 version = "0.4.0"
 dependencies = [
+ "async-trait",
  "dbboard-config",
  "dbboard-connect",
  "dbboard-core",

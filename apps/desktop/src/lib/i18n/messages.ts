@@ -100,6 +100,7 @@ export const en = {
   "structure-empty-hint": "Select a table from the sidebar to inspect its structure.",
   "structure-pk-summary": "PK: { $cols }",
   "structure-relationships": "Relationships",
+  "structure-relationships-partial": "Some relationships are missing: { $tables } could not be introspected.",
   "note-add-placeholder": "Add a note…",
   "about-title": "About dbboard",
   "about-version": "Version",
@@ -369,6 +370,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "empty-config-path-label": "connections.toml",
   "empty-config-path-loading": "パスを解決中…",
   "structure-relationships": "リレーション",
+  "structure-relationships-partial": "リレーションは不完全です: { $tables } を参照できませんでした。",
   // 接続マネージャ (書き込みパス, ADR-0062)
   "conn-manage": "管理",
   "conn-manager-title": "接続",
