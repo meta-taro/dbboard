@@ -7779,3 +7779,100 @@ the tunnel is a silent man-in-the-middle foothold.
   (`DBBOARD_SSH_*`) integration test so CI stays offline while the maintainer can
   drive a real bastion. `serialized_toml_has_no_secret_value_keys` is extended to
   prove the SSH passphrase/password never land in the TOML.
+
+---
+
+## ADR-0070 — Row-producing paths pin the simple/text wire protocol
+
+- **Status**: Accepted 2026-07-30
+- **Relates to**: ADR-0019 (the sqlx-backed Postgres adapter whose `decode_cell`
+  established the text-format value mapping), ADR-0021 (Aurora DSQL, the flavor
+  that surfaced the bug in the field), ADR-0046 (the `query_read_only` row cap
+  whose transaction body introduced the offending code path), ADR-0061 (the
+  DSQL non-cursor cap branch), and ADR-0068 (the MySQL adapter that inherited
+  the same shape).
+
+### Context
+
+Both sqlx-backed adapters map every cell to `Value::Text` holding the value's
+*printed* representation — the same string the engine itself would print. That
+mapping is only correct under a wire protocol that returns values in text
+format: Postgres' simple query protocol (`Q`) and MySQL's `COM_QUERY`.
+`PostgresAdapter::query` / `MySqlAdapter::query` use `sqlx::raw_sql`, which is
+exactly that.
+
+The read-only path added for the row cap did not. Its helpers used
+`sqlx::query(sql)`, chosen deliberately: `RawSql`'s own `fetch`/`fetch_all`
+bound the executor as `Executor<'e>` with a single lifetime, which trips
+`implementation of Executor is not general enough` when the future has to stay
+`Send` across an `#[async_trait]` boundary. The comment on `exec_in_txn`
+recorded that trade-off, but the conclusion was wrong for row-producing
+statements: `sqlx::query` always carries an argument list (empty or not), so it
+goes through Prepare/Bind/Execute — and sqlx binds with
+`result_formats: Binary`. Every cell then arrived as raw binary bytes and was
+read as UTF-8.
+
+The damage split two ways, and the silent half is the dangerous one:
+
+- **Postgres** — `uuid`, `timestamptz`, and wide `int8` values are bytes that
+  fail the UTF-8 check, so the query dies with
+  `type conversion failed: invalid utf-8 sequence of 1 bytes from index 2`.
+  But a binary `int4` of `1` is `00 00 00 01`, which *is* valid UTF-8: the cell
+  came back as four invisible control characters instead of `"1"`, with no
+  error anywhere.
+- **MySQL** — `decode_cell` falls back to `Value::Blob` when the bytes are not
+  UTF-8, so *nothing* errored. Numbers and datetimes simply became opaque
+  blobs.
+
+This reached a released build (v0.4.0) and affected every `SELECT` run from the
+desktop query editor and every `query_read_only` call on the MCP surface, for
+Postgres, Neon, Supabase, CockroachDB, Aurora DSQL, and MySQL/MariaDB alike.
+The D1 and Turso adapters were unaffected — they do not go through sqlx.
+
+It went unnoticed because the only tests that could catch it are the env-gated
+live round-trips. `read_only_query_truncates_to_max_rows` already asserted
+`Value::Text("1")` and would have failed on contact with a real database, but
+it self-skips without `DBBOARD_PG_URL`, and a `debug_assert` guarding the
+text-format invariant in `decode_cell` never ran for the same reason.
+
+### Decision
+
+1. **Every row-producing statement uses the simple/text protocol.** The
+   read-only helpers (`fetch_via_cursor`'s `FETCH FORWARD`,
+   `fetch_capped_stream`, `run_capped`) switch to `sqlx::raw_sql`.
+2. **Hand `RawSql` to the executor, not the other way round.** Calling
+   `conn.fetch(sqlx::raw_sql(sql))` uses `Executor`'s two-lifetime signature
+   and infers cleanly, so the HRTB error that motivated `sqlx::query` does not
+   arise. This is the piece the original trade-off missed.
+3. **Non-row-producing statements keep the extended protocol.** The read-only
+   preamble (`SET TRANSACTION READ ONLY`, `SET LOCAL statement_timeout`) and
+   `exec_in_txn` on the restore path discard their results, so the binary
+   result format costs nothing there. Their comments now say so explicitly
+   instead of implying row paths should follow suit.
+4. **The invariant is enforced at runtime, not with `debug_assert`.**
+   `decode_cell` in the Postgres adapter rejects a non-`Text` `PgValueFormat`
+   with a `DbError::TypeConversion` naming the cause. A silent corruption must
+   not survive a release build just because the assertion was compiled out.
+   The MySQL adapter cannot do the same — sqlx keeps `MySqlValueRef::format`
+   `pub(crate)` — so there the regression test is the only guard.
+
+### Consequences
+
+- Values from the read-only path once again match what `query` returns and what
+  the engine prints. No UI or MCP change was needed; the corruption was entirely
+  below the `Value` boundary.
+- The row cap's wording is unchanged but was always slightly optimistic: sqlx
+  sends `Execute` with `limit: 0`, so the server produces the full result set
+  either way and the cap is enforced by stopping the read. Switching to the
+  simple protocol does not make that worse.
+- Tested RED-first at the only layer that can observe it: new env-gated live
+  tests (`read_only_decodes_wide_types_as_printed_text` for Postgres and
+  MySQL, plus an Aurora DSQL variant covering the non-cursor branch) select an
+  `int4`, a wide `int8`, and a `uuid`/`DATETIME` and assert the printed text.
+  The small-`int4` assertion is the important one — it is the case that fails
+  silently rather than loudly.
+- Standing gap this exposes, recorded rather than fixed here: the live suites
+  are the *only* coverage of value decoding, and they self-skip by default, so
+  a whole class of wire-level regression can ship green. Running them against
+  a real database before a release is a release-checklist item, not something
+  CI can do offline.

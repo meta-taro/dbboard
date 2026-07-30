@@ -308,3 +308,34 @@ async fn read_only_query_truncates_to_max_rows() {
     assert_eq!(result.rows.len(), 10);
     assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
 }
+
+/// Wire-protocol regression, the `MySQL` half of the Postgres
+/// `read_only_decodes_wide_types_as_printed_text` case: the read-only path
+/// must use the text protocol (`COM_QUERY`), because `decode_cell` reads each
+/// cell's bytes as its printed representation.
+///
+/// `sqlx::query` prepares the statement, so the server answers with the
+/// *binary* resultset — and there the corruption is silent rather than loud:
+/// `decode_cell` falls back to `Value::Blob` when the bytes are not UTF-8, so
+/// an `INT` comes back as an opaque blob and a `BIGINT` as whatever those
+/// eight bytes happen to spell. Asserting the printed text pins the protocol.
+#[tokio::test]
+async fn read_only_decodes_wide_types_as_printed_text() {
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_MYSQL_URL not set");
+        return;
+    };
+    let adapter = MySqlAdapter::connect(config).await.expect("connect");
+    let sql = "SELECT CAST(42 AS SIGNED) AS small, \
+                      CAST(1234567890123 AS SIGNED) AS wide, \
+                      CAST('2026-07-30 12:34:56' AS DATETIME) AS ts";
+    let result = adapter.query_read_only(sql, 10).await.expect("read-only");
+    assert_eq!(result.rows.len(), 1);
+    let row = &result.rows[0];
+    assert_eq!(row.get(0), Some(&Value::Text("42".to_string())));
+    assert_eq!(row.get(1), Some(&Value::Text("1234567890123".to_string())));
+    assert_eq!(
+        row.get(2),
+        Some(&Value::Text("2026-07-30 12:34:56".to_string()))
+    );
+}
