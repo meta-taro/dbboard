@@ -33,7 +33,7 @@ use dbboard_core::{
 };
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
-use sqlx::{Column as _, Either, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{Column as _, Either, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
 mod dsql_auth;
 mod table_ddl;
@@ -839,14 +839,13 @@ async fn run_restore_txn(pool: PgPool, statements: &[String]) -> DbResult<()> {
 /// Run one statement inside the restore transaction via the extended query
 /// protocol.
 ///
-/// The read-only path uses the same protocol for the same reason: a held
-/// `Transaction` future must stay `Send` across the `#[async_trait]`
-/// boundary, and `raw_sql`'s simple-protocol executor bound trips the sqlx
-/// `Executor`/`Send` HRTB error there. The extended protocol carries exactly
-/// one command per round-trip, which the restore splitter already guarantees.
-/// (The per-statement, non-atomic path — used by Aurora DSQL — goes through
-/// [`PostgresAdapter::query`]'s `raw_sql`, so it keeps the simple protocol's
-/// broader statement support.)
+/// The extended protocol carries exactly one command per round-trip, which
+/// the restore splitter already guarantees, and a restore discards its result
+/// rows — so the binary result format costs nothing here. Row-producing paths
+/// must NOT copy this: they go through `raw_sql` so [`decode_cell`] sees
+/// text-format values. (The per-statement, non-atomic path — used by Aurora
+/// DSQL — goes through [`PostgresAdapter::query`]'s `raw_sql`, so it keeps the
+/// simple protocol's broader statement support.)
 async fn exec_in_txn(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<()> {
     sqlx::query(sql)
         .execute(&mut *conn)
@@ -964,9 +963,19 @@ async fn fetch_via_cursor(
         .await
         .map_err(|e| classify_error(&e))?;
 
+    // `raw_sql`, not `query`: only the simple query protocol returns values in
+    // text format, which is what `decode_cell` reads. `sqlx::query` always
+    // carries an (empty) argument list, so it goes through Bind/Execute with
+    // `result_formats: Binary` and every cell would be raw binary bytes.
+    //
+    // Handed to the executor rather than called as `raw_sql(..).fetch_all(conn)`:
+    // `RawSql`'s own helpers bound the executor as `Executor<'e>` with a single
+    // lifetime, which is what trips the "implementation of `Executor` is not
+    // general enough" HRTB error under `#[async_trait]`. `Executor::fetch_all`
+    // takes the two-lifetime form and infers cleanly.
     let fetch = format!("FETCH FORWARD {max_rows} FROM {READ_ONLY_CURSOR}");
-    let rows = sqlx::query(&fetch)
-        .fetch_all(&mut *conn)
+    let rows = conn
+        .fetch_all(sqlx::raw_sql(&fetch))
         .await
         .map_err(|e| classify_error(&e))?;
     pg_rows_to_result(&rows)
@@ -987,7 +996,10 @@ async fn fetch_capped_stream(
     sql: &str,
     max_rows: usize,
 ) -> DbResult<QueryResult> {
-    let mut stream = sqlx::query(sql).fetch(&mut *conn);
+    // `raw_sql` for the same reason as [`fetch_via_cursor`]: the simple query
+    // protocol is the only one that delivers text-format values, and it is
+    // handed to the executor there rather than through `RawSql`'s helper.
+    let mut stream = conn.fetch(sqlx::raw_sql(sql));
     let mut rows: Vec<PgRow> = Vec::with_capacity(max_rows.min(1024));
     while rows.len() < max_rows {
         match stream.try_next().await.map_err(|e| classify_error(&e))? {
@@ -1004,8 +1016,11 @@ async fn fetch_capped_stream(
 /// Run `sql` directly on the connection (used for EXPLAIN, which cannot
 /// be a cursor source) and materialise its rows.
 async fn run_capped(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<QueryResult> {
-    let rows = sqlx::query(sql)
-        .fetch_all(&mut *conn)
+    // `raw_sql` for the same reason as [`fetch_via_cursor`]: the simple query
+    // protocol is the only one that delivers text-format values, and it is
+    // handed to the executor there rather than through `RawSql`'s helper.
+    let rows = conn
+        .fetch_all(sqlx::raw_sql(sql))
         .await
         .map_err(|e| classify_error(&e))?;
     pg_rows_to_result(&rows)
@@ -1057,15 +1072,20 @@ fn decode_cell(raw: PgValueRef<'_>) -> DbResult<Value> {
     if raw.is_null() {
         return Ok(Value::Null);
     }
-    // Invariant: the simple query protocol delivers every value in text
-    // format. Assert in debug builds so a future regression (e.g. a path
-    // that switches to the extended/binary protocol) fails loudly here
-    // instead of silently mis-decoding binary bytes as a UTF-8 string.
-    debug_assert_eq!(
-        raw.format(),
-        sqlx::postgres::PgValueFormat::Text,
-        "expected text-format value under the simple query protocol"
-    );
+    // Invariant: every row-producing path uses the simple query protocol, so
+    // values arrive in text format. This is checked at runtime, not with a
+    // `debug_assert`, because the failure is silent rather than loud: a
+    // binary `int4` of 1 is `00 00 00 01`, which *is* valid UTF-8, so the
+    // cell would come back as invisible control characters instead of "1".
+    // Only wider types (uuid, timestamptz, large int8) happen to fail the
+    // UTF-8 check. A release build must refuse the row, not corrupt it.
+    if raw.format() != sqlx::postgres::PgValueFormat::Text {
+        return Err(DbError::TypeConversion(
+            "internal: row arrived in binary format — every row-producing \
+             path must use the simple query protocol"
+                .into(),
+        ));
+    }
     // Decode (not `try_get`) so the column's declared Postgres type does
     // not gate reading it as text — the value is already text-format.
     let text = <String as sqlx::Decode<sqlx::Postgres>>::decode(raw)

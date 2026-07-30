@@ -30,7 +30,9 @@ use futures_util::TryStreamExt;
 use sqlx::mysql::{
     MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode, MySqlValueRef,
 };
-use sqlx::{Column as _, Connection as _, Either, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{
+    Column as _, Connection as _, Either, Executor as _, Row as _, TypeInfo as _, ValueRef as _,
+};
 
 /// Small pool: a desktop client issues one statement at a time, so a handful
 /// of connections is plenty and keeps server-side resource use modest.
@@ -423,7 +425,18 @@ async fn fetch_capped_stream(
     sql: &str,
     max_rows: usize,
 ) -> DbResult<QueryResult> {
-    let mut stream = sqlx::query(sql).fetch(&mut *conn);
+    // `raw_sql`, not `query`: only the text protocol (`COM_QUERY`) returns
+    // values in their printed representation, which is what `decode_cell`
+    // reads. `sqlx::query` always carries an (empty) argument list, so it
+    // prepares the statement and the server answers with the binary
+    // resultset — where an `INT` is raw bytes that `decode_cell` would hand
+    // back as a `Value::Blob` instead of a number, with no error.
+    //
+    // Handed to the executor rather than called as `raw_sql(..).fetch(conn)`:
+    // `RawSql`'s own helpers bound the executor as `Executor<'e>` with a single
+    // lifetime, which is what trips the "implementation of `Executor` is not
+    // general enough" HRTB error under `#[async_trait]`.
+    let mut stream = conn.fetch(sqlx::raw_sql(sql));
     let mut rows: Vec<MySqlRow> = Vec::with_capacity(max_rows.min(1024));
     while rows.len() < max_rows {
         match stream.try_next().await.map_err(|e| classify_error(&e))? {
@@ -440,8 +453,11 @@ async fn fetch_capped_stream(
 /// Run `sql` directly on the connection (used for EXPLAIN, which returns a
 /// small bounded plan) and materialise its rows.
 async fn run_capped(conn: &mut sqlx::MySqlConnection, sql: &str) -> DbResult<QueryResult> {
-    let rows = sqlx::query(sql)
-        .fetch_all(&mut *conn)
+    // `raw_sql` for the same reason as [`fetch_capped_stream`]: the text
+    // protocol is the only one that delivers printed values, and it is handed
+    // to the executor there rather than through `RawSql`'s helper.
+    let rows = conn
+        .fetch_all(sqlx::raw_sql(sql))
         .await
         .map_err(|e| classify_error(&e))?;
     mysql_rows_to_result(&rows)
