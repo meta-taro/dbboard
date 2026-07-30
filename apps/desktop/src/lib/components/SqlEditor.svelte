@@ -34,7 +34,11 @@
     $props();
 
   let host: HTMLDivElement;
-  let view: EditorView | undefined;
+  // Reactive so the "adopt external value" effect below re-runs once the view
+  // exists. A plain `let` made that effect depend on `value` alone, so a set
+  // that landed before mount was silently dropped and the editor kept showing
+  // its seed text forever.
+  let view = $state<EditorView | undefined>(undefined);
 
   // SQL syntax palette mapped onto the shared design tokens (keyword = accent,
   // string = success/green, number = warning/amber, comment = faint) so it

@@ -14,7 +14,8 @@ import {
   type ConnectionView,
   type TableInfo,
 } from '$lib/api';
-import { selectTopN } from '$lib/sql/build';
+import { BROWSE_ROWS } from '$lib/sidebar/menu';
+import { dialectForKind, selectTopN } from '$lib/sql/build';
 
 export type MainTab = 'query' | 'structure';
 
@@ -111,7 +112,8 @@ class Workspace {
    *  primary key and the grid can offer inline cell editing (ADR-0042). */
   browse(table: TableInfo): void {
     const seq = (this.queryRequest?.seq ?? 0) + 1;
-    this.queryRequest = { sql: selectTopN(table, 100), seq, table };
+    const sql = selectTopN(table, BROWSE_ROWS, dialectForKind(this.connection?.kind));
+    this.queryRequest = { sql, seq, table };
     this.activeTab = 'query';
   }
 

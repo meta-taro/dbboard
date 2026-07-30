@@ -7942,3 +7942,48 @@ the list and the sweep, a future engine with reserved names of its own.
 - Still uncovered: no test drives the Svelte panel's `allSettled` branching —
   the desktop test setup is node-environment unit tests with no component
   renderer. That gap is recorded, not closed.
+
+---
+
+## ADR-0072 — Generated SQL follows the connection's identifier dialect
+
+- **Status**: Accepted 2026-07-30
+- **Relates to**: ADR-0068 (the MySQL adapter, which made the previous
+  assumption false) and ADR-0042 (the editable browse the generated `SELECT`
+  feeds).
+
+### Context
+
+The desktop's SQL builders quoted every identifier as `"name"`, documented as
+"what every engine we target accepts". That was true of the Postgres family,
+SQLite, libSQL, and D1. MySQL reads `"orders"` as a *string literal* unless the
+server runs with `ANSI_QUOTES`, so the sidebar's "select top 100" would have
+generated `SELECT * FROM "shop"."orders" LIMIT 100;` — a syntax error on the
+first MySQL connection anyone registers. The adapter itself already back-quotes
+correctly (`qualified_ident`); only the frontend's generator did not.
+
+The egui build has the same latent issue in `quoted_table_ref`. It is left
+alone here: the desktop shell is the shipping surface and the one about to meet
+a MySQL connection.
+
+### Decision
+
+1. `dialectForKind(kind)` maps a `ConnectionView.kind` slug onto `'ansi'` or
+   `'mysql'`. Unknown and missing kinds fall back to ANSI — it is what every
+   adapter except MySQL accepts, so it is the right guess for an adapter added
+   after this code.
+2. `quoteIdent`/`qualifiedName`/`selectTopN`/`countRows` take the dialect and
+   double only that dialect's *own* quote character. A `"` inside a
+   back-quoted MySQL identifier is an ordinary character and passes through.
+3. The table right-click menu is built from a pure `tableMenuActions(table,
+   kind)` in `$lib/sidebar/menu.ts`, not inline in the component, so which
+   actions exist and what SQL each produces are unit-testable.
+
+### Consequences
+
+- The desktop menu regains the `SELECT COUNT(*)` entry the egui build has
+  always had; a test pins the action-id list so a future edit cannot silently
+  drop one again.
+- Dialect selection is a lookup on the connection kind, not a runtime probe. A
+  MySQL server actually running with `ANSI_QUOTES` still gets back-ticks, which
+  it also accepts — the fallback direction is the safe one.

@@ -4,6 +4,7 @@
   import { i18n } from '$lib/i18n/i18n.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import ConnectionManager from './ConnectionManager.svelte';
+  import { tableMenuActions } from '$lib/sidebar/menu';
 
   let query = $state('');
   let managerOpen = $state(false);
@@ -63,19 +64,34 @@
   }
 
   // Read-only actions only: inspect, or generate a bounded SELECT to run.
+  // Which actions exist and what SQL each generates lives in $lib/sidebar/menu
+  // (unit-tested); this only attaches labels and side effects.
   function menuItems(table: TableInfo): MenuItem[] {
-    return [
-      { label: i18n.t('menu-open-structure'), onSelect: () => workspace.selectTable(table) },
-      {
-        label: i18n.t('menu-select-top', { n: 100 }),
-        onSelect: () => workspace.browse(table),
-      },
-      {
-        label: i18n.t('menu-copy-name'),
-        separatorBefore: true,
-        onSelect: () => navigator.clipboard.writeText(workspace.key(table)),
-      },
-    ];
+    return tableMenuActions(table, workspace.connection?.kind).map((action) => {
+      switch (action.id) {
+        case 'open-structure':
+          return {
+            label: i18n.t('menu-open-structure'),
+            onSelect: () => workspace.selectTable(table),
+          };
+        case 'select-top':
+          return {
+            label: i18n.t('menu-select-top', { n: action.n }),
+            onSelect: () => workspace.browse(table),
+          };
+        case 'count-rows':
+          return {
+            label: i18n.t('menu-count-rows'),
+            onSelect: () => workspace.runInEditor(action.sql),
+          };
+        case 'copy-name':
+          return {
+            label: i18n.t('menu-copy-name'),
+            separatorBefore: true,
+            onSelect: () => navigator.clipboard.writeText(action.text),
+          };
+      }
+    });
   }
 </script>
 
