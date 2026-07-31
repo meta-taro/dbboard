@@ -56,3 +56,8 @@ connections.toml
 # the very strings we hide back into a tracked, public file. Template:
 # .pii-denylist.example (format only, no real names).
 .pii-denylist
+
+# 司令塔のベースルール正本と共通雛形（個人名を含むため OSS 上流に出さない）。
+# 実体は司令塔リポから配布される。
+/.claude/rules/
+/.claude/templates/
