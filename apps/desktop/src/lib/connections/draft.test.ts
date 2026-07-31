@@ -6,6 +6,7 @@ import {
   requiredFields,
   validate,
   validateDsnFields,
+  isEditableInApp,
   buildKindInput,
   buildKindEditInput,
   formForEdit,
@@ -286,6 +287,35 @@ describe('formForEdit', () => {
 // The list shows the backend's display slug (hyphenated), which is a different
 // namespace from the form's `ConnectionKind` (underscored) — `aurora-dsql-iam`
 // has no form representation at all, which is exactly why it can't be edited.
+describe('isEditableInApp', () => {
+  it('rejects Aurora DSQL (IAM), which lives only in connections.toml', () => {
+    expect(isEditableInApp('aurora-dsql-iam')).toBe(false);
+  });
+
+  it.each([
+    'turso',
+    'd1',
+    'postgres',
+    'mysql',
+    'neon',
+    'supabase',
+    'aurora-dsql',
+  ])('accepts %s', (slug) => {
+    expect(isEditableInApp(slug)).toBe(true);
+  });
+
+  // Static-credential Aurora DSQL is editable; only the IAM variant is not, and
+  // one is a prefix of the other.
+  it('does not confuse aurora-dsql with aurora-dsql-iam', () => {
+    expect(isEditableInApp('aurora-dsql')).toBe(true);
+    expect(isEditableInApp('aurora-dsql-iam')).toBe(false);
+  });
+
+  it('treats an unknown slug as editable, so a new backend kind is not silently locked out', () => {
+    expect(isEditableInApp('cockroach')).toBe(true);
+  });
+});
+
 describe('CONNECTION_KINDS', () => {
   it('lists all seven kinds with turso first', () => {
     expect(CONNECTION_KINDS).toEqual([

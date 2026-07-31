@@ -23,6 +23,7 @@
     supportsSshTunnel,
     validateSsh,
     validateDsnFields,
+    isEditableInApp,
     buildSshInput,
     buildSshEditInput,
     CONNECTION_KINDS,
@@ -330,9 +331,18 @@
               <div class="row-main">
                 <span class="row-name">{c.name}</span>
                 <span class="row-meta">{c.kind} · {c.id}</span>
+                {#if !isEditableInApp(c.kind)}
+                  <span class="row-note">{i18n.t('conn-edit-toml-only')}</span>
+                {/if}
               </div>
               <div class="row-actions">
-                <button type="button" class="ghost" disabled={busy} onclick={() => startEdit(c)}>
+                <button
+                  type="button"
+                  class="ghost"
+                  disabled={busy || !isEditableInApp(c.kind)}
+                  title={isEditableInApp(c.kind) ? undefined : i18n.t('conn-edit-toml-only')}
+                  onclick={() => startEdit(c)}
+                >
                   {i18n.t('conn-edit')}
                 </button>
                 <button type="button" class="ghost danger" disabled={busy} onclick={() => remove(c)}>
@@ -782,6 +792,10 @@
     font-size: var(--text-hint);
     color: var(--faint);
     font-family: var(--font-mono);
+  }
+  .row-note {
+    font-size: var(--text-hint);
+    color: var(--faint);
   }
   .row-actions {
     display: flex;
