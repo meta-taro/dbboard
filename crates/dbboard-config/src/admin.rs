@@ -33,6 +33,7 @@ use std::sync::Arc;
 use zeroize::Zeroize;
 
 use crate::bundle::{decrypt_bundle, encrypt_bundle, validate_passphrase, BundlePayload};
+use crate::dsn::{parse_dsn, with_password, DsnParts};
 use crate::error::ConfigError;
 use crate::secrets::{SecretError, SecretStore};
 use crate::store::{
@@ -307,6 +308,76 @@ impl ConnectionAdmin {
     #[must_use]
     pub fn entries(&self) -> &[ConnectionEntry] {
         &self.file.connections
+    }
+
+    /// The non-secret parts of the DSN stored for `id`, for prefilling the
+    /// edit form (ADR-0080).
+    ///
+    /// `Ok(None)` means "nothing to prefill": the kind stores no DSN (Turso,
+    /// D1, Aurora DSQL IAM), the keychain entry is gone, or the stored value
+    /// does not parse as a URL. Prefill is best-effort on purpose — a missing
+    /// secret should open an empty form the user can retype, not block the
+    /// edit dialog. The save path ([`ConnectionAdmin::dsn_with_stored_password`])
+    /// is the strict half of the pair.
+    ///
+    /// The password is never part of the return value: [`DsnParts`] has no
+    /// field for one.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::NotFound`] if no entry has id `id`.
+    pub fn dsn_prefill(&self, id: &str) -> Result<Option<DsnParts>, ConfigError> {
+        let Some(key_ref) = self.dsn_key_ref(id)? else {
+            return Ok(None);
+        };
+        let Ok(stored) = self.secrets.get(key_ref) else {
+            return Ok(None);
+        };
+        Ok(parse_dsn(&stored))
+    }
+
+    /// `url` with the password from `id`'s stored DSN grafted back on
+    /// (ADR-0080).
+    ///
+    /// This is the "leave the password blank to keep the stored one" path.
+    /// The UI rebuilds the DSN from the parts it was shown — which never
+    /// included the password — and the credential is re-attached here, inside
+    /// the process that already holds it, so it never crosses into the webview.
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::NotFound`] if no entry has id `id`, or the entry's
+    ///   kind stores no DSN.
+    /// - [`ConfigError::Secret`] if the keychain read fails.
+    /// - [`ConfigError::DsnUnparseable`] if either the stored DSN or `url`
+    ///   does not parse. Failing loudly beats saving the connection back
+    ///   without its password.
+    pub fn dsn_with_stored_password(&self, id: &str, url: &str) -> Result<String, ConfigError> {
+        let key_ref = self
+            .dsn_key_ref(id)?
+            .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
+        let stored = self.secrets.get(key_ref)?;
+        with_password(url, &stored)
+            .ok_or_else(|| ConfigError::DsnUnparseable { id: id.to_string() })
+    }
+
+    /// The keyring reference holding `id`'s DSN, or `None` for a kind that
+    /// stores no DSN.
+    fn dsn_key_ref(&self, id: &str) -> Result<Option<&str>, ConfigError> {
+        let entry = self
+            .file
+            .connections
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
+        Ok(match &entry.kind {
+            ConnectionKind::Postgres { keyring_url_ref }
+            | ConnectionKind::MySql { keyring_url_ref }
+            | ConnectionKind::Neon { keyring_url_ref }
+            | ConnectionKind::Supabase { keyring_url_ref }
+            | ConnectionKind::AuroraDsql { keyring_url_ref } => Some(keyring_url_ref.as_str()),
+            _ => None,
+        })
     }
 
     /// Add `draft` as a new connection.
@@ -1176,6 +1247,17 @@ mod tests {
             id: id.to_string(),
             name: format!("PG {id}"),
             kind: ConnectionKindDraft::Postgres {
+                url: url.to_string(),
+            },
+        }
+    }
+
+    fn mysql_draft(id: &str, url: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            ssh: None,
+            id: id.to_string(),
+            name: format!("MySQL {id}"),
+            kind: ConnectionKindDraft::MySql {
                 url: url.to_string(),
             },
         }
@@ -2674,5 +2756,143 @@ mod tests {
         assert_eq!(ssh.host, "bastion.example");
         // The ssh secret travelled with the bundle into the new keychain.
         assert_eq!(secrets2.get("dbboard.work.ssh_password").unwrap(), "s3cr3t");
+    }
+
+    // --- DSN prefill for the edit form (ADR-0080) ---------------------------
+
+    #[test]
+    fn dsn_prefill_returns_the_stored_parts() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft(
+                "shop",
+                "mysql://app:hunter2@db.internal:3307/shop",
+            ))
+            .expect("add");
+
+        let parts = admin.dsn_prefill("shop").expect("prefill").expect("some");
+        assert_eq!(parts.host, "db.internal");
+        assert_eq!(parts.port, Some(3307));
+        assert_eq!(parts.user, "app");
+        assert_eq!(parts.database, "shop");
+    }
+
+    // The reason the whole prefill path is safe to hand to a webview.
+    #[test]
+    fn dsn_prefill_never_exposes_the_password() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(pg_draft("prod", "postgres://app:hunter2@db:5432/analytics"))
+            .expect("add");
+
+        let parts = admin.dsn_prefill("prod").expect("prefill").expect("some");
+        assert!(!format!("{parts:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn dsn_prefill_keeps_the_tls_parameter() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft(
+                "shop",
+                "mysql://app:p@db:3306/shop?ssl-mode=disabled",
+            ))
+            .expect("add");
+
+        let parts = admin.dsn_prefill("shop").expect("prefill").expect("some");
+        assert_eq!(parts.query, "ssl-mode=disabled");
+    }
+
+    #[test]
+    fn dsn_prefill_is_none_for_a_kind_with_no_dsn() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("local", "Local", "./a.db"))
+            .expect("add");
+        admin.add(d1_draft("edge")).expect("add");
+
+        assert!(admin.dsn_prefill("local").expect("turso").is_none());
+        assert!(admin.dsn_prefill("edge").expect("d1").is_none());
+    }
+
+    // Best-effort by design: a broken keychain entry opens an empty form
+    // rather than a dialog that refuses to open at all.
+    #[test]
+    fn dsn_prefill_is_none_when_the_stored_value_is_not_a_url() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft("shop", "mysql://app:p@db:3306/shop"))
+            .expect("add");
+        secrets
+            .set("dbboard.shop.url", "not a url")
+            .expect("overwrite");
+
+        assert!(admin.dsn_prefill("shop").expect("prefill").is_none());
+    }
+
+    #[test]
+    fn dsn_prefill_rejects_an_unknown_id() {
+        let (_dir, _secrets, admin) = fresh_admin();
+        assert!(matches!(
+            admin.dsn_prefill("ghost"),
+            Err(ConfigError::NotFound(id)) if id == "ghost"
+        ));
+    }
+
+    #[test]
+    fn dsn_with_stored_password_grafts_the_kept_credential() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft("shop", "mysql://app:hunter2@db:3306/shop"))
+            .expect("add");
+
+        let merged = admin
+            .dsn_with_stored_password("shop", "mysql://app@db.internal:3307/other")
+            .expect("graft");
+        assert_eq!(merged, "mysql://app:hunter2@db.internal:3307/other");
+    }
+
+    #[test]
+    fn dsn_with_stored_password_keeps_a_newly_chosen_tls_mode() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft("shop", "mysql://app:hunter2@db:3306/shop"))
+            .expect("add");
+
+        let merged = admin
+            .dsn_with_stored_password("shop", "mysql://app@db:3306/shop?ssl-mode=disabled")
+            .expect("graft");
+        assert_eq!(merged, "mysql://app:hunter2@db:3306/shop?ssl-mode=disabled");
+    }
+
+    // The strict half of the pair: silently saving a connection back without
+    // its password would break a working connection with no visible cause.
+    #[test]
+    fn dsn_with_stored_password_fails_on_an_unparseable_stored_value() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft("shop", "mysql://app:p@db:3306/shop"))
+            .expect("add");
+        secrets
+            .set("dbboard.shop.url", "not a url")
+            .expect("overwrite");
+
+        assert!(matches!(
+            admin.dsn_with_stored_password("shop", "mysql://app@db:3306/shop"),
+            Err(ConfigError::DsnUnparseable { id }) if id == "shop"
+        ));
+    }
+
+    #[test]
+    fn dsn_with_stored_password_rejects_a_kind_with_no_dsn() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("local", "Local", "./a.db"))
+            .expect("add");
+
+        assert!(matches!(
+            admin.dsn_with_stored_password("local", "mysql://app@db:3306/shop"),
+            Err(ConfigError::NotFound(id)) if id == "local"
+        ));
     }
 }

@@ -150,8 +150,7 @@ export const en = {
   "conn-dsn-url-example": "Example: { $example }",
   "conn-dsn-host-tunnel-hint":
     "The host as seen from the SSH server, not from this machine — usually 127.0.0.1.",
-  "conn-dsn-edit-replace-hint":
-    "Saving replaces the stored credentials; every field is required.",
+  "conn-dsn-edit-password-hint": "Leave blank to keep the stored password.",
   "conn-dsn-ssl": "TLS",
   "conn-dsn-ssl-require": "Required",
   "conn-dsn-ssl-disable": "Disabled",
@@ -443,8 +442,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-dsn-url-example": "例: { $example }",
   "conn-dsn-host-tunnel-hint":
     "このPCからではなく、SSH サーバーから見たホスト名です。通常は 127.0.0.1。",
-  "conn-dsn-edit-replace-hint":
-    "保存すると保存済みの認証情報を置き換えます。全項目の入力が必要です。",
+  "conn-dsn-edit-password-hint": "空欄のままにすると保存済みのパスワードを保持します。",
   "conn-dsn-ssl": "TLS",
   "conn-dsn-ssl-require": "必須",
   "conn-dsn-ssl-disable": "無効",

@@ -156,6 +156,9 @@ pub fn config_error_display(err: &ConfigError) -> DisplayError {
             id = id.clone(),
             reason = reason.clone()
         ),
+        ConfigError::DsnUnparseable { id } => {
+            t_args!("config-error-dsn-unparseable", id = id.clone())
+        }
         ConfigError::Bundle(e) => bundle_error_localized(e),
     };
     DisplayError::new(localized, err.to_string())

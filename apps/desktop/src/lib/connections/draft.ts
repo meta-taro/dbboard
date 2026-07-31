@@ -9,6 +9,7 @@
 import {
   composeDsn,
   emptyDsnParts,
+  sslModeFromQuery,
   usesDsnFields,
   validateDsn,
   type DsnField,
@@ -166,7 +167,21 @@ export type EditFields = (
   | { kind: 'turso'; path: string }
   | { kind: 'd1'; account_id: string; database_id: string; base_url: string | null }
   | { kind: 'postgres' | 'mysql' | 'neon' | 'supabase' | 'aurora_dsql' }
-) & { ssh?: SshPrefill | null };
+) & { ssh?: SshPrefill | null; dsn?: DsnPrefill | null };
+
+/** The non-secret half of a stored DSN, split apart by the backend so the edit
+ *  form can show the same host/port/user/database inputs the add form does
+ *  (ADR-0080). There is no password field — that is the point: the credential
+ *  stays in the Rust process and is re-attached there on save. */
+export interface DsnPrefill {
+  host: string;
+  /** `null` when the stored URL omitted it, meaning the engine default. */
+  port: number | null;
+  user: string;
+  database: string;
+  /** The stored query minus its `?`, so a TLS choice made earlier survives. */
+  query: string;
+}
 
 export function emptyForm(): ConnectionForm {
   return {
@@ -231,16 +246,36 @@ function applySshPrefill(base: ConnectionForm, ssh: SshPrefill | null | undefine
   return next;
 }
 
+// Apply the DSN prefill (if any) onto a base form, switching it to the
+// structured inputs. The password is deliberately left blank: the backend never
+// sends it, and blank is what `keepStoredPassword` reads as "keep".
+function applyDsnPrefill(base: ConnectionForm, dsn: DsnPrefill | null | undefined): ConnectionForm {
+  if (!dsn) return base;
+  return {
+    ...base,
+    use_url: false,
+    db_host: dsn.host,
+    db_port: dsn.port === null ? '' : String(dsn.port),
+    db_user: dsn.user,
+    db_password: '',
+    db_name: dsn.database,
+    db_ssl: sslModeFromQuery(dsn.query),
+  };
+}
+
 // Seed the edit form from an existing connection's non-secret fields. Secret
 // inputs stay blank so an untouched save keeps the stored secret.
 export function formForEdit(id: string, name: string, fields: EditFields): ConnectionForm {
-  const base: ConnectionForm = applySshPrefill(
-    // URL mode on edit: the stored DSN is a secret the backend never sends
-    // back, so a blank URL has to keep it. The structured parts cannot express
-    // "keep" — a half-filled set would compose a wrong DSN — so switching to
-    // them is an explicit, full replacement.
-    { ...emptyForm(), id, name, kind: fields.kind, use_url: usesDsnFields(fields.kind) },
-    fields.ssh,
+  const base: ConnectionForm = applyDsnPrefill(
+    applySshPrefill(
+      // Without a DSN prefill, a URL-bearing kind falls back to URL mode: the
+      // stored secret is never returned, so a blank URL has to mean "keep it".
+      // With one (the normal path since ADR-0080) the parts take over, and edit
+      // shows exactly the inputs add does.
+      { ...emptyForm(), id, name, kind: fields.kind, use_url: usesDsnFields(fields.kind) },
+      fields.ssh,
+    ),
+    fields.dsn,
   );
   switch (fields.kind) {
     case 'turso':
@@ -256,6 +291,23 @@ export function formForEdit(id: string, name: string, fields: EditFields): Conne
       // Postgres-family: only name + the secret url are editable.
       return base;
   }
+}
+
+/** Whether the save should keep the password already in the keychain
+ *  (ADR-0080).
+ *
+ *  True exactly when an edit rebuilt its DSN from the structured parts and the
+ *  user did not retype the password — which is the normal case, since the
+ *  backend never sent it to be prefilled. URL mode has its own keep signal (a
+ *  blank URL keeps the whole secret), and on add there is nothing stored to
+ *  keep, so a blank password there means the account really has none.
+ *
+ *  The trade-off: in edit + parts mode a blank box cannot mean "remove the
+ *  password". That matches every other secret in this form, and removing one is
+ *  rare enough to be worth a delete-and-re-add. */
+export function keepStoredPassword(form: ConnectionForm, mode: EditorMode): boolean {
+  if (mode !== 'edit' || form.use_url || !usesDsnFields(form.kind)) return false;
+  return blank(form.db_password);
 }
 
 // The kind-specific fields shown in the form, in display order. `id`/`name`

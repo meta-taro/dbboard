@@ -96,6 +96,16 @@ pub enum ConfigError {
         reason: String,
     },
 
+    /// The DSN stored in the keychain for this connection could not be
+    /// parsed, so the password the user asked to keep cannot be recovered
+    /// (ADR-0080). Raised only on the save path: saving the edit anyway would
+    /// drop the credential from a working connection and break it silently.
+    #[error("connection {id}: the stored connection url could not be parsed")]
+    DsnUnparseable {
+        /// The offending connection id.
+        id: String,
+    },
+
     /// Encrypting or decrypting a connection bundle failed (ADR-0038).
     /// Wraps the crypto-layer [`BundleError`] so the connection-admin
     /// export/import methods surface a single error type. Distinct from
