@@ -8039,3 +8039,39 @@ Hand-assembly has two failure modes that are invisible until they bite:
 - A new DSN-bearing adapter gets the field mode for free; only `defaultPort`
   and `schemeFor` need a line each.
 
+---
+
+## ADR-0074 — Kinds that live only in `connections.toml` are disabled in the list, not refused on submit
+
+- **Status**: Accepted 2026-07-31
+- **Relates to**: ADR-0057 (Aurora DSQL IAM, the only such kind today).
+
+### Context
+
+Aurora DSQL (IAM) entries are declared in `connections.toml`; there is no
+in-app form for them because there is no static secret to store. The backend
+enforced this in `update_connection`, so pressing **Edit** on such a row opened
+the form, let the user fill it in, and only then failed with a red banner. The
+rule was correct and its presentation was not.
+
+### Decision
+
+`isEditableInApp(kindSlug)` in `$lib/connections/draft.ts` holds the list of
+TOML-only backend slugs. The list row disables its Edit button and shows the
+reason inline. The backend check stays — this is a UX layer over an existing
+guard, not a replacement for it.
+
+Two details are deliberate:
+
+- The slug space is the backend's hyphenated `kind_label` (`aurora-dsql-iam`),
+  not the form's underscored `ConnectionKind`. They are disjoint namespaces and
+  a test pins that `aurora-dsql` is not confused with `aurora-dsql-iam`.
+- An unrecognised slug is treated as **editable**. A newly added backend kind
+  should surface a backend error, not be silently locked out of the UI by a
+  frontend list nobody remembered to update.
+
+### Consequences
+
+- Delete stays enabled for these rows: removing an entry is a store operation
+  that works for every kind.
+- Adding a future TOML-only kind means one array entry plus its test.

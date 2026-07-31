@@ -64,6 +64,19 @@ export function supportsSshTunnel(kind: ConnectionKind): boolean {
   return SSH_TUNNELABLE_KINDS.includes(kind);
 }
 
+// Backend display slugs (hyphenated — `kind_label` in dbboard-mcp) whose
+// entries are owned by `connections.toml` and have no in-app form. The list
+// panel takes these from `ConnectionView.kind`, a different namespace from the
+// underscored `ConnectionKind` above, which is why this is a plain string.
+const TOML_ONLY_KIND_SLUGS: readonly string[] = ['aurora-dsql-iam'];
+
+/** Whether the edit form can open this connection at all. The backend refuses
+ *  the same set; checking here turns "click, then get a red error" into a
+ *  disabled button that says why up front. Unknown slugs are treated as
+ *  editable so a newly added backend kind is never silently locked out. */
+export function isEditableInApp(kindSlug: string): boolean {
+  return !TOML_ONLY_KIND_SLUGS.includes(kindSlug);
+}
 
 export type SshAuthMethod = 'key' | 'password';
 export type SshHostKeyPolicy = 'fingerprint' | 'known_hosts';
