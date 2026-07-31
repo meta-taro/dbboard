@@ -35,6 +35,7 @@ pub mod ai_settings;
 pub mod ai_store;
 pub mod annotations;
 pub mod bundle;
+pub mod dsn;
 pub mod error;
 pub mod secrets;
 pub mod secure_fs;
@@ -62,6 +63,7 @@ pub use bundle::{
     decrypt_bundle, encrypt_bundle, validate_passphrase, BundleError, BundlePayload,
     BUNDLE_VERSION, MIN_PASSPHRASE_LEN,
 };
+pub use dsn::{parse_dsn, with_password, DsnParts};
 pub use error::ConfigError;
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{

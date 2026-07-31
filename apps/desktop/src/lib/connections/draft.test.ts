@@ -11,6 +11,7 @@ import {
   buildKindInput,
   buildKindEditInput,
   formForEdit,
+  keepStoredPassword,
   CONNECTION_KINDS,
   supportsSshTunnel,
   validateSsh,
@@ -198,7 +199,9 @@ describe('DSN field mode', () => {
     expect(emptyForm().use_url).toBe(false);
   });
 
-  it('an edit of a URL-bearing kind starts in url mode, because the stored secret is never returned', () => {
+  // Only when the backend could not hand back the parts. With them, edit opens
+  // in the same structured form as add (ADR-0080).
+  it('an edit falls back to url mode when the backend sends no parts', () => {
     expect(formForEdit('p', 'P', { kind: 'neon' }).use_url).toBe(true);
   });
 
@@ -282,6 +285,102 @@ describe('formForEdit', () => {
     expect(f.url).toBe('');
     // A blank-url edit validates (keep the stored secret).
     expect(validate(f, 'edit')).toEqual([]);
+  });
+});
+
+// The user's report: "「編集」で開くと URL モードは追加の時のフォームが変わるので
+// 困りますね" — add asked for host/port/user/password/database, edit asked for a
+// raw URL, and the same connection looked like two different products.
+describe('formForEdit with DSN parts (ADR-0080)', () => {
+  const dsn = {
+    host: 'db.internal',
+    port: 3307,
+    user: 'app',
+    database: 'shop',
+    query: '',
+  };
+
+  it('opens in the same structured mode the add form uses', () => {
+    const f = formForEdit('m', 'M', { kind: 'mysql', dsn });
+    expect(f.use_url).toBe(false);
+  });
+
+  it('prefills every part the backend sent', () => {
+    const f = formForEdit('m', 'M', { kind: 'mysql', dsn });
+    expect(f.db_host).toBe('db.internal');
+    expect(f.db_port).toBe('3307');
+    expect(f.db_user).toBe('app');
+    expect(f.db_name).toBe('shop');
+  });
+
+  // The one field that must stay empty: the backend never sends it, and blank
+  // is what tells the save path to keep the stored one.
+  it('leaves the password blank', () => {
+    expect(formForEdit('m', 'M', { kind: 'mysql', dsn }).db_password).toBe('');
+  });
+
+  it('leaves the port blank when the stored URL omitted it', () => {
+    const f = formForEdit('m', 'M', { kind: 'mysql', dsn: { ...dsn, port: null } });
+    expect(f.db_port).toBe('');
+  });
+
+  it('restores the TLS choice from the stored query string', () => {
+    const off = formForEdit('m', 'M', {
+      kind: 'mysql',
+      dsn: { ...dsn, query: 'ssl-mode=disabled' },
+    });
+    expect(off.db_ssl).toBe('disable');
+    expect(formForEdit('m', 'M', { kind: 'mysql', dsn }).db_ssl).toBe('require');
+  });
+
+  it('validates with the password left alone', () => {
+    expect(validateDsnFields(formForEdit('m', 'M', { kind: 'mysql', dsn }))).toEqual([]);
+  });
+
+  it('still applies the ssh prefill alongside the parts', () => {
+    const f = formForEdit('m', 'M', {
+      kind: 'mysql',
+      dsn,
+      ssh: {
+        host: 'bastion.example',
+        port: 2222,
+        user: 'ops',
+        auth: { method: 'key', key_path: '/k', encrypted: false },
+        host_key: { policy: 'fingerprint', fingerprint: 'SHA256:x' },
+      },
+    });
+    expect(f.ssh_enabled).toBe(true);
+    expect(f.ssh_host).toBe('bastion.example');
+    expect(f.db_host).toBe('db.internal');
+  });
+});
+
+describe('keepStoredPassword', () => {
+  const edited = (over: Partial<ConnectionForm> = {}) =>
+    form({ kind: 'mysql', use_url: false, db_host: 'h', db_user: 'u', db_name: 'd', ...over });
+
+  it('is true when an edit leaves the password box untouched', () => {
+    expect(keepStoredPassword(edited(), 'edit')).toBe(true);
+  });
+
+  it('is false once the user types a new password', () => {
+    expect(keepStoredPassword(edited({ db_password: 'new' }), 'edit')).toBe(false);
+  });
+
+  // On add there is no stored password to keep — a blank one means the account
+  // genuinely has none.
+  it('is false on add', () => {
+    expect(keepStoredPassword(edited(), 'add')).toBe(false);
+  });
+
+  // URL mode already has its own keep signal: a blank URL keeps the whole
+  // stored secret, password included.
+  it('is false in url mode', () => {
+    expect(keepStoredPassword(edited({ use_url: true }), 'edit')).toBe(false);
+  });
+
+  it('is false for a kind that stores no DSN', () => {
+    expect(keepStoredPassword(edited({ kind: 'turso' }), 'edit')).toBe(false);
   });
 });
 

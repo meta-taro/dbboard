@@ -677,6 +677,36 @@ fn to_add_draft(
     }
 }
 
+/// Rewrite a URL-bearing kind's DSN through `graft` (ADR-0080).
+///
+/// The edit form composes its DSN from the parts it was shown, and those never
+/// included the password — so when the user leaves the password box blank,
+/// meaning "keep the stored one", the composed URL is missing a credential the
+/// connection needs. `graft` puts it back, inside the process that already
+/// holds it.
+///
+/// Kinds with no DSN, and a blank URL (the URL-mode "keep the whole secret"
+/// signal), pass through untouched.
+fn graft_url<F>(kind: KindEditInput, graft: F) -> Result<KindEditInput, String>
+where
+    F: Fn(&str) -> Result<String, String>,
+{
+    let apply = |url: Option<String>| -> Result<Option<String>, String> {
+        match url {
+            Some(u) if !u.trim().is_empty() => graft(&u).map(Some),
+            other => Ok(other),
+        }
+    };
+    Ok(match kind {
+        KindEditInput::Postgres { url } => KindEditInput::Postgres { url: apply(url)? },
+        KindEditInput::MySql { url } => KindEditInput::MySql { url: apply(url)? },
+        KindEditInput::Neon { url } => KindEditInput::Neon { url: apply(url)? },
+        KindEditInput::Supabase { url } => KindEditInput::Supabase { url: apply(url)? },
+        KindEditInput::AuroraDsql { url } => KindEditInput::AuroraDsql { url: apply(url)? },
+        other => other,
+    })
+}
+
 fn to_edit_draft(name: String, kind: KindEditInput, ssh: SshEditInput) -> ConnectionEditDraft {
     let kind = match kind {
         KindEditInput::Turso { path } => ConnectionKindEditDraft::Turso { path },
@@ -767,14 +797,36 @@ struct SshEditFieldsDto {
     host_key: SshHostKeyFieldsDto,
 }
 
+/// The non-secret parts of a stored DSN, so the edit form can offer the same
+/// host/port/user/database inputs the add form does (ADR-0080).
+///
+/// There is deliberately no password field: the whole point of this DTO is
+/// that the edit form can be structured *without* the credential ever
+/// reaching the webview.
+#[derive(serde::Serialize)]
+struct DsnPartsDto {
+    host: String,
+    port: Option<u16>,
+    user: String,
+    database: String,
+    /// The stored query string minus its `?`, so a `ssl-mode` the user chose
+    /// earlier is still what the TLS select shows when they reopen the form.
+    query: String,
+}
+
 /// The edit-form prefill payload: the kind's non-secret fields (flattened so
 /// the `kind` discriminator sits at the top level, unchanged) plus the tunnel
-/// block when one is configured.
+/// block when one is configured, plus the DSN parts for URL-bearing kinds.
+///
+/// `dsn` is `None` both for kinds that store no DSN and when the stored one
+/// could not be read or parsed; the form then opens its parts empty rather
+/// than refusing to open.
 #[derive(serde::Serialize)]
 struct EditFieldsResponse {
     #[serde(flatten)]
     kind: EditFieldsDto,
     ssh: Option<SshEditFieldsDto>,
+    dsn: Option<DsnPartsDto>,
 }
 
 /// Project a stored [`dbboard_config::SshTunnelToml`] into its non-secret
@@ -849,7 +901,21 @@ fn connection_edit_fields(
             )
         }
     };
-    Ok(EditFieldsResponse { kind: dto, ssh })
+    let dsn = admin
+        .dsn_prefill(&id)
+        .map_err(|e| e.to_string())?
+        .map(|p| DsnPartsDto {
+            host: p.host,
+            port: p.port,
+            user: p.user,
+            database: p.database,
+            query: p.query,
+        });
+    Ok(EditFieldsResponse {
+        kind: dto,
+        ssh,
+        dsn,
+    })
 }
 
 /// Read the SSH server's host-key fingerprint so the connection form can offer
@@ -891,6 +957,11 @@ fn add_connection(
 /// kind change is a delete + re-add); a blank secret keeps the stored
 /// one. Evicts the read path's cached adapter so the next query rebuilds
 /// with the new credentials.
+///
+/// `keep_password` is the structured-input counterpart of that blank-secret
+/// rule (ADR-0080): the form rebuilt the DSN from host/port/user/database but
+/// the user did not retype the password, so the stored one is grafted back on
+/// here rather than being sent to the webview and back.
 #[tauri::command]
 async fn update_connection(
     state: tauri::State<'_, AppState>,
@@ -898,9 +969,19 @@ async fn update_connection(
     name: String,
     kind: KindEditInput,
     ssh: SshEditInput,
+    keep_password: Option<bool>,
 ) -> Result<(), String> {
     {
         let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+        let kind = if keep_password.unwrap_or(false) {
+            graft_url(kind, |url| {
+                admin
+                    .dsn_with_stored_password(&id, url)
+                    .map_err(|e| e.to_string())
+            })?
+        } else {
+            kind
+        };
         admin
             .update(&id, to_edit_draft(name, kind, ssh))
             .map_err(|e| e.to_string())?;
@@ -1166,8 +1247,8 @@ mod tests {
     // store. The commit discipline (keyring/TOML rollback) is covered by
     // `dbboard-config`'s own suite; here we prove our wiring reaches it.
     use super::{
-        none_if_blank, secret_field, ssh_edit_fields, to_add_draft, to_edit_draft, to_ssh_draft,
-        to_ssh_edit_field, EditFieldsDto, ImportReportDto, KindEditInput, KindInput,
+        graft_url, none_if_blank, secret_field, ssh_edit_fields, to_add_draft, to_edit_draft,
+        to_ssh_draft, to_ssh_edit_field, EditFieldsDto, ImportReportDto, KindEditInput, KindInput,
         SshAuthEditInput, SshAuthFieldsDto, SshAuthInput, SshEditInput, SshHostKeyInput, SshInput,
     };
     use dbboard_config::{
@@ -1199,6 +1280,87 @@ mod tests {
         match secret_field(Some(" tok ".to_string())) {
             SecretField::Set(v) => assert_eq!(v, " tok "),
             SecretField::Keep => panic!("a non-blank secret must Set, not Keep"),
+        }
+    }
+
+    // --- keep-the-stored-password grafting (ADR-0080) ----------------------
+
+    #[test]
+    fn graft_url_rewrites_every_url_bearing_kind() {
+        let graft = |url: &str| Ok(format!("{url}#grafted"));
+        let cases = vec![
+            KindEditInput::Postgres {
+                url: Some("postgres://app@db:5432/x".to_string()),
+            },
+            KindEditInput::MySql {
+                url: Some("mysql://app@db:3306/x".to_string()),
+            },
+            KindEditInput::Neon {
+                url: Some("postgres://app@db:5432/x".to_string()),
+            },
+            KindEditInput::Supabase {
+                url: Some("postgres://app@db:5432/x".to_string()),
+            },
+            KindEditInput::AuroraDsql {
+                url: Some("postgres://app@db:5432/x".to_string()),
+            },
+        ];
+        for kind in cases {
+            let out = graft_url(kind, graft).expect("graft");
+            let url = match out {
+                KindEditInput::Postgres { url }
+                | KindEditInput::MySql { url }
+                | KindEditInput::Neon { url }
+                | KindEditInput::Supabase { url }
+                | KindEditInput::AuroraDsql { url } => url,
+                _ => panic!("kind changed under graft_url"),
+            };
+            assert!(url.expect("url").ends_with("#grafted"));
+        }
+    }
+
+    // A blank URL is URL-mode's own "keep the whole stored secret" signal;
+    // grafting a password into nothing would compose a bogus DSN.
+    #[test]
+    fn graft_url_leaves_a_blank_url_alone() {
+        let boom = |_: &str| -> Result<String, String> { panic!("must not graft a blank url") };
+        for url in [None, Some(String::new()), Some("  ".to_string())] {
+            let out = graft_url(KindEditInput::MySql { url }, boom).expect("graft");
+            match out {
+                KindEditInput::MySql { url } => assert!(url.unwrap_or_default().trim().is_empty()),
+                _ => panic!("kind changed"),
+            }
+        }
+    }
+
+    #[test]
+    fn graft_url_ignores_kinds_that_store_no_dsn() {
+        let boom = |_: &str| -> Result<String, String> { panic!("must not graft a non-dsn kind") };
+        let out = graft_url(
+            KindEditInput::Turso {
+                path: "./a.db".to_string(),
+            },
+            boom,
+        )
+        .expect("graft");
+        assert!(matches!(out, KindEditInput::Turso { .. }));
+    }
+
+    // The stored DSN being unreadable must surface, not be swallowed into a
+    // save that drops the credential.
+    #[test]
+    fn graft_url_propagates_a_failure() {
+        let fail = |_: &str| -> Result<String, String> { Err("keychain gone".to_string()) };
+        // Matched rather than `expect_err`, which would need `Debug` on
+        // `KindEditInput` — a type that carries a DSN, password and all.
+        match graft_url(
+            KindEditInput::MySql {
+                url: Some("mysql://app@db:3306/x".to_string()),
+            },
+            fail,
+        ) {
+            Err(err) => assert_eq!(err, "keychain gone"),
+            Ok(_) => panic!("a failed graft must not save"),
         }
     }
 

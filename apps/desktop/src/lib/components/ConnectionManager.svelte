@@ -17,6 +17,7 @@
   import {
     emptyForm,
     formForEdit,
+    keepStoredPassword,
     fieldsForKind,
     secretFields,
     validate,
@@ -280,6 +281,7 @@
           form.name,
           buildKindEditInput(form),
           buildSshEditInput(form),
+          keepStoredPassword(form, editorMode),
         );
       }
       await workspace.refreshConnections();
@@ -592,11 +594,11 @@
                   {#if f === 'db_host' && form.ssh_enabled}
                     <span class="hint">{i18n.t('conn-dsn-host-tunnel-hint')}</span>
                   {/if}
+                  {#if f === 'db_password' && editorMode === 'edit'}
+                    <span class="hint">{i18n.t('conn-dsn-edit-password-hint')}</span>
+                  {/if}
                 </label>
               {/each}
-              {#if editorMode === 'edit'}
-                <p class="note">{i18n.t('conn-dsn-edit-replace-hint')}</p>
-              {/if}
             {/if}
 
             <!-- Outside the mode branch on purpose. TLS is a property of the
@@ -1094,8 +1096,7 @@
     font-weight: 600;
     color: var(--text-muted);
   }
-  .ssh .note,
-  .dsn .note {
+  .ssh .note {
     margin: 0;
     font-size: var(--text-hint);
     color: var(--faint);

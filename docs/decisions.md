@@ -8334,3 +8334,62 @@ every credential.
 - Switching entry modes does not carry the TLS choice across. That matches the
   existing rule that parts mode on edit is a full replacement, and the select
   re-reads from whichever store is live, so it never shows a stale value.
+
+## ADR-0080: The edit form asks for the same fields the add form does
+
+**Status**: Accepted
+**Date**: 2026-07-31
+
+### Context
+
+The add form takes host / port / user / password / database separately
+(ADR-0073). The edit form opened in raw-URL mode, because the stored DSN is a
+keyring secret the backend never sent back — a blank URL had to mean "keep the
+stored one", and the structured parts had no way to express "keep".
+
+That divergence reached the maintainer as a bug report about a missing feature:
+"was the user/password input removed?" — followed by
+「「編集」で開くと URL モードは追加の時のフォームが変わるので困りますね。」
+From outside, one button led to a client that asks for five fields and another
+to a client that asks for a URL. Worse, the second one silently loses the
+first's guarantees: percent-encoding a password containing `@` or `/` is done
+for you on add and left to you on edit.
+
+The blocker was never the form. It was that the process holding the credential
+refused to say anything at all about it, including the parts that are not
+secret.
+
+### Decision
+
+1. `dbboard-config` gains a `dsn` module that splits a stored URL into
+   `DsnParts { host, port, user, database, query }`. The type has **no password
+   field** — a prefill payload built from it cannot leak one by oversight,
+   because there is nowhere to put one.
+2. `ConnectionAdmin::dsn_prefill(id)` is best-effort: a kind with no DSN, an
+   unreadable keychain entry, or an unparseable stored value all return `None`,
+   and the form opens with empty parts rather than refusing to open.
+3. `ConnectionAdmin::dsn_with_stored_password(id, url)` is the strict half. The
+   UI rebuilds the DSN from the parts it was shown and the stored password is
+   grafted back on **inside the Rust process** — it never crosses into the
+   webview in either direction. An unparseable stored value is an error
+   (`ConfigError::DsnUnparseable`), not a fall-through to "no password": saving
+   a working connection back without its credential would break it with no
+   visible cause.
+4. `update_connection` takes `keep_password`. It is the structured-input
+   counterpart of the blank-secret rule the form already uses everywhere else.
+5. `formForEdit` opens in parts mode whenever the backend sent parts, and falls
+   back to URL mode when it did not. URL mode stays available as the escape
+   hatch for what a form cannot express.
+6. The stored query string travels with the parts, so a TLS choice made under
+   ADR-0078 is still what the select shows when the form is reopened.
+
+### Consequences
+
+- Add and edit now render the same inputs for every URL-bearing kind.
+- In edit + parts mode a blank password box cannot mean "remove the password" —
+  it means keep. That matches every other secret in this form; removing one is
+  rare enough to be worth a delete-and-re-add.
+- The password is still never sent to the frontend. What changed is that the
+  *non-secret* parts no longer travel with it into the keyring's shadow.
+- Process note: this was reported, not noticed. Add/edit parity is now a thing
+  to check before shipping a form change, not after a user hits it.

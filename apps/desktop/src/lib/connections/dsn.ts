@@ -120,9 +120,16 @@ function usableUrl(url: string): URL | null {
  *  adapter's hardened default. */
 export function sslModeFromUrl(url: string): SslMode {
   const parsed = usableUrl(url);
-  if (!parsed) return 'require';
+  return parsed ? sslModeFromQuery(parsed.search) : 'require';
+}
+
+/** The same reading, from a bare query string (`ssl-mode=disabled`, with or
+ *  without its leading `?`). Used by the edit prefill, where the backend hands
+ *  back the stored DSN's query separately from the parts it was split into. */
+export function sslModeFromQuery(query: string): SslMode {
+  const params = new URLSearchParams(query.replace(/^\?/, ''));
   for (const name of SSL_PARAM_NAMES) {
-    const value = parsed.searchParams.get(name)?.trim().toLowerCase();
+    const value = params.get(name)?.trim().toLowerCase();
     if (value === 'disabled' || value === 'disable') return 'disable';
   }
   return 'require';

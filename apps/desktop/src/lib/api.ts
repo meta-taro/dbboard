@@ -336,12 +336,17 @@ export const addConnection = (
   ssh: Record<string, unknown> | null,
 ): Promise<void> => invoke('add_connection', { id, name, kind, ssh });
 
+// `keepPassword` is the structured-input counterpart of a blank secret: the
+// form rebuilt the DSN from the parts it was shown, which never included the
+// password, so the backend grafts the stored one back on (ADR-0080).
 export const updateConnection = (
   id: string,
   name: string,
   kind: Record<string, unknown>,
   ssh: Record<string, unknown>,
-): Promise<void> => invoke('update_connection', { id, name, kind, ssh });
+  keepPassword: boolean,
+): Promise<void> =>
+  invoke('update_connection', { id, name, kind, ssh, keepPassword });
 
 export const deleteConnection = (id: string): Promise<void> =>
   invoke('delete_connection', { id });
