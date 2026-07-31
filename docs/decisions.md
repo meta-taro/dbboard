@@ -8228,3 +8228,64 @@ import/export uses it — so the native dialog cost nothing to add.
   wants a directory; when one does, `PathField` is where that branches.
 - `pickerTitle` returns a `MessageKey`, so a new path field that forgets its
   label is a type error rather than an untranslated dialog.
+
+## ADR-0078 — TLS is a form choice, defaulting to required, never a silent fallback
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+Registering a MySQL connection through dbboard's own SSH tunnel failed with:
+
+```
+connection failed: error occurred while attempting to establish a TLS
+connection: server does not support TLS
+```
+
+This is `harden_ssl_mode` (`crates/dbboard-mysql/src/lib.rs`) working as
+designed. sqlx defaults an unspecified `ssl-mode` to `Preferred`, which tries
+TLS and **silently continues in plaintext** when the server refuses. Both the
+MySQL and Postgres adapters rewrite that default up to `Required`, because a
+connection the user believes is encrypted and is not is worse than one they
+knowingly turned off.
+
+The adapters always preserved an explicit `ssl-mode=DISABLED` in the URL. The
+gap was in the form: the structured host/port/user/password/database inputs
+(ADR-0073) compose a URL with no query string, so there was no way to express
+the choice. The only escape was to abandon the parts, switch to raw-URL entry,
+and hand-write the parameter — the exact hand-assembly ADR-0073 removed.
+
+A tunnelled connection makes this ordinary rather than exotic. Traffic between
+this machine and the SSH server is already encrypted by SSH, and the database
+on the far side is very often a `127.0.0.1` MySQL with TLS never configured.
+Requiring TLS inside the tunnel is redundant *and*, in that setup, impossible.
+
+### Decision
+
+1. `DsnParts` gains `db_ssl: SslMode`, rendered as a select in the Server
+   fieldset. It defaults to `require`.
+2. Exactly two choices: **Required** and **Disabled**. `preferred`/`prefer` is
+   not offered — that is the plaintext-fallback mode the adapters already
+   refuse to ship. `verify_ca`/`verify_full` need a CA file the form has
+   nowhere to put; raw-URL entry can still ask for them.
+3. `require` emits **no** query parameter. The composed URL is byte-for-byte
+   what it was before this option existed, and the adapter's hardening supplies
+   the mode. Only `disable` is written out, so the URL says something only when
+   it says something surprising.
+4. MySQL and Postgres disagree on both the parameter name and the value
+   spelling (`ssl-mode=disabled` vs `sslmode=disable`), and sqlx rejects a
+   wrong one outright. `sslQuery` picks by scheme so no call site guesses.
+5. The field's hint changes when the SSH tunnel is enabled, naming what the
+   tunnel does and does not encrypt rather than repeating a generic warning.
+
+### Consequences
+
+- Existing stored connections are untouched: they carry no parameter, which is
+  what `require` composes.
+- `rewrite_to_loopback` (`crates/dbboard-connect/src/ssh.rs`) preserves the
+  query when it repoints the URL at the local forward, so the choice survives
+  tunnelling. This ADR depends on that; a future rewrite that rebuilds the URL
+  from parts would silently re-enable TLS.
+- Turning TLS off is now a two-click decision recorded in the connection, not a
+  reason to fall back to hand-writing a DSN.
