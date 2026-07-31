@@ -8594,3 +8594,80 @@ distance from the top of the window is not knowable from CSS.
 - The divider is a sibling of the sidebar rather than part of it, which keeps
   `Sidebar.svelte` free of layout state. The cost is a CSS custom property as
   the contract between them, documented at both ends.
+
+---
+
+## ADR-0084 — Commit identity is scanned, because it cannot be edited
+
+**Date:** 2026-07-31
+**Status:** Accepted
+
+### Context
+
+dbboard is a public repository. `scripts/pii-scan.sh` (ADR-0055) has guarded
+file *contents* since it landed, and a review of what that guard actually
+covers turned up the gap: every commit in the repository carries the
+maintainer's personal email address in its author and committer fields, and
+the scanner had no way to see it — `git grep` reads trees, not commit objects.
+
+The two leaks are not equally bad, and the difference is the whole argument.
+A string committed into a file is removed by the next commit; the old copy
+survives only in history, which is a known, bounded risk. An address in a
+commit object is *part of the commit*: fixing it changes the commit's hash,
+which changes every descendant hash, which requires a force-push and breaks
+every existing clone. There is no "fix it in the next commit" for identity.
+
+The tracked `.claude/` directory prompted the review and turned out to be
+fine — the parts that carry other people's names (`.claude/rules/`,
+`.claude/templates/`) were already ignored, and the 22 tracked files scan
+clean. The real finding was the one nobody was looking at.
+
+### Decision
+
+1. **Identity is checked as its own mode, not as another content rule.**
+   `pii-scan.sh --identity <range>` reads `%ae`/`%ce`/`%an`/`%cn` from
+   `git log`. Content rules cannot reach commit metadata at all, so this is a
+   separate code path rather than another entry in `advisory_rules`.
+2. **Only GitHub's noreply forms are publishable.** Both the modern
+   `<id>+<login>@users.noreply.github.com` and the legacy
+   `<login>@users.noreply.github.com` pass; everything else fails, including
+   the `user@hostname` git invents when it is unconfigured. The pattern is
+   overridable via `OSS_IDENTITY_ALLOW_RE` should the repo ever leave GitHub.
+3. **Identity is blocking, not advisory.** The advisory tier exists for shapes
+   that synthetic fixtures also match. An author address has no fixture
+   equivalent — it is either publishable or it is not.
+4. **It is checked before the commit exists.** `--staged` (the pre-commit
+   hook) validates `git config user.email`, because the cheapest moment to
+   stop a bad identity is before the object that would carry it forever is
+   written. The `--identity` range mode is the CI backstop for commits that
+   arrive by other routes.
+5. **Findings are redacted like every other finding.** The output names the
+   commit and the field, never the address. A check whose failure output
+   republishes the address would defeat itself in a public Actions log.
+6. **CI scans only the commits the push or PR introduced**
+   (`event.before..sha`, or the PR's `base..head`) — never a wider range.
+   Existing history is uniformly non-compliant pending the one-time rewrite,
+   so a wider range would be permanently red and drown the signal. This is
+   the same reasoning the message scan already uses.
+7. **Display names are checked against the denylist, not a pattern.** A real
+   name has no shape to match; only the private denylist knows it.
+8. **A mode with no dispatch branch is now a hard error.** The identity mode
+   was briefly parsed but not dispatched, and the script reported `clean`
+   without scanning anything. For a leak scanner that is the worst possible
+   failure, so the `case` gained a `*)` arm that exits 2.
+
+### Consequences
+
+- Every future commit in this repository is authored by a noreply address;
+  the local `user.email` was fixed at the same time as this change.
+- The ~428 commits already published under the personal address are **not**
+  fixed by this ADR. Removing them is a history rewrite plus a force-push —
+  a human decision (CLAUDE.md: pushes are done by the human), documented in
+  `docs/maintainer/history-sanitize-runbook.md`, which now covers the
+  identity rewrite alongside the string replacement it already described.
+  The repository has no forks and no stargazers, so a rewrite would in fact
+  be effective here; that is a reason to consider it, not a reason to do it
+  unilaterally.
+- The pre-commit hook will now refuse to commit from a clone whose
+  `user.email` has not been set. That is the intended behaviour: the failure
+  message names the exact `git config` command to run.

@@ -38,6 +38,7 @@
 #   --message <file>    Scan a commit-message file (commit-msg hook). Blocking.
 #   --tree              Scan tracked files at HEAD (daily CI). Blocking+advisory.
 #   --range <A..B>      Scan commit messages in a range (CI). Blocking+advisory.
+#   --identity <A..B>   Scan author/committer identity in a range (CI). Blocking.
 #   --selftest          Run built-in fixtures and verify the rules fire.
 #
 # Flags:
@@ -158,6 +159,58 @@ scan_denylist() {
     done < "$DENYLIST_FILE"
 }
 
+# --- commit identity (ADR-0084) -------------------------------------------
+# A leaked string in a *file* is fixable with another commit. An address in
+# the author/committer field is not: it is part of the commit object, so
+# removing it means rewriting every descendant hash and force-pushing. That
+# asymmetry is why identity is checked separately, and why it is checked
+# before the commit exists (--staged) as well as after (--identity <range>).
+#
+# GitHub's noreply forms are the only publishable addresses. Override with
+# OSS_IDENTITY_ALLOW_RE if this repo ever moves off GitHub.
+IDENTITY_ALLOW_RE="${OSS_IDENTITY_ALLOW_RE:-^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$}"
+
+# identity_allowed <email> — 0 when the address is safe to publish.
+identity_allowed() {
+    [ -n "${1:-}" ] || return 1
+    printf '%s' "$1" | grep -qE "$IDENTITY_ALLOW_RE"
+}
+
+# scan_identity (--config | <range>)
+# Output is deliberately value-free: naming the address in a public Actions
+# log would republish the very thing the check exists to keep out.
+scan_identity() {
+    if [ "$1" = "--config" ]; then
+        e=$(git config user.email 2>/dev/null || true)
+        if [ -z "$e" ]; then
+            printf '  [identity] git config user.email is unset\n' >&2
+        elif ! identity_allowed "$e"; then
+            printf '  [identity] git config user.email is not a GitHub noreply address  (value redacted)\n' >&2
+        fi
+        return 0
+    fi
+
+    git log --format='%H%x09%ae%x09%ce' "$1" 2>/dev/null \
+    | while IFS='	' read -r h ae ce; do
+        [ -n "$h" ] || continue
+        identity_allowed "$ae" || printf '  [identity] %s author email is not a GitHub noreply address  (value redacted)\n' "$h" >&2
+        identity_allowed "$ce" || printf '  [identity] %s committer email is not a GitHub noreply address  (value redacted)\n' "$h" >&2
+    done
+
+    # Display names are free-form, so there is no shape to test against; the
+    # denylist is the only thing that knows the maintainer's real name.
+    [ -f "$DENYLIST_FILE" ] || return 0
+    names=$(git log --format='%H%x09%an%x09%cn' "$1" 2>/dev/null || true)
+    while IFS= read -r entry || [ -n "$entry" ]; do
+        case "$entry" in ''|'#'*) continue ;; esac
+        id="denylist#$(denylist_id "$entry")"
+        printf '%s' "$names" | grep -iF -e "$entry" 2>/dev/null \
+        | while IFS='	' read -r h _rest; do
+            printf '  [%s] %s commit identity  (match redacted)\n' "$id" "$h" >&2
+        done
+    done < "$DENYLIST_FILE"
+}
+
 # --- text-stream scan (commit messages / logs, not tracked files) ---------
 # scan_text_stream <label> <block|both>  — reads text on stdin.
 scan_text_stream() {
@@ -264,6 +317,34 @@ FIX
     if run_and_check _emit_block 2>/dev/null; then printf 'selftest FAIL: blocking line did not fail run_and_check\n' >&2; rc=1; fi
     if run_and_check _emit_adv 2>/dev/null; then :; else printf 'selftest FAIL: advisory line wrongly failed run_and_check\n' >&2; rc=1; fi
 
+    # Commit identity (ADR-0084). GitHub's two noreply forms are the only
+    # publishable author addresses; everything else — personal mail, work
+    # mail, the fake `user@hostname` git invents when unconfigured — is a
+    # leak that survives in commit metadata forever.
+    for ok in '3032390+meta-taro@users.noreply.github.com' \
+              'meta-taro@users.noreply.github.com'; do
+        identity_allowed "$ok" || { printf 'selftest FAIL: identity rejected a noreply address\n' >&2; rc=1; }
+    done
+    for bad in 'someone@gmail.com' \
+               'dev@corp.example.co.jp' \
+               'runner@fv-az1234-567.(none)' \
+               'attacker@evil.users.noreply.github.com.example.com' \
+               ''; do
+        if identity_allowed "$bad"; then
+            printf 'selftest FAIL: identity accepted a publishable-unsafe address\n' >&2; rc=1
+        fi
+    done
+
+    # An identity finding must be BLOCKING (run_and_check convention) and must
+    # never echo the address itself — CI logs are public.
+    _emit_ident() { printf '  [identity] deadbeef author email is not a GitHub noreply address  (value redacted)\n' >&2; }
+    if run_and_check _emit_ident 2>/dev/null; then
+        printf 'selftest FAIL: identity line did not fail run_and_check\n' >&2; rc=1
+    fi
+    if _emit_ident 2>&1 | grep -q '@'; then
+        printf 'selftest FAIL: identity output leaked an address\n' >&2; rc=1
+    fi
+
     # Denylist literal must match, case-insensitively.
     printf 'AcmeMegaStore\n' > "$tmp/deny"; printf 'welcome to acmemegastore\n' > "$tmp/src.txt"
     d=""
@@ -284,6 +365,7 @@ while [ $# -gt 0 ]; do
         --tree)     MODE=tree ;;
         --message)  MODE=message; shift; ARG=${1:-} ;;
         --range)    MODE=range; shift; ARG=${1:-} ;;
+        --identity) MODE=identity; shift; ARG=${1:-} ;;
         --selftest) MODE=selftest ;;
         --reveal)   REVEAL=1 ;;
         -h|--help)  usage ;;
@@ -300,7 +382,10 @@ case "$MODE" in
     staged)
         printf '[pii-scan] scanning staged changes (blocking rules)...\n' >&2
         run_and_check scan_generic block --cached || rc=1
-        run_and_check scan_denylist --cached || rc=1 ;;
+        run_and_check scan_denylist --cached || rc=1
+        # Cheapest possible moment to catch a bad identity: before the commit
+        # object that would carry it forever is written.
+        run_and_check scan_identity --config || rc=1 ;;
     tree)
         printf '[pii-scan] scanning tracked files at HEAD...\n' >&2
         run_and_check scan_generic block HEAD || rc=1
@@ -313,15 +398,36 @@ case "$MODE" in
         out=$(scan_text_stream "commit-msg" block < "$ARG" 2>&1 || true)
         [ -n "$out" ] && printf '%s\n' "$out" >&2
         printf '%s' "$out" | grep -qE '^  \[' && rc=1 ;;
+    identity)
+        [ -n "$ARG" ] || { printf 'no range\n' >&2; exit 2; }
+        printf '[pii-scan] scanning commit identity in %s...\n' "$ARG" >&2
+        run_and_check scan_identity "$ARG" || rc=1 ;;
     range)
         [ -n "$ARG" ] || { printf 'no range\n' >&2; exit 2; }
         printf '[pii-scan] scanning commit messages in %s...\n' "$ARG" >&2
         out=$(git log --format='%H%n%B' "$ARG" 2>/dev/null | scan_text_stream "commit-log" both 2>&1 || true)
         [ -n "$out" ] && printf '%s\n' "$out" >&2
         printf '%s' "$out" | grep -qE '^  \[' && rc=1 ;;
+    # A mode the parser accepts but this dispatch forgets would otherwise
+    # report "clean" without scanning anything — the worst failure mode a
+    # leak scanner has. Fail loudly instead.
+    *)  printf 'internal error: mode "%s" has no dispatch branch\n' "$MODE" >&2; exit 2 ;;
 esac
 
-if [ "$rc" != 0 ]; then
+if [ "$rc" != 0 ] && [ "$MODE" = identity ]; then
+    cat >&2 <<'MSG'
+
+[pii-scan] PUBLISHABLE-UNSAFE COMMIT IDENTITY.
+  An author/committer address on a public repo must be a GitHub noreply
+  address — a personal one cannot be removed by a later commit, only by
+  rewriting history and force-pushing. Fix the identity for THIS repo:
+
+    git config user.email "<id>+<login>@users.noreply.github.com"
+
+  (the exact address is on GitHub → Settings → Emails). For commits that
+  already carry it, see docs/maintainer/history-sanitize-runbook.md.
+MSG
+elif [ "$rc" != 0 ]; then
     cat >&2 <<'MSG'
 
 [pii-scan] BLOCKING LEAK — commit/push blocked.

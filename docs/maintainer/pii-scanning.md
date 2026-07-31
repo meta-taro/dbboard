@@ -13,9 +13,9 @@ See [ADR-0055](../decisions.md) for the rationale.
 
 | Trigger | Command | Blocks? |
 |---|---|---|
-| pre-commit hook | `pii-scan.sh --staged --reveal` | yes — staged content |
+| pre-commit hook | `pii-scan.sh --staged --reveal` | yes — staged content **and `git config user.email`** |
 | commit-msg hook | `pii-scan.sh --message <file> --reveal` | yes — the message text |
-| CI push/PR/daily | `--selftest`, `--tree`, `--range origin/main..HEAD` | yes — tracked files + new commit messages |
+| CI push/PR/daily | `--selftest`, `--tree`, `--range origin/main..HEAD`, `--identity <pushed range>` | yes — tracked files, new commit messages, new commit identity |
 
 The hooks are installed by cargo-husky from `.cargo-husky/hooks/` on the next
 `cargo test` after this lands. `--reveal` is passed locally (private terminal)
@@ -31,6 +31,9 @@ them — it is full of synthetic connection strings and example emails.
     This is the primary mechanism; matched exactly and **redacted** in output.
   - **private-key** — PEM `BEGIN … PRIVATE KEY` blocks.
   - **aws-access-key-id** — a real-looking `AKIA…` key id.
+  - **identity** — an author/committer address that is not a GitHub noreply
+    address (ADR-0084). Blocking rather than advisory because, unlike a
+    string in a file, it cannot be corrected by a later commit.
 - **ADVISORY** (printed in the daily `--tree`/`--range` scan, never fails):
   - **passworded-db-url**, **personal-email**, **windows-home-path**.
   By project invariant real secrets live only in the OS keyring, never in a
@@ -69,6 +72,7 @@ sh scripts/pii-scan.sh --selftest              # prove the rules fire
 sh scripts/pii-scan.sh --tree                  # scan tracked files at HEAD
 sh scripts/pii-scan.sh --tree --reveal         # ... showing generic matches
 sh scripts/pii-scan.sh --range origin/main..HEAD   # scan new commit messages
+sh scripts/pii-scan.sh --identity origin/develop..HEAD  # scan author/committer
 sh scripts/pii-scan.sh --message .git/COMMIT_EDITMSG
 ```
 
@@ -87,9 +91,31 @@ Exit status: `0` clean, `1` a blocking leak, `2` usage error.
 4. The **only** sanctioned `--no-verify` bypass in this repo is the Windows
    libSQL teardown segfault — never use it to skip a PII finding.
 
+## Commit identity (ADR-0084)
+
+On a public repository the author and committer address of every commit is
+visible to anyone. Unlike a leaked string in a file, it **cannot be fixed by a
+later commit** — the address is part of the commit object, so changing it
+rewrites that hash and every descendant. Set it once, per clone:
+
+```sh
+# NOT --global. The exact address is on GitHub → Settings → Emails.
+git config user.email "<id>+<login>@users.noreply.github.com"
+git config user.email          # confirm
+```
+
+Turning on **Settings → Emails → Keep my email addresses private** on GitHub
+makes the same noreply address apply to commits made through the web UI.
+
+The pre-commit hook refuses to commit when `user.email` is not a noreply
+address, and CI re-checks the commits each push or PR introduced. Neither
+touches existing history — see below.
+
 ## Scope note: history
 
-CI scans HEAD and *new* commit messages, not full history. History still holds
-un-remediated real names pending the destructive one-time rewrite in
-`history-sanitize-runbook.md`; scanning all of it would be permanently red and
-bury the live signal. Remediate history via that runbook, not this scanner.
+CI scans HEAD, *new* commit messages, and the identity of *new* commits — not
+full history. History still holds un-remediated real names pending the
+destructive one-time rewrite in `history-sanitize-runbook.md`, and every commit
+made before ADR-0084 carries a personal author address. Scanning all of it
+would be permanently red and bury the live signal. Remediate history via that
+runbook, not this scanner.

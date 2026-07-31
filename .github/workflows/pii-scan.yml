@@ -12,6 +12,9 @@
 #                      job; the high-false-positive shape rules print as advisory.
 #   * `--range`      — commit MESSAGES new on this ref vs origin/main. Commit
 #                      comments were explicitly in scope for this request.
+#   * `--identity`   — author/committer of the commits this push/PR introduced
+#                      (ADR-0084). Unlike a leaked string in a file, an address
+#                      in a commit object cannot be fixed by a later commit.
 # It does NOT scan full history: history still contains un-remediated real
 # names pending the one-time rewrite (docs/maintainer/history-sanitize-runbook.md),
 # so a full-history scan would be permanently red and drown the signal.
@@ -88,6 +91,32 @@ jobs:
           fi
           echo "range: $RANGE"
           sh scripts/pii-scan.sh --range "$RANGE"
+
+      - name: Scan commit identity of commits new on this ref
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Only commits this event actually introduced. Existing history
+          # carries a personal author address pending the one-time rewrite,
+          # so a wider range would be permanently red (same reasoning as the
+          # message scan above) — this step exists to stop NEW ones.
+          if [ -n "${PR_BASE:-}" ] && [ -n "${PR_HEAD:-}" ]; then
+            RANGE="$PR_BASE..$PR_HEAD"
+          elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="$BEFORE..$AFTER"
+          else
+            echo "identity: no push/PR range for this event — skipping"
+            exit 0
+          fi
+          git rev-parse --verify -q "${RANGE%%..*}" >/dev/null || {
+            echo "identity: base commit not present in this checkout — skipping"
+            exit 0
+          }
+          echo "range: $RANGE"
+          sh scripts/pii-scan.sh --identity "$RANGE"
 
       - name: Shred denylist
         if: always()
