@@ -28,24 +28,31 @@ use dbboard_core::{
 };
 use futures_util::TryStreamExt;
 use sqlx::mysql::{
-    MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode, MySqlValueRef,
+    MySqlConnectOptions, MySqlDatabaseError, MySqlPool, MySqlPoolOptions, MySqlRow, MySqlSslMode,
+    MySqlValueRef,
 };
 use sqlx::{
     Column as _, Connection as _, Either, Executor as _, Row as _, TypeInfo as _, ValueRef as _,
 };
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 
 /// Small pool: a desktop client issues one statement at a time, so a handful
 /// of connections is plenty and keeps server-side resource use modest.
 const MAX_CONNECTIONS: u32 = 5;
 
-/// `max_execution_time` (milliseconds) applied on the connection that runs a
+/// Statement timeout (milliseconds) applied on the connection that runs a
 /// read-only query ([`MySqlAdapter::query_read_only`], ADR-0046 §8). It is the
 /// server-side cancellation backstop: an MCP client that drops a tool future
 /// only cancels the Rust side at an await point, so this timeout is what stops
-/// an abandoned query from pinning a pooled connection. `MySQL` applies
-/// `max_execution_time` to read-only `SELECT`s only, so leaving it set on a
-/// pooled connection never shortens a later write.
+/// an abandoned query from pinning a pooled connection.
+///
+/// How it is spelled depends on the server; see [`TimeoutStyle`].
 const READ_ONLY_STATEMENT_TIMEOUT_MS: u32 = 30_000;
+
+/// `MySQL`'s `ER_UNKNOWN_SYSTEM_VARIABLE`, the answer a server gives when asked
+/// to set a variable it has never heard of (ADR-0081).
+const ER_UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 
 /// Cap on error text surfaced into a [`DbError`], so a hostile or oversized
 /// server message cannot dump an unbounded string into the UI.
@@ -103,6 +110,9 @@ pub struct MySqlAdapter {
     // Only the pool is retained; the connection URL (with its password) is
     // intentionally not stored, so it cannot leak through Debug.
     pool: MySqlPool,
+    /// Cached [`TimeoutStyle`] for this server, shared with the free `async fn`
+    /// that runs the read-only transaction.
+    timeout_style: Arc<AtomicU8>,
 }
 
 impl MySqlAdapter {
@@ -135,7 +145,10 @@ impl MySqlAdapter {
             .connect_with(harden_ssl_mode(options))
             .await
             .map_err(|e| classify_error(&e))?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            timeout_style: Arc::new(AtomicU8::new(TimeoutStyle::Unprobed.as_u8())),
+        })
     }
 }
 
@@ -340,7 +353,14 @@ impl DatabaseAdapter for MySqlAdapter {
         // `Executor` borrows inside an `#[async_trait]` method trips the
         // "implementation of `Executor` is not general enough" HRTB error,
         // which a plain async fn with concrete lifetimes avoids.
-        run_read_only_txn(self.pool.clone(), sql, max_rows, kind).await
+        run_read_only_txn(
+            self.pool.clone(),
+            Arc::clone(&self.timeout_style),
+            sql,
+            max_rows,
+            kind,
+        )
+        .await
     }
 
     async fn execute(&self, sql: &str) -> DbResult<u64> {
@@ -359,6 +379,139 @@ impl DatabaseAdapter for MySqlAdapter {
     }
 }
 
+/// Which session variable this server uses for a statement timeout.
+///
+/// The three servers that speak the `MySQL` wire protocol disagree: `MySQL`
+/// 5.7.8+ has `max_execution_time` in milliseconds, `MariaDB` has
+/// `max_statement_time` in seconds, and `MySQL` 5.6 and older have neither.
+/// Asking for the wrong one is a hard error (`Unknown system variable`), which
+/// used to fail the user's query outright on any `MariaDB` server.
+///
+/// So the spelling is probed once per adapter and cached. Re-probing per query
+/// would mean a rejected statement — a wasted round trip and a line in the
+/// server's error log — on every read-only query a `MariaDB` user runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TimeoutStyle {
+    /// Nothing tried yet on this server.
+    Unprobed,
+    /// `MySQL` 5.7.8+.
+    MaxExecutionTime,
+    /// `MariaDB` 10.1+.
+    MaxStatementTime,
+    /// Neither variable exists; queries run without the backstop.
+    Unsupported,
+}
+
+impl TimeoutStyle {
+    /// The `SET` that installs the timeout for this style.
+    ///
+    /// Session-scoped (no `GLOBAL`): a desktop client must not change the
+    /// timeout for every other client on a shared server.
+    fn statement(self) -> String {
+        match self {
+            // `MariaDB` counts in seconds, so the millisecond budget is divided
+            // down rather than reused verbatim.
+            Self::MaxStatementTime => format!(
+                "SET max_statement_time = {}",
+                READ_ONLY_STATEMENT_TIMEOUT_MS / 1000
+            ),
+            _ => format!("SET max_execution_time = {READ_ONLY_STATEMENT_TIMEOUT_MS}"),
+        }
+    }
+
+    /// The statement that clears the timeout before the connection returns to
+    /// the pool, or `None` when leaving it set is harmless.
+    ///
+    /// `MySQL` applies `max_execution_time` to read-only `SELECT`s only, so it
+    /// can stay. `MariaDB`'s `max_statement_time` applies to *every* statement,
+    /// so a connection left carrying it would kill a later restore's long
+    /// `INSERT` at 30 seconds. `DEFAULT` restores the server's own global value
+    /// instead of hard-coding "no limit" over an administrator's setting.
+    fn reset_statement(self) -> Option<&'static str> {
+        match self {
+            Self::MaxStatementTime => Some("SET max_statement_time = DEFAULT"),
+            _ => None,
+        }
+    }
+
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Unprobed => 0,
+            Self::MaxExecutionTime => 1,
+            Self::MaxStatementTime => 2,
+            Self::Unsupported => 3,
+        }
+    }
+
+    /// Read a cached style back. An unrecognised byte cannot happen through
+    /// [`Self::as_u8`], so it falls back to probing rather than panicking.
+    fn from_u8(raw: u8) -> Self {
+        match raw {
+            1 => Self::MaxExecutionTime,
+            2 => Self::MaxStatementTime,
+            3 => Self::Unsupported,
+            _ => Self::Unprobed,
+        }
+    }
+}
+
+/// Probe order for an unknown server. `MySQL` first: it is the more common
+/// server, so the common case costs one statement.
+const PROBE_ORDER: [TimeoutStyle; 2] = [
+    TimeoutStyle::MaxExecutionTime,
+    TimeoutStyle::MaxStatementTime,
+];
+const ONLY_MAX_EXECUTION_TIME: [TimeoutStyle; 1] = [TimeoutStyle::MaxExecutionTime];
+const ONLY_MAX_STATEMENT_TIME: [TimeoutStyle; 1] = [TimeoutStyle::MaxStatementTime];
+const NO_TIMEOUT_STYLES: [TimeoutStyle; 0] = [];
+
+/// The styles worth trying, given what an earlier probe learned.
+fn styles_to_try(cached: TimeoutStyle) -> &'static [TimeoutStyle] {
+    match cached {
+        TimeoutStyle::Unprobed => &PROBE_ORDER,
+        TimeoutStyle::MaxExecutionTime => &ONLY_MAX_EXECUTION_TIME,
+        TimeoutStyle::MaxStatementTime => &ONLY_MAX_STATEMENT_TIME,
+        TimeoutStyle::Unsupported => &NO_TIMEOUT_STYLES,
+    }
+}
+
+/// Whether a failed `SET` means "this server has no such variable".
+///
+/// Only that error falls through to the next spelling. A transport or pool
+/// failure means the connection itself is gone, and retrying another statement
+/// on it would hide the real cause behind a second, misleading one.
+fn is_unknown_system_variable(err: &sqlx::Error) -> bool {
+    err.as_database_error()
+        .and_then(<dyn sqlx::error::DatabaseError>::try_downcast_ref::<MySqlDatabaseError>)
+        .is_some_and(|db| db.number() == ER_UNKNOWN_SYSTEM_VARIABLE)
+}
+
+/// Install the read-only statement timeout on `conn`, returning the style that
+/// took effect so the caller knows whether it has to be cleared afterwards.
+///
+/// A server with neither variable is not an error: the query still runs, just
+/// without the backstop. The alternative — refusing to query at all — is what
+/// this function exists to stop.
+async fn apply_statement_timeout(
+    conn: &mut sqlx::MySqlConnection,
+    cache: &AtomicU8,
+) -> DbResult<TimeoutStyle> {
+    for style in styles_to_try(TimeoutStyle::from_u8(cache.load(Ordering::Relaxed))) {
+        match sqlx::query(&style.statement()).execute(&mut *conn).await {
+            Ok(_) => {
+                cache.store(style.as_u8(), Ordering::Relaxed);
+                return Ok(*style);
+            }
+            // No such variable on this server: fall through to the next
+            // spelling, or out of the loop when there is none left.
+            Err(e) if is_unknown_system_variable(&e) => {}
+            Err(e) => return Err(classify_error(&e)),
+        }
+    }
+    cache.store(TimeoutStyle::Unsupported.as_u8(), Ordering::Relaxed);
+    Ok(TimeoutStyle::Unsupported)
+}
+
 /// Execute a validated read-only statement inside a server-side `READ ONLY`
 /// transaction and return at most `max_rows` rows.
 ///
@@ -374,6 +527,7 @@ impl DatabaseAdapter for MySqlAdapter {
 /// lifetimes (see [`MySqlAdapter::query_read_only`]).
 async fn run_read_only_txn(
     pool: MySqlPool,
+    timeout_style: Arc<AtomicU8>,
     sql: &str,
     max_rows: usize,
     kind: ReadOnlyStatement,
@@ -381,18 +535,12 @@ async fn run_read_only_txn(
     let mut conn = pool.acquire().await.map_err(|e| classify_error(&e))?;
 
     // Engine-level guards applied to the connection before the transaction
-    // opens (both must precede `START TRANSACTION`). See the constant's docs
-    // for why the session `max_execution_time` is safe to leave set.
+    // opens (both must precede `START TRANSACTION`).
     sqlx::query("SET TRANSACTION READ ONLY")
         .execute(&mut *conn)
         .await
         .map_err(|e| classify_error(&e))?;
-    sqlx::query(&format!(
-        "SET max_execution_time = {READ_ONLY_STATEMENT_TIMEOUT_MS}"
-    ))
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| classify_error(&e))?;
+    let style = apply_statement_timeout(&mut conn, &timeout_style).await?;
 
     let mut tx = conn.begin().await.map_err(|e| classify_error(&e))?;
     let fetched = match kind {
@@ -408,6 +556,15 @@ async fn run_read_only_txn(
     // promptly. Surface a fetch failure ahead of a rollback failure so the
     // caller sees the real cause.
     let rollback = tx.rollback().await;
+
+    // Clear a timeout that would otherwise follow this connection back into the
+    // pool and cut short an unrelated statement (see `reset_statement`). A
+    // failure here is ignored on purpose: the query's own outcome is the news,
+    // and a connection too broken to accept a `SET` will not be reused anyway.
+    if let Some(reset) = style.reset_statement() {
+        let _ = sqlx::query(reset).execute(&mut *conn).await;
+    }
+
     let mut result = fetched?;
     rollback.map_err(|e| classify_error(&e))?;
     result.truncate_rows(max_rows);
@@ -719,8 +876,9 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        assemble_foreign_keys, classify_error, column_from_parts, harden_ssl_mode, qualified_ident,
-        quote_ident, reclassify_schema, truncate, FkRow, FLAVOR_MYSQL,
+        assemble_foreign_keys, classify_error, column_from_parts, harden_ssl_mode,
+        is_unknown_system_variable, qualified_ident, quote_ident, reclassify_schema, styles_to_try,
+        truncate, FkRow, TimeoutStyle, FLAVOR_MYSQL, PROBE_ORDER,
     };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo};
     use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
@@ -762,6 +920,112 @@ mod tests {
         ));
     }
 
+    // --- statement-timeout portability across MySQL and MariaDB (ADR-0081) ---
+
+    #[test]
+    fn the_mysql_timeout_statement_is_in_milliseconds() {
+        assert_eq!(
+            TimeoutStyle::MaxExecutionTime.statement(),
+            "SET max_execution_time = 30000"
+        );
+    }
+
+    // MariaDB measures `max_statement_time` in *seconds*. Writing the same 30s
+    // budget as `30000` there would ask for an eight-hour timeout, i.e. no
+    // backstop at all.
+    #[test]
+    fn the_mariadb_timeout_statement_is_in_seconds() {
+        assert_eq!(
+            TimeoutStyle::MaxStatementTime.statement(),
+            "SET max_statement_time = 30"
+        );
+    }
+
+    // `SET GLOBAL` would change the timeout for every other client on a shared
+    // server, and would need SUPER besides.
+    #[test]
+    fn timeout_statements_are_session_scoped() {
+        for style in PROBE_ORDER {
+            let sql = style.statement();
+            assert!(!sql.contains("GLOBAL"), "not session-scoped: {sql}");
+        }
+    }
+
+    // MySQL applies `max_execution_time` to read-only SELECTs only, so it can
+    // stay set. MariaDB's `max_statement_time` applies to *every* statement, so
+    // leaving it on a pooled connection would kill a later restore's long
+    // INSERT at 30 seconds.
+    #[test]
+    fn only_the_mariadb_timeout_is_cleared_before_the_connection_is_reused() {
+        assert_eq!(TimeoutStyle::MaxExecutionTime.reset_statement(), None);
+        assert_eq!(
+            TimeoutStyle::MaxStatementTime.reset_statement(),
+            Some("SET max_statement_time = DEFAULT")
+        );
+        assert_eq!(TimeoutStyle::Unsupported.reset_statement(), None);
+        assert_eq!(TimeoutStyle::Unprobed.reset_statement(), None);
+    }
+
+    #[test]
+    fn an_unprobed_server_tries_mysql_then_mariadb() {
+        assert_eq!(
+            styles_to_try(TimeoutStyle::Unprobed),
+            [
+                TimeoutStyle::MaxExecutionTime,
+                TimeoutStyle::MaxStatementTime
+            ]
+        );
+    }
+
+    // Once the server has answered, every later query issues exactly one `SET`.
+    // Re-probing would mean a rejected statement per query on MariaDB — a wasted
+    // round trip and a line in the server's error log each time.
+    #[test]
+    fn a_probed_server_only_repeats_what_worked() {
+        assert_eq!(
+            styles_to_try(TimeoutStyle::MaxExecutionTime),
+            [TimeoutStyle::MaxExecutionTime]
+        );
+        assert_eq!(
+            styles_to_try(TimeoutStyle::MaxStatementTime),
+            [TimeoutStyle::MaxStatementTime]
+        );
+    }
+
+    // MySQL 5.6 and older have neither variable. The query still runs; it just
+    // runs without the server-side backstop.
+    #[test]
+    fn a_server_with_neither_variable_is_left_alone() {
+        assert!(styles_to_try(TimeoutStyle::Unsupported).is_empty());
+    }
+
+    #[test]
+    fn the_cached_style_round_trips_through_its_byte() {
+        for style in [
+            TimeoutStyle::Unprobed,
+            TimeoutStyle::MaxExecutionTime,
+            TimeoutStyle::MaxStatementTime,
+            TimeoutStyle::Unsupported,
+        ] {
+            assert_eq!(TimeoutStyle::from_u8(style.as_u8()), style);
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_cached_byte_falls_back_to_probing() {
+        assert_eq!(TimeoutStyle::from_u8(200), TimeoutStyle::Unprobed);
+    }
+
+    // The fallback must trigger on "unknown system variable" and nothing else:
+    // a dead connection or an exhausted pool means the query is doomed anyway,
+    // and retrying another `SET` on it would only hide the real cause.
+    #[test]
+    fn a_transport_failure_is_not_an_unknown_variable() {
+        assert!(!is_unknown_system_variable(&sqlx::Error::PoolClosed));
+        assert!(!is_unknown_system_variable(&sqlx::Error::PoolTimedOut));
+        assert!(!is_unknown_system_variable(&sqlx::Error::RowNotFound));
+    }
+
     /// `connect_lazy_with` builds a pool without any network I/O, which is
     /// enough to read the adapter's static capability flags. It still needs a
     /// Tokio context to spawn the pool's background worker, hence
@@ -769,7 +1033,10 @@ mod tests {
     #[tokio::test]
     async fn capabilities_advertise_the_full_surface() {
         let pool = MySqlPoolOptions::new().connect_lazy_with(MySqlConnectOptions::new());
-        let adapter = super::MySqlAdapter { pool };
+        let adapter = super::MySqlAdapter {
+            pool,
+            timeout_style: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        };
         let caps = adapter.capabilities();
         assert!(caps.has_describe_table);
         assert!(caps.has_table_ddl);

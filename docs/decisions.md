@@ -8393,3 +8393,79 @@ secret.
   *non-secret* parts no longer travel with it into the keyring's shadow.
 - Process note: this was reported, not noticed. Add/edit parity is now a thing
   to check before shipping a form change, not after a user hits it.
+
+## ADR-0081 — The statement-timeout variable is probed, not assumed
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+Every read-only query in the MySQL adapter installs a 30-second session
+statement timeout before opening its transaction (ADR-0046 §8). It is the
+cancellation backstop: an MCP client that drops a tool future only cancels the
+Rust side at an await point, so the server-side timeout is what stops an
+abandoned query from pinning a pooled connection.
+
+That `SET` was hard-coded to `max_execution_time`, which exists only in MySQL
+5.7.8 and later. On MariaDB — same wire protocol, same `mysql://` URL, same
+adapter — the very first query fails with:
+
+```
+query failed: Unknown system variable 'max_execution_time'
+```
+
+The connection succeeds, the schema tree loads, and then nothing can be
+selected. A defence-in-depth measure was breaking the feature it was
+protecting.
+
+The three servers disagree in two ways at once, so a rename is not enough:
+
+| Server | Variable | Unit |
+|---|---|---|
+| MySQL 5.7.8+ | `max_execution_time` | milliseconds |
+| MariaDB 10.1+ | `max_statement_time` | seconds |
+| MySQL 5.6 and older | — | — |
+
+### Decision
+
+1. **Probe, do not detect.** The adapter tries `max_execution_time`, and on
+   `ER_UNKNOWN_SYSTEM_VARIABLE` (1193) tries `max_statement_time`. A
+   `SELECT VERSION()` handshake would cost a round trip on every connection to
+   learn something one `SET` already reveals.
+2. **Only 1193 falls through.** Any other failure is returned. A dead
+   connection or an exhausted pool means the query is doomed anyway, and
+   retrying another statement on it would hide the real cause behind a second,
+   misleading one.
+3. **A server with neither variable is not an error.** The query runs without
+   the backstop. Refusing to query at all is exactly the failure this ADR
+   removes, and the `SET TRANSACTION READ ONLY` guard plus the pre-connection
+   AST check (`classify_read_only`) are the actual safety properties — the
+   timeout is a resource-hygiene measure.
+4. **The answer is cached per adapter** in an `AtomicU8`. Re-probing per query
+   would put a rejected statement on the wire — a wasted round trip, and a line
+   in the server's error log — for every read-only query a MariaDB user runs.
+5. **The MariaDB timeout is cleared before the connection returns to the
+   pool.** MySQL applies `max_execution_time` to read-only `SELECT`s only, so
+   it can stay set. MariaDB's `max_statement_time` applies to *every*
+   statement, so a pooled connection still carrying it would kill a later
+   restore's long `INSERT` at 30 seconds. The reset uses `= DEFAULT`, which
+   restores the server's own global value rather than hard-coding "no limit"
+   over an administrator's setting.
+6. **The unit conversion is a tested fact, not a comment.** Writing the 30 000
+   ms budget verbatim into MariaDB's seconds-valued variable would ask for an
+   eight-hour timeout — a silently absent backstop, the worst kind.
+
+### Consequences
+
+- MariaDB is now a supported target of the MySQL adapter in practice, not just
+  in the module docs. It was named as compatible from the start and never was.
+- The first read-only query against MariaDB pays one extra rejected `SET`.
+  Every query after it costs the same as on MySQL.
+- The probe is pure-function-testable (statement text, units, session scope,
+  probe order, cache round-trip); only the ~15-line loop that puts those
+  statements on the wire needs a live server, which the env-gated round-trip
+  test covers.
+- Cross-engine reminder: the Postgres adapter's `statement_timeout` has no such
+  divergence, so this stays MySQL-local. A future engine sharing the MySQL wire
+  protocol should extend `TimeoutStyle` rather than add a second mechanism.
