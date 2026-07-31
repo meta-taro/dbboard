@@ -6,6 +6,15 @@
 // The `kind` discriminator values are snake_case to match the backend's
 // `#[serde(tag = "kind", rename_all = "snake_case")]` DTOs (src-tauri/lib.rs).
 
+import {
+  composeDsn,
+  emptyDsnParts,
+  usesDsnFields,
+  validateDsn,
+  type DsnField,
+  type DsnParts,
+} from './dsn';
+
 export type ConnectionKind =
   | 'turso'
   | 'd1'
@@ -55,6 +64,7 @@ export function supportsSshTunnel(kind: ConnectionKind): boolean {
   return SSH_TUNNELABLE_KINDS.includes(kind);
 }
 
+
 export type SshAuthMethod = 'key' | 'password';
 export type SshHostKeyPolicy = 'fingerprint' | 'known_hosts';
 
@@ -71,7 +81,7 @@ export type SshFormField =
   | 'ssh_fingerprint'
   | 'ssh_known_hosts';
 
-export interface ConnectionForm {
+export interface ConnectionForm extends DsnParts {
   id: string;
   name: string;
   kind: ConnectionKind;
@@ -81,6 +91,12 @@ export interface ConnectionForm {
   base_url: string; // d1 (optional)
   token: string; // d1 secret
   url: string; // postgres / neon / supabase / aurora_dsql secret
+  // How the DSN is being supplied. `false` (the default on add) means the
+  // structured `db_*` parts, which is what every other client asks for; `true`
+  // means the raw URL, kept as the escape hatch for what a form can't express
+  // (`?sslmode=`, unix sockets, multi-host). An edit starts in URL mode because
+  // the stored secret is never returned, so a blank URL means "keep it".
+  use_url: boolean;
   // SSH tunnel (ADR-0069). Only meaningful for `SSH_TUNNELABLE_KINDS`; ignored
   // by the payload builders otherwise. `port` is a string in the form and
   // parsed to a number on submit; the passphrase/password are secrets (blank on
@@ -150,6 +166,8 @@ export function emptyForm(): ConnectionForm {
     base_url: '',
     token: '',
     url: '',
+    use_url: false,
+    ...emptyDsnParts(),
     ssh_enabled: false,
     ssh_host: '',
     ssh_port: String(DEFAULT_SSH_PORT),
@@ -204,7 +222,11 @@ function applySshPrefill(base: ConnectionForm, ssh: SshPrefill | null | undefine
 // inputs stay blank so an untouched save keeps the stored secret.
 export function formForEdit(id: string, name: string, fields: EditFields): ConnectionForm {
   const base: ConnectionForm = applySshPrefill(
-    { ...emptyForm(), id, name, kind: fields.kind },
+    // URL mode on edit: the stored DSN is a secret the backend never sends
+    // back, so a blank URL has to keep it. The structured parts cannot express
+    // "keep" — a half-filled set would compose a wrong DSN — so switching to
+    // them is an explicit, full replacement.
+    { ...emptyForm(), id, name, kind: fields.kind, use_url: usesDsnFields(fields.kind) },
     fields.ssh,
   );
   switch (fields.kind) {
@@ -260,18 +282,34 @@ export function secretFields(kind: ConnectionKind): FormField[] {
 // Fields that must be non-blank to submit. `base_url` is always optional. On
 // edit, secret fields drop out of the required set: a blank secret keeps the
 // stored one (the existing value is never sent back to the form).
-export function requiredFields(kind: ConnectionKind, mode: EditorMode): FormField[] {
+export function requiredFields(
+  kind: ConnectionKind,
+  mode: EditorMode,
+  useUrl = true,
+): FormField[] {
   const common: FormField[] = mode === 'add' ? ['id', 'name'] : ['name'];
   const secrets = new Set(secretFields(kind));
   const kindFields = fieldsForKind(kind).filter(
-    (f) => f !== 'base_url' && !(mode === 'edit' && secrets.has(f)),
+    (f) =>
+      f !== 'base_url' &&
+      !(mode === 'edit' && secrets.has(f)) &&
+      // In fields mode the URL is composed, never typed, so it is not an input.
+      !(f === 'url' && !useUrl),
   );
   return [...common, ...kindFields];
 }
 
 // Returns the fields that fail validation (blank required). Empty ⇒ valid.
 export function validate(form: ConnectionForm, mode: EditorMode): FormField[] {
-  return requiredFields(form.kind, mode).filter((f) => blank(form[f]));
+  return requiredFields(form.kind, mode, form.use_url).filter((f) => blank(form[f]));
+}
+
+// The DSN parts that fail validation, or empty when the form isn't using them.
+// Reported separately from `validate` because the two field sets are disjoint
+// and the component highlights them in different sections.
+export function validateDsnFields(form: ConnectionForm): DsnField[] {
+  if (!usesDsnFields(form.kind) || form.use_url) return [];
+  return validateDsn(form);
 }
 
 // Parse the form's port string, defaulting a blank/invalid value to 22. The
@@ -385,6 +423,13 @@ export function buildSshEditInput(form: ConnectionForm): Record<string, unknown>
   };
 }
 
+// The DSN to send for a URL-bearing kind: the raw URL as typed, or one composed
+// from the structured parts. Shared by add and edit — in fields mode an edit is
+// a full replacement of the stored secret, never a keep.
+function dsnFor(form: ConnectionForm): string {
+  return form.use_url ? form.url : composeDsn(form.kind, form);
+}
+
 // The `kind` object the `add_connection` command expects (a tagged KindInput).
 // Non-secret optional fields are trimmed to undefined when blank so the
 // backend's `none_if_blank` sees them absent.
@@ -405,7 +450,7 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
     case 'neon':
     case 'supabase':
     case 'aurora_dsql':
-      return { kind: form.kind, url: form.url };
+      return { kind: form.kind, url: dsnFor(form) };
   }
 }
 
@@ -429,6 +474,6 @@ export function buildKindEditInput(form: ConnectionForm): Record<string, unknown
     case 'neon':
     case 'supabase':
     case 'aurora_dsql':
-      return { kind: form.kind, url: form.url };
+      return { kind: form.kind, url: dsnFor(form) };
   }
 }
