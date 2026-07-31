@@ -22,6 +22,7 @@
     buildKindEditInput,
     supportsSshTunnel,
     validateSsh,
+    validateDsnFields,
     buildSshInput,
     buildSshEditInput,
     CONNECTION_KINDS,
@@ -31,6 +32,13 @@
     type SshFormField,
     type EditorMode,
   } from '$lib/connections/draft';
+  import {
+    DSN_FIELDS,
+    defaultPort,
+    schemeFor,
+    usesDsnFields,
+    type DsnField,
+  } from '$lib/connections/dsn';
 
   interface Props {
     onClose: () => void;
@@ -43,6 +51,7 @@
   let form = $state<ConnectionForm>(emptyForm());
   let invalid = $state<FormField[]>([]);
   let invalidSsh = $state<SshFormField[]>([]);
+  let invalidDsn = $state<DsnField[]>([]);
   let busy = $state(false);
   let error = $state('');
   let info = $state('');
@@ -75,11 +84,26 @@
     url: 'conn-field-url',
   };
 
+  const DSN_LABEL: Record<DsnField, MessageKey> = {
+    db_host: 'conn-field-db-host',
+    db_port: 'conn-field-db-port',
+    db_user: 'conn-field-db-user',
+    db_password: 'conn-field-db-password',
+    db_name: 'conn-field-db-name',
+  };
+
+  // A live example of the URL the parts would compose, so the escape hatch
+  // shows the exact shape the backend parses for *this* kind.
+  const urlExample = $derived(
+    `${schemeFor(form.kind)}://user:password@host:${defaultPort(form.kind)}/database`,
+  );
+
   function resetTransient() {
     error = '';
     info = '';
     invalid = [];
     invalidSsh = [];
+    invalidDsn = [];
     passphrase = '';
     passphraseConfirm = '';
     importPath = '';
@@ -121,10 +145,20 @@
     form[f] = value;
   }
 
+  // Switching modes clears the other side's stale highlights: the fields it
+  // flagged are no longer on screen, so keeping them would strand a red border
+  // the user cannot reach.
+  function setUrlMode(useUrl: boolean) {
+    form.use_url = useUrl;
+    invalid = invalid.filter((f) => f !== 'url');
+    invalidDsn = [];
+  }
+
   async function saveForm() {
     invalid = validate(form, editorMode);
     invalidSsh = validateSsh(form, editorMode);
-    if (invalid.length > 0 || invalidSsh.length > 0) return;
+    invalidDsn = validateDsnFields(form);
+    if (invalid.length > 0 || invalidSsh.length > 0 || invalidDsn.length > 0) return;
     busy = true;
     error = '';
     try {
@@ -365,22 +399,75 @@
           {/if}
         </label>
 
+        <!-- The DSN kinds render their credential in the Server fieldset below,
+             either as parts or as one URL; every other field is plain. -->
         {#each fieldsForKind(form.kind) as f (f)}
-          <label class="field">
-            <span class="label">{i18n.t(FIELD_LABEL[f])}</span>
-            <input
-              class:bad={invalid.includes(f)}
-              type={isSecret(f) ? 'password' : 'text'}
-              value={form[f]}
-              oninput={(e) => setField(f, e.currentTarget.value)}
-              spellcheck="false"
-              autocomplete="off"
-            />
-            {#if isSecret(f) && editorMode === 'edit'}
-              <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
-            {/if}
-          </label>
+          {#if !(f === 'url' && usesDsnFields(form.kind))}
+            <label class="field">
+              <span class="label">{i18n.t(FIELD_LABEL[f])}</span>
+              <input
+                class:bad={invalid.includes(f)}
+                type={isSecret(f) ? 'password' : 'text'}
+                value={form[f]}
+                oninput={(e) => setField(f, e.currentTarget.value)}
+                spellcheck="false"
+                autocomplete="off"
+              />
+              {#if isSecret(f) && editorMode === 'edit'}
+                <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
+              {/if}
+            </label>
+          {/if}
         {/each}
+
+        {#if usesDsnFields(form.kind)}
+          <fieldset class="dsn">
+            <legend>{i18n.t('conn-dsn-section')}</legend>
+
+            {#if form.use_url}
+              <label class="field">
+                <span class="label">{i18n.t('conn-field-url')}</span>
+                <input
+                  class:bad={invalid.includes('url')}
+                  type="password"
+                  value={form.url}
+                  oninput={(e) => setField('url', e.currentTarget.value)}
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <span class="hint">{i18n.t('conn-dsn-url-example', { example: urlExample })}</span>
+                {#if editorMode === 'edit'}
+                  <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
+                {/if}
+              </label>
+            {:else}
+              {#each DSN_FIELDS as f (f)}
+                <label class="field">
+                  <span class="label">{i18n.t(DSN_LABEL[f])}</span>
+                  <input
+                    class:bad={invalidDsn.includes(f)}
+                    type={f === 'db_password' ? 'password' : 'text'}
+                    placeholder={f === 'db_port' ? String(defaultPort(form.kind)) : ''}
+                    value={form[f]}
+                    oninput={(e) => (form[f] = e.currentTarget.value)}
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  {#if f === 'db_host' && form.ssh_enabled}
+                    <span class="hint">{i18n.t('conn-dsn-host-tunnel-hint')}</span>
+                  {/if}
+                </label>
+              {/each}
+              {#if editorMode === 'edit'}
+                <p class="note">{i18n.t('conn-dsn-edit-replace-hint')}</p>
+              {/if}
+            {/if}
+
+            <button type="button" class="linkish" onclick={() => setUrlMode(!form.use_url)}>
+              {form.use_url ? i18n.t('conn-dsn-use-fields') : i18n.t('conn-dsn-use-url')}
+            </button>
+          </fieldset>
+        {/if}
 
         {#if supportsSshTunnel(form.kind)}
           <fieldset class="ssh">
@@ -777,7 +864,8 @@
     word-break: break-all;
   }
 
-  .ssh {
+  .ssh,
+  .dsn {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
@@ -786,16 +874,33 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-widget);
   }
-  .ssh legend {
+  .ssh legend,
+  .dsn legend {
     padding: 0 var(--space-1);
     font-size: var(--text-hint);
     font-weight: 600;
     color: var(--text-muted);
   }
-  .ssh .note {
+  .ssh .note,
+  .dsn .note {
     margin: 0;
     font-size: var(--text-hint);
     color: var(--faint);
+  }
+  /* The mode switch is a control, not a call to action — it must not compete
+     with Save for attention, so it reads as a link. */
+  .linkish {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: var(--text-hint);
+    color: var(--text-accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .linkish:hover {
+    color: var(--accent-hover);
   }
   .check {
     display: flex;

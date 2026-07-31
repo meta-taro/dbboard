@@ -7987,3 +7987,55 @@ a MySQL connection.
 - Dialect selection is a lookup on the connection kind, not a runtime probe. A
   MySQL server actually running with `ANSI_QUOTES` still gets back-ticks, which
   it also accepts — the fallback direction is the safe one.
+
+---
+
+## ADR-0073 — Connection credentials are entered as parts, not as a hand-written DSN
+
+- **Status**: Accepted 2026-07-31
+- **Relates to**: ADR-0068 (the MySQL adapter this was first felt on) and
+  ADR-0069 (the SSH tunnel that makes the host field ambiguous).
+
+### Context
+
+The connection form asked for the credential as a single `url` string. That is
+the shape the adapters parse, so it was the shape the form collected. Every
+other desktop client — HeidiSQL, DBeaver, TablePlus — asks for host, port,
+user, password and database as separate fields, so a maintainer arriving with a
+working session in one of those had to hand-assemble a DSN, and got no feedback
+until the connection attempt failed.
+
+Hand-assembly has two failure modes that are invisible until they bite:
+
+- A password containing `@`, `/`, `#` or `?` is not percent-encoded, so the
+  authority is cut at the wrong character and the client silently dials a
+  different host.
+- With an SSH tunnel (ADR-0069), the host in the DSN is the host *as seen from
+  the SSH server*, almost always `127.0.0.1` — not the address you would use
+  from this machine. Nothing in a single `url` box says so.
+
+### Decision
+
+1. `$lib/connections/dsn.ts` owns the parts: `DsnParts`, the display order
+   (host → port → user → password → database, matching HeidiSQL), `composeDsn`,
+   and `validateDsn`. Percent-encoding and IPv6 bracketing happen there, once,
+   under test.
+2. The form defaults to the field mode for every DSN-bearing kind and keeps a
+   `use_url` escape hatch for pasting a provider-issued URL (Neon, Supabase and
+   Aurora DSQL hand out ready-made ones). Turso and D1 are excluded — their
+   credentials are not DSNs.
+3. `defaultPort` fills a blank port (3306 for MySQL, 5432 otherwise) so the
+   common case needs four fields, not five.
+4. When `ssh_enabled` is set, the host field carries an inline hint that the
+   host is resolved on the SSH server.
+
+### Consequences
+
+- A password with URL-significant characters now works without the user
+  knowing what percent-encoding is.
+- The stored credential is still one DSN string — nothing changes below the
+  form, and an existing connection edited in field mode is rewritten in full,
+  which the edit view states explicitly.
+- A new DSN-bearing adapter gets the field mode for free; only `defaultPort`
+  and `schemeFor` need a line each.
+

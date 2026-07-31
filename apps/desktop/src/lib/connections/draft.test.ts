@@ -5,6 +5,7 @@ import {
   secretFields,
   requiredFields,
   validate,
+  validateDsnFields,
   buildKindInput,
   buildKindEditInput,
   formForEdit,
@@ -148,13 +149,17 @@ describe('buildKindInput', () => {
     expect(payload.base_url).toBe('https://x');
   });
   it('tags a neon payload with its own discriminator, not postgres', () => {
-    expect(buildKindInput(form({ kind: 'neon', url: 'postgres://h/db' }))).toEqual({
+    expect(
+      buildKindInput(form({ kind: 'neon', use_url: true, url: 'postgres://h/db' })),
+    ).toEqual({
       kind: 'neon',
       url: 'postgres://h/db',
     });
   });
   it('tags a mysql payload with the mysql discriminator', () => {
-    expect(buildKindInput(form({ kind: 'mysql', url: 'mysql://h/db' }))).toEqual({
+    expect(
+      buildKindInput(form({ kind: 'mysql', use_url: true, url: 'mysql://h/db' })),
+    ).toEqual({
       kind: 'mysql',
       url: 'mysql://h/db',
     });
@@ -163,10 +168,87 @@ describe('buildKindInput', () => {
 
 describe('buildKindEditInput', () => {
   it('sends a blank secret verbatim (backend reads blank as keep)', () => {
-    expect(buildKindEditInput(form({ kind: 'postgres', url: '' }))).toEqual({
+    expect(
+      buildKindEditInput(form({ kind: 'postgres', use_url: true, url: '' })),
+    ).toEqual({
       kind: 'postgres',
       url: '',
     });
+  });
+});
+
+// Structured host/port/user/password/database entry (the default for an add).
+// The raw DSN stays available as an escape hatch for options a form can't
+// express (`?sslmode=`, socket paths, multi-host).
+describe('DSN field mode', () => {
+  const mysqlParts = {
+    kind: 'mysql' as const,
+    id: 'm',
+    name: 'M',
+    db_host: '127.0.0.1',
+    db_port: '3307',
+    db_user: 'app',
+    db_password: 'pw',
+    db_name: 'shop',
+  };
+
+  it('an add form starts in fields mode', () => {
+    expect(emptyForm().use_url).toBe(false);
+  });
+
+  it('an edit of a URL-bearing kind starts in url mode, because the stored secret is never returned', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon' }).use_url).toBe(true);
+  });
+
+  it('requiredFields drops the url in fields mode', () => {
+    expect(requiredFields('mysql', 'add', false)).toEqual(['id', 'name']);
+  });
+
+  it('requiredFields keeps the url in url mode', () => {
+    expect(requiredFields('mysql', 'add', true)).toEqual(['id', 'name', 'url']);
+  });
+
+  it('validate ignores a blank url when the parts are being used', () => {
+    expect(validate(form({ ...mysqlParts, use_url: false, url: '' }), 'add')).toEqual([]);
+  });
+
+  it('validateDsnFields reports the blank parts in fields mode', () => {
+    expect(validateDsnFields(form({ kind: 'mysql', use_url: false }))).toEqual([
+      'db_host',
+      'db_user',
+      'db_name',
+    ]);
+  });
+
+  it('validateDsnFields stays silent in url mode', () => {
+    expect(validateDsnFields(form({ kind: 'mysql', use_url: true }))).toEqual([]);
+  });
+
+  it.each(['turso', 'd1'] as const)(
+    'validateDsnFields stays silent for %s, which has no DSN',
+    (kind) => {
+      expect(validateDsnFields(form({ kind, use_url: false }))).toEqual([]);
+    },
+  );
+
+  it('buildKindInput composes the DSN from the parts', () => {
+    expect(buildKindInput(form({ ...mysqlParts, use_url: false }))).toEqual({
+      kind: 'mysql',
+      url: 'mysql://app:pw@127.0.0.1:3307/shop',
+    });
+  });
+
+  it('buildKindEditInput composes the DSN too — in fields mode an edit is a real replacement, never a keep', () => {
+    expect(buildKindEditInput(form({ ...mysqlParts, use_url: false }))).toEqual({
+      kind: 'mysql',
+      url: 'mysql://app:pw@127.0.0.1:3307/shop',
+    });
+  });
+
+  it('leaves turso and d1 payloads untouched by the mode flag', () => {
+    expect(buildKindInput(form({ kind: 'turso', use_url: false, path: ':memory:' }))).toEqual(
+      { kind: 'turso', path: ':memory:' },
+    );
   });
 });
 
@@ -201,6 +283,9 @@ describe('formForEdit', () => {
   });
 });
 
+// The list shows the backend's display slug (hyphenated), which is a different
+// namespace from the form's `ConnectionKind` (underscored) — `aurora-dsql-iam`
+// has no form representation at all, which is exactly why it can't be edited.
 describe('CONNECTION_KINDS', () => {
   it('lists all seven kinds with turso first', () => {
     expect(CONNECTION_KINDS).toEqual([
