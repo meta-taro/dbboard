@@ -44,6 +44,12 @@
     usesDsnFields,
     type DsnField,
   } from '$lib/connections/dsn';
+  import {
+    isPathField,
+    pickerFilters,
+    pickerTitle,
+    type PathField,
+  } from '$lib/connections/file-picker';
 
   interface Props {
     onClose: () => void;
@@ -118,6 +124,27 @@
         });
     }
   });
+
+  // Fill a path field from the native open dialog. The user is looking at the
+  // file in Explorer while filling this form; asking them to transcribe the
+  // path is how a stray quote or the wrong slash gets in.
+  async function browseFor(field: PathField) {
+    const filters = pickerFilters(field);
+    try {
+      const picked = await open({
+        title: i18n.t(pickerTitle(field)),
+        multiple: false,
+        directory: false,
+        ...(filters.length > 0 ? { filters } : {}),
+      });
+      if (typeof picked !== 'string') return; // cancelled
+      form[field] = picked;
+      invalid = invalid.filter((f) => f !== field);
+      invalidSsh = invalidSsh.filter((f) => f !== field);
+    } catch (e) {
+      error = String(e);
+    }
+  }
 
   // Host-key probe state, separate from `busy`/`error` so a failed lookup does
   // not read as a failed save and does not disable the rest of the form.
@@ -465,14 +492,26 @@
           {#if !(f === 'url' && usesDsnFields(form.kind))}
             <label class="field">
               <span class="label">{i18n.t(FIELD_LABEL[f])}</span>
-              <input
-                class:bad={invalid.includes(f)}
-                type={isSecret(f) ? 'password' : 'text'}
-                value={form[f]}
-                oninput={(e) => setField(f, e.currentTarget.value)}
-                spellcheck="false"
-                autocomplete="off"
-              />
+              <div class="with-action">
+                <input
+                  class:bad={invalid.includes(f)}
+                  type={isSecret(f) ? 'password' : 'text'}
+                  value={form[f]}
+                  oninput={(e) => setField(f, e.currentTarget.value)}
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                {#if isPathField(f)}
+                  <button
+                    type="button"
+                    class="ghost"
+                    disabled={busy}
+                    onclick={() => browseFor(f)}
+                  >
+                    {i18n.t('conn-browse')}
+                  </button>
+                {/if}
+              </div>
               {#if isSecret(f) && editorMode === 'edit'}
                 <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
               {/if}
@@ -592,13 +631,24 @@
               {#if form.ssh_auth_method === 'key'}
                 <label class="field">
                   <span class="label">{i18n.t('conn-ssh-key-path')}</span>
-                  <input
-                    class:bad={invalidSsh.includes('ssh_key_path')}
-                    value={form.ssh_key_path}
-                    oninput={(e) => (form.ssh_key_path = e.currentTarget.value)}
-                    spellcheck="false"
-                    autocomplete="off"
-                  />
+                  <div class="with-action">
+                    <input
+                      class:bad={invalidSsh.includes('ssh_key_path')}
+                      value={form.ssh_key_path}
+                      oninput={(e) => (form.ssh_key_path = e.currentTarget.value)}
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                    <button
+                      type="button"
+                      class="ghost"
+                      disabled={busy}
+                      onclick={() => browseFor('ssh_key_path')}
+                    >
+                      {i18n.t('conn-browse')}
+                    </button>
+                  </div>
+                  <span class="hint">{i18n.t('conn-ssh-key-path-hint')}</span>
                 </label>
 
                 {#if editorMode === 'edit'}
@@ -685,14 +735,24 @@
               {:else}
                 <label class="field">
                   <span class="label">{i18n.t('conn-ssh-known-hosts')}</span>
-                  <input
-                    class:bad={invalidSsh.includes('ssh_known_hosts')}
-                    value={form.ssh_known_hosts}
-                    oninput={(e) => (form.ssh_known_hosts = e.currentTarget.value)}
-                    placeholder="~/.ssh/known_hosts"
-                    spellcheck="false"
-                    autocomplete="off"
-                  />
+                  <div class="with-action">
+                    <input
+                      class:bad={invalidSsh.includes('ssh_known_hosts')}
+                      value={form.ssh_known_hosts}
+                      oninput={(e) => (form.ssh_known_hosts = e.currentTarget.value)}
+                      placeholder="~/.ssh/known_hosts"
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                    <button
+                      type="button"
+                      class="ghost"
+                      disabled={busy}
+                      onclick={() => browseFor('ssh_known_hosts')}
+                    >
+                      {i18n.t('conn-browse')}
+                    </button>
+                  </div>
                   <span class="hint">{i18n.t('conn-ssh-known-hosts-hint')}</span>
                 </label>
               {/if}

@@ -8175,3 +8175,56 @@ discoverable source.
   form alone; it is not a save failure.
 - The probe is unauthenticated, so it works before any credential is entered —
   the fingerprint can be pinned first and the key file chosen after.
+
+## ADR-0077 — Every filesystem path in the connection form has a Browse button
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+The connection form asked for three filesystem paths by making the user type
+them: the Turso/SQLite database file, the SSH private key, and `known_hosts`.
+
+Typing an absolute path by hand is the wrong ask. The path is long, the user is
+usually looking at the file in Explorer while retyping it, and the failure mode
+is silent — a stray quote from a "Copy as path" paste, a backslash the shell
+ate, the wrong one of two similarly named keys. The error surfaces much later
+as a connection failure that says nothing about the path being wrong. Every
+other desktop client puts a Browse button here, so its absence also reads as
+the field being for something more exotic than "pick a file".
+
+`@tauri-apps/plugin-dialog` was already a dependency — the `.dbbx` bundle
+import/export uses it — so the native dialog cost nothing to add.
+
+### Decision
+
+1. `path`, `ssh_key_path` and `ssh_known_hosts` each get a **Browse…** button
+   that opens the native single-file open dialog and writes the chosen path
+   into the field.
+2. What the dialog says and shows lives in `lib/connections/file-picker.ts`
+   (`isPathField`, `pickerFilters`, `pickerTitle`) so it is unit-testable; only
+   the `open()` call itself stays in the component.
+3. Filters apply to the database file only, and always end with an all-files
+   entry. An OpenSSH private key and `known_hosts` have **no** extension, so any
+   filter there would hide exactly the file the dialog was opened to pick.
+4. The dialog's title is the field's own label rather than a generic "Open", so
+   a user with three dialogs' worth of muscle memory still knows which one this
+   is.
+5. Picking a file clears that field's validation error immediately — the value
+   came from the filesystem, so re-flagging it as missing is noise.
+6. Cancelling is not an error. `open()` resolves to `null`; the field is left
+   exactly as it was.
+7. The private-key field gained a hint that it wants an OpenSSH key (the file
+   *without* `.pub`) and that PuTTY `.ppk` is not read. Both are mistakes the
+   file dialog makes easier to commit, not harder.
+
+### Consequences
+
+- Path entry no longer depends on the user transcribing correctly, which
+  removes a class of connection failures that reported themselves as
+  authentication problems.
+- The picker is deliberately file-only (`directory: false`). No current field
+  wants a directory; when one does, `PathField` is where that branches.
+- `pickerTitle` returns a `MessageKey`, so a new path field that forgets its
+  label is a type error rather than an untranslated dialog.
