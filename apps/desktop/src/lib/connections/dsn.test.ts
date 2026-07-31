@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DSN_FIELDS,
+  SSL_MODES,
   defaultPort,
   schemeFor,
   emptyDsnParts,
@@ -127,6 +128,54 @@ describe('composeDsn', () => {
     expect(
       composeDsn('mysql', parts({ db_host: '  db.internal  ', db_name: ' shop ' })),
     ).toBe('mysql://app:secret@db.internal:3306/shop');
+  });
+});
+
+describe('SSL_MODES', () => {
+  it('offers require and disable, and nothing that silently falls back', () => {
+    expect([...SSL_MODES]).toEqual(['require', 'disable']);
+  });
+
+  it('defaults a new form to require', () => {
+    expect(emptyDsnParts().db_ssl).toBe('require');
+  });
+});
+
+describe('composeDsn TLS mode', () => {
+  // The default composes exactly the URL it composed before this option
+  // existed: no query string, and the adapter's own hardening turns sqlx's
+  // plaintext-falling-back default into Required.
+  it('adds nothing when TLS is required', () => {
+    expect(composeDsn('mysql', parts({ db_ssl: 'require' }))).toBe(
+      'mysql://app:secret@db.internal:3306/shop',
+    );
+    expect(composeDsn('postgres', parts({ db_ssl: 'require' }))).toBe(
+      'postgres://app:secret@db.internal:5432/shop',
+    );
+  });
+
+  it('spells the MySQL parameter the way sqlx parses it', () => {
+    expect(composeDsn('mysql', parts({ db_ssl: 'disable' }))).toBe(
+      'mysql://app:secret@db.internal:3306/shop?ssl-mode=disabled',
+    );
+  });
+
+  // Postgres uses a different parameter name *and* a different value spelling
+  // from MySQL. Getting either wrong is a config error at connect time, not a
+  // silently insecure connection, but it is still a dead end for the user.
+  it.each(['postgres', 'neon', 'supabase', 'aurora_dsql'] as ConnectionKind[])(
+    'spells the Postgres parameter for %s the way sqlx parses it',
+    (kind) => {
+      expect(composeDsn(kind, parts({ db_ssl: 'disable' }))).toBe(
+        `postgres://app:secret@db.internal:5432/shop?sslmode=disable`,
+      );
+    },
+  );
+
+  it('keeps the database name encoded when a parameter follows it', () => {
+    expect(composeDsn('mysql', parts({ db_name: 'my db', db_ssl: 'disable' }))).toBe(
+      'mysql://app:secret@db.internal:3306/my%20db?ssl-mode=disabled',
+    );
   });
 });
 

@@ -23,16 +23,36 @@ export const DSN_FIELDS: readonly DsnField[] = [
   'db_name',
 ] as const;
 
+/** Transport security for the database connection.
+ *
+ *  Only two choices, deliberately. sqlx also has `preferred`/`prefer`, which
+ *  tries TLS and silently continues in plaintext when the server says no —
+ *  the adapters refuse to ship that (`harden_ssl_mode` rewrites it), because a
+ *  connection the user believes is encrypted and is not is worse than one they
+ *  knowingly turned off. `verify_ca`/`verify_full` need a CA file the form has
+ *  nowhere to put yet; a connection URL typed by hand can still ask for them. */
+export type SslMode = 'require' | 'disable';
+
+export const SSL_MODES: readonly SslMode[] = ['require', 'disable'] as const;
+
 export interface DsnParts {
   db_host: string;
   db_port: string; // string in the form; blank means "the kind default"
   db_user: string;
   db_password: string;
   db_name: string;
+  db_ssl: SslMode;
 }
 
 export function emptyDsnParts(): DsnParts {
-  return { db_host: '', db_port: '', db_user: '', db_password: '', db_name: '' };
+  return {
+    db_host: '',
+    db_port: '',
+    db_user: '',
+    db_password: '',
+    db_name: '',
+    db_ssl: 'require',
+  };
 }
 
 /** Kinds whose credential is a DSN, and so can be entered as parts. Turso
@@ -62,6 +82,18 @@ function hostAuthority(raw: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
+/** The `?…` sqlx needs to be told to skip TLS, or `''` to say nothing.
+ *
+ *  Nothing is emitted for `require`: the adapters already harden sqlx's
+ *  fall-back-to-plaintext default up to Required, so the safe case composes
+ *  byte-for-byte the URL it composed before this option existed. MySQL and
+ *  Postgres disagree on both the parameter name and the value spelling, and
+ *  sqlx rejects a wrong one outright, so neither is guessed at the call site. */
+function sslQuery(kind: ConnectionKind, mode: SslMode): string {
+  if (mode !== 'disable') return '';
+  return schemeFor(kind) === 'mysql' ? '?ssl-mode=disabled' : '?sslmode=disable';
+}
+
 export function composeDsn(kind: ConnectionKind, parts: DsnParts): string {
   const port = blank(parts.db_port)
     ? defaultPort(kind)
@@ -73,7 +105,8 @@ export function composeDsn(kind: ConnectionKind, parts: DsnParts): string {
     ? user
     : `${user}:${encodeURIComponent(parts.db_password)}`;
   const database = encodeURIComponent(trimmed(parts.db_name));
-  return `${schemeFor(kind)}://${auth}@${hostAuthority(parts.db_host)}:${port}/${database}`;
+  const query = sslQuery(kind, parts.db_ssl);
+  return `${schemeFor(kind)}://${auth}@${hostAuthority(parts.db_host)}:${port}/${database}${query}`;
 }
 
 /** Returns the invalid part fields (empty ⇒ valid). The password is optional:

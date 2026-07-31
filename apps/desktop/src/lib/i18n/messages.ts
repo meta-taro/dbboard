@@ -152,6 +152,13 @@ export const en = {
     "The host as seen from the SSH server, not from this machine — usually 127.0.0.1.",
   "conn-dsn-edit-replace-hint":
     "Saving replaces the stored credentials; every field is required.",
+  "conn-dsn-ssl": "TLS",
+  "conn-dsn-ssl-require": "Required",
+  "conn-dsn-ssl-disable": "Disabled",
+  "conn-dsn-ssl-hint":
+    "dbboard requires TLS by default and never falls back to plaintext on its own. Disable it only for a server that does not support TLS, and only when you trust the network.",
+  "conn-dsn-ssl-tunnel-hint":
+    "The SSH tunnel already encrypts the traffic between this machine and the SSH server. If the database behind it does not support TLS, set this to Disabled.",
   "conn-secret-keep-hint": "Leave blank to keep the stored secret.",
   "conn-required": "Required",
   "conn-kind-turso": "Turso / libSQL",
@@ -436,6 +443,13 @@ const ja: Partial<Record<MessageKey, string>> = {
     "このPCからではなく、SSH サーバーから見たホスト名です。通常は 127.0.0.1。",
   "conn-dsn-edit-replace-hint":
     "保存すると保存済みの認証情報を置き換えます。全項目の入力が必要です。",
+  "conn-dsn-ssl": "TLS",
+  "conn-dsn-ssl-require": "必須",
+  "conn-dsn-ssl-disable": "無効",
+  "conn-dsn-ssl-hint":
+    "dbboard は既定で TLS を必須とし、勝手に平文へ切り替えることはありません。TLS 非対応のサーバーに対して、経路を信頼できる場合のみ「無効」にしてください。",
+  "conn-dsn-ssl-tunnel-hint":
+    "SSH トンネル区間 (このPC ↔ SSH サーバー) は SSH が暗号化しています。その先のデータベースが TLS 非対応なら「無効」にしてください。",
   "conn-secret-keep-hint": "空欄のままにすると保存済みのシークレットを保持します。",
   "conn-required": "必須",
   "conn-kind-turso": "Turso / libSQL",

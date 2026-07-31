@@ -39,10 +39,12 @@
   } from '$lib/connections/draft';
   import {
     DSN_FIELDS,
+    SSL_MODES,
     defaultPort,
     schemeFor,
     usesDsnFields,
     type DsnField,
+    type SslMode,
   } from '$lib/connections/dsn';
   import {
     isPathField,
@@ -101,6 +103,11 @@
     db_user: 'conn-field-db-user',
     db_password: 'conn-field-db-password',
     db_name: 'conn-field-db-name',
+  };
+
+  const SSL_MODE_LABEL: Record<SslMode, MessageKey> = {
+    require: 'conn-dsn-ssl-require',
+    disable: 'conn-dsn-ssl-disable',
   };
 
   // A live example of the URL the parts would compose, so the escape hatch
@@ -557,6 +564,22 @@
                   {/if}
                 </label>
               {/each}
+
+              <label class="field">
+                <span class="label">{i18n.t('conn-dsn-ssl')}</span>
+                <select
+                  value={form.db_ssl}
+                  onchange={(e) => (form.db_ssl = e.currentTarget.value as SslMode)}
+                >
+                  {#each SSL_MODES as m (m)}
+                    <option value={m}>{i18n.t(SSL_MODE_LABEL[m])}</option>
+                  {/each}
+                </select>
+                <span class="hint">
+                  {i18n.t(form.ssh_enabled ? 'conn-dsn-ssl-tunnel-hint' : 'conn-dsn-ssl-hint')}
+                </span>
+              </label>
+
               {#if editorMode === 'edit'}
                 <p class="note">{i18n.t('conn-dsn-edit-replace-hint')}</p>
               {/if}
