@@ -333,6 +333,20 @@ export function parseSshPort(raw: string): number {
   return Number.isFinite(n) && n >= 1 && n <= 65535 ? n : DEFAULT_SSH_PORT;
 }
 
+/** Whether the form has enough to go ask the SSH server for its host key.
+ *  Only the address is needed — the probe never authenticates — but the port
+ *  must be a real one: silently probing 22 because the user typed `2222x`
+ *  would pin the fingerprint of a server they are not going to connect to. */
+export function canProbeHostKey(form: ConnectionForm): boolean {
+  if (!supportsSshTunnel(form.kind) || !form.ssh_enabled) return false;
+  if (form.ssh_host_key_policy !== 'fingerprint') return false;
+  if (blank(form.ssh_host)) return false;
+  const raw = form.ssh_port.trim();
+  if (raw.length === 0) return true; // blank means the SSH default
+  const n = Number.parseInt(raw, 10);
+  return String(n) === raw && n >= 1 && n <= 65535;
+}
+
 // Validate the SSH section. Returns the invalid tunnel fields (empty ⇒ valid).
 // No-op unless the kind supports a tunnel and the toggle is on. Host-key
 // verification is mandatory, so the chosen policy's field is always required.

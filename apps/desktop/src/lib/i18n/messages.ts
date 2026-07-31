@@ -121,7 +121,7 @@ export const en = {
   "conn-add-title": "Add connection",
   "conn-edit": "Edit",
   "conn-edit-title": "Edit connection",
-  "conn-edit-toml-only": "Configured in connections.toml — not editable here",
+  "conn-edit-toml-only": "Configured in connections.toml — edit it there:",
   "conn-delete": "Delete",
   "conn-delete-confirm": "Delete “{ $name }”? Its stored secret is removed too.",
   "conn-empty": "No connections yet — add one to get started.",
@@ -179,6 +179,14 @@ export const en = {
   "conn-ssh-host-key-known-hosts": "known_hosts file",
   "conn-ssh-fingerprint": "Server fingerprint",
   "conn-ssh-known-hosts": "known_hosts path",
+  "conn-ssh-host-key-hint":
+    "Proves the server is the one you expect. Without it, anything that can answer at that address could collect your credentials.",
+  "conn-ssh-fingerprint-hint":
+    "Press Fetch to read it from the server, then confirm it matches what your server administrator published.",
+  "conn-ssh-fetch": "Fetch",
+  "conn-ssh-fetch-busy": "Asking…",
+  "conn-ssh-known-hosts-hint":
+    "The OpenSSH file you already trust this server in. On Windows it is usually .ssh\known_hosts under your user folder.",
   // Connection bundle import/export (ADR-0038)
   "conn-export": "Export…",
   "conn-import": "Import…",
@@ -394,7 +402,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-add-title": "接続を追加",
   "conn-edit": "編集",
   "conn-edit-title": "接続を編集",
-  "conn-edit-toml-only": "connections.toml で設定されているため、ここでは編集できません",
+  "conn-edit-toml-only": "connections.toml で設定されています。編集はこのファイルで:",
   "conn-delete": "削除",
   "conn-delete-confirm": "「{ $name }」を削除しますか？保存されたシークレットも削除されます。",
   "conn-empty": "接続がまだありません。追加して始めましょう。",
@@ -452,6 +460,14 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-ssh-host-key-known-hosts": "known_hosts ファイル",
   "conn-ssh-fingerprint": "サーバーのフィンガープリント",
   "conn-ssh-known-hosts": "known_hosts のパス",
+  "conn-ssh-host-key-hint":
+    "接続先が本当にその サーバーかを確かめる設定です。これが無いと、その アドレスに応答できる別の相手に認証情報を渡してしまいます。",
+  "conn-ssh-fingerprint-hint":
+    "「取得」でサーバーから読み取れます。取得した値が管理者から知らされている値と一致するか確認してください。",
+  "conn-ssh-fetch": "取得",
+  "conn-ssh-fetch-busy": "問い合わせ中…",
+  "conn-ssh-known-hosts-hint":
+    "このサーバーを既に登録済みの OpenSSH ファイルです。Windows では通常ユーザーフォルダ直下の .ssh\known_hosts です。",
   // 接続バンドルのインポート/エクスポート (ADR-0038)
   "conn-export": "エクスポート…",
   "conn-import": "インポート…",

@@ -249,6 +249,7 @@ pub fn run() {
             update_row,
             config_path,
             connection_edit_fields,
+            probe_ssh_host_key,
             add_connection,
             update_connection,
             delete_connection,
@@ -849,6 +850,23 @@ fn connection_edit_fields(
         }
     };
     Ok(EditFieldsResponse { kind: dto, ssh })
+}
+
+/// Read the SSH server's host-key fingerprint so the connection form can offer
+/// it for pinning. This is the SSH client's first-connection prompt, moved into
+/// the form: without it the fingerprint field is a required box with no way to
+/// discover its value short of running `ssh-keyscan` by hand.
+///
+/// Two properties make this safe to expose. It never authenticates — the probe
+/// handler captures the key and then rejects it, so no credential is sent to a
+/// server whose identity is still unverified. And it never writes: the returned
+/// string is filled into the form for the user to confirm and save, so pinning
+/// stays a deliberate act rather than trust-on-first-use behind their back.
+#[tauri::command]
+async fn probe_ssh_host_key(host: String, port: u16) -> Result<String, String> {
+    dbboard_tunnel::probe_host_key(&host, port)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Add a connection: writes the non-secret entry to `connections.toml`

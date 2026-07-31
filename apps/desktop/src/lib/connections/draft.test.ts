@@ -7,6 +7,7 @@ import {
   validate,
   validateDsnFields,
   isEditableInApp,
+  canProbeHostKey,
   buildKindInput,
   buildKindEditInput,
   formForEdit,
@@ -541,5 +542,46 @@ describe('formForEdit with an SSH prefill', () => {
   it('leaves the tunnel off when no ssh block is returned', () => {
     const f = formForEdit('p', 'P', { kind: 'postgres' });
     expect(f.ssh_enabled).toBe(false);
+  });
+});
+
+describe('canProbeHostKey', () => {
+  const base = (): ConnectionForm => ({
+    ...emptyForm(),
+    kind: 'mysql',
+    ssh_enabled: true,
+    ssh_host: 'bastion.example.com',
+    ssh_port: '22',
+    ssh_host_key_policy: 'fingerprint',
+  });
+
+  it('allows the probe once the host is known', () => {
+    expect(canProbeHostKey(base())).toBe(true);
+  });
+
+  it('needs a host — there is nothing to ask otherwise', () => {
+    expect(canProbeHostKey({ ...base(), ssh_host: '   ' })).toBe(false);
+  });
+
+  it('accepts a blank port, which means the SSH default', () => {
+    expect(canProbeHostKey({ ...base(), ssh_port: '' })).toBe(true);
+  });
+
+  it('rejects a port outside the valid range rather than probing the default', () => {
+    expect(canProbeHostKey({ ...base(), ssh_port: '70000' })).toBe(false);
+    expect(canProbeHostKey({ ...base(), ssh_port: '0' })).toBe(false);
+    expect(canProbeHostKey({ ...base(), ssh_port: 'ssh' })).toBe(false);
+  });
+
+  it('is off when the tunnel itself is off', () => {
+    expect(canProbeHostKey({ ...base(), ssh_enabled: false })).toBe(false);
+  });
+
+  it('is off for the known_hosts policy, which pins nothing to fetch', () => {
+    expect(canProbeHostKey({ ...base(), ssh_host_key_policy: 'known_hosts' })).toBe(false);
+  });
+
+  it('is off for a kind that cannot tunnel at all', () => {
+    expect(canProbeHostKey({ ...base(), kind: 'd1' })).toBe(false);
   });
 });

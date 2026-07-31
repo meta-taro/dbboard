@@ -49,6 +49,10 @@ dbboard-core = { path = "../../../crates/dbboard-core" }
 dbboard-ai = { path = "../../../crates/dbboard-ai" }
 dbboard-anthropic = { path = "../../../crates/dbboard-anthropic" }
 dbboard-openai = { path = "../../../crates/dbboard-openai" }
+# SSH tunnel (ADR-0069). Only `probe_host_key` is called from here: the
+# connection form needs to show the user the bastion's fingerprint so they can
+# pin it. Opening the actual tunnel stays in dbboard-connect.
+dbboard-tunnel = { path = "../../../crates/dbboard-tunnel" }
 # Consumes the provider's normalized StreamEvent stream (StreamExt::next)
 # inside the ai_explain/ai_suggest commands as they emit `ai:chunk` events.
 futures-util = { workspace = true }

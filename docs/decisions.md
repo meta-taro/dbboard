@@ -8127,3 +8127,51 @@ verified by reading it.
 - Any future writer of the editor's contents must call `setDoc`; assigning the
   bound variable alone now visibly does nothing, instead of working by accident
   until the timing changes.
+
+---
+
+## ADR-0076 — The connection form fetches the SSH host key instead of demanding it
+
+- **Status**: Accepted 2026-07-31
+- **Relates to**: ADR-0069 (the SSH tunnel and its host-key policy).
+
+### Context
+
+`HostKeyPolicy` has no trust-on-first-use variant by design: both variants
+verify. The form therefore presents "Server fingerprint" as a required field —
+and offered no way to learn the value. A maintainer setting up a tunnel met a
+red box, no explanation of what a host key is, and no path forward short of
+knowing to run `ssh-keyscan | ssh-keygen -lf -` by hand.
+
+`probe_host_key` — which reads the server's key without authenticating and was
+written for exactly this — shipped in `dbboard-tunnel` and was wired to
+nothing.
+
+The alternative, accepting the first key seen, is what the type deliberately
+refuses. The gap was never the policy; it was that a mandatory field had no
+discoverable source.
+
+### Decision
+
+1. `probe_ssh_host_key(host, port)` exposes the existing probe as a Tauri
+   command, and a **Fetch** button beside the fingerprint field fills it in.
+2. The probe runs only on that click. Nothing in the app contacts a server the
+   user has not pressed a button for.
+3. Fetching fills the form; it does not save. The user still confirms the value
+   and presses Save, so pinning stays deliberate — this is the SSH first-
+   connection prompt, not TOFU behind their back.
+4. `canProbeHostKey` gates the button. A port outside 1–65535 disables it rather
+   than falling back to 22: pinning the fingerprint of a server you will not
+   connect to is worse than an unfilled field.
+5. Both policy fields gained a hint saying what host-key verification is for,
+   and the note on a `connections.toml`-only row now shows the file's resolved
+   path — "not editable here" needed a *where*.
+
+### Consequences
+
+- The desktop app now depends on `dbboard-tunnel` directly, for this one
+  function. Opening the tunnel stays in `dbboard-connect`.
+- A failed probe reports inline next to the field and leaves the rest of the
+  form alone; it is not a save failure.
+- The probe is unauthenticated, so it works before any credential is entered —
+  the fingerprint can be pinned first and the key file chosen after.
