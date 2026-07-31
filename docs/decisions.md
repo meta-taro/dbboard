@@ -8469,3 +8469,62 @@ The three servers disagree in two ways at once, so a rename is not enough:
 - Cross-engine reminder: the Postgres adapter's `statement_timeout` has no such
   divergence, so this stays MySQL-local. A future engine sharing the MySQL wire
   protocol should extend `TimeoutStyle` rather than add a second mechanism.
+
+## ADR-0082 — Long cell values get an editor, not a keyhole
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+Inline cell editing (ADR-0042) replaced the cell's text with an `<input>` while
+editing. Two things went wrong at once on a real table:
+
+1. **The column collapsed.** With the text gone from the flow, the table's auto
+   layout resized the column to the input's minimum width. Starting to edit a
+   `varchar(500)` therefore made the field *narrower* than the value it was
+   showing a moment earlier — roughly a dozen characters of a 500-character
+   value, with no way to widen it.
+2. **Nothing accounted for full-width text.** The read-only value popup opened
+   at `value.length >= 40`, so 25 characters of Japanese — 50 display columns,
+   long since truncated on screen — never offered one.
+
+A `<input>` is also the wrong element for a value containing a newline: HTML's
+value sanitisation strips CR and LF, so committing a multi-line value edited
+inline would have silently flattened it.
+
+### Decision
+
+1. **The inline editor floats over the cell.** The value stays in the flow,
+   hidden rather than removed, so the column keeps its width. The editor is
+   absolutely positioned with `min-width: max(100%, 22rem)`: at least as wide
+   as the cell, never narrower than a usable field.
+2. **Long values open a full editor dialog instead** — a fixed 720px surface
+   with a textarea, reached automatically on double-click, or from a `⤢` button
+   in the inline editor when the value turned out to need more room than it
+   first appeared to. The draft carries across; nothing is retyped.
+3. **"Long" is measured in display columns, not `.length`.** `displayWidth`
+   counts CJK, kana, Hangul and emoji as the two columns they occupy, and
+   iterates code points so an astral character counts once. Japanese prose
+   reaches the threshold at half the character count, which is exactly when it
+   stops fitting.
+4. **A value containing a newline always takes the dialog**, however short.
+   This one is correctness, not comfort: the alternative is silent data loss.
+5. **The read-only popup uses the same test**, so a truncated value opens its
+   viewer at the same point regardless of script.
+6. **Escape and clicking away cancel; only Apply and ∅ stage.** A dialog opened
+   by a stray double-click must not be able to leave an edit behind.
+7. The dialog shows a character count, counted by code point — the same unit a
+   `varchar(500)` limit uses, so the number means what the column enforces.
+
+### Consequences
+
+- `displayWidth` / `needsWideEditor` are pure and unit-tested; the component
+  keeps only wiring. The threshold constant is exported, so the tests assert
+  behaviour at the boundary rather than restating a magic number.
+- The inline editor can extend past the right edge of the grid viewport on a
+  far-right column, where it is reachable by horizontal scroll. The `⤢` button
+  is the escape hatch: the dialog is centred and never clipped.
+- Blob cells are still not editable, and the primary-key columns are still held
+  fixed. Nothing about which cells can be edited changed here — only the
+  surface they are edited on.

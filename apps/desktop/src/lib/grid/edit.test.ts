@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildRowUpdates, cellKey, type StagedValue } from './edit';
+import {
+  buildRowUpdates,
+  cellKey,
+  displayWidth,
+  needsWideEditor,
+  INLINE_EDITOR_COLUMNS,
+  type StagedValue,
+} from './edit';
 import type { Cell, Column } from '$lib/api';
 
 const col = (name: string): Column => ({ name, declared_type: null });
@@ -22,6 +29,59 @@ describe('cellKey', () => {
     // "1" + "23" vs "12" + "3" must not produce the same key.
     expect(cellKey(1, 23)).not.toBe(cellKey(12, 3));
     expect(cellKey(2, 1)).toBe(cellKey(2, 1));
+  });
+});
+
+describe('displayWidth (ADR-0082)', () => {
+  it('counts ASCII as one column each', () => {
+    expect(displayWidth('hello')).toBe(5);
+    expect(displayWidth('')).toBe(0);
+  });
+
+  it('counts CJK and kana as two columns each', () => {
+    // The whole reason the inline editor felt cramped: 10 Japanese characters
+    // take the space of 20 Latin ones.
+    expect(displayWidth('融和者')).toBe(6);
+    expect(displayWidth('あいう')).toBe(6);
+    expect(displayWidth('가나')).toBe(4);
+  });
+
+  it('mixes half- and full-width in one string', () => {
+    expect(displayWidth('/top と mtext')).toBe(4 + 1 + 2 + 1 + 5);
+  });
+
+  it('counts an astral code point once, not twice', () => {
+    // An emoji is two UTF-16 units but one character, two columns wide. A
+    // `.length`-based count would have said four.
+    expect(displayWidth('🙂')).toBe(2);
+  });
+});
+
+describe('needsWideEditor (ADR-0082)', () => {
+  it('keeps a short value in the inline editor', () => {
+    expect(needsWideEditor('')).toBe(false);
+    expect(needsWideEditor('/top')).toBe(false);
+    expect(needsWideEditor('078-578-2619')).toBe(false);
+  });
+
+  it('sends a value wider than the inline editor to the dialog', () => {
+    expect(needsWideEditor('a'.repeat(INLINE_EDITOR_COLUMNS))).toBe(false);
+    expect(needsWideEditor('a'.repeat(INLINE_EDITOR_COLUMNS + 1))).toBe(true);
+  });
+
+  it('reaches the threshold twice as fast in Japanese', () => {
+    // Half as many characters, same decision — the point of measuring display
+    // width instead of `.length`.
+    const half = '本'.repeat(INLINE_EDITOR_COLUMNS / 2 + 1);
+    expect(half.length).toBeLessThan(INLINE_EDITOR_COLUMNS);
+    expect(needsWideEditor(half)).toBe(true);
+  });
+
+  it('always sends a multi-line value to the dialog, however short', () => {
+    // Not cosmetic: a single-line <input> strips CR/LF from its value, so
+    // editing "a\nb" inline would commit "ab" and silently destroy the row.
+    expect(needsWideEditor('a\nb')).toBe(true);
+    expect(needsWideEditor('\n')).toBe(true);
   });
 });
 
