@@ -243,8 +243,10 @@
 {/if}
 
 <style>
+  /* Width is driven by the shell's splitter (ADR-0083); the fallback keeps the
+     sidebar usable if this component is ever mounted outside that shell. */
   .sidebar {
-    width: 260px;
+    width: var(--sidebar-width, 260px);
     flex: none;
     display: flex;
     flex-direction: column;

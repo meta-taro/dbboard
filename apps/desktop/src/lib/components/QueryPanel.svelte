@@ -15,6 +15,7 @@
     saveRowLimit,
     clampLimit,
   } from '$lib/query/limits';
+  import { placePopover, type PopoverPlacement } from '$lib/layout/popover';
   import ResultGrid from './ResultGrid.svelte';
   import SqlEditor from './SqlEditor.svelte';
 
@@ -40,6 +41,42 @@
 
   let rowLimit = $state(loadRowLimit());
   let historyOpen = $state(false);
+
+  // The history popover is positioned with `position: fixed` and explicit
+  // coordinates (ADR-0083): the tab pane scrolls, and an absolutely-positioned
+  // popover was being clipped by it — upward from a toolbar near the top of the
+  // window, the newest entries fell off the screen entirely.
+  const HISTORY_POP_HEIGHT = 320;
+  const HISTORY_POP_WIDTH = 460;
+
+  let historyBtn = $state<HTMLButtonElement | null>(null);
+  let historyPop = $state<PopoverPlacement | null>(null);
+  let historyWidth = $state(HISTORY_POP_WIDTH);
+
+  function placeHistory() {
+    if (!historyBtn) return;
+    historyWidth = Math.min(HISTORY_POP_WIDTH, window.innerWidth * 0.6);
+    historyPop = placePopover(
+      historyBtn.getBoundingClientRect(),
+      { width: window.innerWidth, height: window.innerHeight },
+      { width: historyWidth, preferredHeight: HISTORY_POP_HEIGHT },
+    );
+  }
+
+  function toggleHistory() {
+    historyOpen = !historyOpen;
+    if (historyOpen) placeHistory();
+  }
+
+  const historyStyle = $derived(
+    historyPop === null
+      ? ''
+      : `left:${historyPop.left}px;` +
+          (historyPop.top === null
+            ? `bottom:${historyPop.bottom}px;`
+            : `top:${historyPop.top}px;`) +
+          `width:${historyWidth}px;max-height:${historyPop.maxHeight}px`,
+  );
 
   // Editable-browse context. When the current result came from a sidebar
   // "Select top 100" (a known table, not an arbitrary query), we load its
@@ -174,7 +211,8 @@
           <button
             type="button"
             class="chip"
-            onclick={() => (historyOpen = !historyOpen)}
+            bind:this={historyBtn}
+            onclick={toggleHistory}
             disabled={!workspace.connectionId}
             aria-expanded={historyOpen}
             title={i18n.t('history-heading')}
@@ -183,7 +221,7 @@
           </button>
 
           {#if historyOpen}
-            <div class="history-pop" role="menu">
+            <div class="history-pop" role="menu" style={historyStyle}>
               <div class="history-head">
                 <span class="history-title">{i18n.t('history-heading')}</span>
                 {#if history.length > 0}
@@ -258,13 +296,15 @@
   {/if}
 </div>
 
-<!-- Click-away closes the history popover. -->
+<!-- Click-away closes the history popover; a resize re-places it, since its
+     fixed coordinates were measured against the old window. -->
 <svelte:window
   onclick={(e) => {
     if (historyOpen && !(e.target as HTMLElement).closest('.history')) {
       historyOpen = false;
     }
   }}
+  onresize={() => historyOpen && placeHistory()}
 />
 
 <style>
@@ -360,13 +400,11 @@
     cursor: default;
   }
 
-  /* Popover floats above the editor-bar, opening upward from the button. */
+  /* Fixed, not absolute: the tab pane scrolls and would otherwise clip the
+     popover. Position, width and height all come from `placePopover`
+     (ADR-0083), which flips it below the button when there is no room above. */
   .history-pop {
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 0;
-    width: min(460px, 60vw);
-    max-height: 320px;
+    position: fixed;
     display: flex;
     flex-direction: column;
     background: var(--bg-surface);
