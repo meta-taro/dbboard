@@ -126,6 +126,7 @@ export const en = {
   "conn-delete-confirm": "Delete “{ $name }”? Its stored secret is removed too.",
   "conn-empty": "No connections yet — add one to get started.",
   "conn-save": "Save",
+  "conn-browse": "Browse…",
   "conn-cancel": "Cancel",
   "conn-close": "Close",
   "conn-field-id": "ID",
@@ -171,6 +172,8 @@ export const en = {
   "conn-ssh-auth-key": "Private key",
   "conn-ssh-auth-password": "Password",
   "conn-ssh-key-path": "Private key path",
+  "conn-ssh-key-path-hint":
+    "An OpenSSH private key (the file without the .pub suffix). PuTTY .ppk files are not read — export the key in OpenSSH format first.",
   "conn-ssh-key-encrypted": "The key is passphrase-protected",
   "conn-ssh-passphrase": "Key passphrase",
   "conn-ssh-password": "SSH password",
@@ -407,6 +410,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-delete-confirm": "「{ $name }」を削除しますか？保存されたシークレットも削除されます。",
   "conn-empty": "接続がまだありません。追加して始めましょう。",
   "conn-save": "保存",
+  "conn-browse": "参照…",
   "conn-cancel": "キャンセル",
   "conn-close": "閉じる",
   "conn-field-id": "ID",
@@ -452,6 +456,8 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-ssh-auth-key": "秘密鍵",
   "conn-ssh-auth-password": "パスワード",
   "conn-ssh-key-path": "秘密鍵のパス",
+  "conn-ssh-key-path-hint":
+    "OpenSSH 形式の秘密鍵 (.pub が付かないほうのファイル) です。PuTTY の .ppk は読めないため、OpenSSH 形式で書き出してから指定してください。",
   "conn-ssh-key-encrypted": "鍵はパスフレーズで保護されている",
   "conn-ssh-passphrase": "鍵のパスフレーズ",
   "conn-ssh-password": "SSH パスワード",
