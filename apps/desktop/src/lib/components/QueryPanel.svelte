@@ -22,6 +22,15 @@
   // tab switches because the shell keeps this panel mounted (display:none),
   // never unmounts it.
   let sql = $state('SELECT 1 AS hello;');
+  let editor = $state<SqlEditor | undefined>(undefined);
+
+  // Every write to `sql` that did not come from the keyboard has to reach the
+  // editor explicitly; the editor only reads `value` when it builds its view.
+  function setSql(next: string) {
+    sql = next;
+    editor?.setDoc(next);
+  }
+
   let result = $state<QueryOutput | null>(null);
   let error = $state('');
   let busy = $state(false);
@@ -119,7 +128,7 @@
   }
 
   function loadFromHistory(entry: string) {
-    sql = entry;
+    setSql(entry);
     historyOpen = false;
   }
 
@@ -137,7 +146,7 @@
     const req = workspace.queryRequest;
     if (req && req.seq !== lastSeq) {
       lastSeq = req.seq;
-      sql = req.sql;
+      setSql(req.sql);
       execute(req.table ?? null);
     }
   });
@@ -158,7 +167,7 @@
   {/if}
 
   <div class="editor">
-    <SqlEditor bind:value={sql} onRun={run} />
+    <SqlEditor bind:this={editor} bind:value={sql} onRun={run} />
     <div class="editor-bar">
       <div class="left-tools">
         <div class="history">
