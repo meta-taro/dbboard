@@ -10,14 +10,15 @@
 //!
 //! Safety is by construction, not by trust:
 //!
-//! - **Identifiers** are double-quoted with embedded `"` doubled
-//!   (`"a""b"`) — identical for SQLite and Postgres.
+//! - **Identifiers** are delimiter-quoted with the embedded delimiter
+//!   doubled: double quotes for SQLite/Postgres, back-ticks for `MySQL`.
 //! - **Edited values** are emitted as single-quoted string literals (with
-//!   `'` doubled) or the bare keyword `NULL`. The editor only produces
+//!   `'` doubled, and — on `MySQL`, where a backslash is an escape by default
+//!   — `\` doubled too) or the bare keyword `NULL`. The editor only produces
 //!   text, so every value is written as a string literal and the engine
 //!   coerces it by the target column's type (SQLite affinity; Postgres
-//!   assignment cast from an `unknown` literal). `NULL` is the one value
-//!   that is not text and gets its own variant.
+//!   assignment cast from an `unknown` literal; `MySQL` implicit conversion).
+//!   `NULL` is the one value that is not text and gets its own variant.
 //! - **Identity values** come typed from the row (`Value`), so the
 //!   `WHERE` key encodes them by their real type (bare number vs quoted
 //!   text vs `IS NULL`) rather than round-tripping through text.
@@ -38,6 +39,25 @@ pub enum SqlDialect {
     /// Postgres family: Supabase, Neon, Aurora DSQL. Tables live in a
     /// schema; there is no safe implicit row key (`ctid` is unstable).
     Postgres,
+    /// `MySQL` family. Identifiers are back-tick-delimited and a backslash is
+    /// an escape inside string literals by default. Like Postgres it has no safe
+    /// implicit row key, so a table needs a declared primary key to be edited.
+    MySql,
+}
+
+/// Map an adapter id ([`crate::DatabaseAdapter::id`]) to its SQL dialect
+/// family. Unknown ids yield `None` — a caller that cannot name the dialect
+/// must refuse to build write SQL rather than guess and emit the wrong
+/// escaping/qualification. Single source of truth for both the egui and the
+/// Tauri front ends (ADR-0042 write-back, ADR-0062 desktop parity).
+#[must_use]
+pub fn dialect_for_adapter_id(id: &str) -> Option<SqlDialect> {
+    match id {
+        "turso" | "d1" => Some(SqlDialect::Sqlite),
+        "postgres" | "neon" | "supabase" | "aurora-dsql" => Some(SqlDialect::Postgres),
+        "mysql" => Some(SqlDialect::MySql),
+        _ => None,
+    }
 }
 
 /// What can identify a row for a safe `WHERE` — the *capability*, decided
@@ -76,7 +96,9 @@ impl RowIdentity {
             // declared PK; WITHOUT ROWID tables are the exception.
             SqlDialect::Sqlite if !without_rowid => Some(RowIdentity::SqliteRowid),
             // No declared key and no safe implicit one → not editable.
-            SqlDialect::Sqlite | SqlDialect::Postgres => None,
+            // (MySQL's InnoDB has a hidden clustered key but it is not
+            // addressable in SQL, so it is treated like Postgres here.)
+            SqlDialect::Sqlite | SqlDialect::Postgres | SqlDialect::MySql => None,
         }
     }
 }
@@ -161,11 +183,17 @@ pub fn build_update_sql(plan: &UpdatePlan, dialect: SqlDialect) -> Result<String
     let set = plan
         .edits
         .iter()
-        .map(|(col, val)| format!("{} = {}", quote_ident(col), edit_literal(val)))
+        .map(|(col, val)| {
+            format!(
+                "{} = {}",
+                quote_ident(col, dialect),
+                edit_literal(val, dialect)
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
 
-    let where_clause = build_where(&plan.key)?;
+    let where_clause = build_where(&plan.key, dialect)?;
 
     Ok(format!(
         "UPDATE {} SET {} WHERE {}",
@@ -175,7 +203,7 @@ pub fn build_update_sql(plan: &UpdatePlan, dialect: SqlDialect) -> Result<String
     ))
 }
 
-fn build_where(key: &RowKey) -> Result<String, WriteBackError> {
+fn build_where(key: &RowKey, dialect: SqlDialect) -> Result<String, WriteBackError> {
     match key {
         RowKey::Rowid(id) => Ok(format!("rowid = {id}")),
         RowKey::Columns(cols) => {
@@ -184,7 +212,7 @@ fn build_where(key: &RowKey) -> Result<String, WriteBackError> {
             }
             let mut parts = Vec::with_capacity(cols.len());
             for (col, val) in cols {
-                parts.push(key_predicate(col, val)?);
+                parts.push(key_predicate(col, val, dialect)?);
             }
             Ok(parts.join(" AND "))
         }
@@ -194,56 +222,70 @@ fn build_where(key: &RowKey) -> Result<String, WriteBackError> {
 /// One `WHERE` predicate for an identity column, encoding the original
 /// value by its real type. `NULL` becomes `IS NULL` (a primary key never
 /// is, but a unique-key fallback could be).
-fn key_predicate(col: &str, val: &Value) -> Result<String, WriteBackError> {
-    let ident = quote_ident(col);
+fn key_predicate(col: &str, val: &Value, dialect: SqlDialect) -> Result<String, WriteBackError> {
+    let ident = quote_ident(col, dialect);
     Ok(match val {
         Value::Null => format!("{ident} IS NULL"),
         Value::Integer(n) => format!("{ident} = {n}"),
         Value::Real(x) => format!("{ident} = {x}"),
-        Value::Text(s) => format!("{ident} = {}", quote_str(s)),
+        Value::Text(s) => format!("{ident} = {}", quote_str(s, dialect)),
         Value::Blob(_) => return Err(WriteBackError::UnsupportedKeyType(col.to_owned())),
     })
 }
 
 /// A staged edit value as a SQL literal. Text is always quoted and left
 /// for the engine to coerce to the column type; `NULL` is a bare keyword.
-fn edit_literal(val: &CellValue) -> String {
+fn edit_literal(val: &CellValue, dialect: SqlDialect) -> String {
     match val {
         CellValue::Null => "NULL".to_owned(),
-        CellValue::Text(s) => quote_str(s),
+        CellValue::Text(s) => quote_str(s, dialect),
     }
 }
 
-/// The table name for the `UPDATE` target. Postgres qualifies with the
-/// schema when present; SQLite has no schema namespace so the name stands
-/// alone even if a `schema` slipped into `TableInfo`.
+/// The table name for the `UPDATE` target. Postgres and `MySQL` qualify with
+/// the schema/database when present; SQLite has no schema namespace so the
+/// name stands alone even if a `schema` slipped into `TableInfo`.
 ///
 /// `pub(crate)` so the dump path (ADR-0049) qualifies `INSERT` targets the
 /// same way write-back qualifies `UPDATE` targets.
 pub(crate) fn qualified_table(table: &TableInfo, dialect: SqlDialect) -> String {
     match (dialect, &table.schema) {
-        (SqlDialect::Postgres, Some(schema)) => {
-            format!("{}.{}", quote_ident(schema), quote_ident(&table.name))
-        }
-        _ => quote_ident(&table.name),
+        (SqlDialect::Postgres | SqlDialect::MySql, Some(schema)) => format!(
+            "{}.{}",
+            quote_ident(schema, dialect),
+            quote_ident(&table.name, dialect)
+        ),
+        _ => quote_ident(&table.name, dialect),
     }
 }
 
-/// Quote a SQL identifier, doubling any embedded double-quote. Valid for
-/// both SQLite and Postgres.
+/// Quote a SQL identifier for `dialect`, doubling any embedded delimiter.
+/// SQLite and Postgres use the standard double quote; `MySQL` uses back-ticks,
+/// doubling any embedded back-tick.
 ///
 /// `pub(crate)` so the dump path (ADR-0049) shares one escaping
 /// implementation with write-back rather than re-deriving it.
-pub(crate) fn quote_ident(ident: &str) -> String {
-    format!("\"{}\"", ident.replace('"', "\"\""))
+pub(crate) fn quote_ident(ident: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::MySql => format!("`{}`", ident.replace('`', "``")),
+        SqlDialect::Sqlite | SqlDialect::Postgres => {
+            format!("\"{}\"", ident.replace('"', "\"\""))
+        }
+    }
 }
 
-/// Quote a SQL string literal, doubling any embedded single-quote.
+/// Quote a SQL string literal for `dialect`, doubling any embedded
+/// single-quote. On `MySQL` a backslash is an escape character by default, so
+/// a literal backslash is doubled as well; the backslash is doubled *first*
+/// so the escapes added for quotes are not themselves re-escaped.
 ///
 /// `pub(crate)` so the dump path (ADR-0049) shares one escaping
 /// implementation with write-back rather than re-deriving it.
-pub(crate) fn quote_str(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+pub(crate) fn quote_str(s: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::MySql => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''")),
+        SqlDialect::Sqlite | SqlDialect::Postgres => format!("'{}'", s.replace('\'', "''")),
+    }
 }
 
 #[cfg(test)]
@@ -329,6 +371,29 @@ mod tests {
         assert_eq!(
             RowIdentity::resolve(&schema, SqlDialect::Postgres, false),
             None
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_mysql_without_a_pk() {
+        // MySQL, like Postgres, exposes no addressable implicit row key.
+        let schema = schema_with(TableInfo::unqualified("t"), vec![col("a", false)], vec![]);
+        assert_eq!(
+            RowIdentity::resolve(&schema, SqlDialect::MySql, false),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_prefers_the_declared_primary_key_on_mysql() {
+        let schema = schema_with(
+            TableInfo::unqualified("t"),
+            vec![col("id", true), col("name", false)],
+            vec!["id"],
+        );
+        assert_eq!(
+            RowIdentity::resolve(&schema, SqlDialect::MySql, false),
+            Some(RowIdentity::PrimaryKey(vec!["id".to_owned()]))
         );
     }
 
@@ -443,6 +508,68 @@ mod tests {
         );
     }
 
+    // ---- build_update_sql: MySQL dialect --------------------------------
+
+    #[test]
+    fn mysql_delimits_identifiers_with_backticks() {
+        let plan = UpdatePlan {
+            table: TableInfo::unqualified("widgets"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Integer(7))]),
+            edits: vec![("name".to_owned(), CellValue::Text("gadget".to_owned()))],
+        };
+        let sql = build_update_sql(&plan, SqlDialect::MySql).unwrap();
+        assert_eq!(sql, "UPDATE `widgets` SET `name` = 'gadget' WHERE `id` = 7");
+    }
+
+    #[test]
+    fn mysql_qualifies_the_table_with_its_database() {
+        let plan = UpdatePlan {
+            table: TableInfo::qualified("shop", "users"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Integer(1))]),
+            edits: vec![("email".to_owned(), CellValue::Text("x@y.z".to_owned()))],
+        };
+        let sql = build_update_sql(&plan, SqlDialect::MySql).unwrap();
+        assert_eq!(
+            sql,
+            "UPDATE `shop`.`users` SET `email` = 'x@y.z' WHERE `id` = 1"
+        );
+    }
+
+    #[test]
+    fn mysql_doubles_an_embedded_backtick_in_an_identifier() {
+        let plan = UpdatePlan {
+            table: TableInfo::unqualified("we`ird"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Integer(1))]),
+            edits: vec![("c`l".to_owned(), CellValue::Text("v".to_owned()))],
+        };
+        let sql = build_update_sql(&plan, SqlDialect::MySql).unwrap();
+        assert_eq!(sql, "UPDATE `we``ird` SET `c``l` = 'v' WHERE `id` = 1");
+    }
+
+    #[test]
+    fn mysql_doubles_a_backslash_as_well_as_a_quote_in_a_literal() {
+        // With the default (backslash-escapes-on) sql_mode, a literal
+        // backslash must be doubled or MySQL would consume the following char.
+        let plan = UpdatePlan {
+            table: TableInfo::unqualified("t"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Integer(1))]),
+            edits: vec![("path".to_owned(), CellValue::Text(r"C:\a'b".to_owned()))],
+        };
+        let sql = build_update_sql(&plan, SqlDialect::MySql).unwrap();
+        assert_eq!(sql, r"UPDATE `t` SET `path` = 'C:\\a''b' WHERE `id` = 1");
+    }
+
+    #[test]
+    fn mysql_quotes_a_text_identity_value_with_backslash_doubling() {
+        let plan = UpdatePlan {
+            table: TableInfo::unqualified("t"),
+            key: RowKey::Columns(vec![("code".to_owned(), Value::Text(r"a\b".to_owned()))]),
+            edits: vec![("v".to_owned(), CellValue::Text("x".to_owned()))],
+        };
+        let sql = build_update_sql(&plan, SqlDialect::MySql).unwrap();
+        assert_eq!(sql, r"UPDATE `t` SET `v` = 'x' WHERE `code` = 'a\\b'");
+    }
+
     // ---- build_update_sql: injection / escaping -------------------------
 
     #[test]
@@ -526,5 +653,32 @@ mod tests {
             build_update_sql(&plan, SqlDialect::Sqlite),
             Err(WriteBackError::UnsupportedKeyType("k".to_owned()))
         );
+    }
+
+    // ---- dialect_for_adapter_id -----------------------------------------
+
+    #[test]
+    fn adapter_ids_map_to_their_dialect_family() {
+        for id in ["turso", "d1"] {
+            assert_eq!(dialect_for_adapter_id(id), Some(SqlDialect::Sqlite), "{id}");
+        }
+        // Every Postgres flavor an adapter's `id()` can report — including
+        // the aurora-dsql-iam constructor, which sets flavor "aurora-dsql".
+        for id in ["postgres", "neon", "supabase", "aurora-dsql"] {
+            assert_eq!(
+                dialect_for_adapter_id(id),
+                Some(SqlDialect::Postgres),
+                "{id}"
+            );
+        }
+        assert_eq!(dialect_for_adapter_id("mysql"), Some(SqlDialect::MySql));
+    }
+
+    #[test]
+    fn an_unknown_adapter_id_has_no_dialect() {
+        // No dialect → the caller must refuse to build write SQL rather
+        // than guess. "aurora-dsql-iam" is deliberately NOT a real id().
+        assert_eq!(dialect_for_adapter_id("mystery"), None);
+        assert_eq!(dialect_for_adapter_id(""), None);
     }
 }

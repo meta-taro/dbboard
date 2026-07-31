@@ -1,0 +1,124 @@
+import { describe, it, expect } from 'vitest';
+import {
+  quoteIdent,
+  qualifiedName,
+  selectTopN,
+  countRows,
+  dialectForKind,
+} from './build';
+
+describe('dialectForKind', () => {
+  it('maps the MySQL adapter kind to the back-tick dialect', () => {
+    expect(dialectForKind('mysql')).toBe('mysql');
+  });
+
+  // Every other adapter we ship (Postgres family, SQLite/libSQL, D1) accepts
+  // the ANSI double quote, so they share one dialect.
+  it.each(['postgres', 'neon', 'supabase', 'aurora-dsql', 'aurora-dsql-iam', 'turso', 'd1'])(
+    'maps %s to the ANSI dialect',
+    (kind) => {
+      expect(dialectForKind(kind)).toBe('ansi');
+    },
+  );
+
+  // An unknown or not-yet-loaded connection must not silently produce
+  // back-ticks; ANSI is the safe default because it is what most engines take.
+  it('falls back to ANSI for an unknown or missing kind', () => {
+    expect(dialectForKind('something-new')).toBe('ansi');
+    expect(dialectForKind(undefined)).toBe('ansi');
+  });
+});
+
+describe('quoteIdent', () => {
+  it('double-quotes a plain identifier', () => {
+    expect(quoteIdent('users')).toBe('"users"');
+  });
+
+  // Doubling embedded quotes is what keeps a hostile or odd table name from
+  // breaking out of the identifier — the one injection surface here.
+  it('escapes embedded double quotes by doubling them', () => {
+    expect(quoteIdent('we"ird')).toBe('"we""ird"');
+  });
+
+  it('back-quotes for MySQL, which rejects "…" without ANSI_QUOTES', () => {
+    expect(quoteIdent('users', 'mysql')).toBe('`users`');
+  });
+
+  it('escapes embedded back-ticks by doubling them', () => {
+    expect(quoteIdent('we`ird', 'mysql')).toBe('`we``ird`');
+  });
+
+  // A double quote is an ordinary character inside a back-quoted MySQL
+  // identifier, so it must pass through untouched rather than be doubled.
+  it('leaves double quotes alone in the MySQL dialect', () => {
+    expect(quoteIdent('we"ird', 'mysql')).toBe('`we"ird`');
+  });
+});
+
+describe('qualifiedName', () => {
+  it('quotes a bare (schemaless) table', () => {
+    expect(qualifiedName({ schema: null, name: 'orders' })).toBe('"orders"');
+  });
+
+  it('quotes schema and name separately', () => {
+    expect(qualifiedName({ schema: 'public', name: 'orders' })).toBe(
+      '"public"."orders"',
+    );
+  });
+
+  // The MySQL adapter schema-qualifies every table with its database name.
+  it('back-quotes both parts for MySQL', () => {
+    expect(qualifiedName({ schema: 'shop', name: 'orders' }, 'mysql')).toBe(
+      '`shop`.`orders`',
+    );
+  });
+});
+
+describe('selectTopN', () => {
+  it('builds a LIMIT-bounded SELECT * for a schemaless table', () => {
+    expect(selectTopN({ schema: null, name: 'orders' }, 100)).toBe(
+      'SELECT * FROM "orders" LIMIT 100;',
+    );
+  });
+
+  it('qualifies the schema when present', () => {
+    expect(selectTopN({ schema: 'public', name: 'orders' }, 50)).toBe(
+      'SELECT * FROM "public"."orders" LIMIT 50;',
+    );
+  });
+
+  it('floors and clamps n to a positive integer', () => {
+    expect(selectTopN({ schema: null, name: 't' }, 0)).toBe(
+      'SELECT * FROM "t" LIMIT 1;',
+    );
+    expect(selectTopN({ schema: null, name: 't' }, 3.9)).toBe(
+      'SELECT * FROM "t" LIMIT 3;',
+    );
+  });
+
+  it('uses back-ticks for MySQL', () => {
+    expect(selectTopN({ schema: 'shop', name: 'orders' }, 100, 'mysql')).toBe(
+      'SELECT * FROM `shop`.`orders` LIMIT 100;',
+    );
+  });
+});
+
+describe('countRows', () => {
+  it('counts every row of a schema-qualified table', () => {
+    expect(countRows({ schema: 'public', name: 'orders' })).toBe(
+      'SELECT COUNT(*) FROM "public"."orders";',
+    );
+  });
+
+  it('counts every row of a schemaless table', () => {
+    expect(countRows({ schema: null, name: 'orders' })).toBe(
+      'SELECT COUNT(*) FROM "orders";',
+    );
+  });
+
+  it('uses back-ticks for MySQL', () => {
+    expect(countRows({ schema: 'shop', name: 'orders' }, 'mysql')).toBe(
+      'SELECT COUNT(*) FROM `shop`.`orders`;',
+    );
+  });
+});

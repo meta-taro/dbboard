@@ -1,20 +1,141 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { workspace, type MainTab } from '$lib/state/workspace.svelte';
+  import { i18n } from '$lib/i18n/i18n.svelte';
+  import type { MessageKey } from '$lib/i18n/messages';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import QueryPanel from '$lib/components/QueryPanel.svelte';
   import StructurePanel from '$lib/components/StructurePanel.svelte';
+  import BackupDialog from '$lib/components/BackupDialog.svelte';
+  import RestoreDialog from '$lib/components/RestoreDialog.svelte';
+  import AiPanel from '$lib/components/AiPanel.svelte';
+  import UpdateNotice from '$lib/components/UpdateNotice.svelte';
+  import { updateOptOut, checkForUpdate } from '$lib/api';
+  import type { AvailableUpdate } from '$lib/update/notice';
+  import {
+    SIDEBAR_DEFAULT_WIDTH,
+    clampSidebarWidth,
+    loadSidebarWidth,
+    saveSidebarWidth,
+    resetSidebarWidth,
+  } from '$lib/layout/splitter';
 
-  const tabs: { id: MainTab; label: string }[] = [
-    { id: 'query', label: 'Query' },
-    { id: 'structure', label: 'Structure' },
+  const tabs: { id: MainTab; labelKey: MessageKey }[] = [
+    { id: 'query', labelKey: 'tab-query' },
+    { id: 'structure', labelKey: 'tab-structure' },
   ];
 
-  onMount(() => workspace.init());
+  let backupOpen = $state(false);
+  let restoreOpen = $state(false);
+  let aiOpen = $state(false);
+  let update = $state<AvailableUpdate | null>(null);
+
+  // The width the user asked for, kept unclamped: narrowing the window squeezes
+  // the sidebar (see `sidebarWidth`) but must not forget the chosen width, so
+  // widening the window again restores it.
+  let chosenWidth = $state(SIDEBAR_DEFAULT_WIDTH);
+  let viewportWidth = $state(Number.POSITIVE_INFINITY);
+  let dragging = $state(false);
+  let shellEl = $state<HTMLDivElement | null>(null);
+
+  const sidebarWidth = $derived(clampSidebarWidth(chosenWidth, viewportWidth));
+
+  /** How far one arrow-key press moves the divider. */
+  const NUDGE = 16;
+
+  onMount(() => {
+    i18n.init();
+    workspace.init();
+    chosenWidth = loadSidebarWidth();
+    viewportWidth = window.innerWidth;
+    void maybeCheckForUpdate();
+  });
+
+  function widthAt(clientX: number): number {
+    const left = shellEl?.getBoundingClientRect().left ?? 0;
+    return clampSidebarWidth(clientX - left, viewportWidth);
+  }
+
+  function startDrag(e: PointerEvent) {
+    if (e.button !== 0) return;
+    dragging = true;
+    // Capture keeps the drag alive when the pointer outruns the 7px handle,
+    // which it always does.
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function onDrag(e: PointerEvent) {
+    if (!dragging) return;
+    chosenWidth = widthAt(e.clientX);
+  }
+
+  function endDrag(e: PointerEvent) {
+    if (!dragging) return;
+    dragging = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    saveSidebarWidth(chosenWidth);
+  }
+
+  /** Double-click puts the divider back where it started. */
+  function resetDivider() {
+    chosenWidth = resetSidebarWidth();
+  }
+
+  function onDividerKeydown(e: KeyboardEvent) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      chosenWidth = clampSidebarWidth(
+        sidebarWidth + (e.key === 'ArrowLeft' ? -NUDGE : NUDGE),
+        viewportWidth,
+      );
+      saveSidebarWidth(chosenWidth);
+    } else if (e.key === 'Home') {
+      resetDivider();
+    } else {
+      return;
+    }
+    e.preventDefault();
+  }
+
+  // Best-effort startup update check (ADR-0067). Honours the same
+  // DBBOARD_NO_UPDATE_CHECK opt-out as the egui client, and swallows every
+  // failure: an update check must never be able to break the app's launch.
+  async function maybeCheckForUpdate() {
+    try {
+      if (await updateOptOut()) return;
+      update = await checkForUpdate();
+    } catch {
+      update = null;
+    }
+  }
 </script>
 
-<div class="shell">
+<svelte:window onresize={() => (viewportWidth = window.innerWidth)} />
+
+<div class="shell" bind:this={shellEl} style="--sidebar-width: {sidebarWidth}px">
   <Sidebar />
+
+  <!-- A focusable window splitter is the ARIA-sanctioned use of role=separator
+       (it takes aria-valuenow and arrow keys); the linter only knows the static
+       separator, which is indeed non-interactive. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="divider"
+    class:dragging
+    role="separator"
+    aria-orientation="vertical"
+    aria-label={i18n.t('sidebar-resize')}
+    aria-valuenow={sidebarWidth}
+    title={i18n.t('sidebar-resize')}
+    tabindex="0"
+    onpointerdown={startDrag}
+    onpointermove={onDrag}
+    onpointerup={endDrag}
+    onpointercancel={endDrag}
+    ondblclick={resetDivider}
+    onkeydown={onDividerKeydown}
+  ></div>
 
   <main class="main">
     <nav class="tabbar" aria-label="View">
@@ -26,16 +147,46 @@
           aria-current={workspace.activeTab === t.id ? 'page' : undefined}
           onclick={() => workspace.setTab(t.id)}
         >
-          {t.label}
+          {i18n.t(t.labelKey)}
         </button>
       {/each}
 
-      {#if workspace.connection}
-        <span class="conn-pill" title={workspace.connection.id}>
-          <span class="dot" aria-hidden="true"></span>
-          {workspace.connection.name}
-        </span>
-      {/if}
+      <!-- Right-side tool group. The AI button is always present so a first
+           provider can be added before any connection exists; the backup /
+           restore actions and the connection pill only appear with a
+           connection. -->
+      <div class="tools">
+        <button
+          type="button"
+          class="tool-btn"
+          onclick={() => (aiOpen = true)}
+          title={i18n.t('ai-button-title')}
+        >
+          {i18n.t('ai-button')}
+        </button>
+        {#if workspace.connection}
+          <button
+            type="button"
+            class="tool-btn"
+            onclick={() => (backupOpen = true)}
+            title={i18n.t('backup-button-title')}
+          >
+            {i18n.t('backup-button')}
+          </button>
+          <button
+            type="button"
+            class="tool-btn"
+            onclick={() => (restoreOpen = true)}
+            title={i18n.t('restore-button-title')}
+          >
+            {i18n.t('restore-button')}
+          </button>
+          <span class="conn-pill" title={workspace.connection.id}>
+            <span class="dot" aria-hidden="true"></span>
+            {workspace.connection.name}
+          </span>
+        {/if}
+      </div>
     </nav>
 
     {#if workspace.error}
@@ -55,11 +206,57 @@
   </main>
 </div>
 
+{#if backupOpen && workspace.connection}
+  <BackupDialog
+    connectionId={workspace.connection.id}
+    connectionName={workspace.connection.name}
+    onClose={() => (backupOpen = false)}
+  />
+{/if}
+
+{#if restoreOpen && workspace.connection}
+  <RestoreDialog
+    connectionId={workspace.connection.id}
+    connectionName={workspace.connection.name}
+    onClose={() => (restoreOpen = false)}
+  />
+{/if}
+
+{#if aiOpen}
+  <AiPanel
+    connectionId={workspace.connection?.id ?? null}
+    onClose={() => (aiOpen = false)}
+  />
+{/if}
+
+{#if update}
+  <UpdateNotice {update} onDismiss={() => (update = null)} />
+{/if}
+
 <style>
   .shell {
     display: flex;
     height: 100%;
     min-height: 0;
+  }
+
+  /* The grab area is wider than the line it draws: a 1px border is a hard
+     target with a mouse, so the handle straddles the sidebar's edge and the
+     visible rule stays hairline-thin. */
+  .divider {
+    flex: none;
+    width: 7px;
+    margin: 0 -3px 0 -4px;
+    z-index: 3;
+    cursor: col-resize;
+    background: transparent;
+    touch-action: none;
+  }
+  .divider:hover,
+  .divider:focus-visible,
+  .divider.dragging {
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
+    outline: none;
   }
 
   .main {
@@ -73,35 +270,64 @@
   .tabbar {
     display: flex;
     align-items: center;
-    gap: var(--space-1);
-    padding: 0 var(--space-3);
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
     flex: none;
   }
 
   .tab {
-    border: none;
+    border: 1px solid transparent;
     background: transparent;
     color: var(--text-muted);
     font-size: var(--text-body);
     font-weight: 500;
-    padding: 10px var(--space-3);
+    padding: 5px var(--space-3);
+    border-radius: var(--radius-widget);
     cursor: pointer;
-    /* Selected tab is marked by an accent underline, not a fill. */
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
   }
   .tab:hover {
     color: var(--text);
+    background: var(--bg-surface-alt);
   }
+  /* Selected tab is an accent-weak fill ringed by the accent, matching the
+     mock — a filled chip rather than an underline. */
   .tab.active {
     color: var(--text-accent);
-    border-bottom-color: var(--accent);
+    background: var(--accent-weak);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  .tab.active:hover {
+    background: var(--accent-weak);
+  }
+
+  /* The right-side tool group hugs the tabbar's right edge; its items sit
+     snugly beside each other with a shared gap. */
+  .tools {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  /* Quiet ghost actions in the tool group. */
+  .tool-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-hint);
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: var(--radius-widget);
+    cursor: pointer;
+  }
+  .tool-btn:hover {
+    color: var(--text);
+    border-color: var(--border-strong);
   }
 
   .conn-pill {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 6px;

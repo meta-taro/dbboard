@@ -7,56 +7,85 @@
 
 ## 最終更新
 
-- 日付: 2026-07-26 (**ブランド design system = PR #123 マージ済 (ADR-0056 + ADR-0057)。**
-  user 依頼「デザインをモックに寄せたい」。**ADR-0056** = `dbboard-ui::theme` が
-  stock egui を置換 (インディゴ基調パレット Light/Dark 両登録・Auto 追従、spacing/
-  radius トークン、意味色軸)。**ADR-0057** = 塗りつぶし **実行** 主ボタン・`theme::pill`・
-  テーブル数バッジ・バックアップしきい値の `×1/×1K/×1M` 単位エディタ (指標は行数のまま)。
-  ヘッダー識別子 (接続ピル + Auto|Light|Dark トグル) は狭幅でメニュー重なり → **メニュー
-  バー直下の独立行に移動**で解消。新規 i18n 文字列ゼロ。`--no-verify` = 既知 libSQL
-  segfault。**技術スタック議論:** 「egui 継続か Tauri 等デザイン重視スタックへ根本変更
-  か」→ 重なりは egui 限界でなくレイアウトミス (修正済)、乗り換えるなら UI 層だけ Tauri
-  差し替えが筋 (Rust コア 100% 再利用可) だが本番無人依存中 + 数週間規模。**user 選択 =
-  「egui 磨きだけ完了・Tauri は据え置き」**。**今の user 側ボール = (1) この chore
-  doc-sync PR (`chore/post-pr123-doc-sync`) のマージ、(2) 次の実利用摩擦テーマ選定
-  (Export / Saved queries / Schema diff / MCP 継続 等)、(3) PII 運用セットアップ・
-  OpenAI 実応答・restore/backup 実地確認の積み残し。**)
-- 日付: 2026-07-24 (**OSS 個人情報除去ワークフロー = PR #122 マージ済 (ADR-0055)。**
-  user 依頼「OSS は個人情報を除去するワークフロー (日次・コミット時・コミットコメント
-  も)」。`scripts/pii-scan.sh` を pre-commit (`--staged`)・新 commit-msg (`--message`)・
-  CI `pii-scan.yml` (push/PR/**日次 cron**) の 3 経路で起動。**二層:** BLOCKING = 非
-  コミット denylist (実店舗名・maintainer 実 PII) + private-key/AWS 形状、ADVISORY
-  (非ブロック) = パスワード付き URL・個人メール・ホームパス (テスト fixture 多発ゆえ)。
-  denylist ヒットと CI 出力は redact、実 literal は gitignore `.pii-denylist` + CI
-  secret `PII_DENYLIST` のみ。allowlist は tier 分離、履歴全体は対象外 (別途 runbook
-  の人手 rewrite)。security-reviewer の HIGH (allowlist tier 分離) + MEDIUM 2 + LOW 済。
-  `--no-verify` = 既知 libSQL segfault。**今の user 側ボール = (1) この chore doc-sync
-  PR (`chore/post-pr122-doc-sync`) のマージ、(2) PII 運用セットアップ [`.pii-denylist`
-  記入 + `PII_DENYLIST` secret 追加 + `cargo test` でフック再インストール]、(3) 次の
-  実利用摩擦テーマ選定、(4) OpenAI 実応答・restore/backup 実地確認の積み残し。**)
-- 日付: 2026-07-24 (**MCP ツール面を 5→7 に拡張 (PR #118 + PR #120 マージ済)。**
-  user 意向「OpenAI より MCP の需要が高い」を受けた MCP 方面の 2 スライス。
-  **`search_schema` (ADR-0053, PR #118, 6 つ目)** = 名前部分一致でテーブル/カラムを
-  横断検索。**`list_relationships` (ADR-0054, PR #120, 7 つ目)** = FK 結合グラフを
-  有向エッジで返す (`table` 無指定で全体・指定で両側に触れる全エッジ)。core に
-  `DatabaseAdapter::foreign_keys` + `has_foreign_keys` フラグ (ADR-0012 型)、Turso/D1 =
-  `PRAGMA foreign_key_list`・Postgres 系 = `pg_catalog` (Aurora DSQL は空結果)。
-  rust-reviewer の H1/M1/M2 を degrade + 共有ヘルパー `resolve_referenced_columns`
-  (core) で解消。全ゲート green。**今の user 側ボール = (1) この chore doc-sync PR
-  (`chore/post-pr120-doc-sync`) のマージ、(2) 次の実利用摩擦テーマ選定 (MCP 継続か
-  Export/Saved queries/Schema diff 等)、(3) OpenAI 実応答確認・restore/backup 実地確認
-  の積み残し。**)
-- 日付: 2026-07-24 (**エラー折り返し fix が PR #116 で develop 着地 + OpenAI
-  プロバイダを実機スモーク。** OpenAI (ADR-0052, PR #114) を develop ローカル
-  ビルドで実機確認 → Settings で `kind=openai` 追加・使用・送信まで通り、**認証
-  (Bearer)・SSE ストリーミングのエラー経路・エラー本文表示がすべて動作確認できた**
-  (実応答は OpenAI アカウントが `429 insufficient_quota` = 残高不足で未到達。残高
-  チャージ後に各自でトークン逐次表示を見る、で確定)。その実機確認中に拾った摩擦 =
-  **長いエラー本文が AI パネルを右に溢れて折り返さない** → `render_error` (ADR-0039)
-  でコピーボタンを独立行にし localized/原文を `Label::wrap()` で折り返し (全エラー
-  箇所に波及)。PR #116 で着地。**今の user 側ボール = (1) この chore doc-sync PR
-  (`chore/post-pr116-doc-sync`) のマージ、(2) 次テーマ = MCP 方面 (user 意向: MCP
-  の需要が高い)、(3) restore 実地確認の積み残し。**)
+- 日付: 2026-07-31 (**コミット identity のリーク防止 = ADR-0084、および記録ファイルの
+  棚卸し (baseline §31)。コード変更なし。** 発端は user の質問「OSS プロジェクトとして
+  `.claude` などを ignore してないのは問題ないか」。**監査結果 = `.claude/` 自体は問題なし**
+  — 他人の名前を含む `.claude/rules/` と `.claude/templates/` は既に ignore 済み、
+  tracked な 22 ファイルはスキャン clean。**本当の穴は誰も見ていなかったコミット
+  メタデータ** = 全コミットの author/committer に maintainer の個人 Gmail が入っていた。
+  **ファイル内の文字列とは危険度が違う:** ファイルは次のコミットで直せるが、identity は
+  コミットオブジェクトの一部なので、直す = そのハッシュと全子孫ハッシュの書き換え =
+  force-push = 全クローン破壊。`git grep` はツリーを読むのでコミットオブジェクトを
+  構造的に見られず、既存スキャナには検出手段が無かった。**対応 3 段** = (1) このリポの
+  `user.email` を noreply (`<id>+<login>@users.noreply.github.com`) に設定 → 以後の
+  コミットは clean、(2) `pii-scan.sh --identity <range>` を新設 (`%ae/%ce/%an/%cn` を読む
+  独立モード、GitHub の noreply 2 形式のみ許可、**出力は値を伏せる** = 公開 Actions ログで
+  隠したい当のアドレスを再公開しては本末転倒)。pre-commit は**コミットが生まれる前に**
+  `git config user.email` を検査、CI は push/PR が導入したコミットのみ再検査 (履歴全体は
+  書き換え前で一様に非準拠なので常時赤になる)。RED-first で selftest を先に書き、
+  identity モードが**パースされるのに dispatch されず「clean」と report する**バグを発見 →
+  `*)` arm で exit 2 (リークスキャナが何もスキャンせず clean と言うのは最悪の壊れ方)、
+  (3) **既に公開済の ~428 コミットは直っていない** — 履歴書き換え + force-push は human
+  判断 (CLAUDE.md「push は人間」)。手順は `docs/maintainer/history-sanitize-runbook.md` に
+  `--mailmap` 節を追記済。fork 0 / star 0 なので書き換えは実効性がある = 検討する理由に
+  なるが、勝手に実行する理由にはならない。**棚卸し (§31)** = `project-status.md` 3,689→180 行、
+  `next-actions.md` 475→約 300 行を `.claude/archive/` へ**全文退避** (要約ではない・削除でもない)。
+  **今の user 側ボール = (1) `.pii-denylist` 作成 + CI secret `PII_DENYLIST` 設定 (§15 で
+  human のみ。これが無い限り literal 検出は OFF)、(2) 公開済 428 コミットの履歴書き換えを
+  やるかどうかの判断、(3) `feature/desktop-design-polish` の push、(4) v0.4.0 前に
+  `TAURI_SIGNING_PRIVATE_KEY` 設定、(5) #42 = 外部 bastion 経由の live MySQL 検証
+  (**実接続 = 明示的な GO と認証情報が必要。エージェントは勝手に接続しない**)。)
+- 日付: 2026-07-30 (**ドキュメント同期の chore + push 前の PII 除去。** コード変更なし。
+  (1) 前セッションで作業ツリーに残っていた `docs/internal-release-v0.4.0.md` (新デザイン
+  desktop v0.4.0 の**内々配布用リリースノート** = 配布物・外形機能・操作手順・
+  フィードバック依頼・秘匿情報の置き場) をコミット。(2) ADR-0069 の反映漏れを解消 =
+  `docs/roadmap.md` の Pacing Note に SSH トンネル + 「desktop が egui を先行」を追記、
+  `.claude/project-status.md` に ADR-0069 エントリを追加。(3) **⚠ 実 bastion の
+  `user@IP:port` が tracked な `.claude/next-actions.md` に生で入っていた** (前セッションの
+  handoff コミット `d9e26f5`)。**未 push だったので `--amend` で履歴ごと除去** (新ハッシュ
+  `671d805`、force-push 不要 = そのコミットは一度も push されていない)。`git log --all -S`
+  で全 ref 検索 → 0 件を確認。実 host/user は非公開メモリ側にのみ保持。
+  **なぜすり抜けたか = `.pii-denylist` がこのマシンに存在しないため** literal 検出が
+  丸ごと OFF (`[pii-scan] note: no denylist file — literal name detection off`)。
+  `apps/desktop/src-tauri/Cargo.toml` の作業ツリー差分は**改行コード (LF↔CRLF) のみで
+  内容差分ゼロ**なので据え置き。**今の user 側ボール = (1) `.pii-denylist` の作成
+  (`.pii-denylist.example` をコピーして実店舗名・maintainer PII・bastion host/user を記入)
+  + CI secret `PII_DENYLIST` の設定 — これが無い限り BLOCKING 層は実質無効、
+  (2) `feature/desktop-design-polish` の push (25 コミット)、(3) v0.4.0 リリース前に
+  `TAURI_SIGNING_PRIVATE_KEY` シークレット設定、(4) #42 = 外部 bastion 経由の live MySQL
+  検証 (**実接続 = 明示的な GO と認証情報が必要。エージェントは勝手に接続しない**)。)
+- 日付: 2026-07-29 (**デスクトップの SSH トンネル編集 UI が着地 — ここで初めて
+  Tauri 版が egui を追い越した (ADR-0069, commit `22892b6`, branch
+  `feature/desktop-design-polish`)。** バスチオン越しにしか届かない DB
+  (bastion の `localhost` のみ listen) に接続するための SSH トンネルを、接続フォームから
+  編集可能に。対象は tunnel 可能な種別 (Postgres ファミリ + MySQL)。フォームに **SSH
+  トンネル**セクション: enable トグル・bastion host/port/user・鍵/パスワード認証切替・
+  サーバホスト鍵ピン (fingerprint XOR known_hosts、盲信なし必須)。トンネル配管 (russh
+  ローカルフォワード) は両クライアント共有だが**編集 UI は desktop のみ** — egui では
+  `connections.toml` 手編集のまま (意図的、desktop が編集の正本)。**秘匿情報** (鍵
+  パスフレーズ・SSH パスワード) は OS キーチェーンのみ (`ssh_passphrase`/`ssh_password`
+  ref)、TOML には決して入らない。編集時の空欄 = 既存維持 (ADR-0016)。**3人の並列レビュー
+  (security/rust/typescript) が同一の実バグに独立収束** → 修正: 「維持すべきものが無いのに
+  keep」(認証方式切替、または未暗号化鍵を新たに暗号化フラグ ON) が、書き込まれていない
+  keyring ref を永続化していた。両層で拒否するよう修正 — config 層 `apply_update_ssh` は
+  既存ブロックから keep を解決 (id からの再導出をやめる)、フォーム `validateSsh` は
+  edit-prefill provenance フラグで秘匿情報を必須化。保存経路に belt-and-suspenders な
+  `SshTunnelToml::validate()` も追加。**TDD:** config に RED-first で 3 テスト
+  (keep/switch の2バグ + 安全な password-keep)、TS に 6 テスト追加。**docs 同梱**
+  (connections.md の SSH セクション・README・architecture.md の dbboard-tunnel クレート +
+  依存ルール・desktop-parity.md の「desktop が egui を先行」行)。全ゲート green
+  (fmt/clippy clean・config 187・ui 329・desktop 38・svelte-check 0・vitest 161)、
+  pre-commit は既知・良性の turso teardown segfault のみ `--no-verify`。**今の user 側
+  ボール = (1) `feature/desktop-design-polish` の push、(2) 未着手の #42 = dbboard
+  自身のトンネル経由で外部 bastion (実 host/user/port は非公開メモリと `.pii-denylist`
+  のみ — tracked ファイルには決して書かない) の VPS MariaDB へ live な
+  MySQL SELECT を通す検証。これは外部への実接続 = 実行前に user の明示的 GO と認証情報が
+  必要。エージェントは勝手に接続しない。** )
+
+> 2026-07-29 (MySQL アダプタ) 以前の日付エントリは、baseline §31 に基づき
+> [`.claude/archive/next-actions-2026-07.md`](archive/next-actions-2026-07.md)
+> へ全文退避した (要約ではない)。
+
 - develop tip: PR #123 (design system, ADR-0056 + ADR-0057, merge `4e5623c`) が最新。
   直前は #122 (PII scan, ADR-0055, merge `d3ee8dd`)。
   直前は #121 (MCP 5→7 doc-sync `95b6922`) → #120 (list_relationships, ADR-0054

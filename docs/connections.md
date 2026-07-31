@@ -30,14 +30,17 @@ At startup the binary picks a backend in this order:
    [ADR-0019](decisions.md); the adapter is labelled `supabase`).
 4. `DBBOARD_PG_URL` (generic PostgreSQL-wire — CockroachDB, self-hosted
    Postgres; the adapter is labelled `postgres`).
-5. The `DBBOARD_D1_*` trio (account id + database id + token).
-6. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
-7. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
+5. `DBBOARD_MYSQL_URL` (MySQL / MariaDB — a distinct SQL dialect, not a
+   pg-wire flavor; the adapter is labelled `mysql`. See
+   [ADR-0068](decisions.md)).
+6. The `DBBOARD_D1_*` trio (account id + database id + token).
+7. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
+8. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
    missing id aborts startup — dbboard refuses to silently fall back to
    a different backend than the user asked for.
-8. If `connections.toml` contains exactly one entry, that one is
+9. If `connections.toml` contains exactly one entry, that one is
    auto-selected.
-9. Otherwise an in-memory Turso/libSQL database (`:memory:`).
+10. Otherwise an in-memory Turso/libSQL database (`:memory:`).
 
 `DBBOARD_AURORA_DSQL_URL`, `DBBOARD_NEON_URL`, and
 `DBBOARD_SUPABASE_URL` all outrank `DBBOARD_PG_URL` because they carry
@@ -107,6 +110,15 @@ kind            = "aurora-dsql"
 keyring_url_ref = "dbboard.aurora-dsql-prod.url"
 
 [[connections]]
+id              = "shop-mysql"
+name            = "Shop (MySQL)"
+kind            = "mysql"
+# MySQL / MariaDB — a genuinely different SQL dialect, not a pg-wire
+# flavor. Same secret shape as the Postgres family (the keyring carries a
+# "mysql://…" URL), but served by the dbboard-mysql adapter. See ADR-0068.
+keyring_url_ref = "dbboard.shop-mysql.url"
+
+[[connections]]
 id                     = "aurora-dsql-iam-prod"
 name                   = "Aurora DSQL (IAM, prod)"
 kind                   = "aurora-dsql-iam"
@@ -131,11 +143,14 @@ keyring_secret_key_ref = "dbboard.aurora-dsql-iam-prod.secret_key"
   are a hard error at load time.
 - `name` — display label for the (future) connection picker.
 - `kind` — `"turso"`, `"d1"`, `"postgres"`, `"neon"`, `"supabase"`,
-  `"aurora-dsql"`, or `"aurora-dsql-iam"`. `"neon"`, `"supabase"`,
-  `"aurora-dsql"`, and `"postgres"` share the same wire shape (the
-  keyring carries a `postgres://…` URL either way); the only difference
-  is the runtime adapter label, which the connection picker and history
-  records read. `"aurora-dsql-iam"` is the exception: it carries its
+  `"aurora-dsql"`, `"aurora-dsql-iam"`, or `"mysql"`. `"neon"`,
+  `"supabase"`, `"aurora-dsql"`, and `"postgres"` share the same wire
+  shape (the keyring carries a `postgres://…` URL either way); the only
+  difference is the runtime adapter label, which the connection picker and
+  history records read. `"mysql"` is a distinct dialect (ADR-0068) served
+  by its own adapter, but stores its secret the same way — the keyring
+  carries a `mysql://…` URL. `"aurora-dsql-iam"` is the exception: it
+  carries its
   fields inline (`endpoint`, `region`, `database`, `username`,
   `access_key_id`) and stores only the AWS secret access key in the
   keychain, because dbboard mints the IAM token itself (see below).
@@ -174,16 +189,81 @@ only in where the ~15-minute IAM auth token comes from:
   connection list can connect/reconnect and delete it, but not yet edit
   it.
 
+### SSH tunnel (`[connections.ssh]`)
+
+A connection to a database that only listens on a bastion's `localhost`
+can reach it through an **SSH tunnel**: dbboard opens a local port
+forward over SSH, then rewrites the connection URL's host/port to the
+local end of that forward before the adapter dials. The tunnel is a
+cross-cutting `ssh` sub-table on any connection whose `kind` supports it
+(`postgres`, `neon`, `supabase`, `aurora-dsql`, `mysql`); the D1 and
+Turso kinds do not. See [ADR-0069](decisions.md) for the design.
+
+```toml
+[[connections]]
+id              = "work-mysql"
+name            = "Work MySQL (via bastion)"
+kind            = "mysql"
+keyring_url_ref = "dbboard.work-mysql.url"
+
+  [connections.ssh]
+  host = "bastion.example.com"
+  port = 22
+  user = "deploy"
+  # --- auth: exactly one of key_path or keyring_password_ref ---
+  key_path               = "/home/user/.ssh/id_ed25519"
+  # passphrase for an encrypted key (omit for an unencrypted key):
+  keyring_passphrase_ref = "dbboard.work-mysql.ssh_passphrase"
+  # --- host-key policy: exactly one of fingerprint or known_hosts ---
+  fingerprint            = "SHA256:abc123def456..."
+```
+
+- `host` / `port` / `user` — the bastion to dial. `port` defaults to 22.
+- **Forward target** — the DB host and port to forward *to* are taken
+  from the connection URL itself (e.g. `127.0.0.1:3306` from the
+  `mysql://…@127.0.0.1:3306/…` URL in the keychain), **not** stored in
+  the `ssh` block. Point the URL at the address the DB listens on *from
+  the bastion's side* (usually `127.0.0.1`).
+- **Auth — exactly one of:**
+  - `key_path` — path to a private key for public-key auth. If the key
+    is encrypted, `keyring_passphrase_ref` names the keychain entry
+    holding its passphrase; omit it for an unencrypted key.
+  - `keyring_password_ref` — keychain reference to an SSH password for
+    password auth. Mutually exclusive with `key_path`.
+- **Host-key policy — exactly one of** (a tunnel with neither is a load
+  error; dbboard never blindly trusts an unverified host key):
+  - `fingerprint` — a pinned `SHA256:…` server host-key fingerprint. The
+    server is rejected on any mismatch.
+  - `known_hosts` — path to an OpenSSH `known_hosts` file to verify the
+    server key against.
+
+The key **passphrase** and the SSH **password** are the only secrets;
+they live in the keychain under `ssh_passphrase` / `ssh_password`
+references (e.g. `dbboard.work-mysql.ssh_passphrase`). The bastion
+host/port/user, the key **path**, and the host-key **fingerprint** are
+non-secret and stay inline.
+
+The desktop app edits all of this from the connection form: for a
+tunnel-capable kind an **SSH tunnel** section appears with an enable
+toggle, the bastion host/port/user, a key/password auth switch, and a
+fingerprint/known-hosts host-key switch. As with every other secret, an
+SSH passphrase or password field left blank when **editing** keeps the
+stored secret untouched (see [ADR-0016](decisions.md)); for an encrypted
+key, the *"key is encrypted"* checkbox tells dbboard to keep the stored
+passphrase when you leave the field blank.
+
 ### What the file never contains
 
 - D1 API tokens
 - Postgres connection URLs that embed a password
 - AWS secret access keys (for `aurora-dsql-iam`)
+- SSH key passphrases and SSH passwords (for a tunneled connection)
 
 These live only in the OS keychain. The TOML keeps the references.
 (An `aurora-dsql-iam` entry's AWS **access key id** is a public
 identifier and *is* kept inline — only the secret access key is a
-secret.)
+secret. Likewise an SSH key **path** and host-key **fingerprint** are
+non-secret and stay inline.)
 
 ## Seeding secrets
 

@@ -17,6 +17,7 @@ fn toml_round_trip_never_carries_a_secret_token() {
     let file = ConnectionFile {
         version: CONFIG_VERSION,
         connections: vec![ConnectionEntry {
+            ssh: None,
             id: "cf-d1".to_string(),
             name: "Cloudflare D1".to_string(),
             kind: ConnectionKind::D1 {
@@ -45,6 +46,7 @@ fn toml_round_trip_never_carries_a_postgres_url() {
     let file = ConnectionFile {
         version: CONFIG_VERSION,
         connections: vec![ConnectionEntry {
+            ssh: None,
             id: "neon-prod".to_string(),
             name: "Neon prod".to_string(),
             kind: ConnectionKind::Postgres {

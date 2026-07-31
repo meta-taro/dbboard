@@ -45,7 +45,7 @@ pub fn build_select_page(
     if !key_columns.is_empty() {
         let key_list = key_columns
             .iter()
-            .map(|c| quote_ident(c))
+            .map(|c| quote_ident(c, dialect))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -163,6 +163,21 @@ mod tests {
         // capped page and records the truncation rather than paging blindly.
         let sql = build_select_page(&table(), &[], SqlDialect::Sqlite, 5000, None);
         assert_eq!(sql, "SELECT * FROM \"users\" LIMIT 5000");
+    }
+
+    #[test]
+    fn mysql_pages_use_backtick_identifiers() {
+        let sql = build_select_page(
+            &table(),
+            &["id".into()],
+            SqlDialect::MySql,
+            500,
+            Some(&[Value::Integer(42)]),
+        );
+        assert_eq!(
+            sql,
+            "SELECT * FROM `users` WHERE (`id`) > (42) ORDER BY `id` LIMIT 500"
+        );
     }
 
     #[test]

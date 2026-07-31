@@ -1,0 +1,23 @@
+[package]
+name = "dbboard-tunnel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Pure-Rust SSH local-forward tunnel (russh) for bastion-gated databases (ADR-0069)."
+
+[dependencies]
+# Pure-Rust SSH client. `net`/`io-util` are added here (the workspace default
+# set is macros + rt-multi-thread) because the tunnel binds a loopback
+# listener and copies bytes bidirectionally between it and the SSH channel.
+russh = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "time"] }
+
+[lints]
+workspace = true

@@ -13,11 +13,18 @@
 //! - **Secrets never leave.** [`list_connections`](McpService::list_connections)
 //!   projects each entry to id/name/kind only; the keyring references and
 //!   the resolved URLs/tokens are never serialized into a tool result.
-//! - **Reads only.** Every query goes through
-//!   [`DatabaseAdapter::query_read_only`], which each adapter enforces at
-//!   the engine (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`,
-//!   D1 AST classification). This layer never calls the plain `query`
-//!   path.
+//! - **Reads only, for agents.** Every method [`crate::server`] wraps as an
+//!   MCP tool goes through [`DatabaseAdapter::query_read_only`], enforced at
+//!   the engine (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`, D1
+//!   AST classification). The MCP surface never writes.
+//!
+//! The desktop app also uses this service as its shared data-access layer
+//! (it owns the adapter cache and connection resolution). For it — and only
+//! it — [`apply_row_update`](McpService::apply_row_update) is a deliberate
+//! write path (inline cell editing, ADR-0042 / ADR-0062). It is **not**
+//! wrapped as an MCP tool, so it is unreachable by an external agent; the
+//! read-only invariant above is a property of the exposed tool set, not of
+//! every method on the struct.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +35,11 @@ use dbboard_config::store::{self, ConnectionKind};
 use dbboard_config::{ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
-    Column, ColumnInfo, DatabaseAdapter, DbError, ForeignKey, Row, TableInfo, TableSchema,
+    build_update_sql, dialect_for_adapter_id, plan_dump as core_plan_dump,
+    plan_restore as core_plan_restore, run_dump as core_run_dump, run_restore as core_run_restore,
+    Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl, DumpOutcome, DumpPlan, DumpSink,
+    ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan, Row, TableInfo,
+    TableSchema, UpdatePlan, WriteBackError,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -129,6 +140,11 @@ pub struct RelationshipView {
     pub table: Option<String>,
     pub relationships: Vec<Relationship>,
     pub truncated: bool,
+    /// Tables the sweep could list but not introspect — a denied `PRAGMA`,
+    /// a permission-restricted table, one dropped mid-sweep. Their edges are
+    /// missing from `relationships`, so this is reported rather than swallowed:
+    /// "no foreign keys" and "we could not look" are different answers.
+    pub unreadable_tables: Vec<TableInfo>,
 }
 
 /// Result of [`McpService::get_annotations`]: the local table/column
@@ -166,6 +182,41 @@ pub enum ServiceError {
     /// connection failure, or a query error.
     #[error(transparent)]
     Db(#[from] DbError),
+
+    /// The core write-back layer refused to build the `UPDATE` (no edits,
+    /// empty key, or a blob identity value). Desktop write path only.
+    #[error(transparent)]
+    WriteBack(#[from] WriteBackError),
+
+    /// The connection's adapter has no known SQL dialect, so no write SQL
+    /// can be built for it. Desktop write path only.
+    #[error("adapter {0:?} has no known SQL dialect for editing")]
+    NotEditable(String),
+
+    /// The connection's adapter has no known SQL dialect, so no dump can be
+    /// produced for it. Desktop dump path only (ADR-0049).
+    #[error("adapter {0:?} has no known SQL dialect to dump")]
+    NotDumpable(String),
+
+    /// Writing the dump's output file failed (a full disk, a revoked path).
+    /// Fatal to a dump — a backup that cannot be written is worthless.
+    /// Desktop dump path only.
+    #[error("dump output failed: {0}")]
+    Dump(String),
+
+    /// The connection's adapter has no known SQL dialect, so an incoming
+    /// `.sql` script cannot be classified for restore. Desktop restore path
+    /// only (ADR-0051).
+    #[error("adapter {0:?} has no known SQL dialect to restore into")]
+    NotRestorable(String),
+
+    /// A restore was refused or failed as a whole: a non-empty target left
+    /// unconfirmed, an adapter that cannot execute writes, or an atomic
+    /// batch that rolled back. Per-statement failures on the non-atomic path
+    /// are non-fatal and travel in the outcome instead. Desktop restore path
+    /// only.
+    #[error("restore failed: {0}")]
+    Restore(String),
 
     /// A `spawn_blocking` task panicked or was cancelled.
     #[error("background task failed: {0}")]
@@ -206,6 +257,7 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::Turso { .. } => "turso",
         ConnectionKind::D1 { .. } => "d1",
         ConnectionKind::Postgres { .. } => "postgres",
+        ConnectionKind::MySql { .. } => "mysql",
         ConnectionKind::Neon { .. } => "neon",
         ConnectionKind::Supabase { .. } => "supabase",
         ConnectionKind::AuroraDsql { .. } => "aurora-dsql",
@@ -350,6 +402,132 @@ impl McpService {
         })
     }
 
+    /// Apply one single-row `UPDATE` to `connection_id` (inline cell
+    /// editing, ADR-0042). **Desktop write path** — deliberately not an MCP
+    /// tool. Builds the fully-escaped statement from `plan` with the
+    /// adapter's dialect (never string-concatenated user text), runs it via
+    /// the adapter's `execute`, and returns the engine's affected-row count
+    /// so the caller can confirm exactly one row changed.
+    ///
+    /// The `WHERE` key comes from the row's declared primary key, so a
+    /// well-formed plan can only ever match zero or one row; the caller
+    /// (the Tauri command) treats anything other than one as a conflict and
+    /// re-reads, rather than this layer guessing.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::ConnectionNotFound`] for an unknown id.
+    /// - [`ServiceError::NotEditable`] if the adapter's dialect is unknown.
+    /// - [`ServiceError::WriteBack`] if the core refuses the plan (no
+    ///   edits, empty key, or a blob identity value).
+    /// - [`ServiceError::Db`] if the engine rejects or fails the `UPDATE`.
+    pub async fn apply_row_update(
+        &self,
+        connection_id: &str,
+        plan: &UpdatePlan,
+    ) -> Result<u64, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotEditable(adapter.id().to_string()))?;
+        let sql = build_update_sql(plan, dialect)?;
+        Ok(adapter.execute(&sql).await?)
+    }
+
+    /// Preflight a logical dump of `connection_id` (ADR-0049): list its
+    /// tables and `COUNT(*)` each, producing the [`DumpPlan`] the desktop
+    /// uses to size progress and warn on a large database. Reads only.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotDumpable`] if the adapter has no known SQL
+    /// dialect; otherwise whatever the connection/`list_tables` surfaces.
+    pub async fn plan_dump(&self, connection_id: &str) -> Result<DumpPlan, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotDumpable(adapter.id().to_string()))?;
+        Ok(core_plan_dump(adapter.as_ref(), dialect).await?)
+    }
+
+    /// Run a whole-connection logical dump described by `plan`, writing SQL
+    /// text to `sink` and reporting progress/cancellation through `control`
+    /// (ADR-0049). Reads the database only; the sole write is to the
+    /// caller-supplied output sink (a file on the desktop).
+    ///
+    /// Returns the [`DumpOutcome`] — including any per-table failures and
+    /// truncations — unless the sink itself fails, which is fatal. Like
+    /// [`apply_row_update`](Self::apply_row_update), this is a desktop-only
+    /// method and is deliberately **not** exposed as an MCP tool.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotDumpable`] if the adapter has no known SQL
+    /// dialect; [`ServiceError::Dump`] if writing to `sink` fails.
+    pub async fn run_dump(
+        &self,
+        connection_id: &str,
+        plan: &DumpPlan,
+        sink: &mut dyn DumpSink,
+        control: &dyn DumpControl,
+    ) -> Result<DumpOutcome, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotDumpable(adapter.id().to_string()))?;
+        core_run_dump(adapter.as_ref(), dialect, plan, sink, control)
+            .await
+            .map_err(|e| ServiceError::Dump(e.to_string()))
+    }
+
+    /// Preflight a logical restore of `script` into `connection_id`
+    /// (ADR-0051): classify the script under the connection's dialect and
+    /// list the target's existing tables, producing the [`RestorePlan`] the
+    /// desktop uses to size progress and decide whether the empty-target
+    /// safety gate needs a typed confirmation. Reads only.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotRestorable`] if the adapter has no known SQL
+    /// dialect; otherwise whatever the connection/`list_tables` surfaces.
+    pub async fn plan_restore(
+        &self,
+        connection_id: &str,
+        script: &str,
+    ) -> Result<RestorePlan, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotRestorable(adapter.id().to_string()))?;
+        Ok(core_plan_restore(adapter.as_ref(), dialect, script).await?)
+    }
+
+    /// Apply a preflighted logical restore to `connection_id`, reporting
+    /// progress/cancellation through `control` (ADR-0051). Writes to the
+    /// target database only. The whole script runs as one atomic batch on
+    /// engines that support it, or statement-by-statement (honouring
+    /// `options.on_error`) on those that do not (Cloudflare D1).
+    ///
+    /// Like [`apply_row_update`](Self::apply_row_update) and the dump
+    /// methods, this is a desktop-only method and is deliberately **not**
+    /// exposed as an MCP tool.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Restore`] if the whole run is refused or fails — a
+    /// non-empty target without `options.confirmed`, an adapter that cannot
+    /// execute writes, or an atomic batch that rolled back. Per-statement
+    /// failures on the non-atomic path are non-fatal and land in the
+    /// returned [`RestoreOutcome`] instead.
+    pub async fn run_restore(
+        &self,
+        connection_id: &str,
+        plan: &RestorePlan,
+        options: RestoreOptions,
+        control: &dyn RestoreControl,
+    ) -> Result<RestoreOutcome, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        core_run_restore(adapter.as_ref(), plan, options, control)
+            .await
+            .map_err(|e| ServiceError::Restore(e.to_string()))
+    }
+
     /// Fetch the local notes for `connection_id`, filtered to `table`
     /// and/or `column` when supplied. Unknown connection or table yields
     /// an empty result rather than an error — notes are optional
@@ -478,13 +656,29 @@ impl McpService {
         let tables = adapter.list_tables().await?;
 
         let mut relationships = Vec::new();
+        let mut unreadable_tables = Vec::new();
         let mut truncated = false;
         'outer: for table in &tables {
             if relationships.len() >= MAX_RELATIONSHIPS {
                 truncated = true;
                 break;
             }
-            for fk in adapter.foreign_keys(table).await? {
+            // One unreadable table must not take the whole schema with it.
+            // Cloudflare's reserved `_cf_%` tables are listed by
+            // `sqlite_master` but denied by the Workers authorizer, so this
+            // sweep used to abort with `SQLITE_AUTH` and blank the structure
+            // view for every *readable* table in the database. The same shape
+            // shows up wherever a listed table is not introspectable: a
+            // revoked grant, a table dropped between the list and the sweep.
+            let fks = match adapter.foreign_keys(table).await {
+                Ok(fks) => fks,
+                Err(e) => {
+                    tracing::debug!(table = %table.name, error = %e, "skipping unreadable table");
+                    unreadable_tables.push(table.clone());
+                    continue;
+                }
+            };
+            for fk in fks {
                 let edge = relationship_from_fk(table, fk);
                 // Keep an edge only if it touches the requested table at
                 // either endpoint (a relationship is inherently two-sided).
@@ -507,6 +701,7 @@ impl McpService {
             table: filter,
             relationships,
             truncated,
+            unreadable_tables,
         })
     }
 
@@ -542,6 +737,16 @@ impl McpService {
         let adapter = connect_adapter(config).await?;
         cache.insert(connection_id.to_string(), Arc::clone(&adapter));
         Ok(adapter)
+    }
+
+    /// Evict any cached adapter for `connection_id`, forcing the next
+    /// access to rebuild it from the current config and keyring.
+    ///
+    /// Call this after a connection's credentials change or it is
+    /// removed, so a stale adapter (old password, or one pointing at a
+    /// now-deleted entry) is never handed back. A miss is a no-op.
+    pub async fn invalidate(&self, connection_id: &str) {
+        self.cache.lock().await.remove(connection_id);
     }
 
     async fn load_connection_file(&self) -> Result<store::ConnectionFile, ServiceError> {
@@ -584,6 +789,9 @@ mod tests {
     use super::*;
     use dbboard_config::annotations::AnnotationsAdmin;
     use dbboard_config::InMemorySecretStore;
+    use dbboard_core::{
+        Capabilities, DbResult, ForeignKey as CoreForeignKey, QueryResult as CoreQueryResult,
+    };
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -736,11 +944,288 @@ keyring_url_ref = "dbboard.prod-pg.url"
     }
 
     #[tokio::test]
+    async fn invalidate_drops_the_cached_adapter() {
+        // The seeded fixture holds a cached in-memory adapter with one table.
+        let fx = seeded_turso_fixture().await;
+        assert_eq!(
+            fx.service.list_tables("mem").await.expect("seeded").len(),
+            1
+        );
+        // After invalidation the next access rebuilds a fresh `:memory:`
+        // adapter — the seeded table is gone, proving the stale instance was
+        // evicted rather than reused.
+        fx.service.invalidate("mem").await;
+        assert!(fx
+            .service
+            .list_tables("mem")
+            .await
+            .expect("rebuilt")
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn list_tables_sees_the_seeded_table() {
         let fx = seeded_turso_fixture().await;
         let tables = fx.service.list_tables("mem").await.expect("list tables");
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].name, "items");
+    }
+
+    // ---- apply_row_update (desktop write path, ADR-0042) ----------------
+
+    use dbboard_core::{CellValue, RowKey, Value};
+
+    fn update_name(id: i64, new: CellValue) -> UpdatePlan {
+        UpdatePlan {
+            table: TableInfo::unqualified("items"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Integer(id))]),
+            edits: vec![("name".to_owned(), new)],
+        }
+    }
+
+    /// Read one cell back through the read-only path so the write is
+    /// confirmed against the same cached adapter.
+    async fn name_of(fx: &Fixture, id: i64) -> Option<Value> {
+        let out = fx
+            .service
+            .run_read_query(
+                "mem",
+                &format!("SELECT name FROM items WHERE id = {id}"),
+                None,
+            )
+            .await
+            .expect("read back");
+        out.rows.first().map(|r| r.values()[0].clone())
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_writes_exactly_one_row_and_reports_it() {
+        let fx = seeded_turso_fixture().await;
+        let affected = fx
+            .service
+            .apply_row_update(
+                "mem",
+                &update_name(3, CellValue::Text("renamed".to_owned())),
+            )
+            .await
+            .expect("update");
+        assert_eq!(affected, 1);
+        assert_eq!(
+            name_of(&fx, 3).await,
+            Some(Value::Text("renamed".to_owned()))
+        );
+        // A neighbouring row is untouched — the PK `WHERE` is exact.
+        assert_eq!(name_of(&fx, 2).await, Some(Value::Text("n2".to_owned())));
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_can_clear_a_cell_to_null() {
+        let fx = seeded_turso_fixture().await;
+        let affected = fx
+            .service
+            .apply_row_update("mem", &update_name(2, CellValue::Null))
+            .await
+            .expect("update to null");
+        assert_eq!(affected, 1);
+        assert_eq!(name_of(&fx, 2).await, Some(Value::Null));
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_reports_zero_when_the_key_matches_no_row() {
+        let fx = seeded_turso_fixture().await;
+        // No row has id 999: a well-formed UPDATE simply affects nothing.
+        // The caller (Tauri command) turns a non-1 count into a conflict.
+        let affected = fx
+            .service
+            .apply_row_update("mem", &update_name(999, CellValue::Text("x".to_owned())))
+            .await
+            .expect("no-op update");
+        assert_eq!(affected, 0);
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_surfaces_a_write_back_refusal() {
+        let fx = seeded_turso_fixture().await;
+        // A blob identity value can't be a safe WHERE key — the core
+        // refuses before any SQL reaches the engine.
+        let plan = UpdatePlan {
+            table: TableInfo::unqualified("items"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Blob(vec![1, 2]))]),
+            edits: vec![("name".to_owned(), CellValue::Text("x".to_owned()))],
+        };
+        let err = fx
+            .service
+            .apply_row_update("mem", &plan)
+            .await
+            .expect_err("blob key refused");
+        assert!(matches!(err, ServiceError::WriteBack(_)), "got {err:?}");
+    }
+
+    // ---- plan_dump / run_dump (desktop backup path, ADR-0049) -----------
+
+    /// Collect dump SQL into memory so a test can assert on its content
+    /// without touching the filesystem.
+    #[derive(Default)]
+    struct VecSink(String);
+
+    impl dbboard_core::DumpSink for VecSink {
+        fn write_str(&mut self, s: &str) -> Result<(), dbboard_core::DumpError> {
+            self.0.push_str(s);
+            Ok(())
+        }
+    }
+
+    /// A `DumpControl` that never cancels and discards progress — enough to
+    /// drive `run_dump` in a unit test.
+    struct NoopControl;
+
+    impl dbboard_core::DumpControl for NoopControl {
+        fn report(&self, _progress: &dbboard_core::DumpProgress) {}
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_dump_counts_the_seeded_rows() {
+        let fx = seeded_turso_fixture().await;
+        let plan = fx.service.plan_dump("mem").await.expect("plan");
+        assert_eq!(plan.tables.len(), 1, "one seeded table");
+        assert_eq!(plan.tables[0].table.name, "items");
+        assert_eq!(plan.total_rows(), 5, "5 seeded rows");
+    }
+
+    #[tokio::test]
+    async fn plan_dump_rejects_an_unknown_connection() {
+        let fx = seeded_turso_fixture().await;
+        let err = fx.service.plan_dump("nope").await.expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_dump_emits_data_inserts_and_reports_the_table() {
+        let fx = seeded_turso_fixture().await;
+        let plan = fx.service.plan_dump("mem").await.expect("plan");
+        let mut sink = VecSink::default();
+        let outcome = fx
+            .service
+            .run_dump("mem", &plan, &mut sink, &NoopControl)
+            .await
+            .expect("dump");
+
+        assert_eq!(outcome.tables_dumped, 1);
+        assert_eq!(outcome.rows_written, 5);
+        assert!(!outcome.cancelled);
+        assert!(outcome.failures.is_empty(), "no per-table failures");
+
+        let sql = sink.0;
+        // The SQLite/Turso dump is data-only by design (ADR-0049): no
+        // CREATE TABLE, just the INSERTs, under a dialect header comment.
+        assert!(
+            !sql.contains("CREATE TABLE"),
+            "sqlite dump must not emit DDL, got:\n{sql}"
+        );
+        assert!(
+            sql.contains("dbboard logical dump"),
+            "missing header:\n{sql}"
+        );
+        assert!(
+            sql.contains("INSERT INTO") && sql.contains("items"),
+            "expected inserts for items, got:\n{sql}"
+        );
+        // Every seeded value must appear in the dumped inserts.
+        for i in 1..=5 {
+            assert!(sql.contains(&format!("'n{i}'")), "missing n{i} in:\n{sql}");
+        }
+    }
+
+    // ---- plan_restore / run_restore (desktop import path, ADR-0051) -----
+
+    /// A `RestoreControl` that never cancels and discards progress — enough
+    /// to drive `run_restore` in a unit test.
+    struct NoopRestoreControl;
+
+    impl dbboard_core::RestoreControl for NoopRestoreControl {
+        fn report(&self, _progress: &dbboard_core::RestoreProgress) {}
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// A fresh, empty in-memory Turso connection — the unconfirmed-safe
+    /// restore target. Establishing the adapter here caches it, so a later
+    /// `run_restore` and the read-back query hit the same `:memory:` db.
+    async fn empty_turso_fixture() -> Fixture {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        fx.service.adapter_for("mem").await.expect("connect mem");
+        fx
+    }
+
+    const RESTORE_SCRIPT: &str = "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); \
+         INSERT INTO items (id, name) VALUES (1, 'a'); \
+         INSERT INTO items (id, name) VALUES (2, 'b')";
+
+    #[tokio::test]
+    async fn plan_restore_classifies_and_sees_an_empty_target() {
+        let fx = empty_turso_fixture().await;
+        let plan = fx
+            .service
+            .plan_restore("mem", RESTORE_SCRIPT)
+            .await
+            .expect("plan");
+        assert!(plan.is_target_empty(), "a fresh :memory: db has no tables");
+        assert_eq!(plan.runnable_count(), 3, "one CREATE + two INSERTs");
+    }
+
+    #[tokio::test]
+    async fn plan_restore_rejects_an_unknown_connection() {
+        let fx = empty_turso_fixture().await;
+        let err = fx
+            .service
+            .plan_restore("nope", RESTORE_SCRIPT)
+            .await
+            .expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_restore_applies_the_script_to_an_empty_target() {
+        let fx = empty_turso_fixture().await;
+        let plan = fx
+            .service
+            .plan_restore("mem", RESTORE_SCRIPT)
+            .await
+            .expect("plan");
+        let outcome = fx
+            .service
+            .run_restore("mem", &plan, RestoreOptions::default(), &NoopRestoreControl)
+            .await
+            .expect("restore");
+
+        assert_eq!(outcome.statements_run, 3);
+        assert_eq!(outcome.ddl_run, 1);
+        assert_eq!(outcome.data_run, 2);
+        assert!(!outcome.cancelled);
+        assert!(outcome.failures.is_empty(), "no per-statement failures");
+
+        // The restore landed in the same cached :memory: db: the rows are
+        // now queryable through the read path.
+        let out = fx
+            .service
+            .run_read_query("mem", "SELECT id, name FROM items ORDER BY id", None)
+            .await
+            .expect("query the restored table");
+        assert_eq!(out.row_count, 2);
     }
 
     #[tokio::test]
@@ -1122,6 +1607,91 @@ keyring_url_ref = "dbboard.prod-pg.url"
             assert_eq!(view.table, None, "blank {blank:?} should clear the filter");
             assert_eq!(view.relationships.len(), 2);
         }
+    }
+
+    /// An adapter whose `foreign_keys` fails for exactly one table, the way a
+    /// D1 database's reserved `_cf_KV` does: `sqlite_master` lists it, but the
+    /// Workers authorizer denies the `PRAGMA`, so the lookup comes back as
+    /// `[7500] not authorized: SQLITE_AUTH`.
+    struct OneDeniedTable;
+
+    #[async_trait::async_trait]
+    impl DatabaseAdapter for OneDeniedTable {
+        fn id(&self) -> &'static str {
+            "denied"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                has_foreign_keys: true,
+                ..Default::default()
+            }
+        }
+        async fn ping(&self) -> DbResult<()> {
+            Ok(())
+        }
+        async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+            Ok(vec![
+                TableInfo::unqualified("_cf_KV"),
+                TableInfo::unqualified("orders"),
+            ])
+        }
+        async fn query(&self, _sql: &str) -> DbResult<CoreQueryResult> {
+            Ok(CoreQueryResult::empty())
+        }
+        async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<CoreForeignKey>> {
+            if table.name == "_cf_KV" {
+                return Err(DbError::Query("[7500] not authorized: SQLITE_AUTH".into()));
+            }
+            Ok(vec![CoreForeignKey {
+                columns: vec!["customer_id".into()],
+                referenced_table: TableInfo::unqualified("customers"),
+                referenced_columns: vec!["id".into()],
+                constraint_name: None,
+            }])
+        }
+    }
+
+    /// One unreadable table must not take the whole schema down with it. The
+    /// sweep visits every table, so aborting on the first error meant a single
+    /// reserved D1 table blanked the desktop structure view for the *entire*
+    /// database — the user saw nothing but `SQLITE_AUTH`, on tables that were
+    /// perfectly readable. Skip what we cannot read; report the rest.
+    #[tokio::test]
+    async fn list_relationships_skips_a_table_whose_foreign_keys_are_denied() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        fx.service
+            .cache
+            .lock()
+            .await
+            .insert("denied".to_string(), Arc::new(OneDeniedTable));
+
+        let view = fx
+            .service
+            .list_relationships("denied", None)
+            .await
+            .expect("one denied table must not fail the whole call");
+        assert_eq!(view.relationships.len(), 1);
+        edge(&view, "orders", "customers");
+        // Skipping must not be silent: the caller has to be able to tell
+        // "this table has no foreign keys" from "we could not look".
+        assert_eq!(
+            view.unreadable_tables,
+            vec![TableInfo::unqualified("_cf_KV")]
+        );
+    }
+
+    /// The happy path reports nothing unreadable — the field is a real signal,
+    /// not something that is always populated.
+    #[tokio::test]
+    async fn list_relationships_reports_no_unreadable_tables_when_all_succeed() {
+        let fx = seeded_relationship_fixture().await;
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert!(view.unreadable_tables.is_empty());
     }
 
     #[tokio::test]

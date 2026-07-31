@@ -1,16 +1,18 @@
 <script lang="ts">
   import { theme, type ThemeMode } from '$lib/theme/theme.svelte';
+  import { i18n } from '$lib/i18n/i18n.svelte';
+  import type { MessageKey } from '$lib/i18n/messages';
 
   // Segmented Auto | Light | Dark control (DESIGN.md "Segmented theme toggle").
   // The selected segment reads active; the whole group is one rounded field.
-  const modes: { value: ThemeMode; label: string }[] = [
-    { value: 'auto', label: 'Auto' },
-    { value: 'light', label: 'Light' },
-    { value: 'dark', label: 'Dark' },
+  const modes: { value: ThemeMode; labelKey: MessageKey }[] = [
+    { value: 'auto', labelKey: 'theme-auto' },
+    { value: 'light', labelKey: 'theme-light' },
+    { value: 'dark', labelKey: 'theme-dark' },
   ];
 </script>
 
-<div class="segmented" role="group" aria-label="Theme">
+<div class="segmented" role="group" aria-label={i18n.t('theme-menu')}>
   {#each modes as m (m.value)}
     <button
       type="button"
@@ -19,7 +21,7 @@
       aria-pressed={theme.mode === m.value}
       onclick={() => theme.set(m.value)}
     >
-      {m.label}
+      {i18n.t(m.labelKey)}
     </button>
   {/each}
 </div>

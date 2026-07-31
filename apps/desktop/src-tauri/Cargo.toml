@@ -22,6 +22,16 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Native save/open dialogs for the connection-bundle import/export (ADR-0038).
+# The picked path is handed to a Rust command that does the file I/O itself, so
+# the encrypted blob and passphrase never round-trip through the WebView.
+tauri-plugin-dialog = "2"
+# Auto-update (ADR-0067): the updater fetches a signed `latest.json` from the
+# GitHub release, verifies the minisign signature against the embedded pubkey,
+# then downloads + installs the newer bundle. `process` gives the frontend the
+# `relaunch()` it calls after a successful install. Both are desktop-only.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The spike's whole backend: the read-only service the MCP server already
@@ -32,6 +42,20 @@ dbboard-config = { path = "../../../crates/dbboard-config" }
 # Command return types (TableInfo / TableSchema) live in the domain crate;
 # the frontend consumes them as JSON, so they cross the Tauri boundary here.
 dbboard-core = { path = "../../../crates/dbboard-core" }
+# AI assistant vertical (ADR-0052): the I/O-free provider trait plus the two
+# concrete providers, wired exactly as the egui app wires them. The
+# AiSettingsAdmin + keyring store it reads from already ship in dbboard-config
+# above; only the provider crates are new here.
+dbboard-ai = { path = "../../../crates/dbboard-ai" }
+dbboard-anthropic = { path = "../../../crates/dbboard-anthropic" }
+dbboard-openai = { path = "../../../crates/dbboard-openai" }
+# SSH tunnel (ADR-0069). Only `probe_host_key` is called from here: the
+# connection form needs to show the user the bastion's fingerprint so they can
+# pin it. Opening the actual tunnel stays in dbboard-connect.
+dbboard-tunnel = { path = "../../../crates/dbboard-tunnel" }
+# Consumes the provider's normalized StreamEvent stream (StreamExt::next)
+# inside the ai_explain/ai_suggest commands as they emit `ai:chunk` events.
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

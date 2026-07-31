@@ -33,7 +33,7 @@ use dbboard_core::{
 };
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
-use sqlx::{Column as _, Either, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{Column as _, Either, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
 mod dsql_auth;
 mod table_ddl;
@@ -796,7 +796,7 @@ impl DatabaseAdapter for PostgresAdapter {
         // sqlx `Executor` borrows inside an `#[async_trait]` method trips
         // the "implementation of `Executor` is not general enough" HRTB
         // error, which a plain async fn with concrete lifetimes avoids.
-        run_read_only_txn(self.pool.current(), sql, max_rows, kind).await
+        run_read_only_txn(self.pool.current(), self.flavor, sql, max_rows, kind).await
     }
 
     async fn execute(&self, sql: &str) -> DbResult<u64> {
@@ -839,14 +839,13 @@ async fn run_restore_txn(pool: PgPool, statements: &[String]) -> DbResult<()> {
 /// Run one statement inside the restore transaction via the extended query
 /// protocol.
 ///
-/// The read-only path uses the same protocol for the same reason: a held
-/// `Transaction` future must stay `Send` across the `#[async_trait]`
-/// boundary, and `raw_sql`'s simple-protocol executor bound trips the sqlx
-/// `Executor`/`Send` HRTB error there. The extended protocol carries exactly
-/// one command per round-trip, which the restore splitter already guarantees.
-/// (The per-statement, non-atomic path — used by Aurora DSQL — goes through
-/// [`PostgresAdapter::query`]'s `raw_sql`, so it keeps the simple protocol's
-/// broader statement support.)
+/// The extended protocol carries exactly one command per round-trip, which
+/// the restore splitter already guarantees, and a restore discards its result
+/// rows — so the binary result format costs nothing here. Row-producing paths
+/// must NOT copy this: they go through `raw_sql` so [`decode_cell`] sees
+/// text-format values. (The per-statement, non-atomic path — used by Aurora
+/// DSQL — goes through [`PostgresAdapter::query`]'s `raw_sql`, so it keeps the
+/// simple protocol's broader statement support.)
 async fn exec_in_txn(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<()> {
     sqlx::query(sql)
         .execute(&mut *conn)
@@ -855,41 +854,69 @@ async fn exec_in_txn(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<()> {
     Ok(())
 }
 
+/// Session statements that turn an open transaction into the read-only,
+/// self-cancelling one ADR-0046 §8 relies on: `SET TRANSACTION READ ONLY`
+/// (the engine rejects every write for the transaction's life) and a
+/// `SET LOCAL statement_timeout` (the server-side cancellation backstop).
+///
+/// Aurora DSQL supports neither: it parses `SET TRANSACTION` as a request
+/// to set a GUC named `TRANSACTION` and rejects it
+/// (`setting configuration parameter "TRANSACTION" not supported`), and it
+/// manages `statement_timeout` itself (both are engine-managed, ADR-0021).
+/// So it gets an empty preamble and the read-only guarantee rests solely on
+/// the pre-connection [`classify_read_only`] AST guard — which already
+/// rejects every write, multi-statement batch, and data-modifying CTE
+/// before a connection is even opened.
+fn read_only_preamble(flavor: &str) -> Vec<String> {
+    if flavor == FLAVOR_AURORA_DSQL {
+        return Vec::new();
+    }
+    vec![
+        "SET TRANSACTION READ ONLY".to_string(),
+        format!("SET LOCAL statement_timeout = '{READ_ONLY_STATEMENT_TIMEOUT_SECS}s'"),
+    ]
+}
+
 /// Execute a validated read-only statement inside a server-side
 /// `READ ONLY` transaction and return at most `max_rows` rows.
 ///
-/// A `READ ONLY` transaction makes Postgres itself reject every write for
-/// its whole duration — INSERT / UPDATE / DELETE / DDL, `nextval()`,
-/// data-modifying CTEs, and a writing `FOR UPDATE` — closing the
-/// simple-query multi-statement and CTE-DML hazards even if the
-/// classifier's grammar missed one. The sqlx `Transaction` rolls back on
-/// drop, so an early `?` return never leaves the pooled connection
-/// mid-transaction.
+/// On the standard Postgres flavors a `READ ONLY` transaction makes the
+/// engine itself reject every write for its whole duration — INSERT /
+/// UPDATE / DELETE / DDL, `nextval()`, data-modifying CTEs, and a writing
+/// `FOR UPDATE` — closing the simple-query multi-statement and CTE-DML
+/// hazards even if the classifier's grammar missed one. Aurora DSQL cannot
+/// take that preamble (see [`read_only_preamble`]), so there the
+/// classifier is the sole read-only guard. Either way the sqlx
+/// `Transaction` rolls back on drop, so an early `?` return never leaves
+/// the pooled connection mid-transaction.
 async fn run_read_only_txn(
     pool: PgPool,
+    flavor: &str,
     sql: &str,
     max_rows: usize,
     kind: ReadOnlyStatement,
 ) -> DbResult<QueryResult> {
     let mut tx = pool.begin().await.map_err(|e| classify_error(&e))?;
-    // Two single statements (not one `raw_sql` batch): the simple-query
+    // Each as a single statement (not one `raw_sql` batch): the simple-query
     // batch protocol widens the sqlx `Executor` lifetime bounds enough to
     // trip the "not general enough" HRTB error under `#[async_trait]`.
-    sqlx::query("SET TRANSACTION READ ONLY")
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| classify_error(&e))?;
-    let timeout = format!("SET LOCAL statement_timeout = '{READ_ONLY_STATEMENT_TIMEOUT_SECS}s'");
-    sqlx::query(&timeout)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| classify_error(&e))?;
+    for stmt in read_only_preamble(flavor) {
+        sqlx::query(&stmt)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| classify_error(&e))?;
+    }
 
     let fetched = match kind {
         // A plain query becomes a server-side cursor so at most
         // `max_rows` rows ever cross the wire — an engine-level cap,
-        // not a textual `LIMIT` wrapped around arbitrary SQL.
-        ReadOnlyStatement::Query => fetch_via_cursor(&mut tx, sql, max_rows).await,
+        // not a textual `LIMIT` wrapped around arbitrary SQL. Aurora DSQL
+        // rejects `DECLARE CURSOR`, so there we stream the portal and
+        // stop after `max_rows` instead (same wire cap, no cursor).
+        ReadOnlyStatement::Query if caps_with_cursor(flavor) => {
+            fetch_via_cursor(&mut tx, sql, max_rows).await
+        }
+        ReadOnlyStatement::Query => fetch_capped_stream(&mut tx, sql, max_rows).await,
         // EXPLAIN returns a small, bounded plan and cannot be a cursor
         // source, so run it directly and materialise its rows.
         ReadOnlyStatement::Explain => run_capped(&mut tx, sql).await,
@@ -909,6 +936,18 @@ async fn run_read_only_txn(
 /// the (already validated) statement, then `FETCH FORWARD max_rows`, so
 /// the server materialises only the rows we keep.
 ///
+/// Whether the read-only row-cap uses a server-side cursor.
+///
+/// Standard Postgres flavors cap with `DECLARE ... CURSOR` + `FETCH
+/// FORWARD` so only `max_rows` rows ever cross the wire. Aurora DSQL
+/// rejects `DECLARE CURSOR` (`unsupported statement: DeclareCursor`,
+/// ADR-0061) — cursors are on its unsupported-features list, correcting
+/// the original ADR-0061 assumption — so there the cap streams the portal
+/// and stops after `max_rows` instead ([`fetch_capped_stream`]).
+fn caps_with_cursor(flavor: &str) -> bool {
+    flavor != FLAVOR_AURORA_DSQL
+}
+
 /// Takes a concrete `&mut PgConnection` (not `&mut Transaction`) so the
 /// executor borrow has a single, nameable lifetime — passing the
 /// transaction and deref-ing inside trips the sqlx `Executor` HRTB error
@@ -924,19 +963,64 @@ async fn fetch_via_cursor(
         .await
         .map_err(|e| classify_error(&e))?;
 
+    // `raw_sql`, not `query`: only the simple query protocol returns values in
+    // text format, which is what `decode_cell` reads. `sqlx::query` always
+    // carries an (empty) argument list, so it goes through Bind/Execute with
+    // `result_formats: Binary` and every cell would be raw binary bytes.
+    //
+    // Handed to the executor rather than called as `raw_sql(..).fetch_all(conn)`:
+    // `RawSql`'s own helpers bound the executor as `Executor<'e>` with a single
+    // lifetime, which is what trips the "implementation of `Executor` is not
+    // general enough" HRTB error under `#[async_trait]`. `Executor::fetch_all`
+    // takes the two-lifetime form and infers cleanly.
     let fetch = format!("FETCH FORWARD {max_rows} FROM {READ_ONLY_CURSOR}");
-    let rows = sqlx::query(&fetch)
-        .fetch_all(&mut *conn)
+    let rows = conn
+        .fetch_all(sqlx::raw_sql(&fetch))
         .await
         .map_err(|e| classify_error(&e))?;
+    pg_rows_to_result(&rows)
+}
+
+/// Cap a read-only query without a cursor: stream the query's portal and
+/// stop after `max_rows` rows, then drop the stream so the server stops
+/// producing more. This is the Aurora DSQL path — it rejects `DECLARE
+/// CURSOR`, so the cursor cap in [`fetch_via_cursor`] is unavailable — and
+/// it keeps the same "at most `max_rows` rows cross the wire" property
+/// without wrapping arbitrary SQL in a `LIMIT` subquery (which would break
+/// on duplicate output column names).
+///
+/// Takes a concrete `&mut PgConnection` for the same `Executor` lifetime
+/// reason as [`fetch_via_cursor`].
+async fn fetch_capped_stream(
+    conn: &mut sqlx::PgConnection,
+    sql: &str,
+    max_rows: usize,
+) -> DbResult<QueryResult> {
+    // `raw_sql` for the same reason as [`fetch_via_cursor`]: the simple query
+    // protocol is the only one that delivers text-format values, and it is
+    // handed to the executor there rather than through `RawSql`'s helper.
+    let mut stream = conn.fetch(sqlx::raw_sql(sql));
+    let mut rows: Vec<PgRow> = Vec::with_capacity(max_rows.min(1024));
+    while rows.len() < max_rows {
+        match stream.try_next().await.map_err(|e| classify_error(&e))? {
+            Some(row) => rows.push(row),
+            None => break,
+        }
+    }
+    // Drop the portal stream before returning so the transaction can be
+    // rolled back cleanly without a half-consumed result set on the wire.
+    drop(stream);
     pg_rows_to_result(&rows)
 }
 
 /// Run `sql` directly on the connection (used for EXPLAIN, which cannot
 /// be a cursor source) and materialise its rows.
 async fn run_capped(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<QueryResult> {
-    let rows = sqlx::query(sql)
-        .fetch_all(&mut *conn)
+    // `raw_sql` for the same reason as [`fetch_via_cursor`]: the simple query
+    // protocol is the only one that delivers text-format values, and it is
+    // handed to the executor there rather than through `RawSql`'s helper.
+    let rows = conn
+        .fetch_all(sqlx::raw_sql(sql))
         .await
         .map_err(|e| classify_error(&e))?;
     pg_rows_to_result(&rows)
@@ -988,15 +1072,20 @@ fn decode_cell(raw: PgValueRef<'_>) -> DbResult<Value> {
     if raw.is_null() {
         return Ok(Value::Null);
     }
-    // Invariant: the simple query protocol delivers every value in text
-    // format. Assert in debug builds so a future regression (e.g. a path
-    // that switches to the extended/binary protocol) fails loudly here
-    // instead of silently mis-decoding binary bytes as a UTF-8 string.
-    debug_assert_eq!(
-        raw.format(),
-        sqlx::postgres::PgValueFormat::Text,
-        "expected text-format value under the simple query protocol"
-    );
+    // Invariant: every row-producing path uses the simple query protocol, so
+    // values arrive in text format. This is checked at runtime, not with a
+    // `debug_assert`, because the failure is silent rather than loud: a
+    // binary `int4` of 1 is `00 00 00 01`, which *is* valid UTF-8, so the
+    // cell would come back as invisible control characters instead of "1".
+    // Only wider types (uuid, timestamptz, large int8) happen to fail the
+    // UTF-8 check. A release build must refuse the row, not corrupt it.
+    if raw.format() != sqlx::postgres::PgValueFormat::Text {
+        return Err(DbError::TypeConversion(
+            "internal: row arrived in binary format — every row-producing \
+             path must use the simple query protocol"
+                .into(),
+        ));
+    }
     // Decode (not `try_get`) so the column's declared Postgres type does
     // not gate reading it as text — the value is already text-format.
     let text = <String as sqlx::Decode<sqlx::Postgres>>::decode(raw)
@@ -1161,9 +1250,9 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        assemble_foreign_keys, classify_error, column_from_parts, harden_ssl_mode,
-        reclassify_schema, truncate, tuple_to_table, FkRow, FLAVOR_AURORA_DSQL, FLAVOR_NEON,
-        FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        assemble_foreign_keys, caps_with_cursor, classify_error, column_from_parts,
+        harden_ssl_mode, read_only_preamble, reclassify_schema, truncate, tuple_to_table, FkRow,
+        FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
     use dbboard_core::{DatabaseAdapter, DbError, ForeignKey, TableInfo};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
@@ -1406,6 +1495,53 @@ mod tests {
             pool: super::PoolHandle::Static(pool),
             flavor: FLAVOR_POSTGRES,
         }
+    }
+
+    /// The standard Postgres flavors enforce a read-only transaction with
+    /// two session statements: `SET TRANSACTION READ ONLY` (the engine
+    /// backstop) and a `SET LOCAL statement_timeout` (the cancellation
+    /// backstop). The `30s` timeout must be present so an abandoned query
+    /// cannot pin a pooled connection.
+    #[test]
+    fn read_only_preamble_sets_read_only_and_timeout_on_standard_postgres() {
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_NEON, FLAVOR_SUPABASE] {
+            let stmts = read_only_preamble(flavor);
+            assert_eq!(stmts.len(), 2, "flavor {flavor}");
+            assert_eq!(stmts[0], "SET TRANSACTION READ ONLY", "flavor {flavor}");
+            assert!(
+                stmts[1].contains("statement_timeout") && stmts[1].contains("30s"),
+                "flavor {flavor}: {}",
+                stmts[1]
+            );
+        }
+    }
+
+    /// Aurora DSQL rejects `SET TRANSACTION` (it parses the word as an
+    /// unknown GUC — `setting configuration parameter "TRANSACTION" not
+    /// supported`) and manages `statement_timeout` itself, so it gets no
+    /// preamble at all. The read-only guarantee then rests entirely on the
+    /// pre-connection classifier (ADR-0021, ADR-0046 §8).
+    #[test]
+    fn read_only_preamble_is_empty_on_aurora_dsql() {
+        assert!(read_only_preamble(FLAVOR_AURORA_DSQL).is_empty());
+    }
+
+    /// Standard Postgres flavors cap a read-only query with a server-side
+    /// cursor (`DECLARE ... CURSOR` + `FETCH FORWARD`), so only `max_rows`
+    /// rows ever cross the wire.
+    #[test]
+    fn caps_with_cursor_on_standard_postgres() {
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_NEON, FLAVOR_SUPABASE] {
+            assert!(caps_with_cursor(flavor), "flavor {flavor}");
+        }
+    }
+
+    /// Aurora DSQL rejects `DECLARE CURSOR` (`unsupported statement:
+    /// DeclareCursor`, ADR-0061), so its read-only row-cap must stream the
+    /// portal and stop after `max_rows` rather than open a cursor.
+    #[test]
+    fn does_not_cap_with_cursor_on_aurora_dsql() {
+        assert!(!caps_with_cursor(FLAVOR_AURORA_DSQL));
     }
 
     /// `query_read_only` classifies before it connects: a write is
