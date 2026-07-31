@@ -320,6 +320,12 @@ export const onRestoreProgress = (
 export const connectionEditFields = (id: string): Promise<EditFields> =>
   invoke('connection_edit_fields', { id });
 
+// Ask the SSH server for its host-key fingerprint (`SHA256:…`) so the form can
+// offer it for pinning. Opens a connection to `host`, but never authenticates —
+// see the command's doc comment.
+export const probeSshHostKey = (host: string, port: number): Promise<string> =>
+  invoke('probe_ssh_host_key', { host, port });
+
 // `ssh` is a tagged SshInput (or null for no tunnel) / SshEditInput, shaped by
 // `$lib/connections/draft`. The tunnel fronts the connection; its secrets ride
 // inline on add and keep-or-overwrite on edit (ADR-0069).

@@ -10,6 +10,8 @@
     connectionEditFields,
     exportConnections,
     importConnections,
+    probeSshHostKey,
+    configPath,
     type ConnectionView,
   } from '$lib/api';
   import {
@@ -24,6 +26,8 @@
     validateSsh,
     validateDsnFields,
     isEditableInApp,
+    canProbeHostKey,
+    parseSshPort,
     buildSshInput,
     buildSshEditInput,
     CONNECTION_KINDS,
@@ -99,12 +103,53 @@
     `${schemeFor(form.kind)}://user:password@host:${defaultPort(form.kind)}/database`,
   );
 
+  // "Not editable here" is only half an answer; the other half is *where*. The
+  // path is resolved lazily and only when a row actually needs it, so the
+  // common case (every connection editable) costs nothing.
+  let configFilePath = $state('');
+  $effect(() => {
+    const needsPath = workspace.connections.some((c) => !isEditableInApp(c.kind));
+    if (needsPath && !configFilePath) {
+      configPath()
+        .then((p) => (configFilePath = p))
+        .catch(() => {
+          // Without the path the note still says the entry lives in
+          // connections.toml — less helpful, but not wrong.
+        });
+    }
+  });
+
+  // Host-key probe state, separate from `busy`/`error` so a failed lookup does
+  // not read as a failed save and does not disable the rest of the form.
+  let probing = $state(false);
+  let probeError = $state('');
+
+  // Ask the SSH server what its host key is, so the user has something to pin.
+  // Only ever runs on this click: the app never contacts a server the user has
+  // not asked it to.
+  async function fetchFingerprint() {
+    probeError = '';
+    probing = true;
+    try {
+      form.ssh_fingerprint = await probeSshHostKey(
+        form.ssh_host.trim(),
+        parseSshPort(form.ssh_port),
+      );
+      invalidSsh = invalidSsh.filter((f) => f !== 'ssh_fingerprint');
+    } catch (e) {
+      probeError = String(e);
+    } finally {
+      probing = false;
+    }
+  }
+
   function resetTransient() {
     error = '';
     info = '';
     invalid = [];
     invalidSsh = [];
     invalidDsn = [];
+    probeError = '';
     passphrase = '';
     passphraseConfirm = '';
     importPath = '';
@@ -332,7 +377,12 @@
                 <span class="row-name">{c.name}</span>
                 <span class="row-meta">{c.kind} · {c.id}</span>
                 {#if !isEditableInApp(c.kind)}
-                  <span class="row-note">{i18n.t('conn-edit-toml-only')}</span>
+                  <span class="row-note">
+                    {i18n.t('conn-edit-toml-only')}
+                    {#if configFilePath}
+                      <code class="row-path">{configFilePath}</code>
+                    {/if}
+                  </span>
                 {/if}
               </div>
               <div class="row-actions">
@@ -605,18 +655,32 @@
                   <option value="fingerprint">{i18n.t('conn-ssh-host-key-fingerprint')}</option>
                   <option value="known_hosts">{i18n.t('conn-ssh-host-key-known-hosts')}</option>
                 </select>
+                <span class="hint">{i18n.t('conn-ssh-host-key-hint')}</span>
               </label>
 
               {#if form.ssh_host_key_policy === 'fingerprint'}
                 <label class="field">
                   <span class="label">{i18n.t('conn-ssh-fingerprint')}</span>
-                  <input
-                    class:bad={invalidSsh.includes('ssh_fingerprint')}
-                    value={form.ssh_fingerprint}
-                    oninput={(e) => (form.ssh_fingerprint = e.currentTarget.value)}
-                    spellcheck="false"
-                    autocomplete="off"
-                  />
+                  <div class="with-action">
+                    <input
+                      class:bad={invalidSsh.includes('ssh_fingerprint')}
+                      value={form.ssh_fingerprint}
+                      oninput={(e) => (form.ssh_fingerprint = e.currentTarget.value)}
+                      placeholder="SHA256:…"
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                    <button
+                      type="button"
+                      class="ghost"
+                      disabled={busy || probing || !canProbeHostKey(form)}
+                      onclick={fetchFingerprint}
+                    >
+                      {probing ? i18n.t('conn-ssh-fetch-busy') : i18n.t('conn-ssh-fetch')}
+                    </button>
+                  </div>
+                  <span class="hint">{i18n.t('conn-ssh-fingerprint-hint')}</span>
+                  {#if probeError}<span class="hint bad-text">{probeError}</span>{/if}
                 </label>
               {:else}
                 <label class="field">
@@ -625,9 +689,11 @@
                     class:bad={invalidSsh.includes('ssh_known_hosts')}
                     value={form.ssh_known_hosts}
                     oninput={(e) => (form.ssh_known_hosts = e.currentTarget.value)}
+                    placeholder="~/.ssh/known_hosts"
                     spellcheck="false"
                     autocomplete="off"
                   />
+                  <span class="hint">{i18n.t('conn-ssh-known-hosts-hint')}</span>
                 </label>
               {/if}
             {/if}
@@ -797,6 +863,10 @@
     font-size: var(--text-hint);
     color: var(--faint);
   }
+  .row-path {
+    font-family: var(--font-mono);
+    word-break: break-all;
+  }
   .row-actions {
     display: flex;
     gap: var(--space-2);
@@ -848,6 +918,24 @@
   .hint {
     font-size: var(--text-hint);
     color: var(--faint);
+  }
+  .hint.bad-text {
+    color: var(--danger);
+  }
+  /* An input paired with the action that fills it in. The button keeps its
+     intrinsic width so the field still grows with the dialog. */
+  .with-action {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+  }
+  .with-action input {
+    flex: 1;
+    min-width: 0;
+  }
+  .with-action button {
+    flex: none;
+    white-space: nowrap;
   }
   .field input,
   .field select {
