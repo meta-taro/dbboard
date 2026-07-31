@@ -94,6 +94,58 @@ function sslQuery(kind: ConnectionKind, mode: SslMode): string {
   return schemeFor(kind) === 'mysql' ? '?ssl-mode=disabled' : '?sslmode=disable';
 }
 
+/** The two spellings sqlx accepts for the TLS parameter, lower-cased. MySQL
+ *  documents `ssl-mode` and Postgres `sslmode`, but sqlx's MySQL parser takes
+ *  either, so both are recognised when reading and both are removed when
+ *  writing — otherwise flipping the select could leave a stale second one. */
+const SSL_PARAM_NAMES = ['ssl-mode', 'sslmode'];
+
+/** `null` unless `url` is complete enough to reason about. A URL still being
+ *  typed (`mysql://app@`, `still typing`) must be handed back untouched: a
+ *  half-written value the code rewrites under the cursor is worse than one it
+ *  ignores. Note that a non-special scheme like `mysql:` permits an empty
+ *  host, so parsing succeeding is not enough — the host has to be there. */
+function usableUrl(url: string): URL | null {
+  try {
+    const parsed = new URL(url.trim());
+    return parsed.hostname.length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What a hand-written connection URL is currently asking for. Anything other
+ *  than an explicit "disabled" reads as `require`: `required`, `verify_ca` and
+ *  `verify_identity` all mean encrypted, and a URL that says nothing gets the
+ *  adapter's hardened default. */
+export function sslModeFromUrl(url: string): SslMode {
+  const parsed = usableUrl(url);
+  if (!parsed) return 'require';
+  for (const name of SSL_PARAM_NAMES) {
+    const value = parsed.searchParams.get(name)?.trim().toLowerCase();
+    if (value === 'disabled' || value === 'disable') return 'disable';
+  }
+  return 'require';
+}
+
+/** `url` with its TLS parameter set to `mode` (or removed, for `require`).
+ *
+ *  The query is edited as text rather than through `URL.toString()`, which
+ *  would re-serialise — and so quietly rewrite — parts of the URL the user
+ *  typed and did not ask to have changed. */
+export function withSslMode(kind: ConnectionKind, url: string, mode: SslMode): string {
+  if (!usableUrl(url)) return url;
+  const cut = url.indexOf('?');
+  const base = cut === -1 ? url : url.slice(0, cut);
+  const pairs = cut === -1 ? [] : url.slice(cut + 1).split('&').filter(Boolean);
+  const kept = pairs.filter((pair) => {
+    const name = pair.split('=', 1)[0].trim().toLowerCase();
+    return !SSL_PARAM_NAMES.includes(name);
+  });
+  if (mode === 'disable') kept.push(sslQuery(kind, mode).slice(1));
+  return kept.length > 0 ? `${base}?${kept.join('&')}` : base;
+}
+
 export function composeDsn(kind: ConnectionKind, parts: DsnParts): string {
   const port = blank(parts.db_port)
     ? defaultPort(kind)

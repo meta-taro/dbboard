@@ -8,6 +8,8 @@ import {
   composeDsn,
   validateDsn,
   usesDsnFields,
+  sslModeFromUrl,
+  withSslMode,
 } from './dsn';
 import type { ConnectionKind } from './draft';
 
@@ -176,6 +178,110 @@ describe('composeDsn TLS mode', () => {
     expect(composeDsn('mysql', parts({ db_name: 'my db', db_ssl: 'disable' }))).toBe(
       'mysql://app:secret@db.internal:3306/my%20db?ssl-mode=disabled',
     );
+  });
+});
+
+describe('sslModeFromUrl', () => {
+  it('reads a hand-written URL as requiring TLS when it says nothing', () => {
+    expect(sslModeFromUrl('mysql://app@db.internal:3306/shop')).toBe('require');
+  });
+
+  it('recognises the MySQL spelling', () => {
+    expect(sslModeFromUrl('mysql://app@db:3306/shop?ssl-mode=disabled')).toBe('disable');
+  });
+
+  it('recognises the Postgres spelling', () => {
+    expect(sslModeFromUrl('postgres://app@db:5432/shop?sslmode=disable')).toBe('disable');
+  });
+
+  it('is case-insensitive, as sqlx is', () => {
+    expect(sslModeFromUrl('mysql://app@db:3306/shop?ssl-mode=DISABLED')).toBe('disable');
+  });
+
+  it('accepts sslmode on a mysql URL, which sqlx also accepts', () => {
+    expect(sslModeFromUrl('mysql://app@db:3306/shop?sslmode=disabled')).toBe('disable');
+  });
+
+  it('finds the parameter among others', () => {
+    expect(sslModeFromUrl('mysql://app@db:3306/shop?charset=utf8mb4&ssl-mode=disabled')).toBe(
+      'disable',
+    );
+  });
+
+  // REQUIRED / VERIFY_CA / VERIFY_IDENTITY all mean "encrypted"; the select
+  // only distinguishes off from on, and must not misreport a stricter mode.
+  it.each(['required', 'verify_ca', 'verify_identity', 'preferred'])(
+    'reports %s as require, since only disabled is the off switch',
+    (mode) => {
+      expect(sslModeFromUrl(`mysql://app@db:3306/shop?ssl-mode=${mode}`)).toBe('require');
+    },
+  );
+
+  it('does not throw on a URL that is still being typed', () => {
+    expect(sslModeFromUrl('mysql://')).toBe('require');
+    expect(sslModeFromUrl('')).toBe('require');
+    expect(sslModeFromUrl('not a url at all')).toBe('require');
+  });
+});
+
+describe('withSslMode', () => {
+  it('leaves a blank URL alone, so the select cannot invent one', () => {
+    expect(withSslMode('mysql', '', 'disable')).toBe('');
+    expect(withSslMode('mysql', '   ', 'disable')).toBe('   ');
+  });
+
+  it('appends the MySQL parameter to a URL that has no query', () => {
+    expect(withSslMode('mysql', 'mysql://app@db:3306/shop', 'disable')).toBe(
+      'mysql://app@db:3306/shop?ssl-mode=disabled',
+    );
+  });
+
+  it('appends the Postgres parameter to a URL that has no query', () => {
+    expect(withSslMode('postgres', 'postgres://app@db:5432/shop', 'disable')).toBe(
+      'postgres://app@db:5432/shop?sslmode=disable',
+    );
+  });
+
+  it('appends after an existing parameter rather than replacing the query', () => {
+    expect(withSslMode('mysql', 'mysql://app@db:3306/shop?charset=utf8mb4', 'disable')).toBe(
+      'mysql://app@db:3306/shop?charset=utf8mb4&ssl-mode=disabled',
+    );
+  });
+
+  it('removes the parameter when TLS goes back to required', () => {
+    expect(withSslMode('mysql', 'mysql://app@db:3306/shop?ssl-mode=disabled', 'require')).toBe(
+      'mysql://app@db:3306/shop',
+    );
+  });
+
+  it('keeps the other parameters when it removes its own', () => {
+    expect(
+      withSslMode('mysql', 'mysql://app@db:3306/shop?ssl-mode=disabled&charset=utf8mb4', 'require'),
+    ).toBe('mysql://app@db:3306/shop?charset=utf8mb4');
+  });
+
+  it('replaces rather than duplicates an existing entry', () => {
+    expect(withSslMode('mysql', 'mysql://app@db:3306/shop?ssl-mode=required', 'disable')).toBe(
+      'mysql://app@db:3306/shop?ssl-mode=disabled',
+    );
+  });
+
+  it('is idempotent', () => {
+    const once = withSslMode('mysql', 'mysql://app@db:3306/shop', 'disable');
+    expect(withSslMode('mysql', once, 'disable')).toBe(once);
+  });
+
+  it('round-trips through sslModeFromUrl', () => {
+    const url = 'mysql://app@db:3306/shop';
+    expect(sslModeFromUrl(withSslMode('mysql', url, 'disable'))).toBe('disable');
+    expect(sslModeFromUrl(withSslMode('mysql', url, 'require'))).toBe('require');
+  });
+
+  // A half-typed URL must survive keystroke-by-keystroke: rewriting it into
+  // something the user did not type would fight the cursor.
+  it('leaves an unparseable URL exactly as typed', () => {
+    expect(withSslMode('mysql', 'mysql://app@', 'disable')).toBe('mysql://app@');
+    expect(withSslMode('mysql', 'still typing', 'disable')).toBe('still typing');
   });
 });
 

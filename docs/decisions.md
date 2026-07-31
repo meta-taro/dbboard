@@ -8289,3 +8289,48 @@ Requiring TLS inside the tunnel is redundant *and*, in that setup, impossible.
   from parts would silently re-enable TLS.
 - Turning TLS off is now a two-click decision recorded in the connection, not a
   reason to fall back to hand-writing a DSN.
+
+## ADR-0079 — The TLS select belongs to the connection, not to the entry mode
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+ADR-0078 added the TLS select to the Server fieldset, but placed it inside the
+structured-parts branch of the form. Opening an existing connection for editing
+starts in **URL mode** — `formForEdit` sets `use_url` for every DSN kind,
+because the stored DSN is a secret the backend never sends back and a blank URL
+has to mean "keep it". So the person who most needed the control (someone whose
+existing connection just failed with `server does not support TLS`) could not
+see it at all. Their only route was to switch to separate fields and retype
+every credential.
+
+### Decision
+
+1. The select moves outside the mode branch. TLS is a property of the
+   connection, not of how its credential happened to be typed.
+2. In URL mode the select is a **view of the URL text**, not a shadow copy:
+   `sslModeFromUrl` reads it back and `withSslMode` rewrites it. A hand-written
+   `?ssl-mode=…` is therefore never contradicted by what the select displays.
+3. `withSslMode` edits the query as text instead of round-tripping through
+   `URL.toString()`, which would re-serialise parts of the URL the user typed
+   and did not ask to change.
+4. A URL still being typed (`mysql://app@`, or anything unparseable) is handed
+   back untouched. Rewriting a half-written value under the cursor is worse
+   than ignoring it.
+5. Both spellings (`ssl-mode`, `sslmode`) are recognised on read and removed on
+   write — sqlx's MySQL parser accepts either, so writing one without clearing
+   the other could leave two contradicting parameters.
+6. Only an explicit `disabled`/`disable` reads as off. `required`, `verify_ca`
+   and `verify_identity` all mean encrypted, and the two-value select must not
+   misreport a stricter mode as the weaker one it can express.
+7. When the URL box is blank on edit, the select is disabled and says why: the
+   stored credential is being kept, so there is no URL here to rewrite.
+
+### Consequences
+
+- The parts-mode path is unchanged; `db_ssl` still drives `composeDsn`.
+- Switching entry modes does not carry the TLS choice across. That matches the
+  existing rule that parts mode on edit is a full replacement, and the select
+  re-reads from whichever store is live, so it never shows a stale value.

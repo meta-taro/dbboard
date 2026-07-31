@@ -159,6 +159,8 @@ export const en = {
     "dbboard requires TLS by default and never falls back to plaintext on its own. Disable it only for a server that does not support TLS, and only when you trust the network.",
   "conn-dsn-ssl-tunnel-hint":
     "The SSH tunnel already encrypts the traffic between this machine and the SSH server. If the database behind it does not support TLS, set this to Disabled.",
+  "conn-dsn-ssl-locked-hint":
+    "The stored connection URL is kept as it is. To change TLS, retype the URL or switch to separate fields.",
   "conn-secret-keep-hint": "Leave blank to keep the stored secret.",
   "conn-required": "Required",
   "conn-kind-turso": "Turso / libSQL",
@@ -450,6 +452,8 @@ const ja: Partial<Record<MessageKey, string>> = {
     "dbboard は既定で TLS を必須とし、勝手に平文へ切り替えることはありません。TLS 非対応のサーバーに対して、経路を信頼できる場合のみ「無効」にしてください。",
   "conn-dsn-ssl-tunnel-hint":
     "SSH トンネル区間 (このPC ↔ SSH サーバー) は SSH が暗号化しています。その先のデータベースが TLS 非対応なら「無効」にしてください。",
+  "conn-dsn-ssl-locked-hint":
+    "保存済みの接続 URL をそのまま使います。TLS を変更するには URL を入力し直すか、個別入力に切り替えてください。",
   "conn-secret-keep-hint": "空欄のままにすると保存済みのシークレットを保持します。",
   "conn-required": "必須",
   "conn-kind-turso": "Turso / libSQL",

@@ -43,6 +43,8 @@
     defaultPort,
     schemeFor,
     usesDsnFields,
+    sslModeFromUrl,
+    withSslMode,
     type DsnField,
     type SslMode,
   } from '$lib/connections/dsn';
@@ -109,6 +111,34 @@
     require: 'conn-dsn-ssl-require',
     disable: 'conn-dsn-ssl-disable',
   };
+
+  // The TLS select drives two different stores depending on the entry mode: in
+  // parts mode it is its own field, in URL mode it is a view of the query
+  // string the user typed. Reading it back out of the URL (rather than keeping
+  // a shadow copy) means a hand-written `?ssl-mode=…` is never contradicted by
+  // what the select shows.
+  const sslValue = $derived(form.use_url ? sslModeFromUrl(form.url) : form.db_ssl);
+
+  // On edit, a blank URL means "keep the stored credential" — there is no URL
+  // here to rewrite, so the select would silently do nothing.
+  const sslLocked = $derived(form.use_url && form.url.trim().length === 0);
+
+  const sslHint = $derived<MessageKey>(
+    sslLocked
+      ? 'conn-dsn-ssl-locked-hint'
+      : form.ssh_enabled
+        ? 'conn-dsn-ssl-tunnel-hint'
+        : 'conn-dsn-ssl-hint',
+  );
+
+  function onSslChange(e: Event & { currentTarget: HTMLSelectElement }) {
+    const mode = e.currentTarget.value as SslMode;
+    if (form.use_url) {
+      setField('url', withSslMode(form.kind, form.url, mode));
+    } else {
+      form.db_ssl = mode;
+    }
+  }
 
   // A live example of the URL the parts would compose, so the escape hatch
   // shows the exact shape the backend parses for *this* kind.
@@ -564,26 +594,24 @@
                   {/if}
                 </label>
               {/each}
-
-              <label class="field">
-                <span class="label">{i18n.t('conn-dsn-ssl')}</span>
-                <select
-                  value={form.db_ssl}
-                  onchange={(e) => (form.db_ssl = e.currentTarget.value as SslMode)}
-                >
-                  {#each SSL_MODES as m (m)}
-                    <option value={m}>{i18n.t(SSL_MODE_LABEL[m])}</option>
-                  {/each}
-                </select>
-                <span class="hint">
-                  {i18n.t(form.ssh_enabled ? 'conn-dsn-ssl-tunnel-hint' : 'conn-dsn-ssl-hint')}
-                </span>
-              </label>
-
               {#if editorMode === 'edit'}
                 <p class="note">{i18n.t('conn-dsn-edit-replace-hint')}</p>
               {/if}
             {/if}
+
+            <!-- Outside the mode branch on purpose. TLS is a property of the
+                 connection, not of how its credential was typed, and the edit
+                 form opens in URL mode — so keeping this on the parts side
+                 only would hide it from exactly the people who need it. -->
+            <label class="field">
+              <span class="label">{i18n.t('conn-dsn-ssl')}</span>
+              <select disabled={sslLocked} value={sslValue} onchange={onSslChange}>
+                {#each SSL_MODES as m (m)}
+                  <option value={m}>{i18n.t(SSL_MODE_LABEL[m])}</option>
+                {/each}
+              </select>
+              <span class="hint">{i18n.t(sslHint)}</span>
+            </label>
 
             <button type="button" class="linkish" onclick={() => setUrlMode(!form.use_url)}>
               {form.use_url ? i18n.t('conn-dsn-use-fields') : i18n.t('conn-dsn-use-url')}
