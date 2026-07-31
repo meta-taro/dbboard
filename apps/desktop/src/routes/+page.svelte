@@ -12,6 +12,13 @@
   import UpdateNotice from '$lib/components/UpdateNotice.svelte';
   import { updateOptOut, checkForUpdate } from '$lib/api';
   import type { AvailableUpdate } from '$lib/update/notice';
+  import {
+    SIDEBAR_DEFAULT_WIDTH,
+    clampSidebarWidth,
+    loadSidebarWidth,
+    saveSidebarWidth,
+    resetSidebarWidth,
+  } from '$lib/layout/splitter';
 
   const tabs: { id: MainTab; labelKey: MessageKey }[] = [
     { id: 'query', labelKey: 'tab-query' },
@@ -23,11 +30,72 @@
   let aiOpen = $state(false);
   let update = $state<AvailableUpdate | null>(null);
 
+  // The width the user asked for, kept unclamped: narrowing the window squeezes
+  // the sidebar (see `sidebarWidth`) but must not forget the chosen width, so
+  // widening the window again restores it.
+  let chosenWidth = $state(SIDEBAR_DEFAULT_WIDTH);
+  let viewportWidth = $state(Number.POSITIVE_INFINITY);
+  let dragging = $state(false);
+  let shellEl = $state<HTMLDivElement | null>(null);
+
+  const sidebarWidth = $derived(clampSidebarWidth(chosenWidth, viewportWidth));
+
+  /** How far one arrow-key press moves the divider. */
+  const NUDGE = 16;
+
   onMount(() => {
     i18n.init();
     workspace.init();
+    chosenWidth = loadSidebarWidth();
+    viewportWidth = window.innerWidth;
     void maybeCheckForUpdate();
   });
+
+  function widthAt(clientX: number): number {
+    const left = shellEl?.getBoundingClientRect().left ?? 0;
+    return clampSidebarWidth(clientX - left, viewportWidth);
+  }
+
+  function startDrag(e: PointerEvent) {
+    if (e.button !== 0) return;
+    dragging = true;
+    // Capture keeps the drag alive when the pointer outruns the 7px handle,
+    // which it always does.
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function onDrag(e: PointerEvent) {
+    if (!dragging) return;
+    chosenWidth = widthAt(e.clientX);
+  }
+
+  function endDrag(e: PointerEvent) {
+    if (!dragging) return;
+    dragging = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    saveSidebarWidth(chosenWidth);
+  }
+
+  /** Double-click puts the divider back where it started. */
+  function resetDivider() {
+    chosenWidth = resetSidebarWidth();
+  }
+
+  function onDividerKeydown(e: KeyboardEvent) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      chosenWidth = clampSidebarWidth(
+        sidebarWidth + (e.key === 'ArrowLeft' ? -NUDGE : NUDGE),
+        viewportWidth,
+      );
+      saveSidebarWidth(chosenWidth);
+    } else if (e.key === 'Home') {
+      resetDivider();
+    } else {
+      return;
+    }
+    e.preventDefault();
+  }
 
   // Best-effort startup update check (ADR-0067). Honours the same
   // DBBOARD_NO_UPDATE_CHECK opt-out as the egui client, and swallows every
@@ -42,8 +110,32 @@
   }
 </script>
 
-<div class="shell">
+<svelte:window onresize={() => (viewportWidth = window.innerWidth)} />
+
+<div class="shell" bind:this={shellEl} style="--sidebar-width: {sidebarWidth}px">
   <Sidebar />
+
+  <!-- A focusable window splitter is the ARIA-sanctioned use of role=separator
+       (it takes aria-valuenow and arrow keys); the linter only knows the static
+       separator, which is indeed non-interactive. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="divider"
+    class:dragging
+    role="separator"
+    aria-orientation="vertical"
+    aria-label={i18n.t('sidebar-resize')}
+    aria-valuenow={sidebarWidth}
+    title={i18n.t('sidebar-resize')}
+    tabindex="0"
+    onpointerdown={startDrag}
+    onpointermove={onDrag}
+    onpointerup={endDrag}
+    onpointercancel={endDrag}
+    ondblclick={resetDivider}
+    onkeydown={onDividerKeydown}
+  ></div>
 
   <main class="main">
     <nav class="tabbar" aria-label="View">
@@ -146,6 +238,25 @@
     display: flex;
     height: 100%;
     min-height: 0;
+  }
+
+  /* The grab area is wider than the line it draws: a 1px border is a hard
+     target with a mouse, so the handle straddles the sidebar's edge and the
+     visible rule stays hairline-thin. */
+  .divider {
+    flex: none;
+    width: 7px;
+    margin: 0 -3px 0 -4px;
+    z-index: 3;
+    cursor: col-resize;
+    background: transparent;
+    touch-action: none;
+  }
+  .divider:hover,
+  .divider:focus-visible,
+  .divider.dragging {
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
+    outline: none;
   }
 
   .main {

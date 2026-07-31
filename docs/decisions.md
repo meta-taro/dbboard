@@ -8528,3 +8528,69 @@ inline would have silently flattened it.
 - Blob cells are still not editable, and the primary-key columns are still held
   fixed. Nothing about which cells can be edited changed here — only the
   surface they are edited on.
+
+---
+
+## ADR-0083 — The sidebar splits, and popovers place themselves
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+Two layout complaints from real use, both about space the window has but the
+app would not give:
+
+1. **The sidebar was a fixed 260px.** A schema-qualified table name is longer
+   than that on a real database, and there was no way to trade grid width for
+   list width — in either direction.
+2. **The query-history popover was clipped.** It opened upward from the editor
+   bar with `position: absolute`, and the tab pane it lives in scrolls: the top
+   of the popover — the *newest* entries — was cut off by the pane's edge and
+   unreachable. On a short window it was cut off by the viewport as well.
+
+The second is not a styling slip that a larger `max-height` fixes. An absolutely
+positioned element is clipped by any scrolling ancestor, and the anchor's
+distance from the top of the window is not knowable from CSS.
+
+### Decision
+
+1. **A draggable divider sits between the sidebar and the main pane.** The
+   sidebar's width comes from a `--sidebar-width` custom property set by the
+   shell, so the sidebar component keeps owning its own styling and none of the
+   drag machinery.
+2. **Double-clicking the divider resets it to the default** — and *forgets* the
+   stored width, so a later launch also starts at the default. Resetting the
+   position but leaving the preference behind would be a lie the next restart
+   exposes.
+3. **The chosen width is stored unclamped; the applied width is derived.**
+   Narrowing the window squeezes the sidebar to half the viewport, but widening
+   it again restores what the user actually asked for. Clamping on write would
+   have quietly destroyed the preference.
+4. **The minimum width wins over the viewport cap.** On a window too narrow for
+   both panes, a cramped sidebar beats an unreadable one; the grid can scroll.
+5. **The divider is a real `role="separator"`** with `tabindex`, arrow-key
+   nudges and `Home` to reset. A drag handle reachable only by mouse is not a
+   control, and the pointer plumbing uses pointer capture so the drag survives
+   the pointer outrunning a 7px target.
+6. **Popovers anchored to a toolbar are placed with `position: fixed` and
+   explicit coordinates.** `placePopover` prefers opening upward (the anchors
+   live on bottom toolbars), flips below when there is not enough room, picks
+   the roomier side when neither fits, and caps `max-height` to the space
+   actually available. It pins the popover by the edge that touches the button,
+   so a short list hugs its anchor instead of floating away from it.
+7. **The popover is re-placed on resize while open**, since its fixed
+   coordinates were measured against the old window.
+
+### Consequences
+
+- `clampSidebarWidth` / `loadSidebarWidth` / `resetSidebarWidth` and
+  `placePopover` are pure and unit-tested; the components keep only wiring.
+  `placePopover` is deliberately DOM-free — it takes a rect and a viewport, not
+  an element — so the flip and clamp cases are testable without a browser.
+- `placePopover` is written for reuse but is used by the history popover only
+  for now. The result grid's own popups are anchored inside a pane that does not
+  clip them, and are left alone.
+- The divider is a sibling of the sidebar rather than part of it, which keeps
+  `Sidebar.svelte` free of layout state. The cost is a CSS custom property as
+  the contract between them, documented at both ends.
