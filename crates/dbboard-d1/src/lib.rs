@@ -25,8 +25,21 @@ use serde_json::Value as JsonValue;
 const DEFAULT_BASE_URL: &str = "https://api.cloudflare.com/client/v4";
 
 /// Lists user tables, mirroring the Turso adapter's introspection.
+///
+/// Two families are excluded. `sqlite_%` is SQLite's own bookkeeping, as
+/// everywhere else. `_cf_%` is Cloudflare's: every D1 database carries at
+/// least `_cf_KV`, which `sqlite_master` lists but the Workers SQLite
+/// authorizer refuses to open — any read, and any `PRAGMA` against it, comes
+/// back as `[7500] not authorized: SQLITE_AUTH`. Surfacing a table that
+/// nothing can touch is worse than not listing it: it broke the structure
+/// view, whose relationship sweep runs `PRAGMA foreign_key_list` over every
+/// listed table and so failed for the whole database.
+///
+/// `ESCAPE '\'` makes the underscores literal — unescaped, LIKE's `_`
+/// wildcard would also match names such as `acf_log`.
 const LIST_TABLES_SQL: &str = "SELECT name FROM sqlite_master \
      WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+     AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' \
      ORDER BY name";
 
 /// Connection parameters for a single D1 database.
@@ -755,6 +768,28 @@ mod tests {
 
     fn parse(body: serde_json::Value) -> D1Envelope {
         serde_json::from_value(body).expect("valid D1 envelope")
+    }
+
+    /// Every D1 database carries Cloudflare's own bookkeeping tables
+    /// (`_cf_KV` today). `sqlite_master` lists them, but the Workers SQLite
+    /// authorizer denies every access, so the moment anything touches one it
+    /// gets `[7500] not authorized: SQLITE_AUTH` — which is what blanked the
+    /// desktop structure view, because its relationship sweep runs
+    /// `PRAGMA foreign_key_list` over every listed table. Exclude them at the
+    /// source; a table nobody can read is not a table the user has.
+    #[test]
+    fn list_tables_sql_excludes_internal_tables() {
+        assert!(
+            super::LIST_TABLES_SQL.contains("name NOT LIKE 'sqlite_%'"),
+            "must still exclude SQLite's own tables: {}",
+            super::LIST_TABLES_SQL
+        );
+        assert!(
+            super::LIST_TABLES_SQL.contains("name NOT LIKE '\\_cf\\_%' ESCAPE '\\'"),
+            "must exclude Cloudflare's reserved tables, with `_` escaped so the \
+             pattern cannot match an unrelated name: {}",
+            super::LIST_TABLES_SQL
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-# Release build + checksums (ADR-0044).
+# Release build + checksums (ADR-0044) + Tauri auto-update manifest (ADR-0067).
 #
 # Pushing a `v*.*.*` tag builds the distributable artifacts on their native
 # runners and publishes them to the matching GitHub Release together with a
@@ -6,6 +6,12 @@
 # artifacts as a smoke test but does NOT publish (there is no tag to attach
 # to). Checksums are the highest-leverage trust signal for an OSS binary:
 # anyone can verify a download against the value the CI computed.
+#
+# Two product lines ship from the same tag: the egui binary (build-windows /
+# build-macos → .exe/.msi/.dmg) and the Tauri desktop app (build-tauri-* →
+# NSIS setup .exe / .dmg plus the updater's signed `.app.tar.gz`/`.sig`). The
+# publish job additionally assembles `latest.json` — the manifest
+# tauri-plugin-updater fetches to discover + verify a newer build (ADR-0067).
 #
 # NOT signed yet. Windows artifacts trip SmartScreen ("unknown publisher")
 # and the macOS .app trips Gatekeeper until code signing + notarization are
@@ -139,8 +145,98 @@ jobs:
           name: macos
           path: dist/
 
+  # --- Tauri desktop app (v0.4.0 parity + auto-update, ADR-0067) ----------
+  #
+  # Builds the Tauri bundles and, because tauri.conf.json sets
+  # createUpdaterArtifacts, the matching minisign `.sig` files the updater
+  # verifies. Signing happens here at build time (the updater's design requires
+  # it): the PRIVATE key arrives via the TAURI_SIGNING_PRIVATE_KEY secret and
+  # never touches the repo. NOTE: this hands a signing key to a job that also
+  # runs untrusted crates.io build code — an accepted trade-off inherent to the
+  # updater flow (and exactly what tauri-action does). It is the *updater*
+  # signing key only; it never code-signs the binary, so OS code signing stays
+  # deferred (ADR-0044 §Future) and these bundles still trip SmartScreen /
+  # Gatekeeper. Rust is preinstalled on the runners (as with the egui jobs);
+  # only Node + pnpm (via corepack) are added.
+  build-tauri-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Enable pnpm via corepack
+        run: corepack enable
+      - name: Install frontend deps
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      # `pnpm tauri build` runs the pinned @tauri-apps/cli devDep. With the
+      # signing env set + createUpdaterArtifacts, the NSIS setup .exe lands in
+      # the workspace target/ alongside its `.exe.sig`.
+      - name: Build Tauri bundle (NSIS + updater .sig)
+        working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build
+      - name: Stage artifacts + checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1) dist/
+          Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe.sig | Select-Object -First 1) dist/
+          Get-ChildItem dist -Filter *.exe | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name |
+              Out-File -Append -Encoding ascii dist/SHA256SUMS.tauri-windows.txt
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-windows
+          path: dist/
+
+  build-tauri-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Enable pnpm via corepack
+        run: corepack enable
+      # A universal binary serves both darwin arches from one artifact, so both
+      # rustup targets must be present before the bundle step.
+      - name: Add both macOS Rust targets (universal build)
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Install frontend deps
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      - name: Build Tauri universal bundle (.dmg + updater .app.tar.gz + .sig)
+        working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target universal-apple-darwin
+      - name: Stage artifacts + checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          base=target/universal-apple-darwin/release/bundle
+          cp "$base"/dmg/*.dmg dist/
+          cp "$base"/macos/*.app.tar.gz dist/
+          cp "$base"/macos/*.app.tar.gz.sig dist/
+          cd dist
+          shasum -a 256 *.dmg *.app.tar.gz > SHA256SUMS.tauri-macos.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-macos
+          path: dist/
+
   publish:
-    needs: [build-windows, build-macos]
+    needs: [build-windows, build-macos, build-tauri-windows, build-tauri-macos]
     # Only publish for a real tag *push*. Checking event_name as well as
     # ref_type is load-bearing: a manual workflow_dispatch run can also be
     # aimed at an existing tag (via the "Run workflow" ref picker or
@@ -177,6 +273,72 @@ jobs:
           cat staged/*/SHA256SUMS.*.txt > out/SHA256SUMS.txt
           ls -la out
           cat out/SHA256SUMS.txt
+
+      # Build latest.json — the manifest tauri-plugin-updater fetches from the
+      # release. It carries, per platform, the `.sig` contents plus the static
+      # download URL of the bundle (the URL is predictable from the tag, so the
+      # manifest can be built before the release object exists). One universal
+      # macOS artifact serves both darwin arches. `one()` fails loudly if a
+      # bundle is missing so a half-built release never ships a broken manifest.
+      - name: Assemble the updater manifest (latest.json)
+        env:
+          GH_REF_NAME: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          GH_REF_NAME="${GH_REF_NAME}" GH_REPO="${GH_REPO}" python3 - <<'PY'
+          import glob, json, os, sys
+
+          tag = os.environ["GH_REF_NAME"]
+          repo = os.environ["GH_REPO"]
+          version = tag[1:] if tag[:1] in "vV" else tag
+          base = f"https://github.com/{repo}/releases/download/{tag}"
+
+          def one(pattern):
+              hits = glob.glob(pattern)
+              if len(hits) != 1:
+                  sys.exit(f"::error::expected exactly one {pattern}, got {hits}")
+              return hits[0]
+
+          def sig(path):
+              with open(path, encoding="utf-8") as fh:
+                  return fh.read().strip()
+
+          win = one("out/*-setup.exe")
+          win_sig = one("out/*-setup.exe.sig")
+          mac = one("out/*.app.tar.gz")
+          mac_sig = one("out/*.app.tar.gz.sig")
+
+          mac_entry = {"signature": sig(mac_sig), "url": f"{base}/{os.path.basename(mac)}"}
+          doc = {
+              "version": version,
+              "notes": f"dbboard {tag}. See the release page for the full changelog.",
+              "pub_date": os.environ["PUB_DATE"],
+              "platforms": {
+                  "windows-x86_64": {
+                      "signature": sig(win_sig),
+                      "url": f"{base}/{os.path.basename(win)}",
+                  },
+                  "darwin-x86_64": mac_entry,
+                  "darwin-aarch64": mac_entry,
+              },
+          }
+          with open("out/latest.json", "w", encoding="utf-8") as fh:
+              json.dump(doc, fh, indent=2)
+          PY
+          cat out/latest.json
+
+      # `gh release upload` will NOT create the release object — it 404s if the
+      # tag has no release yet. Bootstrap it first (idempotent: view-or-create),
+      # then upload. Without this the very first publish for a tag fails.
+      - name: Ensure the release object exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+                 --title "${GITHUB_REF_NAME}" --generate-notes
 
       # Runner-bundled gh CLI + built-in token; no third-party release
       # action. `--clobber` makes re-runs idempotent.

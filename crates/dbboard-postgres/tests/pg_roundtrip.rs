@@ -357,6 +357,30 @@ async fn read_only_query_truncates_to_max_rows() {
     assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
 }
 
+/// Aurora DSQL read-only cap regression (ADR-0061): DSQL rejects `DECLARE
+/// CURSOR` (`unsupported statement: DeclareCursor`), so the row-cap must
+/// take the non-cursor streaming branch. This asserts a `query_read_only`
+/// over 100 rows with `max_rows = 10` succeeds and returns exactly 10 —
+/// which it cannot do if a cursor is issued, since DSQL would error first.
+/// Gated on `DBBOARD_AURORA_DSQL_URL`.
+#[tokio::test]
+async fn aurora_dsql_read_only_caps_without_a_cursor() {
+    let Some(url) = std::env::var("DBBOARD_AURORA_DSQL_URL").ok() else {
+        eprintln!("skipping: DBBOARD_AURORA_DSQL_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url })
+        .await
+        .expect("connect_aurora_dsql");
+    let sql = "SELECT n FROM generate_series(1, 100) AS s(n) ORDER BY n";
+    let result = adapter
+        .query_read_only(sql, 10)
+        .await
+        .expect("read-only cap must not use a cursor on Aurora DSQL");
+    assert_eq!(result.rows.len(), 10);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
+}
+
 /// The engine backstop, not the classifier: `nextval()` is a *write*
 /// (it advances a sequence) wrapped in a `SELECT`, so the AST classifier
 /// waves it through as read-only — but `BEGIN READ ONLY` makes Postgres
@@ -437,5 +461,77 @@ async fn query_over_the_row_cap_is_a_query_error() {
     assert!(
         msg.contains(&MAX_RESULT_ROWS.to_string()),
         "error should mention the cap, got: {msg}"
+    );
+}
+
+/// Wire-protocol regression: the read-only path must use the *simple* query
+/// protocol, whose values arrive in text format, because `decode_cell` reads
+/// every cell as a UTF-8 string.
+///
+/// Under the extended protocol sqlx binds with `result_formats: Binary`, and
+/// the damage splits two ways: a `uuid` or a wide `int8` is binary garbage
+/// that fails the UTF-8 check outright (`invalid utf-8 sequence ...`), while a
+/// small `int4` — `1` is `00 00 00 01`, which *is* valid UTF-8 — decodes
+/// silently into control characters instead of its digits. One row of each
+/// pins both halves, so a future switch back to `sqlx::query` fails loudly
+/// rather than corrupting results.
+///
+/// This covers the cursor branch (`DECLARE`/`FETCH FORWARD`); Aurora DSQL's
+/// non-cursor branch is covered by
+/// `aurora_dsql_read_only_decodes_wide_types_as_printed_text`.
+#[tokio::test]
+async fn read_only_decodes_wide_types_as_printed_text() {
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+    let sql = "SELECT 42::int4 AS small, \
+                      1234567890123::int8 AS wide, \
+                      '11111111-2222-3333-4444-555555555555'::uuid AS id, \
+                      true AS flag";
+    let result = adapter.query_read_only(sql, 10).await.expect("read-only");
+    assert_eq!(result.rows.len(), 1);
+    let row = &result.rows[0];
+    assert_eq!(row.get(0), Some(&Value::Text("42".to_string())));
+    assert_eq!(row.get(1), Some(&Value::Text("1234567890123".to_string())));
+    assert_eq!(
+        row.get(2),
+        Some(&Value::Text(
+            "11111111-2222-3333-4444-555555555555".to_string()
+        ))
+    );
+    assert_eq!(row.get(3), Some(&Value::Text("t".to_string())));
+}
+
+/// The same wire-protocol regression on Aurora DSQL's non-cursor branch
+/// ([`fetch_capped_stream`]), which is the one the desktop client hit with
+/// `type conversion failed: invalid utf-8 sequence of 1 bytes from index 2`
+/// on a `SELECT *` over a table with a `uuid` primary key.
+///
+/// Gated on `DBBOARD_AURORA_DSQL_URL` so the standard-Postgres run stays
+/// independent of an AWS account.
+#[tokio::test]
+async fn aurora_dsql_read_only_decodes_wide_types_as_printed_text() {
+    let Some(url) = std::env::var("DBBOARD_AURORA_DSQL_URL").ok() else {
+        eprintln!("skipping: DBBOARD_AURORA_DSQL_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url })
+        .await
+        .expect("connect_aurora_dsql");
+    let sql = "SELECT 42::int4 AS small, \
+                      1234567890123::int8 AS wide, \
+                      '11111111-2222-3333-4444-555555555555'::uuid AS id";
+    let result = adapter.query_read_only(sql, 10).await.expect("read-only");
+    assert_eq!(result.rows.len(), 1);
+    let row = &result.rows[0];
+    assert_eq!(row.get(0), Some(&Value::Text("42".to_string())));
+    assert_eq!(row.get(1), Some(&Value::Text("1234567890123".to_string())));
+    assert_eq!(
+        row.get(2),
+        Some(&Value::Text(
+            "11111111-2222-3333-4444-555555555555".to_string()
+        ))
     );
 }

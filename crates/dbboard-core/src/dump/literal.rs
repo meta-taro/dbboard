@@ -17,15 +17,16 @@ use crate::write_back::{quote_str, SqlDialect};
 /// - `Integer` → bare decimal.
 /// - `Real` → shortest round-tripping form when finite; a dialect-specific
 ///   form for NaN/±Infinity (see [`real_literal`]).
-/// - `Text` → single-quoted, with embedded `'` doubled.
-/// - `Blob` → `X'…'` (SQLite) or `'\x…'::bytea` (Postgres).
+/// - `Text` → single-quoted, with embedded `'` doubled (and `\` doubled on
+///   `MySQL`).
+/// - `Blob` → `X'…'` (SQLite / `MySQL`) or `'\x…'::bytea` (Postgres).
 #[must_use]
 pub fn value_literal(value: &Value, dialect: SqlDialect) -> String {
     match value {
         Value::Null => "NULL".to_owned(),
         Value::Integer(n) => n.to_string(),
         Value::Real(x) => real_literal(*x, dialect),
-        Value::Text(s) => quote_str(s),
+        Value::Text(s) => quote_str(s, dialect),
         Value::Blob(bytes) => blob_literal(bytes, dialect),
     }
 }
@@ -43,6 +44,11 @@ pub fn value_literal(value: &Value, dialect: SqlDialect) -> String {
 /// - SQLite has none: NaN maps to `NULL` (matching SQLite's own storage of
 ///   NaN), and ±Infinity to the overflowing literal `±9e999`, which SQLite
 ///   parses to ±Inf.
+/// - `MySQL`'s `DOUBLE` cannot represent NaN or ±Infinity at all and rejects
+///   an out-of-range literal under strict `sql_mode`, so every non-finite value
+///   maps to `NULL` — the only form that always parses. This is lossy for
+///   ±Infinity, but such a value can never have come from a `MySQL` column in
+///   the first place (the adapter decodes finite reals only).
 fn real_literal(x: f64, dialect: SqlDialect) -> String {
     if x.is_finite() {
         return format!("{x}");
@@ -51,7 +57,10 @@ fn real_literal(x: f64, dialect: SqlDialect) -> String {
         (SqlDialect::Postgres, true, _) => "'NaN'::double precision".to_owned(),
         (SqlDialect::Postgres, false, true) => "'Infinity'::double precision".to_owned(),
         (SqlDialect::Postgres, false, false) => "'-Infinity'::double precision".to_owned(),
-        (SqlDialect::Sqlite, true, _) => "NULL".to_owned(),
+        // SQLite stores NaN as NULL; MySQL's `DOUBLE` cannot hold any
+        // non-finite value, so every such case maps to NULL — the only form
+        // that always parses.
+        (SqlDialect::Sqlite, true, _) | (SqlDialect::MySql, ..) => "NULL".to_owned(),
         (SqlDialect::Sqlite, false, true) => "9e999".to_owned(),
         (SqlDialect::Sqlite, false, false) => "-9e999".to_owned(),
     }
@@ -65,7 +74,9 @@ fn blob_literal(bytes: &[u8], dialect: SqlDialect) -> String {
         let _ = write!(hex, "{b:02x}");
     }
     match dialect {
-        SqlDialect::Sqlite => format!("X'{hex}'"),
+        // MySQL accepts the same `X'…'` hexadecimal-literal syntax as SQLite,
+        // yielding a binary string the target column coerces.
+        SqlDialect::Sqlite | SqlDialect::MySql => format!("X'{hex}'"),
         // Standard-conforming strings (default on modern Postgres, so on
         // Supabase and Aurora DSQL): the backslash is literal and bytea's
         // hex input format parses `\xHEX`.
@@ -178,6 +189,36 @@ mod tests {
         assert_eq!(
             value_literal(&blob, SqlDialect::Postgres),
             "'\\x0aff00'::bytea"
+        );
+    }
+
+    #[test]
+    fn mysql_doubles_a_backslash_in_text() {
+        assert_eq!(
+            value_literal(&Value::Text(r"a\b'c".into()), SqlDialect::MySql),
+            r"'a\\b''c'"
+        );
+    }
+
+    #[test]
+    fn mysql_blob_is_a_hex_literal() {
+        let blob = Value::Blob(vec![0x0a, 0xff, 0x00]);
+        assert_eq!(value_literal(&blob, SqlDialect::MySql), "X'0aff00'");
+    }
+
+    #[test]
+    fn mysql_non_finite_reals_collapse_to_null() {
+        assert_eq!(
+            value_literal(&Value::Real(f64::NAN), SqlDialect::MySql),
+            "NULL"
+        );
+        assert_eq!(
+            value_literal(&Value::Real(f64::INFINITY), SqlDialect::MySql),
+            "NULL"
+        );
+        assert_eq!(
+            value_literal(&Value::Real(f64::NEG_INFINITY), SqlDialect::MySql),
+            "NULL"
         );
     }
 

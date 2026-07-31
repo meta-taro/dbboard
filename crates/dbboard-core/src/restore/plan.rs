@@ -17,7 +17,7 @@
 //! runs; the engine, not this classifier, has the final say.
 
 use sqlparser::ast::Statement;
-use sqlparser::dialect::{Dialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::dialect::{Dialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
 use sqlparser::parser::Parser;
 
 use crate::restore::split_statements;
@@ -90,6 +90,7 @@ fn parse_single(sql: &str, dialect: SqlDialect) -> Option<Statement> {
     let parser_dialect: Box<dyn Dialect> = match dialect {
         SqlDialect::Postgres => Box::new(PostgreSqlDialect {}),
         SqlDialect::Sqlite => Box::new(SQLiteDialect {}),
+        SqlDialect::MySql => Box::new(MySqlDialect {}),
     };
     let mut statements = Parser::parse_sql(parser_dialect.as_ref(), sql).ok()?;
     if statements.len() == 1 {

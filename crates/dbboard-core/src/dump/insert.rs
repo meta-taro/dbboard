@@ -33,7 +33,7 @@ pub fn build_insert(
     let table_sql = qualified_table(table, dialect);
     let column_list = columns
         .iter()
-        .map(|c| quote_ident(c))
+        .map(|c| quote_ident(c, dialect))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -174,6 +174,24 @@ mod tests {
         assert_eq!(
             sql,
             r#"INSERT INTO "t" ("a", "b", "c") VALUES (1, NULL, NULL);"#
+        );
+    }
+
+    #[test]
+    fn mysql_uses_backticks_and_hex_blob_literals() {
+        let sql = build_insert(
+            &TableInfo::qualified("shop", "widgets"),
+            &cols(&["id", "data"]),
+            &[Row::new(vec![
+                Value::Integer(7),
+                Value::Blob(vec![0x01, 0x02]),
+            ])],
+            SqlDialect::MySql,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "INSERT INTO `shop`.`widgets` (`id`, `data`) VALUES (7, X'0102');"
         );
     }
 

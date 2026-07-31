@@ -89,6 +89,9 @@ config-error-serialize = Could not write the configuration: { $detail }
 config-error-no-config-dir = Could not determine a per-user configuration directory.
 config-error-not-found = No connection found with id: { $id }
 config-error-kind-mismatch = The kind of connection { $id } cannot change on edit; delete it and add it again instead.
+config-error-ssh-unsupported-kind = Connection { $id }: an SSH tunnel is not supported for a { $kind } connection.
+config-error-ssh-invalid = Connection { $id }: the SSH tunnel settings are invalid: { $reason }
+config-error-dsn-unparseable = Connection { $id }: the stored connection URL could not be read, so the saved password cannot be kept. Retype the password to save.
 
 # BundleError — encrypted connection bundle export / import (ADR-0038).
 config-error-bundle-passphrase-short = The passphrase must be at least { $min } characters.

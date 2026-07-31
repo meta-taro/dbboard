@@ -28,6 +28,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+# Splitting a stored DSN back into the parts the edit form shows (ADR-0080).
+url = { workspace = true }
 # Scrub the intermediate bundle plaintext buffer after use (ADR-0038).
 zeroize = { workspace = true }
 

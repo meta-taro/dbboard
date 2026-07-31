@@ -33,9 +33,12 @@ use std::sync::Arc;
 use zeroize::Zeroize;
 
 use crate::bundle::{decrypt_bundle, encrypt_bundle, validate_passphrase, BundlePayload};
+use crate::dsn::{parse_dsn, with_password, DsnParts};
 use crate::error::ConfigError;
 use crate::secrets::{SecretError, SecretStore};
-use crate::store::{load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind};
+use crate::store::{
+    load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind, SshTunnelToml,
+};
 
 /// User-supplied draft for **adding** a new connection.
 ///
@@ -49,6 +52,46 @@ pub struct ConnectionDraft {
     pub id: String,
     pub name: String,
     pub kind: ConnectionKindDraft,
+    /// Optional SSH local-forward tunnel (ADR-0069). Cross-cutting: it fronts
+    /// the connection regardless of `kind`, so it lives here beside `kind`
+    /// rather than inside it. `add` rejects it for a kind that cannot tunnel
+    /// ([`ConnectionKind::supports_ssh_tunnel`]).
+    pub ssh: Option<SshTunnelDraft>,
+}
+
+/// Add-time SSH tunnel draft: bastion coordinates plus **inline** secrets (the
+/// key passphrase or the SSH password). The add-path companion to the stored
+/// [`SshTunnelToml`], whose secrets live behind `keyring_*_ref`s;
+/// [`ConnectionAdmin::add`] derives those refs from the connection id and
+/// routes the inline values through the [`SecretStore`].
+#[derive(Debug, Clone)]
+pub struct SshTunnelDraft {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: SshAuthDraft,
+    pub host_key: SshHostKeyDraft,
+}
+
+/// Inline-secret SSH auth for an add draft.
+#[derive(Debug, Clone)]
+pub enum SshAuthDraft {
+    /// Private-key auth. `passphrase` is `None` for an unencrypted key, or the
+    /// inline passphrase secret to seed into the keyring.
+    Key {
+        key_path: String,
+        passphrase: Option<String>,
+    },
+    /// Password auth; the inline password secret to seed into the keyring.
+    Password(String),
+}
+
+/// Host-key verification policy chosen in the UI. A tunnel must verify the
+/// server key, so there is no "accept any" — exactly one of these is set.
+#[derive(Debug, Clone)]
+pub enum SshHostKeyDraft {
+    Fingerprint(String),
+    KnownHosts(String),
 }
 
 /// Add-time, inline-secret companion to [`ConnectionKind`].
@@ -64,6 +107,9 @@ pub enum ConnectionKindDraft {
         token: String,
     },
     Postgres {
+        url: String,
+    },
+    MySql {
         url: String,
     },
     Neon {
@@ -89,6 +135,60 @@ pub enum ConnectionKindDraft {
 pub struct ConnectionEditDraft {
     pub name: String,
     pub kind: ConnectionKindEditDraft,
+    /// How the update should treat the entry's SSH tunnel (ADR-0069). Three
+    /// states, because "no tunnel" and "don't touch the tunnel" are different:
+    /// an editor with no tunnel UI (the egui client) must be able to change a
+    /// name without dropping the tunnel, so it sends [`SshEditField::Keep`].
+    pub ssh: SshEditField,
+}
+
+/// Top-level SSH edit intent. Distinct from a plain `Option` so a caller that
+/// does not render the tunnel (egui) can leave it untouched rather than
+/// silently removing it.
+#[derive(Debug, Clone)]
+pub enum SshEditField {
+    /// Leave the stored tunnel (block and secrets) exactly as it is.
+    Keep,
+    /// Remove the tunnel; [`ConnectionAdmin::update`] purges its secrets.
+    Disable,
+    /// Replace the tunnel with this configuration.
+    Set(SshTunnelEditDraft),
+}
+
+/// Edit-time SSH tunnel draft. Non-secret fields carry their new values
+/// verbatim; only the passphrase / password distinguish "keep the stored
+/// secret" from "overwrite it".
+#[derive(Debug, Clone)]
+pub struct SshTunnelEditDraft {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: SshAuthEditDraft,
+    pub host_key: SshHostKeyDraft,
+}
+
+/// Edit-time SSH auth. Mirrors [`SshAuthDraft`] but the secrets are
+/// keep-or-overwrite rather than always-inline.
+#[derive(Debug, Clone)]
+pub enum SshAuthEditDraft {
+    Key {
+        key_path: String,
+        passphrase: SshPassphraseField,
+    },
+    Password(SecretField),
+}
+
+/// Three-state edit control for a key passphrase: a key may be unencrypted, so
+/// unlike a mandatory secret it also has an explicit "no passphrase" state
+/// distinct from "keep the stored one".
+#[derive(Debug, Clone)]
+pub enum SshPassphraseField {
+    /// Reuse the stored passphrase (the key is encrypted and unchanged).
+    Keep,
+    /// Overwrite the passphrase with this new value.
+    Set(String),
+    /// The key is unencrypted; drop any stored passphrase.
+    Unencrypted,
 }
 
 /// Edit-time companion to [`ConnectionKind`]. Variant must match the
@@ -106,6 +206,9 @@ pub enum ConnectionKindEditDraft {
         token: SecretField,
     },
     Postgres {
+        url: SecretField,
+    },
+    MySql {
         url: SecretField,
     },
     Neon {
@@ -207,6 +310,76 @@ impl ConnectionAdmin {
         &self.file.connections
     }
 
+    /// The non-secret parts of the DSN stored for `id`, for prefilling the
+    /// edit form (ADR-0080).
+    ///
+    /// `Ok(None)` means "nothing to prefill": the kind stores no DSN (Turso,
+    /// D1, Aurora DSQL IAM), the keychain entry is gone, or the stored value
+    /// does not parse as a URL. Prefill is best-effort on purpose — a missing
+    /// secret should open an empty form the user can retype, not block the
+    /// edit dialog. The save path ([`ConnectionAdmin::dsn_with_stored_password`])
+    /// is the strict half of the pair.
+    ///
+    /// The password is never part of the return value: [`DsnParts`] has no
+    /// field for one.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::NotFound`] if no entry has id `id`.
+    pub fn dsn_prefill(&self, id: &str) -> Result<Option<DsnParts>, ConfigError> {
+        let Some(key_ref) = self.dsn_key_ref(id)? else {
+            return Ok(None);
+        };
+        let Ok(stored) = self.secrets.get(key_ref) else {
+            return Ok(None);
+        };
+        Ok(parse_dsn(&stored))
+    }
+
+    /// `url` with the password from `id`'s stored DSN grafted back on
+    /// (ADR-0080).
+    ///
+    /// This is the "leave the password blank to keep the stored one" path.
+    /// The UI rebuilds the DSN from the parts it was shown — which never
+    /// included the password — and the credential is re-attached here, inside
+    /// the process that already holds it, so it never crosses into the webview.
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::NotFound`] if no entry has id `id`, or the entry's
+    ///   kind stores no DSN.
+    /// - [`ConfigError::Secret`] if the keychain read fails.
+    /// - [`ConfigError::DsnUnparseable`] if either the stored DSN or `url`
+    ///   does not parse. Failing loudly beats saving the connection back
+    ///   without its password.
+    pub fn dsn_with_stored_password(&self, id: &str, url: &str) -> Result<String, ConfigError> {
+        let key_ref = self
+            .dsn_key_ref(id)?
+            .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
+        let stored = self.secrets.get(key_ref)?;
+        with_password(url, &stored)
+            .ok_or_else(|| ConfigError::DsnUnparseable { id: id.to_string() })
+    }
+
+    /// The keyring reference holding `id`'s DSN, or `None` for a kind that
+    /// stores no DSN.
+    fn dsn_key_ref(&self, id: &str) -> Result<Option<&str>, ConfigError> {
+        let entry = self
+            .file
+            .connections
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
+        Ok(match &entry.kind {
+            ConnectionKind::Postgres { keyring_url_ref }
+            | ConnectionKind::MySql { keyring_url_ref }
+            | ConnectionKind::Neon { keyring_url_ref }
+            | ConnectionKind::Supabase { keyring_url_ref }
+            | ConnectionKind::AuroraDsql { keyring_url_ref } => Some(keyring_url_ref.as_str()),
+            _ => None,
+        })
+    }
+
     /// Add `draft` as a new connection.
     ///
     /// Writes any secret material to the [`SecretStore`] under a
@@ -233,13 +406,41 @@ impl ConnectionAdmin {
             return Err(ConfigError::DuplicateId(draft.id));
         }
 
-        let (kind, secret_writes) = build_kind_for_add(&draft.id, draft.kind);
+        let (kind, mut secret_writes) = build_kind_for_add(&draft.id, draft.kind);
 
+        // Reject a tunnel on a kind that cannot forward a TCP port before any
+        // secret is written, so a bad combo costs nothing.
+        let ssh = match draft.ssh {
+            Some(_) if !kind.supports_ssh_tunnel() => {
+                return Err(ConfigError::SshUnsupportedKind {
+                    id: draft.id,
+                    kind: kind.adapter_label(),
+                });
+            }
+            Some(ssh) => {
+                let (toml, mut writes) = build_ssh_for_add(&draft.id, ssh);
+                secret_writes.append(&mut writes);
+                Some(toml)
+            }
+            None => None,
+        };
+
+        // A connection can now carry two secrets (kind url/token + ssh
+        // passphrase/password); if the second write fails, roll the first back
+        // so no orphan keyring entry survives a partial add.
+        let mut written: Vec<&PendingSecretWrite> = Vec::new();
         for write in &secret_writes {
-            self.secrets.set(&write.key_ref, &write.value)?;
+            if let Err(err) = self.secrets.set(&write.key_ref, &write.value) {
+                for done in &written {
+                    let _ = self.secrets.delete(&done.key_ref);
+                }
+                return Err(ConfigError::Secret(err));
+            }
+            written.push(write);
         }
 
         let new_entry = ConnectionEntry {
+            ssh,
             id: draft.id,
             name: draft.name,
             kind,
@@ -291,10 +492,37 @@ impl ConnectionAdmin {
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
 
-        let existing_kind = self.file.connections[idx].kind.clone();
-        let (new_kind, applied_writes) = self.apply_update_kind(id, &existing_kind, draft.kind)?;
+        let existing = self.file.connections[idx].clone();
+        let (new_kind, mut applied_writes) =
+            self.apply_update_kind(id, &existing.kind, draft.kind)?;
+
+        // Kind can't change on update, so a tunnel is legal here iff the
+        // existing kind can forward a TCP port. Only a `Set` introduces a new
+        // tunnel; Keep/Disable are always fine. Reject before writing any ssh
+        // secret, restoring the kind writes already applied above.
+        if matches!(draft.ssh, SshEditField::Set(_)) && !new_kind.supports_ssh_tunnel() {
+            self.restore_applied(&applied_writes);
+            return Err(ConfigError::SshUnsupportedKind {
+                id: id.to_string(),
+                kind: new_kind.adapter_label(),
+            });
+        }
+
+        let new_ssh = match self.apply_update_ssh(
+            id,
+            draft.ssh,
+            existing.ssh.as_ref(),
+            &mut applied_writes,
+        ) {
+            Ok(ssh) => ssh,
+            Err(err) => {
+                self.restore_applied(&applied_writes);
+                return Err(err);
+            }
+        };
 
         let new_entry = ConnectionEntry {
+            ssh: new_ssh,
             id: id.to_string(),
             name: draft.name,
             kind: new_kind,
@@ -304,19 +532,22 @@ impl ConnectionAdmin {
         new_file.connections[idx] = new_entry;
 
         if let Err(err) = save_atomic(&self.path, &new_file) {
-            for write in &applied_writes {
-                // Restore the old value if we had one; if we did not
-                // (the keyring was empty before this update), delete
-                // the just-written entry so we leave no orphan.
-                let _ = match &write.old_value {
-                    Some(old) => self.secrets.set(&write.key_ref, old),
-                    None => self.secrets.delete(&write.key_ref),
-                };
-            }
+            self.restore_applied(&applied_writes);
             return Err(err);
         }
 
         self.file = new_file;
+
+        // Best-effort purge of ssh secrets the old entry referenced but the new
+        // one no longer does — the tunnel was removed, or auth switched
+        // key<->password. Mirrors `delete`: once unreferenced, an orphan secret
+        // is harmless and a purge failure must not fail an otherwise-saved
+        // update.
+        self.purge_orphaned_ssh_secrets(
+            existing.ssh.as_ref(),
+            self.file.connections[idx].ssh.as_ref(),
+        );
+
         Ok(&self.file.connections[idx])
     }
 
@@ -347,7 +578,7 @@ impl ConnectionAdmin {
         // Orphan keyring entries (either missing already, or left
         // behind by a backend purge failure) are harmless: the TOML is
         // the source of truth and nothing references them any more.
-        for key_ref in keyring_refs_in(&removed.kind) {
+        for key_ref in entry_keyring_refs(&removed) {
             let _ = self.secrets.delete(&key_ref);
         }
 
@@ -381,7 +612,7 @@ impl ConnectionAdmin {
 
         let mut secrets = BTreeMap::new();
         for entry in &self.file.connections {
-            for key_ref in keyring_refs_in(&entry.kind) {
+            for key_ref in entry_keyring_refs(entry) {
                 let value = self.secrets.get(&key_ref)?;
                 secrets.insert(key_ref, value);
             }
@@ -444,7 +675,7 @@ impl ConnectionAdmin {
             .file
             .connections
             .iter()
-            .flat_map(|e| keyring_refs_in(&e.kind))
+            .flat_map(entry_keyring_refs)
             .collect();
 
         let mut report = ImportReport::default();
@@ -456,7 +687,7 @@ impl ConnectionAdmin {
                 report.skipped.push(entry.id);
                 continue;
             }
-            let refs = keyring_refs_in(&entry.kind);
+            let refs = entry_keyring_refs(&entry);
             if refs.iter().any(|r| claimed_refs.contains(r)) {
                 // Ref collides with a slot another connection owns; refuse
                 // rather than overwrite that connection's secret.
@@ -567,6 +798,14 @@ impl ConnectionAdmin {
                     keyring_url_ref: keyring_url_ref.clone(),
                 }
             }
+            (ConnectionKind::MySql { keyring_url_ref }, ConnectionKindEditDraft::MySql { url }) => {
+                if let SecretField::Set(new_value) = url {
+                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
+                }
+                ConnectionKind::MySql {
+                    keyring_url_ref: keyring_url_ref.clone(),
+                }
+            }
             (ConnectionKind::Neon { keyring_url_ref }, ConnectionKindEditDraft::Neon { url }) => {
                 if let SecretField::Set(new_value) = url {
                     self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
@@ -626,11 +865,210 @@ impl ConnectionAdmin {
         });
         Ok(())
     }
+
+    /// Undo the keyring writes recorded in `applied` (restoring the previous
+    /// value, or deleting the entry if the keyring was empty before). Used on
+    /// every failure path after some secrets have already been written.
+    fn restore_applied(&self, applied: &[AppliedSecretWrite]) {
+        for write in applied {
+            let _ = match &write.old_value {
+                Some(old) => self.secrets.set(&write.key_ref, old),
+                None => self.secrets.delete(&write.key_ref),
+            };
+        }
+    }
+
+    /// Delete the keyring secrets `old` referenced that `new` no longer does.
+    /// Best-effort: an unreferenced secret is harmless (the TOML is the source
+    /// of truth) so a delete failure is ignored.
+    fn purge_orphaned_ssh_secrets(&self, old: Option<&SshTunnelToml>, new: Option<&SshTunnelToml>) {
+        let Some(old) = old else { return };
+        let kept: HashSet<&str> = new
+            .map(SshTunnelToml::keyring_refs)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        for old_ref in old.keyring_refs() {
+            if !kept.contains(old_ref) {
+                let _ = self.secrets.delete(old_ref);
+            }
+        }
+    }
+
+    /// Resolve an [`SshEditField`] into the entry's new tunnel block.
+    ///
+    /// `Keep` returns the existing block untouched (no keyring write), so an
+    /// editor with no tunnel UI never disturbs a stored tunnel; `Disable`
+    /// returns `None` (the caller purges the orphaned secrets); `Set` builds
+    /// the block, writing any overwritten passphrase/password to the keyring
+    /// (recorded in `applied` for rollback). A
+    /// [`SecretField::Keep`]/[`SshPassphraseField::Keep`] reuses the secret the
+    /// *existing* block already points at — resolved from `existing`, not
+    /// re-derived from the id — so a "keep" with nothing stored to keep (e.g.
+    /// switching auth method, or marking a previously-unencrypted key encrypted
+    /// while leaving the passphrase blank) is rejected rather than persisting a
+    /// ref to a keyring entry that was never written (ADR-0069 / ADR-0016).
+    fn apply_update_ssh(
+        &self,
+        id: &str,
+        field: SshEditField,
+        existing: Option<&SshTunnelToml>,
+        applied: &mut Vec<AppliedSecretWrite>,
+    ) -> Result<Option<SshTunnelToml>, ConfigError> {
+        let draft = match field {
+            SshEditField::Keep => return Ok(existing.cloned()),
+            SshEditField::Disable => return Ok(None),
+            SshEditField::Set(draft) => draft,
+        };
+
+        let (key_path, keyring_passphrase_ref, keyring_password_ref) = match draft.auth {
+            SshAuthEditDraft::Key {
+                key_path,
+                passphrase,
+            } => {
+                let pass_ref = match passphrase {
+                    SshPassphraseField::Unencrypted => None,
+                    SshPassphraseField::Keep => {
+                        match existing.and_then(|e| e.keyring_passphrase_ref.clone()) {
+                            Some(existing_ref) => Some(existing_ref),
+                            None => {
+                                return Err(ConfigError::SshInvalid {
+                                    id: id.to_string(),
+                                    reason: "the SSH key is marked encrypted but no \
+                                             passphrase was provided and none is stored to keep"
+                                        .to_string(),
+                                })
+                            }
+                        }
+                    }
+                    SshPassphraseField::Set(value) => {
+                        let key_ref = keyring_ref(id, SSH_PASSPHRASE_FIELD);
+                        self.apply_secret_write(&key_ref, &value, applied)?;
+                        Some(key_ref)
+                    }
+                };
+                (Some(key_path), pass_ref, None)
+            }
+            SshAuthEditDraft::Password(field) => {
+                let pass_ref = match field {
+                    SecretField::Set(value) => {
+                        let key_ref = keyring_ref(id, SSH_PASSWORD_FIELD);
+                        self.apply_secret_write(&key_ref, &value, applied)?;
+                        key_ref
+                    }
+                    SecretField::Keep => {
+                        match existing.and_then(|e| e.keyring_password_ref.clone()) {
+                            Some(existing_ref) => existing_ref,
+                            None => {
+                                return Err(ConfigError::SshInvalid {
+                                    id: id.to_string(),
+                                    reason: "switching to SSH password auth requires a password"
+                                        .to_string(),
+                                })
+                            }
+                        }
+                    }
+                };
+                (None, None, Some(pass_ref))
+            }
+        };
+
+        let (fingerprint, known_hosts) = split_host_key(draft.host_key);
+
+        let tunnel = SshTunnelToml {
+            host: draft.host,
+            port: draft.port,
+            user: draft.user,
+            key_path,
+            keyring_passphrase_ref,
+            keyring_password_ref,
+            fingerprint,
+            known_hosts,
+        };
+        // Belt-and-suspenders: the tagged draft enums make an invalid combination
+        // (two auth methods, a passphrase ref without a key, no host-key policy)
+        // unrepresentable, but re-validate before it can reach disk so any future
+        // drift in the draft types fails here rather than at the next load.
+        tunnel
+            .validate()
+            .map_err(|reason| ConfigError::SshInvalid {
+                id: id.to_string(),
+                reason,
+            })?;
+        Ok(Some(tunnel))
+    }
 }
 
 /// Compute the keyring ref for a given connection id and field.
 fn keyring_ref(id: &str, field: &str) -> String {
     format!("dbboard.{id}.{field}")
+}
+
+/// Keyring field names for the two SSH secrets. Kept as consts so the add and
+/// update paths derive the exact same ref for a given id.
+const SSH_PASSPHRASE_FIELD: &str = "ssh_passphrase";
+const SSH_PASSWORD_FIELD: &str = "ssh_password";
+
+/// Split a host-key draft into the `(fingerprint, known_hosts)` pair
+/// [`SshTunnelToml`] stores — exactly one is `Some`.
+fn split_host_key(host_key: SshHostKeyDraft) -> (Option<String>, Option<String>) {
+    match host_key {
+        SshHostKeyDraft::Fingerprint(fingerprint) => (Some(fingerprint), None),
+        SshHostKeyDraft::KnownHosts(path) => (None, Some(path)),
+    }
+}
+
+/// Build the stored [`SshTunnelToml`] for an `add`, deriving keyring refs from
+/// the id and returning the inline secrets as pending writes.
+fn build_ssh_for_add(id: &str, draft: SshTunnelDraft) -> (SshTunnelToml, Vec<PendingSecretWrite>) {
+    let mut writes = Vec::new();
+    let (key_path, keyring_passphrase_ref, keyring_password_ref) = match draft.auth {
+        SshAuthDraft::Key {
+            key_path,
+            passphrase,
+        } => {
+            let pass_ref = passphrase.map(|value| {
+                let key_ref = keyring_ref(id, SSH_PASSPHRASE_FIELD);
+                writes.push(PendingSecretWrite {
+                    key_ref: key_ref.clone(),
+                    value,
+                });
+                key_ref
+            });
+            (Some(key_path), pass_ref, None)
+        }
+        SshAuthDraft::Password(value) => {
+            let key_ref = keyring_ref(id, SSH_PASSWORD_FIELD);
+            writes.push(PendingSecretWrite {
+                key_ref: key_ref.clone(),
+                value,
+            });
+            (None, None, Some(key_ref))
+        }
+    };
+    let (fingerprint, known_hosts) = split_host_key(draft.host_key);
+    let toml = SshTunnelToml {
+        host: draft.host,
+        port: draft.port,
+        user: draft.user,
+        key_path,
+        keyring_passphrase_ref,
+        keyring_password_ref,
+        fingerprint,
+        known_hosts,
+    };
+    (toml, writes)
+}
+
+/// Every keyring ref an entry owns — its kind's secret plus any SSH tunnel
+/// secret. The bundle export/import and delete paths use this so a tunneled
+/// connection carries (and cleans up) its ssh secret too.
+fn entry_keyring_refs(entry: &ConnectionEntry) -> Vec<String> {
+    let mut refs = keyring_refs_in(&entry.kind);
+    if let Some(ssh) = &entry.ssh {
+        refs.extend(ssh.keyring_refs().into_iter().map(str::to_string));
+    }
+    refs
 }
 
 /// Scrub the plaintext secret values held in an import's pending-write
@@ -643,9 +1081,9 @@ fn zeroize_secret_writes(writes: &mut [(String, String)]) {
 }
 
 /// Enumerate every keyring ref that a given [`ConnectionKind`] points
-/// at. `Turso` has none; `D1`, `Postgres`, `Neon`, `Supabase`, and
-/// `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its AWS
-/// secret-key ref (its other fields are non-secret and live inline).
+/// at. `Turso` has none; `D1`, `Postgres`, `MySql`, `Neon`, `Supabase`,
+/// and `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its
+/// AWS secret-key ref (its other fields are non-secret and live inline).
 fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
     match kind {
         ConnectionKind::Turso { .. } => Vec::new(),
@@ -653,6 +1091,7 @@ fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
             keyring_token_ref, ..
         } => vec![keyring_token_ref.clone()],
         ConnectionKind::Postgres { keyring_url_ref }
+        | ConnectionKind::MySql { keyring_url_ref }
         | ConnectionKind::Neon { keyring_url_ref }
         | ConnectionKind::Supabase { keyring_url_ref }
         | ConnectionKind::AuroraDsql { keyring_url_ref } => {
@@ -715,6 +1154,17 @@ fn build_kind_for_add(
             }];
             (kind, writes)
         }
+        ConnectionKindDraft::MySql { url } => {
+            let url_ref = keyring_ref(id, "url");
+            let kind = ConnectionKind::MySql {
+                keyring_url_ref: url_ref.clone(),
+            };
+            let writes = vec![PendingSecretWrite {
+                key_ref: url_ref,
+                value: url,
+            }];
+            (kind, writes)
+        }
         ConnectionKindDraft::Neon { url } => {
             let url_ref = keyring_ref(id, "url");
             let kind = ConnectionKind::Neon {
@@ -768,6 +1218,7 @@ mod tests {
 
     fn turso_draft(id: &str, name: &str, path: &str) -> ConnectionDraft {
         ConnectionDraft {
+            ssh: None,
             id: id.to_string(),
             name: name.to_string(),
             kind: ConnectionKindDraft::Turso {
@@ -778,6 +1229,7 @@ mod tests {
 
     fn d1_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
+            ssh: None,
             id: id.to_string(),
             name: format!("D1 {id}"),
             kind: ConnectionKindDraft::D1 {
@@ -791,6 +1243,7 @@ mod tests {
 
     fn pg_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            ssh: None,
             id: id.to_string(),
             name: format!("PG {id}"),
             kind: ConnectionKindDraft::Postgres {
@@ -799,8 +1252,20 @@ mod tests {
         }
     }
 
+    fn mysql_draft(id: &str, url: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            ssh: None,
+            id: id.to_string(),
+            name: format!("MySQL {id}"),
+            kind: ConnectionKindDraft::MySql {
+                url: url.to_string(),
+            },
+        }
+    }
+
     fn neon_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            ssh: None,
             id: id.to_string(),
             name: format!("Neon {id}"),
             kind: ConnectionKindDraft::Neon {
@@ -811,6 +1276,7 @@ mod tests {
 
     fn supabase_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            ssh: None,
             id: id.to_string(),
             name: format!("Supabase {id}"),
             kind: ConnectionKindDraft::Supabase {
@@ -821,6 +1287,7 @@ mod tests {
 
     fn aurora_dsql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            ssh: None,
             id: id.to_string(),
             name: format!("Aurora DSQL {id}"),
             kind: ConnectionKindDraft::AuroraDsql {
@@ -971,6 +1438,7 @@ mod tests {
             .update(
                 "dsql",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "Aurora DSQL dsql".to_string(),
                     kind: ConnectionKindEditDraft::AuroraDsql {
                         url: SecretField::Set(
@@ -1002,6 +1470,7 @@ mod tests {
             .update(
                 "dsql",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "Renamed Aurora DSQL".to_string(),
                     kind: ConnectionKindEditDraft::AuroraDsql {
                         url: SecretField::Keep,
@@ -1030,6 +1499,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "pg".to_string(),
                     kind: ConnectionKindEditDraft::AuroraDsql {
                         url: SecretField::Keep,
@@ -1080,6 +1550,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                ssh: None,
                 id: "dsql-iam".to_string(),
                 name: "Aurora DSQL (IAM)".to_string(),
                 kind: ConnectionKind::AuroraDsqlIam {
@@ -1115,6 +1586,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                ssh: None,
                 id: "dsql-iam".to_string(),
                 name: "Aurora DSQL (IAM)".to_string(),
                 kind: ConnectionKind::AuroraDsqlIam {
@@ -1133,6 +1605,7 @@ mod tests {
             .update(
                 "dsql-iam",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "renamed".to_string(),
                     kind: ConnectionKindEditDraft::AuroraDsql {
                         url: SecretField::Keep,
@@ -1160,6 +1633,7 @@ mod tests {
             .update(
                 "supabase",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "Supabase supabase".to_string(),
                     kind: ConnectionKindEditDraft::Supabase {
                         url: SecretField::Set(
@@ -1190,6 +1664,7 @@ mod tests {
             .update(
                 "supabase",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "Renamed Supabase".to_string(),
                     kind: ConnectionKindEditDraft::Supabase {
                         url: SecretField::Keep,
@@ -1219,6 +1694,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "pg".to_string(),
                     kind: ConnectionKindEditDraft::Supabase {
                         url: SecretField::Keep,
@@ -1266,6 +1742,7 @@ mod tests {
             .update(
                 "neon",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "Neon neon".to_string(),
                     kind: ConnectionKindEditDraft::Neon {
                         url: SecretField::Set("postgres://neon.example/new".to_string()),
@@ -1291,6 +1768,7 @@ mod tests {
             .update(
                 "neon",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "Renamed Neon".to_string(),
                     kind: ConnectionKindEditDraft::Neon {
                         url: SecretField::Keep,
@@ -1319,6 +1797,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "pg".to_string(),
                     kind: ConnectionKindEditDraft::Neon {
                         url: SecretField::Keep,
@@ -1429,6 +1908,7 @@ mod tests {
             .update(
                 "local",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "New".to_string(),
                     kind: ConnectionKindEditDraft::Turso {
                         path: "/tmp/x.db".to_string(),
@@ -1457,6 +1937,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
                     kind: ConnectionKindEditDraft::D1 {
                         account_id: "acct".to_string(),
@@ -1489,6 +1970,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "D1 prod".to_string(),
                     kind: ConnectionKindEditDraft::D1 {
                         account_id: "acct".to_string(),
@@ -1513,6 +1995,7 @@ mod tests {
             .update(
                 "missing",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "X".to_string(),
                     kind: ConnectionKindEditDraft::Turso {
                         path: ":memory:".to_string(),
@@ -1536,6 +2019,7 @@ mod tests {
             .update(
                 "local",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "L".to_string(),
                     kind: ConnectionKindEditDraft::D1 {
                         account_id: "a".to_string(),
@@ -1574,6 +2058,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
                     kind: ConnectionKindEditDraft::D1 {
                         account_id: "acct".to_string(),
@@ -1698,6 +2183,7 @@ mod tests {
         let (_dir, secrets, mut target) = fresh_admin();
         target
             .add(ConnectionDraft {
+                ssh: None,
                 id: "store-a".to_string(),
                 name: "pre-existing".to_string(),
                 kind: ConnectionKindDraft::D1 {
@@ -1778,6 +2264,7 @@ mod tests {
         // hijack the victim's live credentials on import.
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
+            ssh: None,
             id: "attacker".to_string(),
             name: "Attacker".to_string(),
             kind: ConnectionKind::Supabase {
@@ -1845,5 +2332,567 @@ mod tests {
             .expect("clear secret");
         let err = admin.export_bundle(BUNDLE_PASS).expect_err("must fail");
         assert!(matches!(err, ConfigError::Secret(_)), "got {err:?}");
+    }
+
+    // ---- SSH tunnel write path (ADR-0069) ----
+
+    fn pg_ssh_key_draft(id: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            ssh: Some(SshTunnelDraft {
+                host: "bastion.example".to_string(),
+                port: 2222,
+                user: "deploy".to_string(),
+                auth: SshAuthDraft::Key {
+                    key_path: "/home/deploy/.ssh/id_ed25519".to_string(),
+                    passphrase: Some("unlock-me".to_string()),
+                },
+                host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+            }),
+            id: id.to_string(),
+            name: format!("PG {id}"),
+            kind: ConnectionKindDraft::Postgres {
+                url: "postgres://u:p@db.internal:5432/app".to_string(),
+            },
+        }
+    }
+
+    fn pg_ssh_password_draft(id: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            ssh: Some(SshTunnelDraft {
+                host: "bastion.example".to_string(),
+                port: 22,
+                user: "deploy".to_string(),
+                auth: SshAuthDraft::Password("s3cr3t".to_string()),
+                host_key: SshHostKeyDraft::KnownHosts("/home/deploy/.ssh/known_hosts".to_string()),
+            }),
+            id: id.to_string(),
+            name: format!("PG {id}"),
+            kind: ConnectionKindDraft::Postgres {
+                url: "postgres://u:p@db.internal:5432/app".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn add_ssh_key_auth_persists_the_block_and_seeds_the_passphrase() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        let entry = admin.add(pg_ssh_key_draft("work")).expect("add").clone();
+        let ssh = entry.ssh.expect("ssh block present");
+        assert_eq!(ssh.host, "bastion.example");
+        assert_eq!(ssh.port, 2222);
+        assert_eq!(ssh.user, "deploy");
+        assert_eq!(
+            ssh.key_path.as_deref(),
+            Some("/home/deploy/.ssh/id_ed25519")
+        );
+        assert_eq!(
+            ssh.keyring_passphrase_ref.as_deref(),
+            Some("dbboard.work.ssh_passphrase")
+        );
+        assert!(ssh.keyring_password_ref.is_none());
+        assert_eq!(ssh.fingerprint.as_deref(), Some("SHA256:abc"));
+        // The inline passphrase went to the keyring, never the TOML.
+        assert_eq!(
+            secrets.get("dbboard.work.ssh_passphrase").unwrap(),
+            "unlock-me"
+        );
+        // The stored block is valid per the loader's own rules.
+        ssh.validate().expect("stored block validates");
+    }
+
+    #[test]
+    fn add_ssh_password_auth_seeds_the_password_secret() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(pg_ssh_password_draft("work"))
+            .expect("add")
+            .clone();
+        let ssh = entry.ssh.expect("ssh block present");
+        assert!(ssh.key_path.is_none());
+        assert_eq!(
+            ssh.keyring_password_ref.as_deref(),
+            Some("dbboard.work.ssh_password")
+        );
+        assert_eq!(
+            ssh.known_hosts.as_deref(),
+            Some("/home/deploy/.ssh/known_hosts")
+        );
+        assert_eq!(secrets.get("dbboard.work.ssh_password").unwrap(), "s3cr3t");
+        ssh.validate().expect("stored block validates");
+    }
+
+    #[test]
+    fn add_ssh_key_auth_without_passphrase_writes_no_secret() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        let mut draft = pg_ssh_key_draft("work");
+        draft.ssh = Some(SshTunnelDraft {
+            host: "bastion.example".to_string(),
+            port: 22,
+            user: "deploy".to_string(),
+            auth: SshAuthDraft::Key {
+                key_path: "/k/id".to_string(),
+                passphrase: None,
+            },
+            host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+        });
+        let entry = admin.add(draft).expect("add").clone();
+        let ssh = entry.ssh.expect("ssh block present");
+        assert!(ssh.keyring_passphrase_ref.is_none());
+        assert!(matches!(
+            secrets.get("dbboard.work.ssh_passphrase"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn add_ssh_on_a_non_tunnelable_kind_is_rejected_and_writes_nothing() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        let mut draft = turso_draft("local", "Local", "/tmp/db.sqlite");
+        draft.ssh = Some(SshTunnelDraft {
+            host: "bastion.example".to_string(),
+            port: 22,
+            user: "deploy".to_string(),
+            auth: SshAuthDraft::Password("pw".to_string()),
+            host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+        });
+        let err = admin.add(draft).expect_err("must reject");
+        assert!(
+            matches!(err, ConfigError::SshUnsupportedKind { .. }),
+            "got {err:?}"
+        );
+        // Nothing was seeded and the entry was not added.
+        assert!(matches!(
+            secrets.get("dbboard.local.ssh_password"),
+            Err(SecretError::NotFound(_))
+        ));
+        assert!(admin.entries().is_empty());
+    }
+
+    #[test]
+    fn update_adds_an_ssh_block_to_a_tunnelless_connection() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(pg_draft("work", "postgres://u:p@db.internal/app"))
+            .expect("add");
+        admin
+            .update(
+                "work",
+                ConnectionEditDraft {
+                    ssh: SshEditField::Set(SshTunnelEditDraft {
+                        host: "bastion.example".to_string(),
+                        port: 22,
+                        user: "deploy".to_string(),
+                        auth: SshAuthEditDraft::Password(SecretField::Set("pw".to_string())),
+                        host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+                    }),
+                    name: "PG work".to_string(),
+                    kind: ConnectionKindEditDraft::Postgres {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update");
+        let ssh = admin.entries()[0].ssh.as_ref().expect("ssh added");
+        assert_eq!(ssh.host, "bastion.example");
+        assert_eq!(secrets.get("dbboard.work.ssh_password").unwrap(), "pw");
+    }
+
+    #[test]
+    fn update_keeps_the_stored_passphrase_when_asked() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_key_draft("work")).expect("add");
+        // Edit a non-secret field (the bastion user) but Keep the passphrase.
+        admin
+            .update(
+                "work",
+                ConnectionEditDraft {
+                    ssh: SshEditField::Set(SshTunnelEditDraft {
+                        host: "bastion.example".to_string(),
+                        port: 2222,
+                        user: "ops".to_string(),
+                        auth: SshAuthEditDraft::Key {
+                            key_path: "/home/deploy/.ssh/id_ed25519".to_string(),
+                            passphrase: SshPassphraseField::Keep,
+                        },
+                        host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+                    }),
+                    name: "PG work".to_string(),
+                    kind: ConnectionKindEditDraft::Postgres {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update");
+        let ssh = admin.entries()[0].ssh.as_ref().expect("ssh kept");
+        assert_eq!(ssh.user, "ops");
+        assert_eq!(
+            ssh.keyring_passphrase_ref.as_deref(),
+            Some("dbboard.work.ssh_passphrase")
+        );
+        // The original passphrase is untouched.
+        assert_eq!(
+            secrets.get("dbboard.work.ssh_passphrase").unwrap(),
+            "unlock-me"
+        );
+    }
+
+    #[test]
+    fn update_with_ssh_keep_preserves_the_tunnel_and_its_secret() {
+        // The egui client has no tunnel UI, so it sends `Keep`; renaming a
+        // tunneled connection there must not drop the tunnel (ADR-0069).
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_password_draft("work")).expect("add");
+        admin
+            .update(
+                "work",
+                ConnectionEditDraft {
+                    ssh: SshEditField::Keep,
+                    name: "Renamed".to_string(),
+                    kind: ConnectionKindEditDraft::Postgres {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update");
+        let entry = &admin.entries()[0];
+        assert_eq!(entry.name, "Renamed");
+        let ssh = entry.ssh.as_ref().expect("tunnel preserved");
+        assert_eq!(ssh.host, "bastion.example");
+        assert_eq!(
+            ssh.keyring_password_ref.as_deref(),
+            Some("dbboard.work.ssh_password")
+        );
+        // The secret slot the tunnel points at is untouched.
+        assert_eq!(secrets.get("dbboard.work.ssh_password").unwrap(), "s3cr3t");
+    }
+
+    #[test]
+    fn update_removing_the_tunnel_purges_its_secret() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_password_draft("work")).expect("add");
+        assert!(secrets.get("dbboard.work.ssh_password").is_ok());
+        admin
+            .update(
+                "work",
+                ConnectionEditDraft {
+                    ssh: SshEditField::Disable,
+                    name: "PG work".to_string(),
+                    kind: ConnectionKindEditDraft::Postgres {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update");
+        assert!(admin.entries()[0].ssh.is_none());
+        assert!(matches!(
+            secrets.get("dbboard.work.ssh_password"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn update_switching_auth_purges_the_old_secret_and_writes_the_new() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_key_draft("work")).expect("add");
+        assert!(secrets.get("dbboard.work.ssh_passphrase").is_ok());
+        // Switch key auth -> password auth.
+        admin
+            .update(
+                "work",
+                ConnectionEditDraft {
+                    ssh: SshEditField::Set(SshTunnelEditDraft {
+                        host: "bastion.example".to_string(),
+                        port: 2222,
+                        user: "deploy".to_string(),
+                        auth: SshAuthEditDraft::Password(SecretField::Set("pw2".to_string())),
+                        host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+                    }),
+                    name: "PG work".to_string(),
+                    kind: ConnectionKindEditDraft::Postgres {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update");
+        let ssh = admin.entries()[0].ssh.as_ref().expect("ssh present");
+        assert!(ssh.key_path.is_none());
+        assert_eq!(secrets.get("dbboard.work.ssh_password").unwrap(), "pw2");
+        // The stale passphrase from the old key-auth block is gone.
+        assert!(matches!(
+            secrets.get("dbboard.work.ssh_passphrase"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn delete_purges_the_ssh_secret_too() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_password_draft("work")).expect("add");
+        admin.delete("work").expect("delete");
+        assert!(matches!(
+            secrets.get("dbboard.work.ssh_password"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn update_set_password_keep_reuses_the_existing_password_ref() {
+        // Editing a non-secret field of a password-auth tunnel while sending
+        // `SecretField::Keep` must reuse the stored password, not fabricate a
+        // fresh (unwritten) ref.
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_password_draft("work")).expect("add");
+        admin
+            .update(
+                "work",
+                ConnectionEditDraft {
+                    ssh: SshEditField::Set(SshTunnelEditDraft {
+                        host: "bastion.example".to_string(),
+                        port: 2222,
+                        user: "ops".to_string(),
+                        auth: SshAuthEditDraft::Password(SecretField::Keep),
+                        host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+                    }),
+                    name: "PG work".to_string(),
+                    kind: ConnectionKindEditDraft::Postgres {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update");
+        let ssh = admin.entries()[0].ssh.as_ref().expect("ssh present");
+        assert_eq!(ssh.user, "ops");
+        assert_eq!(
+            ssh.keyring_password_ref.as_deref(),
+            Some("dbboard.work.ssh_password")
+        );
+        assert_eq!(secrets.get("dbboard.work.ssh_password").unwrap(), "s3cr3t");
+    }
+
+    #[test]
+    fn update_switching_to_key_auth_encrypted_without_a_passphrase_is_rejected() {
+        // Switching a password-auth tunnel to an *encrypted* key while leaving
+        // the passphrase blank (mapped to `SshPassphraseField::Keep`) has
+        // nothing to keep: the connection must not be saved pointing at a
+        // passphrase ref that was never written.
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_password_draft("work")).expect("add");
+        let err = admin
+            .update(
+                "work",
+                ConnectionEditDraft {
+                    ssh: SshEditField::Set(SshTunnelEditDraft {
+                        host: "bastion.example".to_string(),
+                        port: 22,
+                        user: "deploy".to_string(),
+                        auth: SshAuthEditDraft::Key {
+                            key_path: "/home/deploy/.ssh/id_ed25519".to_string(),
+                            passphrase: SshPassphraseField::Keep,
+                        },
+                        host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+                    }),
+                    name: "PG work".to_string(),
+                    kind: ConnectionKindEditDraft::Postgres {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect_err("must reject a keep with nothing to keep");
+        assert!(matches!(err, ConfigError::SshInvalid { .. }), "got {err:?}");
+        // The connection is unchanged: still password auth, secret intact.
+        let ssh = admin.entries()[0].ssh.as_ref().expect("ssh unchanged");
+        assert!(ssh.key_path.is_none());
+        assert_eq!(secrets.get("dbboard.work.ssh_password").unwrap(), "s3cr3t");
+    }
+
+    #[test]
+    fn update_switching_to_password_auth_without_a_password_is_rejected() {
+        // Switching a key-auth tunnel to password auth with `SecretField::Keep`
+        // has no stored password to keep: reject rather than persist a dangling
+        // password ref.
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_key_draft("work")).expect("add");
+        let err = admin
+            .update(
+                "work",
+                ConnectionEditDraft {
+                    ssh: SshEditField::Set(SshTunnelEditDraft {
+                        host: "bastion.example".to_string(),
+                        port: 22,
+                        user: "deploy".to_string(),
+                        auth: SshAuthEditDraft::Password(SecretField::Keep),
+                        host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+                    }),
+                    name: "PG work".to_string(),
+                    kind: ConnectionKindEditDraft::Postgres {
+                        url: SecretField::Keep,
+                    },
+                },
+            )
+            .expect_err("must reject a password keep with nothing to keep");
+        assert!(matches!(err, ConfigError::SshInvalid { .. }), "got {err:?}");
+        // The connection is unchanged: still key auth, passphrase intact.
+        let ssh = admin.entries()[0].ssh.as_ref().expect("ssh unchanged");
+        assert_eq!(
+            ssh.key_path.as_deref(),
+            Some("/home/deploy/.ssh/id_ed25519")
+        );
+        assert_eq!(
+            secrets.get("dbboard.work.ssh_passphrase").unwrap(),
+            "unlock-me"
+        );
+    }
+
+    #[test]
+    fn export_and_import_round_trip_a_tunneled_connection() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin.add(pg_ssh_password_draft("work")).expect("add");
+        let blob = admin.export_bundle(BUNDLE_PASS).expect("export");
+
+        let (_dir2, secrets2, mut target) = fresh_admin();
+        let report = target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+        assert_eq!(report.imported, vec!["work".to_string()]);
+        let ssh = target.entries()[0].ssh.as_ref().expect("ssh imported");
+        assert_eq!(ssh.host, "bastion.example");
+        // The ssh secret travelled with the bundle into the new keychain.
+        assert_eq!(secrets2.get("dbboard.work.ssh_password").unwrap(), "s3cr3t");
+    }
+
+    // --- DSN prefill for the edit form (ADR-0080) ---------------------------
+
+    #[test]
+    fn dsn_prefill_returns_the_stored_parts() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft(
+                "shop",
+                "mysql://app:hunter2@db.internal:3307/shop",
+            ))
+            .expect("add");
+
+        let parts = admin.dsn_prefill("shop").expect("prefill").expect("some");
+        assert_eq!(parts.host, "db.internal");
+        assert_eq!(parts.port, Some(3307));
+        assert_eq!(parts.user, "app");
+        assert_eq!(parts.database, "shop");
+    }
+
+    // The reason the whole prefill path is safe to hand to a webview.
+    #[test]
+    fn dsn_prefill_never_exposes_the_password() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(pg_draft("prod", "postgres://app:hunter2@db:5432/analytics"))
+            .expect("add");
+
+        let parts = admin.dsn_prefill("prod").expect("prefill").expect("some");
+        assert!(!format!("{parts:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn dsn_prefill_keeps_the_tls_parameter() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft(
+                "shop",
+                "mysql://app:p@db:3306/shop?ssl-mode=disabled",
+            ))
+            .expect("add");
+
+        let parts = admin.dsn_prefill("shop").expect("prefill").expect("some");
+        assert_eq!(parts.query, "ssl-mode=disabled");
+    }
+
+    #[test]
+    fn dsn_prefill_is_none_for_a_kind_with_no_dsn() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("local", "Local", "./a.db"))
+            .expect("add");
+        admin.add(d1_draft("edge")).expect("add");
+
+        assert!(admin.dsn_prefill("local").expect("turso").is_none());
+        assert!(admin.dsn_prefill("edge").expect("d1").is_none());
+    }
+
+    // Best-effort by design: a broken keychain entry opens an empty form
+    // rather than a dialog that refuses to open at all.
+    #[test]
+    fn dsn_prefill_is_none_when_the_stored_value_is_not_a_url() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft("shop", "mysql://app:p@db:3306/shop"))
+            .expect("add");
+        secrets
+            .set("dbboard.shop.url", "not a url")
+            .expect("overwrite");
+
+        assert!(admin.dsn_prefill("shop").expect("prefill").is_none());
+    }
+
+    #[test]
+    fn dsn_prefill_rejects_an_unknown_id() {
+        let (_dir, _secrets, admin) = fresh_admin();
+        assert!(matches!(
+            admin.dsn_prefill("ghost"),
+            Err(ConfigError::NotFound(id)) if id == "ghost"
+        ));
+    }
+
+    #[test]
+    fn dsn_with_stored_password_grafts_the_kept_credential() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft("shop", "mysql://app:hunter2@db:3306/shop"))
+            .expect("add");
+
+        let merged = admin
+            .dsn_with_stored_password("shop", "mysql://app@db.internal:3307/other")
+            .expect("graft");
+        assert_eq!(merged, "mysql://app:hunter2@db.internal:3307/other");
+    }
+
+    #[test]
+    fn dsn_with_stored_password_keeps_a_newly_chosen_tls_mode() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft("shop", "mysql://app:hunter2@db:3306/shop"))
+            .expect("add");
+
+        let merged = admin
+            .dsn_with_stored_password("shop", "mysql://app@db:3306/shop?ssl-mode=disabled")
+            .expect("graft");
+        assert_eq!(merged, "mysql://app:hunter2@db:3306/shop?ssl-mode=disabled");
+    }
+
+    // The strict half of the pair: silently saving a connection back without
+    // its password would break a working connection with no visible cause.
+    #[test]
+    fn dsn_with_stored_password_fails_on_an_unparseable_stored_value() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(mysql_draft("shop", "mysql://app:p@db:3306/shop"))
+            .expect("add");
+        secrets
+            .set("dbboard.shop.url", "not a url")
+            .expect("overwrite");
+
+        assert!(matches!(
+            admin.dsn_with_stored_password("shop", "mysql://app@db:3306/shop"),
+            Err(ConfigError::DsnUnparseable { id }) if id == "shop"
+        ));
+    }
+
+    #[test]
+    fn dsn_with_stored_password_rejects_a_kind_with_no_dsn() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("local", "Local", "./a.db"))
+            .expect("add");
+
+        assert!(matches!(
+            admin.dsn_with_stored_password("local", "mysql://app@db:3306/shop"),
+            Err(ConfigError::NotFound(id)) if id == "local"
+        ));
     }
 }

@@ -6917,3 +6917,1757 @@ New crate `apps/desktop/src-tauri` (`dbboard-desktop`) + a SvelteKit frontend in
   coexist in the workspace until the maintainer evaluates the running spike.
   If migration is rejected, `apps/desktop` is deleted and the workspace member
   removed — nothing in the core depends on it.
+
+## ADR-0060 — CodeMirror 6 for the desktop SQL editor
+
+**Status:** Accepted · **Date:** 2026-07-27 · **Scope:** `apps/desktop` frontend
+
+### Context
+
+The Tauri query editor started as a plain `<textarea>`. To match the
+visual-direction mock and to be usable for real work (the maintainer wants the
+Tauri build releasable as v0.4.0), the editor needs SQL syntax highlighting,
+line numbers, bracket matching, and room to grow into autocomplete against the
+live schema. Hand-rolling a highlighter overlay would re-implement a solved
+problem and cap out well short of autocomplete.
+
+### Decision
+
+Adopt **CodeMirror 6** (modular `@codemirror/*` packages, not the `codemirror`
+meta-bundle) behind a single `SqlEditor.svelte` wrapper:
+
+1. **Composed, not `basicSetup`.** Only the extensions we use are imported
+   (line numbers, active line, history, close-brackets, autocomplete, `lang-sql`,
+   syntax highlighting). This keeps the bundle honest and the config legible.
+2. **Themed through the design tokens.** The CM theme and `HighlightStyle`
+   reference `var(--...)` (keyword = accent, string = success, number = warning,
+   comment = faint), so the editor re-themes on the same light↔dark token swap
+   as everything else — no editor-specific theme switching.
+3. **Two-way bind with an equality guard.** An `updateListener` pushes edits to
+   the bound `value`; an `$effect` adopts external sets (the sidebar's "Select
+   top 100" injecting a query) only when the text actually differs, avoiding a
+   feedback loop.
+4. **Cmd/Ctrl-Enter to run** is registered as a highest-precedence keymap so it
+   is never swallowed by the default bindings.
+
+### Consequences
+
+- Adds seven `@codemirror/*` / `@lezer/highlight` runtime deps to
+  `apps/desktop`. All are stable, widely used, and clear `minimumReleaseAge`.
+- **vitest is pinned to v2** (`^2.1.9`), not v4: vitest 4 requires Vite 6, and
+  the app is on Vite 5 (SvelteKit 2.9). Revisit when the app moves to Vite 6.
+- Pure SQL-text generation (`quoteIdent`, `qualifiedName`, `selectTopN`) lives
+  in `$lib/sql/build.ts` and is unit-tested (`build.test.ts`) independent of
+  CodeMirror — identifiers are always double-quoted (Postgres + SQLite/libSQL
+  safe), the one injection surface.
+- Still within the ADR-0059 spike: if the Tauri UI is dropped, this goes with
+  `apps/desktop`.
+
+## ADR-0061 — Aurora DSQL cannot take the read-only transaction preamble
+
+- **Status**: Accepted 2026-07-27
+- **Relates to**: ADR-0046 §8 (the read-only enforcement this amends for one
+  flavor) and ADR-0021 (the Aurora DSQL divergence log this extends)
+
+### Context
+
+ADR-0046 §8 hardens the MCP read path with a two-part backstop: every
+read-only statement runs inside a transaction opened with
+`SET TRANSACTION READ ONLY` (the engine then rejects every write for the
+transaction's life) plus `SET LOCAL statement_timeout = '30s'` (a server-side
+cancellation backstop for an abandoned query). This shipped for all Postgres
+flavors alike.
+
+Aurora DSQL rejects **both** statements:
+
+- `SET TRANSACTION READ ONLY` — DSQL does not implement the `SET TRANSACTION`
+  command form. It parses the word `TRANSACTION` as a GUC name and fails with
+  `ERROR: setting configuration parameter "TRANSACTION" not supported`. This
+  is the error a user hit running `SELECT * FROM … LIMIT 100` against a live
+  Aurora DSQL IAM connection — a query that worked before ADR-0046 added the
+  preamble.
+- `statement_timeout` — DSQL manages transaction duration itself and lists
+  `statement_timeout` (with `lock_timeout`, `idle_in_transaction_session_timeout`)
+  among the parameters it does not accept via `SET` / `SET LOCAL`.
+
+DSQL's supported-session-parameter list and its fixed `REPEATABLE READ`
+isolation are documented at
+<https://docs.aws.amazon.com/aurora-dsql/latest/userguide/accessing.html>.
+
+**Correction (2026-07-27).** The first cut of this ADR asserted that
+server-side cursors (`DECLARE` / `FETCH`) — the other half of the read path —
+were *not* on DSQL's unsupported list, so the cursor row-cap was kept. That
+was wrong. DSQL rejects `DECLARE CURSOR` with
+`ERROR: unsupported statement: DeclareCursor`, which a user hit on the very
+next query after the preamble fix shipped. `DECLARE CURSOR` is on DSQL's
+unsupported-features list
+(<https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-unsupported-features.html>).
+So the cursor row-cap cannot be used on DSQL either — see the amendment below.
+
+### Decision
+
+Gate the preamble on the flavor. A pure `read_only_preamble(flavor)` helper
+returns the two `SET` statements for the standard flavors
+(`postgres` / `neon` / `supabase`) and an **empty preamble** for
+`aurora-dsql`. `run_read_only_txn` still opens a transaction and still rolls
+back on drop — only the two unsupported `SET` statements are skipped for DSQL.
+The row-cap mechanism is also flavor-gated (see the amendment).
+
+### Consequences
+
+- **DSQL loses the transaction-level read-only backstop.** There, the sole
+  read-only guarantee is the pre-connection `classify_read_only` AST guard,
+  which already rejects every write, multi-statement batch, and
+  data-modifying CTE before a connection is opened — so the app-layer
+  guarantee is unchanged; only the engine-level belt is absent on DSQL. This
+  is strictly safer than the pre-ADR-0046 DSQL read path, which ran the query
+  with no transaction wrapper and no classifier at all.
+- **DSQL loses the `statement_timeout` cancellation backstop**, but DSQL
+  enforces its own transaction-duration limits, so an abandoned query cannot
+  pin a connection indefinitely regardless.
+- Restoring a begin-time read-only transaction on DSQL
+  (`BEGIN READ ONLY` / `START TRANSACTION READ ONLY`) is a possible follow-up
+  once verified against a live cluster; it is deliberately out of scope here
+  to keep the fix to the minimal change that unblocks the connection without
+  risking another unsupported-statement rejection.
+- The helper is unit-tested (`read_only_preamble_*`); the flavor-gated read
+  path itself is exercised end-to-end only against a live DSQL cluster, which
+  no CI runner has — that verification is the maintainer's.
+
+### Amendment (2026-07-27) — the row-cap must also be flavor-gated
+
+The preamble fix above unblocked the `SET TRANSACTION` rejection, but the very
+next query (`SELECT * FROM … LIMIT 100`) failed with
+`ERROR: unsupported statement: DeclareCursor`. The read path caps a
+row-returning query with a server-side cursor —
+`DECLARE dbboard_ro_cursor NO SCROLL CURSOR FOR <sql>` then
+`FETCH FORWARD <max_rows>` — so that only `max_rows` rows ever cross the wire.
+Aurora DSQL does not implement `DECLARE CURSOR`, so this half of the read path
+was still broken for DSQL.
+
+**Decision.** Flavor-gate the row-cap mechanism too, via a pure
+`caps_with_cursor(flavor)` helper:
+
+- Standard flavors (`postgres` / `neon` / `supabase`) keep the cursor cap
+  (`fetch_via_cursor`).
+- `aurora-dsql` uses a new `fetch_capped_stream`: it streams the query's
+  portal with `sqlx::query(sql).fetch(...)` and stops after `max_rows` rows,
+  then drops the stream so the server stops producing more. This preserves the
+  "at most `max_rows` rows cross the wire" property **without a cursor**, and
+  without wrapping arbitrary SQL in a `LIMIT` subquery — subquery-wrapping
+  would break on a query with duplicate output column names (`SELECT id, id`).
+
+`EXPLAIN` continues to run directly (`run_capped`) on all flavors; it was
+never a cursor source.
+
+**Consequences.**
+
+- The DSQL read path is now fully functional: both the preamble and the
+  row-cap are DSQL-compatible.
+- `caps_with_cursor` is unit-tested (`caps_with_cursor_on_standard_postgres`,
+  `does_not_cap_with_cursor_on_aurora_dsql`). The streaming cap itself is
+  exercised end-to-end by `aurora_dsql_read_only_caps_without_a_cursor`, gated
+  on a live `DBBOARD_AURORA_DSQL_URL` — maintainer-run, as no CI runner has a
+  DSQL cluster.
+- Lesson: "not mentioned in the accessing.html session-parameter list" is not
+  the same as "supported". The authoritative source for what DSQL rejects is
+  the unsupported-features page, which lists `DECLARE CURSOR` explicitly. The
+  original ADR trusted the wrong list.
+
+## ADR-0062 — Connection management write path (Tauri desktop, v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-27
+- **Relates to**: ADR-0016 (the original connection-management UI model),
+  ADR-0020 (in-process connection switching), ADR-0038 (passphrase-encrypted
+  bundle export/import), ADR-0046 / ADR-0059 (the read-only Tauri spike this
+  lifts the write ban from), and the ADR-0016 secrets-in-keyring rule.
+
+### Context
+
+The Tauri 2 + SvelteKit rewrite (ADR-0059) shipped as a deliberately
+**read-only** spike: it could browse connections defined in `connections.toml`
+but could not create, edit, or delete them, and had no bundle import/export.
+That was fine for a spike but is a **regression against the egui build**, which
+has full connection CRUD *and* passphrase-encrypted bundle transfer. A user
+upgrading from the egui app to the Tauri app would lose the ability to add a
+connection from inside the app and — worse — lose import/export entirely, which
+is how connections move between machines.
+
+It also surfaced as two concrete bug reports that both root-cause to
+"no connection configured, and no in-app way to add one": *Select top 100*
+produced no SQL and the *Run* button could not be pressed, because both require
+a selected connection that a fresh install has no way to create.
+
+The read path (`McpService`, reads `connections.toml` fresh, caches adapters)
+must not be the thing that writes: mixing a cache with a mutator invites stale
+credentials. The egui build already solved this with `ConnectionAdmin` in
+`dbboard-config` — a CRUD facade that owns `connections.toml` + the OS keyring
+with rollback discipline. The Tauri app should reuse it verbatim, not
+reimplement it.
+
+### Decision
+
+Lift the read-only boundary for connection management and wire the existing
+`dbboard-config::ConnectionAdmin` into the Tauri app as the **sole writer**.
+
+- **`AppState` gains `admin: Mutex<ConnectionAdmin>`** alongside the existing
+  `service: McpService`. The two share one `connections.toml`; after any write
+  the app calls `service.invalidate(connection_id)` to evict the matching
+  cached adapter so the read path can never serve stale credentials.
+- **Six new commands**: `add_connection`, `update_connection`,
+  `delete_connection`, `connection_edit_fields`, `export_connections`,
+  `import_connections`.
+- **DTO boundary.** `dbboard-config`'s draft enums carry inline secrets and do
+  not derive `Serialize`/`Deserialize`, so the app defines thin Tauri DTOs
+  (`KindInput` / `KindEditInput`, tagged `#[serde(tag = "kind",
+  rename_all = "snake_case")]`) that the frontend speaks, and maps them to the
+  draft types. The Svelte contract stays decoupled from the config internals.
+- **Secrets are never read back (ADR-0016).** `connection_edit_fields` returns
+  an `EditFieldsDto` with **non-secret fields only**. The edit form leaves
+  secret inputs blank; a blank secret on save means "keep the stored secret"
+  (`SecretField::Keep`), never "clear it" (`SecretField::Set`).
+- **Bundle file I/O stays in Rust.** The frontend uses the Tauri dialog plugin
+  only to pick a save/open path; the encrypted blob and the passphrase never
+  round-trip through the WebView. `export_connections` writes the ciphertext,
+  `import_connections` reads it, and both call `ConnectionAdmin`'s
+  `export_bundle` / `import_bundle` (ADR-0038). Import is additive: ids already
+  present are **skipped, never overwritten**, and the `ImportReportDto` reports
+  imported vs skipped ids.
+- **Pure frontend draft module.** Validation and DTO-shaping live in an
+  I/O-free `$lib/connections/draft.ts` (mirroring the egui form/admin split),
+  so the Svelte `ConnectionManager.svelte` only binds inputs and the command
+  only receives an already-validated payload.
+
+### Consequences
+
+- The two upgrade-blocking bugs are fixed at the root: a fresh install can now
+  add a connection from inside the app, so *Select top 100* and *Run* have a
+  connection to act on.
+- Import/export parity with the egui build is restored, so upgrading users keep
+  the workflow that moves connections between machines.
+- `connections.toml` + `annotations.toml` remain the shared source of truth
+  between the egui and Tauri builds (both resolve
+  `ProjectDirs::from("dev", "dbboard", "dbboard")`), so a connection added in
+  one build appears in the other.
+- Coverage: the DTO↔draft mapping (blank-handling for optional/secret fields),
+  the add/update/delete flow over a temp store, duplicate-id rejection, and the
+  export→import file round-trip are unit-tested in the desktop crate (12
+  tests); the pure draft module is unit-tested on the frontend (22 tests).
+
+### v0.4.0 desktop-parity scope map
+
+This ADR is the connection vertical. The **directive is full egui parity in
+one release — no segmentation, no "this is also missing" follow-ups.** The
+remaining verticals below are tracked here so the whole scope is visible; each
+lands as its own focused, tested commit under this parity effort, and each gets
+its own ADR entry where it introduces a new decision.
+
+| Vertical | egui source | Status |
+|---|---|---|
+| Connection CRUD + bundle import/export | `ConnectionsView` + `ConnectionAdmin` | **This ADR — done** |
+| Inline cell editing (UPDATE-only, declared PK, `rows_affected == 1` gate) | ADR-0042 | **Done — ADR-0063** |
+| Local annotation editing (table/column notes, empty = delete) | ADR-0045 | **Done** |
+| Dataset export (CSV / CSV-with-BOM / TSV, row selection) | ADR-0035 | **Done** |
+| Logical backup / dump (warn-and-allow threshold; Turso emits no DDL) | ADR-0049 / ADR-0050 | **Done — ADR-0064** |
+| Logical restore / import (empty-target confirm; per-engine txn strategy) | ADR-0051 | **Done — ADR-0065** |
+| AI assistant (provider trait; explain/suggest; never runs SQL, never sends rows) | ADR-0052 | **Done — ADR-0066** |
+| Auto-update (updater plugin + signed `latest.json`; bump 0.3.0 → 0.4.0) | ADR-0044 / ADR-0043 | **Done — ADR-0067** |
+
+The read-only enforcement of the *query* path (ADR-0046 §8, ADR-0061) is
+unchanged: lifting the write ban applies to connection **management**, not to
+arbitrary SQL — user SQL still runs through the read-only classifier.
+
+---
+
+## ADR-0063 — Desktop inline cell editing: the first DB-write surface (Tauri, v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0042 (the egui cell-edit model this ports — `build_update_sql`,
+  the declared-primary-key requirement, the `rows_affected == 1` commit gate),
+  ADR-0046 §8 / ADR-0061 (the read-only classifier on the *query* path, which
+  this does **not** relax), ADR-0059 (the read-only Tauri spike), and ADR-0062
+  (the connection **management** write path, whose read/write split this reuses).
+
+### Context
+
+The Tauri build could browse rows but not change them — a regression against the
+egui app, which edits a cell in place and writes it back as a single-row UPDATE.
+This is the second desktop write surface after connection management (ADR-0062),
+and the first that writes to a **user's database** rather than to local config.
+That raises two questions ADR-0062 did not: *where does the write live* relative
+to the read-only MCP tool surface, and *what stops a mis-keyed edit* from
+clobbering more than one row.
+
+`McpService` is already the shared desktop data-access layer as well as the
+read-only MCP tool surface. The temptation is to expose the write as one more
+MCP tool; that would hand external agents a mutation path, which ADR-0046 §8
+forbids. The two roles must be split at the method level, not the type level.
+
+### Decision
+
+1. **The write path is a `McpService` method that is deliberately *not* an MCP
+   tool.** `McpService::apply_row_update(connection_id, &UpdatePlan)` performs
+   the write and returns the affected-row count. It is called only from the
+   desktop Tauri command `update_row`; it is **never** registered in the MCP
+   tool router. External agents keep the exact read-only surface they had.
+   `ServiceError::WriteBack` / `NotEditable` map to `invalid_params` in the MCP
+   layer purely for exhaustiveness — they are unreachable from a tool call.
+
+2. **Editability is gated on a *declared* primary key, decided on the frontend.**
+   A result grid is editable only when it came from a sidebar *Select top 100*
+   browse (which carries the source `TableInfo`) **and** `describeTable` reports
+   a non-empty `primary_key`. An arbitrary query is never editable; a table with
+   no declared PK (including rowid-only SQLite tables) shows a read-only note.
+   The pure grouping step — matching each staged edit to its row's PK values —
+   lives in `apps/desktop/src/lib/grid/edit.ts` and is unit-tested in isolation;
+   it throws if the PK is empty or a PK column is absent from the result, so a
+   browse must `SELECT *`.
+
+3. **The command enforces the `rows_affected == 1` gate** (parity with egui's
+   `advance_save`). `update_row` returns `Ok(())` only when exactly one row
+   matched; `0` and `n > 1` both surface as an error and leave the edit staged,
+   so a stale or non-unique key can never silently write the wrong rows.
+
+### Consequences
+
+- The desktop gains in-place editing at egui parity while agents stay strictly
+  read-only — the split is enforced by *what is registered as a tool*, so it
+  cannot be bypassed by an agent crafting a request.
+- Editing requires a declared PK. rowid-only SQLite tables and view/derived
+  results are intentionally read-only in the app, matching egui.
+- Tested RED-first: 4 integration tests on `apply_row_update` in
+  `dbboard-mcp` (writes exactly one row and reports it; clears a cell to NULL;
+  reports `0` when the key matches nothing; surfaces a write-back refusal) and
+  8 unit tests on the pure `buildRowUpdates` grouping in `edit.test.ts`.
+
+---
+
+## ADR-0064 — Desktop logical backup: wiring the core dump to Tauri (v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0049 (the logical-dump design and the pure
+  `dbboard-core::dump` orchestrator/preflight this wires), ADR-0050 (the
+  user-configurable warn threshold), ADR-0059 (the read-only Tauri spike),
+  ADR-0062 (connection-management write path), and ADR-0063 (inline cell
+  editing — the *non-MCP-tool* write-method pattern this reuses).
+
+### Context
+
+The logical dump was already built and tested end-to-end in `dbboard-core`
+(`plan_dump` preflight, `run_dump` orchestrator, Value→SQL serialization) and
+shipped in the egui app via `dbboard-ui::backup`. The Tauri build had none of
+it. This vertical is **wiring only** — no new dump logic — plus the desktop
+pieces the domain layer cannot hold: file I/O, a cancellation flag, progress to
+the WebView, and the confirmation/threshold UX. Three questions had to be
+answered the same way ADR-0063 answered them for cell editing: *where does the
+write method live* relative to the read-only MCP tool surface, *how does an
+un-serialisable plan cross IPC*, and *where does the warn threshold live*.
+
+### Decision
+
+1. **The dump is two `McpService` methods that are deliberately *not* MCP
+   tools.** `plan_dump(connection_id)` and
+   `run_dump(connection_id, &DumpPlan, &mut dyn DumpSink, &dyn DumpControl)`
+   resolve the adapter and its dialect, then call the core functions. Neither is
+   registered in the MCP router, so external agents keep the exact read-only
+   surface — identical to `apply_row_update` (ADR-0063). Two new
+   `ServiceError` variants, `NotDumpable` (adapter has no known SQL dialect) and
+   `Dump` (the output sink failed), map to `invalid_params` / `internal_error`
+   in the MCP layer purely for exhaustiveness; they are unreachable from a tool
+   call.
+
+2. **`DumpPlan` never crosses IPC; the run re-plans internally.** `DumpPlan` is
+   not `Serialize` (it holds `TableInfo`), so `plan_dump` returns a flat
+   `DumpPlanDto` (table names + counts + `total_rows` + `is_empty_data`) for the
+   confirmation dialog, and the `run_dump` **command** re-runs the preflight
+   itself before dumping. A dump's preflight is cheap (one `COUNT(*)` per table)
+   relative to the dump, so re-planning is preferable to inventing a
+   serialisable plan handle or caching plans across commands.
+
+3. **The warn threshold is frontend-owned (localStorage), like theme and
+   language.** ADR-0050 requires a *user-configurable* threshold; the desktop
+   satisfies that without a `ui-settings.toml` by persisting it in the frontend
+   and applying it there (`exceedsThreshold`). The backend never blocks a dump —
+   warn-and-allow (ADR-0049 Decision 8) is a UI prompt, not a server gate — so
+   the threshold does not belong in the adapter or dump contract.
+
+4. **Progress and cancellation use a Tauri event + a shared `AtomicBool`.**
+   The `run_dump` command builds an `EventControl` (a `DumpControl`) that emits
+   each `DumpProgress` as a `dump:progress` event and reads cancellation off an
+   `AppState.dump_cancel: Arc<AtomicBool>` that a separate `cancel_dump` command
+   flips. Only one dump runs at a time, so a single flag suffices; the run
+   clears it first so a stale cancel can't abort the next dump. This mirrors the
+   egui `ChannelControl`/`CancellationToken`, swapping the mpsc channel for the
+   Tauri event bus. The output is a buffered `FileSink` whose sole write is to
+   the user-chosen `.sql` path.
+
+### Consequences
+
+- The desktop gains one-click logical backup at egui parity while agents stay
+  strictly read-only — again enforced by *what is registered as a tool*.
+- A cancellation mid-run is not an error: `run_dump` returns an outcome with
+  `cancelled = true` and the partial file is kept and reported honestly; only an
+  unopenable/unwritable output fails the command. Per-table read failures and
+  keyless-table truncations are surfaced in the outcome, not hidden.
+- For SQLite/libSQL the dump is **data-only** (no `CREATE TABLE`) — the
+  `table_ddl` capability is Postgres-only in v1 (ADR-0049 Decision 6/9). The UI
+  says so, and a test pins that the Turso dump emits `INSERT`s under a header
+  comment and no DDL.
+- Tested RED-first: 3 integration tests on the new `McpService` dump methods in
+  `dbboard-mcp` (preflight counts the seeded rows; unknown connection is a clean
+  not-found; a run emits data inserts and reports the table with no DDL), 3
+  unit tests on the desktop `FileSink`/cancel-flag plumbing, and 16 unit tests
+  on the pure frontend `plan.ts` (threshold clamp/persist, `exceedsThreshold`
+  warn-and-allow boundary, progress percent incl. zero-row and over-count edge
+  cases, default file-name slugify).
+
+---
+
+## ADR-0065 — Desktop logical restore: wiring the core restore to Tauri (v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0051 (the logical-restore design and the pure
+  `dbboard-core::restore` orchestrator/preflight this wires), ADR-0059 (the
+  read-only Tauri spike), ADR-0063 (inline cell editing — the *non-MCP-tool*
+  write-method pattern), and ADR-0064 (desktop logical backup — the sibling
+  vertical whose re-plan-on-run and progress/cancel shapes this mirrors).
+
+### Context
+
+The logical restore was already built and tested end-to-end in `dbboard-core`
+(`plan_restore` preflight + classifier, `run_restore` orchestrator with the
+per-engine transaction strategy and the empty-target gate) and shipped in the
+egui app via `dbboard-ui::restore`. The Tauri build had none of it. Like the
+dump (ADR-0064) this vertical is **wiring only** — no new restore logic — plus
+the desktop pieces the domain layer cannot hold: reading the chosen `.sql` file,
+a cancellation flag, and progress to the WebView. The same three questions
+ADR-0063/0064 answered recur, and are answered the same way. The one asymmetry
+with the dump: a restore has **no sink** — it writes into the target database
+through the adapter, not to a file — and no warn threshold; its single safety
+gate is the empty-target confirmation.
+
+### Decision
+
+1. **The restore is two `McpService` methods that are deliberately *not* MCP
+   tools.** `plan_restore(connection_id, script)` and
+   `run_restore(connection_id, &RestorePlan, RestoreOptions, &dyn RestoreControl)`
+   resolve the adapter and its dialect, then call the core functions. Neither is
+   registered in the MCP router, so external agents keep the exact read-only
+   surface — identical to `apply_row_update` (ADR-0063) and the dump methods
+   (ADR-0064). Two new `ServiceError` variants, `NotRestorable` (adapter has no
+   known SQL dialect) and `Restore` (the run failed), map to `invalid_params` /
+   `internal_error` in the MCP layer purely for exhaustiveness; they are
+   unreachable from a tool call.
+
+2. **`RestorePlan` never crosses IPC; the run re-plans internally.**
+   `RestorePlan`/`RestoreStatement` are not `Serialize`, so `plan_restore`
+   returns a flat `RestorePlanDto` (statement counts by kind, `existing_tables`,
+   `is_target_empty`) for the confirmation dialog, and the `run_restore`
+   **command** re-reads the file and re-runs the preflight itself before
+   applying it — the same re-plan-on-run shape ADR-0064 established for the dump.
+   The counts are of the *runnable* statements only: transaction-control
+   statements (a dump's own `BEGIN`/`COMMIT`) are stripped by the runner and
+   excluded so the numbers match what actually executes.
+
+3. **The empty-target confirmation is the one gate, collected in the frontend.**
+   A restore into a database that already has tables needs `confirmed = true`;
+   the plan DTO's `existing_tables`/`is_target_empty` drives a required checkbox
+   the run button reads (`needsConfirmation`). There is no warn threshold — that
+   was dump-specific. The `on_error` policy (`stop` | `continue`) is a frontend
+   choice that only affects the per-statement (non-atomic) path; anything but the
+   explicit `continue` is coerced to the safe `stop` at both ends.
+
+4. **Progress and cancellation use a Tauri event + a shared `AtomicBool`,
+   symmetric to the dump.** `run_restore` builds an `EventControl` (a
+   `RestoreControl`) that emits each `RestoreProgress` as a `restore:progress`
+   event and reads cancellation off an `AppState.restore_cancel:
+   Arc<AtomicBool>` a separate `cancel_restore` command flips. The flag is kept
+   distinct from `dump_cancel` even though the two are never in flight together,
+   so a cancel can never cross verticals; the run clears it first so a stale
+   cancel can't abort the next restore.
+
+### Consequences
+
+- The desktop gains one-click logical restore at egui parity while agents stay
+  strictly read-only — again enforced by *what is registered as a tool*.
+- Per-engine transaction strategy is the core's, unchanged: adapters with
+  `has_atomic_restore` run the whole script as one all-or-nothing batch (the
+  outcome's `atomic = true`); adapters with only `has_execute` (Cloudflare D1)
+  apply each statement in order, honouring `on_error`. The UI reflects which
+  path ran in its success message.
+- A cancellation mid-run is not an error: `run_restore` returns an outcome with
+  `cancelled = true` and the already-applied statements reported; on the atomic
+  path the flag is only observed before the indivisible batch starts. Only an
+  unreadable file or a hard run error fails the command.
+- Statements the classifier could not parse under the dialect still run verbatim
+  (best-effort) and are surfaced as an `unparsed_count` warning, so a restore is
+  never silently narrowed to what the parser understood.
+- Tested RED-first: 3 integration tests on the new `McpService` restore methods
+  in `dbboard-mcp` (preflight classifies and sees an empty target; unknown
+  connection is a clean not-found; a run applies the script and the rows land),
+  3 unit tests on the desktop `on_error` coercion / progress-DTO / cancel-flag
+  plumbing, and 13 unit tests on the pure frontend `plan.ts` (statement-based
+  progress percent incl. empty-script and over-count edges, `needsConfirmation`
+  gate, `hasUnparsed`, `restoreHadFailures`, `normalizeOnError` default, file
+  filter).
+
+---
+
+## ADR-0066 — Desktop AI assistant: wiring the provider layer to Tauri (v0.4.0 parity)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0052 (the AI assistant design — the I/O-free provider
+  trait, the explain/suggest split, and the never-runs-SQL / never-sends-rows
+  guardrail this ports), ADR-0028 (the `describe_table` metadata prefetch this
+  fans out for Suggest), ADR-0063/0064/0065 (the desktop write verticals whose
+  *non-MCP-tool* method pattern and cancel-flag plumbing this reuses), and
+  ADR-0059 (the read-only Tauri spike this extends).
+
+### Context
+
+The AI assistant was already built and tested in the egui client: a pluggable
+provider trait (`dbboard-ai`) with two concrete providers
+(`dbboard-anthropic`, `dbboard-openai`), an explain path (send the SQL text),
+a suggest path (send the prompt + schema names), and the settings admin that
+owns `ai-providers.toml` plus the keyring. The Tauri build had none of it.
+Like the other v0.4.0 verticals this is **transport wiring only** — no new AI
+logic — plus the desktop pieces the domain layer cannot hold: streaming
+deltas to the WebView, a cancellation flag, and the provider-management
+command surface. The guardrail that defines this feature is inherited
+verbatim: the assistant never runs SQL and never sees a single row.
+
+### Decision
+
+1. **The two AI actions are Tauri commands, deliberately *not* MCP tools.**
+   `ai_explain(connection_id, sql)` and
+   `ai_suggest(connection_id, prompt, include_details)` clone the live
+   provider out of an `RwLock<Option<Arc<dyn AiProvider>>>` slot and stream
+   its output. Neither is registered in the MCP router, so external agents
+   keep the exact read-only surface — identical to the write verticals
+   (ADR-0062/0063/0064/0065). This is the enforcement point: read-only is
+   *what is registered as a tool*, not a property of the code paths.
+
+2. **The never-runs-SQL / never-sends-rows guardrail is preserved by what the
+   commands are allowed to fetch.** Explain sends only the SQL text the user
+   typed. Suggest sends the natural-language prompt plus table/column *names*
+   (`list_tables`, and — when the user ticks include-details — `describe_table`
+   metadata: names, types, PK). No `run_read_query` output ever reaches a
+   provider. A `describe_table` that fails is not fatal: it is counted into
+   `prefetch_warnings` and surfaced to the user so a partial schema is never
+   silently presented as complete.
+
+3. **Streaming uses a Tauri event; cancellation a shared `AtomicBool`.**
+   Each provider `StreamEvent` is emitted as an `ai:chunk` event carrying a
+   text delta and the running token counts; the frontend folds them through a
+   pure `accumulate()` that appends text but **replaces** the cumulative token
+   totals (the provider reports `tokens_out` cumulatively, so summing would
+   double-count). A single `cancel_ai` command flips the one
+   `AiState` cancel flag the in-flight stream polls; only one AI request runs
+   at a time, so one flag suffices, and a new request clears it first so a
+   stale cancel can't abort the next run.
+
+4. **The API key lives only in the OS keyring; the management surface never
+   returns it.** Provider CRUD (`list_ai_providers`, `add_ai_provider`,
+   `update_ai_provider`, `delete_ai_provider`, `set_active_ai_provider`) is
+   backed by `AiSettingsAdmin`, which writes `ai-providers.toml` for
+   non-secret fields and the keyring at `dbboard.ai.<id>.api_key` for the key.
+   The key is never written to TOML, never logged, never serialized back to
+   the WebView — `AiProviderView` has no key field, and an edit that leaves
+   the key blank keeps the stored one.
+
+### Consequences
+
+- The desktop gains explain-my-SQL and draft-SQL at egui parity while agents
+  stay strictly read-only and no row data can leave the machine through the
+  provider.
+- The entry-point button is always present (outside the connection gate) so a
+  first provider can be added before any connection exists; Suggest still
+  requires a connection (enforced in both the frontend `canSend` guard and the
+  command dispatch), while Explain does not.
+- Tested RED-first: 9 backend unit tests in `dbboard-desktop` (status DTO
+  shape, provider-view redaction, kind-input parse, stream accumulation
+  replace-not-sum, cancel-flag clear-on-start, prefetch-warning count), and 19
+  frontend unit tests on the pure `panel.ts` (`canSend`, `showIncludeDetails`,
+  `accumulate` append/replace/non-mutation, `validateProvider`,
+  `normalizeModel`, `providerFormForEdit`, `buildAddKindInput`). The provider
+  trait and concrete providers keep their existing `dbboard-ai` coverage,
+  unchanged.
+
+## ADR-0067 — Desktop auto-update: tauri-plugin-updater + a CI-assembled `latest.json` (v0.4.0)
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0040 (the egui client's inform-only update check — the
+  version-compare rules and the `DBBOARD_NO_UPDATE_CHECK` opt-out this mirrors),
+  ADR-0043 (release notes as Markdown — the notes surface this reuses),
+  ADR-0044 (the release build + checksums pipeline this extends, and its
+  deferred OS code signing), and ADR-0059/0062–0066 (the Tauri desktop app this
+  completes to v0.4.0 parity).
+
+### Context
+
+The egui client already *informs* about a newer release (ADR-0040): a
+best-effort startup check against the GitHub Releases API that surfaces a Help
+notice and the notes, with updating left entirely manual. The Tauri app had no
+update path at all. This is the last v0.4.0 parity vertical, and it goes one
+step further than egui: Tauri ships a first-party updater
+(`tauri-plugin-updater`) that can verify a signed release and install it in
+place, so the desktop app can offer **Install & Restart** rather than "go
+download it yourself". The egui binary and the Tauri app are shipped
+side-by-side — egui stays in production (it runs three store DBs and an
+unattended Aurora DSQL consumer) — so this adds a channel, it does not retire
+one.
+
+### Decision
+
+1. **`tauri-plugin-updater` + `tauri-plugin-process`, verifying a signed
+   `latest.json`.** `tauri.conf.json` points the updater at
+   `…/releases/latest/download/latest.json`, embeds the minisign **public** key,
+   and sets `createUpdaterArtifacts: true` so `tauri build` emits a `.sig` next
+   to each bundle. Windows installs via the NSIS setup `.exe` in `passive`
+   mode; macOS ships a universal `.app.tar.gz`. The frontend calls `check()`,
+   then `downloadAndInstall()`, then `relaunch()` (from the process plugin).
+
+2. **The signing PRIVATE key never enters the repo.** Only the public key is
+   committed (in `tauri.conf.json`). Signing happens in CI from the
+   `TAURI_SIGNING_PRIVATE_KEY` secret (empty password). This is the minisign
+   *updater* key only — it does not code-sign the binary, so OS code signing
+   stays deferred (ADR-0044 §Future) and the bundles still trip SmartScreen /
+   Gatekeeper on first run. Accepted trade-off: the signing key is exposed to a
+   CI job that also runs untrusted crates.io build code, which is inherent to
+   the updater's build-time-signing design (and exactly what `tauri-action`
+   does); the blast radius is "can sign an update", bounded by the human
+   holding the secret.
+
+3. **`latest.json` is assembled by CI, not by `tauri build`.** `tauri build`
+   produces the bundles and their `.sig` files but not the manifest. The
+   `release.yml` publish job builds `latest.json` from the `.sig` contents plus
+   the static, tag-derived download URLs — one universal macOS artifact serves
+   both `darwin-x86_64` and `darwin-aarch64`. Assembly fails loudly (`one()`)
+   if any bundle is missing, so a half-built release can never publish a
+   manifest that points at a nonexistent asset. No third-party release action
+   (ADR-0044): the runner-bundled `gh` CLI publishes, and — fixing the failure
+   mode recorded during the egui release work — the publish job now bootstraps
+   the release object (`gh release view … || gh release create …`) before
+   `gh release upload`, which 404s on a tag that has no release yet.
+
+4. **Opt-out and the newer-guard mirror egui (ADR-0040).** A new
+   `update_opt_out` command honours the same `DBBOARD_NO_UPDATE_CHECK` env knob,
+   so one variable silences both binaries. The pure `notice.ts` re-implements
+   egui's `parse_version`/`is_newer` (tolerate a leading `v`, fill missing
+   components with 0, drop pre-release/build metadata, treat any unparseable tag
+   as "not newer") as a defensive guard: even though the plugin gates on
+   version, a misconfigured endpoint offering a same/older build never nags. The
+   notice is a non-modal corner card, never a blocking dialog.
+
+### Consequences
+
+- The desktop app reaches v0.4.0 with full egui feature parity **plus**
+  in-place auto-update; the coordinated version bump moves the whole workspace
+  0.3.0 → 0.4.0 so both binaries and every crate share one release number.
+- The notes are rendered as plain preformatted text rather than Markdown
+  (ADR-0043 uses `egui_commonmark`, which has no WebView analogue here without a
+  new dependency, deliberately avoided under the package-manager supply-chain
+  policy). Rich Markdown notes are a possible follow-up, not a blocker.
+- **Human handoff required before the first signed release:** set the GitHub
+  Actions secret `TAURI_SIGNING_PRIVATE_KEY` to the generated minisign private
+  key with an empty `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Until then the
+  `build-tauri-*` jobs fail (updater artifacts cannot be signed). The public
+  key is already embedded, so an unsigned/mismatched build would be rejected by
+  clients anyway — signing is not optional for this channel.
+- Tested RED-first: 15 frontend unit tests on the pure `notice.ts`
+  (`normalizeVersion`, `parseVersion` incl. pre-release/empty rejection,
+  `isNewer` incl. the never-phantom guard, `foldDownload` start/progress/finish
+  non-mutation, `downloadPercent` rounding/clamp/indeterminate) plus a Rust unit
+  test pinning the `update_opt_out` policy. The download-and-install path itself
+  is thin glue over the plugin and is exercised through the UI.
+
+## ADR-0068 — MySQL adapter: a fourth engine and the first genuinely new SQL dialect
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0012 (the `DatabaseAdapter` trait this implements),
+  ADR-0028 (the `describe_table` column/PK contract), ADR-0046 (the read-only
+  transaction guarantee for the MCP/AI surface), ADR-0049/0050/0051 (the logical
+  dump/restore contract and the per-dialect value literals), ADR-0054 (the
+  `foreign_keys` edge contract), and the write-back dialect rules in
+  `dbboard-core::write_back` (ADR-0042). Unlike the Postgres-wire family
+  (ADR-0018/0019/0021), MySQL is not another flavor of an existing dialect.
+
+### Context
+
+A maintainer uses MySQL at work and asked for it as a first-class engine. Every
+adapter so far has been either SQLite-wire (Turso/libSQL, D1) or Postgres-wire
+(CockroachDB, Neon, Supabase, Aurora DSQL) — MySQL is the first engine whose SQL
+text differs enough to need its own `SqlDialect` variant. The mandate was full
+parity, not a read-only preview: connect, query, introspection
+(`list_tables`/`describe_table`/`foreign_keys`/`table_ddl`), inline cell
+write-back, CSV/TSV export, logical dump, atomic restore, the read-only MCP/AI
+surface, and the desktop connection-manager UI — every vertical the other
+adapters already satisfy.
+
+### Decision
+
+1. **A new `SqlDialect::MySql`, not a reuse of an existing one.** MySQL quotes
+   identifiers with back-ticks (`` `x` ``, doubling an embedded back-tick), not
+   double-quotes; escapes string literals with both back-slash *and* doubled
+   single-quote (`'a\\b''c'`); cannot store `NaN`/`±Inf` in a `DOUBLE`, so those
+   dump as `NULL`; and shares SQLite's `X'…'` hex blob literal. These live as
+   `SqlDialect::MySql` arms in `dbboard-core` (`write_back`, `dump::literal`),
+   and `read_only`/`restore::plan` map it to sqlparser's `MySqlDialect` so the
+   AST read-only guard parses MySQL grammar. The wire/adapter id is the string
+   `"mysql"` throughout.
+
+2. **`dbboard-mysql`, a sibling adapter crate over `sqlx`'s MySQL driver.** It
+   depends on `dbboard-core` only, mirroring the Postgres adapter's structure:
+   a `MySqlConfig { url }` secret that never lands in `Debug`/`DbError`, a
+   pool built through `harden_ssl_mode` (a bare `mysql://…` is upgraded off
+   `Disabled`), and `classify_error` reducing every driver error to a fixed
+   string so a URL password cannot leak. Introspection reads
+   `information_schema` bound through the prepared protocol (`COALESCE(?,
+   DATABASE())` — an unqualified `TableInfo` resolves to the connection's single
+   database); `table_ddl` uses `SHOW CREATE TABLE` with a back-tick-quoted
+   identifier. The `query` path uses the text protocol, so every value arrives
+   as `Value::Text` (NULL as `Value::Null`), consistent with the Postgres
+   adapter.
+
+3. **Read-only enforced at the engine, not just the AST.** `query_read_only`
+   opens a `SET TRANSACTION READ ONLY` transaction (next-transaction scope, no
+   SESSION/GLOBAL leak) behind the pre-connection `classify_read_only` guard, and
+   sets a session `max_execution_time` backstop. A plain query is capped by
+   streaming and dropping after `max_rows` rather than wrapping arbitrary SQL in
+   a `LIMIT` subquery (which breaks on duplicate output columns); EXPLAIN runs
+   directly. The sqlx `Transaction` rolls back on drop, so an early return never
+   strands a pooled connection mid-transaction. Restore runs as one InnoDB
+   transaction; the logical dump is data-only (INSERTs), so MySQL's
+   DDL-implicit-commit does not break the all-or-nothing guarantee behind
+   `has_atomic_restore`.
+
+4. **The variant is threaded top to bottom, compiler-guided.**
+   `ConnectionKind::MySql { keyring_url_ref }` (config) → `BackendConfig::MySql`
+   + `DBBOARD_MYSQL_URL` env resolution (connect) → the connection-manager add/
+   edit forms (egui + the SvelteKit desktop UI) → the Tauri command DTOs → MCP
+   `kind_label`. Because `#[serde(tag = "kind", rename_all = "snake_case")]`
+   would render the Rust `MySql` variant as `my_sql`, every serde-tagged enum
+   carrying it pins `#[serde(rename = "mysql")]` so the wire discriminator stays
+   `mysql`; the untagged Rust draft/UI enums need no rename. The URL is the
+   secret and lives in the OS keychain like the Postgres family; the store keeps
+   only a `keyring_url_ref`. The connection-URL form field reuses the existing
+   engine-neutral `connections-field-pg-url` i18n key; only a `conn-kind-mysql`
+   brand label is added.
+
+### Consequences
+
+- dbboard supports four engine families across three dialects
+  (SQLite-wire, Postgres-wire, and now MySQL). Adding a genuinely new dialect
+  exercised — and validated — the `SqlDialect` seam: identifier quoting, literal
+  escaping, float handling, and the read-only/restore AST all fanned out from
+  one enum variant.
+- A new `DBBOARD_MYSQL_URL` env var joins the resolution chain (documented in
+  `docs/architecture.md`); it takes precedence over a file-store MySQL entry the
+  same way `DBBOARD_PG_URL` does.
+- Tested RED-first: dialect rules unit-tested in `dbboard-core`
+  (`write_back`/`dump::literal` MySQL arms — back-tick quoting, back-slash +
+  doubled-quote escaping, NaN/Inf → NULL, `X'…'` blobs), adapter behaviour
+  unit-tested in `dbboard-mysql` (SSL hardening, identifier quoting, FK
+  assembly, column parsing, error classification), config/connect propagation
+  covered in their existing round-trip suites, and a live, env-gated
+  `mysql_roundtrip.rs` integration test (`DBBOARD_MYSQL_URL`) covering
+  connect/ping/DML/SELECT, `describe_table` with a composite PK, single +
+  composite `foreign_keys`, the read-only truncating cap, and the 10_000-row
+  `MAX_RESULT_ROWS` boundary (built from a four-way digit cross-join, since
+  MySQL has no `generate_series` and a recursive CTE would trip
+  `cte_max_recursion_depth`).
+
+## ADR-0069 — SSH tunnel: pure-Rust local port forwarding (russh) with mandatory host-key verification
+
+- **Status**: Accepted 2026-07-29
+- **Relates to**: ADR-0013 (the `connections.toml` + OS-keychain store this
+  extends), ADR-0016 (the `ConnectionAdmin` add/update/delete secret-committal
+  order the SSH secrets ride on), ADR-0034 (the rustls-**ring** / no-aws-lc-rs
+  crypto-backend constraint that gates the SSH crate choice), ADR-0046 (the
+  connection factory `connect_adapter` the tunnel wraps), and ADR-0068 (MySQL,
+  the engine that surfaced the need — work databases reachable only through a
+  bastion).
+
+### Context
+
+The maintainer's work MySQL/MariaDB databases live on VPS hosts and are bound to
+the server's `localhost` — they are reachable only by first opening an SSH
+connection to the box and forwarding a local port to `127.0.0.1:3306` on the far
+side. Every such database is registered in HeidiSQL as an "SSH tunnel" session
+(plink + a key file, local port → remote `127.0.0.1:3306`). dbboard could only
+accept a `mysql://…`/`postgres://…` URL pointed at an already-reachable host, so
+these databases were simply unusable without a second tool holding the tunnel
+open. For dbboard to be the maintainer's actual daily client (ADR-0068's stated
+goal) it has to open the tunnel itself.
+
+This is the first network-facing credential path dbboard adds that is *not* a
+database URL: an SSH private key (possibly passphrase-protected), an optional
+SSH password, and — critically — a **server host key** that must be verified or
+the tunnel is a silent man-in-the-middle foothold.
+
+### Decision
+
+1. **A new `dbboard-tunnel` crate over `russh` 0.62 (pure Rust), not a shell-out
+   to `ssh`/`plink`.** russh gives a self-contained SSH client with no external
+   binary dependency, matching the pure-Rust posture of the rest of the tree
+   (rustls, libsql-core, age). Shelling out to the system `ssh` — or bundling
+   plink as HeidiSQL does — would make the tunnel depend on an out-of-band binary
+   whose presence, version, and host-key store dbboard cannot control, and would
+   reintroduce exactly the "second tool" problem this ADR removes. `russh` folds
+   its former `russh-keys` crate into `russh::keys` (since 0.50) and carries its
+   own `ssh-key` fork, so the dependency is the single `russh = "0.62"` line.
+   Its crypto rides on `ring` (already in the tree via rustls-ring), so it adds
+   **no** `aws-lc-rs`, honouring ADR-0034 — verified with `cargo tree`. The
+   crate depends on `russh` + `tokio` only; it does **not** depend on
+   `dbboard-core`, so it stays a leaf utility with no knowledge of adapters.
+
+2. **Host-key verification is mandatory; blind-accept is not an option in the
+   type.** russh's `check_server_key` defaults to rejecting every key, and we
+   keep that safety: the `HostKeyPolicy` enum offers exactly two verifying
+   modes — `Fingerprint("SHA256:…")` (pin the server key's SHA-256 fingerprint,
+   deterministic and filesystem-free) and `KnownHosts(path?)` (verify against an
+   OpenSSH `known_hosts`, where a *mismatch* — russh returns `Err`, the MITM
+   signal — is a hard failure distinct from an *unknown* host). There is no
+   `AcceptAny`/TOFU-by-default variant. To make first-time pinning usable the
+   crate exposes `probe_host_key`, which connects far enough to read the server
+   key fingerprint and returns it *without authenticating* — the UI shows it the
+   way PuTTY/HeidiSQL show a host-key prompt, and the user pins it. This mirrors
+   the ADR-0034 stance that a desktop client must fail *closed* on a bad chain,
+   never wave it through.
+
+3. **The tunnel guard is bound to the adapter's lifetime via a decorator, so
+   `connect_adapter` keeps its signature.** When a resolved backend carries an
+   SSH block, `connect_adapter` opens the tunnel first, rewrites the URL's
+   `host:port` to the tunnel's ephemeral `127.0.0.1:<port>` local forward,
+   connects the ordinary adapter through it, and wraps the pair in a
+   `TunneledAdapter { inner, _tunnel }` that delegates every `DatabaseAdapter`
+   method to `inner`. Dropping the returned `Arc<dyn DatabaseAdapter>` drops the
+   pool first, then the tunnel — no reconnection, no dangling forward. Both
+   `dbboard-server` (one adapter) and `dbboard-mcp` (a per-id cache) get tunnels
+   for free with no signature change (ADR-0046).
+
+4. **SSH config is a cross-cutting `ssh` sub-table on `ConnectionEntry`, not a
+   field on each URL-bearing `ConnectionKind`.** A tunnel applies uniformly to
+   every TCP engine (the Postgres-wire family + MySQL) and to none of the others
+   (Turso is a local file, D1 is HTTPS-to-Cloudflare), so threading it through
+   five enum variants would be five copies of the same optional. Instead
+   `ConnectionEntry` grows one `#[serde(skip_serializing_if = "Option::is_none")]
+   ssh: Option<SshTunnelToml>`; parse rejects an `ssh` block paired with a
+   `turso`/`d1`/`aurora-dsql-iam` kind. Secrets stay out of the file exactly as
+   before: the key-file **path** and the non-secret SSH host/port/user live
+   inline, while the key **passphrase** and the SSH **password** are
+   `keyring_*_ref` pointers resolved through the same `SecretStore` and committed
+   through the same rollback-ordered `ConnectionAdmin` path (ADR-0016). A
+   parallel `DBBOARD_SSH_*` env surface layers a tunnel onto whichever URL
+   backend the env resolver picked, for headless/CI use and the first live test.
+
+### Consequences
+
+- dbboard can be the daily client for bastion-gated databases without a second
+  tool; the HeidiSQL SSH-tunnel sessions map one-to-one onto dbboard
+  connections.
+- A new leaf crate `dbboard-tunnel` joins the workspace (documented in
+  `docs/architecture.md`); `dbboard-connect` gains a `russh`-backed dependency
+  transitively and a `TunneledAdapter` decorator.
+- Host-key safety is enforced by construction: there is no code path that
+  connects a tunnel without either a pinned fingerprint or a known_hosts match,
+  and the mismatch case is surfaced distinctly from the unknown-host case.
+- Tested RED-first: `SshTunnelConfig`/`HostKeyPolicy`/`SshTunnelToml` parsing and
+  validation, the `host:port` URL-rewrite helper, and SHA-256 fingerprint
+  formatting are pure unit tests; the actual forward (connect → verify → auth →
+  `direct-tcpip` → `copy_bidirectional`) is covered by an env-gated
+  (`DBBOARD_SSH_*`) integration test so CI stays offline while the maintainer can
+  drive a real bastion. `serialized_toml_has_no_secret_value_keys` is extended to
+  prove the SSH passphrase/password never land in the TOML.
+
+---
+
+## ADR-0070 — Row-producing paths pin the simple/text wire protocol
+
+- **Status**: Accepted 2026-07-30
+- **Relates to**: ADR-0019 (the sqlx-backed Postgres adapter whose `decode_cell`
+  established the text-format value mapping), ADR-0021 (Aurora DSQL, the flavor
+  that surfaced the bug in the field), ADR-0046 (the `query_read_only` row cap
+  whose transaction body introduced the offending code path), ADR-0061 (the
+  DSQL non-cursor cap branch), and ADR-0068 (the MySQL adapter that inherited
+  the same shape).
+
+### Context
+
+Both sqlx-backed adapters map every cell to `Value::Text` holding the value's
+*printed* representation — the same string the engine itself would print. That
+mapping is only correct under a wire protocol that returns values in text
+format: Postgres' simple query protocol (`Q`) and MySQL's `COM_QUERY`.
+`PostgresAdapter::query` / `MySqlAdapter::query` use `sqlx::raw_sql`, which is
+exactly that.
+
+The read-only path added for the row cap did not. Its helpers used
+`sqlx::query(sql)`, chosen deliberately: `RawSql`'s own `fetch`/`fetch_all`
+bound the executor as `Executor<'e>` with a single lifetime, which trips
+`implementation of Executor is not general enough` when the future has to stay
+`Send` across an `#[async_trait]` boundary. The comment on `exec_in_txn`
+recorded that trade-off, but the conclusion was wrong for row-producing
+statements: `sqlx::query` always carries an argument list (empty or not), so it
+goes through Prepare/Bind/Execute — and sqlx binds with
+`result_formats: Binary`. Every cell then arrived as raw binary bytes and was
+read as UTF-8.
+
+The damage split two ways, and the silent half is the dangerous one:
+
+- **Postgres** — `uuid`, `timestamptz`, and wide `int8` values are bytes that
+  fail the UTF-8 check, so the query dies with
+  `type conversion failed: invalid utf-8 sequence of 1 bytes from index 2`.
+  But a binary `int4` of `1` is `00 00 00 01`, which *is* valid UTF-8: the cell
+  came back as four invisible control characters instead of `"1"`, with no
+  error anywhere.
+- **MySQL** — `decode_cell` falls back to `Value::Blob` when the bytes are not
+  UTF-8, so *nothing* errored. Numbers and datetimes simply became opaque
+  blobs.
+
+This reached a released build (v0.4.0) and affected every `SELECT` run from the
+desktop query editor and every `query_read_only` call on the MCP surface, for
+Postgres, Neon, Supabase, CockroachDB, Aurora DSQL, and MySQL/MariaDB alike.
+The D1 and Turso adapters were unaffected — they do not go through sqlx.
+
+It went unnoticed because the only tests that could catch it are the env-gated
+live round-trips. `read_only_query_truncates_to_max_rows` already asserted
+`Value::Text("1")` and would have failed on contact with a real database, but
+it self-skips without `DBBOARD_PG_URL`, and a `debug_assert` guarding the
+text-format invariant in `decode_cell` never ran for the same reason.
+
+### Decision
+
+1. **Every row-producing statement uses the simple/text protocol.** The
+   read-only helpers (`fetch_via_cursor`'s `FETCH FORWARD`,
+   `fetch_capped_stream`, `run_capped`) switch to `sqlx::raw_sql`.
+2. **Hand `RawSql` to the executor, not the other way round.** Calling
+   `conn.fetch(sqlx::raw_sql(sql))` uses `Executor`'s two-lifetime signature
+   and infers cleanly, so the HRTB error that motivated `sqlx::query` does not
+   arise. This is the piece the original trade-off missed.
+3. **Non-row-producing statements keep the extended protocol.** The read-only
+   preamble (`SET TRANSACTION READ ONLY`, `SET LOCAL statement_timeout`) and
+   `exec_in_txn` on the restore path discard their results, so the binary
+   result format costs nothing there. Their comments now say so explicitly
+   instead of implying row paths should follow suit.
+4. **The invariant is enforced at runtime, not with `debug_assert`.**
+   `decode_cell` in the Postgres adapter rejects a non-`Text` `PgValueFormat`
+   with a `DbError::TypeConversion` naming the cause. A silent corruption must
+   not survive a release build just because the assertion was compiled out.
+   The MySQL adapter cannot do the same — sqlx keeps `MySqlValueRef::format`
+   `pub(crate)` — so there the regression test is the only guard.
+
+### Consequences
+
+- Values from the read-only path once again match what `query` returns and what
+  the engine prints. No UI or MCP change was needed; the corruption was entirely
+  below the `Value` boundary.
+- The row cap's wording is unchanged but was always slightly optimistic: sqlx
+  sends `Execute` with `limit: 0`, so the server produces the full result set
+  either way and the cap is enforced by stopping the read. Switching to the
+  simple protocol does not make that worse.
+- Tested RED-first at the only layer that can observe it: new env-gated live
+  tests (`read_only_decodes_wide_types_as_printed_text` for Postgres and
+  MySQL, plus an Aurora DSQL variant covering the non-cursor branch) select an
+  `int4`, a wide `int8`, and a `uuid`/`DATETIME` and assert the printed text.
+  The small-`int4` assertion is the important one — it is the case that fails
+  silently rather than loudly.
+- Standing gap this exposes, recorded rather than fixed here: the live suites
+  are the *only* coverage of value decoding, and they self-skip by default, so
+  a whole class of wire-level regression can ship green. Running them against
+  a real database before a release is a release-checklist item, not something
+  CI can do offline.
+
+---
+
+## ADR-0071 — A listed table nobody can read must degrade, not fail the sweep
+
+- **Status**: Accepted 2026-07-30
+- **Relates to**: ADR-0054 (`list_relationships`, the sweep this fixes),
+  ADR-0025 (the D1 adapter and its `sqlite_master` introspection), and
+  ADR-0046 (the MCP read-only tool surface that exposes the view).
+
+### Context
+
+The desktop Structure tab was blank for **every** table of a Cloudflare D1
+connection, showing only `query failed: [7500] not authorized: SQLITE_AUTH` —
+including for tables that read perfectly well from the query editor.
+
+Three separate things had to line up:
+
+1. Every D1 database carries Cloudflare's own bookkeeping table `_cf_KV`.
+   `sqlite_master` lists it, so `LIST_TABLES_SQL` returned it and the sidebar
+   showed it.
+2. `list_relationships` walks *every* listed table and runs
+   `PRAGMA foreign_key_list` against each. The Workers SQLite authorizer denies
+   any access to `_cf_%`, so that PRAGMA returns `SQLITE_AUTH`, and the `?` on
+   the loop body aborted the whole call.
+3. The Structure panel fetched columns, notes, and relationships with
+   `Promise.all`. One rejection discarded the two results that had succeeded,
+   so the panel rendered the error *instead of* the column list.
+
+Each layer is individually defensible; together they turn one unreadable table
+into a database-wide outage of a read-only view. The same shape recurs whenever
+a listed table is not introspectable — a revoked grant, a table dropped between
+the list and the sweep, a future engine with reserved names of its own.
+
+### Decision
+
+1. **Do not list what cannot be read.** `dbboard-d1`'s `LIST_TABLES_SQL`
+   excludes `_cf_%` alongside `sqlite_%`, with `ESCAPE '\'` so LIKE's `_`
+   wildcard cannot swallow an unrelated name such as `acf_log`.
+2. **The sweep skips, it does not abort.** `list_relationships` catches a
+   per-table `foreign_keys` failure, logs it at debug, and carries on.
+3. **Skipping is reported, not silent.** `RelationshipView` gains
+   `unreadable_tables`. "This table has no foreign keys" and "we could not
+   look" are different answers, and the caller — agent or UI — is entitled to
+   tell them apart.
+4. **Only the load-bearing read is fatal to the panel.** The Structure panel
+   uses `Promise.allSettled`; a failed column read still blanks it (there is
+   nothing to show), while a failed note or relationship read costs only its
+   own section and surfaces as a warning line.
+
+### Consequences
+
+- Decision 1 alone would have fixed the reported symptom. It is deliberately
+  not the only fix: it addresses one engine's reserved prefix, while 2–4
+  address the class.
+- `unreadable_tables` is an additive field on an MCP tool result. Agents that
+  ignore it behave as before; the desktop renders it as a warning naming the
+  tables.
+- Tested RED-first offline: a stub adapter seeded into the service's adapter
+  cache lists two tables and denies `foreign_keys` for one, asserting the other
+  table's edge still comes back and the denied table is named in
+  `unreadable_tables`. A unit test pins the D1 `LIKE` pattern including its
+  `ESCAPE` clause.
+- Still uncovered: no test drives the Svelte panel's `allSettled` branching —
+  the desktop test setup is node-environment unit tests with no component
+  renderer. That gap is recorded, not closed.
+
+---
+
+## ADR-0072 — Generated SQL follows the connection's identifier dialect
+
+- **Status**: Accepted 2026-07-30
+- **Relates to**: ADR-0068 (the MySQL adapter, which made the previous
+  assumption false) and ADR-0042 (the editable browse the generated `SELECT`
+  feeds).
+
+### Context
+
+The desktop's SQL builders quoted every identifier as `"name"`, documented as
+"what every engine we target accepts". That was true of the Postgres family,
+SQLite, libSQL, and D1. MySQL reads `"orders"` as a *string literal* unless the
+server runs with `ANSI_QUOTES`, so the sidebar's "select top 100" would have
+generated `SELECT * FROM "shop"."orders" LIMIT 100;` — a syntax error on the
+first MySQL connection anyone registers. The adapter itself already back-quotes
+correctly (`qualified_ident`); only the frontend's generator did not.
+
+The egui build has the same latent issue in `quoted_table_ref`. It is left
+alone here: the desktop shell is the shipping surface and the one about to meet
+a MySQL connection.
+
+### Decision
+
+1. `dialectForKind(kind)` maps a `ConnectionView.kind` slug onto `'ansi'` or
+   `'mysql'`. Unknown and missing kinds fall back to ANSI — it is what every
+   adapter except MySQL accepts, so it is the right guess for an adapter added
+   after this code.
+2. `quoteIdent`/`qualifiedName`/`selectTopN`/`countRows` take the dialect and
+   double only that dialect's *own* quote character. A `"` inside a
+   back-quoted MySQL identifier is an ordinary character and passes through.
+3. The table right-click menu is built from a pure `tableMenuActions(table,
+   kind)` in `$lib/sidebar/menu.ts`, not inline in the component, so which
+   actions exist and what SQL each produces are unit-testable.
+
+### Consequences
+
+- The desktop menu regains the `SELECT COUNT(*)` entry the egui build has
+  always had; a test pins the action-id list so a future edit cannot silently
+  drop one again.
+- Dialect selection is a lookup on the connection kind, not a runtime probe. A
+  MySQL server actually running with `ANSI_QUOTES` still gets back-ticks, which
+  it also accepts — the fallback direction is the safe one.
+
+---
+
+## ADR-0073 — Connection credentials are entered as parts, not as a hand-written DSN
+
+- **Status**: Accepted 2026-07-31
+- **Relates to**: ADR-0068 (the MySQL adapter this was first felt on) and
+  ADR-0069 (the SSH tunnel that makes the host field ambiguous).
+
+### Context
+
+The connection form asked for the credential as a single `url` string. That is
+the shape the adapters parse, so it was the shape the form collected. Every
+other desktop client — HeidiSQL, DBeaver, TablePlus — asks for host, port,
+user, password and database as separate fields, so a maintainer arriving with a
+working session in one of those had to hand-assemble a DSN, and got no feedback
+until the connection attempt failed.
+
+Hand-assembly has two failure modes that are invisible until they bite:
+
+- A password containing `@`, `/`, `#` or `?` is not percent-encoded, so the
+  authority is cut at the wrong character and the client silently dials a
+  different host.
+- With an SSH tunnel (ADR-0069), the host in the DSN is the host *as seen from
+  the SSH server*, almost always `127.0.0.1` — not the address you would use
+  from this machine. Nothing in a single `url` box says so.
+
+### Decision
+
+1. `$lib/connections/dsn.ts` owns the parts: `DsnParts`, the display order
+   (host → port → user → password → database, matching HeidiSQL), `composeDsn`,
+   and `validateDsn`. Percent-encoding and IPv6 bracketing happen there, once,
+   under test.
+2. The form defaults to the field mode for every DSN-bearing kind and keeps a
+   `use_url` escape hatch for pasting a provider-issued URL (Neon, Supabase and
+   Aurora DSQL hand out ready-made ones). Turso and D1 are excluded — their
+   credentials are not DSNs.
+3. `defaultPort` fills a blank port (3306 for MySQL, 5432 otherwise) so the
+   common case needs four fields, not five.
+4. When `ssh_enabled` is set, the host field carries an inline hint that the
+   host is resolved on the SSH server.
+
+### Consequences
+
+- A password with URL-significant characters now works without the user
+  knowing what percent-encoding is.
+- The stored credential is still one DSN string — nothing changes below the
+  form, and an existing connection edited in field mode is rewritten in full,
+  which the edit view states explicitly.
+- A new DSN-bearing adapter gets the field mode for free; only `defaultPort`
+  and `schemeFor` need a line each.
+
+---
+
+## ADR-0074 — Kinds that live only in `connections.toml` are disabled in the list, not refused on submit
+
+- **Status**: Accepted 2026-07-31
+- **Relates to**: ADR-0057 (Aurora DSQL IAM, the only such kind today).
+
+### Context
+
+Aurora DSQL (IAM) entries are declared in `connections.toml`; there is no
+in-app form for them because there is no static secret to store. The backend
+enforced this in `update_connection`, so pressing **Edit** on such a row opened
+the form, let the user fill it in, and only then failed with a red banner. The
+rule was correct and its presentation was not.
+
+### Decision
+
+`isEditableInApp(kindSlug)` in `$lib/connections/draft.ts` holds the list of
+TOML-only backend slugs. The list row disables its Edit button and shows the
+reason inline. The backend check stays — this is a UX layer over an existing
+guard, not a replacement for it.
+
+Two details are deliberate:
+
+- The slug space is the backend's hyphenated `kind_label` (`aurora-dsql-iam`),
+  not the form's underscored `ConnectionKind`. They are disjoint namespaces and
+  a test pins that `aurora-dsql` is not confused with `aurora-dsql-iam`.
+- An unrecognised slug is treated as **editable**. A newly added backend kind
+  should surface a backend error, not be silently locked out of the UI by a
+  frontend list nobody remembered to update.
+
+### Consequences
+
+- Delete stays enabled for these rows: removing an entry is a store operation
+  that works for every kind.
+- Adding a future TOML-only kind means one array entry plus its test.
+
+---
+
+## ADR-0075 — The SQL editor takes external documents by call, not by watching a prop
+
+- **Status**: Accepted 2026-07-31
+- **Relates to**: ADR-0060 (the CodeMirror editor) and ADR-0072 (the table menu
+  whose "Count rows" entry exposed this).
+
+### Context
+
+`SqlEditor` took its document as a two-way bound `value` and adopted outside
+changes in an effect that compared the prop against the live document. Running
+"Count rows" from the table menu produced the right answer in the result grid
+while the editor kept showing the seed text `SELECT 1 AS hello;` — the query
+that ran was one the user could not see.
+
+The adoption effect is only correct if it runs *after* the CodeMirror view is
+built. When it does not, the dispatch is skipped, nothing records that a
+document was missed, and the editor stays stale for the rest of the session. An
+earlier attempt to fix the ordering by making the view reactive did not cure
+the report, which is the argument against the whole approach rather than
+against that particular patch: a channel whose correctness depends on framework
+scheduling, and which fails silently when the schedule differs, cannot be
+verified by reading it.
+
+### Decision
+
+1. `ExternalDoc` (`$lib/editor/external-doc.ts`) buffers one pending document.
+   `null` means nothing pending; `''` is a real empty document, so no code path
+   tests it for truthiness.
+2. `SqlEditor` exports `setDoc(text)`, reachable through `bind:this`. It pushes
+   into the buffer and flushes; `onMount` flushes again after building the view,
+   so a call that arrives first is applied rather than lost.
+3. `value` now seeds the initial document and carries typing back out. It is no
+   longer watched — the prop comment says so, because the binding still looks
+   two-way at the call site.
+4. `QueryPanel` routes both of its non-keyboard writes (the sidebar request and
+   a history replay) through one `setSql` helper, so there is a single place
+   that can forget to notify the editor.
+
+### Consequences
+
+- Applying a document is unconditional: pressing the same menu entry twice
+  resets an editor the user typed over in between, which is what "run this
+  query" should do.
+- The ordering rule is a unit test on `ExternalDoc`, not an assumption about
+  effect scheduling. The remaining untested part is the two-line flush inside
+  the component.
+- Any future writer of the editor's contents must call `setDoc`; assigning the
+  bound variable alone now visibly does nothing, instead of working by accident
+  until the timing changes.
+
+---
+
+## ADR-0076 — The connection form fetches the SSH host key instead of demanding it
+
+- **Status**: Accepted 2026-07-31
+- **Relates to**: ADR-0069 (the SSH tunnel and its host-key policy).
+
+### Context
+
+`HostKeyPolicy` has no trust-on-first-use variant by design: both variants
+verify. The form therefore presents "Server fingerprint" as a required field —
+and offered no way to learn the value. A maintainer setting up a tunnel met a
+red box, no explanation of what a host key is, and no path forward short of
+knowing to run `ssh-keyscan | ssh-keygen -lf -` by hand.
+
+`probe_host_key` — which reads the server's key without authenticating and was
+written for exactly this — shipped in `dbboard-tunnel` and was wired to
+nothing.
+
+The alternative, accepting the first key seen, is what the type deliberately
+refuses. The gap was never the policy; it was that a mandatory field had no
+discoverable source.
+
+### Decision
+
+1. `probe_ssh_host_key(host, port)` exposes the existing probe as a Tauri
+   command, and a **Fetch** button beside the fingerprint field fills it in.
+2. The probe runs only on that click. Nothing in the app contacts a server the
+   user has not pressed a button for.
+3. Fetching fills the form; it does not save. The user still confirms the value
+   and presses Save, so pinning stays deliberate — this is the SSH first-
+   connection prompt, not TOFU behind their back.
+4. `canProbeHostKey` gates the button. A port outside 1–65535 disables it rather
+   than falling back to 22: pinning the fingerprint of a server you will not
+   connect to is worse than an unfilled field.
+5. Both policy fields gained a hint saying what host-key verification is for,
+   and the note on a `connections.toml`-only row now shows the file's resolved
+   path — "not editable here" needed a *where*.
+
+### Consequences
+
+- The desktop app now depends on `dbboard-tunnel` directly, for this one
+  function. Opening the tunnel stays in `dbboard-connect`.
+- A failed probe reports inline next to the field and leaves the rest of the
+  form alone; it is not a save failure.
+- The probe is unauthenticated, so it works before any credential is entered —
+  the fingerprint can be pinned first and the key file chosen after.
+
+## ADR-0077 — Every filesystem path in the connection form has a Browse button
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+The connection form asked for three filesystem paths by making the user type
+them: the Turso/SQLite database file, the SSH private key, and `known_hosts`.
+
+Typing an absolute path by hand is the wrong ask. The path is long, the user is
+usually looking at the file in Explorer while retyping it, and the failure mode
+is silent — a stray quote from a "Copy as path" paste, a backslash the shell
+ate, the wrong one of two similarly named keys. The error surfaces much later
+as a connection failure that says nothing about the path being wrong. Every
+other desktop client puts a Browse button here, so its absence also reads as
+the field being for something more exotic than "pick a file".
+
+`@tauri-apps/plugin-dialog` was already a dependency — the `.dbbx` bundle
+import/export uses it — so the native dialog cost nothing to add.
+
+### Decision
+
+1. `path`, `ssh_key_path` and `ssh_known_hosts` each get a **Browse…** button
+   that opens the native single-file open dialog and writes the chosen path
+   into the field.
+2. What the dialog says and shows lives in `lib/connections/file-picker.ts`
+   (`isPathField`, `pickerFilters`, `pickerTitle`) so it is unit-testable; only
+   the `open()` call itself stays in the component.
+3. Filters apply to the database file only, and always end with an all-files
+   entry. An OpenSSH private key and `known_hosts` have **no** extension, so any
+   filter there would hide exactly the file the dialog was opened to pick.
+4. The dialog's title is the field's own label rather than a generic "Open", so
+   a user with three dialogs' worth of muscle memory still knows which one this
+   is.
+5. Picking a file clears that field's validation error immediately — the value
+   came from the filesystem, so re-flagging it as missing is noise.
+6. Cancelling is not an error. `open()` resolves to `null`; the field is left
+   exactly as it was.
+7. The private-key field gained a hint that it wants an OpenSSH key (the file
+   *without* `.pub`) and that PuTTY `.ppk` is not read. Both are mistakes the
+   file dialog makes easier to commit, not harder.
+
+### Consequences
+
+- Path entry no longer depends on the user transcribing correctly, which
+  removes a class of connection failures that reported themselves as
+  authentication problems.
+- The picker is deliberately file-only (`directory: false`). No current field
+  wants a directory; when one does, `PathField` is where that branches.
+- `pickerTitle` returns a `MessageKey`, so a new path field that forgets its
+  label is a type error rather than an untranslated dialog.
+
+## ADR-0078 — TLS is a form choice, defaulting to required, never a silent fallback
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+Registering a MySQL connection through dbboard's own SSH tunnel failed with:
+
+```
+connection failed: error occurred while attempting to establish a TLS
+connection: server does not support TLS
+```
+
+This is `harden_ssl_mode` (`crates/dbboard-mysql/src/lib.rs`) working as
+designed. sqlx defaults an unspecified `ssl-mode` to `Preferred`, which tries
+TLS and **silently continues in plaintext** when the server refuses. Both the
+MySQL and Postgres adapters rewrite that default up to `Required`, because a
+connection the user believes is encrypted and is not is worse than one they
+knowingly turned off.
+
+The adapters always preserved an explicit `ssl-mode=DISABLED` in the URL. The
+gap was in the form: the structured host/port/user/password/database inputs
+(ADR-0073) compose a URL with no query string, so there was no way to express
+the choice. The only escape was to abandon the parts, switch to raw-URL entry,
+and hand-write the parameter — the exact hand-assembly ADR-0073 removed.
+
+A tunnelled connection makes this ordinary rather than exotic. Traffic between
+this machine and the SSH server is already encrypted by SSH, and the database
+on the far side is very often a `127.0.0.1` MySQL with TLS never configured.
+Requiring TLS inside the tunnel is redundant *and*, in that setup, impossible.
+
+### Decision
+
+1. `DsnParts` gains `db_ssl: SslMode`, rendered as a select in the Server
+   fieldset. It defaults to `require`.
+2. Exactly two choices: **Required** and **Disabled**. `preferred`/`prefer` is
+   not offered — that is the plaintext-fallback mode the adapters already
+   refuse to ship. `verify_ca`/`verify_full` need a CA file the form has
+   nowhere to put; raw-URL entry can still ask for them.
+3. `require` emits **no** query parameter. The composed URL is byte-for-byte
+   what it was before this option existed, and the adapter's hardening supplies
+   the mode. Only `disable` is written out, so the URL says something only when
+   it says something surprising.
+4. MySQL and Postgres disagree on both the parameter name and the value
+   spelling (`ssl-mode=disabled` vs `sslmode=disable`), and sqlx rejects a
+   wrong one outright. `sslQuery` picks by scheme so no call site guesses.
+5. The field's hint changes when the SSH tunnel is enabled, naming what the
+   tunnel does and does not encrypt rather than repeating a generic warning.
+
+### Consequences
+
+- Existing stored connections are untouched: they carry no parameter, which is
+  what `require` composes.
+- `rewrite_to_loopback` (`crates/dbboard-connect/src/ssh.rs`) preserves the
+  query when it repoints the URL at the local forward, so the choice survives
+  tunnelling. This ADR depends on that; a future rewrite that rebuilds the URL
+  from parts would silently re-enable TLS.
+- Turning TLS off is now a two-click decision recorded in the connection, not a
+  reason to fall back to hand-writing a DSN.
+
+## ADR-0079 — The TLS select belongs to the connection, not to the entry mode
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+ADR-0078 added the TLS select to the Server fieldset, but placed it inside the
+structured-parts branch of the form. Opening an existing connection for editing
+starts in **URL mode** — `formForEdit` sets `use_url` for every DSN kind,
+because the stored DSN is a secret the backend never sends back and a blank URL
+has to mean "keep it". So the person who most needed the control (someone whose
+existing connection just failed with `server does not support TLS`) could not
+see it at all. Their only route was to switch to separate fields and retype
+every credential.
+
+### Decision
+
+1. The select moves outside the mode branch. TLS is a property of the
+   connection, not of how its credential happened to be typed.
+2. In URL mode the select is a **view of the URL text**, not a shadow copy:
+   `sslModeFromUrl` reads it back and `withSslMode` rewrites it. A hand-written
+   `?ssl-mode=…` is therefore never contradicted by what the select displays.
+3. `withSslMode` edits the query as text instead of round-tripping through
+   `URL.toString()`, which would re-serialise parts of the URL the user typed
+   and did not ask to change.
+4. A URL still being typed (`mysql://app@`, or anything unparseable) is handed
+   back untouched. Rewriting a half-written value under the cursor is worse
+   than ignoring it.
+5. Both spellings (`ssl-mode`, `sslmode`) are recognised on read and removed on
+   write — sqlx's MySQL parser accepts either, so writing one without clearing
+   the other could leave two contradicting parameters.
+6. Only an explicit `disabled`/`disable` reads as off. `required`, `verify_ca`
+   and `verify_identity` all mean encrypted, and the two-value select must not
+   misreport a stricter mode as the weaker one it can express.
+7. When the URL box is blank on edit, the select is disabled and says why: the
+   stored credential is being kept, so there is no URL here to rewrite.
+
+### Consequences
+
+- The parts-mode path is unchanged; `db_ssl` still drives `composeDsn`.
+- Switching entry modes does not carry the TLS choice across. That matches the
+  existing rule that parts mode on edit is a full replacement, and the select
+  re-reads from whichever store is live, so it never shows a stale value.
+
+## ADR-0080: The edit form asks for the same fields the add form does
+
+**Status**: Accepted
+**Date**: 2026-07-31
+
+### Context
+
+The add form takes host / port / user / password / database separately
+(ADR-0073). The edit form opened in raw-URL mode, because the stored DSN is a
+keyring secret the backend never sent back — a blank URL had to mean "keep the
+stored one", and the structured parts had no way to express "keep".
+
+That divergence reached the maintainer as a bug report about a missing feature:
+"was the user/password input removed?" — followed by
+「「編集」で開くと URL モードは追加の時のフォームが変わるので困りますね。」
+From outside, one button led to a client that asks for five fields and another
+to a client that asks for a URL. Worse, the second one silently loses the
+first's guarantees: percent-encoding a password containing `@` or `/` is done
+for you on add and left to you on edit.
+
+The blocker was never the form. It was that the process holding the credential
+refused to say anything at all about it, including the parts that are not
+secret.
+
+### Decision
+
+1. `dbboard-config` gains a `dsn` module that splits a stored URL into
+   `DsnParts { host, port, user, database, query }`. The type has **no password
+   field** — a prefill payload built from it cannot leak one by oversight,
+   because there is nowhere to put one.
+2. `ConnectionAdmin::dsn_prefill(id)` is best-effort: a kind with no DSN, an
+   unreadable keychain entry, or an unparseable stored value all return `None`,
+   and the form opens with empty parts rather than refusing to open.
+3. `ConnectionAdmin::dsn_with_stored_password(id, url)` is the strict half. The
+   UI rebuilds the DSN from the parts it was shown and the stored password is
+   grafted back on **inside the Rust process** — it never crosses into the
+   webview in either direction. An unparseable stored value is an error
+   (`ConfigError::DsnUnparseable`), not a fall-through to "no password": saving
+   a working connection back without its credential would break it with no
+   visible cause.
+4. `update_connection` takes `keep_password`. It is the structured-input
+   counterpart of the blank-secret rule the form already uses everywhere else.
+5. `formForEdit` opens in parts mode whenever the backend sent parts, and falls
+   back to URL mode when it did not. URL mode stays available as the escape
+   hatch for what a form cannot express.
+6. The stored query string travels with the parts, so a TLS choice made under
+   ADR-0078 is still what the select shows when the form is reopened.
+
+### Consequences
+
+- Add and edit now render the same inputs for every URL-bearing kind.
+- In edit + parts mode a blank password box cannot mean "remove the password" —
+  it means keep. That matches every other secret in this form; removing one is
+  rare enough to be worth a delete-and-re-add.
+- The password is still never sent to the frontend. What changed is that the
+  *non-secret* parts no longer travel with it into the keyring's shadow.
+- Process note: this was reported, not noticed. Add/edit parity is now a thing
+  to check before shipping a form change, not after a user hits it.
+
+## ADR-0081 — The statement-timeout variable is probed, not assumed
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+Every read-only query in the MySQL adapter installs a 30-second session
+statement timeout before opening its transaction (ADR-0046 §8). It is the
+cancellation backstop: an MCP client that drops a tool future only cancels the
+Rust side at an await point, so the server-side timeout is what stops an
+abandoned query from pinning a pooled connection.
+
+That `SET` was hard-coded to `max_execution_time`, which exists only in MySQL
+5.7.8 and later. On MariaDB — same wire protocol, same `mysql://` URL, same
+adapter — the very first query fails with:
+
+```
+query failed: Unknown system variable 'max_execution_time'
+```
+
+The connection succeeds, the schema tree loads, and then nothing can be
+selected. A defence-in-depth measure was breaking the feature it was
+protecting.
+
+The three servers disagree in two ways at once, so a rename is not enough:
+
+| Server | Variable | Unit |
+|---|---|---|
+| MySQL 5.7.8+ | `max_execution_time` | milliseconds |
+| MariaDB 10.1+ | `max_statement_time` | seconds |
+| MySQL 5.6 and older | — | — |
+
+### Decision
+
+1. **Probe, do not detect.** The adapter tries `max_execution_time`, and on
+   `ER_UNKNOWN_SYSTEM_VARIABLE` (1193) tries `max_statement_time`. A
+   `SELECT VERSION()` handshake would cost a round trip on every connection to
+   learn something one `SET` already reveals.
+2. **Only 1193 falls through.** Any other failure is returned. A dead
+   connection or an exhausted pool means the query is doomed anyway, and
+   retrying another statement on it would hide the real cause behind a second,
+   misleading one.
+3. **A server with neither variable is not an error.** The query runs without
+   the backstop. Refusing to query at all is exactly the failure this ADR
+   removes, and the `SET TRANSACTION READ ONLY` guard plus the pre-connection
+   AST check (`classify_read_only`) are the actual safety properties — the
+   timeout is a resource-hygiene measure.
+4. **The answer is cached per adapter** in an `AtomicU8`. Re-probing per query
+   would put a rejected statement on the wire — a wasted round trip, and a line
+   in the server's error log — for every read-only query a MariaDB user runs.
+5. **The MariaDB timeout is cleared before the connection returns to the
+   pool.** MySQL applies `max_execution_time` to read-only `SELECT`s only, so
+   it can stay set. MariaDB's `max_statement_time` applies to *every*
+   statement, so a pooled connection still carrying it would kill a later
+   restore's long `INSERT` at 30 seconds. The reset uses `= DEFAULT`, which
+   restores the server's own global value rather than hard-coding "no limit"
+   over an administrator's setting.
+6. **The unit conversion is a tested fact, not a comment.** Writing the 30 000
+   ms budget verbatim into MariaDB's seconds-valued variable would ask for an
+   eight-hour timeout — a silently absent backstop, the worst kind.
+
+### Consequences
+
+- MariaDB is now a supported target of the MySQL adapter in practice, not just
+  in the module docs. It was named as compatible from the start and never was.
+- The first read-only query against MariaDB pays one extra rejected `SET`.
+  Every query after it costs the same as on MySQL.
+- The probe is pure-function-testable (statement text, units, session scope,
+  probe order, cache round-trip); only the ~15-line loop that puts those
+  statements on the wire needs a live server, which the env-gated round-trip
+  test covers.
+- Cross-engine reminder: the Postgres adapter's `statement_timeout` has no such
+  divergence, so this stays MySQL-local. A future engine sharing the MySQL wire
+  protocol should extend `TimeoutStyle` rather than add a second mechanism.
+
+## ADR-0082 — Long cell values get an editor, not a keyhole
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+Inline cell editing (ADR-0042) replaced the cell's text with an `<input>` while
+editing. Two things went wrong at once on a real table:
+
+1. **The column collapsed.** With the text gone from the flow, the table's auto
+   layout resized the column to the input's minimum width. Starting to edit a
+   `varchar(500)` therefore made the field *narrower* than the value it was
+   showing a moment earlier — roughly a dozen characters of a 500-character
+   value, with no way to widen it.
+2. **Nothing accounted for full-width text.** The read-only value popup opened
+   at `value.length >= 40`, so 25 characters of Japanese — 50 display columns,
+   long since truncated on screen — never offered one.
+
+A `<input>` is also the wrong element for a value containing a newline: HTML's
+value sanitisation strips CR and LF, so committing a multi-line value edited
+inline would have silently flattened it.
+
+### Decision
+
+1. **The inline editor floats over the cell.** The value stays in the flow,
+   hidden rather than removed, so the column keeps its width. The editor is
+   absolutely positioned with `min-width: max(100%, 22rem)`: at least as wide
+   as the cell, never narrower than a usable field.
+2. **Long values open a full editor dialog instead** — a fixed 720px surface
+   with a textarea, reached automatically on double-click, or from a `⤢` button
+   in the inline editor when the value turned out to need more room than it
+   first appeared to. The draft carries across; nothing is retyped.
+3. **"Long" is measured in display columns, not `.length`.** `displayWidth`
+   counts CJK, kana, Hangul and emoji as the two columns they occupy, and
+   iterates code points so an astral character counts once. Japanese prose
+   reaches the threshold at half the character count, which is exactly when it
+   stops fitting.
+4. **A value containing a newline always takes the dialog**, however short.
+   This one is correctness, not comfort: the alternative is silent data loss.
+5. **The read-only popup uses the same test**, so a truncated value opens its
+   viewer at the same point regardless of script.
+6. **Escape and clicking away cancel; only Apply and ∅ stage.** A dialog opened
+   by a stray double-click must not be able to leave an edit behind.
+7. The dialog shows a character count, counted by code point — the same unit a
+   `varchar(500)` limit uses, so the number means what the column enforces.
+
+### Consequences
+
+- `displayWidth` / `needsWideEditor` are pure and unit-tested; the component
+  keeps only wiring. The threshold constant is exported, so the tests assert
+  behaviour at the boundary rather than restating a magic number.
+- The inline editor can extend past the right edge of the grid viewport on a
+  far-right column, where it is reachable by horizontal scroll. The `⤢` button
+  is the escape hatch: the dialog is centred and never clipped.
+- Blob cells are still not editable, and the primary-key columns are still held
+  fixed. Nothing about which cells can be edited changed here — only the
+  surface they are edited on.
+
+---
+
+## ADR-0083 — The sidebar splits, and popovers place themselves
+
+- **Date**: 2026-07-31
+- **Status**: Accepted
+
+### Context
+
+Two layout complaints from real use, both about space the window has but the
+app would not give:
+
+1. **The sidebar was a fixed 260px.** A schema-qualified table name is longer
+   than that on a real database, and there was no way to trade grid width for
+   list width — in either direction.
+2. **The query-history popover was clipped.** It opened upward from the editor
+   bar with `position: absolute`, and the tab pane it lives in scrolls: the top
+   of the popover — the *newest* entries — was cut off by the pane's edge and
+   unreachable. On a short window it was cut off by the viewport as well.
+
+The second is not a styling slip that a larger `max-height` fixes. An absolutely
+positioned element is clipped by any scrolling ancestor, and the anchor's
+distance from the top of the window is not knowable from CSS.
+
+### Decision
+
+1. **A draggable divider sits between the sidebar and the main pane.** The
+   sidebar's width comes from a `--sidebar-width` custom property set by the
+   shell, so the sidebar component keeps owning its own styling and none of the
+   drag machinery.
+2. **Double-clicking the divider resets it to the default** — and *forgets* the
+   stored width, so a later launch also starts at the default. Resetting the
+   position but leaving the preference behind would be a lie the next restart
+   exposes.
+3. **The chosen width is stored unclamped; the applied width is derived.**
+   Narrowing the window squeezes the sidebar to half the viewport, but widening
+   it again restores what the user actually asked for. Clamping on write would
+   have quietly destroyed the preference.
+4. **The minimum width wins over the viewport cap.** On a window too narrow for
+   both panes, a cramped sidebar beats an unreadable one; the grid can scroll.
+5. **The divider is a real `role="separator"`** with `tabindex`, arrow-key
+   nudges and `Home` to reset. A drag handle reachable only by mouse is not a
+   control, and the pointer plumbing uses pointer capture so the drag survives
+   the pointer outrunning a 7px target.
+6. **Popovers anchored to a toolbar are placed with `position: fixed` and
+   explicit coordinates.** `placePopover` prefers opening upward (the anchors
+   live on bottom toolbars), flips below when there is not enough room, picks
+   the roomier side when neither fits, and caps `max-height` to the space
+   actually available. It pins the popover by the edge that touches the button,
+   so a short list hugs its anchor instead of floating away from it.
+7. **The popover is re-placed on resize while open**, since its fixed
+   coordinates were measured against the old window.
+
+### Consequences
+
+- `clampSidebarWidth` / `loadSidebarWidth` / `resetSidebarWidth` and
+  `placePopover` are pure and unit-tested; the components keep only wiring.
+  `placePopover` is deliberately DOM-free — it takes a rect and a viewport, not
+  an element — so the flip and clamp cases are testable without a browser.
+- `placePopover` is written for reuse but is used by the history popover only
+  for now. The result grid's own popups are anchored inside a pane that does not
+  clip them, and are left alone.
+- The divider is a sibling of the sidebar rather than part of it, which keeps
+  `Sidebar.svelte` free of layout state. The cost is a CSS custom property as
+  the contract between them, documented at both ends.
+
+---
+
+## ADR-0084 — Commit identity is scanned, because it cannot be edited
+
+**Date:** 2026-07-31
+**Status:** Accepted
+
+### Context
+
+dbboard is a public repository. `scripts/pii-scan.sh` (ADR-0055) has guarded
+file *contents* since it landed, and a review of what that guard actually
+covers turned up the gap: every commit in the repository carries the
+maintainer's personal email address in its author and committer fields, and
+the scanner had no way to see it — `git grep` reads trees, not commit objects.
+
+The two leaks are not equally bad, and the difference is the whole argument.
+A string committed into a file is removed by the next commit; the old copy
+survives only in history, which is a known, bounded risk. An address in a
+commit object is *part of the commit*: fixing it changes the commit's hash,
+which changes every descendant hash, which requires a force-push and breaks
+every existing clone. There is no "fix it in the next commit" for identity.
+
+The tracked `.claude/` directory prompted the review and turned out to be
+fine — the parts that carry other people's names (`.claude/rules/`,
+`.claude/templates/`) were already ignored, and the 22 tracked files scan
+clean. The real finding was the one nobody was looking at.
+
+### Decision
+
+1. **Identity is checked as its own mode, not as another content rule.**
+   `pii-scan.sh --identity <range>` reads `%ae`/`%ce`/`%an`/`%cn` from
+   `git log`. Content rules cannot reach commit metadata at all, so this is a
+   separate code path rather than another entry in `advisory_rules`.
+2. **Only GitHub's noreply forms are publishable.** Both the modern
+   `<id>+<login>@users.noreply.github.com` and the legacy
+   `<login>@users.noreply.github.com` pass; everything else fails, including
+   the `user@hostname` git invents when it is unconfigured. The pattern is
+   overridable via `OSS_IDENTITY_ALLOW_RE` should the repo ever leave GitHub.
+3. **Identity is blocking, not advisory.** The advisory tier exists for shapes
+   that synthetic fixtures also match. An author address has no fixture
+   equivalent — it is either publishable or it is not.
+4. **It is checked before the commit exists.** `--staged` (the pre-commit
+   hook) validates `git config user.email`, because the cheapest moment to
+   stop a bad identity is before the object that would carry it forever is
+   written. The `--identity` range mode is the CI backstop for commits that
+   arrive by other routes.
+5. **Findings are redacted like every other finding.** The output names the
+   commit and the field, never the address. A check whose failure output
+   republishes the address would defeat itself in a public Actions log.
+6. **CI scans only the commits the push or PR introduced**
+   (`event.before..sha`, or the PR's `base..head`) — never a wider range.
+   Existing history is uniformly non-compliant pending the one-time rewrite,
+   so a wider range would be permanently red and drown the signal. This is
+   the same reasoning the message scan already uses.
+7. **Display names are checked against the denylist, not a pattern.** A real
+   name has no shape to match; only the private denylist knows it.
+8. **A mode with no dispatch branch is now a hard error.** The identity mode
+   was briefly parsed but not dispatched, and the script reported `clean`
+   without scanning anything. For a leak scanner that is the worst possible
+   failure, so the `case` gained a `*)` arm that exits 2.
+
+### Consequences
+
+- Every future commit in this repository is authored by a noreply address;
+  the local `user.email` was fixed at the same time as this change.
+- The ~428 commits already published under the personal address are **not**
+  fixed by this ADR. Removing them is a history rewrite plus a force-push —
+  a human decision (CLAUDE.md: pushes are done by the human), documented in
+  `docs/maintainer/history-sanitize-runbook.md`, which now covers the
+  identity rewrite alongside the string replacement it already described.
+  The repository has no forks and no stargazers, so a rewrite would in fact
+  be effective here; that is a reason to consider it, not a reason to do it
+  unilaterally.
+- The pre-commit hook will now refuse to commit from a clone whose
+  `user.email` has not been set. That is the intended behaviour: the failure
+  message names the exact `git config` command to run.

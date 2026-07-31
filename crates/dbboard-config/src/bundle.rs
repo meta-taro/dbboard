@@ -292,6 +292,7 @@ mod tests {
             version: crate::store::CONFIG_VERSION,
             connections: vec![
                 ConnectionEntry {
+                    ssh: None,
                     id: "store-a".to_string(),
                     name: "store-a".to_string(),
                     kind: ConnectionKind::D1 {
@@ -302,6 +303,7 @@ mod tests {
                     },
                 },
                 ConnectionEntry {
+                    ssh: None,
                     id: "store-c".to_string(),
                     name: "store-c".to_string(),
                     kind: ConnectionKind::Supabase {

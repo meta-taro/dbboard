@@ -1,16 +1,22 @@
 <script lang="ts">
   import { workspace } from '$lib/state/workspace.svelte';
   import { searchSchema, type SchemaMatch, type TableInfo } from '$lib/api';
+  import { i18n } from '$lib/i18n/i18n.svelte';
+  import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
+  import ConnectionManager from './ConnectionManager.svelte';
+  import { tableMenuActions } from '$lib/sidebar/menu';
 
   let query = $state('');
+  let managerOpen = $state(false);
+  let menu = $state<{ x: number; y: number; table: TableInfo } | null>(null);
   // null = not searching (show the full table list); an array = search results.
   let matches = $state<SchemaMatch[] | null>(null);
   let searching = $state(false);
   let searchError = $state('');
   let seq = 0;
 
-  async function onConnectionChange(e: Event) {
-    const id = (e.currentTarget as HTMLSelectElement).value;
+  async function selectConnection(id: string) {
+    if (id === workspace.connectionId) return;
     query = '';
     matches = null;
     await workspace.selectConnection(id);
@@ -51,32 +57,94 @@
       workspace.key(workspace.selectedTable) === workspace.key(t)
     );
   }
+
+  function openMenu(e: MouseEvent, table: TableInfo) {
+    e.preventDefault();
+    menu = { x: e.clientX, y: e.clientY, table };
+  }
+
+  // Read-only actions only: inspect, or generate a bounded SELECT to run.
+  // Which actions exist and what SQL each generates lives in $lib/sidebar/menu
+  // (unit-tested); this only attaches labels and side effects.
+  function menuItems(table: TableInfo): MenuItem[] {
+    return tableMenuActions(table, workspace.connection?.kind).map((action) => {
+      switch (action.id) {
+        case 'open-structure':
+          return {
+            label: i18n.t('menu-open-structure'),
+            onSelect: () => workspace.selectTable(table),
+          };
+        case 'select-top':
+          return {
+            label: i18n.t('menu-select-top', { n: action.n }),
+            onSelect: () => workspace.browse(table),
+          };
+        case 'count-rows':
+          return {
+            label: i18n.t('menu-count-rows'),
+            onSelect: () => workspace.runInEditor(action.sql),
+          };
+        case 'copy-name':
+          return {
+            label: i18n.t('menu-copy-name'),
+            separatorBefore: true,
+            onSelect: () => navigator.clipboard.writeText(action.text),
+          };
+      }
+    });
+  }
 </script>
+
+{#snippet dbIcon()}
+  <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+    <ellipse cx="8" cy="3.5" rx="5" ry="2" />
+    <path d="M3 3.5v9c0 1.1 2.24 2 5 2s5-.9 5-2v-9" />
+    <path d="M3 8c0 1.1 2.24 2 5 2s5-.9 5-2" />
+  </svg>
+{/snippet}
+
+{#snippet tableIcon()}
+  <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <line x1="2" y1="6.5" x2="14" y2="6.5" />
+    <line x1="6.5" y1="6.5" x2="6.5" y2="13" />
+  </svg>
+{/snippet}
 
 <aside class="sidebar">
   <div class="section">
-    <label class="field">
-      <span class="field-label">Connection</span>
-      <select
-        value={workspace.connectionId}
-        onchange={onConnectionChange}
-        disabled={workspace.connections.length === 0}
-      >
-        {#if workspace.connections.length === 0}
-          <option value="">(none configured)</option>
-        {/if}
+    <div class="section-head">
+      <div class="eyebrow">{i18n.t('connections-window-title')}</div>
+      <button type="button" class="manage" onclick={() => (managerOpen = true)}>
+        {i18n.t('conn-manage')}
+      </button>
+    </div>
+    <nav class="nav-list" aria-label={i18n.t('connections-window-title')}>
+      {#if workspace.connections.length === 0}
+        <p class="hint">{i18n.t('sidebar-connections-empty')}</p>
+      {:else}
         {#each workspace.connections as c (c.id)}
-          <option value={c.id}>{c.name} · {c.kind}</option>
+          <button
+            type="button"
+            class="nav-row conn"
+            class:active={workspace.connectionId === c.id}
+            onclick={() => selectConnection(c.id)}
+            title={c.id}
+          >
+            {@render dbIcon()}
+            <span class="nav-name">{c.name}</span>
+            <span class="nav-meta">{c.kind}</span>
+          </button>
         {/each}
-      </select>
-    </label>
+      {/if}
+    </nav>
   </div>
 
   <div class="section tables">
     <div class="search">
       <input
         type="search"
-        placeholder="Search tables &amp; columns…"
+        placeholder={i18n.t('sidebar-search-placeholder')}
         bind:value={query}
         disabled={!workspace.connectionId}
         spellcheck="false"
@@ -86,28 +154,30 @@
     {#if matches === null}
       <!-- Normal browse mode: the full table list. -->
       <div class="heading">
-        <span class="heading-label">Tables</span>
+        <span class="eyebrow">{i18n.t('tables-heading')}</span>
         {#if workspace.tables.length > 0}
           <span class="badge">{workspace.tables.length}</span>
         {/if}
       </div>
       <div class="list">
         {#if workspace.loadingTables}
-          <p class="hint">Loading…</p>
+          <p class="hint">{i18n.t('sidebar-loading')}</p>
         {:else if workspace.tables.length === 0}
-          <p class="hint">No tables</p>
+          <p class="hint">{i18n.t('sidebar-tables-empty')}</p>
         {:else}
           {#each workspace.tables as t (workspace.key(t))}
             <button
               type="button"
-              class="row"
-              class:selected={isSelected(t)}
+              class="nav-row"
+              class:active={isSelected(t)}
               onclick={() => workspace.selectTable(t)}
+              oncontextmenu={(e) => openMenu(e, t)}
               title={workspace.key(t)}
             >
-              {#if t.schema}<span class="schema">{t.schema}.</span>{/if}<span
-                class="name">{t.name}</span
-              >
+              {@render tableIcon()}
+              <span class="nav-name">
+                {#if t.schema}<span class="schema">{t.schema}.</span>{/if}{t.name}
+              </span>
             </button>
           {/each}
         {/if}
@@ -115,29 +185,33 @@
     {:else}
       <!-- Search mode. -->
       <div class="heading">
-        <span class="heading-label">Matches</span>
+        <span class="eyebrow">{i18n.t('sidebar-matches')}</span>
         {#if !searching}<span class="badge">{matches.length}</span>{/if}
       </div>
       <div class="list">
         {#if searching}
-          <p class="hint">Searching…</p>
+          <p class="hint">{i18n.t('sidebar-searching')}</p>
         {:else if searchError}
           <p class="error">{searchError}</p>
         {:else if matches.length === 0}
-          <p class="hint">No matches</p>
+          <p class="hint">{i18n.t('sidebar-no-matches')}</p>
         {:else}
           {#each matches as m (workspace.key(m.table))}
             <button
               type="button"
-              class="row match"
-              class:selected={isSelected(m.table)}
+              class="nav-row match"
+              class:active={isSelected(m.table)}
               onclick={() => workspace.selectTable(m.table)}
+              oncontextmenu={(e) => openMenu(e, m.table)}
               title={workspace.key(m.table)}
             >
               <span class="match-name">
-                {#if m.table.schema}<span class="schema"
-                    >{m.table.schema}.</span
-                  >{/if}{m.table.name}
+                {@render tableIcon()}
+                <span class="nav-name">
+                  {#if m.table.schema}<span class="schema"
+                      >{m.table.schema}.</span
+                    >{/if}{m.table.name}
+                </span>
                 {#if !m.table_name_matched}<span class="via">col</span>{/if}
               </span>
               {#if m.matched_columns.length > 0}
@@ -155,9 +229,24 @@
   </div>
 </aside>
 
+{#if menu}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    items={menuItems(menu.table)}
+    onClose={() => (menu = null)}
+  />
+{/if}
+
+{#if managerOpen}
+  <ConnectionManager onClose={() => (managerOpen = false)} />
+{/if}
+
 <style>
+  /* Width is driven by the shell's splitter (ADR-0083); the fallback keeps the
+     sidebar usable if this component is ever mounted outside that shell. */
   .sidebar {
-    width: 260px;
+    width: var(--sidebar-width, 260px);
     flex: none;
     display: flex;
     flex-direction: column;
@@ -180,17 +269,36 @@
     padding-bottom: var(--space-2);
   }
 
-  .field {
+  .section-head {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
   }
-  .field-label {
+  /* Quiet text trigger, aligned with the section eyebrow. */
+  .manage {
+    background: transparent;
+    border: none;
+    color: var(--text-accent);
     font-size: var(--text-hint);
-    color: var(--text-muted);
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: var(--radius-widget);
+  }
+  .manage:hover {
+    background: var(--bg-surface-alt);
   }
 
-  select,
+  /* Uppercase section label — one step quieter than muted body text. */
+  .eyebrow {
+    font-size: var(--text-hint);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
   input[type='search'] {
     width: 100%;
     background: var(--bg-surface-alt);
@@ -200,11 +308,9 @@
     padding: 6px 8px;
     font-size: var(--text-body);
   }
-  select:hover:not(:disabled),
   input[type='search']:hover:not(:disabled) {
     border-color: var(--border-strong);
   }
-  select:disabled,
   input[type='search']:disabled {
     opacity: 0.6;
   }
@@ -217,18 +323,18 @@
     margin-bottom: var(--space-3);
   }
 
+  .nav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin-top: var(--space-2);
+  }
+
   .heading {
     display: flex;
     align-items: center;
     gap: var(--space-2);
     margin-bottom: var(--space-2);
-  }
-  .heading-label {
-    font-size: var(--text-hint);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-muted);
   }
   .badge {
     font-size: var(--text-hint);
@@ -251,39 +357,72 @@
     gap: 1px;
   }
 
-  .row {
-    display: block;
+  /* Shared navi row: icon + name (+ optional right-aligned meta). Active state
+     is an accent-weak fill with a 2px inset accent bar down the left edge. */
+  .nav-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     width: 100%;
     text-align: left;
     border: none;
     background: transparent;
     color: var(--text);
     font-size: var(--text-body);
-    padding: 5px 8px;
+    padding: 6px 8px;
     border-radius: var(--radius-widget);
     cursor: pointer;
+  }
+  .nav-row:hover {
+    background: var(--bg-surface-alt);
+  }
+  .nav-row.active {
+    background: var(--accent-weak);
+    color: var(--text-accent);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  .icon {
+    flex: none;
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    color: var(--faint);
+  }
+  .nav-row.active .icon {
+    color: var(--accent);
+  }
+
+  .nav-name {
+    flex: 1;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .row:hover {
-    background: var(--bg-surface-alt);
-  }
-  .row.selected {
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-    color: var(--text-accent);
+  .nav-meta {
+    flex: none;
+    font-size: var(--text-hint);
+    color: var(--faint);
+    text-transform: capitalize;
   }
   .schema {
     color: var(--text-muted);
   }
 
+  /* A search hit can wrap onto a second line for matched columns. */
   .match {
-    white-space: normal;
+    flex-direction: column;
+    align-items: stretch;
   }
   .match-name {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-2);
   }
   .via {
     font-size: 9px;
@@ -299,7 +438,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    margin-top: 4px;
+    margin: 4px 0 0 23px;
   }
   .col-chip {
     font-size: var(--text-hint);

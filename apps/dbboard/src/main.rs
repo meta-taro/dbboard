@@ -1471,6 +1471,7 @@ mod tests {
         use dbboard_config::store::{ConnectionEntry, ConnectionKind};
         let entries = vec![
             ConnectionEntry {
+                ssh: None,
                 id: "store-a".into(),
                 name: "Store A".into(),
                 kind: ConnectionKind::Turso {
@@ -1478,6 +1479,7 @@ mod tests {
                 },
             },
             ConnectionEntry {
+                ssh: None,
                 id: "store-b".into(),
                 name: "Store B".into(),
                 kind: ConnectionKind::Neon {

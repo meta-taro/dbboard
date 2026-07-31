@@ -14,6 +14,8 @@ import {
   type ConnectionView,
   type TableInfo,
 } from '$lib/api';
+import { BROWSE_ROWS } from '$lib/sidebar/menu';
+import { dialectForKind, selectTopN } from '$lib/sql/build';
 
 export type MainTab = 'query' | 'structure';
 
@@ -29,6 +31,16 @@ class Workspace {
   error = $state('');
   loadingTables = $state(false);
 
+  /** A request to load SQL into the query editor and run it — raised by the
+   *  sidebar context menu ("Select top 100"), consumed by the Query panel.
+   *  The seq lets the panel apply each request exactly once, even when the
+   *  same SQL text is requested twice in a row. `table`, when present, marks
+   *  the request as an editable browse of that table: the panel loads its
+   *  primary key so the result grid can offer inline editing (ADR-0042). */
+  queryRequest = $state<{ sql: string; seq: number; table?: TableInfo } | null>(
+    null,
+  );
+
   /** The currently selected connection, or undefined if none. */
   get connection(): ConnectionView | undefined {
     return this.connections.find((c) => c.id === this.connectionId);
@@ -40,6 +52,28 @@ class Workspace {
       this.connections = await listConnections();
       if (this.connections.length > 0) {
         await this.selectConnection(this.connections[0].id);
+      }
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
+  /** Reload the connection list after an add/edit/delete. Preserves the
+   *  current selection when it survives (re-selecting it so changed
+   *  credentials take effect); otherwise falls back to the first connection,
+   *  or clears everything when none remain. */
+  async refreshConnections(): Promise<void> {
+    try {
+      this.connections = await listConnections();
+      const survived = this.connections.some((c) => c.id === this.connectionId);
+      if (survived) {
+        await this.selectConnection(this.connectionId);
+      } else if (this.connections.length > 0) {
+        await this.selectConnection(this.connections[0].id);
+      } else {
+        this.connectionId = '';
+        this.selectedTable = null;
+        this.tables = [];
       }
     } catch (e) {
       this.error = String(e);
@@ -63,6 +97,24 @@ class Workspace {
 
   setTab(tab: MainTab): void {
     this.activeTab = tab;
+  }
+
+  /** Load SQL into the Query editor and switch to it; the panel runs it. Used
+   *  for arbitrary generated SQL that is not tied to one editable table. */
+  runInEditor(sql: string): void {
+    const seq = (this.queryRequest?.seq ?? 0) + 1;
+    this.queryRequest = { sql, seq };
+    this.activeTab = 'query';
+  }
+
+  /** Browse a table's first rows in the Query editor as an *editable* result:
+   *  a bounded `SELECT *` plus the table identity, so the panel can load the
+   *  primary key and the grid can offer inline cell editing (ADR-0042). */
+  browse(table: TableInfo): void {
+    const seq = (this.queryRequest?.seq ?? 0) + 1;
+    const sql = selectTopN(table, BROWSE_ROWS, dialectForKind(this.connection?.kind));
+    this.queryRequest = { sql, seq, table };
+    this.activeTab = 'query';
   }
 
   /** Stable key for a table, used for list keying and equality. */

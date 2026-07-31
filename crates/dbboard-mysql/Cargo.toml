@@ -1,0 +1,22 @@
+[package]
+name = "dbboard-mysql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "MySQL adapter for dbboard over sqlx."
+
+[dependencies]
+async-trait = { workspace = true }
+dbboard-core = { workspace = true }
+sqlx = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

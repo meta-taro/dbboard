@@ -99,7 +99,10 @@ export function exportValue(cell: Cell): string {
  * Serialize columns + rows to a delimited block. CSV (`,`) fields are
  * RFC-4180-quoted when they contain the delimiter, a quote, or a newline; TSV
  * (`\t`) fields have any tab/newline collapsed to a space so a paste into a
- * spreadsheet keeps its cell boundaries. Rows are CRLF-joined.
+ * spreadsheet keeps its cell boundaries. Records are separated (no trailing
+ * newline) — CSV joins with CRLF per RFC 4180, TSV with a bare LF, matching
+ * dbboard-ui's `export` module (ADR-0035) so both frontends emit byte-for-byte
+ * identical files.
  */
 export function toDelimited(
   columns: Column[],
@@ -107,9 +110,33 @@ export function toDelimited(
   sep: ',' | '\t',
 ): string {
   const escape = sep === ',' ? escapeCsv : escapeTsv;
+  const newline = sep === ',' ? '\r\n' : '\n';
   const header = columns.map((c) => escape(c.name)).join(sep);
   const body = rows.map((r) => r.map((cell) => escape(exportValue(cell))).join(sep));
-  return [header, ...body].join('\r\n');
+  return [header, ...body].join(newline);
+}
+
+/**
+ * UTF-8 byte-order mark. Excel on Windows assumes the system ANSI code page
+ * (Shift-JIS on Japanese Windows) for a BOM-less CSV and renders UTF-8 text as
+ * mojibake; a leading BOM makes it auto-detect UTF-8. Harmless to BOM-aware
+ * parsers and to the spreadsheet's own re-save. Mirrors dbboard-ui's
+ * `export::UTF8_BOM` (ADR-0035).
+ */
+export const UTF8_BOM = '﻿';
+
+/**
+ * `toDelimited` with a leading UTF-8 BOM — the form to *write to a file* a user
+ * will open in Excel. The clipboard path (copy) deliberately stays BOM-less:
+ * the clipboard carries Unicode natively, and a BOM would show up as a stray
+ * glyph when pasting into a plain-text target (ADR-0035).
+ */
+export function toDelimitedFile(
+  columns: Column[],
+  rows: Cell[][],
+  sep: ',' | '\t',
+): string {
+  return UTF8_BOM + toDelimited(columns, rows, sep);
 }
 
 function escapeCsv(field: string): string {
