@@ -24,8 +24,12 @@
   import { sql } from '@codemirror/lang-sql';
   import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
   import { tags as t } from '@lezer/highlight';
+  import { ExternalDoc } from '$lib/editor/external-doc';
 
   interface Props {
+    /** Seeds the initial document and receives what the user types. It is
+     *  deliberately *not* watched afterwards — to replace the contents from
+     *  outside, call `setDoc` through `bind:this`. */
     value: string;
     onRun?: () => void;
     placeholder?: string;
@@ -34,11 +38,25 @@
     $props();
 
   let host: HTMLDivElement;
-  // Reactive so the "adopt external value" effect below re-runs once the view
-  // exists. A plain `let` made that effect depend on `value` alone, so a set
-  // that landed before mount was silently dropped and the editor kept showing
-  // its seed text forever.
-  let view = $state<EditorView | undefined>(undefined);
+  let view: EditorView | undefined;
+  const external = new ExternalDoc();
+
+  /** Replace the editor's contents from outside (sidebar menu, history
+   *  replay). Callable through `bind:this` before the view exists — the
+   *  document is buffered and applied on mount. */
+  export function setDoc(text: string) {
+    external.push(text);
+    flush();
+  }
+
+  function flush() {
+    if (!view || !external.hasPending) return;
+    const next = external.take() as string;
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: next },
+      selection: { anchor: next.length },
+    });
+  }
 
   // SQL syntax palette mapped onto the shared design tokens (keyword = accent,
   // string = success/green, number = warning/amber, comment = faint) so it
@@ -132,18 +150,9 @@
       ],
     });
     view = new EditorView({ state, parent: host });
+    // A `setDoc` that arrived before the view existed lands here.
+    flush();
     return () => view?.destroy();
-  });
-
-  // Adopt external changes to `value` (e.g. the context menu injecting a
-  // query). The equality guard makes a user keystroke a no-op here.
-  $effect(() => {
-    const incoming = value;
-    if (view && incoming !== view.state.doc.toString()) {
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: incoming },
-      });
-    }
   });
 </script>
 

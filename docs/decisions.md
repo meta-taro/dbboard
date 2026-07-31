@@ -8075,3 +8075,55 @@ Two details are deliberate:
 - Delete stays enabled for these rows: removing an entry is a store operation
   that works for every kind.
 - Adding a future TOML-only kind means one array entry plus its test.
+
+---
+
+## ADR-0075 — The SQL editor takes external documents by call, not by watching a prop
+
+- **Status**: Accepted 2026-07-31
+- **Relates to**: ADR-0060 (the CodeMirror editor) and ADR-0072 (the table menu
+  whose "Count rows" entry exposed this).
+
+### Context
+
+`SqlEditor` took its document as a two-way bound `value` and adopted outside
+changes in an effect that compared the prop against the live document. Running
+"Count rows" from the table menu produced the right answer in the result grid
+while the editor kept showing the seed text `SELECT 1 AS hello;` — the query
+that ran was one the user could not see.
+
+The adoption effect is only correct if it runs *after* the CodeMirror view is
+built. When it does not, the dispatch is skipped, nothing records that a
+document was missed, and the editor stays stale for the rest of the session. An
+earlier attempt to fix the ordering by making the view reactive did not cure
+the report, which is the argument against the whole approach rather than
+against that particular patch: a channel whose correctness depends on framework
+scheduling, and which fails silently when the schedule differs, cannot be
+verified by reading it.
+
+### Decision
+
+1. `ExternalDoc` (`$lib/editor/external-doc.ts`) buffers one pending document.
+   `null` means nothing pending; `''` is a real empty document, so no code path
+   tests it for truthiness.
+2. `SqlEditor` exports `setDoc(text)`, reachable through `bind:this`. It pushes
+   into the buffer and flushes; `onMount` flushes again after building the view,
+   so a call that arrives first is applied rather than lost.
+3. `value` now seeds the initial document and carries typing back out. It is no
+   longer watched — the prop comment says so, because the binding still looks
+   two-way at the call site.
+4. `QueryPanel` routes both of its non-keyboard writes (the sidebar request and
+   a history replay) through one `setSql` helper, so there is a single place
+   that can forget to notify the editor.
+
+### Consequences
+
+- Applying a document is unconditional: pressing the same menu entry twice
+  resets an editor the user typed over in between, which is what "run this
+  query" should do.
+- The ordering rule is a unit test on `ExternalDoc`, not an assumption about
+  effect scheduling. The remaining untested part is the two-line flush inside
+  the component.
+- Any future writer of the editor's contents must call `setDoc`; assigning the
+  bound variable alone now visibly does nothing, instead of working by accident
+  until the timing changes.
