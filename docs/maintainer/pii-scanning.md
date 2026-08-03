@@ -33,7 +33,10 @@ them — it is full of synthetic connection strings and example emails.
   - **aws-access-key-id** — a real-looking `AKIA…` key id.
   - **identity** — an author/committer address that is not a GitHub noreply
     address (ADR-0084). Blocking rather than advisory because, unlike a
-    string in a file, it cannot be corrected by a later commit.
+    string in a file, it cannot be corrected by a later commit. Three shapes
+    pass: `<id>+<login>@users.noreply.github.com`, the older `<login>@`
+    variant, and the bare `noreply@github.com` that GitHub stamps as the
+    committer of web-UI commits (ADR-0085).
 - **ADVISORY** (printed in the daily `--tree`/`--range` scan, never fails):
   - **passworded-db-url**, **personal-email**, **windows-home-path**.
   By project invariant real secrets live only in the OS keyring, never in a
@@ -116,6 +119,13 @@ resulting commit. That is exactly what happened on 2026-07-31: the branch
 commits of PR #127 were noreply, the squash commit `e15dcff` it produced on
 `develop` was not, and the identity check went red on a range this clone did not
 write.
+
+Turning the setting on fixed it: the next squash commit was authored by the
+noreply form. The identity step still went red, this time on the *committer* —
+`noreply@github.com`, GitHub's own web-flow address, which the allowlist did
+not yet admit. So the false positive had been firing on every web merge since
+ADR-0084 landed, and it looked exactly like the real leak underneath it. That
+is what ADR-0085 fixes; if you see an identity failure now, it is a finding.
 
 The pre-commit hook refuses to commit when `user.email` is not a noreply
 address, and CI re-checks the commits each push or PR introduced. Neither

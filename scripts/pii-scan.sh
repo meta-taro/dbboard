@@ -166,9 +166,17 @@ scan_denylist() {
 # asymmetry is why identity is checked separately, and why it is checked
 # before the commit exists (--staged) as well as after (--identity <range>).
 #
-# GitHub's noreply forms are the only publishable addresses. Override with
-# OSS_IDENTITY_ALLOW_RE if this repo ever moves off GitHub.
-IDENTITY_ALLOW_RE="${OSS_IDENTITY_ALLOW_RE:-^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$}"
+# GitHub's noreply forms are the only publishable addresses. Three shapes:
+# the per-account `<id>+<login>@users.noreply.github.com` and its older
+# `<login>@` variant, plus the bare `noreply@github.com` that GitHub's own
+# web-flow stamps as the COMMITTER of every commit created through the web UI
+# (squash merges included). That third one belongs to GitHub, not to an
+# account, so it identifies nobody — but it is not under `users.` and an
+# allowlist written for the account forms alone rejects it. Every web merge
+# then fails a check the maintainer cannot fix by configuring anything, which
+# is how a genuine author leak stayed hidden behind a false positive.
+# Override with OSS_IDENTITY_ALLOW_RE if this repo ever moves off GitHub.
+IDENTITY_ALLOW_RE="${OSS_IDENTITY_ALLOW_RE:-^(([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com|noreply@github\.com)$}"
 
 # identity_allowed <email> — 0 when the address is safe to publish.
 identity_allowed() {
@@ -322,13 +330,16 @@ FIX
     # mail, the fake `user@hostname` git invents when unconfigured — is a
     # leak that survives in commit metadata forever.
     for ok in '3032390+meta-taro@users.noreply.github.com' \
-              'meta-taro@users.noreply.github.com'; do
+              'meta-taro@users.noreply.github.com' \
+              'noreply@github.com'; do
         identity_allowed "$ok" || { printf 'selftest FAIL: identity rejected a noreply address\n' >&2; rc=1; }
     done
     for bad in 'someone@gmail.com' \
                'dev@corp.example.co.jp' \
                'runner@fv-az1234-567.(none)' \
                'attacker@evil.users.noreply.github.com.example.com' \
+               'evil-noreply@github.com' \
+               'noreply@github.com.example.com' \
                ''; do
         if identity_allowed "$bad"; then
             printf 'selftest FAIL: identity accepted a publishable-unsafe address\n' >&2; rc=1
