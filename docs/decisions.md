@@ -8671,3 +8671,67 @@ clean. The real finding was the one nobody was looking at.
 - The pre-commit hook will now refuse to commit from a clone whose
   `user.email` has not been set. That is the intended behaviour: the failure
   message names the exact `git config` command to run.
+
+## ADR-0085 — The identity allowlist admits GitHub's web-flow committer
+
+**Date:** 2026-08-03
+**Status:** Accepted
+
+### Context
+
+ADR-0084 defined the publishable-identity allowlist as GitHub's per-account
+noreply forms:
+
+```
+^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$
+```
+
+That is the complete set of addresses a *person* can commit under, and it is
+the right rule for the author field. It is not the complete set that appears
+in the committer field. A commit created through the GitHub web UI — every
+"Squash and merge" included — is committed by GitHub itself under the bare
+`noreply@github.com`. That address is not under `users.`, so the pattern
+rejects it.
+
+The consequence is not merely a nuisance failure. It is a check that no
+configuration can satisfy: the maintainer's `git config` has no bearing on a
+commit this clone never authored, so the identity step goes red on every web
+merge regardless of whether anything leaked. A check that fails identically
+whether or not the condition it tests for holds carries no information.
+
+That cost was paid before it was noticed. The merge of PR #127 leaked a
+personal address in the author field of `e15dcff` — a genuine finding, exactly
+what ADR-0084 exists to catch. The fix (turning on **Keep my email addresses
+private**) worked: the next squash commit, `d7ed16b`, was authored by the
+noreply form. The identity step still failed, now on the committer, and the
+two failures are indistinguishable from the job status alone. A real leak and
+a false positive that had been firing on every merge since ADR-0084 landed
+present as the same red X.
+
+### Decision
+
+Admit `noreply@github.com` as a third publishable shape:
+
+```
+^(([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com|noreply@github\.com)$
+```
+
+Matched as a whole-string alternative, not as a suffix. `evil-noreply@github.com`
+and `noreply@github.com.example.com` are both still rejected, and both are now
+asserted in `--selftest` alongside the existing near-miss case.
+
+The address is admitted for the author field as well as the committer field.
+Splitting the allowlist per field would buy nothing: `noreply@github.com`
+belongs to GitHub rather than to any account, so it identifies nobody wherever
+it appears, and a single predicate is one thing to reason about instead of two.
+
+### Consequences
+
+- The identity step now distinguishes a leak from a web merge. This is the
+  point of the change; the previous behaviour would have masked any future
+  author leak the same way it masked this one.
+- The allowlist is wider by exactly one literal string. It admits no shape that
+  varies, so it cannot be widened further by an address someone chooses.
+- ADR-0084's scope is unchanged. History still carries the personal address on
+  every commit before the fix, and `docs/maintainer/history-sanitize-runbook.md`
+  is still the only route to removing it.
