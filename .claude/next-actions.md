@@ -30,9 +30,21 @@
   `--mailmap` 節を追記済。fork 0 / star 0 なので書き換えは実効性がある = 検討する理由に
   なるが、勝手に実行する理由にはならない。**棚卸し (§31)** = `project-status.md` 3,689→180 行、
   `next-actions.md` 475→約 300 行を `.claude/archive/` へ**全文退避** (要約ではない・削除でもない)。
-  **今の user 側ボール = (1) `.pii-denylist` 作成 + CI secret `PII_DENYLIST` 設定 (§15 で
-  human のみ。これが無い限り literal 検出は OFF)、(2) 公開済 428 コミットの履歴書き換えを
-  やるかどうかの判断、(3) `feature/desktop-design-polish` の push、(4) v0.4.0 前に
+  **`.pii-denylist` はエージェント側で作成済** (untracked・gitignored)。作った瞬間に
+  BLOCKING 層が初めて有効になり、**3 件即ヒット** — しかも当たったのは
+  「実店舗名を履歴から消すべき理由」を説明している当の段落 (本ファイル下の候補 B) で、
+  そこに実店舗名が生で書かれていた → 除去 (commit `cdf6524`)。
+  **未公開コミットの identity は書き換え済** = `git filter-branch --env-filter` を
+  `--all --not --remotes=origin` に限定し、全ローカルブランチの未公開部分 28 コミットを
+  noreply に。**一度も push されていないので force-push 不要・誰の clone も壊さない**。
+  書き換え後に全ブランチで「ツリー + 件名 + 順序が一致」を検証、`refs/original/*` と
+  バックアップ ref を削除 (Gmail 入りコミットオブジェクトを到達可能なまま残さない)。
+  **今の user 側ボール = (1) CI secret `PII_DENYLIST` の設定 (§15 で human のみ。
+  ローカルは有効になったが CI 側はまだ literal 検出 OFF。中身はローカルの
+  `.pii-denylist` をそのまま貼る)、(2) 公開済 468 コミットの履歴書き換えをやるか
+  どうかの判断 (やるなら**先に全ローカル作業を push してから** — 順序を間違えると
+  未書き換えのローカルコミットが即座に再汚染する。runbook に追記済。open PR #125 も
+  巻き添えで壊れる)、(3) `feature/desktop-design-polish` の push、(4) v0.4.0 前に
   `TAURI_SIGNING_PRIVATE_KEY` 設定、(5) #42 = 外部 bastion 経由の live MySQL 検証
   (**実接続 = 明示的な GO と認証情報が必要。エージェントは勝手に接続しない**)。)
 - 日付: 2026-07-30 (**ドキュメント同期の chore + push 前の PII 除去。** コード変更なし。
@@ -227,13 +239,31 @@ MSI アンインストールは `%APPDATA%\dbboard\dbboard\` の設定と Window
 マネージャーのエントリを残す (仕様)。ユーザに口頭で伝えた `cmdkey` +
 フォルダ削除のクリーンアップ手順を README か `docs/` に明文化する小 chore。
 
-### 候補 B: git 履歴の実店舗名 rewrite (human ボール・破壊的・未実行)
+### 候補 B: git 履歴の一括サニタイズ (human ボール・破壊的・未実行)
 
-過去コミットに実店舗名がまだ残る (`store-a`/`store-b`/`store-c`
-系)。バイナリはCIビルドで名前を含まないためリリースは塞がないが、公開リポの
-履歴には残る。`docs/maintainer/history-sanitize-runbook.md` の手順で
-`git filter-repo --replace-text` → develop/main を **force-push**。全ハッシュ
-変更・既存クローン/PR/フォーク破損のため **human 実行**。
+**1 回の rewrite で 2 つが同時に片付く。** どちらも「ファイルなら次のコミットで
+直せるが、既に公開された過去コミットは書き換えないと消えない」もの:
+
+1. **実店舗名** — 過去コミットに残る (実名は**非公開メモリと `.pii-denylist`
+   のみ**。ここには書かない。対応表からローカルで `replacements.txt` を作る)。
+   バイナリは CI ビルドで名前を含まないためリリースは塞がない。
+2. **コミット identity** — 公開済 468 コミットの author/committer が個人 Gmail
+   (ADR-0084)。**未公開のローカル 28 コミットは書き換え済** (2026-07-31、
+   force-push 不要だったので実行した)。以後の新規コミットも noreply で clean。
+   残るのは origin 上の分だけ。
+
+手順は `docs/maintainer/history-sanitize-runbook.md` (Step 1-3 = 文字列置換、
+Step 3b = `--mailmap` で identity、Step 4 = force-push)。全ハッシュ変更・既存
+クローン/PR/フォーク破損のため **human 実行**。fork 0 / star 0 なので実効性は
+ある = 検討する理由になるが、勝手に実行する理由にはならない。
+
+**順序を間違えると全部無駄になる:** rewrite + force-push は**未 push の
+ローカル作業を全部 push してから**やり、その後クローンを捨てて re-clone する。
+先に rewrite すると、残った未書き換えのローカルコミットを次の `git push` が
+そのまま remote に戻して再汚染する (git から見れば単なる新規コミットなので
+警告も出ない)。`git pull --rebase` では直らない。runbook の「Ordering」節参照。
+open PR **#125** (`feature/cjk-font-and-ai-menu`) は rewrite で壊れるので、
+先に merge / close するか、書き換え後のブランチから立て直す。
 
 ### 候補 C: release.yml の publish 自己作成化 (follow-up)
 
