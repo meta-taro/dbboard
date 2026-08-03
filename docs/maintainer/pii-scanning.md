@@ -107,6 +107,16 @@ git config user.email          # confirm
 Turning on **Settings → Emails → Keep my email addresses private** on GitHub
 makes the same noreply address apply to commits made through the web UI.
 
+**This second step is not optional, and `git config` alone does not cover it.**
+Merging a PR from the GitHub web UI creates a commit that this clone never
+authored — the "Squash and merge" button stamps it with the account's primary
+address, not with `git config user.email`. So a repo whose local commits are all
+clean still publishes a personal address on every merge, and CI fails on the
+resulting commit. That is exactly what happened on 2026-07-31: the branch
+commits of PR #127 were noreply, the squash commit `e15dcff` it produced on
+`develop` was not, and the identity check went red on a range this clone did not
+write.
+
 The pre-commit hook refuses to commit when `user.email` is not a noreply
 address, and CI re-checks the commits each push or PR introduced. Neither
 touches existing history — see below.
