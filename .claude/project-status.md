@@ -5,7 +5,7 @@
 
 ## 最終更新
 
-- 日付: 2026-07-31 (**コミット identity のスキャンを新設 = ADR-0084 (commit `49658e2`)、
+- 日付: 2026-07-31 (**コミット identity のスキャンを新設 = ADR-0084 (commit `cf11913`)、
   および記録ファイルの棚卸し (baseline §31)。コード変更なし。** 発端は user の質問
   「OSS プロジェクトとして `.claude` などを ignore してないのは問題ないか」。
   **`.claude/` 自体は問題なし** — 他人の名前を含む `.claude/rules/` と
@@ -23,7 +23,19 @@
   `*)` arm で exit 2、(3) **既に公開済の ~428 コミットは直っていない** = 履歴書き換えは
   human 判断。手順は `docs/maintainer/history-sanitize-runbook.md` に `--mailmap` 節を追記。
   **棚卸し (§31)** = 本ファイル 3,689→180 行、`next-actions.md` 475→約 300 行を
-  `.claude/archive/` へ**全文退避** (要約でも削除でもない)。)
+  `.claude/archive/` へ**全文退避** (要約でも削除でもない)。
+  **`.pii-denylist` を作成 (untracked・gitignored)** = ADR-0055 のブロッキング層が
+  この PC で初めて有効化。作った直後に 3 件ヒットし、**「実店舗名を履歴から消すべき理由」
+  を説明している当の段落 (`next-actions.md`) が実店舗名を書いていた**ことが判明 →
+  除去 (commit `cdf6524`)。エントリは必ず十分長くする — 素の OS ユーザー名のような短い
+  文字列は "system" 等に部分一致して全コミットをブロックする。
+  **未公開ローカルコミットの identity を書き換え済み** = `git filter-branch --env-filter`
+  を `--all --not --remotes=origin` に限定して実行。全ローカルブランチの未公開部分
+  28 コミットが個人 Gmail → noreply に。**push 済みでないので force-push 不要・
+  誰の clone も壊さない**。書き換え後に「ツリー + 件名 + 順序が全ブランチで一致」を検証、
+  `refs/original/*` とバックアップ ref は削除 (Gmail を持つコミットオブジェクトを
+  到達可能なまま残さないため。復旧は reflog から可能)。
+  **残るのは origin 上の 468 コミット** = force-push を伴うので human 判断。)
 - 日付: 2026-07-29 (**SSH トンネルが着地 — デスクトップ (Tauri) が初めて egui を追い越した**
   (branch `feature/desktop-design-polish`, commits `8bfe07b`→`22892b6`, ADR-0069)。
   **動機:** バスチオン越しにしか届かない DB (VPS 側が `localhost` のみ listen) は、これまで
