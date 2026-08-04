@@ -7,6 +7,21 @@
 
 ## 最終更新
 
+- 日付: 2026-08-04 その2 (**#130 は PR #132 (`051c9cd`) で develop に着地・issue クローズ済。
+  `feature/desktop-design-polish` も push 済 (`f703a54..3e6c6a4`)。**
+  **さらに #42 (外部 bastion 経由の live MySQL 検証) は既に済んでいた** — user から
+  「MySQL の接続は先日確認した」と指摘を受けて実機を確認したところ、dbboard の接続一覧に
+  MySQL 種別のエントリが 1 件登録済で、`connections.toml` の当該ブロックには
+  `[connections.ssh]` と鍵パスフレーズの keyring ref が入っていた = SSH トンネル経由。
+  **これまでのエントリが「未着手」として引き写し続けていたのが誤り** (前回の
+  `TAURI_SIGNING_PRIVATE_KEY` と同じ、確認せずに前エントリをコピーした結果)。
+  接続情報 (host / user / port) は tracked ファイルには書かない — 非公開メモリと
+  `.pii-denylist` のみ。
+  **今の user 側ボール = 公開済 468 コミットの履歴書き換えの判断のみ**
+  (ローカルの未 push 作業は無くなったので、やるなら今が最も安全)。
+  **エージェント側の次候補** = cargo CI の新設 (pre-push が唯一のゲートである件)、
+  pii-scan の `--denylist-digest` モード。)
+
 - 日付: 2026-08-04 (**issue #130 = pre-push の再コンパイル解消。commit `e271726`、ADR-0086。**
   修正は `apps/desktop/src-tauri/Cargo.toml` の `crate-type` 1 行。
   **原因は推測されていたもの (`build.rs` の `cargo:rerun-if-changed` 欠落) ではなかった** —

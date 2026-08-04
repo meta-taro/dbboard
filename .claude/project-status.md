@@ -5,6 +5,22 @@
 
 ## 最終更新
 
+- 日付: 2026-08-04 その2 (**#130 クローズ + 記録の訂正 2 件。**
+  PR #132 (squash `051c9cd`) が develop にマージされ、issue #130 はクローズ済
+  (計測値を添えたコメントを投稿)。`feature/desktop-design-polish` の 14 コミットも
+  push 済 (`f703a54..3e6c6a4`)。両 push とも pre-push は全緑で、既知の libSQL teardown
+  segfault も出なかった (= `--no-verify` 不使用)。所要は修正後の実測どおり 1 回あたり約 58s。
+  **訂正: #42 (外部 bastion 経由の live MySQL 検証) は未着手ではなく完了済だった。**
+  user の指摘を受けて実機側を確認 — dbboard の接続一覧に MySQL 種別が 1 件登録されており、
+  `connections.toml` の当該ブロックに `[connections.ssh]` と鍵パスフレーズの keyring ref が
+  存在する = SSH トンネル経由の構成。ステータス側が数エントリにわたり「未着手」を
+  引き写していたのが誤り。**接続情報そのもの (host / user / port) は tracked ファイルには
+  書かない** — 非公開メモリと `.pii-denylist` のみ。
+  なお `.pii-denylist` はこの端末に存在しないため、スキャナはこの種の情報に対して盲目である
+  (ADR-0085 で記録済の既知ギャップ)。書かない運用で担保するしかない。
+  **残る user 側ボール = 公開済 468 コミットの履歴書き換えの判断のみ。**
+  未 push のローカル作業が無くなったので、実施するなら今が最も安全な時点。)
+
 - 日付: 2026-08-04 (**issue #130 = `dbboard-desktop` が pre-push のたびに再コンパイルされる
   問題の原因確定と修正。commit `e271726`、ADR-0086。変更は
   `apps/desktop/src-tauri/Cargo.toml` の `crate-type` 1 行。**
