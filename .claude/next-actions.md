@@ -7,6 +7,41 @@
 
 ## 最終更新
 
+- 日付: 2026-08-04 (**issue #130 = pre-push の再コンパイル解消。commit `e271726`、ADR-0086。**
+  修正は `apps/desktop/src-tauri/Cargo.toml` の `crate-type` 1 行。
+  **原因は推測されていたもの (`build.rs` の `cargo:rerun-if-changed` 欠落) ではなかった** —
+  `cargo build --release` を 2 回続けると 1s / 0 件で終わるので無条件リビルドではなく、
+  再コンパイルは **build と test が交互に走るときだけ**出ていた (= pre-push の形)。
+  `CARGO_LOG=cargo::core::compiler::fingerprint=info` が
+  `UnitDependencyInfoChanged` を lib ユニットに、バイナリは波及 (`StaleDependency`) と
+  名指し。両コマンドが**同じ** fingerprint ファイルを書いていた: `staticlib`/`cdylib` は
+  出力ファイル名が固定なので cargo の `-C metadata` ハッシュを持てず、ビルド構成ごとに
+  fingerprint ディレクトリが分かれない。`--all-features` はこのワークスペースでは no-op
+  (`[features]` も `optional` も無い) だが dev-dependency はグラフに合流するので
+  `hyper` が `full`/`http2` 等を得て依存ハッシュが正当に変わり、1 つの枠を奪い合っていた。
+  裏取り = `.fingerprint` ツリー全体で **1210 ユニット中、差は 1 つだけ**。
+  修正は `crate-type = ["rlib"]` (staticlib/cdylib は Tauri テンプレ由来のモバイル用で、
+  `gen/android`・`gen/apple`・`cfg(mobile)` はどれも存在しない)。
+  **実測: test 直後の build 42s→2s、build 直後の test 94s→56s、pre-push 合計 約136s→58s、
+  再コンパイル 0 件。** 残る 56s はテスト実行時間 = この issue のスコープ外。
+  全ゲート green・pre-commit 全通過 (`--no-verify` 不使用)・release バイナリの起動も確認。
+  **副次的な発見: このリポには cargo の CI が無い** (`.github/workflows/` は pages /
+  pii-scan / release のみ)。つまり **pre-push が唯一のビルド・テストゲート**で、
+  遅いから飛ばすと誰も検査しなくなる。#131 の baseline §35 が前提にする「最後の砦は CI」は
+  このリポでは成立しない。
+  **今の user 側ボール = (1) `chore/post-pr129-doc-sync` の push (2 コミット: `2fab7ba` docs +
+  `e271726` perf) → PR → develop、以下は据え置き: (2) 公開済 468 コミットの履歴書き換えの
+  判断 (やるなら**先に全ローカル作業を push してから**)、(3) `feature/desktop-design-polish`
+  の push (未 push 14 コミット)、(4) #42 = 外部 bastion 経由の live MySQL 検証
+  (**実接続 = 明示的な GO と認証情報が必要**)。**エージェント側の次候補** =
+  `--denylist-digest` モード、cargo CI の新設 (上記の副次的発見)。
+  **記録の訂正: `TAURI_SIGNING_PRIVATE_KEY` は 2026-07-30 に投入済み** (`gh secret list` で確認)。
+  前エントリから user ボールとして引き写していたが、既に済んでいたもの。ただし
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` は未設定 — 鍵にパスフレーズを付けていない場合は
+  空で通るので、v0.4.0 の署名が通るかは**最初のリリース実行時に判明する**。
+  **リリース状況の実測**: 最新リリースは v0.3.0 (2026-07-22)、workspace version は既に
+  `0.4.0`、`origin/develop` は `origin/main` より **76 コミット先行**。つまり v0.4.0 は
+  「切るかどうか」ではなく「中身が溜まりきっている」状態。)
 - 日付: 2026-08-03 (**identity 赤の解消 = ADR-0085 (PR #128 / #129)、および CI の
   denylist 層が初めて実稼働。** セッション開始時の §18 手順で `develop` の `pii-scan` が
   赤だったのが発端。中身は**本物 1 件と誤検出 1 件が重なっていた**。

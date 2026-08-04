@@ -5,6 +5,41 @@
 
 ## 最終更新
 
+- 日付: 2026-08-04 (**issue #130 = `dbboard-desktop` が pre-push のたびに再コンパイルされる
+  問題の原因確定と修正。commit `e271726`、ADR-0086。変更は
+  `apps/desktop/src-tauri/Cargo.toml` の `crate-type` 1 行。**
+  issue が推測していた `build.rs` の `cargo:rerun-if-changed` 欠落は**外れ**だった。
+  `cargo build --release` を 2 回続けると 1s / 再コンパイル 0 件なので無条件リビルドではなく、
+  再コンパイルが出るのは `cargo build --release` と `cargo test --all-features --release` が
+  **交互に走るときだけ** = pre-push そのものの形。
+  `CARGO_LOG=cargo::core::compiler::fingerprint=info` の出力が
+  `dirty: UnitDependencyInfoChanged` を lib ユニットに名指しし、バイナリは
+  `FsStatusOutdated(StaleDependency)` = 波及にすぎなかった。決定的だったのは、両コマンドが
+  **同じ** `target/release/.fingerprint/dbboard-desktop-<hash>/lib-dbboard_desktop_lib.json`
+  を書いていたこと。cargo は通常ユニットを `-C metadata` にハッシュ化して構成ごとに
+  fingerprint を分けるが、`staticlib`/`cdylib` はリンカが見つけるために**出力ファイル名が
+  固定**なのでハッシュを変えられず、パスも分かれない。中身が違うことも確認済 —
+  `--all-features` はこのワークスペースでは no-op (`[features]` も `optional = true` も
+  存在しない) だが dev-dependency はグラフに合流し、`cargo tree` の dev 有無の差分で
+  `hyper` が `full`/`http2`、`hyper-util` が `http2`、`slab` が `default`、`tempfile` が
+  `getrandom` を得る。つまり記録される依存ハッシュは正当に違い、それが 1 つの枠で
+  上書きし合っていた。範囲の裏取りに `.fingerprint` ツリー全体を比較すると
+  **1210 ユニット中、差があるのは 1 つだけ** (片側にしか無いユニットは 0)。
+  **修正 = `crate-type = ["rlib"]`。** `staticlib`/`cdylib` は Tauri テンプレート由来で、
+  モバイルホストが lib をリンクするためのもの。本アプリは desktop 専用 (`main.rs` は
+  `run()` を呼ぶだけ、`gen/android`・`gen/apple` は無く、`cfg(mobile)` もソースに 0 件)。
+  **実測 (warm ツリーで交互実行): test 直後の build 42s/1件 → 2s/0件、build 直後の test
+  94s/1件 → 56s/0件、pre-push 合計 約136s → 58s。** issue に記録した 237s との差は
+  マシン負荷と AV スキャンの揺れで、修正が取り除くのは「最大クレートのフルコンパイル
+  1 回 × 往復 2 回」という固定量。残る 56s はテスト実行時間 = 明示的にスコープ外。
+  **検証**: fmt/clippy/check/`cargo test --all-features` (48 スイート) すべて green、
+  `cargo test --all-features --release` rc=0 (今回は libSQL teardown segfault も出ず)、
+  release バイナリの起動・常駐を確認、pre-commit フック全通過 (`--no-verify` 不使用)。
+  **副次的な発見 = このリポには cargo の CI が存在しない** (`.github/workflows/` は
+  `pages.yml` / `pii-scan.yml` / `release.yml` の 3 つのみ)。つまり
+  **pre-push が唯一のビルド・テストゲート**であり、遅さを理由に飛ばされると検査は
+  どこにも残らない。#131 が持ち込んだ baseline §35 は「最後の砦は CI」を前提にするが、
+  その前提はこのリポでは成立しない。cargo CI の新設が次の候補。)
 - 日付: 2026-08-03 (**identity 誤検出の除去 = ADR-0085 (PR #128 `d7ed16b` / PR #129 `27824b0`)、
   および CI の denylist 層が初めて実稼働。コード変更は `scripts/pii-scan.sh` の許可正規表現
   1 行のみ。** 発端はセッション開始時の §18 手順で `develop` の `pii-scan` が赤だったこと。
