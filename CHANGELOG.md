@@ -9,6 +9,23 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Fixed
+
+- The Tauri release jobs pinned Node 20 while `apps/desktop` pins pnpm 11,
+  which imports `node:sqlite` (Node 22.5+); `pnpm install` died before
+  resolving a package. Both jobs now run Node 22.
+
+### Documentation
+
+- `dbboard-mcp`: document registering the server with **Claude Code**
+  (`claude mcp add`), which the top-level README claimed was covered but
+  was not; correct the tool count in the README (five → seven); and add
+  sections on restarting after a config change, running several agents at
+  once against a **tunneled** connection, and reading connection-failure
+  symptoms.
+- Download page: mention the MCP server, and list MySQL/MariaDB among the
+  supported engines.
+
 ## [0.4.0] — 2026-08-04
 
 Fourth tagged release, and the largest so far. Headlined by a **new

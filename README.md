@@ -442,7 +442,8 @@ credentials. See [ADR-0046](docs/decisions.md) and the crate README,
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
 full spec.
 
-Five fixed tools: `list_connections`, `list_tables`, `describe_table`,
+Seven fixed tools: `list_connections`, `list_tables`, `describe_table`,
+`search_schema` (ADR-0053), `list_relationships` (ADR-0054),
 `run_read_query`, and `get_annotations` (dbboard's local notes, ADR-0045).
 The security posture is the reason it is safe to point an agent at:
 
@@ -464,7 +465,14 @@ cargo build --release -p dbboard-mcp
 # binary at target/release/dbboard-mcp(.exe)
 ```
 
-Register it with Claude Desktop by adding the absolute path to the built
+Register it with **Claude Code** in one command — `--scope user` makes it
+available in every project on the machine:
+
+```sh
+claude mcp add dbboard --scope user -- /absolute/path/to/dbboard-mcp
+```
+
+Or with **Claude Desktop**, by adding the absolute path to the built
 binary in `claude_desktop_config.json`
 (`%APPDATA%\Claude\claude_desktop_config.json` on Windows,
 `~/Library/Application Support/Claude/claude_desktop_config.json` on
@@ -480,10 +488,16 @@ macOS):
 }
 ```
 
+Either way, **restart the agent afterwards.** Each client spawns its own
+`dbboard-mcp` process and holds it for the session, so an already-running
+agent keeps talking to the old one — and restarting the dbboard *desktop
+app* does nothing to it, because they are separate processes.
+
 With no arguments it reads the same per-user `connections.toml` the GUI
 uses; pass `--config` (or set `DBBOARD_CONFIG`) to point at a curated,
-least-privilege subset instead. Full configuration — including the
-per-OS config paths and running it under Claude Code — is documented in
+least-privilege subset instead. Full configuration — the per-OS config
+paths, running several agents at once, and what to check when a
+connection fails — is documented in
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md).
 
 ## Development
