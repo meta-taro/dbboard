@@ -10,12 +10,22 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
-# Tauri takes the main-binary + shared-lib shape (the lib is what mobile /
-# tests would link); we keep it for parity with the reference stack even though
-# the spike is desktop-only.
+# rlib only, deliberately. The Tauri template ships
+# `["staticlib", "cdylib", "rlib"]`, but staticlib/cdylib exist purely so an
+# iOS/Android host can link the lib — this app is desktop-only (`main.rs` just
+# calls `run()`, and there is no `gen/android` or `gen/apple`).
+#
+# Keeping them was not free: a fixed-name artifact cannot carry cargo's varying
+# `-C metadata` hash, so this unit's fingerprint path stayed identical across
+# build configurations. `cargo build --release` and `cargo test --release`
+# resolve different dependency features (dev-deps pull `hyper/http2` etc.), so
+# the two runs kept overwriting each other's fingerprint and recompiling this
+# crate — ~42s in each direction, every pre-push (#130, ADR-0086).
+#
+# If mobile is ever targeted, add them back and expect the thrash to return.
 [lib]
 name = "dbboard_desktop_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
