@@ -82,7 +82,7 @@
     <p class="tagline">
       A high-performance desktop database client for modern serverless and
       distributed databases — Turso/libSQL, Cloudflare&nbsp;D1, CockroachDB,
-      Neon, Supabase, and AWS&nbsp;Aurora&nbsp;DSQL.
+      Neon, Supabase, MySQL/MariaDB, and AWS&nbsp;Aurora&nbsp;DSQL.
     </p>
 
     <h2>Download <span id="version" class="meta"></span></h2>
@@ -101,6 +101,24 @@ sha256sum -c SHA256SUMS.txt
 # Windows PowerShell
 (Get-FileHash .\dbboard-windows-x86_64.exe -Algorithm SHA256).Hash</pre>
     <p id="checksums-link" class="meta"></p>
+
+    <h2>Use it from an AI agent</h2>
+    <p>
+      dbboard also ships <code>dbboard-mcp</code>, a headless
+      <a href="https://modelcontextprotocol.io">MCP</a> server that hands the
+      connections you have already configured to an AI agent as a
+      <strong>read-only</strong> tool surface over stdio. It reuses the same
+      <code>connections.toml</code> and OS keychain the app uses, so it adds no
+      new place to keep credentials, and secrets never cross the wire.
+    </p>
+    <pre>
+claude mcp add dbboard --scope user -- /path/to/dbboard-mcp</pre>
+    <p class="meta">
+      Restart the agent afterwards — each client holds its own server process
+      for the session. Setup, the seven tools, and troubleshooting are in the
+      <a href="https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md">dbboard-mcp
+      README</a>.
+    </p>
 
     <h2>Before you run it</h2>
     <p class="note">

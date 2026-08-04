@@ -69,6 +69,41 @@ cargo build --release -p dbboard-mcp
 # binary at target/release/dbboard-mcp(.exe)
 ```
 
+## Configure Claude Code
+
+One command, run from anywhere. `--scope user` registers the server for
+every project on the machine rather than just the current one:
+
+```sh
+claude mcp add dbboard --scope user -- /absolute/path/to/dbboard-mcp
+```
+
+On Windows, give the `.exe` and use forward slashes or escaped
+backslashes:
+
+```sh
+claude mcp add dbboard --scope user -- C:/path/to/dbboard-mcp.exe
+```
+
+That writes an `mcpServers.dbboard` entry into `~/.claude.json`, which
+you can also edit by hand:
+
+```jsonc
+{
+  "mcpServers": {
+    "dbboard": {
+      "type": "stdio",
+      "command": "C:/path/to/dbboard-mcp.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+Verify with `claude mcp list`, then **restart Claude Code** — see
+[Restart after any config change](#restart-after-any-config-change).
+
 ## Configure Claude Desktop
 
 Add an entry to Claude Desktop's `claude_desktop_config.json`
@@ -111,8 +146,61 @@ taken from that file's directory:
 }
 ```
 
-Restart Claude Desktop after editing the config. The server also runs
-under Claude Code and any other MCP client that speaks stdio.
+## Restart after any config change
+
+Every MCP client spawns its **own** `dbboard-mcp` process over stdio and
+keeps it for the life of the session. Two consequences that account for
+most "it still doesn't work" reports:
+
+- Editing `connections.toml`, adding a connection in the GUI, or
+  rebuilding the binary does **not** reach a server that is already
+  running. Restart the *agent* — Claude Code, Claude Desktop, whatever
+  spawned it.
+- Restarting the dbboard **desktop app** does nothing to the MCP server.
+  They are separate processes that happen to read the same config.
+
+Also note that the binary an agent runs is whatever absolute path its
+config points at. Installing a new dbboard release does not update a
+path that points into a local `target/release/` build tree.
+
+## Running more than one agent at once
+
+Nothing stops several agents from each running their own `dbboard-mcp`,
+but each process opens its **own** connections — including its **own SSH
+tunnel** for any connection with a `[connections.ssh]` block
+([`docs/connections.md`](../../docs/connections.md)). Three agents
+against one tunneled MySQL entry means three SSH sessions and three
+connection pools, not one shared.
+
+That matters because the limits you hit first are usually not the
+database's:
+
+- `sshd` throttles concurrent and half-open sessions (`MaxStartups`,
+  `MaxSessions`). Under that limit connections are dropped, sometimes
+  probabilistically, and a retry loop makes it worse rather than better.
+- The private key must be readable *now*. A key kept in a
+  cloud-synced folder (OneDrive, Dropbox, iCloud Drive) may be a
+  placeholder that has to be downloaded first; dbboard warns about such
+  paths for exactly this reason.
+
+## Troubleshooting a failed connection
+
+The error text comes from the database driver, so read it as "how far
+did we get", not "what is wrong":
+
+| Symptom | What it means | Where to look |
+|---|---|---|
+| `expected to read N bytes, got 0 bytes at EOF` | The TCP connection was accepted and then closed before the protocol handshake finished. | For a **tunneled** connection this is the SSH hop, not the database — the local forward accepted the socket but the channel died. Check `sshd` limits and the key file. Otherwise: the server's connection limit. |
+| `connection refused` / timeout | Nothing accepted the socket. | Host, port, firewall, IP allow-list. |
+| A keyring or secret error | The entry was found but its secret could not be read. | The OS keychain entry named by the `keyring_*_ref`. |
+| The tool list is empty or stale | The agent is talking to an old process. | [Restart after any config change](#restart-after-any-config-change). |
+
+`RUST_LOG=debug` sends the server's own view of connection setup to
+stderr, which the client usually surfaces as MCP server logs.
+
+If one agent can reach a connection and another cannot **from the same
+machine**, the database is not the variable — the agent's config,
+its process age, and the number of tunnels already open are.
 
 ## Run manually
 
