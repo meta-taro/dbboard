@@ -440,6 +440,7 @@ impl ConnectionAdmin {
         }
 
         let new_entry = ConnectionEntry {
+            mcp_write: false,
             ssh,
             id: draft.id,
             name: draft.name,
@@ -522,6 +523,7 @@ impl ConnectionAdmin {
         };
 
         let new_entry = ConnectionEntry {
+            mcp_write: false,
             ssh: new_ssh,
             id: id.to_string(),
             name: draft.name,
@@ -1550,6 +1552,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                mcp_write: false,
                 ssh: None,
                 id: "dsql-iam".to_string(),
                 name: "Aurora DSQL (IAM)".to_string(),
@@ -1586,6 +1589,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                mcp_write: false,
                 ssh: None,
                 id: "dsql-iam".to_string(),
                 name: "Aurora DSQL (IAM)".to_string(),
@@ -2264,6 +2268,7 @@ mod tests {
         // hijack the victim's live credentials on import.
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: "attacker".to_string(),
             name: "Attacker".to_string(),

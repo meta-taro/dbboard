@@ -598,6 +598,7 @@ mod tests {
 
     fn turso_entry(id: &str, path: &str) -> ConnectionEntry {
         ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("turso {id}"),
@@ -609,6 +610,7 @@ mod tests {
 
     fn d1_entry(id: &str, token_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("d1 {id}"),
@@ -623,6 +625,7 @@ mod tests {
 
     fn pg_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("pg {id}"),
@@ -634,6 +637,7 @@ mod tests {
 
     fn mysql_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("mysql {id}"),
@@ -645,6 +649,7 @@ mod tests {
 
     fn neon_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("neon {id}"),
@@ -656,6 +661,7 @@ mod tests {
 
     fn supabase_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("supabase {id}"),
@@ -667,6 +673,7 @@ mod tests {
 
     fn aurora_dsql_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("aurora-dsql {id}"),
@@ -678,6 +685,7 @@ mod tests {
 
     fn aurora_dsql_iam_entry(id: &str, secret_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("aurora-dsql-iam {id}"),

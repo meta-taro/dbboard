@@ -8837,3 +8837,112 @@ direction — and that part does not vary.
 - `build.rs` is unchanged. Adding `cargo:rerun-if-changed` would have been a
   plausible-looking edit that fixed nothing, and the fingerprint log is the
   reason it was not made.
+
+## ADR-0087 — The MCP server writes, behind a per-connection flag and a closed list
+
+**Date:** 2026-08-04
+**Status:** Accepted
+
+### Context
+
+`dbboard-mcp` shipped read-only. Every tool went through `check_read_only`, and
+the one thing that changed data — `apply_row_update` — was not exposed as a
+tool at all. The reasoning at the time was that an agent holding a database
+handle is an agent holding a loaded gun, and that a read-only surface is the
+only one that cannot be misused.
+
+That reasoning does not survive contact with the work. The maintainer's
+statement was direct: *"MCP書き込みできないのはあかんです。alterとかcreatetable
+もです。"* An agent that can read a schema but cannot add a column has to hand
+the change back to a human to type, which is the entire cost the server was
+meant to remove. Asked whether destructive statements were a concern, the
+answer was that they are not normal work — *"通常破壊は行わないと思うので、
+もんだいないでうs"* — but that privilege changes and `TRUNCATE` are a different
+matter: *"granteとかremoveみたいなはなしですかね？それなら制限はあったほうが
+いいです。truncateとか。"*
+
+So the question is not "read or write". It is which writes, gated how.
+
+An earlier draft of this design got it wrong in a way worth recording. It
+proposed a single `run_write` tool with no classification, on the grounds that
+the database already parses SQL and dbboard classifying it a second time would
+only produce a second, wrong answer. That argument is sound about *syntax* and
+useless about *policy*: the engine will happily tell you that
+`GRANT ALL ON *.* TO 'agent'@'%'` is valid SQL, because it is. The engine has
+no opinion about who is asking. Policy is exactly the thing dbboard has to
+decide for itself, and the draft would have passed both categories the
+maintainer named straight through to the server.
+
+### Decision
+
+Three tiers.
+
+**1. Off by default, per connection.** `ConnectionEntry` gains
+`mcp_write: bool`, default `false`. No connection writes until the operator
+sets it. The flag is per connection, not global, because the same
+`connections.toml` backs the desktop app and can name a production database
+alongside a scratch one; a single global switch would hand DDL rights over
+every entry the moment one of them needed it.
+
+It is `skip_serializing_if = "is_false"`, so turning it on for one connection
+does not rewrite a key into every other entry of an existing file. It sits
+*before* `ssh` in the struct because TOML requires scalars to precede tables,
+and `[connections.ssh]` is a table — a test asserts the ordering rather than
+leaving it to whoever next edits the struct.
+
+**2. An allowlist, decided by AST.** `crates/dbboard-core/src/write_policy.rs`
+classifies a statement as `Data` (`INSERT`/`UPDATE`/`DELETE`/`MERGE`) or
+`Schema` (`CREATE TABLE`/`VIEW`/`INDEX`/`SCHEMA`, `ALTER TABLE`) and refuses
+everything else. It mirrors `read_only.rs`: single statement only, parsed not
+prefix-matched, fails closed on anything unrecognised, and never echoes the SQL
+back in the refusal. Batches are refused however they end, so
+`UPDATE t SET a = 1; DROP TABLE t` cannot ride in on a permitted first
+statement.
+
+**3. A closed list that no flag opens.** Privilege changes (`GRANT`, `REVOKE`,
+`DENY`), principal changes (`CREATE`/`ALTER`/`DROP` of a `USER`/`ROLE`/`GROUP`,
+`SET PASSWORD`), `TRUNCATE`, and `DROP` are refused *permanently* — the refusal
+says so, and points at the desktop app's SQL editor. There is no configuration
+that turns them on.
+
+The line between `DELETE` (permitted) and `TRUNCATE`/`DROP` (closed) is not
+squeamishness about the word "destructive". A `DELETE` is row-logged and rolls
+back inside a transaction; `TRUNCATE` and `DROP` are DDL that commit implicitly
+on MySQL and leave nothing to undo. Privilege and principal changes are closed
+for a different reason: an agent that can grant is an agent that can widen its
+own reach past the connection it was handed, which makes tier 1 meaningless.
+
+Connection CRUD — creating or editing entries in `connections.toml` — stays
+closed regardless, under baseline §15. Credentials are the human's to place.
+
+### The prefilter, and why it can only refuse
+
+`classify_write` runs a leading-keyword check before the parser. This looks
+like the string matching `read_only.rs` explicitly rejects, so the constraint
+is written into the code: **the prefilter can only ever refuse; the AST is the
+sole authority on what is permitted.** A wrong guess there costs a false
+refusal, never a false permit.
+
+It exists because sqlparser 0.62 does not parse every vendor spelling of
+`CREATE USER` — not `CREATE USER a PASSWORD 'x'`, not `WITH PASSWORD`, not
+MySQL's `'a'@'%' IDENTIFIED BY`. Those already failed closed, but with the
+reason "could not be parsed", which reads as a syntax complaint and invites an
+agent to retry with different syntax until something lands. The prefilter
+upgrades them to a permanent refusal that names the category. A test asserts
+`CREATE TABLE` and `ALTER TABLE` are not caught by it.
+
+### Consequences
+
+- Dump stays *outside* the write gate. Taking a backup does not change the
+  database, and requiring the flag for it would mean the safest thing an agent
+  can do needs the same permission as the least safe. Restore is a write and is
+  gated.
+- The refusal text is part of the contract. An agent that gets "refused
+  permanently" should stop, not retry; one that gets a plain refusal may
+  legitimately rephrase. That distinction is why `WritePolicyViolation` carries
+  `is_permanent()` rather than a single opaque message.
+- `read_only.rs` is untouched. The read tools keep their row cap and their own
+  classifier; nothing about writes weakens what a read tool may do.
+- New sqlparser `Statement` variants arrive refused by default. That is the
+  intended failure direction, and the cost is a follow-up issue rather than a
+  lost table.
