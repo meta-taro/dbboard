@@ -9,6 +9,120 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-04
+
+Fourth tagged release, and the largest so far. Headlined by a **new
+desktop client** — Tauri 2 + SvelteKit — which starts the release as a
+read-only spike (ADR-0059) and ends it at feature parity with the egui
+build, then overtakes it with SSH-tunnel editing. Also lands **MySQL /
+MariaDB** as the fourth engine and the first genuinely different SQL
+dialect, logical **dump and restore**, an **OpenAI** provider, and
+automated **PII / secret leak scanning** on every commit.
+
+Both clients ship from the same tag; the egui single-exe build is still
+released and still works. The HTTP contract in
+[`docs/api-contract.md`](docs/api-contract.md) is unchanged from 0.2.0.
+
+### Added
+
+- **A second desktop client (Tauri 2 + SvelteKit)**, now the primary one.
+  It began as an explicitly read-only spike over the egui-free core
+  (ADR-0059) — frameless titlebar, sidebar shell, Query/Structure tabs, a
+  design-token system with Auto/Light/Dark, a CodeMirror 6 SQL editor
+  (ADR-0060), and a result grid with sort, selection, export, and a cell
+  popup. Parity with egui then arrived slice by slice:
+  - **Connection management write path** (ADR-0062) — create, edit,
+    delete, plus passphrase-encrypted bundle import/export. Credentials
+    are entered as **parts, never as a hand-written DSN** (ADR-0073); TLS
+    is an explicit form choice defaulting to required, with no silent
+    plaintext fallback (ADR-0078, ADR-0079); every filesystem path has a
+    Browse button (ADR-0077); kinds that only exist in `connections.toml`
+    are disabled in the list rather than refused on submit (ADR-0074);
+    the edit form asks for exactly the fields the add form does
+    (ADR-0080).
+  - **Inline cell editing** (ADR-0063) — the first DB-write surface in
+    the Tauri app, with an explicit save step.
+  - **Logical backup and restore** (ADR-0064, ADR-0065) wired to the same
+    core orchestrators the egui build uses.
+  - **AI assistant** (ADR-0066) over the existing provider layer.
+  - **Auto-update** (ADR-0067) — `tauri-plugin-updater` against a
+    `latest.json` manifest assembled by release CI and verified with a
+    signing key held only as a repository secret.
+- **MySQL / MariaDB adapter** (ADR-0068) — the fourth engine, and the
+  first that is not Postgres- or SQLite-shaped. Row-producing paths pin
+  the simple/text wire protocol (ADR-0070); generated SQL follows the
+  connection's identifier dialect (ADR-0072); the statement-timeout
+  variable is **probed rather than assumed**, since MySQL spells it
+  `max_execution_time` and MariaDB `max_statement_time` (ADR-0081); a
+  listed table nobody can read degrades instead of failing the whole
+  sweep (ADR-0071).
+- **SSH tunnel** (ADR-0069) — pure-Rust local port forwarding (russh) for
+  databases that only listen on a bastion's `localhost`. Host-key
+  verification is **mandatory** (fingerprint pin XOR `known_hosts`, never
+  blind trust); the connection form can fetch the host key for you to
+  confirm instead of demanding you paste it (ADR-0076). Editing lives in
+  the Tauri app only — egui users still hand-edit `connections.toml`.
+  Passphrases and SSH passwords go to the OS keychain, never to TOML.
+- **Logical dump** (ADR-0049) — a plan/threshold pass, keyset paging with
+  progress and cancel, SQL literal + `INSERT` rendering, `table_ddl` as
+  an adapter capability with Postgres catalog reconstruction and D1
+  verbatim DDL, and a user-configurable huge-DB warn threshold
+  (ADR-0050).
+- **Logical restore / import** (ADR-0051) — a SQL statement splitter, a
+  `sqlparser`-backed classifier, an orchestrator with an empty-target
+  gate, and per-engine transaction strategy (atomic on Turso, per-
+  statement on D1, transaction-or-fallback on Postgres/DSQL).
+- **OpenAI (ChatGPT) provider** (ADR-0052) — a `dbboard-openai` Chat
+  Completions provider wired through config, admin, UI, and i18n.
+- **Two more read-only MCP tools**: `search_schema` for name lookup
+  across a connection (ADR-0053) and `list_relationships` for
+  foreign-key introspection (ADR-0054), bringing the tool set to seven.
+- **PII / secret leak scanning** (ADR-0055) — `scripts/pii-scan.sh` runs
+  on every commit, every commit message, and daily in CI, blocking real
+  store names, credentials, and maintainer PII from entering a public
+  repo. Commit identity is scanned too, because it cannot be edited
+  after the fact (ADR-0084).
+- **A branded egui design system** (ADR-0056) — palette, tokens, theme
+  module — applied to the primary CTA, header identity, and count badge
+  (ADR-0057).
+- **A download page on GitHub Pages** (ADR-0047), plus Start Menu and
+  Desktop shortcuts in the MSI.
+- **Sortable result grid**, up to three columns (ADR-0048).
+
+### Changed
+
+- Aurora DSQL no longer receives the read-only transaction preamble; it
+  rejects it, so the guard is applied differently there (ADR-0061).
+- Long cell values open an editor instead of being read through a
+  keyhole (ADR-0082); the sidebar splits and popovers place themselves
+  (ADR-0083).
+- The desktop lib is `rlib`-only, so its fingerprint can vary per build
+  configuration — `cargo build` and `cargo test` no longer evict each
+  other's fingerprint and recompile it. Pre-push dropped from ~136s to
+  ~58s (ADR-0086).
+
+### Fixed
+
+- Long error messages wrap in the inline error banner instead of
+  overflowing.
+- The header pill and theme toggle moved off the menu bar, where they
+  overlapped (ADR-0057).
+- The PII identity allowlist admits GitHub's `web-flow` committer, so
+  commits authored through the GitHub web UI no longer fail the scan
+  (ADR-0085).
+
+### Security
+
+- SSH host-key verification is mandatory and has no "trust anything"
+  path (ADR-0069).
+- SSH key passphrases and passwords are stored only in the OS keychain;
+  `connections.toml` holds a reference, never a secret. Switching auth
+  method no longer persists a keyring reference that was never written.
+- PII / secret scanning is wired into the commit path and CI (ADR-0055),
+  with a known gap recorded: without a local `.pii-denylist` the
+  business-identifying rules cannot fire, so the untracked denylist and
+  the `PII_DENYLIST` CI secret are load-bearing.
+
 ## [0.3.0] — 2026-07-21
 
 Third tagged release. Headlined by **dbboard as a read-only MCP server**
@@ -169,6 +283,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/meta-taro/dbboard/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/meta-taro/dbboard/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/meta-taro/dbboard/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/meta-taro/dbboard/releases/tag/v0.1.0
