@@ -35,11 +35,11 @@ use dbboard_config::store::{self, ConnectionKind};
 use dbboard_config::{ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
-    build_update_sql, dialect_for_adapter_id, plan_dump as core_plan_dump,
+    build_update_sql, classify_write, dialect_for_adapter_id, plan_dump as core_plan_dump,
     plan_restore as core_plan_restore, run_dump as core_run_dump, run_restore as core_run_restore,
     Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl, DumpOutcome, DumpPlan, DumpSink,
     ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan, Row, TableInfo,
-    TableSchema, UpdatePlan, WriteBackError,
+    TableSchema, UpdatePlan, WriteBackError, WritePolicyViolation, WriteStatement,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -89,6 +89,17 @@ pub struct QueryOutput {
     pub rows: Vec<Row>,
     pub row_count: usize,
     pub truncated: bool,
+}
+
+/// Result of [`McpService::run_write`]. `statement` is `"data"` or
+/// `"schema"` — the category the policy allowed it under, so an agent can
+/// see that its `ALTER` was understood as schema and not silently treated
+/// as something else. `rows_affected` is the engine's own count; DDL
+/// generally reports zero, which is not a failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WriteOutput {
+    pub statement: String,
+    pub rows_affected: u64,
 }
 
 /// One table returned by [`McpService::search_schema`]: the table itself,
@@ -192,6 +203,22 @@ pub enum ServiceError {
     /// can be built for it. Desktop write path only.
     #[error("adapter {0:?} has no known SQL dialect for editing")]
     NotEditable(String),
+
+    /// The connection exists, but the operator has not set `mcp_write` on
+    /// it, so the MCP write tools will not touch it (ADR-0087). Says where
+    /// the switch is, because an agent cannot flip it and should ask rather
+    /// than retry.
+    #[error(
+        "connection {0:?} is not enabled for writes over MCP; \
+         a human must set mcp_write = true on it in connections.toml"
+    )]
+    WriteNotEnabled(String),
+
+    /// The write policy refused the statement (ADR-0087). Carries
+    /// [`WritePolicyViolation::is_permanent`], which tells an agent whether
+    /// rephrasing could ever help.
+    #[error(transparent)]
+    WriteRefused(#[from] WritePolicyViolation),
 
     /// The connection's adapter has no known SQL dialect, so no dump can be
     /// produced for it. Desktop dump path only (ADR-0049).
@@ -400,6 +427,70 @@ impl McpService {
             columns: result.columns,
             rows: result.rows,
         })
+    }
+
+    /// Run one write statement against `connection_id` on an agent's behalf
+    /// (ADR-0087).
+    ///
+    /// Two gates, in this order:
+    ///
+    /// 1. The connection's `mcp_write` flag, read fresh from
+    ///    `connections.toml` on every call. The adapter is cached but the
+    ///    gate is not, so revoking it takes effect on the next statement
+    ///    rather than at the next restart of a server an agent is holding
+    ///    open.
+    /// 2. [`classify_write`], which permits DML and table/view/index DDL and
+    ///    refuses everything else — including reads, which would otherwise
+    ///    be an uncapped [`run_read_query`](Self::run_read_query).
+    ///
+    /// Privilege changes, principal changes, `TRUNCATE` and `DROP` are
+    /// refused whatever the flag says; no configuration opens them.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::ConnectionNotFound`] for an unknown id.
+    /// - [`ServiceError::WriteNotEnabled`] if the operator has not opted the
+    ///   connection in.
+    /// - [`ServiceError::NotEditable`] if the adapter has no known dialect,
+    ///   so the statement cannot be classified at all.
+    /// - [`ServiceError::WriteRefused`] if the policy refuses it.
+    /// - [`ServiceError::Db`] if the engine rejects or fails it.
+    pub async fn run_write(
+        &self,
+        connection_id: &str,
+        sql: &str,
+    ) -> Result<WriteOutput, ServiceError> {
+        self.require_mcp_write(connection_id).await?;
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotEditable(adapter.id().to_string()))?;
+        let statement = classify_write(sql, dialect)?;
+        let rows_affected = adapter.execute(sql).await?;
+        Ok(WriteOutput {
+            statement: match statement {
+                WriteStatement::Data => "data".to_owned(),
+                WriteStatement::Schema => "schema".to_owned(),
+            },
+            rows_affected,
+        })
+    }
+
+    /// Fail unless the operator has set `mcp_write` on `connection_id`.
+    ///
+    /// Deliberately reads the file rather than any cached view — see
+    /// [`run_write`](Self::run_write) for why the gate is not cached.
+    async fn require_mcp_write(&self, connection_id: &str) -> Result<(), ServiceError> {
+        let file = self.load_connection_file().await?;
+        let entry = file
+            .connections
+            .iter()
+            .find(|e| e.id == connection_id)
+            .ok_or_else(|| ServiceError::ConnectionNotFound(connection_id.to_string()))?;
+        if entry.mcp_write {
+            Ok(())
+        } else {
+            Err(ServiceError::WriteNotEnabled(connection_id.to_string()))
+        }
     }
 
     /// Apply one single-row `UPDATE` to `connection_id` (inline cell
@@ -922,10 +1013,19 @@ keyring_url_ref = "dbboard.prod-pg.url"
     /// Seed the cached in-memory Turso adapter through its write path,
     /// then exercise the read-only tools against the same instance.
     async fn seeded_turso_fixture() -> Fixture {
+        seeded_turso_fixture_with_write(false).await
+    }
+
+    /// The same fixture, with the connection's `mcp_write` gate set to
+    /// `writable` so the write tools can be exercised either side of it.
+    async fn seeded_turso_fixture_with_write(writable: bool) -> Fixture {
         let fx = fixture();
+        let gate = if writable { "mcp_write = true\n" } else { "" };
         write(
             &fx.config_path,
-            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+            &format!(
+                "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n{gate}"
+            ),
         );
         let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
         adapter
@@ -1294,6 +1394,137 @@ keyring_url_ref = "dbboard.prod-pg.url"
             .await
             .expect("still there");
         assert_eq!(out.row_count, 5);
+    }
+
+    /// A connection that has not opted in is refused before the statement is
+    /// even classified — the gate is about the connection, not the SQL.
+    #[tokio::test]
+    async fn run_write_is_refused_when_the_connection_has_not_opted_in() {
+        let fx = seeded_turso_fixture().await;
+        let err = fx
+            .service
+            .run_write("mem", "UPDATE items SET name = 'x' WHERE id = 1")
+            .await
+            .expect_err("gate closed");
+        assert!(
+            matches!(err, ServiceError::WriteNotEnabled(ref id) if id == "mem"),
+            "expected WriteNotEnabled, got {err:?}"
+        );
+        assert_eq!(name_of(&fx, 1).await, Some(Value::Text("n1".to_owned())));
+    }
+
+    #[tokio::test]
+    async fn run_write_applies_dml_when_the_connection_has_opted_in() {
+        let fx = seeded_turso_fixture_with_write(true).await;
+        let out = fx
+            .service
+            .run_write("mem", "UPDATE items SET name = 'renamed' WHERE id = 1")
+            .await
+            .expect("update");
+        assert_eq!(out.rows_affected, 1);
+        assert_eq!(out.statement, "data");
+        assert_eq!(
+            name_of(&fx, 1).await,
+            Some(Value::Text("renamed".to_owned()))
+        );
+    }
+
+    /// The DDL the maintainer asked for by name (#137).
+    #[tokio::test]
+    async fn run_write_applies_the_ddl_the_maintainer_asked_for() {
+        let fx = seeded_turso_fixture_with_write(true).await;
+        for sql in [
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)",
+            "ALTER TABLE items ADD COLUMN note TEXT",
+        ] {
+            let out = fx.service.run_write("mem", sql).await.expect("ddl");
+            assert_eq!(out.statement, "schema");
+        }
+        let tables = fx.service.list_tables("mem").await.expect("tables");
+        assert_eq!(tables.len(), 2);
+    }
+
+    /// Opting in does not open the closed list. Both categories the
+    /// maintainer named stay refused, and say they are refused permanently
+    /// so an agent stops instead of rephrasing.
+    #[tokio::test]
+    async fn opting_in_does_not_open_the_permanently_closed_list() {
+        let fx = seeded_turso_fixture_with_write(true).await;
+        for sql in [
+            "DROP TABLE items",
+            "TRUNCATE TABLE items",
+            "GRANT ALL ON items TO someone",
+            "CREATE USER someone PASSWORD 'x'",
+        ] {
+            let err = fx
+                .service
+                .run_write("mem", sql)
+                .await
+                .expect_err("must stay closed");
+            let ServiceError::WriteRefused(violation) = err else {
+                panic!("expected WriteRefused for {sql:?}, got {err:?}");
+            };
+            assert!(violation.is_permanent(), "{sql:?} should be permanent");
+        }
+        // Every table survived.
+        assert_eq!(
+            fx.service.list_tables("mem").await.expect("tables").len(),
+            1
+        );
+    }
+
+    /// A `SELECT` through the write path would be an uncapped read wearing
+    /// the wrong name, so it is refused even on an opted-in connection.
+    #[tokio::test]
+    async fn run_write_refuses_a_read_so_it_cannot_dodge_the_row_cap() {
+        let fx = seeded_turso_fixture_with_write(true).await;
+        let err = fx
+            .service
+            .run_write("mem", "SELECT * FROM items")
+            .await
+            .expect_err("read refused");
+        assert!(matches!(err, ServiceError::WriteRefused(_)), "{err:?}");
+    }
+
+    /// The gate is re-read from disk on every call, while the adapter stays
+    /// cached. Revoking it therefore takes effect on the next statement,
+    /// without restarting the server the agent is holding open.
+    #[tokio::test]
+    async fn revoking_the_gate_takes_effect_without_a_restart() {
+        let fx = seeded_turso_fixture_with_write(true).await;
+        fx.service
+            .run_write("mem", "UPDATE items SET name = 'a' WHERE id = 1")
+            .await
+            .expect("allowed while open");
+
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+
+        let err = fx
+            .service
+            .run_write("mem", "UPDATE items SET name = 'b' WHERE id = 1")
+            .await
+            .expect_err("gate now closed");
+        assert!(matches!(err, ServiceError::WriteNotEnabled(_)), "{err:?}");
+        // The cached adapter is still live, so this is the gate refusing and
+        // not the connection having gone away.
+        assert_eq!(name_of(&fx, 1).await, Some(Value::Text("a".to_owned())));
+    }
+
+    #[tokio::test]
+    async fn run_write_rejects_an_unknown_connection() {
+        let fx = seeded_turso_fixture_with_write(true).await;
+        let err = fx
+            .service
+            .run_write("nope", "UPDATE items SET name = 'x'")
+            .await
+            .expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

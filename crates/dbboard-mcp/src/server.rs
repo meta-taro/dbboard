@@ -1,16 +1,23 @@
-//! The MCP wire layer: wrap [`McpService`] as seven read-only tools.
+//! The MCP wire layer: wrap [`McpService`] as the exposed tool set.
 //!
 //! This is a thin adapter over [`crate::service`]. Each `#[tool]` method
 //! deserializes its typed parameters, calls the matching service method,
 //! serializes the result to a JSON text block, and maps a
 //! [`ServiceError`] onto the MCP error envelope. All the real work — and
-//! all the security invariants (read-only enforcement, secret redaction)
-//! — live in the service; keeping this layer trivial is deliberate.
+//! all the security invariants (read-only enforcement, the write gate,
+//! secret redaction) — live in the service; keeping this layer trivial is
+//! deliberate.
 //!
 //! The tool set: `list_connections`, `list_tables`, `describe_table`,
-//! `run_read_query`, `get_annotations` (ADR-0046 Decision 5) plus
-//! `search_schema` (ADR-0053) and `list_relationships` (ADR-0054). All
-//! read-only — there is no write path.
+//! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
+//! `search_schema` (ADR-0053), `list_relationships` (ADR-0054) and
+//! `run_write` (ADR-0087).
+//!
+//! Tool *descriptions* carry more of the write policy than a reader might
+//! expect. They are the only documentation the agent gets before it acts:
+//! a rule an agent only meets as an error is a rule it discovers by
+//! breaking, and a permanent refusal it did not expect looks like a syntax
+//! problem worth retrying.
 
 use std::sync::Arc;
 
@@ -92,6 +99,17 @@ pub struct ListRelationshipsParams {
     /// Case-insensitive. Omit for every relationship in the connection.
     #[serde(default)]
     pub table: Option<String>,
+}
+
+/// Parameters for [`DbboardMcp::run_write`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunWriteParams {
+    /// The connection id from `list_connections`. It must have
+    /// `mcp_write = true` set by a human in `connections.toml`.
+    pub connection_id: String,
+    /// A single write statement: `INSERT` / `UPDATE` / `DELETE` / `MERGE`,
+    /// or `CREATE TABLE` / `VIEW` / `INDEX` / `SCHEMA` / `ALTER TABLE`.
+    pub sql: String,
 }
 
 /// The MCP server: holds the shared [`McpService`] plus the generated
@@ -233,6 +251,26 @@ impl DbboardMcp {
             .map_err(|e| to_mcp(&e))?;
         json_block(&out)
     }
+
+    // The description spells out the closed list and the flag because an
+    // agent that only learns them from an error will try the statement
+    // first. Saying "a human must enable it" up front is what stops a
+    // refused write turning into a retry loop.
+    #[tool(
+        description = "Run a single WRITE statement: INSERT / UPDATE / DELETE / MERGE, or CREATE TABLE / VIEW / INDEX / SCHEMA / ALTER TABLE. Returns the category it was allowed under (`data` or `schema`) and the engine's affected-row count (DDL usually reports 0, which is not a failure). \
+        \n\nTwo things will refuse you. (1) The connection must have `mcp_write = true` set by a human in connections.toml; it is off by default and you cannot turn it on — report it and ask. (2) GRANT / REVOKE, anything creating or altering a database USER or ROLE, TRUNCATE, and DROP are refused permanently on every connection: no setting enables them, so do not rephrase — say a human must run it in the dbboard app. Reads are refused here too; use run_read_query, which caps its rows. One statement per call — batches are refused."
+    )]
+    async fn run_write(
+        &self,
+        Parameters(RunWriteParams { connection_id, sql }): Parameters<RunWriteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self
+            .service
+            .run_write(&connection_id, &sql)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&out)
+    }
 }
 
 // `router = self.tool_router` points the generated `call_tool`/`list_tools`
@@ -253,9 +291,12 @@ impl ServerHandler for DbboardMcp {
                  list_tables / describe_table to explore a schema (or search_schema \
                  to jump straight to the tables/columns whose name matches a term, \
                  or list_relationships to map the foreign-key join graph), \
-                 run_read_query to read data (SELECT/WITH/EXPLAIN only — writes are \
-                 rejected), and get_annotations for dbboard's local notes on tables \
-                 and columns.",
+                 run_read_query to read data (SELECT/WITH/EXPLAIN only), and \
+                 get_annotations for dbboard's local notes on tables and columns. \
+                 \n\nWriting goes through run_write, and only on a connection a human \
+                 has set mcp_write = true on — it is off by default. Privilege and \
+                 role changes, TRUNCATE and DROP are refused on every connection and \
+                 no setting enables them.",
             )
     }
 }
@@ -296,13 +337,23 @@ fn to_mcp(err: &ServiceError) -> McpError {
         // but they are still caller-attributable if they ever did — refusing a
         // bad plan or an un-dumpable/un-restorable adapter is not an
         // environment fault.
+        //
+        // The two write gates (ADR-0087) are caller-attributable too, but for
+        // opposite reasons. `WriteRefused` is the statement's fault and the
+        // agent can act on it — rephrase, or stop if the refusal says
+        // permanent. `WriteNotEnabled` is not something the agent can fix at
+        // all, but it is still not a retry: retrying a closed gate loops
+        // forever, whereas `invalid_params` tells the agent to say so and ask
+        // a human to open it.
         ServiceError::ConnectionNotFound(_)
         | ServiceError::InvalidRequest(_)
         | ServiceError::Db(_)
         | ServiceError::WriteBack(_)
         | ServiceError::NotEditable(_)
         | ServiceError::NotDumpable(_)
-        | ServiceError::NotRestorable(_) => McpError::invalid_params(message, None),
+        | ServiceError::NotRestorable(_)
+        | ServiceError::WriteNotEnabled(_)
+        | ServiceError::WriteRefused(_) => McpError::invalid_params(message, None),
     }
 }
 
