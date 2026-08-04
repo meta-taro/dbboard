@@ -166,7 +166,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Must stay >= 22.5: `apps/desktop` pins pnpm 11 via `packageManager`,
+          # and pnpm 11 imports `node:sqlite`, which does not exist before then.
+          # On Node 20 `pnpm install` fails before it resolves a single package.
+          node-version: 22
       - name: Enable pnpm via corepack
         run: corepack enable
       - name: Install frontend deps
@@ -204,7 +207,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Must stay >= 22.5: `apps/desktop` pins pnpm 11 via `packageManager`,
+          # and pnpm 11 imports `node:sqlite`, which does not exist before then.
+          # On Node 20 `pnpm install` fails before it resolves a single package.
+          node-version: 22
       - name: Enable pnpm via corepack
         run: corepack enable
       # A universal binary serves both darwin arches from one artifact, so both
