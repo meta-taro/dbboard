@@ -5,6 +5,74 @@
 
 ## 最終更新
 
+- 日付: 2026-08-04 (**issue #130 = `dbboard-desktop` が pre-push のたびに再コンパイルされる
+  問題の原因確定と修正。commit `e271726`、ADR-0086。変更は
+  `apps/desktop/src-tauri/Cargo.toml` の `crate-type` 1 行。**
+  issue が推測していた `build.rs` の `cargo:rerun-if-changed` 欠落は**外れ**だった。
+  `cargo build --release` を 2 回続けると 1s / 再コンパイル 0 件なので無条件リビルドではなく、
+  再コンパイルが出るのは `cargo build --release` と `cargo test --all-features --release` が
+  **交互に走るときだけ** = pre-push そのものの形。
+  `CARGO_LOG=cargo::core::compiler::fingerprint=info` の出力が
+  `dirty: UnitDependencyInfoChanged` を lib ユニットに名指しし、バイナリは
+  `FsStatusOutdated(StaleDependency)` = 波及にすぎなかった。決定的だったのは、両コマンドが
+  **同じ** `target/release/.fingerprint/dbboard-desktop-<hash>/lib-dbboard_desktop_lib.json`
+  を書いていたこと。cargo は通常ユニットを `-C metadata` にハッシュ化して構成ごとに
+  fingerprint を分けるが、`staticlib`/`cdylib` はリンカが見つけるために**出力ファイル名が
+  固定**なのでハッシュを変えられず、パスも分かれない。中身が違うことも確認済 —
+  `--all-features` はこのワークスペースでは no-op (`[features]` も `optional = true` も
+  存在しない) だが dev-dependency はグラフに合流し、`cargo tree` の dev 有無の差分で
+  `hyper` が `full`/`http2`、`hyper-util` が `http2`、`slab` が `default`、`tempfile` が
+  `getrandom` を得る。つまり記録される依存ハッシュは正当に違い、それが 1 つの枠で
+  上書きし合っていた。範囲の裏取りに `.fingerprint` ツリー全体を比較すると
+  **1210 ユニット中、差があるのは 1 つだけ** (片側にしか無いユニットは 0)。
+  **修正 = `crate-type = ["rlib"]`。** `staticlib`/`cdylib` は Tauri テンプレート由来で、
+  モバイルホストが lib をリンクするためのもの。本アプリは desktop 専用 (`main.rs` は
+  `run()` を呼ぶだけ、`gen/android`・`gen/apple` は無く、`cfg(mobile)` もソースに 0 件)。
+  **実測 (warm ツリーで交互実行): test 直後の build 42s/1件 → 2s/0件、build 直後の test
+  94s/1件 → 56s/0件、pre-push 合計 約136s → 58s。** issue に記録した 237s との差は
+  マシン負荷と AV スキャンの揺れで、修正が取り除くのは「最大クレートのフルコンパイル
+  1 回 × 往復 2 回」という固定量。残る 56s はテスト実行時間 = 明示的にスコープ外。
+  **検証**: fmt/clippy/check/`cargo test --all-features` (48 スイート) すべて green、
+  `cargo test --all-features --release` rc=0 (今回は libSQL teardown segfault も出ず)、
+  release バイナリの起動・常駐を確認、pre-commit フック全通過 (`--no-verify` 不使用)。
+  **副次的な発見 = このリポには cargo の CI が存在しない** (`.github/workflows/` は
+  `pages.yml` / `pii-scan.yml` / `release.yml` の 3 つのみ)。つまり
+  **pre-push が唯一のビルド・テストゲート**であり、遅さを理由に飛ばされると検査は
+  どこにも残らない。#131 が持ち込んだ baseline §35 は「最後の砦は CI」を前提にするが、
+  その前提はこのリポでは成立しない。cargo CI の新設が次の候補。)
+- 日付: 2026-08-03 (**identity 誤検出の除去 = ADR-0085 (PR #128 `d7ed16b` / PR #129 `27824b0`)、
+  および CI の denylist 層が初めて実稼働。コード変更は `scripts/pii-scan.sh` の許可正規表現
+  1 行のみ。** 発端はセッション開始時の §18 手順で `develop` の `pii-scan` が赤だったこと。
+  **(1) ADR-0084 の穴が 2 つ連続で出た。** 1 つ目は**本物**: GitHub の「Squash and merge」は
+  この clone が書いていないコミットを web UI 側で作るので、`git config user.email` を
+  noreply にしても**アカウントのプライマリアドレスが author に入る**。PR #127 の squash
+  コミット `e15dcff` がこれで、CI が赤くなった。対応は GitHub の
+  Settings → Emails → **Keep my email addresses private** を ON (§15 = human 操作、user が実施)。
+  効果は次の squash `d7ed16b` の author が noreply になったことで実証済み。
+  2 つ目は**誤検出**: 同じ `d7ed16b` の *committer* が `noreply@github.com` — GitHub 自身の
+  web-flow アドレスで、`users.` 配下ではないため ADR-0084 の許可正規表現が弾いていた。
+  **つまり ADR-0084 が着地して以来、web マージのたびに誤検出が出ていた**。しかも
+  「設定で直せる本物の author リーク」と「設定では絶対に直らない committer 誤検出」が
+  同じ赤い X として出るので、**片方がもう片方を隠していた**。条件が成立してもしなくても
+  同じ結果を返す検査は情報を運ばない。**ADR-0085** = 許可を全文 alternation にして
+  `noreply@github.com` を 1 個だけ追加。author/committer 同じ述語を使う (このアドレスは
+  アカウントではなく GitHub のものなので誰も識別しない)。RED-first で selftest に
+  3 つの正例と `evil-noreply@github.com` / `noreply@github.com.example.com` の負例を追加。
+  **(2) CI secret `PII_DENYLIST` が存在しなかった** = PR #128 の緑を確認しに行って発覚。
+  日次スキャンのログに `denylist: PII_DENYLIST secret absent — generic rules only` /
+  `literal name detection off` とあり、**CI は実店舗名 3 件を含む `develop` を、clean
+  だからではなく照合対象を持っていなかったから緑にしていた**。§15 に従い投入手順のみ提示し
+  エージェントは触らず、user が作成。run 30784716586 で `denylist: materialized from secret`
+  を確認、ツリーは advisory の `passworded-db-url` のみで BLOCKING 無し。
+  **結果**: `develop` の `pii-scan` は push run 30786499201・日次 run 30803841065 とも green。
+  **残る穴 (次セッション候補)** = ローカル `.pii-denylist` と CI secret の**中身の一致は
+  誰も検証していない**。貼り間違い・部分コピーでも CI は緑になる。既存の `denylist_id()`
+  (sha8) を使う `--denylist-digest` モードで、中身を出さずに突き合わせられる。
+  **issue #130 を起票** = `dbboard-desktop` が毎回フル再コンパイルされ pre-push が約 4 分
+  (実測 warm で build 99s / test 138s / 計 237s)。harness の 2 分上限を超えるので push は
+  別ターミナル必須。原因は `build.rs` に `cargo:rerun-if-changed` が無いこと**と推測**する
+  段階で、確定は `CARGO_LOG=cargo::core::compiler::fingerprint=info` を先に取ること。
+  test 側 138s は実行時間なのでビルドを直しても残る。)
 - 日付: 2026-07-31 (**コミット identity のスキャンを新設 = ADR-0084 (commit `cf11913`)、
   および記録ファイルの棚卸し (baseline §31)。コード変更なし。** 発端は user の質問
   「OSS プロジェクトとして `.claude` などを ignore してないのは問題ないか」。
