@@ -24,6 +24,7 @@ result-export-selected-csv = 선택 행 CSV 저장…
 result-clear-selection = 선택 해제
 result-selected-count = { $count }행 선택됨
 result-select-row-hint = 클릭하여 행 선택 (Ctrl / Shift 로 다중 선택)
+result-sort-hint = 클릭하여 정렬; Ctrl / Shift로 정렬 기준 추가
 
 error-prefix-connection = 연결 오류
 error-prefix-query = 쿼리 오류
@@ -107,6 +108,7 @@ ai-settings-field-model = 모델 (선택)
 ai-settings-field-api-key = API 키
 ai-settings-replace-api-key = API 키 교체
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = 사용 중: { $name }
 
 ai-include-details = 컬럼 상세 정보 포함
@@ -145,3 +147,49 @@ edit-set-null = NULL로 설정
 edit-revert-cell = 셀 되돌리기
 edit-cell-hint = 더블클릭하여 편집 · 우클릭하여 NULL
 edit-save-unexpected-rows = 저장 중단: 1개 행이어야 하나 { $rows }개 행에 영향
+
+# ADR-0049 backup (logical dump).
+backup-button = 백업…
+backup-button-hint = 이 데이터베이스의 테이블을 SQL 파일로 덤프합니다
+backup-planning = 백업 준비 중…
+backup-warn-title = 대용량 데이터베이스
+backup-warn-body = 이 데이터베이스에는 모든 테이블에 걸쳐 { $rows }개의 행이 있습니다. 덤프에 시간이 걸리고 파일이 커질 수 있습니다.
+backup-warn-continue = 그래도 백업
+backup-warn-cancel = 취소
+backup-dialog-title = 백업 저장 위치
+backup-progress-title = 백업 중
+backup-progress-table = 테이블 { $done } / { $total }
+backup-progress-rows = { $done } / { $total } 행
+backup-progress-current = 현재: { $table }
+backup-cancel-button = 취소
+backup-done-title = 백업 완료
+backup-done-summary = { $tables }개 테이블, { $rows }개 행을 덤프했습니다.
+backup-done-cancelled = 백업이 취소되었습니다 — 파일에는 부분 덤프가 포함되어 있습니다.
+backup-done-failures = { $count }개 테이블을 읽을 수 없어 건너뛰었습니다.
+backup-done-truncations = { $count }개 테이블이 도중에 잘렸습니다.
+backup-failed-title = 백업 실패
+backup-close-button = 닫기
+
+# ADR-0051: 논리적 복원(가져오기).
+restore-button = 복원…
+restore-button-hint = 이 데이터베이스에 SQL 파일을 적용합니다
+restore-planning = 파일 읽는 중…
+restore-dialog-title = 복원할 SQL 파일 선택
+restore-warn-title = 대상이 비어 있지 않음
+restore-warn-body = 이 데이터베이스에는 이미 { $tables }개 테이블이 있습니다. { $statements }개 문을 복원하면 실패하거나 기존 데이터를 덮어쓸 수 있습니다.
+restore-warn-continue = 그래도 복원
+restore-warn-cancel = 취소
+restore-progress-title = 복원 중
+restore-progress-statements = 문 { $done } / { $total }
+restore-cancel-button = 취소
+restore-done-title = 복원 완료
+restore-done-summary = { $statements }개 문을 적용했습니다: 스키마 { $ddl }개, 데이터 { $data }개.
+restore-done-cancelled = 복원이 취소되었습니다 — 대상에는 부분 복원이 포함되어 있습니다.
+restore-done-failures = { $count }개 문이 실패하여 건너뛰었습니다.
+restore-close-button = 닫기
+restore-failed-title = 복원 실패
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = 백업
+backup-threshold-label = 경고 기준 행 수
+backup-threshold-hint = 덤프하기 전에 전체 행 수가 이 값을 초과하면 대용량 데이터베이스 경고를 표시합니다. ui-settings.toml에 저장됩니다.

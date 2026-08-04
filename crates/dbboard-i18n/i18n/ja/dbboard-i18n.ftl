@@ -24,6 +24,7 @@ result-export-selected-csv = 選択行を CSV 保存…
 result-clear-selection = 選択解除
 result-selected-count = { $count } 行選択中
 result-select-row-hint = クリックで行を選択（Ctrl / Shift で複数選択）
+result-sort-hint = クリックで並べ替え（Ctrl / Shift で条件を追加）
 
 error-prefix-connection = 接続エラー
 error-prefix-query = クエリエラー
@@ -51,6 +52,9 @@ config-error-serialize = 設定の書き出しに失敗しました: { $detail }
 config-error-no-config-dir = ユーザーごとの設定ディレクトリを特定できませんでした。
 config-error-not-found = 指定した id の接続が見つかりません: { $id }
 config-error-kind-mismatch = 接続 { $id } の種類は編集では変更できません。削除して追加し直してください。
+config-error-ssh-unsupported-kind = 接続 { $id }: { $kind } 接続では SSH トンネルを利用できません。
+config-error-ssh-invalid = 接続 { $id }: SSH トンネル設定が不正です: { $reason }
+config-error-dsn-unparseable = 接続 { $id }: 保存済みの接続 URL を読み取れないため、保存済みパスワードを保持できません。パスワードを入力し直して保存してください。
 
 # BundleError — 接続設定の暗号化バンドル export / import（ADR-0038）。
 config-error-bundle-passphrase-short = パスフレーズは { $min } 文字以上にしてください。
@@ -177,6 +181,7 @@ ai-settings-field-model = モデル（任意）
 ai-settings-field-api-key = API キー
 ai-settings-replace-api-key = API キーを置換
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = 使用中：{ $name }
 
 ai-include-details = カラム詳細を含める
@@ -215,3 +220,49 @@ edit-set-null = NULL に設定
 edit-revert-cell = セルを元に戻す
 edit-cell-hint = ダブルクリックで編集 · 右クリックで NULL
 edit-save-unexpected-rows = 保存を中止しました: 1 行のはずが { $rows } 行に影響
+
+# ADR-0049 backup (logical dump).
+backup-button = バックアップ…
+backup-button-hint = このデータベースのテーブルを SQL ファイルにダンプします
+backup-planning = バックアップを準備中…
+backup-warn-title = 大きなデータベース
+backup-warn-body = このデータベースにはテーブル全体で { $rows } 行あります。ダンプには時間がかかり、大きなファイルになる場合があります。
+backup-warn-continue = そのままバックアップ
+backup-warn-cancel = キャンセル
+backup-dialog-title = バックアップの保存先
+backup-progress-title = バックアップ中
+backup-progress-table = テーブル { $done } / { $total }
+backup-progress-rows = { $done } / { $total } 行
+backup-progress-current = 現在: { $table }
+backup-cancel-button = キャンセル
+backup-done-title = バックアップ完了
+backup-done-summary = { $tables } 個のテーブル、{ $rows } 行をダンプしました。
+backup-done-cancelled = バックアップをキャンセルしました — ファイルには部分的なダンプが含まれています。
+backup-done-failures = { $count } 個のテーブルを読み取れず、スキップしました。
+backup-done-truncations = { $count } 個のテーブルが途中で切り詰められました。
+backup-failed-title = バックアップ失敗
+backup-close-button = 閉じる
+
+# ADR-0051: 論理リストア（インポート）。
+restore-button = 復元…
+restore-button-hint = SQL ファイルをこのデータベースに適用します
+restore-planning = ファイルを読み込み中…
+restore-dialog-title = 復元する SQL ファイルを選択
+restore-warn-title = 対象が空ではありません
+restore-warn-body = このデータベースには既に { $tables } 個のテーブルがあります。{ $statements } 個のステートメントを復元すると、失敗するか既存のデータを上書きする可能性があります。
+restore-warn-continue = そのまま復元
+restore-warn-cancel = キャンセル
+restore-progress-title = 復元中
+restore-progress-statements = ステートメント { $done } / { $total }
+restore-cancel-button = キャンセル
+restore-done-title = 復元完了
+restore-done-summary = { $statements } 個のステートメントを適用しました: スキーマ { $ddl }、データ { $data }。
+restore-done-cancelled = 復元をキャンセルしました — 対象には部分的な復元が含まれています。
+restore-done-failures = { $count } 個のステートメントが失敗し、スキップされました。
+restore-close-button = 閉じる
+restore-failed-title = 復元失敗
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = バックアップ
+backup-threshold-label = 警告する行数のしきい値
+backup-threshold-hint = ダンプ前に、合計行数がこの値を超えると大規模データベースの警告を表示します。ui-settings.toml に保存されます。

@@ -17,8 +17,22 @@ dbboard-config = { workspace = true }
 # path (not workspace deps) exactly as `dbboard-server` did before the
 # ADR-0046 extraction.
 dbboard-d1 = { path = "../dbboard-d1" }
+dbboard-mysql = { path = "../dbboard-mysql" }
 dbboard-postgres = { path = "../dbboard-postgres" }
 dbboard-turso = { path = "../dbboard-turso" }
+# SSH local-forward tunnel (ADR-0069). The factory opens a tunnel for a
+# connection whose entry carries an `[ssh]` block and rewrites its URL to the
+# loopback forward, then wraps the adapter so the tunnel lives as long as it.
+dbboard-tunnel = { workspace = true }
+# Rewrite a database URL's host:port to the loopback forward (ADR-0069).
+url = { workspace = true }
+# TunneledAdapter delegates the async DatabaseAdapter surface to its inner
+# adapter; the trait is async_trait exactly like the concrete adapters.
+async-trait = { workspace = true }
+
+[dev-dependencies]
+# Async delegation tests for TunneledAdapter.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

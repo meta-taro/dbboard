@@ -1,0 +1,39 @@
+[package]
+name = "dbboard-openai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "OpenAI Chat Completions API provider for dbboard's AI layer (ADR-0052)."
+
+[dependencies]
+# Trait crate. Concrete providers depend on dbboard-ai only — never on
+# dbboard-core directly (it is re-exported through dbboard-ai for
+# `TableInfo`), never on dbboard-ui (ADR-0023 Decision 1 / ADR-0052).
+dbboard-ai = { workspace = true }
+# `async-trait` desugars the `AiProvider` async methods to
+# `Pin<Box<dyn Future>>` so the trait is object-safe.
+async-trait = { workspace = true }
+# HTTPS client. The workspace dep pins rustls so TLS stays pure-Rust.
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# SSE streaming on Chat Completions uses reqwest-eventsource with an
+# explicit RetryPolicy::Never (token-billed POSTs must not silently
+# retry) — same rationale and pin as dbboard-anthropic (ADR-0026).
+reqwest-eventsource = "0.6"
+# Underlying Stream trait for the AiStream return type.
+futures-util = { workspace = true }
+
+[dev-dependencies]
+# Drives the async `AiProvider` calls under `#[tokio::test]`.
+tokio = { workspace = true }
+# Pure-Rust mock HTTP server. Lets the round-trip tests exercise the
+# Chat Completions surface without hitting the live OpenAI endpoint and
+# without requiring a real API key.
+wiremock = { workspace = true }
+
+[lints]
+workspace = true

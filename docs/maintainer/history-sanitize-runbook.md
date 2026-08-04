@@ -74,6 +74,97 @@ Also spot-check a few historical commits that originally introduced the
 strings (see the private notes for the commit list) to confirm the tree at
 those revisions is clean.
 
+## Step 3b — rewrite the commit identity (ADR-0084)
+
+Separate from the string replacement above, and usually wanted in the same
+pass: every commit made before ADR-0084 carries a personal email address in
+its author and committer fields. `--replace-text` does not touch commit
+metadata, so this needs its own filter.
+
+Build a `mailmap` file (in the mirror dir, untracked — it names the address
+you are trying to remove, so it must never be committed):
+
+```
+# <correct name> <correct-email> <old-email>
+metataro <ID+LOGIN@users.noreply.github.com> <the-old-personal-address>
+```
+
+Then:
+
+```sh
+git filter-repo --mailmap mailmap
+```
+
+Verify — both should print `0`:
+
+```sh
+git log --all --format='%ae%n%ce' | grep -c -v '@users\.noreply\.github\.com'
+git rev-list --count --all --author='<the-old-personal-address>'
+```
+
+`scripts/pii-scan.sh --identity <range>` checks the same invariant and is what
+CI runs, but it deliberately scans only new commits; for the post-rewrite
+verification use the two commands above, which cover every ref.
+
+**Before you decide to do this**, weigh it honestly:
+
+- It is only worth doing if the rewrite will actually be effective. Check
+  `gh api repos/<owner>/<repo> --jq '{forks: .forks_count, stars: .stargazers_count}'`
+  first — every fork is an independent copy that keeps the old commits.
+- It breaks every existing clone and open PR, and invalidates every commit
+  hash referenced in `docs/`, `.claude/`, issues, and PR descriptions.
+- It does not help going forward on its own. Setting `user.email` to a noreply
+  address (ADR-0084) is what stops new exposure, and that is free.
+
+## Ordering — push everything first, or the rewrite undoes itself
+
+**Do the whole rewrite only after every local branch you still intend to push
+has been pushed.** A rewrite of `origin` does not touch your working checkout.
+If you rewrite and force-push while local commits are still unpushed, those
+local commits still carry the old strings and the old identity, and the next
+ordinary `git push` puts them straight back on the remote — silently, with no
+warning, because to git they are just new commits.
+
+Two orders work. Either:
+
+1. push all outstanding local work, **then** rewrite the mirror and force-push,
+   **then** delete the local clone and re-clone from the rewritten remote; or
+2. rewrite and force-push first, then re-clone and **redo** the unpushed work on
+   top of the new history (only sane if there is very little of it).
+
+Nothing else works. In particular, `git pull --rebase` after a force-push does
+not save you: it rebases your un-rewritten commits onto the clean history and
+keeps their metadata.
+
+The unpublished part can be cleaned separately, and should be, because it is
+free — no force-push, no broken clones:
+
+```sh
+git filter-branch -f --env-filter '
+  OLD="<the-old-personal-address>"
+  NEW="<ID+LOGIN@users.noreply.github.com>"
+  [ "$GIT_AUTHOR_EMAIL"    = "$OLD" ] && export GIT_AUTHOR_EMAIL="$NEW"
+  [ "$GIT_COMMITTER_EMAIL" = "$OLD" ] && export GIT_COMMITTER_EMAIL="$NEW"
+  true
+' -- --all --not --remotes=origin
+```
+
+The `--all --not --remotes=origin` range is load-bearing: it limits the rewrite
+to commits that exist only locally, so branches that share history with `origin`
+(`develop`, `main`, tags) are left alone and no divergence is created. Verify
+that every rewritten branch is content-identical before dropping the backups:
+
+```sh
+for r in $(git for-each-ref --format='%(refname)' refs/original/refs/heads); do
+  b=${r#refs/original/}
+  [ "$(git log --format='%T %s' "$r" | md5sum)" = "$(git log --format='%T %s' "$b" | md5sum)" ] \
+    || echo "MISMATCH: $b"
+done
+```
+
+Then drop `refs/original/*` — while they exist, the old commits stay reachable
+and `git push --all` would republish them.
+
 ## Step 4 — force-push (human)
 
 Only after Step 3 is clean:
@@ -85,6 +176,10 @@ git push --force --mirror git@github.com:meta-taro/dbboard.git
 Then:
 
 - Re-protect `develop` / `main` branch rules if the mirror push reset them.
+- **Deal with every open PR.** `gh pr list --state open` before you start: a
+  rewrite orphans each open PR's head commits, and GitHub will show the PR as
+  having an unrelated history rather than closing it cleanly. Merge or close
+  them first if you can; otherwise re-open each one from a rebuilt branch.
 - Tell anyone with an existing clone to re-clone (their old clones still
   contain the strings and will re-introduce them on push).
 - Note that GitHub may retain old commit objects reachable by SHA for a

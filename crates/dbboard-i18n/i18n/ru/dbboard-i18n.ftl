@@ -24,6 +24,7 @@ result-export-selected-csv = Сохранить выбранное в CSV…
 result-clear-selection = Снять выделение
 result-selected-count = Выбрано: { $count }
 result-select-row-hint = Клик для выбора строки (Ctrl / Shift для нескольких)
+result-sort-hint = Нажмите для сортировки; Ctrl / Shift — добавить уровень
 
 error-prefix-connection = Ошибка подключения
 error-prefix-query = Ошибка запроса
@@ -108,6 +109,7 @@ ai-settings-field-model = Модель (необязательно)
 ai-settings-field-api-key = API-ключ
 ai-settings-replace-api-key = Заменить API-ключ
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = Активный: { $name }
 
 ai-include-details = Включить сведения о столбцах
@@ -146,3 +148,49 @@ edit-set-null = Установить NULL
 edit-revert-cell = Вернуть ячейку
 edit-cell-hint = Двойной клик для правки · правый клик для NULL
 edit-save-unexpected-rows = Сохранение остановлено: ожидалась 1 строка, затронуто { $rows }
+
+# ADR-0049 backup (logical dump).
+backup-button = Резервная копия…
+backup-button-hint = Выгрузить таблицы этой базы данных в файл SQL
+backup-planning = Подготовка резервной копии…
+backup-warn-title = Большая база данных
+backup-warn-body = В этой базе данных { $rows } строк во всех таблицах. Выгрузка может занять время и создать большой файл.
+backup-warn-continue = Всё равно создать копию
+backup-warn-cancel = Отмена
+backup-dialog-title = Сохранить резервную копию как
+backup-progress-title = Создание резервной копии
+backup-progress-table = Таблица { $done } из { $total }
+backup-progress-rows = { $done } / { $total } строк
+backup-progress-current = Текущая: { $table }
+backup-cancel-button = Отмена
+backup-done-title = Резервное копирование завершено
+backup-done-summary = Выгружено таблиц: { $tables }, строк: { $rows }.
+backup-done-cancelled = Резервное копирование отменено — файл содержит частичную выгрузку.
+backup-done-failures = Не удалось прочитать { $count } таблиц(ы), они пропущены.
+backup-done-truncations = { $count } таблиц(ы) обрезаны на середине.
+backup-failed-title = Ошибка резервного копирования
+backup-close-button = Закрыть
+
+# ADR-0051: логическое восстановление (импорт).
+restore-button = Восстановить…
+restore-button-hint = Применить файл SQL к этой базе данных
+restore-planning = Чтение файла…
+restore-dialog-title = Выберите файл SQL для восстановления
+restore-warn-title = Цель не пуста
+restore-warn-body = В этой базе данных уже есть { $tables } таблиц(ы). Восстановление { $statements } операторов(а) может завершиться ошибкой или перезаписать существующие данные.
+restore-warn-continue = Всё равно восстановить
+restore-warn-cancel = Отмена
+restore-progress-title = Восстановление
+restore-progress-statements = Оператор { $done } из { $total }
+restore-cancel-button = Отмена
+restore-done-title = Восстановление завершено
+restore-done-summary = Применено { $statements } операторов(а): { $ddl } схемы, { $data } данных.
+restore-done-cancelled = Восстановление отменено — цель содержит частичное восстановление.
+restore-done-failures = { $count } операторов(а) завершились ошибкой и были пропущены.
+restore-close-button = Закрыть
+restore-failed-title = Ошибка восстановления
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Резервная копия
+backup-threshold-label = Предупреждать свыше (строк)
+backup-threshold-hint = Показывает предупреждение о большой базе данных перед дампом, когда общее число строк превышает это значение. Сохраняется в ui-settings.toml.

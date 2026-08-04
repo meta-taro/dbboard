@@ -72,6 +72,12 @@ pub(crate) fn request_for(command: &Command) -> HttpRequest {
         Command::DescribeTable { .. } => {
             unreachable!("DescribeTable is handled via SchemaSource before request_for")
         }
+        Command::PlanBackup | Command::StartBackup { .. } | Command::CancelBackup => {
+            unreachable!("Backup commands are handled in the worker before request_for")
+        }
+        Command::PlanRestore { .. } | Command::StartRestore { .. } | Command::CancelRestore => {
+            unreachable!("Restore commands are handled in the worker before request_for")
+        }
     }
 }
 

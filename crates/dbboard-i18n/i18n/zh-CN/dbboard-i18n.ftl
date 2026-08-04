@@ -24,6 +24,7 @@ result-export-selected-csv = 保存选中行为 CSV…
 result-clear-selection = 清除选择
 result-selected-count = 已选 { $count } 行
 result-select-row-hint = 点击选择该行（Ctrl / Shift 多选）
+result-sort-hint = 点击排序；Ctrl / Shift 添加排序层级
 
 error-prefix-connection = 连接错误
 error-prefix-query = 查询错误
@@ -107,6 +108,7 @@ ai-settings-field-model = 模型（可选）
 ai-settings-field-api-key = API 密钥
 ai-settings-replace-api-key = 替换 API 密钥
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = 活动：{ $name }
 
 ai-include-details = 包含列详细信息
@@ -145,3 +147,49 @@ edit-set-null = 设为 NULL
 edit-revert-cell = 还原单元格
 edit-cell-hint = 双击编辑 · 右键设为 NULL
 edit-save-unexpected-rows = 已停止保存：应为 1 行，却影响了 { $rows } 行
+
+# ADR-0049 backup (logical dump).
+backup-button = 备份…
+backup-button-hint = 将此数据库的表导出为 SQL 文件
+backup-planning = 正在准备备份…
+backup-warn-title = 大型数据库
+backup-warn-body = 此数据库所有表共有 { $rows } 行。导出可能需要一段时间并生成较大的文件。
+backup-warn-continue = 仍然备份
+backup-warn-cancel = 取消
+backup-dialog-title = 备份另存为
+backup-progress-title = 正在备份
+backup-progress-table = 第 { $done } / { $total } 个表
+backup-progress-rows = { $done } / { $total } 行
+backup-progress-current = 当前：{ $table }
+backup-cancel-button = 取消
+backup-done-title = 备份完成
+backup-done-summary = 已导出 { $tables } 个表，{ $rows } 行。
+backup-done-cancelled = 备份已取消 — 文件包含部分导出内容。
+backup-done-failures = 有 { $count } 个表无法读取，已跳过。
+backup-done-truncations = 有 { $count } 个表被中途截断。
+backup-failed-title = 备份失败
+backup-close-button = 关闭
+
+# ADR-0051：逻辑恢复（导入）。
+restore-button = 恢复…
+restore-button-hint = 将 SQL 文件应用到此数据库
+restore-planning = 正在读取文件…
+restore-dialog-title = 选择要恢复的 SQL 文件
+restore-warn-title = 目标非空
+restore-warn-body = 此数据库已有 { $tables } 个表。恢复 { $statements } 条语句可能会失败或覆盖现有数据。
+restore-warn-continue = 仍然恢复
+restore-warn-cancel = 取消
+restore-progress-title = 正在恢复
+restore-progress-statements = 语句 { $done } / { $total }
+restore-cancel-button = 取消
+restore-done-title = 恢复完成
+restore-done-summary = 已应用 { $statements } 条语句：{ $ddl } 条结构，{ $data } 条数据。
+restore-done-cancelled = 恢复已取消 — 目标包含部分恢复内容。
+restore-done-failures = 有 { $count } 条语句失败，已跳过。
+restore-close-button = 关闭
+restore-failed-title = 恢复失败
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = 备份
+backup-threshold-label = 警告阈值（行数）
+backup-threshold-hint = 转储前，当总行数超过此值时显示大型数据库警告。保存到 ui-settings.toml。

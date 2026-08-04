@@ -40,7 +40,7 @@ use std::thread;
 use dbboard_ai::{
     AiError, AiProvider, AiStream, ExplainRequest, StopReason, StreamEvent, SuggestRequest,
 };
-use dbboard_core::{DatabaseAdapter, DbError, TableInfo, TableSchema};
+use dbboard_core::{plan_dump, plan_restore, DatabaseAdapter, DbError, TableInfo, TableSchema};
 use eframe::egui;
 use futures_util::StreamExt;
 use tokio::sync::mpsc as tmpsc;
@@ -64,7 +64,8 @@ use tokio_util::sync::CancellationToken;
 pub type AiProviderSlot = Arc<RwLock<Option<Arc<dyn AiProvider>>>>;
 
 use crate::client::{self, HttpRequest};
-use crate::{Command, Reply};
+use crate::edit::dialect_for_adapter_id;
+use crate::{backup, restore, Command, Reply};
 
 /// Bridge from a `Command::SwitchConnection { id }` to the actual swap.
 /// The worker calls [`Self::switch`] from its dedicated thread (so the
@@ -268,10 +269,21 @@ async fn run_command_loop(
     // overwrites it, and a CancelAiRequest on it just `.cancel()`s a
     // token nobody is listening on.
     let mut in_flight: Option<CancellationToken> = None;
+    // Separate single-slot cancel handle for the in-flight backup
+    // (ADR-0049 slice e). A backup and an AI request can be in flight at
+    // once, so they cannot share the AI slot; the UI still gates to at
+    // most one backup at a time, so one slot suffices here too.
+    let mut backup_in_flight: Option<CancellationToken> = None;
+    // Separate single-slot cancel handle for the in-flight restore (ADR-0051).
+    // The UI gates to at most one restore at a time, so one slot suffices, and
+    // a restore can run alongside a backup or an AI request.
+    let mut restore_in_flight: Option<CancellationToken> = None;
     while let Some(cmd) = cmd_rx.recv().await {
         handle_command(
             cmd,
             &mut in_flight,
+            &mut backup_in_flight,
+            &mut restore_in_flight,
             base_url,
             &reply_tx,
             &egui_ctx,
@@ -293,6 +305,8 @@ async fn run_command_loop(
 async fn handle_command(
     cmd: Command,
     in_flight: &mut Option<CancellationToken>,
+    backup_in_flight: &mut Option<CancellationToken>,
+    restore_in_flight: &mut Option<CancellationToken>,
     base_url: &str,
     reply_tx: &Sender<Reply>,
     egui_ctx: &egui::Context,
@@ -472,6 +486,125 @@ async fn handle_command(
             let _ = reply_tx.send(Reply::TableDescribed { table, result });
             egui_ctx.request_repaint();
         }
+        // ADR-0049 slice e: backup preflight. Awaited inline — it is one
+        // list_tables plus a COUNT(*) per table, and the UI keeps its
+        // Backup button disabled until the plan lands. In-process, never
+        // HTTP.
+        Command::PlanBackup => {
+            let result = match schema_source {
+                Some(source) => {
+                    let adapter = source.current_adapter();
+                    match dialect_for_adapter_id(adapter.id()) {
+                        Some(dialect) => plan_dump(adapter.as_ref(), dialect).await,
+                        None => Err(unsupported_backup_error()),
+                    }
+                }
+                None => Err(unsupported_backup_error()),
+            };
+            let _ = reply_tx.send(Reply::BackupPlanned { result });
+            egui_ctx.request_repaint();
+        }
+        // ADR-0049 slice e: run the dump on a spawned task so the loop
+        // keeps draining commands (notably CancelBackup) while it pages.
+        // The dialect is re-derived from the live adapter rather than
+        // carried from PlanBackup, so a connection switch between the two
+        // cannot desync it.
+        Command::StartBackup { path, plan } => {
+            let target = schema_source.and_then(|source| {
+                let adapter = source.current_adapter();
+                dialect_for_adapter_id(adapter.id()).map(|dialect| (adapter, dialect))
+            });
+            if let Some((adapter, dialect)) = target {
+                let token = CancellationToken::new();
+                *backup_in_flight = Some(token.clone());
+                tokio::spawn(backup::run_backup(
+                    adapter,
+                    dialect,
+                    plan,
+                    path,
+                    token,
+                    reply_tx.clone(),
+                    egui_ctx.clone(),
+                ));
+            } else {
+                let _ = reply_tx.send(Reply::BackupFailed {
+                    message: unsupported_backup_error().message().to_owned(),
+                });
+                egui_ctx.request_repaint();
+            }
+        }
+        // ADR-0049 Decision 9: cancel the in-flight backup, if any. The
+        // dump task observes the token at its next boundary and still
+        // reports a (cancelled) BackupComplete on its way out.
+        Command::CancelBackup => {
+            if let Some(token) = backup_in_flight.take() {
+                token.cancel();
+            }
+        }
+        // ADR-0051 restore preflight. Awaited inline — reading and classifying
+        // one `.sql` file plus a `list_tables` is short, and the UI keeps its
+        // Restore flow gated until the plan lands. In-process, never HTTP.
+        Command::PlanRestore { path } => {
+            let result = match schema_source {
+                Some(source) => {
+                    let adapter = source.current_adapter();
+                    match dialect_for_adapter_id(adapter.id()) {
+                        // A local `.sql` read is short and the UI gates the
+                        // Restore flow until the plan lands, so a blocking
+                        // `std::fs` read on the worker runtime is fine — the
+                        // dump side writes its file with blocking `std::fs`
+                        // too.
+                        Some(dialect) if adapter.capabilities().has_execute => {
+                            match std::fs::read_to_string(&path) {
+                                Ok(script) => {
+                                    plan_restore(adapter.as_ref(), dialect, &script).await
+                                }
+                                Err(e) => Err(DbError::Query(format!(
+                                    "could not read {}: {e}",
+                                    path.display()
+                                ))),
+                            }
+                        }
+                        _ => Err(unsupported_restore_error()),
+                    }
+                }
+                None => Err(unsupported_restore_error()),
+            };
+            let _ = reply_tx.send(Reply::RestorePlanned { result });
+            egui_ctx.request_repaint();
+        }
+        // ADR-0051: run the restore on a spawned task so the loop keeps
+        // draining commands (notably CancelRestore) while it applies
+        // statements. The plan already holds the classified statements, so no
+        // dialect is needed here — only the live adapter to apply them to.
+        Command::StartRestore { plan, options } => {
+            let adapter = schema_source.map(SchemaSource::current_adapter);
+            if let Some(adapter) = adapter {
+                let token = CancellationToken::new();
+                *restore_in_flight = Some(token.clone());
+                tokio::spawn(restore::run_restore(
+                    adapter,
+                    plan,
+                    options,
+                    token,
+                    reply_tx.clone(),
+                    egui_ctx.clone(),
+                ));
+            } else {
+                let _ = reply_tx.send(Reply::RestoreFailed {
+                    message: unsupported_restore_error().message().to_owned(),
+                });
+                egui_ctx.request_repaint();
+            }
+        }
+        // ADR-0051: cancel the in-flight restore, if any. The restore task
+        // observes the token at its next boundary and still reports a
+        // (cancelled) RestoreComplete on its way out.
+        Command::CancelRestore => {
+            if let Some(token) = restore_in_flight.take() {
+                token.cancel();
+            }
+        }
         // HTTP arms — short round-trips, awaited inline.
         cmd @ (Command::ListTables | Command::Query(_)) => {
             let request = client::request_for(&cmd);
@@ -480,6 +613,22 @@ async fn handle_command(
             egui_ctx.request_repaint();
         }
     }
+}
+
+/// The error a backup command answers with when the active connection
+/// cannot be dumped: either no schema source is wired, or its adapter id
+/// maps to no SQL dialect (ADR-0049). Kept as one helper so the preflight
+/// and the start paths report identically.
+fn unsupported_backup_error() -> DbError {
+    DbError::Capability("backup is unavailable on this connection".to_string())
+}
+
+/// The error a restore command answers with when the active connection cannot
+/// be restored into: no schema source is wired, its adapter id maps to no SQL
+/// dialect, or the adapter cannot execute writes (ADR-0051). Kept as one helper
+/// so the preflight and the start paths report identically.
+fn unsupported_restore_error() -> DbError {
+    DbError::Capability("restore is unavailable on this connection".to_string())
 }
 
 /// Fan out `describe_table` over `tables`, at most
@@ -943,6 +1092,27 @@ fn report_fatal(
                 table,
                 result: Err(err.clone()),
             },
+            // ADR-0049: the backup preflight/start surface the fatal error
+            // so their modal reports it instead of hanging on a plan that
+            // never arrives.
+            Command::PlanBackup => Reply::BackupPlanned {
+                result: Err(err.clone()),
+            },
+            Command::StartBackup { .. } => Reply::BackupFailed {
+                message: err.message().to_string(),
+            },
+            // ADR-0051: the restore preflight/start surface the fatal error so
+            // their modal reports it instead of hanging on a plan/run that
+            // never arrives.
+            Command::PlanRestore { .. } => Reply::RestorePlanned {
+                result: Err(err.clone()),
+            },
+            Command::StartRestore { .. } => Reply::RestoreFailed {
+                message: err.message().to_string(),
+            },
+            // Nothing is in flight on the fatal path, so a cancel needs no
+            // reply — the UI never entered a running state.
+            Command::CancelBackup | Command::CancelRestore => continue,
         };
         if reply_tx.send(reply).is_err() {
             break;

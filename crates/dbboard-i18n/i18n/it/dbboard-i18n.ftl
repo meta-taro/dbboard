@@ -24,6 +24,7 @@ result-export-selected-csv = Salva selezione come CSV…
 result-clear-selection = Cancella selezione
 result-selected-count = { $count } selezionate
 result-select-row-hint = Clic per selezionare la riga (Ctrl / Maiusc per selezione multipla)
+result-sort-hint = Clicca per ordinare; Ctrl / Maiusc per aggiungere un livello
 
 error-prefix-connection = Errore di connessione
 error-prefix-query = Errore di query
@@ -108,6 +109,7 @@ ai-settings-field-model = Modello (opzionale)
 ai-settings-field-api-key = Chiave API
 ai-settings-replace-api-key = Sostituisci chiave API
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = Attivo: { $name }
 
 ai-include-details = Includi dettagli delle colonne
@@ -146,3 +148,49 @@ edit-set-null = Imposta NULL
 edit-revert-cell = Ripristina cella
 edit-cell-hint = Doppio clic per modificare · clic destro per NULL
 edit-save-unexpected-rows = Salvataggio interrotto: prevista 1 riga, { $rows } interessate
+
+# ADR-0049 backup (logical dump).
+backup-button = Backup…
+backup-button-hint = Esporta le tabelle di questo database in un file SQL
+backup-planning = Preparazione del backup…
+backup-warn-title = Database di grandi dimensioni
+backup-warn-body = Questo database contiene { $rows } righe in tutte le sue tabelle. L'esportazione può richiedere tempo e generare un file di grandi dimensioni.
+backup-warn-continue = Esegui comunque il backup
+backup-warn-cancel = Annulla
+backup-dialog-title = Salva backup come
+backup-progress-title = Backup in corso
+backup-progress-table = Tabella { $done } di { $total }
+backup-progress-rows = { $done } / { $total } righe
+backup-progress-current = Corrente: { $table }
+backup-cancel-button = Annulla
+backup-done-title = Backup completato
+backup-done-summary = Esportate { $tables } tabella/e, { $rows } righe.
+backup-done-cancelled = Backup annullato — il file contiene un'esportazione parziale.
+backup-done-failures = Impossibile leggere { $count } tabella/e, che sono state saltate.
+backup-done-truncations = { $count } tabella/e sono state troncate a metà.
+backup-failed-title = Backup non riuscito
+backup-close-button = Chiudi
+
+# ADR-0051: ripristino logico (importazione).
+restore-button = Ripristina…
+restore-button-hint = Applica un file SQL a questo database
+restore-planning = Lettura del file…
+restore-dialog-title = Scegli un file SQL da ripristinare
+restore-warn-title = La destinazione non è vuota
+restore-warn-body = Questo database contiene già { $tables } tabella/e. Il ripristino di { $statements } istruzione/i potrebbe non riuscire o sovrascrivere dati esistenti.
+restore-warn-continue = Ripristina comunque
+restore-warn-cancel = Annulla
+restore-progress-title = Ripristino in corso
+restore-progress-statements = Istruzione { $done } di { $total }
+restore-cancel-button = Annulla
+restore-done-title = Ripristino completato
+restore-done-summary = Applicate { $statements } istruzione/i: { $ddl } schema, { $data } dati.
+restore-done-cancelled = Ripristino annullato — la destinazione contiene un ripristino parziale.
+restore-done-failures = { $count } istruzione/i non riuscite e saltate.
+restore-close-button = Chiudi
+restore-failed-title = Ripristino non riuscito
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Backup
+backup-threshold-label = Avvisa oltre (righe)
+backup-threshold-hint = Mostra l'avviso di database di grandi dimensioni prima del dump quando il numero totale di righe supera questo valore. Salvato in ui-settings.toml.

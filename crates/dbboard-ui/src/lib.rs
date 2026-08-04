@@ -15,13 +15,18 @@
 
 mod ai;
 mod ai_settings;
+mod backup;
 mod client;
 mod connections;
 mod edit;
 mod errors;
 mod export;
 mod history;
+mod restore;
 mod selection;
+/// Central design system: branded palette, theme-aware semantic colours,
+/// and the [`theme::apply`] entry point the binary calls at startup.
+pub mod theme;
 mod worker;
 
 pub use ai::{AiMode, AiPanel, AiResponseView};
@@ -50,12 +55,17 @@ pub use dbboard_ai::{AiError, AiProvider, StopReason};
 pub use dbboard_core::{DatabaseAdapter, DbError};
 
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
 use dbboard_config::{table_key as annotation_table_key, AnnotationsAdmin};
-use dbboard_core::{ColumnInfo, DbResult, QueryResult, SqlDialect, TableInfo, TableSchema, Value};
+use dbboard_core::{
+    sorted_row_order, ColumnInfo, DbResult, DumpOutcome, DumpPlan, DumpProgress, OnError,
+    QueryResult, RestoreOptions, RestoreOutcome, RestorePlan, RestoreProgress, Row, SortKey,
+    SqlDialect, TableInfo, TableSchema, Value, DEFAULT_BACKUP_WARN_ROWS,
+};
 use dbboard_i18n::{t, t_args};
 use eframe::egui;
 
@@ -139,6 +149,48 @@ pub enum Command {
     /// so the structure view stays independent of the AI prefetch flow.
     /// Issued when the user clicks a table in the sidebar.
     DescribeTable { table: TableInfo },
+    /// Preflight a logical-dump backup of the live connection (ADR-0049
+    /// slice e): list the tables and `COUNT(*)` each. In-process via the
+    /// injected [`worker::SchemaSource`], answered with
+    /// [`Reply::BackupPlanned`]. The UI uses the returned plan to show the
+    /// huge-DB warning and size the progress bar before it opens the save
+    /// dialog and sends [`Command::StartBackup`].
+    PlanBackup,
+    /// Run the backup to `path`, using the plan a preceding
+    /// [`Command::PlanBackup`] produced (ADR-0049 slice e). The worker
+    /// snapshots the live adapter, derives its dialect, and spawns the dump
+    /// task — emitting [`Reply::BackupProgress`] as it pages and a terminal
+    /// [`Reply::BackupComplete`] / [`Reply::BackupFailed`]. Cancellable via
+    /// [`Command::CancelBackup`].
+    StartBackup { path: PathBuf, plan: DumpPlan },
+    /// Cancel the in-flight backup, if any (ADR-0049 Decision 9). The dump
+    /// stops at the next table/page boundary and still reports a
+    /// [`Reply::BackupComplete`] whose outcome is marked cancelled, so the
+    /// partial file is surfaced honestly rather than as an error.
+    CancelBackup,
+    /// Preflight a logical restore of the `.sql` file at `path` (ADR-0051):
+    /// read it, classify its statements, and list the target's existing
+    /// tables. In-process via the injected [`worker::SchemaSource`], answered
+    /// with [`Reply::RestorePlanned`]. The UI uses the returned plan to size
+    /// the progress bar and — when the target is not empty — to require the
+    /// caller's confirmation before it sends [`Command::StartRestore`].
+    PlanRestore { path: PathBuf },
+    /// Apply the plan a preceding [`Command::PlanRestore`] produced (ADR-0051).
+    /// The worker snapshots the live adapter and spawns the restore task —
+    /// emitting [`Reply::RestoreProgress`] as it applies statements and a
+    /// terminal [`Reply::RestoreComplete`] / [`Reply::RestoreFailed`].
+    /// Cancellable via [`Command::CancelRestore`]. `options.confirmed` carries
+    /// the empty-target-gate acknowledgement the UI collected.
+    StartRestore {
+        plan: RestorePlan,
+        options: RestoreOptions,
+    },
+    /// Cancel the in-flight restore, if any (ADR-0051). The restore stops at
+    /// the next statement boundary (per-statement engines) and still reports a
+    /// [`Reply::RestoreComplete`] whose outcome is marked cancelled, so a
+    /// partial restore is surfaced honestly rather than as an error. An atomic
+    /// engine that has not yet committed unwinds cleanly.
+    CancelRestore,
 }
 
 /// Result flowing worker → UI.
@@ -257,6 +309,59 @@ pub enum Reply {
     TableDescribed {
         table: TableInfo,
         result: DbResult<TableSchema>,
+    },
+    /// Result of a [`Command::PlanBackup`] preflight (ADR-0049 slice e).
+    /// `Ok` carries the per-table plan the UI needs to warn on a huge DB
+    /// and size the progress bar; `Err` surfaces a listing failure (or an
+    /// unsupported connection) so the UI can abandon the backup.
+    BackupPlanned {
+        result: DbResult<DumpPlan>,
+    },
+    /// One progress snapshot of an in-flight backup (ADR-0049 slice e).
+    /// The UI replaces its running meter with `progress` and repaints.
+    BackupProgress {
+        progress: DumpProgress,
+    },
+    /// Terminal marker for a finished backup (ADR-0049 slice e). Carries
+    /// the outcome — rows written, per-table failures, truncations, and
+    /// whether it was cancelled — so the UI can render an honest summary.
+    BackupComplete {
+        outcome: DumpOutcome,
+    },
+    /// The backup could not be written (ADR-0049 slice e): the output file
+    /// could not be created or a write failed. `message` is the OS error.
+    /// Adapter-side per-table failures are *not* here — those ride in
+    /// [`Reply::BackupComplete`]'s outcome and never abort the run.
+    BackupFailed {
+        message: String,
+    },
+    /// Result of a [`Command::PlanRestore`] preflight (ADR-0051). `Ok` carries
+    /// the classified plan plus the target's existing tables, which the UI
+    /// uses to size the progress bar and decide whether the empty-target
+    /// confirmation is needed; `Err` surfaces an unreadable file, an
+    /// unsupported connection, or a listing failure so the UI can abandon the
+    /// restore.
+    RestorePlanned {
+        result: DbResult<RestorePlan>,
+    },
+    /// One progress snapshot of an in-flight restore (ADR-0051). The UI
+    /// replaces its running meter with `progress` and repaints.
+    RestoreProgress {
+        progress: RestoreProgress,
+    },
+    /// Terminal marker for a finished restore (ADR-0051). Carries the outcome —
+    /// statements applied, per-statement failures, and whether it was
+    /// cancelled — so the UI can render an honest summary.
+    RestoreComplete {
+        outcome: RestoreOutcome,
+    },
+    /// The restore could not be applied (ADR-0051): a non-empty target the
+    /// caller did not confirm, an adapter that cannot execute writes, or an
+    /// atomic batch that unwound. `message` is the fatal error. Per-statement
+    /// failures on the non-atomic path are *not* here — those ride in
+    /// [`Reply::RestoreComplete`]'s outcome and never abort the run.
+    RestoreFailed {
+        message: String,
     },
 }
 
@@ -390,6 +495,78 @@ impl EditGrid {
     }
 }
 
+/// Backup (logical dump) UI state (ADR-0049 slice e). A single slot: at
+/// most one backup is planned or running at a time, so the toolbar button
+/// gates on this being idle/terminal.
+///
+/// The state machine is deliberately split so its transitions are pure and
+/// testable — `drain_replies` only *moves between* states, never touching
+/// egui or the native file dialog. The two UI-only steps live in the render
+/// path: [`BackupState::Confirming`] draws the warn modal, and
+/// [`BackupState::ReadyToSave`] triggers the (blocking) save dialog, exactly
+/// as the CSV-export button does.
+#[derive(Debug, Default)]
+enum BackupState {
+    /// No backup activity.
+    #[default]
+    Idle,
+    /// `PlanBackup` sent; awaiting [`Reply::BackupPlanned`].
+    Planning,
+    /// Preflight came back over the warn threshold; the render path shows
+    /// the "large database" modal before proceeding. Carries the plan and
+    /// the warned total so the modal can name the row count.
+    Confirming { plan: DumpPlan, total_rows: u64 },
+    /// Preflight accepted (either under threshold, or confirmed through the
+    /// modal); the render path opens the save dialog on the next frame.
+    ReadyToSave(DumpPlan),
+    /// Dump running; carries the latest progress snapshot for the bar.
+    Running(DumpProgress),
+    /// Terminal: the dump finished (possibly cancelled, or with per-table
+    /// failures / truncations recorded in the outcome).
+    Done(DumpOutcome),
+    /// Terminal: the output file could not be opened or written.
+    Failed(String),
+}
+
+/// The outcome of one frame of the huge-DB confirm modal, captured inside
+/// the render closure and applied after it (egui borrows `ui` for the
+/// closure, so the state transition has to wait until it returns).
+enum ConfirmAction {
+    None,
+    Continue,
+    Cancel,
+}
+
+/// Restore (logical import) state machine (ADR-0051, slice 6). Mirrors
+/// [`BackupState`], but its first step is the file *picker* rather than a
+/// preflight query: the toolbar Restore button opens the open-file dialog, and
+/// only a chosen `.sql` path advances to [`RestoreState::Planning`].
+///
+/// The transitions are pure and testable — `drain_replies` only *moves
+/// between* states. The one UI-only step is the [`RestoreState::Confirming`]
+/// modal, the ADR-0051 strong-confirm shown when the target is not empty; an
+/// empty target skips it and runs straight from the preflight reply.
+#[derive(Debug, Default)]
+enum RestoreState {
+    /// No restore activity.
+    #[default]
+    Idle,
+    /// A file was picked and `PlanRestore` sent; awaiting
+    /// [`Reply::RestorePlanned`].
+    Planning,
+    /// Preflight came back against a non-empty target; the render path shows
+    /// the strong-confirm modal before proceeding (ADR-0051 empty/new-target
+    /// safety model). Carries the plan so a "Restore anyway" advances it.
+    Confirming { plan: RestorePlan },
+    /// Restore running; carries the latest progress snapshot for the bar.
+    Running(RestoreProgress),
+    /// Terminal: the restore finished (possibly cancelled, or with
+    /// per-statement failures recorded in the outcome).
+    Done(RestoreOutcome),
+    /// Terminal: a fatal error prevented (or unwound) the restore.
+    Failed(String),
+}
+
 pub struct DbboardApp {
     sql: String,
     tables: DbResult<Vec<TableInfo>>,
@@ -398,6 +575,9 @@ pub struct DbboardApp {
     /// whenever a new result replaces [`Self::last_result`] — the old
     /// indices no longer point at the same rows.
     result_selection: selection::ResultSelection,
+    /// Result-grid column sort (up to three levels). Reset whenever a new
+    /// result replaces [`Self::last_result`] — the columns may differ.
+    result_sort: SortState,
     history: PersistentHistoryStore,
     /// `Some` between submitting a query and consuming its reply; the
     /// `drain_replies` path uses this to compute `duration_ms`.
@@ -467,6 +647,18 @@ pub struct DbboardApp {
     /// Inline cell-editing state (issue 0013 slice b). Populated only for
     /// browse-`SELECT` results of a single base table; read-only otherwise.
     edit: EditGrid,
+    /// Backup (logical dump) state machine (ADR-0049 slice e). `Idle`
+    /// until the toolbar Backup button fires a preflight.
+    backup: BackupState,
+    /// Large-database warn threshold in total rows (ADR-0050). Seeded to
+    /// [`DEFAULT_BACKUP_WARN_ROWS`] and overridden by the persisted
+    /// `ui-settings.toml` value the binary pushes in via
+    /// [`Self::set_backup_warn_rows`]. The preflight compares the plan's
+    /// total against this, not the constant.
+    backup_warn_rows: u64,
+    /// Restore (logical import) state machine (ADR-0051 slice 6). `Idle` until
+    /// the toolbar Restore button picks a `.sql` file and fires a preflight.
+    restore: RestoreState,
     busy: bool,
     cmd_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -577,6 +769,7 @@ impl DbboardApp {
             tables: Ok(Vec::new()),
             last_result: None,
             result_selection: selection::ResultSelection::default(),
+            result_sort: SortState::default(),
             history,
             pending: None,
             pending_ai: None,
@@ -593,6 +786,9 @@ impl DbboardApp {
             structure: None,
             annotations: None,
             edit: EditGrid::default(),
+            backup: BackupState::Idle,
+            backup_warn_rows: DEFAULT_BACKUP_WARN_ROWS,
+            restore: RestoreState::Idle,
             busy: false,
             cmd_tx,
             reply_rx,
@@ -650,6 +846,11 @@ impl DbboardApp {
         }
     }
 
+    // Central reply dispatcher: one arm per `Reply` variant, mirroring the
+    // command side in `worker::handle_command`. It grows one arm per feature
+    // (ADR-0051 restore added four), so the line lint is not a useful signal
+    // here — the same allow guards the sibling dispatcher.
+    #[allow(clippy::too_many_lines)]
     fn drain_replies(&mut self) {
         while let Ok(reply) = self.reply_rx.try_recv() {
             match reply {
@@ -679,8 +880,10 @@ impl DbboardApp {
                     }
                     self.last_result = Some(r);
                     // A fresh result invalidates any row selection carried
-                    // over from the previous one (ADR-0035 slice 2).
+                    // over from the previous one (ADR-0035 slice 2), and any
+                    // sort keyed on the previous result's columns.
                     self.result_selection.clear();
+                    self.result_sort.reset();
                     // The rows just changed underneath any open inline
                     // editor; close it (issue 0013 slice b). Staged edits
                     // persist — a fresh run already reset them via run_sql.
@@ -800,6 +1003,17 @@ impl DbboardApp {
                         }
                     }
                 }
+                // ADR-0049 slice e: preflight came back. A late reply after
+                // the user already dismissed the flow (state back to Idle)
+                // is ignored, so a stale plan cannot resurrect a modal.
+                Reply::BackupPlanned { result } => self.on_backup_planned(result),
+                Reply::BackupProgress { progress } => self.on_backup_progress(progress),
+                Reply::BackupComplete { outcome } => self.backup = BackupState::Done(outcome),
+                Reply::BackupFailed { message } => self.backup = BackupState::Failed(message),
+                Reply::RestorePlanned { result } => self.on_restore_planned(result),
+                Reply::RestoreProgress { progress } => self.on_restore_progress(progress),
+                Reply::RestoreComplete { outcome } => self.restore = RestoreState::Done(outcome),
+                Reply::RestoreFailed { message } => self.restore = RestoreState::Failed(message),
             }
         }
     }
@@ -1248,6 +1462,558 @@ impl DbboardApp {
         self.has_ai_provider() && self.ai_panel.is_open()
     }
 
+    /// Whether the active connection can be backed up (ADR-0049): a live
+    /// adapter is wired and its id maps to a SQL dialect the dumper knows.
+    /// Read per frame to gate the toolbar button, mirroring
+    /// [`Self::db_has_describe_table`]; `false` in tests / in-memory flows,
+    /// which simply hides the button.
+    #[must_use]
+    pub fn can_backup(&self) -> bool {
+        self.schema_source
+            .as_ref()
+            .is_some_and(|s| edit::dialect_for_adapter_id(s.current_adapter().id()).is_some())
+    }
+
+    /// Whether a backup is mid-flight (planning or dumping) — used to gate
+    /// the toolbar button so a second click cannot start a parallel run. A
+    /// terminal state (`Done`/`Failed`) does not count as busy: its summary
+    /// window is dismissible and a fresh backup may start behind it.
+    #[must_use]
+    fn backup_in_progress(&self) -> bool {
+        matches!(
+            self.backup,
+            BackupState::Planning
+                | BackupState::Confirming { .. }
+                | BackupState::ReadyToSave(_)
+                | BackupState::Running(_)
+        )
+    }
+
+    /// Start a backup by asking the worker to preflight the active
+    /// connection (ADR-0049 slice e). No-op if one is already in flight or
+    /// the connection cannot be dumped — the toolbar already gates on both,
+    /// so this is defence-in-depth. A closed channel leaves the state
+    /// untouched (the UI is shutting down anyway).
+    fn start_backup(&mut self) {
+        if self.backup_in_progress() || !self.can_backup() {
+            return;
+        }
+        if self.cmd_tx.send(Command::PlanBackup).is_ok() {
+            self.backup = BackupState::Planning;
+        }
+    }
+
+    /// Fold a preflight reply into the state machine. A late reply that
+    /// arrives after the user dismissed the flow (state no longer
+    /// `Planning`) is ignored so a stale plan cannot reopen a modal.
+    fn on_backup_planned(&mut self, result: DbResult<DumpPlan>) {
+        if !matches!(self.backup, BackupState::Planning) {
+            return;
+        }
+        self.backup = match result {
+            Ok(plan) => match plan.exceeds_threshold(self.backup_warn_rows) {
+                Some(total_rows) => BackupState::Confirming { plan, total_rows },
+                None => BackupState::ReadyToSave(plan),
+            },
+            Err(e) => BackupState::Failed(e.message().to_string()),
+        };
+    }
+
+    /// Apply a progress tick. Ticks only matter while a dump is running;
+    /// one arriving after cancellation/completion (state already terminal)
+    /// is dropped so it cannot resurrect the progress window.
+    fn on_backup_progress(&mut self, progress: DumpProgress) {
+        if matches!(self.backup, BackupState::Running(_)) {
+            self.backup = BackupState::Running(progress);
+        }
+    }
+
+    /// Ask the worker to cancel the in-flight dump (ADR-0049 Decision 9).
+    /// The task still reports a (cancelled) `BackupComplete`, so the state
+    /// stays `Running` until that terminal reply lands.
+    fn cancel_backup(&mut self) {
+        let _ = self.cmd_tx.send(Command::CancelBackup);
+    }
+
+    /// Dismiss a terminal backup summary, returning the slot to idle.
+    fn dismiss_backup(&mut self) {
+        self.backup = BackupState::Idle;
+    }
+
+    /// Render whichever backup window the current state calls for, and
+    /// drive the two UI-only transitions. `Idle`/`Planning` own no window —
+    /// the toolbar carries their affordance (button / spinner). Matching the
+    /// state place with non-binding patterns lets each arm freely re-borrow
+    /// `self` for its sub-render.
+    fn render_backup(&mut self, ctx: &egui::Context) {
+        match self.backup {
+            BackupState::Idle | BackupState::Planning => {}
+            BackupState::Confirming { .. } => self.render_backup_confirm(ctx),
+            // Move the plan out and open the (blocking) native save dialog.
+            // Resetting to Idle first means a cancelled dialog lands back at
+            // Idle with no extra bookkeeping.
+            BackupState::ReadyToSave(_) => {
+                if let BackupState::ReadyToSave(plan) =
+                    std::mem::replace(&mut self.backup, BackupState::Idle)
+                {
+                    self.pick_path_and_start(plan);
+                }
+            }
+            BackupState::Running(_) => self.render_backup_running(ctx),
+            BackupState::Done(_) => self.render_backup_done(ctx),
+            BackupState::Failed(_) => self.render_backup_failed(ctx),
+        }
+    }
+
+    /// The huge-DB warning (ADR-0049 Decision 8, warn-and-allow). Reads the
+    /// total off the `Confirming` state; "Back up anyway" advances to the
+    /// save dialog, "Cancel" abandons the flow.
+    fn render_backup_confirm(&mut self, ctx: &egui::Context) {
+        let BackupState::Confirming { total_rows, .. } = self.backup else {
+            return;
+        };
+        let mut action = ConfirmAction::None;
+        egui::Window::new(t!("backup-warn-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(t_args!("backup-warn-body", rows = total_rows));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t!("backup-warn-continue")).clicked() {
+                        action = ConfirmAction::Continue;
+                    }
+                    if ui.button(t!("backup-warn-cancel")).clicked() {
+                        action = ConfirmAction::Cancel;
+                    }
+                });
+            });
+        match action {
+            ConfirmAction::Continue => {
+                if let BackupState::Confirming { plan, .. } =
+                    std::mem::replace(&mut self.backup, BackupState::Idle)
+                {
+                    self.backup = BackupState::ReadyToSave(plan);
+                }
+            }
+            ConfirmAction::Cancel => self.backup = BackupState::Idle,
+            ConfirmAction::None => {}
+        }
+    }
+
+    /// The live progress window: a bar plus table/row counters and a Cancel
+    /// button. Cancel only signals the worker; the terminal reply flips the
+    /// state, so the window stays up (showing the last progress) until then.
+    fn render_backup_running(&mut self, ctx: &egui::Context) {
+        let BackupState::Running(progress) = &self.backup else {
+            return;
+        };
+        let fraction = backup_fraction(progress);
+        let table_line = t_args!(
+            "backup-progress-table",
+            done = progress.tables_done,
+            total = progress.tables_total
+        );
+        let rows_line = t_args!(
+            "backup-progress-rows",
+            done = progress.rows_done,
+            total = progress.rows_total
+        );
+        let current = progress
+            .current_table
+            .as_ref()
+            .map(|t| t_args!("backup-progress-current", table = t.clone()));
+        let mut cancel = false;
+        egui::Window::new(t!("backup-progress-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                ui.label(table_line);
+                ui.label(rows_line);
+                if let Some(current) = current {
+                    ui.label(current);
+                }
+                ui.add_space(8.0);
+                if ui.button(t!("backup-cancel-button")).clicked() {
+                    cancel = true;
+                }
+            });
+        // Keep the frame ticking so progress replies keep draining.
+        ctx.request_repaint();
+        if cancel {
+            self.cancel_backup();
+        }
+    }
+
+    /// Completion summary. Names the dumped totals and surfaces the honest
+    /// caveats — cancellation, skipped tables, truncations — so a partial
+    /// backup is never mistaken for a clean one. Close returns to idle.
+    fn render_backup_done(&mut self, ctx: &egui::Context) {
+        let BackupState::Done(outcome) = &self.backup else {
+            return;
+        };
+        let summary = t_args!(
+            "backup-done-summary",
+            tables = outcome.tables_dumped,
+            rows = outcome.rows_written
+        );
+        let cancelled = outcome.cancelled;
+        let failures = outcome.failures.len();
+        let truncations = outcome.truncations.len();
+        let mut close = false;
+        egui::Window::new(t!("backup-done-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(summary);
+                if cancelled {
+                    ui.label(t!("backup-done-cancelled"));
+                }
+                if failures > 0 {
+                    ui.label(t_args!("backup-done-failures", count = failures));
+                }
+                if truncations > 0 {
+                    ui.label(t_args!("backup-done-truncations", count = truncations));
+                }
+                ui.add_space(8.0);
+                if ui.button(t!("backup-close-button")).clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.dismiss_backup();
+        }
+    }
+
+    /// Failure window: the output could not be opened or written. Close
+    /// returns to idle.
+    fn render_backup_failed(&mut self, ctx: &egui::Context) {
+        let BackupState::Failed(message) = &self.backup else {
+            return;
+        };
+        // A raw I/O error string has no separate localized/original halves,
+        // so both slots carry the same text (only one line renders).
+        let display = errors::DisplayError::new(message.clone(), message.clone());
+        let mut close = false;
+        egui::Window::new(t!("backup-failed-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                errors::render_error(ui, Some(&display));
+                ui.add_space(8.0);
+                if ui.button(t!("backup-close-button")).clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.dismiss_backup();
+        }
+    }
+
+    /// Blocking "Save As" for the dump, then hand off to the worker
+    /// (ADR-0049 slice e). Mirrors [`save_csv_via_dialog`]: opens in
+    /// Downloads with a non-colliding default name, and a cancelled dialog
+    /// abandons the flow (state already reset to `Idle` by the caller). On a
+    /// chosen path we send `StartBackup` and move to `Running`; a closed
+    /// channel is reported as a failure rather than silently dropped.
+    fn pick_path_and_start(&mut self, plan: DumpPlan) {
+        let download_dir = directories::UserDirs::new()
+            .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf));
+        let file_name = match &download_dir {
+            Some(dir) => {
+                export::next_available_name("dbboard-backup", "sql", |name| dir.join(name).exists())
+            }
+            None => "dbboard-backup.sql".to_string(),
+        };
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(t!("backup-dialog-title"))
+            .add_filter("SQL", &["sql"])
+            .set_file_name(file_name);
+        if let Some(dir) = download_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else {
+            return; // user cancelled; state is already Idle
+        };
+        if self
+            .cmd_tx
+            .send(Command::StartBackup { path, plan })
+            .is_ok()
+        {
+            self.backup = BackupState::Running(DumpProgress::default());
+        } else {
+            self.backup = BackupState::Failed("backup worker unavailable".to_string());
+        }
+    }
+
+    /// Whether the active connection can be restored into (ADR-0051): a live
+    /// adapter is wired, its id maps to a SQL dialect the classifier knows, and
+    /// it advertises `has_execute` so statements can actually be applied. Read
+    /// per frame to gate the toolbar button, mirroring [`Self::can_backup`];
+    /// `false` in tests / in-memory flows, which simply hides the button.
+    #[must_use]
+    pub fn can_restore(&self) -> bool {
+        self.schema_source.as_ref().is_some_and(|s| {
+            let adapter = s.current_adapter();
+            edit::dialect_for_adapter_id(adapter.id()).is_some()
+                && adapter.capabilities().has_execute
+        })
+    }
+
+    /// Whether a restore is mid-flight (planning, confirming, or applying) —
+    /// used to gate the toolbar button so a second click cannot start a
+    /// parallel run. A terminal state (`Done`/`Failed`) does not count as busy:
+    /// its summary window is dismissible and a fresh restore may start behind
+    /// it.
+    #[must_use]
+    fn restore_in_progress(&self) -> bool {
+        matches!(
+            self.restore,
+            RestoreState::Planning | RestoreState::Confirming { .. } | RestoreState::Running(_)
+        )
+    }
+
+    /// Start a restore by picking a `.sql` file and asking the worker to
+    /// preflight it (ADR-0051). No-op if one is already in flight or the
+    /// connection cannot be restored into — the toolbar already gates on both,
+    /// so this is defence-in-depth. A cancelled file dialog leaves the state
+    /// untouched; a closed channel does too (the UI is shutting down anyway).
+    fn start_restore(&mut self) {
+        if self.restore_in_progress() || !self.can_restore() {
+            return;
+        }
+        let download_dir = directories::UserDirs::new()
+            .and_then(|dirs| dirs.download_dir().map(std::path::Path::to_path_buf));
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(t!("restore-dialog-title"))
+            .add_filter("SQL", &["sql"]);
+        if let Some(dir) = download_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return; // user cancelled; state stays Idle
+        };
+        if self.cmd_tx.send(Command::PlanRestore { path }).is_ok() {
+            self.restore = RestoreState::Planning;
+        }
+    }
+
+    /// Fold a preflight reply into the state machine. A late reply that arrives
+    /// after the user dismissed the flow (state no longer `Planning`) is
+    /// ignored so a stale plan cannot reopen a modal. An empty target runs
+    /// straight away; a non-empty one raises the strong-confirm modal first.
+    fn on_restore_planned(&mut self, result: DbResult<RestorePlan>) {
+        if !matches!(self.restore, RestoreState::Planning) {
+            return;
+        }
+        match result {
+            Ok(plan) if plan.is_target_empty() => self.launch_restore(plan, false),
+            Ok(plan) => self.restore = RestoreState::Confirming { plan },
+            Err(e) => self.restore = RestoreState::Failed(e.message().to_string()),
+        }
+    }
+
+    /// Hand a confirmed (or empty-target) plan to the worker (ADR-0051).
+    /// `confirmed` carries the empty-target-gate acknowledgement — always
+    /// `true` on the non-empty path the modal drives, ignored by the runner on
+    /// an already-empty target. A closed channel is reported as a failure
+    /// rather than silently dropped.
+    fn launch_restore(&mut self, plan: RestorePlan, confirmed: bool) {
+        let options = RestoreOptions {
+            confirmed,
+            on_error: OnError::Stop,
+        };
+        if self
+            .cmd_tx
+            .send(Command::StartRestore { plan, options })
+            .is_ok()
+        {
+            self.restore = RestoreState::Running(RestoreProgress::default());
+        } else {
+            self.restore = RestoreState::Failed("restore worker unavailable".to_string());
+        }
+    }
+
+    /// Apply a progress tick. Ticks only matter while a restore is running; one
+    /// arriving after cancellation/completion (state already terminal) is
+    /// dropped so it cannot resurrect the progress window.
+    fn on_restore_progress(&mut self, progress: RestoreProgress) {
+        if matches!(self.restore, RestoreState::Running(_)) {
+            self.restore = RestoreState::Running(progress);
+        }
+    }
+
+    /// Ask the worker to cancel the in-flight restore (ADR-0051). The task
+    /// still reports a (cancelled) `RestoreComplete`, so the state stays
+    /// `Running` until that terminal reply lands.
+    fn cancel_restore(&mut self) {
+        let _ = self.cmd_tx.send(Command::CancelRestore);
+    }
+
+    /// Dismiss a terminal restore summary, returning the slot to idle.
+    fn dismiss_restore(&mut self) {
+        self.restore = RestoreState::Idle;
+    }
+
+    /// Render whichever restore window the current state calls for. `Idle`/
+    /// `Planning` own no window — the toolbar carries their affordance (button
+    /// / spinner). Matching on a place with non-binding patterns lets each arm
+    /// freely re-borrow `self` for its sub-render.
+    fn render_restore(&mut self, ctx: &egui::Context) {
+        match self.restore {
+            RestoreState::Idle | RestoreState::Planning => {}
+            RestoreState::Confirming { .. } => self.render_restore_confirm(ctx),
+            RestoreState::Running(_) => self.render_restore_running(ctx),
+            RestoreState::Done(_) => self.render_restore_done(ctx),
+            RestoreState::Failed(_) => self.render_restore_failed(ctx),
+        }
+    }
+
+    /// The non-empty-target strong-confirm (ADR-0051 empty/new-target safety
+    /// model). Names how many tables the target already holds; "Restore
+    /// anyway" launches with `confirmed = true`, "Cancel" abandons the flow.
+    fn render_restore_confirm(&mut self, ctx: &egui::Context) {
+        let RestoreState::Confirming { plan } = &self.restore else {
+            return;
+        };
+        let existing = plan.existing_tables.len();
+        let statements = plan.runnable_count();
+        let mut action = ConfirmAction::None;
+        egui::Window::new(t!("restore-warn-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(t_args!(
+                    "restore-warn-body",
+                    tables = existing,
+                    statements = statements
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t!("restore-warn-continue")).clicked() {
+                        action = ConfirmAction::Continue;
+                    }
+                    if ui.button(t!("restore-warn-cancel")).clicked() {
+                        action = ConfirmAction::Cancel;
+                    }
+                });
+            });
+        match action {
+            ConfirmAction::Continue => {
+                if let RestoreState::Confirming { plan } =
+                    std::mem::replace(&mut self.restore, RestoreState::Idle)
+                {
+                    self.launch_restore(plan, true);
+                }
+            }
+            ConfirmAction::Cancel => self.restore = RestoreState::Idle,
+            ConfirmAction::None => {}
+        }
+    }
+
+    /// The live progress window: a bar plus a statement counter and a Cancel
+    /// button. Cancel only signals the worker; the terminal reply flips the
+    /// state, so the window stays up (showing the last progress) until then.
+    fn render_restore_running(&mut self, ctx: &egui::Context) {
+        let RestoreState::Running(progress) = &self.restore else {
+            return;
+        };
+        let fraction = restore_fraction(progress);
+        let statements_line = t_args!(
+            "restore-progress-statements",
+            done = progress.statements_done,
+            total = progress.statements_total
+        );
+        let mut cancel = false;
+        egui::Window::new(t!("restore-progress-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                ui.label(statements_line);
+                ui.add_space(8.0);
+                if ui.button(t!("restore-cancel-button")).clicked() {
+                    cancel = true;
+                }
+            });
+        // Keep the frame ticking so progress replies keep draining.
+        ctx.request_repaint();
+        if cancel {
+            self.cancel_restore();
+        }
+    }
+
+    /// Completion summary. Names the applied totals and surfaces the honest
+    /// caveats — cancellation and per-statement failures — so a partial restore
+    /// is never mistaken for a clean one. Close returns to idle.
+    fn render_restore_done(&mut self, ctx: &egui::Context) {
+        let RestoreState::Done(outcome) = &self.restore else {
+            return;
+        };
+        let summary = t_args!(
+            "restore-done-summary",
+            statements = outcome.statements_run,
+            ddl = outcome.ddl_run,
+            data = outcome.data_run
+        );
+        let cancelled = outcome.cancelled;
+        let failures = outcome.failures.len();
+        let mut close = false;
+        egui::Window::new(t!("restore-done-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(summary);
+                if cancelled {
+                    ui.label(t!("restore-done-cancelled"));
+                }
+                if failures > 0 {
+                    ui.label(t_args!("restore-done-failures", count = failures));
+                }
+                ui.add_space(8.0);
+                if ui.button(t!("restore-close-button")).clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.dismiss_restore();
+        }
+    }
+
+    /// Failure window: a fatal error prevented (or unwound) the restore. Close
+    /// returns to idle.
+    fn render_restore_failed(&mut self, ctx: &egui::Context) {
+        let RestoreState::Failed(message) = &self.restore else {
+            return;
+        };
+        // A raw error string has no separate localized/original halves, so both
+        // slots carry the same text (only one line renders).
+        let display = errors::DisplayError::new(message.clone(), message.clone());
+        let mut close = false;
+        egui::Window::new(t!("restore-failed-title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                errors::render_error(ui, Some(&display));
+                ui.add_space(8.0);
+                if ui.button(t!("restore-close-button")).clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.dismiss_restore();
+        }
+    }
+
     /// Toggle the AI panel window. Noop when no provider is wired —
     /// callers do not need to gate this themselves, but in practice the
     /// menu bar already hides the button so this is defence-in-depth.
@@ -1294,6 +2060,25 @@ impl DbboardApp {
     #[must_use]
     pub fn active_ai_provider_label(&self) -> Option<&str> {
         self.active_ai_provider_label.as_deref()
+    }
+
+    /// Set the backup large-database warn threshold in total rows (ADR-0050).
+    /// The binary owns `ui-settings.toml` (the persisted source of truth) and
+    /// pushes the resolved value in — the persisted setting when present, the
+    /// [`DEFAULT_BACKUP_WARN_ROWS`] fallback otherwise. The next preflight
+    /// ([`Self::on_backup_planned`]) compares against this.
+    pub fn set_backup_warn_rows(&mut self, rows: u64) {
+        self.backup_warn_rows = rows;
+    }
+
+    /// The threshold the next preflight will use. Seeded to
+    /// [`DEFAULT_BACKUP_WARN_ROWS`]; reflects the last value pushed by
+    /// [`Self::set_backup_warn_rows`]. Exposed so the binary can read the
+    /// built-in default back out (to seed the settings editor) without
+    /// re-importing the core constant.
+    #[must_use]
+    pub fn backup_warn_rows(&self) -> u64 {
+        self.backup_warn_rows
     }
 
     /// Last `SwitchAiProvider` failure surfaced through
@@ -1383,7 +2168,13 @@ fn pending_ai_from_command(cmd: &Command, conn_label: &str) -> Option<PendingAiS
         | Command::SwitchConnection { .. }
         | Command::SwitchAiProvider { .. }
         | Command::PrefetchSchema { .. }
-        | Command::DescribeTable { .. } => return None,
+        | Command::DescribeTable { .. }
+        | Command::PlanBackup
+        | Command::StartBackup { .. }
+        | Command::CancelBackup
+        | Command::PlanRestore { .. }
+        | Command::StartRestore { .. }
+        | Command::CancelRestore => return None,
     };
     let conn = if conn_label.is_empty() {
         None
@@ -1565,9 +2356,20 @@ impl eframe::App for DbboardApp {
         self.render_tables_panel(ui);
         self.render_query_panel(ui);
 
-        // Egui is event-driven, so request a follow-up frame while a
-        // query is in flight to keep draining the reply channel.
-        if self.busy {
+        // ADR-0049 slice e: backup modals/progress float over everything,
+        // like the AI panel. Rendered after the main panels so they layer
+        // on top.
+        self.render_backup(ui.ctx());
+
+        // ADR-0051 slice 6: restore modals/progress float over everything,
+        // like the backup ones.
+        self.render_restore(ui.ctx());
+
+        // Egui is event-driven, so request a follow-up frame while a query,
+        // a backup, or a restore is in flight to keep draining the reply
+        // channel. The running-progress windows also request repaints
+        // themselves; this covers the Planning gap before their window exists.
+        if self.busy || self.backup_in_progress() || self.restore_in_progress() {
             ui.ctx().request_repaint();
         }
     }
@@ -1589,8 +2391,20 @@ impl DbboardApp {
         // than a bare SQL string so provenance survives. "Count" stays a
         // plain read-only starter.
         let mut quick_browse: Option<TableInfo> = None;
+        // Table count for the section badge (ADR-0057), known only once the
+        // list has loaded. `Option<usize>` is Copy, so this borrow of
+        // `self.tables` ends before the `match` below re-borrows it.
+        let table_count = self.tables.as_ref().ok().map(Vec::len);
         egui::Panel::left("tables").show_inside(ui, |ui| {
-            ui.heading(t!("tables-heading"));
+            ui.horizontal(|ui| {
+                ui.heading(t!("tables-heading"));
+                // A count chip beside the heading — the number of tables is
+                // already in hand (no extra query), unlike per-table row
+                // counts which would each need a COUNT(*).
+                if let Some(n) = table_count {
+                    theme::pill(ui, &n.to_string(), None);
+                }
+            });
             ui.separator();
             match &self.tables {
                 Ok(tables) if tables.is_empty() => {
@@ -1648,8 +2462,15 @@ impl DbboardApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(t!("sql-heading"));
+                // The Run action is the view's primary call-to-action, so it
+                // gets the filled accent button (ADR-0057); every other
+                // control here stays a neutral secondary.
+                let dark = ui.visuals().dark_mode;
                 if ui
-                    .add_enabled(!self.busy, egui::Button::new(t!("sql-run-button")))
+                    .add_enabled(
+                        !self.busy,
+                        theme::primary_button(dark, t!("sql-run-button")),
+                    )
                     .clicked()
                 {
                     self.run_sql();
@@ -1660,6 +2481,43 @@ impl DbboardApp {
                     t_args!("auto-limit-checkbox", count = DEFAULT_AUTO_LIMIT),
                 )
                 .on_hover_text(t!("auto-limit-hint"));
+                // ADR-0049 backup: only shown when the live connection can be
+                // dumped, and disabled while any backup is in flight so a
+                // second click cannot start a parallel run.
+                if self.can_backup() {
+                    if ui
+                        .add_enabled(
+                            !self.backup_in_progress(),
+                            egui::Button::new(t!("backup-button")),
+                        )
+                        .on_hover_text(t!("backup-button-hint"))
+                        .clicked()
+                    {
+                        self.start_backup();
+                    }
+                    if matches!(self.backup, BackupState::Planning) {
+                        ui.label(t!("backup-planning"));
+                    }
+                }
+                // ADR-0051 restore: shown only when the live connection can be
+                // restored into (dialect known + `has_execute`), and disabled
+                // while any restore is in flight so a second click cannot start
+                // a parallel run.
+                if self.can_restore() {
+                    if ui
+                        .add_enabled(
+                            !self.restore_in_progress(),
+                            egui::Button::new(t!("restore-button")),
+                        )
+                        .on_hover_text(t!("restore-button-hint"))
+                        .clicked()
+                    {
+                        self.start_restore();
+                    }
+                    if matches!(self.restore, RestoreState::Planning) {
+                        ui.label(t!("restore-planning"));
+                    }
+                }
                 if self.busy {
                     ui.spinner();
                 }
@@ -1688,44 +2546,49 @@ impl DbboardApp {
                 self.run_sql();
             }
 
-            // Recently-run statements; click one to refill the editor
-            // (ADR-0014). Restore is captured here and applied after the
-            // immutable iter() borrow ends, sidestepping the borrow
-            // checker without cloning the whole store.
-            let mut restore: Option<String> = None;
-            {
-                let history = self.history.store();
-                egui::CollapsingHeader::new(t_args!("history-title", count = history.len()))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        if history.is_empty() {
-                            ui.label(t!("history-empty"));
-                        } else {
-                            egui::ScrollArea::vertical()
-                                .max_height(160.0)
-                                .show(ui, |ui| {
-                                    // Slice (a) only surfaces query entries
-                                    // in the legacy history panel; the AI
-                                    // record viewer lands in slice (c).
-                                    for entry in history.iter() {
-                                        let HistoryEntry::Query(q) = entry else {
-                                            continue;
-                                        };
-                                        if ui.small_button(history_button_label(&q.sql)).clicked() {
-                                            restore = Some(q.sql.clone());
-                                        }
-                                    }
-                                });
-                        }
-                    });
-            }
-            if let Some(sql) = restore {
-                self.sql = sql;
-            }
+            self.render_history(ui);
 
             ui.separator();
             self.render_result_area(ui);
         });
+    }
+
+    /// Recently-run statements; click one to refill the editor (ADR-0014).
+    /// Split out of `render_query_panel` to keep each function focused. The
+    /// restore is captured inside the immutable `iter()` borrow and applied
+    /// after it ends, sidestepping the borrow checker without cloning the
+    /// whole store.
+    fn render_history(&mut self, ui: &mut egui::Ui) {
+        let mut restore: Option<String> = None;
+        {
+            let history = self.history.store();
+            egui::CollapsingHeader::new(t_args!("history-title", count = history.len()))
+                .default_open(false)
+                .show(ui, |ui| {
+                    if history.is_empty() {
+                        ui.label(t!("history-empty"));
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(160.0)
+                            .show(ui, |ui| {
+                                // Slice (a) only surfaces query entries in the
+                                // legacy history panel; the AI record viewer
+                                // lands in slice (c).
+                                for entry in history.iter() {
+                                    let HistoryEntry::Query(q) = entry else {
+                                        continue;
+                                    };
+                                    if ui.small_button(history_button_label(&q.sql)).clicked() {
+                                        restore = Some(q.sql.clone());
+                                    }
+                                }
+                            });
+                    }
+                });
+        }
+        if let Some(sql) = restore {
+            self.sql = sql;
+        }
     }
 
     /// Result/structure tab body and the inline-edit action handoff
@@ -1752,8 +2615,14 @@ impl DbboardApp {
                     ui.label(t!("result-empty"));
                 }
                 Some(Ok(result)) => {
-                    grid_intent =
-                        render_result(ui, result, &mut self.result_selection, &mut self.edit, busy);
+                    grid_intent = render_result(
+                        ui,
+                        result,
+                        &mut self.result_selection,
+                        &mut self.result_sort,
+                        &mut self.edit,
+                        busy,
+                    );
                 }
                 Some(Err(e)) => {
                     errors::render_error(ui, Some(&errors::db_error_display(e)));
@@ -2196,10 +3065,146 @@ fn save_csv_via_dialog(columns: &[dbboard_core::Column], rows: &[dbboard_core::R
     }
 }
 
+/// Progress-bar fraction for a running dump, in `[0.0, 1.0]`.
+///
+/// Rows are the fine-grained signal, so they drive the bar whenever the
+/// plan counted any (`rows_total > 0`). A schema-only dump (every table
+/// empty) has no rows to divide, so it falls back to the coarser
+/// table-step count. With neither — the pre-first-report snapshot — the bar
+/// sits at zero.
+//
+// A progress bar only needs a few significant figures, so the u64→f32 cast's
+// precision loss on very large row counts is immaterial (it shifts the bar by
+// sub-pixel amounts); the alternative — exact 64-bit ratio arithmetic — buys
+// nothing a viewer can perceive.
+#[allow(clippy::cast_precision_loss)]
+fn backup_fraction(progress: &DumpProgress) -> f32 {
+    let ratio = |done: u64, total: u64| -> f32 {
+        if total == 0 {
+            0.0
+        } else {
+            // total > 0, so the clamp only guards the (shouldn't-happen)
+            // done > total case.
+            (done as f32 / total as f32).clamp(0.0, 1.0)
+        }
+    };
+    if progress.rows_total > 0 {
+        ratio(progress.rows_done, progress.rows_total)
+    } else {
+        ratio(progress.tables_done as u64, progress.tables_total as u64)
+    }
+}
+
+/// Progress-bar fraction for a running restore, in `[0.0, 1.0]`. Statements are
+/// the only signal restore has, so they drive the bar directly; the
+/// pre-first-report snapshot (`statements_total == 0`) sits at zero.
+#[allow(clippy::cast_precision_loss)]
+fn restore_fraction(progress: &RestoreProgress) -> f32 {
+    if progress.statements_total == 0 {
+        0.0
+    } else {
+        // total > 0, so the clamp only guards the (shouldn't-happen)
+        // done > total case.
+        (progress.statements_done as f32 / progress.statements_total as f32).clamp(0.0, 1.0)
+    }
+}
+
+/// Most sort levels the grid tracks at once — a primary, secondary, and
+/// tertiary key. Matches what a user can reasonably reason about and keeps
+/// the header indicator (level numbers 1–3) legible.
+const MAX_SORT_KEYS: usize = 3;
+
+/// Result-grid sort state: the ordered sort keys plus a cached row
+/// permutation. The order is recomputed only when the keys change or the
+/// result's row count no longer matches, so a displayed grid isn't re-sorted
+/// every frame. Sorting reorders *display*, never the underlying rows — the
+/// row indices used for selection and inline editing stay valid.
+#[derive(Default)]
+struct SortState {
+    /// Active sort keys, primary first, capped at [`MAX_SORT_KEYS`].
+    keys: Vec<SortKey>,
+    /// Cached permutation of the current result's row indices.
+    order: Vec<usize>,
+    /// The keys changed since `order` was last computed.
+    dirty: bool,
+}
+
+impl SortState {
+    /// Drop all sorting. Called when a fresh result replaces the old one —
+    /// the columns (and their meaning) may have changed entirely.
+    fn reset(&mut self) {
+        self.keys.clear();
+        self.order.clear();
+        self.dirty = true;
+    }
+
+    /// Apply a header click on `column`. A plain click sorts by that column
+    /// alone, cycling ascending → descending → off. An `additive` click
+    /// (Ctrl / Shift held) instead builds a multi-level sort: a new column is
+    /// appended as the next level (up to [`MAX_SORT_KEYS`]), and clicking an
+    /// existing level cycles its own direction ascending → descending → gone.
+    fn on_header_click(&mut self, column: usize, additive: bool) {
+        let existing = self.keys.iter().position(|k| k.column == column);
+        if additive {
+            match existing {
+                Some(i) if self.keys[i].ascending => self.keys[i].ascending = false,
+                Some(i) => {
+                    self.keys.remove(i);
+                }
+                None if self.keys.len() < MAX_SORT_KEYS => {
+                    self.keys.push(SortKey {
+                        column,
+                        ascending: true,
+                    });
+                }
+                // At the cap: ignore the extra column rather than silently
+                // evicting a level the user set on purpose.
+                None => {}
+            }
+        } else {
+            match self.keys.as_slice() {
+                [only] if only.column == column && only.ascending => {
+                    self.keys[0].ascending = false;
+                }
+                [only] if only.column == column => self.keys.clear(),
+                _ => {
+                    self.keys.clear();
+                    self.keys.push(SortKey {
+                        column,
+                        ascending: true,
+                    });
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The display order for `rows`, recomputing the cached permutation when
+    /// the keys changed or the row count no longer matches (a safety net for
+    /// any result swap that didn't call [`Self::reset`]).
+    fn order_for(&mut self, rows: &[Row]) -> &[usize] {
+        if self.dirty || self.order.len() != rows.len() {
+            self.order = sorted_row_order(rows, &self.keys);
+            self.dirty = false;
+        }
+        &self.order
+    }
+
+    /// If `column` participates in the sort, its 1-based level and direction
+    /// for the header indicator; `None` when the column isn't sorted.
+    fn indicator(&self, column: usize) -> Option<(usize, bool)> {
+        self.keys
+            .iter()
+            .position(|k| k.column == column)
+            .map(|i| (i + 1, self.keys[i].ascending))
+    }
+}
+
 fn render_result(
     ui: &mut egui::Ui,
     result: &QueryResult,
     selection: &mut selection::ResultSelection,
+    sort: &mut SortState,
     edit: &mut EditGrid,
     busy: bool,
 ) -> Option<GridIntent> {
@@ -2241,6 +3246,17 @@ fn render_result(
     // highlight). ADR-0035 slice 2.
     let mut pending_click: Option<(usize, selection::ClickModifiers)> = None;
 
+    // Precompute the sort display order and per-column indicators before the
+    // table closures, which can't borrow `sort` (they also need to *mutate*
+    // it on a header click). A header click is captured and applied after the
+    // table, the same way the row click above is deferred.
+    let order: Vec<usize> = sort.order_for(&result.rows).to_vec();
+    let indicators: Vec<Option<(usize, bool)>> = (0..result.columns.len())
+        .map(|c| sort.indicator(c))
+        .collect();
+    let show_levels = sort.keys.len() > 1;
+    let mut pending_header_click: Option<(usize, bool)> = None;
+
     // Pin the Save row to the bottom of the result area *before* laying out
     // the grid, so it stays on screen no matter how tall the grid grows.
     // The grid's ScrollArea claims all remaining height, so a Save row added
@@ -2277,17 +3293,17 @@ fn render_result(
 
             table
                 .header(row_height, |mut header| {
-                    // Empty gutter header above the row-number column.
-                    header.col(|_ui| {});
-                    for col in &result.columns {
-                        header.col(|ui| {
-                            ui.strong(&col.name);
-                        });
-                    }
+                    pending_header_click =
+                        render_sort_header(&mut header, &result.columns, &indicators, show_levels);
                 })
                 .body(|body| {
                     body.rows(row_height, result.rows.len(), |mut row| {
-                        let index = row.index();
+                        // `display` is the on-screen position; `index` is the
+                        // actual row in `result.rows` it maps to under the
+                        // current sort. Selection and editing key on `index`
+                        // so they stay correct whatever the display order.
+                        let display = row.index();
+                        let index = order[display];
                         // Highlight the whole row even though only the
                         // gutter is clickable, so the selection reads
                         // across all columns.
@@ -2296,14 +3312,14 @@ fn render_result(
                             ui.with_layout(
                                 egui::Layout::top_down_justified(egui::Align::Center),
                                 |ui| {
-                                    // 1-based row number, like a spreadsheet
-                                    // row header. The justified layout makes
-                                    // the whole gutter cell the click target,
-                                    // not just the digits.
+                                    // Sequential 1-based display position, like
+                                    // a spreadsheet row header. The justified
+                                    // layout makes the whole gutter cell the
+                                    // click target, not just the digits.
                                     let response = ui
                                         .selectable_label(
                                             selection.is_selected(index),
-                                            (index + 1).to_string(),
+                                            (display + 1).to_string(),
                                         )
                                         .on_hover_text(t!("result-select-row-hint"));
                                     if response.clicked() {
@@ -2337,9 +3353,63 @@ fn render_result(
     if let Some((index, mods)) = pending_click {
         selection.click(index, mods);
     }
+    if let Some((column, additive)) = pending_header_click {
+        sort.on_header_click(column, additive);
+    }
 
     render_expanded_cell_popup(ui, expand_id);
     intent
+}
+
+/// Render the result grid's header row: an empty gutter cell, then one
+/// clickable, sort-aware cell per column. Returns the column a click landed on
+/// (with whether a modifier was held), for the caller to apply after the table
+/// so the sort can't change mid-layout.
+fn render_sort_header(
+    header: &mut egui_extras::TableRow<'_, '_>,
+    columns: &[dbboard_core::Column],
+    indicators: &[Option<(usize, bool)>],
+    show_levels: bool,
+) -> Option<(usize, bool)> {
+    let mut click = None;
+    // Empty gutter header above the row-number column.
+    header.col(|_ui| {});
+    for (col_idx, col) in columns.iter().enumerate() {
+        header.col(|ui| {
+            // Clickable header: sorts by this column. The selected highlight
+            // marks an active sort column; the label carries the ▲/▼ arrow and
+            // (when multi-level) the sort level number.
+            let label = sort_header_label(&col.name, indicators[col_idx], show_levels);
+            let response = ui
+                .selectable_label(
+                    indicators[col_idx].is_some(),
+                    egui::RichText::new(label).strong(),
+                )
+                .on_hover_text(t!("result-sort-hint"));
+            if response.clicked() {
+                let mods = ui.input(|i| i.modifiers);
+                click = Some((col_idx, mods.command || mods.shift));
+            }
+        });
+    }
+    click
+}
+
+/// Build a column header label with its sort indicator: an ▲/▼ arrow when the
+/// column is sorted, plus a 1-based level number when more than one column is
+/// sorted, so the primary/secondary/tertiary order stays legible.
+fn sort_header_label(name: &str, indicator: Option<(usize, bool)>, show_levels: bool) -> String {
+    match indicator {
+        None => name.to_string(),
+        Some((level, ascending)) => {
+            let arrow = if ascending { '▲' } else { '▼' };
+            if show_levels {
+                format!("{name} {arrow}{level}")
+            } else {
+                format!("{name} {arrow}")
+            }
+        }
+    }
 }
 
 /// Whether the inline-edit Save row has anything to show: pending staged
@@ -2432,11 +3502,14 @@ fn render_editable_cell(
         None => (value.map(ToString::to_string).unwrap_or_default(), false),
     };
 
-    // Faint dirty tint pulled from the active Visuals so it holds up in
-    // both light and dark themes (ADR-0041) instead of a hard-coded RGB.
+    // Faint dirty tint keyed off the brand accent so it holds up in both
+    // light and dark themes (ADR-0041/ADR-0056) instead of a hard-coded
+    // RGB. The accent keeps its full RGB across themes (it is opaque),
+    // unlike `selection.bg_fill` whose premultiplied translucent value
+    // would read back dimmed.
     if is_staged {
-        let sel = ui.visuals().selection.bg_fill;
-        let tint = egui::Color32::from_rgba_unmultiplied(sel.r(), sel.g(), sel.b(), 48);
+        let accent = crate::theme::accent(ui.visuals().dark_mode);
+        let tint = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 48);
         ui.painter().rect_filled(ui.max_rect(), 2.0, tint);
     }
 
@@ -2560,16 +3633,124 @@ fn render_expanded_cell_popup(ui: &mut egui::Ui, expand_id: egui::Id) {
 mod tests {
     use super::errors::db_error_display;
     use super::{
-        apply_auto_limit, cell_preview, is_bare_select, is_long_cell, quick_count_sql,
-        quick_select_sql, quote_ident, should_run_from_keys, AiProviderSlot, AnnotationsAdmin,
-        Command, DbboardApp, HistoryStatus, NoteTarget, PersistentHistoryStore, Reply, ResultTab,
-        CELL_PREVIEW_CHARS, DEFAULT_CAPACITY,
+        apply_auto_limit, backup_fraction, cell_preview, is_bare_select, is_long_cell,
+        quick_count_sql, quick_select_sql, quote_ident, restore_fraction, should_run_from_keys,
+        AiProviderSlot, AnnotationsAdmin, BackupState, Command, DbboardApp, HistoryStatus,
+        NoteTarget, PersistentHistoryStore, Reply, RestoreState, ResultTab, CELL_PREVIEW_CHARS,
+        DEFAULT_CAPACITY,
     };
     use dbboard_core::{
-        Column, ColumnInfo, DbError, QueryResult, Row, TableInfo, TableSchema, Value,
+        Column, ColumnInfo, DbError, DumpOutcome, DumpPlan, DumpProgress, QueryResult, Row,
+        TableInfo, TablePlan, TableSchema, Value, DEFAULT_BACKUP_WARN_ROWS,
     };
     use std::sync::mpsc;
     use std::sync::{Arc, RwLock};
+
+    /// Header-click cycling and cached-order behaviour of the result-grid
+    /// sort. Pure state logic, so it needs no egui context.
+    mod sort_state {
+        use super::super::{sort_header_label, SortState, MAX_SORT_KEYS};
+        use dbboard_core::{Row, SortKey, Value};
+
+        fn rows(vals: &[i64]) -> Vec<Row> {
+            vals.iter()
+                .map(|v| Row::new(vec![Value::Integer(*v)]))
+                .collect()
+        }
+
+        fn key(column: usize, ascending: bool) -> SortKey {
+            SortKey { column, ascending }
+        }
+
+        #[test]
+        fn plain_click_cycles_ascending_descending_off() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            assert_eq!(s.keys, vec![key(0, true)]);
+            s.on_header_click(0, false);
+            assert_eq!(s.keys, vec![key(0, false)]);
+            s.on_header_click(0, false);
+            assert!(s.keys.is_empty());
+        }
+
+        #[test]
+        fn plain_click_on_a_new_column_replaces_the_sort() {
+            let mut s = SortState::default();
+            s.on_header_click(0, true); // build a two-level sort first
+            s.on_header_click(1, true);
+            s.on_header_click(2, false); // plain click on a third column
+            assert_eq!(s.keys, vec![key(2, true)]);
+        }
+
+        #[test]
+        fn additive_click_builds_a_multi_level_sort() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            s.on_header_click(1, true);
+            s.on_header_click(2, true);
+            assert_eq!(s.keys.len(), 3);
+            assert_eq!(s.indicator(0), Some((1, true)));
+            assert_eq!(s.indicator(1), Some((2, true)));
+            assert_eq!(s.indicator(2), Some((3, true)));
+        }
+
+        #[test]
+        fn additive_click_cycles_then_drops_an_existing_level() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            s.on_header_click(1, true); // add level 2 ascending
+            s.on_header_click(1, true); // ascending -> descending
+            assert_eq!(s.indicator(1), Some((2, false)));
+            s.on_header_click(1, true); // descending -> removed
+            assert_eq!(s.indicator(1), None);
+            assert_eq!(s.keys, vec![key(0, true)]); // primary survives
+        }
+
+        #[test]
+        fn additive_click_ignores_a_fourth_column_at_the_cap() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            s.on_header_click(1, true);
+            s.on_header_click(2, true);
+            s.on_header_click(3, true); // would be a fourth level
+            assert_eq!(s.keys.len(), MAX_SORT_KEYS);
+            assert_eq!(s.indicator(3), None);
+        }
+
+        #[test]
+        fn order_for_reflects_the_active_sort() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false); // ascending
+            assert_eq!(s.order_for(&rows(&[3, 1, 2])), &[1, 2, 0]);
+        }
+
+        #[test]
+        fn order_for_recomputes_when_the_row_count_changes() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            assert_eq!(s.order_for(&rows(&[2, 1])), &[1, 0]);
+            // A shorter/longer result must not reuse the stale permutation.
+            assert_eq!(s.order_for(&rows(&[5, 6, 4])), &[2, 0, 1]);
+        }
+
+        #[test]
+        fn reset_clears_the_keys() {
+            let mut s = SortState::default();
+            s.on_header_click(0, false);
+            let _ = s.order_for(&rows(&[3, 1, 2]));
+            s.reset();
+            assert!(s.keys.is_empty());
+        }
+
+        #[test]
+        fn header_label_appends_arrow_and_level_number() {
+            assert_eq!(sort_header_label("id", None, false), "id");
+            assert_eq!(sort_header_label("id", Some((1, true)), false), "id ▲");
+            assert_eq!(sort_header_label("id", Some((1, false)), false), "id ▼");
+            // The level number appears only once more than one column sorts.
+            assert_eq!(sort_header_label("id", Some((2, true)), true), "id ▲2");
+        }
+    }
 
     const FIXED_TS: &str = "2026-06-04T00:00:00.000Z";
 
@@ -3998,5 +5179,441 @@ mod tests {
     fn quick_count_sql_counts_rows() {
         let sql = quick_count_sql(&TableInfo::unqualified("orders"));
         assert_eq!(sql, "SELECT COUNT(*) FROM \"orders\";");
+    }
+
+    // ADR-0049 slice e: the backup state machine. These exercise the pure
+    // transitions `drain_replies` drives — no egui, no file dialog — so the
+    // warn/confirm/progress/terminal flow is verified without a live adapter.
+    mod backup {
+        use super::{
+            backup_fraction, build, BackupState, Command, DumpOutcome, DumpPlan, DumpProgress,
+            Reply, TableInfo, TablePlan, DEFAULT_BACKUP_WARN_ROWS,
+        };
+
+        fn plan_of(rows: u64) -> DumpPlan {
+            DumpPlan::new(vec![TablePlan::new(TableInfo::unqualified("t"), rows)])
+        }
+
+        #[test]
+        fn planned_under_threshold_goes_straight_to_save() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Planning;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(10)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::ReadyToSave(_)));
+        }
+
+        #[test]
+        fn planned_over_threshold_asks_for_confirmation_with_the_total() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Planning;
+            let rows = DEFAULT_BACKUP_WARN_ROWS + 1;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(rows)),
+                })
+                .unwrap();
+            app.drain_replies();
+            match app.backup {
+                BackupState::Confirming { total_rows, .. } => assert_eq!(total_rows, rows),
+                other => panic!("expected Confirming, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_lowered_threshold_warns_where_the_default_would_not() {
+            // ADR-0050: the preflight compares against the runtime threshold,
+            // not the constant. A plan that sits under the 500k default must
+            // warn once the user lowers the threshold below it.
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.set_backup_warn_rows(100);
+            app.backup = BackupState::Planning;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(500)),
+                })
+                .unwrap();
+            app.drain_replies();
+            match app.backup {
+                BackupState::Confirming { total_rows, .. } => assert_eq!(total_rows, 500),
+                other => panic!("expected Confirming, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_raised_threshold_skips_the_warning_the_default_would_show() {
+            // The mirror of the above: raising the threshold above a plan the
+            // 500k default would have flagged skips the warning entirely.
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.set_backup_warn_rows(DEFAULT_BACKUP_WARN_ROWS * 10);
+            app.backup = BackupState::Planning;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(DEFAULT_BACKUP_WARN_ROWS + 1)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::ReadyToSave(_)));
+        }
+
+        #[test]
+        fn the_default_threshold_is_the_core_constant() {
+            // A freshly built app uses the domain default until the binary
+            // pushes a persisted override.
+            let (app, _cmd_rx, _reply_tx) = build();
+            assert_eq!(app.backup_warn_rows(), DEFAULT_BACKUP_WARN_ROWS);
+        }
+
+        #[test]
+        fn planned_error_surfaces_as_failed() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Planning;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Err(dbboard_core::DbError::Capability("nope".into())),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::Failed(_)));
+        }
+
+        #[test]
+        fn a_stale_plan_after_dismissal_is_ignored() {
+            // The user dismissed the flow (state back to Idle) before the
+            // preflight reply arrived; it must not resurrect a modal.
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Idle;
+            reply_tx
+                .send(Reply::BackupPlanned {
+                    result: Ok(plan_of(10)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::Idle));
+        }
+
+        #[test]
+        fn progress_updates_only_while_running() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Running(DumpProgress::default());
+            reply_tx
+                .send(Reply::BackupProgress {
+                    progress: DumpProgress {
+                        rows_done: 7,
+                        rows_total: 10,
+                        ..DumpProgress::default()
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.backup {
+                BackupState::Running(p) => assert_eq!(p.rows_done, 7),
+                other => panic!("expected Running, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_late_progress_tick_after_completion_is_dropped() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Done(DumpOutcome::default());
+            reply_tx
+                .send(Reply::BackupProgress {
+                    progress: DumpProgress {
+                        rows_done: 3,
+                        ..DumpProgress::default()
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::Done(_)));
+        }
+
+        #[test]
+        fn complete_and_failed_land_on_terminal_states() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.backup = BackupState::Running(DumpProgress::default());
+            reply_tx
+                .send(Reply::BackupComplete {
+                    outcome: DumpOutcome::default(),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.backup, BackupState::Done(_)));
+
+            reply_tx
+                .send(Reply::BackupFailed {
+                    message: "disk full".into(),
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.backup {
+                BackupState::Failed(m) => assert_eq!(m, "disk full"),
+                other => panic!("expected Failed, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn start_backup_without_a_dumpable_connection_is_a_noop() {
+            // build() wires no schema source, so can_backup() is false and no
+            // PlanBackup should be emitted (only the bootstrap ListTables).
+            let (mut app, cmd_rx, _reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+            app.start_backup();
+            assert!(matches!(app.backup, BackupState::Idle));
+            assert!(cmd_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn cancel_backup_signals_the_worker() {
+            let (mut app, cmd_rx, _reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap
+            app.cancel_backup();
+            assert!(matches!(cmd_rx.try_recv(), Ok(Command::CancelBackup)));
+        }
+
+        #[test]
+        fn fraction_prefers_rows_then_tables_then_zero() {
+            // Rows drive the bar when counted.
+            assert!(
+                (backup_fraction(&DumpProgress {
+                    rows_done: 1,
+                    rows_total: 4,
+                    ..DumpProgress::default()
+                }) - 0.25)
+                    .abs()
+                    < f32::EPSILON
+            );
+            // No rows (schema-only): fall back to table steps.
+            assert!(
+                (backup_fraction(&DumpProgress {
+                    tables_done: 1,
+                    tables_total: 2,
+                    ..DumpProgress::default()
+                }) - 0.5)
+                    .abs()
+                    < f32::EPSILON
+            );
+            // Nothing counted yet: zero.
+            assert!(backup_fraction(&DumpProgress::default()).abs() < f32::EPSILON);
+        }
+    }
+
+    // ADR-0051 slice 6: the restore state machine. Like the backup tests these
+    // exercise the pure transitions `drain_replies` drives — no egui, no file
+    // dialog — so the plan/confirm/progress/terminal flow is verified without a
+    // live adapter.
+    mod restore {
+        use super::{build, restore_fraction, Command, Reply, RestoreState};
+        use dbboard_core::{
+            OnError, RestoreOutcome, RestorePlan, RestoreProgress, RestoreStatement,
+            StatementFailure, StatementKind,
+        };
+
+        /// A plan whose target holds `existing` tables and whose script is
+        /// `statements` runnable `INSERT`s. Enough to drive the empty/non-empty
+        /// branch and the progress-bar denominator.
+        fn plan_of(existing: &[&str], statements: usize) -> RestorePlan {
+            RestorePlan {
+                statements: (0..statements)
+                    .map(|i| RestoreStatement {
+                        sql: format!("INSERT INTO t VALUES ({i});"),
+                        kind: StatementKind::Data,
+                    })
+                    .collect(),
+                existing_tables: existing.iter().map(|s| (*s).to_string()).collect(),
+            }
+        }
+
+        #[test]
+        fn planned_empty_target_runs_and_emits_start() {
+            let (mut app, cmd_rx, reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+            app.restore = RestoreState::Planning;
+            reply_tx
+                .send(Reply::RestorePlanned {
+                    result: Ok(plan_of(&[], 3)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.restore, RestoreState::Running(_)));
+            match cmd_rx.try_recv() {
+                Ok(Command::StartRestore { options, .. }) => {
+                    // An empty target needs no confirmation.
+                    assert!(!options.confirmed);
+                    assert_eq!(options.on_error, OnError::Stop);
+                }
+                other => panic!("expected StartRestore, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn planned_non_empty_target_asks_for_confirmation() {
+            let (mut app, cmd_rx, reply_tx) = build();
+            let _ = cmd_rx.try_recv();
+            app.restore = RestoreState::Planning;
+            reply_tx
+                .send(Reply::RestorePlanned {
+                    result: Ok(plan_of(&["users", "orders"], 2)),
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.restore {
+                RestoreState::Confirming { plan } => {
+                    assert_eq!(plan.existing_tables.len(), 2);
+                }
+                other => panic!("expected Confirming, got {other:?}"),
+            }
+            // No StartRestore until the user confirms.
+            assert!(cmd_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn planned_error_surfaces_as_failed() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.restore = RestoreState::Planning;
+            reply_tx
+                .send(Reply::RestorePlanned {
+                    result: Err(dbboard_core::DbError::Query("could not read x.sql".into())),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.restore, RestoreState::Failed(_)));
+        }
+
+        #[test]
+        fn a_stale_plan_after_dismissal_is_ignored() {
+            // The user dismissed the flow (state back to Idle) before the
+            // preflight reply arrived; it must not resurrect a modal or run.
+            let (mut app, cmd_rx, reply_tx) = build();
+            let _ = cmd_rx.try_recv();
+            app.restore = RestoreState::Idle;
+            reply_tx
+                .send(Reply::RestorePlanned {
+                    result: Ok(plan_of(&[], 1)),
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.restore, RestoreState::Idle));
+            assert!(cmd_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn progress_updates_only_while_running() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.restore = RestoreState::Running(RestoreProgress::default());
+            reply_tx
+                .send(Reply::RestoreProgress {
+                    progress: RestoreProgress {
+                        statements_done: 7,
+                        statements_total: 10,
+                        current_index: Some(7),
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.restore {
+                RestoreState::Running(p) => assert_eq!(p.statements_done, 7),
+                other => panic!("expected Running, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_late_progress_tick_after_completion_is_dropped() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.restore = RestoreState::Done(RestoreOutcome::default());
+            reply_tx
+                .send(Reply::RestoreProgress {
+                    progress: RestoreProgress {
+                        statements_done: 3,
+                        ..RestoreProgress::default()
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            assert!(matches!(app.restore, RestoreState::Done(_)));
+        }
+
+        #[test]
+        fn complete_and_failed_land_on_terminal_states() {
+            let (mut app, _cmd_rx, reply_tx) = build();
+            app.restore = RestoreState::Running(RestoreProgress::default());
+            reply_tx
+                .send(Reply::RestoreComplete {
+                    outcome: RestoreOutcome {
+                        statements_run: 4,
+                        failures: vec![StatementFailure {
+                            index: 2,
+                            message: "boom".into(),
+                        }],
+                        ..RestoreOutcome::default()
+                    },
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.restore {
+                RestoreState::Done(o) => assert_eq!(o.statements_run, 4),
+                other => panic!("expected Done, got {other:?}"),
+            }
+
+            app.restore = RestoreState::Running(RestoreProgress::default());
+            reply_tx
+                .send(Reply::RestoreFailed {
+                    message: "target not empty".into(),
+                })
+                .unwrap();
+            app.drain_replies();
+            match &app.restore {
+                RestoreState::Failed(m) => assert_eq!(m, "target not empty"),
+                other => panic!("expected Failed, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn start_restore_without_a_restorable_connection_is_a_noop() {
+            // build() wires no schema source, so can_restore() is false and no
+            // PlanRestore should be emitted (only the bootstrap ListTables).
+            let (mut app, cmd_rx, _reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap ListTables
+            app.start_restore();
+            assert!(matches!(app.restore, RestoreState::Idle));
+            assert!(cmd_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn cancel_restore_signals_the_worker() {
+            let (mut app, cmd_rx, _reply_tx) = build();
+            let _ = cmd_rx.try_recv(); // drain bootstrap
+            app.cancel_restore();
+            assert!(matches!(cmd_rx.try_recv(), Ok(Command::CancelRestore)));
+        }
+
+        #[test]
+        fn launch_restore_with_a_closed_channel_fails_cleanly() {
+            // A closed command channel (UI shutting down) surfaces a failure
+            // rather than a phantom Running with no worker behind it.
+            let (mut app, cmd_rx, _reply_tx) = build();
+            drop(cmd_rx);
+            app.launch_restore(plan_of(&[], 1), true);
+            assert!(matches!(app.restore, RestoreState::Failed(_)));
+        }
+
+        #[test]
+        fn fraction_is_statements_done_over_total_then_zero() {
+            assert!(
+                (restore_fraction(&RestoreProgress {
+                    statements_done: 1,
+                    statements_total: 4,
+                    current_index: Some(1),
+                }) - 0.25)
+                    .abs()
+                    < f32::EPSILON
+            );
+            // Nothing counted yet: zero.
+            assert!(restore_fraction(&RestoreProgress::default()).abs() < f32::EPSILON);
+        }
     }
 }

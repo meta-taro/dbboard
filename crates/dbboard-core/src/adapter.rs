@@ -17,7 +17,9 @@ use crate::capabilities::{
     AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
     ViewIntrospection,
 };
-use crate::{check_read_only, DbError, DbResult, QueryResult, SqlDialect, TableInfo, TableSchema};
+use crate::{
+    check_read_only, DbError, DbResult, ForeignKey, QueryResult, SqlDialect, TableInfo, TableSchema,
+};
 
 #[async_trait]
 pub trait DatabaseAdapter: Send + Sync {
@@ -81,6 +83,92 @@ pub trait DatabaseAdapter: Send + Sync {
         ))
     }
 
+    /// The foreign-key constraints declared on `table` — the outbound
+    /// edges of the relationship graph (ADR-0054). Each [`ForeignKey`]
+    /// pairs this table's referencing columns with the referenced
+    /// table's columns; a composite key is one `ForeignKey` with several
+    /// aligned column pairs.
+    ///
+    /// Returns an empty vector for a table with no foreign keys, and for
+    /// engines that model no foreign keys at all (Aurora DSQL, ADR-0021)
+    /// — an empty result, not a capability error, so a relationship
+    /// walk over a mixed connection set does not have to special-case
+    /// them.
+    ///
+    /// The default returns [`DbError::Capability`] so adapters that
+    /// pre-date ADR-0054 compile unchanged and miss at runtime rather
+    /// than at build time. Implementors must also flip
+    /// [`Capabilities::has_foreign_keys`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if `table` does not exist, plus any
+    /// error the underlying introspection query surfaces.
+    ///
+    /// [`Capabilities::has_foreign_keys`]: crate::Capabilities::has_foreign_keys
+    async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+        let _ = table;
+        Err(DbError::Capability(
+            "foreign_keys not supported by this adapter".into(),
+        ))
+    }
+
+    /// The `CREATE` DDL that reconstructs `table` — the `CREATE TABLE`
+    /// statement plus any dependent objects the engine attaches to it
+    /// (indexes, and where the engine models them this way, constraints).
+    /// The backup/dump path (ADR-0049) emits this ahead of a table's data.
+    ///
+    /// The returned string is one or more complete, `;`-terminated SQL
+    /// statements in the adapter's own dialect. It carries no promise of
+    /// cross-engine portability — a Postgres dump does not re-import into
+    /// SQLite, and a DSQL dump omits the constraints DSQL cannot express.
+    ///
+    /// The default returns [`DbError::Capability`] so adapters that pre-date
+    /// ADR-0049 compile unchanged and miss at runtime rather than at build
+    /// time. Implementors must also flip [`Capabilities::has_table_ddl`].
+    async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
+        let _ = table;
+        Err(DbError::Capability(
+            "table_ddl not supported by this adapter".into(),
+        ))
+    }
+
+    /// Execute one write/DDL statement, returning the number of rows it
+    /// affected (0 for DDL). This is the per-statement primitive the
+    /// restore/import path (ADR-0051) drives — unlike [`query`](Self::query),
+    /// the caller expects it to *change* the database.
+    ///
+    /// `sql` must be a single statement; splitting a script into statements
+    /// is the restore layer's job (`dbboard_core::split_statements`), not the
+    /// adapter's.
+    ///
+    /// The default returns [`DbError::Capability`] so adapters that pre-date
+    /// ADR-0051 compile unchanged and miss at runtime rather than at build
+    /// time. Implementors must also flip [`Capabilities::has_execute`].
+    async fn execute(&self, sql: &str) -> DbResult<u64> {
+        let _ = sql;
+        Err(DbError::Capability(
+            "execute not supported by this adapter".into(),
+        ))
+    }
+
+    /// Execute `statements` as one atomic unit: either every statement
+    /// commits or none does. Restore uses this so a failed import leaves the
+    /// target untouched rather than half-populated.
+    ///
+    /// Only engines with a real multi-statement transaction implement this.
+    /// Cloudflare D1 (no transaction over its HTTP API) leaves it unset and
+    /// the restore path falls back to per-statement [`execute`](Self::execute).
+    ///
+    /// The default returns [`DbError::Capability`]. Implementors must also
+    /// flip [`Capabilities::has_atomic_restore`].
+    async fn execute_in_transaction(&self, statements: &[String]) -> DbResult<()> {
+        let _ = statements;
+        Err(DbError::Capability(
+            "execute_in_transaction not supported by this adapter".into(),
+        ))
+    }
+
     fn views(&self) -> Option<&dyn ViewIntrospection> {
         None
     }
@@ -114,7 +202,8 @@ mod tests {
         ViewIntrospection,
     };
     use crate::{
-        Column, ColumnInfo, DbError, DbResult, QueryResult, Row, TableInfo, TableSchema, Value,
+        Column, ColumnInfo, DbError, DbResult, ForeignKey, QueryResult, Row, TableInfo,
+        TableSchema, Value,
     };
 
     struct NoopAdapter;
@@ -159,6 +248,10 @@ mod tests {
                 has_storage: true,
                 has_realtime: true,
                 has_describe_table: true,
+                has_table_ddl: true,
+                has_execute: true,
+                has_atomic_restore: true,
+                has_foreign_keys: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -183,6 +276,31 @@ mod tests {
                 }],
                 primary_key: vec!["id".into()],
             })
+        }
+        async fn foreign_keys(&self, _table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+            Ok(vec![ForeignKey {
+                columns: vec!["owner_id".into()],
+                referenced_table: TableInfo::qualified("public", "users"),
+                referenced_columns: vec!["id".into()],
+                constraint_name: Some("fk_owner".into()),
+            }])
+        }
+        async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
+            Ok(format!(
+                "CREATE TABLE {} (id INTEGER PRIMARY KEY);",
+                table.name
+            ))
+        }
+        async fn execute(&self, _sql: &str) -> DbResult<u64> {
+            Ok(1)
+        }
+        async fn execute_in_transaction(&self, statements: &[String]) -> DbResult<()> {
+            // Echo a trivial success unless handed an empty batch, which the
+            // restore path should never do.
+            if statements.is_empty() {
+                return Err(DbError::Query("empty transaction".into()));
+            }
+            Ok(())
         }
         fn views(&self) -> Option<&dyn ViewIntrospection> {
             Some(self)
@@ -269,6 +387,117 @@ mod tests {
     fn describe_table_capability_flag_matches_support() {
         assert!(!NoopAdapter.capabilities().has_describe_table);
         assert!(FullAdapter.capabilities().has_describe_table);
+    }
+
+    #[tokio::test]
+    async fn default_foreign_keys_surfaces_capability_error() {
+        let err = NoopAdapter
+            .foreign_keys(&TableInfo::unqualified("orders"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(err.message(), "foreign_keys not supported by this adapter");
+    }
+
+    #[tokio::test]
+    async fn overridden_foreign_keys_returns_the_edge() {
+        let fks = FullAdapter
+            .foreign_keys(&TableInfo::unqualified("widgets"))
+            .await
+            .unwrap();
+        assert_eq!(fks.len(), 1);
+        assert_eq!(fks[0].columns, vec!["owner_id".to_owned()]);
+        assert_eq!(
+            fks[0].referenced_table,
+            TableInfo::qualified("public", "users")
+        );
+    }
+
+    #[test]
+    fn foreign_keys_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_foreign_keys);
+        assert!(FullAdapter.capabilities().has_foreign_keys);
+    }
+
+    #[tokio::test]
+    async fn default_table_ddl_surfaces_capability_error() {
+        let err = NoopAdapter
+            .table_ddl(&TableInfo::unqualified("users"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(err.message(), "table_ddl not supported by this adapter");
+    }
+
+    #[tokio::test]
+    async fn overridden_table_ddl_reconstructs_the_requested_table() {
+        let ddl = FullAdapter
+            .table_ddl(&TableInfo::unqualified("users"))
+            .await
+            .unwrap();
+        assert!(ddl.starts_with("CREATE TABLE users"));
+        assert!(ddl.trim_end().ends_with(';'));
+    }
+
+    #[test]
+    fn table_ddl_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_table_ddl);
+        assert!(FullAdapter.capabilities().has_table_ddl);
+    }
+
+    #[tokio::test]
+    async fn default_execute_surfaces_capability_error() {
+        let err = NoopAdapter
+            .execute("INSERT INTO t VALUES (1)")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(err.message(), "execute not supported by this adapter");
+    }
+
+    #[tokio::test]
+    async fn overridden_execute_reports_rows_affected() {
+        let affected = FullAdapter
+            .execute("INSERT INTO t VALUES (1)")
+            .await
+            .unwrap();
+        assert_eq!(affected, 1);
+    }
+
+    #[test]
+    fn execute_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_execute);
+        assert!(FullAdapter.capabilities().has_execute);
+    }
+
+    #[tokio::test]
+    async fn default_execute_in_transaction_surfaces_capability_error() {
+        let err = NoopAdapter
+            .execute_in_transaction(&["INSERT INTO t VALUES (1)".to_owned()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(
+            err.message(),
+            "execute_in_transaction not supported by this adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn overridden_execute_in_transaction_runs_a_batch() {
+        FullAdapter
+            .execute_in_transaction(&[
+                "CREATE TABLE t (id INTEGER)".to_owned(),
+                "INSERT INTO t VALUES (1)".to_owned(),
+            ])
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn atomic_restore_capability_flag_matches_support() {
+        assert!(!NoopAdapter.capabilities().has_atomic_restore);
+        assert!(FullAdapter.capabilities().has_atomic_restore);
     }
 
     /// An adapter whose `query` always returns `row_count` single-cell

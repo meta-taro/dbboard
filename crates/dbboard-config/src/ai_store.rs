@@ -68,8 +68,8 @@ pub struct AiProviderEntry {
 /// keyring_api_key_ref = "dbboard.ai.anthropic-main.api_key"
 /// ```
 ///
-/// New providers land additively as new variants. Stage 2 ships only
-/// `Anthropic`; `openai`, `ollama`, … are explicitly deferred to
+/// New providers land additively as new variants. ADR-0025 shipped
+/// `Anthropic`; ADR-0052 adds `OpenAi`. `ollama`, … remain deferred to
 /// follow-up ADRs (ADR-0025 §Out-of-scope).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -78,6 +78,17 @@ pub enum AiProviderKind {
     /// model name; when absent the crate-side default
     /// (`claude-sonnet-5` at the time of writing) is used.
     Anthropic {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        keyring_api_key_ref: String,
+    },
+    /// `OpenAI` `ChatGPT` provider (ADR-0052). Same shape as `Anthropic` —
+    /// an optional `model` (crate-side default `gpt-4o` when absent) and
+    /// a keyring reference. Explicitly renamed to `kind = "openai"` so
+    /// the TOML value matches the provider id rather than the
+    /// `snake_case` default (`open_ai`).
+    #[serde(rename = "openai")]
+    OpenAi {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         keyring_api_key_ref: String,
@@ -362,6 +373,59 @@ keyring_api_key_ref = "dbboard.ai.anthropic-main.api_key"
     }
 
     #[test]
+    fn parses_an_openai_entry_with_model_override() {
+        // ADR-0052: the second provider variant. `kind = "openai"`
+        // (explicit rename, not the `open_ai` snake_case default) and
+        // the same optional-model + keyring-ref shape as Anthropic.
+        let toml_src = r#"
+version = 1
+active_id = "openai-main"
+
+[[providers]]
+id                  = "openai-main"
+name                = "ChatGPT"
+kind                = "openai"
+model               = "gpt-4o-mini"
+keyring_api_key_ref = "dbboard.ai.openai-main.api_key"
+"#;
+        let file = AiProviderFile::parse(toml_src).expect("openai with model parses");
+        assert_eq!(file.active_id.as_deref(), Some("openai-main"));
+        assert_eq!(
+            file.providers[0].kind,
+            AiProviderKind::OpenAi {
+                model: Some("gpt-4o-mini".to_string()),
+                keyring_api_key_ref: "dbboard.ai.openai-main.api_key".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn openai_entry_round_trips_through_serialization() {
+        // The `kind = "openai"` value must survive a save/parse cycle —
+        // a regression here would silently rewrite it to `open_ai` and
+        // break the next load.
+        let file = AiProviderFile {
+            version: AI_CONFIG_VERSION,
+            active_id: Some("openai-main".to_string()),
+            providers: vec![AiProviderEntry {
+                id: "openai-main".to_string(),
+                name: "ChatGPT".to_string(),
+                kind: AiProviderKind::OpenAi {
+                    model: None,
+                    keyring_api_key_ref: "dbboard.ai.openai-main.api_key".to_string(),
+                },
+            }],
+        };
+        let serialized = toml::to_string(&file).expect("serialize");
+        assert!(
+            serialized.contains("kind = \"openai\""),
+            "kind must serialize as openai, not open_ai: {serialized}"
+        );
+        let reparsed = AiProviderFile::parse(&serialized).expect("reparse");
+        assert_eq!(reparsed, file);
+    }
+
+    #[test]
     fn parses_multiple_providers_and_active_pointer() {
         let toml_src = r#"
 version = 1
@@ -393,7 +457,7 @@ version = 1
 [[providers]]
 id                  = "x"
 name                = "X"
-kind                = "openai"
+kind                = "gemini"
 keyring_api_key_ref = "dbboard.ai.x.api_key"
 "#;
         let err = AiProviderFile::parse(toml_src).expect_err("unknown kind must fail");

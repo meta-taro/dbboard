@@ -15,9 +15,9 @@
 
 use async_trait::async_trait;
 use dbboard_core::{
-    check_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
-    DbError, DbResult, QueryResult, Row, SqlDialect, TableInfo, TableSchema, Value,
-    MAX_RESULT_ROWS,
+    check_read_only, resolve_referenced_columns, too_many_rows_error, Capabilities, Column,
+    ColumnInfo, DatabaseAdapter, DbError, DbResult, ForeignKey, QueryResult, Row, SqlDialect,
+    TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -25,8 +25,21 @@ use serde_json::Value as JsonValue;
 const DEFAULT_BASE_URL: &str = "https://api.cloudflare.com/client/v4";
 
 /// Lists user tables, mirroring the Turso adapter's introspection.
+///
+/// Two families are excluded. `sqlite_%` is SQLite's own bookkeeping, as
+/// everywhere else. `_cf_%` is Cloudflare's: every D1 database carries at
+/// least `_cf_KV`, which `sqlite_master` lists but the Workers SQLite
+/// authorizer refuses to open — any read, and any `PRAGMA` against it, comes
+/// back as `[7500] not authorized: SQLITE_AUTH`. Surfacing a table that
+/// nothing can touch is worse than not listing it: it broke the structure
+/// view, whose relationship sweep runs `PRAGMA foreign_key_list` over every
+/// listed table and so failed for the whole database.
+///
+/// `ESCAPE '\'` makes the underscores literal — unescaped, LIKE's `_`
+/// wildcard would also match names such as `acf_log`.
 const LIST_TABLES_SQL: &str = "SELECT name FROM sqlite_master \
      WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+     AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' \
      ORDER BY name";
 
 /// Connection parameters for a single D1 database.
@@ -117,6 +130,58 @@ impl D1Adapter {
             Err(error_from_response(status, &envelope.errors))
         }
     }
+
+    /// Group raw `PRAGMA foreign_key_list` rows into composite
+    /// [`ForeignKey`]s, mirroring the Turso adapter: rows sharing an `id`
+    /// form one constraint ordered by `seq`, and a `None` `to` (the
+    /// referencing DDL omitted the parent column list) resolves against
+    /// the parent's primary key in key order. Kept as a method because
+    /// that resolution needs a `describe_table` round-trip.
+    async fn assemble_foreign_keys(&self, raw: Vec<RawFk>) -> DbResult<Vec<ForeignKey>> {
+        // Group by fk id, preserving first-seen order so the output is
+        // stable rather than dependent on SQLite's row ordering.
+        let mut groups: Vec<(i64, Vec<RawFk>)> = Vec::new();
+        for r in raw {
+            match groups.iter_mut().find(|(id, _)| *id == r.id) {
+                Some((_, rows)) => rows.push(r),
+                None => groups.push((r.id, vec![r])),
+            }
+        }
+
+        let mut out = Vec::with_capacity(groups.len());
+        for (_, mut rows) in groups {
+            rows.sort_by_key(|r| r.seq);
+            let referenced_table = TableInfo::unqualified(rows[0].referenced_table.clone());
+            let columns: Vec<String> = rows.iter().map(|r| r.from.clone()).collect();
+
+            // A `NULL` in `to` means the DDL omitted the parent column
+            // list, so the reference is to the parent's primary key. One
+            // describe of the parent resolves every such column at once.
+            let to: Vec<Option<String>> = rows.iter().map(|r| r.to.clone()).collect();
+            let referenced_columns = if to.iter().any(Option::is_none) {
+                // A stale reference to a since-dropped table (SQLite does not
+                // require the parent to exist) must not abort the whole
+                // relationship walk — degrade to an unresolved PK for this one
+                // edge instead of propagating the `describe_table` error.
+                let pk = match self.describe_table(&referenced_table).await {
+                    Ok(schema) => schema.primary_key,
+                    Err(_) => Vec::new(),
+                };
+                resolve_referenced_columns(&to, &pk)
+            } else {
+                resolve_referenced_columns(&to, &[])
+            };
+
+            out.push(ForeignKey {
+                columns,
+                referenced_table,
+                referenced_columns,
+                // SQLite's PRAGMA does not report the constraint name.
+                constraint_name: None,
+            });
+        }
+        Ok(out)
+    }
 }
 
 #[async_trait]
@@ -128,6 +193,16 @@ impl DatabaseAdapter for D1Adapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_describe_table: true,
+            has_table_ddl: true,
+            has_execute: true,
+            // Foreign keys come from `PRAGMA foreign_key_list` over the same
+            // `/raw` envelope as `describe_table` (ADR-0054).
+            has_foreign_keys: true,
+            // D1's HTTP API exposes no multi-statement transaction over
+            // `/raw`, so restore cannot run atomically — it falls back to
+            // per-statement execution (ADR-0051). `has_atomic_restore` stays
+            // false and `execute_in_transaction` keeps its default
+            // capability-error impl, which the orchestrator never calls.
             ..Capabilities::default()
         }
     }
@@ -177,6 +252,48 @@ impl DatabaseAdapter for D1Adapter {
             .post_raw(&format!("PRAGMA table_info('{escaped}')"))
             .await?;
         envelope_to_table_schema(table, envelope)
+    }
+
+    async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+        // Same PRAGMA as the Turso adapter, over the /raw envelope:
+        // `foreign_key_list('t')` returns (id, seq, table, from, to,
+        // on_update, on_delete, match), one row per key column. The name
+        // is embedded with single quotes doubled — it is not a bindable
+        // PRAGMA argument.
+        let escaped = table.name.replace('\'', "''");
+        let envelope = self
+            .post_raw(&format!("PRAGMA foreign_key_list('{escaped}')"))
+            .await?;
+        let raw = envelope_to_raw_fks(envelope)?;
+        self.assemble_foreign_keys(raw).await
+    }
+
+    async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
+        // SQLite stores each object's own `CREATE` text verbatim in
+        // `sqlite_master.sql`, so a table's DDL — plus the DDL of every
+        // index it owns — comes back in one round-trip (ADR-0049 Decision
+        // 4). Names are embedded with single quotes doubled, the same
+        // SQLite string-literal escaping `describe_table` uses; the name
+        // is not a bindable parameter here. Auto-created indexes (those
+        // backing PRIMARY KEY / UNIQUE) carry a NULL `sql` and are
+        // filtered out — they are re-created implicitly by the table DDL.
+        let escaped = table.name.replace('\'', "''");
+        let sql = format!(
+            "SELECT type, sql FROM sqlite_master \
+             WHERE (type = 'table' AND name = '{escaped}') \
+                OR (type = 'index' AND tbl_name = '{escaped}' AND sql IS NOT NULL) \
+             ORDER BY (type = 'table') DESC, name"
+        );
+        let envelope = self.post_raw(&sql).await?;
+        envelope_to_table_ddl(table, envelope)
+    }
+
+    async fn execute(&self, sql: &str) -> DbResult<u64> {
+        // `/raw` returns the same envelope for DML and DDL; the affected
+        // count comes from `meta.changes`, which `envelope_to_query_result`
+        // already surfaces as `rows_affected`. Restore never expects rows
+        // back, so the row payload is simply discarded.
+        self.query(sql).await.map(|result| result.rows_affected)
     }
 }
 
@@ -399,6 +516,121 @@ fn envelope_to_table_schema(table: &TableInfo, envelope: D1Envelope) -> DbResult
     })
 }
 
+/// One row of `PRAGMA foreign_key_list`, before rows are grouped into
+/// composite constraints. `to` is `None` when the referencing DDL omitted
+/// the parent column list (an implicit reference to the parent's primary
+/// key), which [`D1Adapter::assemble_foreign_keys`] resolves.
+struct RawFk {
+    id: i64,
+    seq: i64,
+    referenced_table: String,
+    from: String,
+    to: Option<String>,
+}
+
+/// Map a `PRAGMA foreign_key_list` envelope (`id, seq, table, from, to,
+/// on_update, on_delete, match`) onto raw rows. Columns are located by
+/// name rather than position so a reordered envelope still maps correctly;
+/// an empty result (a table without foreign keys) yields no rows.
+fn envelope_to_raw_fks(envelope: D1Envelope) -> DbResult<Vec<RawFk>> {
+    let result = envelope_to_query_result(envelope)?;
+
+    let position = |field: &str| -> DbResult<usize> {
+        result
+            .columns
+            .iter()
+            .position(|c| c.name == field)
+            .ok_or_else(|| {
+                DbError::Schema(format!(
+                    "PRAGMA foreign_key_list result is missing the '{field}' column"
+                ))
+            })
+    };
+    let id_at = position("id")?;
+    let seq_at = position("seq")?;
+    let table_at = position("table")?;
+    let from_at = position("from")?;
+    let to_at = position("to")?;
+
+    let mut raw = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        // An omitted parent column list stores NULL in `to`; anything else
+        // is the referenced column name.
+        let to = match row.get(to_at) {
+            Some(Value::Text(s)) => Some(s.clone()),
+            Some(Value::Null) | None => None,
+            Some(other) => Some(other.to_string()),
+        };
+        raw.push(RawFk {
+            id: pragma_int(row, id_at, "id")?,
+            seq: pragma_int(row, seq_at, "seq")?,
+            referenced_table: pragma_text(row, table_at, "table")?,
+            from: pragma_text(row, from_at, "from")?,
+            to,
+        });
+    }
+    Ok(raw)
+}
+
+/// Assemble a table's `CREATE` DDL from a `SELECT type, sql FROM
+/// sqlite_master` envelope: the `type='table'` row's statement first, then
+/// each `type='index'` row's statement, every one terminated with `;`.
+///
+/// `sqlite_master.sql` stores each statement without a trailing semicolon,
+/// so one is appended. A missing table row (zero `type='table'` rows)
+/// synthesises SQLite's own "no such table" message, matching the
+/// [`envelope_to_table_schema`] contract.
+fn envelope_to_table_ddl(table: &TableInfo, envelope: D1Envelope) -> DbResult<String> {
+    let result = envelope_to_query_result(envelope)?;
+    let type_at = result
+        .columns
+        .iter()
+        .position(|c| c.name == "type")
+        .ok_or_else(|| {
+            DbError::Schema("sqlite_master result is missing the 'type' column".into())
+        })?;
+    let sql_at = result
+        .columns
+        .iter()
+        .position(|c| c.name == "sql")
+        .ok_or_else(|| {
+            DbError::Schema("sqlite_master result is missing the 'sql' column".into())
+        })?;
+
+    let mut create_table: Option<String> = None;
+    let mut index_ddls: Vec<String> = Vec::new();
+    for row in &result.rows {
+        let (Some(Value::Text(kind)), Some(Value::Text(stmt))) =
+            (row.get(type_at), row.get(sql_at))
+        else {
+            // Non-text type/sql cell: not something sqlite_master emits, so
+            // treat it as a schema-shape error rather than silently drop it.
+            return Err(DbError::Schema(format!(
+                "unexpected sqlite_master row for {}: {row:?}",
+                table.name
+            )));
+        };
+        match kind.as_str() {
+            "table" => create_table = Some(stmt.clone()),
+            "index" => index_ddls.push(stmt.clone()),
+            _ => {}
+        }
+    }
+
+    let Some(create_table) = create_table else {
+        return Err(DbError::Query(format!("no such table: {}", table.name)));
+    };
+
+    let mut ddl = String::new();
+    ddl.push_str(create_table.trim_end());
+    ddl.push_str(";\n");
+    for index in index_ddls {
+        ddl.push_str(index.trim_end());
+        ddl.push_str(";\n");
+    }
+    Ok(ddl)
+}
+
 fn pragma_int(row: &Row, at: usize, field: &str) -> DbResult<i64> {
     match row.get(at) {
         Some(Value::Integer(n)) => Ok(*n),
@@ -527,14 +759,37 @@ fn reclassify_schema(err: DbError) -> DbError {
 mod tests {
     use super::{
         build_raw_url, convert_json_value, envelope_to_query_result,
-        envelope_to_query_result_capped, envelope_to_table_schema, envelope_to_tables,
-        error_from_response, reclassify_schema, D1Adapter, D1ApiError, D1Config, D1Envelope,
+        envelope_to_query_result_capped, envelope_to_raw_fks, envelope_to_table_ddl,
+        envelope_to_table_schema, envelope_to_tables, error_from_response, reclassify_schema,
+        D1Adapter, D1ApiError, D1Config, D1Envelope,
     };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo, Value};
     use serde_json::json;
 
     fn parse(body: serde_json::Value) -> D1Envelope {
         serde_json::from_value(body).expect("valid D1 envelope")
+    }
+
+    /// Every D1 database carries Cloudflare's own bookkeeping tables
+    /// (`_cf_KV` today). `sqlite_master` lists them, but the Workers SQLite
+    /// authorizer denies every access, so the moment anything touches one it
+    /// gets `[7500] not authorized: SQLITE_AUTH` — which is what blanked the
+    /// desktop structure view, because its relationship sweep runs
+    /// `PRAGMA foreign_key_list` over every listed table. Exclude them at the
+    /// source; a table nobody can read is not a table the user has.
+    #[test]
+    fn list_tables_sql_excludes_internal_tables() {
+        assert!(
+            super::LIST_TABLES_SQL.contains("name NOT LIKE 'sqlite_%'"),
+            "must still exclude SQLite's own tables: {}",
+            super::LIST_TABLES_SQL
+        );
+        assert!(
+            super::LIST_TABLES_SQL.contains("name NOT LIKE '\\_cf\\_%' ESCAPE '\\'"),
+            "must exclude Cloudflare's reserved tables, with `_` escaped so the \
+             pattern cannot match an unrelated name: {}",
+            super::LIST_TABLES_SQL
+        );
     }
 
     #[test]
@@ -756,6 +1011,177 @@ mod tests {
     }
 
     #[test]
+    fn connect_advertises_table_ddl_capability() {
+        let adapter = D1Adapter::connect(D1Config {
+            account_id: "acc".into(),
+            database_id: "db".into(),
+            api_token: "token".into(),
+            base_url: None,
+        })
+        .expect("build adapter");
+        assert!(adapter.capabilities().has_table_ddl);
+    }
+
+    #[test]
+    fn connect_advertises_foreign_keys_capability() {
+        let adapter = D1Adapter::connect(D1Config {
+            account_id: "acc".into(),
+            database_id: "db".into(),
+            api_token: "token".into(),
+            base_url: None,
+        })
+        .expect("build adapter");
+        assert!(adapter.capabilities().has_foreign_keys);
+    }
+
+    fn fk_envelope(rows: &serde_json::Value) -> D1Envelope {
+        parse(json!({
+            "success": true,
+            "result": [{
+                "results": {
+                    "columns": ["id", "seq", "table", "from", "to", "on_update", "on_delete", "match"],
+                    "rows": rows
+                },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }))
+    }
+
+    #[test]
+    fn foreign_key_list_maps_a_single_column_reference() {
+        // orders.customer_id -> customers.id
+        let envelope = fk_envelope(&json!([[
+            0,
+            0,
+            "customers",
+            "customer_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION",
+            "NONE"
+        ]]));
+        let raw = envelope_to_raw_fks(envelope).expect("map fk rows");
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].id, 0);
+        assert_eq!(raw[0].seq, 0);
+        assert_eq!(raw[0].referenced_table, "customers");
+        assert_eq!(raw[0].from, "customer_id");
+        assert_eq!(raw[0].to.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn foreign_key_list_maps_a_null_parent_column_to_none() {
+        // A DDL that omits the parent column list stores NULL in `to`;
+        // the implicit primary-key reference is resolved later.
+        let envelope = fk_envelope(&json!([[
+            0,
+            0,
+            "customers",
+            "customer_id",
+            null,
+            "NO ACTION",
+            "NO ACTION",
+            "NONE"
+        ]]));
+        let raw = envelope_to_raw_fks(envelope).expect("map fk rows");
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].to, None);
+    }
+
+    #[test]
+    fn foreign_key_list_maps_composite_key_rows() {
+        // A composite key shares one id across rows ordered by seq.
+        let envelope = fk_envelope(&json!([
+            [0, 0, "parent", "a", "pa", "NO ACTION", "NO ACTION", "NONE"],
+            [0, 1, "parent", "b", "pb", "NO ACTION", "NO ACTION", "NONE"]
+        ]));
+        let raw = envelope_to_raw_fks(envelope).expect("map fk rows");
+        assert_eq!(raw.len(), 2);
+        assert!(raw
+            .iter()
+            .all(|r| r.id == 0 && r.referenced_table == "parent"));
+        assert_eq!(raw[0].from, "a");
+        assert_eq!(raw[1].from, "b");
+    }
+
+    #[test]
+    fn foreign_key_list_is_empty_for_a_table_without_references() {
+        let raw = envelope_to_raw_fks(fk_envelope(&json!([]))).expect("map fk rows");
+        assert!(raw.is_empty());
+    }
+
+    fn master_envelope(rows: &serde_json::Value) -> D1Envelope {
+        parse(json!({
+            "success": true,
+            "result": [{
+                "results": { "columns": ["type", "sql"], "rows": rows },
+                "meta": { "changes": 0 },
+                "success": true
+            }],
+            "errors": []
+        }))
+    }
+
+    #[test]
+    fn table_ddl_emits_create_table_then_indexes_each_terminated() {
+        // sqlite_master stores each statement without a trailing `;`.
+        let envelope = master_envelope(&json!([
+            [
+                "table",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)"
+            ],
+            ["index", "CREATE INDEX idx_users_email ON users (email)"],
+            [
+                "index",
+                "CREATE UNIQUE INDEX uq_users_email ON users (email)"
+            ]
+        ]));
+        let ddl = envelope_to_table_ddl(&TableInfo::unqualified("users"), envelope).expect("ddl");
+        assert_eq!(
+            ddl,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);\n\
+             CREATE INDEX idx_users_email ON users (email);\n\
+             CREATE UNIQUE INDEX uq_users_email ON users (email);\n"
+        );
+    }
+
+    #[test]
+    fn table_ddl_without_indexes_is_just_the_create_table() {
+        let envelope = master_envelope(&json!([["table", "CREATE TABLE t (id INTEGER)"]]));
+        let ddl = envelope_to_table_ddl(&TableInfo::unqualified("t"), envelope).expect("ddl");
+        assert_eq!(ddl, "CREATE TABLE t (id INTEGER);\n");
+    }
+
+    #[test]
+    fn table_ddl_for_missing_table_is_a_query_error() {
+        // The query filters an auto-index (NULL sql) out server-side, so a
+        // table that does not exist yields zero rows here.
+        let envelope = master_envelope(&json!([]));
+        let err = envelope_to_table_ddl(&TableInfo::unqualified("ghost"), envelope)
+            .expect_err("missing table should fail");
+        let DbError::Query(msg) = err else {
+            panic!("expected DbError::Query, got {err:?}");
+        };
+        assert!(
+            msg.contains("no such table") && msg.contains("ghost"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn table_ddl_with_only_orphan_indexes_still_reports_missing_table() {
+        // Defensive: if the table row is absent but index rows arrive, the
+        // absence of a CREATE TABLE is what matters — there is nothing to
+        // reconstruct, so it is still a missing-table error.
+        let envelope = master_envelope(&json!([["index", "CREATE INDEX idx ON gone (x)"]]));
+        let err = envelope_to_table_ddl(&TableInfo::unqualified("gone"), envelope)
+            .expect_err("no table row should fail");
+        assert!(matches!(err, DbError::Query(_)));
+    }
+
+    #[test]
     fn table_schema_maps_pragma_rows_with_composite_pk_in_key_order() {
         // Declaration order: sku, order_id, line_no — but the composite
         // key order is (order_id=1, line_no=2), which must win.
@@ -829,6 +1255,32 @@ mod tests {
             base_url: None,
         })
         .expect("build adapter")
+    }
+
+    /// D1 offers per-statement `execute` (ADR-0051) but not atomic restore:
+    /// its HTTP `/raw` API has no multi-statement transaction, so the runner
+    /// applies statements one at a time.
+    #[test]
+    fn capabilities_advertise_execute_but_not_atomic_restore() {
+        let caps = adapter().capabilities();
+        assert!(caps.has_execute);
+        assert!(
+            !caps.has_atomic_restore,
+            "D1 cannot run an atomic multi-statement restore"
+        );
+    }
+
+    /// The orchestrator must never reach `execute_in_transaction` on D1 (it
+    /// gates on `has_atomic_restore`), so the method keeps its default
+    /// capability-error impl — asserted here so a future accidental override
+    /// without flipping the flag is caught.
+    #[tokio::test]
+    async fn execute_in_transaction_is_unsupported_on_d1() {
+        let err = adapter()
+            .execute_in_transaction(&["INSERT INTO t VALUES (1)".to_owned()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
     }
 
     /// D1 has no engine read-only mode, so the classifier is the whole

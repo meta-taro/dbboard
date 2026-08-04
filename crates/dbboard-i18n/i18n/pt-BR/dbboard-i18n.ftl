@@ -24,6 +24,7 @@ result-export-selected-csv = Salvar seleção como CSV…
 result-clear-selection = Limpar seleção
 result-selected-count = { $count } selecionadas
 result-select-row-hint = Clique para selecionar a linha (Ctrl / Shift para várias)
+result-sort-hint = Clique para ordenar; Ctrl / Shift para adicionar um nível
 
 error-prefix-connection = Erro de conexão
 error-prefix-query = Erro de consulta
@@ -108,6 +109,7 @@ ai-settings-field-model = Modelo (opcional)
 ai-settings-field-api-key = Chave de API
 ai-settings-replace-api-key = Substituir chave de API
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = Ativo: { $name }
 
 ai-include-details = Incluir detalhes das colunas
@@ -146,3 +148,49 @@ edit-set-null = Definir NULL
 edit-revert-cell = Reverter célula
 edit-cell-hint = Clique duplo para editar · clique direito para NULL
 edit-save-unexpected-rows = Salvamento interrompido: esperava 1 linha, { $rows } afetadas
+
+# ADR-0049 backup (logical dump).
+backup-button = Backup…
+backup-button-hint = Exportar as tabelas deste banco de dados para um arquivo SQL
+backup-planning = Preparando o backup…
+backup-warn-title = Banco de dados grande
+backup-warn-body = Este banco de dados tem { $rows } linhas em todas as suas tabelas. O despejo pode demorar e gerar um arquivo grande.
+backup-warn-continue = Fazer backup mesmo assim
+backup-warn-cancel = Cancelar
+backup-dialog-title = Salvar backup como
+backup-progress-title = Fazendo backup
+backup-progress-table = Tabela { $done } de { $total }
+backup-progress-rows = { $done } / { $total } linhas
+backup-progress-current = Atual: { $table }
+backup-cancel-button = Cancelar
+backup-done-title = Backup concluído
+backup-done-summary = { $tables } tabela(s), { $rows } linhas exportadas.
+backup-done-cancelled = Backup cancelado — o arquivo contém um despejo parcial.
+backup-done-failures = Não foi possível ler { $count } tabela(s), que foram ignoradas.
+backup-done-truncations = { $count } tabela(s) foram truncadas no meio.
+backup-failed-title = Falha no backup
+backup-close-button = Fechar
+
+# ADR-0051: restauração lógica (importação).
+restore-button = Restaurar…
+restore-button-hint = Aplicar um arquivo SQL a este banco de dados
+restore-planning = Lendo o arquivo…
+restore-dialog-title = Escolher um arquivo SQL para restaurar
+restore-warn-title = O destino não está vazio
+restore-warn-body = Este banco de dados já tem { $tables } tabela(s). Restaurar { $statements } instrução(ões) pode falhar ou sobrescrever dados existentes.
+restore-warn-continue = Restaurar mesmo assim
+restore-warn-cancel = Cancelar
+restore-progress-title = Restaurando
+restore-progress-statements = Instrução { $done } de { $total }
+restore-cancel-button = Cancelar
+restore-done-title = Restauração concluída
+restore-done-summary = { $statements } instrução(ões) aplicada(s): { $ddl } de esquema, { $data } de dados.
+restore-done-cancelled = Restauração cancelada — o destino contém uma restauração parcial.
+restore-done-failures = { $count } instrução(ões) falharam e foram ignoradas.
+restore-close-button = Fechar
+restore-failed-title = Falha na restauração
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Backup
+backup-threshold-label = Avisar acima de (linhas)
+backup-threshold-hint = Mostra o aviso de banco de dados grande antes do despejo quando o total de linhas excede este valor. Salvo em ui-settings.toml.
