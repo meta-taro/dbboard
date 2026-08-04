@@ -7,6 +7,32 @@
 
 ## 最終更新
 
+- 日付: 2026-08-03 (**identity 赤の解消 = ADR-0085 (PR #128 / #129)、および CI の
+  denylist 層が初めて実稼働。** セッション開始時の §18 手順で `develop` の `pii-scan` が
+  赤だったのが発端。中身は**本物 1 件と誤検出 1 件が重なっていた**。
+  **本物** = GitHub の「Squash and merge」は web UI 側でコミットを作るので、この clone の
+  `git config user.email` が noreply でも**アカウントのプライマリアドレスが author に入る**
+  (PR #127 の squash `e15dcff`)。→ user が GitHub の Settings → Emails →
+  **Keep my email addresses private** を ON (§15 = human 操作)。次の squash `d7ed16b` の
+  author が noreply になったことで効果は実証済み。
+  **誤検出** = 同じ `d7ed16b` の *committer* が `noreply@github.com` (GitHub 自身の web-flow
+  アドレス)。`users.` 配下ではないので ADR-0084 の許可正規表現が弾いていた。**ADR-0084 が
+  着地して以来 web マージのたびに出ていた**が、上の本物と同じ赤い X に見えるので
+  **片方がもう片方を隠していた**。→ ADR-0085 で許可を全文 alternation にしてこの 1 個を追加。
+  **`PII_DENYLIST` secret が存在しなかった** = 日次スキャンのログが
+  `literal name detection off` で、**CI は実店舗名 3 件を含む `develop` を、clean だからでは
+  なく照合対象を持っていなかったから緑にしていた**。§15 に従い手順のみ提示、user が作成 →
+  run 30784716586 で `materialized from secret` を確認、BLOCKING 無し。
+  **`develop` は green** (push run 30786499201 / 日次 run 30803841065)。
+  **今の user 側ボール = (1) 公開済 468 コミットの履歴書き換えをやるかどうかの判断
+  (やるなら**先に全ローカル作業を push してから** — 順序を間違えると未書き換えの
+  ローカルコミットが即座に再汚染する。runbook に追記済)、(2)
+  `feature/desktop-design-polish` の push、(3) v0.4.0 前に `TAURI_SIGNING_PRIVATE_KEY` 設定、
+  (4) #42 = 外部 bastion 経由の live MySQL 検証 (**実接続 = 明示的な GO と認証情報が必要。
+  エージェントは勝手に接続しない**)。**エージェント側の次候補** = `--denylist-digest`
+  モード (ローカル `.pii-denylist` と CI secret の中身を sha8 で突き合わせる — 現状、
+  貼り間違い・部分コピーでも CI は緑になる)、issue #130 (`dbboard-desktop` のフル再
+  コンパイルで pre-push 約 4 分。原因確定は `CARGO_LOG` を先に取ってから)。)
 - 日付: 2026-07-31 (**コミット identity のリーク防止 = ADR-0084、および記録ファイルの
   棚卸し (baseline §31)。コード変更なし。** 発端は user の質問「OSS プロジェクトとして
   `.claude` などを ignore してないのは問題ないか」。**監査結果 = `.claude/` 自体は問題なし**
