@@ -7,6 +7,32 @@
 
 ## 最終更新
 
+- 日付: 2026-08-04 その3 (**v0.4.0 をリリースした。** 経緯: バージョンは 2 週間前に
+  0.4.0 へ上がっていたが `CHANGELOG.md` の `## [Unreleased]` が空で、タグを打つ根拠が
+  無いまま放置されていた。0.4.0 節を書き起こし (`7bc5e60`)、PR #133 で main へ、
+  タグ `v0.4.0` を push。**1 回目のタグビルドは Tauri 2 ジョブが両方落ちた** —
+  `Install frontend deps` で `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`。
+  `release.yml` が Node 20 固定なのに `apps/desktop` は `pnpm@11.1.1` を pin しており、
+  pnpm 11 は `node:sqlite` (Node 22.5 以降) を import する。**ローカルの Node が
+  v22.22.2 なので手元では一切再現しない類の失敗。** cargo だけの
+  `build-windows` / `build-macos` は成功、`publish` は skip = **何も publish されて
+  いなかったのでタグを移動して復旧できた**。修正 = 両 `setup-node` を `node-version: 22`
+  (PR #134、`174fb97`)。`v0.4.0` を削除して main 先端で張り直し
+  (`1dad53e`)、**run 30888094754 は全緑で publish 完了** — v0.4.0 に 10 資産
+  (egui 版 exe/dmg/msi + Tauri 版 setup.exe/dmg/app.tar.gz + updater 署名 +
+  `latest.json` + `SHA256SUMS.txt`) が付いた。
+  **user から常設の方針: リリースは良い区切りで頻繁に切ること。**
+  → エージェント側の約束: **feat PR ごとに `## [Unreleased]` に 1 行足す**
+  (今回の「タグを打とうにも変更履歴が無い」を再発させない)。
+  **MCP は読み取り専用では使い物にならない、と user 指摘。** 現状 7 tool は全て read。
+  `service.rs` には未公開の write プリミティブ (`apply_row_update` / `plan_dump` /
+  `run_dump` / `plan_restore` / `run_restore`) がある。**`apply_row_update` の公開は
+  妥当、接続 CRUD は開けてはいけない** (agent が接続定義と keychain ref を書き換えられる
+  = baseline §15 の人間専有境界を壊す)。dump/restore も破壊的。→ v0.5.0 スコープとして
+  ADR 付き issue を起こすかは **user 未回答**。
+  **user 側ボール = (1) MCP write を v0.5.0 に入れるかの判断、
+  (2) 公開済 468 コミットの履歴書き換えの判断。**)
+
 - 日付: 2026-08-04 その2 (**#130 は PR #132 (`051c9cd`) で develop に着地・issue クローズ済。
   `feature/desktop-design-polish` も push 済 (`f703a54..3e6c6a4`)。**
   **さらに #42 (外部 bastion 経由の live MySQL 検証) は既に済んでいた** — user から
