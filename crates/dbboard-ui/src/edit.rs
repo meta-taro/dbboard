@@ -39,17 +39,10 @@ impl StagedValue {
     }
 }
 
-/// Map an adapter id ([`dbboard_core::DatabaseAdapter::id`]) to its SQL
-/// dialect family. Unknown ids yield `None` — editing is then disabled
-/// rather than guessing a dialect and building the wrong SQL.
-#[must_use]
-pub fn dialect_for_adapter_id(id: &str) -> Option<SqlDialect> {
-    match id {
-        "turso" | "d1" => Some(SqlDialect::Sqlite),
-        "postgres" | "neon" | "supabase" | "aurora-dsql" => Some(SqlDialect::Postgres),
-        _ => None,
-    }
-}
+// Adapter-id → dialect lives in `dbboard-core` now, shared with the Tauri
+// desktop write path (ADR-0062) so the two front ends cannot drift. Re-exported
+// here to keep `edit::dialect_for_adapter_id` a stable path for egui callers.
+pub use dbboard_core::dialect_for_adapter_id;
 
 /// Whether a result backed by `schema`/`dialect` can be inline-edited in
 /// the UI.

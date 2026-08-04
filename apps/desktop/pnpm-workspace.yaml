@@ -1,0 +1,15 @@
+# pnpm 11 reads project-level settings from here, not package.json's `pnpm`
+# field or .npmrc. This is a single-package project (no `packages:` glob), so
+# it stays scoped to apps/desktop and never scans the surrounding Cargo repo.
+#
+# Supply-chain policy (see ~/.claude/rules/package-manager.md):
+#   - onlyBuiltDependencies: only these packages may run install scripts.
+#     esbuild's postinstall just links its prebuilt platform binary; the binary
+#     is already present via the @esbuild/win32-x64 optional dep, so this only
+#     silences pnpm's ignored-build gate.
+#   - minimumReleaseAge: quarantine packages published in the last 24h.
+onlyBuiltDependencies:
+  - esbuild
+minimumReleaseAge: 1440
+allowBuilds:
+  esbuild: true

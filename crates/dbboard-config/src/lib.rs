@@ -35,6 +35,7 @@ pub mod ai_settings;
 pub mod ai_store;
 pub mod annotations;
 pub mod bundle;
+pub mod dsn;
 pub mod error;
 pub mod secrets;
 pub mod secure_fs;
@@ -43,7 +44,8 @@ pub mod ui_settings;
 
 pub use admin::{
     ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,
-    ConnectionKindEditDraft, ImportReport, SecretField,
+    ConnectionKindEditDraft, ImportReport, SecretField, SshAuthDraft, SshAuthEditDraft,
+    SshEditField, SshHostKeyDraft, SshPassphraseField, SshTunnelDraft, SshTunnelEditDraft,
 };
 pub use ai_settings::{
     AiProviderDraft, AiProviderEditDraft, AiProviderKindDraft, AiProviderKindEditDraft,
@@ -61,11 +63,12 @@ pub use bundle::{
     decrypt_bundle, encrypt_bundle, validate_passphrase, BundleError, BundlePayload,
     BUNDLE_VERSION, MIN_PASSPHRASE_LEN,
 };
+pub use dsn::{parse_dsn, with_password, DsnParts};
 pub use error::ConfigError;
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{
     default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind,
-    CONFIG_VERSION,
+    SshTunnelToml, CONFIG_VERSION,
 };
 pub use ui_settings::{
     default_ui_settings_path, load_or_default as load_ui_settings, save_atomic as save_ui_settings,

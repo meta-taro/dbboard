@@ -146,6 +146,19 @@ pub fn config_error_display(err: &ConfigError) -> DisplayError {
         ConfigError::KindMismatch { id } => {
             t_args!("config-error-kind-mismatch", id = id.clone())
         }
+        ConfigError::SshUnsupportedKind { id, kind } => t_args!(
+            "config-error-ssh-unsupported-kind",
+            id = id.clone(),
+            kind = *kind
+        ),
+        ConfigError::SshInvalid { id, reason } => t_args!(
+            "config-error-ssh-invalid",
+            id = id.clone(),
+            reason = reason.clone()
+        ),
+        ConfigError::DsnUnparseable { id } => {
+            t_args!("config-error-dsn-unparseable", id = id.clone())
+        }
         ConfigError::Bundle(e) => bundle_error_localized(e),
     };
     DisplayError::new(localized, err.to_string())
@@ -225,25 +238,32 @@ pub fn render_error(ui: &mut egui::Ui, err: Option<&DisplayError>) {
         return;
     };
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            if ui
-                .button(t!("error-copy-button"))
-                .on_hover_text(t!("error-copy-hint"))
-                .clicked()
-            {
-                ui.ctx().copy_text(err.clipboard_text());
-            }
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(err.localized()).color(egui::Color32::LIGHT_RED),
-                )
-                .selectable(true),
-            );
-        });
+        // The Copy button sits on its own row so a long message is free to
+        // wrap to the full available width below it. Keeping the button
+        // inline (as it once was) forced the message onto a single
+        // horizontal line, and a lengthy provider body — e.g. an OpenAI
+        // 429 `insufficient_quota` error — overflowed the AI panel to the
+        // right instead of wrapping.
+        if ui
+            .button(t!("error-copy-button"))
+            .on_hover_text(t!("error-copy-hint"))
+            .clicked()
+        {
+            ui.ctx().copy_text(err.clipboard_text());
+        }
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(err.localized())
+                    .color(crate::theme::danger(ui.visuals().dark_mode)),
+            )
+            .selectable(true)
+            .wrap(),
+        );
         if err.has_distinct_original() {
             ui.add(
                 egui::Label::new(egui::RichText::new(err.original()).weak().small())
-                    .selectable(true),
+                    .selectable(true)
+                    .wrap(),
             );
         }
     });

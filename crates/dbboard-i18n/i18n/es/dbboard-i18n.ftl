@@ -24,6 +24,7 @@ result-export-selected-csv = Guardar selección como CSV…
 result-clear-selection = Borrar selección
 result-selected-count = { $count } seleccionadas
 result-select-row-hint = Clic para seleccionar la fila (Ctrl / Mayús para varias)
+result-sort-hint = Haz clic para ordenar; Ctrl / Mayús para añadir un nivel
 
 error-prefix-connection = Error de conexión
 error-prefix-query = Error de consulta
@@ -108,6 +109,7 @@ ai-settings-field-model = Modelo (opcional)
 ai-settings-field-api-key = Clave de API
 ai-settings-replace-api-key = Reemplazar clave de API
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = Activo: { $name }
 
 ai-include-details = Incluir detalles de columnas
@@ -146,3 +148,49 @@ edit-set-null = Establecer NULL
 edit-revert-cell = Revertir celda
 edit-cell-hint = Doble clic para editar · clic derecho para NULL
 edit-save-unexpected-rows = Guardado detenido: se esperaba 1 fila, { $rows } afectadas
+
+# ADR-0049 backup (logical dump).
+backup-button = Copia de seguridad…
+backup-button-hint = Volcar las tablas de esta base de datos a un archivo SQL
+backup-planning = Preparando la copia de seguridad…
+backup-warn-title = Base de datos grande
+backup-warn-body = Esta base de datos tiene { $rows } filas en todas sus tablas. El volcado puede tardar y generar un archivo grande.
+backup-warn-continue = Hacer copia igualmente
+backup-warn-cancel = Cancelar
+backup-dialog-title = Guardar copia de seguridad como
+backup-progress-title = Creando copia de seguridad
+backup-progress-table = Tabla { $done } de { $total }
+backup-progress-rows = { $done } / { $total } filas
+backup-progress-current = Actual: { $table }
+backup-cancel-button = Cancelar
+backup-done-title = Copia de seguridad completada
+backup-done-summary = Se volcaron { $tables } tabla(s), { $rows } filas.
+backup-done-cancelled = Copia de seguridad cancelada — el archivo contiene un volcado parcial.
+backup-done-failures = No se pudieron leer { $count } tabla(s) y se omitieron.
+backup-done-truncations = { $count } tabla(s) se truncaron a medias.
+backup-failed-title = Error en la copia de seguridad
+backup-close-button = Cerrar
+
+# ADR-0051: restauración lógica (importación).
+restore-button = Restaurar…
+restore-button-hint = Aplicar un archivo SQL a esta base de datos
+restore-planning = Leyendo el archivo…
+restore-dialog-title = Elegir un archivo SQL para restaurar
+restore-warn-title = El destino no está vacío
+restore-warn-body = Esta base de datos ya tiene { $tables } tabla(s). Restaurar { $statements } instrucción(es) puede fallar o sobrescribir datos existentes.
+restore-warn-continue = Restaurar igualmente
+restore-warn-cancel = Cancelar
+restore-progress-title = Restaurando
+restore-progress-statements = Instrucción { $done } de { $total }
+restore-cancel-button = Cancelar
+restore-done-title = Restauración completada
+restore-done-summary = Se aplicaron { $statements } instrucción(es): { $ddl } de esquema, { $data } de datos.
+restore-done-cancelled = Restauración cancelada — el destino contiene una restauración parcial.
+restore-done-failures = { $count } instrucción(es) fallaron y se omitieron.
+restore-close-button = Cerrar
+restore-failed-title = Error en la restauración
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Copia de seguridad
+backup-threshold-label = Advertir a partir de (filas)
+backup-threshold-hint = Muestra la advertencia de base de datos grande antes del volcado cuando el total de filas supera este valor. Se guarda en ui-settings.toml.

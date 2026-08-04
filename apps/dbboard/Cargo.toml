@@ -38,6 +38,7 @@ dbboard-ui = { path = "../../crates/dbboard-ui" }
 # failure degrades gracefully — the binary still runs without AI.
 dbboard-ai = { workspace = true }
 dbboard-anthropic = { workspace = true }
+dbboard-openai = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 # Renders the update notice's release notes (GitHub release body) as

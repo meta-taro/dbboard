@@ -151,6 +151,96 @@ async fn describe_table_round_trips_columns_and_composite_pk() {
     );
 }
 
+/// `foreign_keys` round-trip (ADR-0054): a child table with a single-column
+/// and a composite reference reports both, with local/referenced columns
+/// aligned in key order and the constraint name preserved. A table without
+/// references reports none.
+#[tokio::test]
+async fn foreign_keys_round_trip_reports_single_and_composite_edges() {
+    use dbboard_core::TableInfo;
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+
+    let pid = std::process::id();
+    let parent = format!("dbboard_pg_fk_parent_{pid}");
+    let composite = format!("dbboard_pg_fk_composite_{pid}");
+    let child = format!("dbboard_pg_fk_child_{pid}");
+    // Drop children before parents to satisfy referential order.
+    let drop_all = format!(
+        "DROP TABLE IF EXISTS {child}; DROP TABLE IF EXISTS {composite}; \
+         DROP TABLE IF EXISTS {parent}"
+    );
+
+    // Statements run one at a time — the read-only batch guard only applies
+    // to the query path, and `query` here drives plain DDL sequentially.
+    for stmt in [
+        format!("DROP TABLE IF EXISTS {child}"),
+        format!("DROP TABLE IF EXISTS {composite}"),
+        format!("DROP TABLE IF EXISTS {parent}"),
+        format!("CREATE TABLE {parent} (id INT PRIMARY KEY)"),
+        format!("CREATE TABLE {composite} (a INT, b INT, PRIMARY KEY (a, b))"),
+        format!(
+            "CREATE TABLE {child} (\
+             id INT PRIMARY KEY, \
+             parent_id INT REFERENCES {parent} (id), \
+             ca INT, cb INT, \
+             CONSTRAINT {child}_composite_fk FOREIGN KEY (ca, cb) \
+             REFERENCES {composite} (a, b))"
+        ),
+    ] {
+        adapter.query(&stmt).await.expect("setup ddl");
+    }
+
+    let edges = adapter
+        .foreign_keys(&TableInfo::qualified("public", &child))
+        .await
+        .expect("foreign_keys");
+    assert_eq!(edges.len(), 2, "expected two edges, got {edges:?}");
+
+    let single = edges
+        .iter()
+        .find(|e| e.columns == vec!["parent_id".to_string()])
+        .expect("single-column edge");
+    assert_eq!(
+        single.referenced_table,
+        TableInfo::qualified("public", &parent)
+    );
+    assert_eq!(single.referenced_columns, vec!["id".to_string()]);
+
+    let comp = edges
+        .iter()
+        .find(|e| e.columns == vec!["ca".to_string(), "cb".to_string()])
+        .expect("composite edge");
+    assert_eq!(
+        comp.referenced_table,
+        TableInfo::qualified("public", &composite)
+    );
+    assert_eq!(
+        comp.referenced_columns,
+        vec!["a".to_string(), "b".to_string()]
+    );
+    assert_eq!(
+        comp.constraint_name.as_deref(),
+        Some(format!("{child}_composite_fk").as_str())
+    );
+
+    // A table with no outbound references reports none.
+    let parent_edges = adapter
+        .foreign_keys(&TableInfo::qualified("public", &parent))
+        .await
+        .expect("foreign_keys on parent");
+    assert!(
+        parent_edges.is_empty(),
+        "parent has no FKs: {parent_edges:?}"
+    );
+
+    adapter.query(&drop_all).await.expect("cleanup drop");
+}
+
 /// Exactly at the row cap: `generate_series(1, MAX_RESULT_ROWS)` returns
 /// `MAX_RESULT_ROWS` rows and must succeed.
 #[tokio::test]
@@ -267,6 +357,30 @@ async fn read_only_query_truncates_to_max_rows() {
     assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
 }
 
+/// Aurora DSQL read-only cap regression (ADR-0061): DSQL rejects `DECLARE
+/// CURSOR` (`unsupported statement: DeclareCursor`), so the row-cap must
+/// take the non-cursor streaming branch. This asserts a `query_read_only`
+/// over 100 rows with `max_rows = 10` succeeds and returns exactly 10 —
+/// which it cannot do if a cursor is issued, since DSQL would error first.
+/// Gated on `DBBOARD_AURORA_DSQL_URL`.
+#[tokio::test]
+async fn aurora_dsql_read_only_caps_without_a_cursor() {
+    let Some(url) = std::env::var("DBBOARD_AURORA_DSQL_URL").ok() else {
+        eprintln!("skipping: DBBOARD_AURORA_DSQL_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url })
+        .await
+        .expect("connect_aurora_dsql");
+    let sql = "SELECT n FROM generate_series(1, 100) AS s(n) ORDER BY n";
+    let result = adapter
+        .query_read_only(sql, 10)
+        .await
+        .expect("read-only cap must not use a cursor on Aurora DSQL");
+    assert_eq!(result.rows.len(), 10);
+    assert_eq!(result.rows[0].get(0), Some(&Value::Text("1".to_string())));
+}
+
 /// The engine backstop, not the classifier: `nextval()` is a *write*
 /// (it advances a sequence) wrapped in a `SELECT`, so the AST classifier
 /// waves it through as read-only — but `BEGIN READ ONLY` makes Postgres
@@ -347,5 +461,77 @@ async fn query_over_the_row_cap_is_a_query_error() {
     assert!(
         msg.contains(&MAX_RESULT_ROWS.to_string()),
         "error should mention the cap, got: {msg}"
+    );
+}
+
+/// Wire-protocol regression: the read-only path must use the *simple* query
+/// protocol, whose values arrive in text format, because `decode_cell` reads
+/// every cell as a UTF-8 string.
+///
+/// Under the extended protocol sqlx binds with `result_formats: Binary`, and
+/// the damage splits two ways: a `uuid` or a wide `int8` is binary garbage
+/// that fails the UTF-8 check outright (`invalid utf-8 sequence ...`), while a
+/// small `int4` — `1` is `00 00 00 01`, which *is* valid UTF-8 — decodes
+/// silently into control characters instead of its digits. One row of each
+/// pins both halves, so a future switch back to `sqlx::query` fails loudly
+/// rather than corrupting results.
+///
+/// This covers the cursor branch (`DECLARE`/`FETCH FORWARD`); Aurora DSQL's
+/// non-cursor branch is covered by
+/// `aurora_dsql_read_only_decodes_wide_types_as_printed_text`.
+#[tokio::test]
+async fn read_only_decodes_wide_types_as_printed_text() {
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+    let sql = "SELECT 42::int4 AS small, \
+                      1234567890123::int8 AS wide, \
+                      '11111111-2222-3333-4444-555555555555'::uuid AS id, \
+                      true AS flag";
+    let result = adapter.query_read_only(sql, 10).await.expect("read-only");
+    assert_eq!(result.rows.len(), 1);
+    let row = &result.rows[0];
+    assert_eq!(row.get(0), Some(&Value::Text("42".to_string())));
+    assert_eq!(row.get(1), Some(&Value::Text("1234567890123".to_string())));
+    assert_eq!(
+        row.get(2),
+        Some(&Value::Text(
+            "11111111-2222-3333-4444-555555555555".to_string()
+        ))
+    );
+    assert_eq!(row.get(3), Some(&Value::Text("t".to_string())));
+}
+
+/// The same wire-protocol regression on Aurora DSQL's non-cursor branch
+/// ([`fetch_capped_stream`]), which is the one the desktop client hit with
+/// `type conversion failed: invalid utf-8 sequence of 1 bytes from index 2`
+/// on a `SELECT *` over a table with a `uuid` primary key.
+///
+/// Gated on `DBBOARD_AURORA_DSQL_URL` so the standard-Postgres run stays
+/// independent of an AWS account.
+#[tokio::test]
+async fn aurora_dsql_read_only_decodes_wide_types_as_printed_text() {
+    let Some(url) = std::env::var("DBBOARD_AURORA_DSQL_URL").ok() else {
+        eprintln!("skipping: DBBOARD_AURORA_DSQL_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect_aurora_dsql(PostgresConfig { url })
+        .await
+        .expect("connect_aurora_dsql");
+    let sql = "SELECT 42::int4 AS small, \
+                      1234567890123::int8 AS wide, \
+                      '11111111-2222-3333-4444-555555555555'::uuid AS id";
+    let result = adapter.query_read_only(sql, 10).await.expect("read-only");
+    assert_eq!(result.rows.len(), 1);
+    let row = &result.rows[0];
+    assert_eq!(row.get(0), Some(&Value::Text("42".to_string())));
+    assert_eq!(row.get(1), Some(&Value::Text("1234567890123".to_string())));
+    assert_eq!(
+        row.get(2),
+        Some(&Value::Text(
+            "11111111-2222-3333-4444-555555555555".to_string()
+        ))
     );
 }

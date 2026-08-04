@@ -1,4 +1,4 @@
-//! The MCP wire layer: wrap [`McpService`] as five read-only tools.
+//! The MCP wire layer: wrap [`McpService`] as seven read-only tools.
 //!
 //! This is a thin adapter over [`crate::service`]. Each `#[tool]` method
 //! deserializes its typed parameters, calls the matching service method,
@@ -7,9 +7,10 @@
 //! all the security invariants (read-only enforcement, secret redaction)
 //! — live in the service; keeping this layer trivial is deliberate.
 //!
-//! The tool set is fixed at five (ADR-0046 Decision 5): `list_connections`,
-//! `list_tables`, `describe_table`, `run_read_query`, `get_annotations`.
-//! There is no write path.
+//! The tool set: `list_connections`, `list_tables`, `describe_table`,
+//! `run_read_query`, `get_annotations` (ADR-0046 Decision 5) plus
+//! `search_schema` (ADR-0053) and `list_relationships` (ADR-0054). All
+//! read-only — there is no write path.
 
 use std::sync::Arc;
 
@@ -69,6 +70,28 @@ pub struct GetAnnotationsParams {
     /// Restrict to one column (keeps the table-level note as context).
     #[serde(default)]
     pub column: Option<String>,
+}
+
+/// Parameters for [`DbboardMcp::search_schema`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchSchemaParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// Case-insensitive substring to match against table and column
+    /// names. Must not be blank.
+    pub pattern: String,
+}
+
+/// Parameters for [`DbboardMcp::list_relationships`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListRelationshipsParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// Restrict to relationships touching this table at either endpoint
+    /// (the bare name, or the schema-qualified `public.orders` key).
+    /// Case-insensitive. Omit for every relationship in the connection.
+    #[serde(default)]
+    pub table: Option<String>,
 }
 
 /// The MCP server: holds the shared [`McpService`] plus the generated
@@ -174,6 +197,42 @@ impl DbboardMcp {
             .map_err(|e| to_mcp(&e))?;
         json_block(&out)
     }
+
+    #[tool(
+        description = "Find the tables and columns whose NAME contains a substring (case-insensitive) across a whole connection — the fast way to answer 'which table has the email column?' or 'which tables relate to orders?' without describe_table on every table. Returns each matching table with a `table_name_matched` flag and the list of matched columns (empty when only the table name matched — call describe_table for its full columns). Matches identifiers only, not row data. On a very large schema, narrow with a specific substring."
+    )]
+    async fn search_schema(
+        &self,
+        Parameters(SearchSchemaParams {
+            connection_id,
+            pattern,
+        }): Parameters<SearchSchemaParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self
+            .service
+            .search_schema(&connection_id, &pattern)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&out)
+    }
+
+    #[tool(
+        description = "Discover the foreign-key relationships in a connection — the schema's join graph. Returns directed edges (from child columns to the parent table's columns) so you can plan JOINs and understand the data model without reading DDL. Pass a `table` to get every relationship touching it on EITHER side at once: both what it references (its parents) and what references it (its children) — the fast way to answer 'how is orders connected?'. Omit `table` for the whole graph. Engines without foreign keys (Aurora DSQL) return no edges. Results are capped with a `truncated` flag."
+    )]
+    async fn list_relationships(
+        &self,
+        Parameters(ListRelationshipsParams {
+            connection_id,
+            table,
+        }): Parameters<ListRelationshipsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self
+            .service
+            .list_relationships(&connection_id, table.as_deref())
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&out)
+    }
 }
 
 // `router = self.tool_router` points the generated `call_tool`/`list_tools`
@@ -191,9 +250,12 @@ impl ServerHandler for DbboardMcp {
             .with_instructions(
                 "Read-only access to the databases dbboard is configured with. \
                  Start with list_connections to discover connection ids, then \
-                 list_tables / describe_table to explore a schema, run_read_query \
-                 to read data (SELECT/WITH/EXPLAIN only — writes are rejected), and \
-                 get_annotations for dbboard's local notes on tables and columns.",
+                 list_tables / describe_table to explore a schema (or search_schema \
+                 to jump straight to the tables/columns whose name matches a term, \
+                 or list_relationships to map the foreign-key join graph), \
+                 run_read_query to read data (SELECT/WITH/EXPLAIN only — writes are \
+                 rejected), and get_annotations for dbboard's local notes on tables \
+                 and columns.",
             )
     }
 }
@@ -214,18 +276,33 @@ fn json_block<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
 fn to_mcp(err: &ServiceError) -> McpError {
     let message = err.to_string();
     match err {
-        // A backend connection drop is an environment failure, not a bad
-        // request — matched first so it wins over the blanket `Db` arm.
-        ServiceError::Db(DbError::Connection(_)) => McpError::internal_error(message, None),
+        // Environment failures, not bad requests. `Db(Connection)` is matched
+        // here (ahead of the blanket `Db` arm below) so a backend drop never
+        // reads as a caller error. Config/Annotations/Task are local I/O; Dump
+        // is a desktop-only sink failure (a full disk, a revoked path) and
+        // Restore a desktop-only whole-run failure (a rolled-back atomic
+        // batch) — both never reach an MCP tool but are environment faults if
+        // they ever did.
+        ServiceError::Db(DbError::Connection(_))
+        | ServiceError::Config(_)
+        | ServiceError::Annotations(_)
+        | ServiceError::Task(_)
+        | ServiceError::Dump(_)
+        | ServiceError::Restore(_) => McpError::internal_error(message, None),
         // An unknown id, or any other DbError (rejected write, bad SQL,
-        // unknown table, unsupported capability), is attributable to what
-        // the caller sent.
-        ServiceError::ConnectionNotFound(_) | ServiceError::Db(_) => {
-            McpError::invalid_params(message, None)
-        }
-        ServiceError::Config(_) | ServiceError::Annotations(_) | ServiceError::Task(_) => {
-            McpError::internal_error(message, None)
-        }
+        // unknown table, unsupported capability), is attributable to what the
+        // caller sent. WriteBack / NotEditable / NotDumpable / NotRestorable
+        // belong to the desktop write path and never reach an MCP tool call,
+        // but they are still caller-attributable if they ever did — refusing a
+        // bad plan or an un-dumpable/un-restorable adapter is not an
+        // environment fault.
+        ServiceError::ConnectionNotFound(_)
+        | ServiceError::InvalidRequest(_)
+        | ServiceError::Db(_)
+        | ServiceError::WriteBack(_)
+        | ServiceError::NotEditable(_)
+        | ServiceError::NotDumpable(_)
+        | ServiceError::NotRestorable(_) => McpError::invalid_params(message, None),
     }
 }
 
@@ -239,6 +316,12 @@ mod tests {
     #[test]
     fn unknown_connection_is_a_bad_request() {
         let err = to_mcp(&ServiceError::ConnectionNotFound("nope".into()));
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn a_blank_search_pattern_is_a_bad_request() {
+        let err = to_mcp(&ServiceError::InvalidRequest("blank".into()));
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 

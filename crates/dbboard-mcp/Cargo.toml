@@ -35,6 +35,9 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 dbboard-turso = { path = "../dbboard-turso" }
+# Only tests implement `DatabaseAdapter` here (stub adapters seeded into the
+# cache); the service itself just consumes `Arc<dyn DatabaseAdapter>`.
+async-trait = { workspace = true }
 
 [lints]
 workspace = true

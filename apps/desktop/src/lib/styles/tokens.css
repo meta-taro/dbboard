@@ -1,0 +1,207 @@
+/*
+ * dbboard design tokens (DESIGN.md / ADR-0056).
+ *
+ * The Rust `dbboard-ui::theme` module is the single source of truth for the
+ * ground/border/accent/semantic values; these custom properties mirror it so
+ * the Tauri frontend reads as the same product as the egui app.
+ *
+ * Theme resolution (Auto default, ADR-0041):
+ *   - `:root` holds the LIGHT palette as the base.
+ *   - `@media (prefers-color-scheme: dark)` swaps to DARK — this drives "Auto".
+ *   - `:root[data-theme="light|dark"]` overrides the media query in BOTH
+ *     directions, so an explicit user choice always wins. The theme controller
+ *     sets/removes `data-theme`; absent = Auto.
+ *
+ * Text tokens are DERIVED here (not part of the ADR-0056 locked table, which
+ * covers grounds/borders/accent/semantics) but chosen to sit on those grounds
+ * at WCAG-AA contrast.
+ */
+
+:root {
+  /* ---- Light palette (base) ---- */
+  --bg-canvas: #f4f5f8;
+  --bg-surface: #ffffff;
+  --bg-surface-alt: #f0f1f5;
+  --bg-code: #fafbfc;
+  --border: #e2e4ec;
+  --border-strong: #d3d6e0;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  /* Tinted accent/semantic fills — for active rows, selected tabs, badges. */
+  --accent-weak: rgba(79, 70, 229, 0.1);
+  --danger: #dc2626;
+  --danger-weak: rgba(220, 38, 38, 0.1);
+  --warning: #b45309;
+  --warning-weak: rgba(180, 83, 9, 0.12);
+  --success: #059669;
+  --success-weak: rgba(5, 150, 105, 0.12);
+
+  /* Derived text on the light ground. */
+  --text: #1c1f2b;
+  --text-muted: #5b6072;
+  /* Faint: eyebrow labels, meta captions — one step quieter than muted. */
+  --faint: #8a8fa3;
+  --text-accent: #4f46e5;
+  --on-accent: #ffffff;
+
+  /* ---- Spacing (4px base) ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* ---- Radius ---- */
+  --radius-window: 8px; /* windows, dialogs, cards */
+  --radius-widget: 6px; /* buttons, fields, rows, pills-as-badges */
+  --radius-pill: 999px;
+
+  /* ---- Type ---- */
+  --text-heading: 15px;
+  --text-body: 13px;
+  --text-small: 12px;
+  --text-hint: 11px;
+  --line-body: 1.5;
+
+  /*
+   * Inter / JetBrains Mono are bundled in a Phase 2 fast-follow (DESIGN.md);
+   * until then the platform system font carries the look, exactly as the egui
+   * app does. Swapping in the bundled faces is a one-line change here.
+   */
+  --font-ui:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+  --font-mono:
+    ui-monospace, 'Cascadia Code', 'JetBrains Mono', 'SFMono-Regular', Menlo,
+    Consolas, monospace;
+
+  /* Elevation — kept subtle; this is a calm dev tool, not a consumer app. */
+  --shadow-popover: 0 6px 24px rgba(12, 14, 20, 0.18);
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-canvas: #0c0e14;
+    --bg-surface: #171922;
+    --bg-surface-alt: #1e2130;
+    --bg-code: #12141c;
+    --border: #282c39;
+    --border-strong: #333849;
+    --accent: #6366f1;
+    --accent-hover: #818cf8;
+    --accent-weak: rgba(99, 102, 241, 0.16);
+    --danger: #f87171;
+    --danger-weak: rgba(248, 113, 113, 0.14);
+    --warning: #fbbf24;
+    --warning-weak: rgba(251, 191, 36, 0.14);
+    --success: #34d399;
+    --success-weak: rgba(52, 211, 153, 0.14);
+
+    --text: #e6e8f0;
+    --text-muted: #8b90a3;
+    --faint: #6b7086;
+    --text-accent: #a5b4fc;
+    --on-accent: #fafbff;
+
+    --shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.5);
+
+    color-scheme: dark;
+  }
+}
+
+/* Explicit LIGHT choice — override any OS dark preference. */
+:root[data-theme='light'] {
+  --bg-canvas: #f4f5f8;
+  --bg-surface: #ffffff;
+  --bg-surface-alt: #f0f1f5;
+  --bg-code: #fafbfc;
+  --border: #e2e4ec;
+  --border-strong: #d3d6e0;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-weak: rgba(79, 70, 229, 0.1);
+  --danger: #dc2626;
+  --danger-weak: rgba(220, 38, 38, 0.1);
+  --warning: #b45309;
+  --warning-weak: rgba(180, 83, 9, 0.12);
+  --success: #059669;
+  --success-weak: rgba(5, 150, 105, 0.12);
+
+  --text: #1c1f2b;
+  --text-muted: #5b6072;
+  --faint: #8a8fa3;
+  --text-accent: #4f46e5;
+  --on-accent: #ffffff;
+
+  --shadow-popover: 0 6px 24px rgba(12, 14, 20, 0.18);
+
+  color-scheme: light;
+}
+
+/* Explicit DARK choice — override any OS light preference. */
+:root[data-theme='dark'] {
+  --bg-canvas: #0c0e14;
+  --bg-surface: #171922;
+  --bg-surface-alt: #1e2130;
+  --bg-code: #12141c;
+  --border: #282c39;
+  --border-strong: #333849;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-weak: rgba(99, 102, 241, 0.16);
+  --danger: #f87171;
+  --danger-weak: rgba(248, 113, 113, 0.14);
+  --warning: #fbbf24;
+  --warning-weak: rgba(251, 191, 36, 0.14);
+  --success: #34d399;
+  --success-weak: rgba(52, 211, 153, 0.14);
+
+  --text: #e6e8f0;
+  --text-muted: #8b90a3;
+  --faint: #6b7086;
+  --text-accent: #a5b4fc;
+  --on-accent: #fafbff;
+
+  --shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.5);
+
+  color-scheme: dark;
+}
+
+/* ---- Base element styling in terms of the tokens ---- */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg-canvas);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: var(--line-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Keyboard focus is always visible (accessibility target: AA). */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

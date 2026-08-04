@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use dbboard_config::{
     ConfigError, ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionEntry,
-    ConnectionKind, ConnectionKindDraft, ConnectionKindEditDraft, SecretField,
+    ConnectionKind, ConnectionKindDraft, ConnectionKindEditDraft, SecretField, SshEditField,
 };
 use dbboard_i18n::t;
 use eframe::egui;
@@ -118,6 +118,7 @@ pub enum KindSelector {
     Turso,
     D1,
     Postgres,
+    MySql,
     Neon,
     Supabase,
     AuroraDsql,
@@ -137,6 +138,7 @@ pub struct AddFormState {
     pub d1_base_url: String,
     pub d1_token: String,
     pub pg_url: String,
+    pub mysql_url: String,
     pub neon_url: String,
     pub supabase_url: String,
     pub aurora_dsql_url: String,
@@ -169,6 +171,10 @@ pub enum EditKindState {
         new_token: String,
     },
     Postgres {
+        replace_url: bool,
+        new_url: String,
+    },
+    MySql {
         replace_url: bool,
         new_url: String,
     },
@@ -584,7 +590,7 @@ impl ConnectionsView {
         // A completed export/import leaves a green summary here (ADR-0038)
         // until the next mode transition clears it.
         if let Some(info) = &self.last_info {
-            ui.colored_label(egui::Color32::LIGHT_GREEN, info);
+            ui.colored_label(crate::theme::success(ui.visuals().dark_mode), info);
         }
 
         match &mut self.mode {
@@ -621,7 +627,7 @@ impl ConnectionsView {
             }
             Mode::ConfirmDelete { id: _, name } => {
                 ui.colored_label(
-                    egui::Color32::LIGHT_RED,
+                    crate::theme::danger(ui.visuals().dark_mode),
                     format!("{}: {name}", t!("connections-confirm-delete")),
                 );
                 errors::render_error(ui, self.last_error.as_ref());
@@ -816,6 +822,9 @@ impl AddFormState {
             KindSelector::Postgres => ConnectionKindDraft::Postgres {
                 url: self.pg_url.clone(),
             },
+            KindSelector::MySql => ConnectionKindDraft::MySql {
+                url: self.mysql_url.clone(),
+            },
             KindSelector::Neon => ConnectionKindDraft::Neon {
                 url: self.neon_url.clone(),
             },
@@ -827,6 +836,10 @@ impl AddFormState {
             },
         };
         ConnectionDraft {
+            // The egui client does not expose SSH tunnel editing (ADR-0069's
+            // UI lives in the Tauri desktop); tunneled connections are added
+            // via connections.toml or the desktop app.
+            ssh: None,
             id: self.id.clone(),
             name: self.name.clone(),
             kind,
@@ -856,6 +869,10 @@ impl EditFormState {
                 new_token: String::new(),
             },
             ConnectionKind::Postgres { keyring_url_ref: _ } => EditKindState::Postgres {
+                replace_url: false,
+                new_url: String::new(),
+            },
+            ConnectionKind::MySql { keyring_url_ref: _ } => EditKindState::MySql {
                 replace_url: false,
                 new_url: String::new(),
             },
@@ -912,6 +929,16 @@ impl EditFormState {
                     SecretField::Keep
                 },
             },
+            EditKindState::MySql {
+                replace_url,
+                new_url,
+            } => ConnectionKindEditDraft::MySql {
+                url: if *replace_url {
+                    SecretField::Set(new_url.clone())
+                } else {
+                    SecretField::Keep
+                },
+            },
             EditKindState::Neon {
                 replace_url,
                 new_url,
@@ -948,6 +975,11 @@ impl EditFormState {
             EditKindState::AuroraDsqlIam => ConnectionKindEditDraft::AuroraDsqlIam,
         };
         ConnectionEditDraft {
+            // egui has no tunnel UI (the desktop app is the editor), so it
+            // must not disturb a stored tunnel: `Keep` leaves the block and
+            // its secrets exactly as they are, letting a tunneled connection be
+            // renamed here without dropping the tunnel (ADR-0069).
+            ssh: SshEditField::Keep,
             name: self.name.clone(),
             kind,
         }
@@ -996,15 +1028,9 @@ pub fn row_connect_action(is_active: bool) -> RowConnectAction {
 }
 
 fn kind_label(kind: &ConnectionKind) -> &'static str {
-    match kind {
-        ConnectionKind::Turso { .. } => "Turso",
-        ConnectionKind::D1 { .. } => "Cloudflare D1",
-        ConnectionKind::Postgres { .. } => "Postgres",
-        ConnectionKind::Neon { .. } => "Neon",
-        ConnectionKind::Supabase { .. } => "Supabase",
-        ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
-        ConnectionKind::AuroraDsqlIam { .. } => "Aurora DSQL (IAM)",
-    }
+    // The mapping now lives on the enum so the header pill (in the binary)
+    // and this list read one definition (ADR-0057).
+    kind.adapter_label()
 }
 
 /// Whether the UI offers an Edit form for `kind`. The Aurora DSQL IAM
@@ -1042,6 +1068,7 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) -> bool {
                     ui.selectable_value(&mut form.kind, KindSelector::Turso, "Turso");
                     ui.selectable_value(&mut form.kind, KindSelector::D1, "Cloudflare D1");
                     ui.selectable_value(&mut form.kind, KindSelector::Postgres, "Postgres");
+                    ui.selectable_value(&mut form.kind, KindSelector::MySql, "MySQL");
                     ui.selectable_value(&mut form.kind, KindSelector::Neon, "Neon");
                     ui.selectable_value(&mut form.kind, KindSelector::Supabase, "Supabase");
                     ui.selectable_value(&mut form.kind, KindSelector::AuroraDsql, "Aurora DSQL");
@@ -1067,6 +1094,14 @@ fn render_add_form(ui: &mut egui::Ui, form: &mut AddFormState) -> bool {
         KindSelector::Postgres => {
             ui.label(t!("connections-field-pg-url"));
             ui.add(egui::TextEdit::singleline(&mut form.pg_url).password(true));
+        }
+        KindSelector::MySql => {
+            // MySQL is a distinct dialect (ADR-0068), but the field is
+            // still a generic connection URL — reuse the shared,
+            // engine-neutral `connections-field-pg-url` key ("Connection
+            // URL" in all 11 locales) rather than fan out a synonym.
+            ui.label(t!("connections-field-pg-url"));
+            ui.add(egui::TextEdit::singleline(&mut form.mysql_url).password(true));
         }
         KindSelector::Neon => {
             // Neon shares the Postgres URL field semantically; we just
@@ -1137,6 +1172,10 @@ fn render_edit_form(ui: &mut egui::Ui, id: &str, form: &mut EditFormState) {
             replace_url,
             new_url,
         }
+        | EditKindState::MySql {
+            replace_url,
+            new_url,
+        }
         | EditKindState::Neon {
             replace_url,
             new_url,
@@ -1166,6 +1205,7 @@ fn kind_selector_label(kind: KindSelector) -> &'static str {
         KindSelector::Turso => "Turso",
         KindSelector::D1 => "Cloudflare D1",
         KindSelector::Postgres => "Postgres",
+        KindSelector::MySql => "MySQL",
         KindSelector::Neon => "Neon",
         KindSelector::Supabase => "Supabase",
         KindSelector::AuroraDsql => "Aurora DSQL",
@@ -1337,6 +1377,7 @@ mod tests {
     fn start_edit_prefills_from_the_existing_entry_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "prod".into(),
             name: "Prod".into(),
             kind: ConnectionKind::D1 {
@@ -1378,6 +1419,7 @@ mod tests {
     fn start_delete_records_the_entry_id_and_name() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "x".into(),
             name: "X DB".into(),
             kind: ConnectionKind::Turso {
@@ -1501,6 +1543,7 @@ mod tests {
     fn start_edit_on_neon_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "n".into(),
             name: "N".into(),
             kind: ConnectionKind::Neon {
@@ -1531,6 +1574,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "n".into(),
                 name: "N".into(),
                 kind: ConnectionKindDraft::Neon {
@@ -1587,6 +1631,7 @@ mod tests {
     fn start_edit_on_supabase_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "s".into(),
             name: "S".into(),
             kind: ConnectionKind::Supabase {
@@ -1617,6 +1662,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "s".into(),
                 name: "S".into(),
                 kind: ConnectionKindDraft::Supabase {
@@ -1676,6 +1722,7 @@ mod tests {
     fn start_edit_on_aurora_dsql_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            ssh: None,
             id: "d".into(),
             name: "D".into(),
             kind: ConnectionKind::AuroraDsql {
@@ -1706,6 +1753,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "d".into(),
                 name: "D".into(),
                 kind: ConnectionKindDraft::AuroraDsql {
@@ -1740,6 +1788,7 @@ mod tests {
         // Pre-populate via admin so the second add collides.
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "dup".into(),
                 name: "First".into(),
                 kind: ConnectionKindDraft::Turso {
@@ -1766,6 +1815,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "prod".into(),
                 name: "Prod".into(),
                 kind: ConnectionKindDraft::D1 {
@@ -1797,6 +1847,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "prod".into(),
                 name: "Prod".into(),
                 kind: ConnectionKindDraft::D1 {
@@ -1830,6 +1881,7 @@ mod tests {
         let (_dir, _secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "x".into(),
                 name: "X".into(),
                 kind: ConnectionKindDraft::Turso {
@@ -1933,6 +1985,7 @@ mod tests {
     fn seed_one(admin: &mut ConnectionAdmin) {
         admin
             .add(ConnectionDraft {
+                ssh: None,
                 id: "local".into(),
                 name: "Local".into(),
                 kind: ConnectionKindDraft::Turso {

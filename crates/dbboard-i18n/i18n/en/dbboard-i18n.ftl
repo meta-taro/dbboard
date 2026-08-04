@@ -35,6 +35,7 @@ result-export-selected-csv = Save selected as CSV…
 result-clear-selection = Clear selection
 result-selected-count = { $count } selected
 result-select-row-hint = Click to select the row (Ctrl / Shift for multiple)
+result-sort-hint = Click to sort; Ctrl / Shift to add a level
 
 # ADR-0031 structure tab: clicking a sidebar table describes it and shows
 # its columns here, next to the query result.
@@ -88,6 +89,9 @@ config-error-serialize = Could not write the configuration: { $detail }
 config-error-no-config-dir = Could not determine a per-user configuration directory.
 config-error-not-found = No connection found with id: { $id }
 config-error-kind-mismatch = The kind of connection { $id } cannot change on edit; delete it and add it again instead.
+config-error-ssh-unsupported-kind = Connection { $id }: an SSH tunnel is not supported for a { $kind } connection.
+config-error-ssh-invalid = Connection { $id }: the SSH tunnel settings are invalid: { $reason }
+config-error-dsn-unparseable = Connection { $id }: the stored connection URL could not be read, so the saved password cannot be kept. Retype the password to save.
 
 # BundleError — encrypted connection bundle export / import (ADR-0038).
 config-error-bundle-passphrase-short = The passphrase must be at least { $min } characters.
@@ -251,6 +255,7 @@ ai-settings-field-model = Model (optional)
 ai-settings-field-api-key = API key
 ai-settings-replace-api-key = Replace API key
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 # Subtitle on the AI assistant panel showing which provider is bound
 # to the in-process slot right now. Rendered only when a provider is
 # active (i.e. the panel is visible).
@@ -275,3 +280,57 @@ edit-set-null = Set NULL
 edit-revert-cell = Revert cell
 edit-cell-hint = Double-click to edit · right-click for NULL
 edit-save-unexpected-rows = Save stopped: expected 1 row, { $rows } affected
+
+# ADR-0049 backup (logical dump). A toolbar button preflights the active
+# connection (counting rows), warns before dumping a very large database,
+# then streams the dump to a file the user picks, showing progress and a
+# Cancel button. The completion summary surfaces partial failures,
+# truncations, and cancellation honestly.
+backup-button = Backup…
+backup-button-hint = Dump this database's tables to a SQL file
+backup-planning = Preparing backup…
+backup-warn-title = Large database
+backup-warn-body = This database has { $rows } rows across its tables. A dump may take a while and produce a large file.
+backup-warn-continue = Back up anyway
+backup-warn-cancel = Cancel
+backup-dialog-title = Save backup as
+backup-progress-title = Backing up
+backup-progress-table = Table { $done } of { $total }
+backup-progress-rows = { $done } / { $total } rows
+backup-progress-current = Current: { $table }
+backup-cancel-button = Cancel
+backup-done-title = Backup complete
+backup-done-summary = Dumped { $tables } table(s), { $rows } rows.
+backup-done-cancelled = Backup cancelled — the file holds a partial dump.
+backup-done-failures = { $count } table(s) could not be read and were skipped.
+backup-done-truncations = { $count } table(s) were truncated part-way.
+backup-failed-title = Backup failed
+backup-close-button = Close
+
+# ADR-0051: logical restore (import). The Restore button picks a .sql file,
+# the worker classifies it, and — when the target is not empty — a strong
+# confirm guards the empty/new-target safety model before statements are
+# applied. The completion summary surfaces partial failures and cancellation
+# honestly.
+restore-button = Restore…
+restore-button-hint = Apply a SQL file to this database
+restore-planning = Reading file…
+restore-dialog-title = Choose a SQL file to restore
+restore-warn-title = Target is not empty
+restore-warn-body = This database already has { $tables } table(s). Restoring { $statements } statement(s) may fail or overwrite existing data.
+restore-warn-continue = Restore anyway
+restore-warn-cancel = Cancel
+restore-progress-title = Restoring
+restore-progress-statements = Statement { $done } of { $total }
+restore-cancel-button = Cancel
+restore-done-title = Restore complete
+restore-done-summary = Applied { $statements } statement(s): { $ddl } schema, { $data } data.
+restore-done-cancelled = Restore cancelled — the target holds a partial restore.
+restore-done-failures = { $count } statement(s) failed and were skipped.
+restore-close-button = Close
+restore-failed-title = Restore failed
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Backup
+backup-threshold-label = Warn above (rows)
+backup-threshold-hint = Show the large-database warning before dumping when the total row count exceeds this. Saved to ui-settings.toml.

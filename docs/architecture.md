@@ -29,8 +29,13 @@ dbboard/
     ├── dbboard-postgres/   # adapter: PostgreSQL-wire (CockroachDB + Neon /
     │                       #   Supabase / Aurora DSQL via the flavor field —
     │                       #   ADR-0018/0019/0021)
+    ├── dbboard-mysql/      # adapter: MySQL / MariaDB (new SqlDialect —
+    │                       #   ADR-0068)
+    ├── dbboard-tunnel/     # SSH local port-forward over russh (ADR-0069)
     ├── dbboard-connect/    # connection factory: connections.toml entry +
-    │                       #   keyring secret -> connected adapter (ADR-0046)
+    │                       #   keyring secret -> connected adapter (ADR-0046);
+    │                       #   opens a dbboard-tunnel forward first when the
+    │                       #   entry carries an ssh block (ADR-0069)
     ├── dbboard-server/     # local axum HTTP backend (ADR-0006)
     ├── dbboard-mcp/        # headless read-only MCP server over stdio (ADR-0046)
     ├── dbboard-ai/         # AI provider trait + value types (ADR-0023)
@@ -40,7 +45,8 @@ dbboard/
 
 As of the latest `develop`, `dbboard-core`, `dbboard-config`,
 `dbboard-i18n`, `dbboard-turso`, `dbboard-d1`, `dbboard-postgres` (with
-its three pg-wire flavors), `dbboard-connect` (connection factory,
+its three pg-wire flavors), `dbboard-mysql` (MySQL / MariaDB — the first
+genuinely new SQL dialect, ADR-0068), `dbboard-connect` (connection factory,
 ADR-0046), `dbboard-server`, `dbboard-mcp` (headless read-only MCP
 server, ADR-0046), `dbboard-ui`, `dbboard-ai` (trait crate; landed via
 PR #20 on 2026-06-15), `dbboard-anthropic` (first concrete provider;
@@ -70,7 +76,8 @@ apps/dbboard
    ├──> dbboard-server ────────────┤
    │       ├──> dbboard-turso ─────┤
    │       ├──> dbboard-d1 ────────┤──> dbboard-core
-   │       └──> dbboard-postgres ──┤
+   │       ├──> dbboard-postgres ──┤
+   │       └──> dbboard-mysql ─────┤
    └──> (dbboard-anthropic) ───────┤         (concrete AI providers live alongside
             └──> dbboard-ai ───────┘          the binary; in-process, no HTTP)
 ```
@@ -84,13 +91,22 @@ contract ([ADR-0023](decisions.md)).
   `serde` for the wire format, which is pure data transformation, not
   I/O).
 - Adapter crates depend on `dbboard-core` only.
-- `dbboard-connect` depends on `dbboard-core`, `dbboard-config`, and the
-  concrete adapter crates. It is the single place that turns a
-  `connections.toml` entry plus its keyring secret into a connected
-  `Arc<dyn DatabaseAdapter>` (`backend_config_for_entry` +
-  `connect_adapter`), extracted from `dbboard-server` so a second entry
+- `dbboard-connect` depends on `dbboard-core`, `dbboard-config`,
+  `dbboard-tunnel`, and the concrete adapter crates. It is the single
+  place that turns a `connections.toml` entry plus its keyring secret
+  into a connected `Arc<dyn DatabaseAdapter>` (`backend_config_for_entry`
+  + `connect_adapter`), extracted from `dbboard-server` so a second entry
   point can reuse the exact, security-sensitive construction without
-  pulling in axum ([ADR-0046](decisions.md)).
+  pulling in axum ([ADR-0046](decisions.md)). When the entry carries an
+  `ssh` block it opens a `dbboard-tunnel` local forward first and
+  rewrites the URL host/port to the tunnel's local end before dialing the
+  adapter ([ADR-0069](decisions.md)).
+- `dbboard-tunnel` depends on **nothing in this workspace** (only `russh`,
+  `tokio`, and its own `thiserror` error type). It wraps `russh` to open
+  an authenticated SSH connection to a bastion and forward a local port to
+  the DB's `host:port`, verifying the server host key against a pinned
+  fingerprint or a `known_hosts` file — never blindly
+  ([ADR-0069](decisions.md)).
 - `dbboard-server` depends on `dbboard-connect` (and `dbboard-core`); it
   is reached from `apps/dbboard` and owns the HTTP contract. Since Phase
   1.5 `apps/dbboard` reaches the adapter set only transitively through
@@ -273,9 +289,11 @@ User-facing configuration lives in a dedicated crate
   even on a recovered powered-off disk.
 
 `apps/dbboard::main` resolves a backend in this order:
-`DBBOARD_PG_URL` → `DBBOARD_D1_*` → `DBBOARD_TURSO_PATH` →
-`DBBOARD_CONNECTION=<id>` from `connections.toml` → single-entry
-auto-select → default Turso `:memory:`. The config layer is purely
+`DBBOARD_PG_URL` → `DBBOARD_MYSQL_URL` → `DBBOARD_D1_*` →
+`DBBOARD_TURSO_PATH` → `DBBOARD_CONNECTION=<id>` from `connections.toml` →
+single-entry auto-select → default Turso `:memory:` (the pg-wire flavor
+vars `DBBOARD_AURORA_DSQL_URL`/`DBBOARD_NEON_URL`/`DBBOARD_SUPABASE_URL`
+outrank the generic `DBBOARD_PG_URL`). The config layer is purely
 additive; existing env-driven flows are unchanged.
 
 ## Testing Strategy

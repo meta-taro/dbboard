@@ -2,8 +2,8 @@
 //!
 //! [`McpService`] owns the security-sensitive work — resolving a
 //! `connections.toml` entry plus its keyring secret into a connected
-//! adapter, and running the five read-only operations exposed to an
-//! external agent (ADR-0046 Decision 5). It knows nothing about `rmcp`,
+//! adapter, and running the seven read-only operations exposed to an
+//! external agent (ADR-0046 Decision 5, ADR-0053, ADR-0054). It knows nothing about `rmcp`,
 //! JSON-RPC, or stdio: [`crate::server`] wraps each method as a tool and
 //! translates errors onto the MCP envelope. Keeping the logic here means
 //! it is testable against a real (in-memory) adapter with no transport.
@@ -13,11 +13,18 @@
 //! - **Secrets never leave.** [`list_connections`](McpService::list_connections)
 //!   projects each entry to id/name/kind only; the keyring references and
 //!   the resolved URLs/tokens are never serialized into a tool result.
-//! - **Reads only.** Every query goes through
-//!   [`DatabaseAdapter::query_read_only`], which each adapter enforces at
-//!   the engine (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`,
-//!   D1 AST classification). This layer never calls the plain `query`
-//!   path.
+//! - **Reads only, for agents.** Every method [`crate::server`] wraps as an
+//!   MCP tool goes through [`DatabaseAdapter::query_read_only`], enforced at
+//!   the engine (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`, D1
+//!   AST classification). The MCP surface never writes.
+//!
+//! The desktop app also uses this service as its shared data-access layer
+//! (it owns the adapter cache and connection resolution). For it — and only
+//! it — [`apply_row_update`](McpService::apply_row_update) is a deliberate
+//! write path (inline cell editing, ADR-0042 / ADR-0062). It is **not**
+//! wrapped as an MCP tool, so it is unreachable by an external agent; the
+//! read-only invariant above is a property of the exposed tool set, not of
+//! every method on the struct.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,7 +34,13 @@ use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
 use dbboard_config::store::{self, ConnectionKind};
 use dbboard_config::{ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
-use dbboard_core::{Column, DatabaseAdapter, DbError, Row, TableInfo, TableSchema};
+use dbboard_core::{
+    build_update_sql, dialect_for_adapter_id, plan_dump as core_plan_dump,
+    plan_restore as core_plan_restore, run_dump as core_run_dump, run_restore as core_run_restore,
+    Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl, DumpOutcome, DumpPlan, DumpSink,
+    ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan, Row, TableInfo,
+    TableSchema, UpdatePlan, WriteBackError,
+};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -41,6 +54,20 @@ pub const DEFAULT_MAX_ROWS: usize = 200;
 /// clamped to this — the read path is for reconnaissance, not bulk
 /// export, and an unbounded fetch could exhaust memory on a wide table.
 pub const MAX_MAX_ROWS: usize = 1000;
+
+/// Hard ceiling on the number of table matches [`McpService::search_schema`]
+/// returns. A deliberately-broad pattern (`"id"`, `"a"`) on a large schema
+/// would otherwise walk every table and return the whole catalog in one
+/// blob; the search stops here and flags `truncated`, mirroring
+/// `run_read_query`'s row cap. Reconnaissance, not export.
+pub const MAX_SCHEMA_MATCHES: usize = 200;
+
+/// Hard ceiling on the number of relationship edges
+/// [`McpService::list_relationships`] returns. A wide schema can declare
+/// far more foreign keys than it has tables; the walk stops here and flags
+/// `truncated` rather than return an unbounded blob. Reconnaissance, not
+/// export — an agent that hits the cap should filter to one table.
+pub const MAX_RELATIONSHIPS: usize = 500;
 
 /// A connection as an agent is allowed to see it: the stable id, the
 /// human label, and the adapter kind. Deliberately **not** the keyring
@@ -64,6 +91,62 @@ pub struct QueryOutput {
     pub truncated: bool,
 }
 
+/// One table returned by [`McpService::search_schema`]: the table itself,
+/// whether its *name* matched the pattern, and the columns whose name
+/// matched. A table-name-only hit carries empty `matched_columns` — the
+/// flag is the signal, and the agent can `describe_table` for the full
+/// column list rather than have every column echoed here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SchemaMatch {
+    pub table: TableInfo,
+    pub table_name_matched: bool,
+    pub matched_columns: Vec<ColumnInfo>,
+}
+
+/// Result of [`McpService::search_schema`]: every table in the connection
+/// whose name — or one of whose column names — contains the pattern.
+/// `truncated` is set when the match cap ([`MAX_SCHEMA_MATCHES`]) was hit
+/// and further tables were left unexamined, telling the agent to narrow
+/// the pattern rather than assume it saw the whole schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SchemaSearchView {
+    pub connection_id: String,
+    pub pattern: String,
+    pub matches: Vec<SchemaMatch>,
+    pub truncated: bool,
+}
+
+/// One foreign-key relationship as a directed edge, flattened from a
+/// [`ForeignKey`] for [`McpService::list_relationships`]: the child
+/// (`from`) table's columns point at the parent (`to`) table's columns.
+/// `from_columns` and `to_columns` are aligned 1:1 in key order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Relationship {
+    pub from_table: TableInfo,
+    pub from_columns: Vec<String>,
+    pub to_table: TableInfo,
+    pub to_columns: Vec<String>,
+    pub constraint_name: Option<String>,
+}
+
+/// Result of [`McpService::list_relationships`]: the foreign-key edges of
+/// a connection, optionally filtered to those touching one table (either
+/// endpoint). `table` echoes the applied filter; `truncated` is set when
+/// the edge cap ([`MAX_RELATIONSHIPS`]) was hit and further tables were
+/// left unexamined.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RelationshipView {
+    pub connection_id: String,
+    pub table: Option<String>,
+    pub relationships: Vec<Relationship>,
+    pub truncated: bool,
+    /// Tables the sweep could list but not introspect — a denied `PRAGMA`,
+    /// a permission-restricted table, one dropped mid-sweep. Their edges are
+    /// missing from `relationships`, so this is reported rather than swallowed:
+    /// "no foreign keys" and "we could not look" are different answers.
+    pub unreadable_tables: Vec<TableInfo>,
+}
+
 /// Result of [`McpService::get_annotations`]: the local table/column
 /// notes (ADR-0045) for one connection, filtered to the requested table
 /// and/or column. Empty `tables` when the connection has no notes.
@@ -82,6 +165,11 @@ pub enum ServiceError {
     #[error("no connection with id {0:?} in the connection store")]
     ConnectionNotFound(String),
 
+    /// The caller's arguments were malformed (e.g. a blank search pattern).
+    /// Distinct from a `Db` rejection: nothing reached the engine.
+    #[error("{0}")]
+    InvalidRequest(String),
+
     /// Reading `connections.toml` or resolving a keyring secret failed.
     #[error(transparent)]
     Config(#[from] ConfigError),
@@ -95,9 +183,72 @@ pub enum ServiceError {
     #[error(transparent)]
     Db(#[from] DbError),
 
+    /// The core write-back layer refused to build the `UPDATE` (no edits,
+    /// empty key, or a blob identity value). Desktop write path only.
+    #[error(transparent)]
+    WriteBack(#[from] WriteBackError),
+
+    /// The connection's adapter has no known SQL dialect, so no write SQL
+    /// can be built for it. Desktop write path only.
+    #[error("adapter {0:?} has no known SQL dialect for editing")]
+    NotEditable(String),
+
+    /// The connection's adapter has no known SQL dialect, so no dump can be
+    /// produced for it. Desktop dump path only (ADR-0049).
+    #[error("adapter {0:?} has no known SQL dialect to dump")]
+    NotDumpable(String),
+
+    /// Writing the dump's output file failed (a full disk, a revoked path).
+    /// Fatal to a dump — a backup that cannot be written is worthless.
+    /// Desktop dump path only.
+    #[error("dump output failed: {0}")]
+    Dump(String),
+
+    /// The connection's adapter has no known SQL dialect, so an incoming
+    /// `.sql` script cannot be classified for restore. Desktop restore path
+    /// only (ADR-0051).
+    #[error("adapter {0:?} has no known SQL dialect to restore into")]
+    NotRestorable(String),
+
+    /// A restore was refused or failed as a whole: a non-empty target left
+    /// unconfirmed, an adapter that cannot execute writes, or an atomic
+    /// batch that rolled back. Per-statement failures on the non-atomic path
+    /// are non-fatal and travel in the outcome instead. Desktop restore path
+    /// only.
+    #[error("restore failed: {0}")]
+    Restore(String),
+
     /// A `spawn_blocking` task panicked or was cancelled.
     #[error("background task failed: {0}")]
     Task(String),
+}
+
+/// Flatten one [`ForeignKey`] on `from_table` into a directed edge.
+fn relationship_from_fk(from_table: &TableInfo, fk: ForeignKey) -> Relationship {
+    Relationship {
+        from_table: from_table.clone(),
+        from_columns: fk.columns,
+        to_table: fk.referenced_table,
+        to_columns: fk.referenced_columns,
+        constraint_name: fk.constraint_name,
+    }
+}
+
+/// Does `edge` touch the table named `want` (already lower-cased) at
+/// either endpoint? Matches the bare name and the `schema.name` key, so a
+/// filter of `orders` finds `public.orders` too.
+fn edge_touches(edge: &Relationship, want: &str) -> bool {
+    table_matches(&edge.from_table, want) || table_matches(&edge.to_table, want)
+}
+
+fn table_matches(table: &TableInfo, want: &str) -> bool {
+    if table.name.to_lowercase() == want {
+        return true;
+    }
+    match &table.schema {
+        Some(schema) => format!("{}.{}", schema.to_lowercase(), table.name.to_lowercase()) == want,
+        None => false,
+    }
 }
 
 /// The stable, agent-facing kind label for a connection.
@@ -106,6 +257,7 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::Turso { .. } => "turso",
         ConnectionKind::D1 { .. } => "d1",
         ConnectionKind::Postgres { .. } => "postgres",
+        ConnectionKind::MySql { .. } => "mysql",
         ConnectionKind::Neon { .. } => "neon",
         ConnectionKind::Supabase { .. } => "supabase",
         ConnectionKind::AuroraDsql { .. } => "aurora-dsql",
@@ -250,6 +402,132 @@ impl McpService {
         })
     }
 
+    /// Apply one single-row `UPDATE` to `connection_id` (inline cell
+    /// editing, ADR-0042). **Desktop write path** — deliberately not an MCP
+    /// tool. Builds the fully-escaped statement from `plan` with the
+    /// adapter's dialect (never string-concatenated user text), runs it via
+    /// the adapter's `execute`, and returns the engine's affected-row count
+    /// so the caller can confirm exactly one row changed.
+    ///
+    /// The `WHERE` key comes from the row's declared primary key, so a
+    /// well-formed plan can only ever match zero or one row; the caller
+    /// (the Tauri command) treats anything other than one as a conflict and
+    /// re-reads, rather than this layer guessing.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::ConnectionNotFound`] for an unknown id.
+    /// - [`ServiceError::NotEditable`] if the adapter's dialect is unknown.
+    /// - [`ServiceError::WriteBack`] if the core refuses the plan (no
+    ///   edits, empty key, or a blob identity value).
+    /// - [`ServiceError::Db`] if the engine rejects or fails the `UPDATE`.
+    pub async fn apply_row_update(
+        &self,
+        connection_id: &str,
+        plan: &UpdatePlan,
+    ) -> Result<u64, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotEditable(adapter.id().to_string()))?;
+        let sql = build_update_sql(plan, dialect)?;
+        Ok(adapter.execute(&sql).await?)
+    }
+
+    /// Preflight a logical dump of `connection_id` (ADR-0049): list its
+    /// tables and `COUNT(*)` each, producing the [`DumpPlan`] the desktop
+    /// uses to size progress and warn on a large database. Reads only.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotDumpable`] if the adapter has no known SQL
+    /// dialect; otherwise whatever the connection/`list_tables` surfaces.
+    pub async fn plan_dump(&self, connection_id: &str) -> Result<DumpPlan, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotDumpable(adapter.id().to_string()))?;
+        Ok(core_plan_dump(adapter.as_ref(), dialect).await?)
+    }
+
+    /// Run a whole-connection logical dump described by `plan`, writing SQL
+    /// text to `sink` and reporting progress/cancellation through `control`
+    /// (ADR-0049). Reads the database only; the sole write is to the
+    /// caller-supplied output sink (a file on the desktop).
+    ///
+    /// Returns the [`DumpOutcome`] — including any per-table failures and
+    /// truncations — unless the sink itself fails, which is fatal. Like
+    /// [`apply_row_update`](Self::apply_row_update), this is a desktop-only
+    /// method and is deliberately **not** exposed as an MCP tool.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotDumpable`] if the adapter has no known SQL
+    /// dialect; [`ServiceError::Dump`] if writing to `sink` fails.
+    pub async fn run_dump(
+        &self,
+        connection_id: &str,
+        plan: &DumpPlan,
+        sink: &mut dyn DumpSink,
+        control: &dyn DumpControl,
+    ) -> Result<DumpOutcome, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotDumpable(adapter.id().to_string()))?;
+        core_run_dump(adapter.as_ref(), dialect, plan, sink, control)
+            .await
+            .map_err(|e| ServiceError::Dump(e.to_string()))
+    }
+
+    /// Preflight a logical restore of `script` into `connection_id`
+    /// (ADR-0051): classify the script under the connection's dialect and
+    /// list the target's existing tables, producing the [`RestorePlan`] the
+    /// desktop uses to size progress and decide whether the empty-target
+    /// safety gate needs a typed confirmation. Reads only.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::NotRestorable`] if the adapter has no known SQL
+    /// dialect; otherwise whatever the connection/`list_tables` surfaces.
+    pub async fn plan_restore(
+        &self,
+        connection_id: &str,
+        script: &str,
+    ) -> Result<RestorePlan, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotRestorable(adapter.id().to_string()))?;
+        Ok(core_plan_restore(adapter.as_ref(), dialect, script).await?)
+    }
+
+    /// Apply a preflighted logical restore to `connection_id`, reporting
+    /// progress/cancellation through `control` (ADR-0051). Writes to the
+    /// target database only. The whole script runs as one atomic batch on
+    /// engines that support it, or statement-by-statement (honouring
+    /// `options.on_error`) on those that do not (Cloudflare D1).
+    ///
+    /// Like [`apply_row_update`](Self::apply_row_update) and the dump
+    /// methods, this is a desktop-only method and is deliberately **not**
+    /// exposed as an MCP tool.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Restore`] if the whole run is refused or fails — a
+    /// non-empty target without `options.confirmed`, an adapter that cannot
+    /// execute writes, or an atomic batch that rolled back. Per-statement
+    /// failures on the non-atomic path are non-fatal and land in the
+    /// returned [`RestoreOutcome`] instead.
+    pub async fn run_restore(
+        &self,
+        connection_id: &str,
+        plan: &RestorePlan,
+        options: RestoreOptions,
+        control: &dyn RestoreControl,
+    ) -> Result<RestoreOutcome, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        core_run_restore(adapter.as_ref(), plan, options, control)
+            .await
+            .map_err(|e| ServiceError::Restore(e.to_string()))
+    }
+
     /// Fetch the local notes for `connection_id`, filtered to `table`
     /// and/or `column` when supplied. Unknown connection or table yields
     /// an empty result rather than an error — notes are optional
@@ -281,6 +559,149 @@ impl McpService {
         Ok(AnnotationsView {
             connection_id: connection_id.to_string(),
             tables,
+        })
+    }
+
+    /// Find the tables and columns in `connection_id` whose name contains
+    /// `pattern` (case-insensitive substring). Collapses the common
+    /// `list_tables` + N×`describe_table` exploration an agent otherwise
+    /// runs by hand (ADR-0053).
+    ///
+    /// Composed from the existing read-only introspection primitives — no
+    /// `query` path, no secret ever serialized.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::InvalidRequest`] if `pattern` is blank (a blank
+    /// needle would match the entire catalog — use `list_tables` for that).
+    /// [`ServiceError::ConnectionNotFound`] for an unknown id, or
+    /// [`ServiceError::Db`] if the adapter's catalog read fails.
+    pub async fn search_schema(
+        &self,
+        connection_id: &str,
+        pattern: &str,
+    ) -> Result<SchemaSearchView, ServiceError> {
+        let needle = pattern.trim().to_lowercase();
+        if needle.is_empty() {
+            return Err(ServiceError::InvalidRequest(
+                "search pattern must not be blank".to_string(),
+            ));
+        }
+
+        let adapter = self.adapter_for(connection_id).await?;
+        let tables = adapter.list_tables().await?;
+
+        let cap = tables.len().min(MAX_SCHEMA_MATCHES);
+        let mut matches = Vec::with_capacity(cap);
+        let mut truncated = false;
+        for table in tables {
+            // Stop once the cap is hit: further tables are left unexamined
+            // and the agent is told to narrow, rather than paying N more
+            // `describe_table` calls to build an oversized blob.
+            if matches.len() >= MAX_SCHEMA_MATCHES {
+                truncated = true;
+                break;
+            }
+            let table_name_matched = table.name.to_lowercase().contains(&needle);
+            let schema = adapter.describe_table(&table).await?;
+            let matched_columns: Vec<ColumnInfo> = schema
+                .columns
+                .into_iter()
+                .filter(|c| c.name.to_lowercase().contains(&needle))
+                .collect();
+            if table_name_matched || !matched_columns.is_empty() {
+                matches.push(SchemaMatch {
+                    table,
+                    table_name_matched,
+                    matched_columns,
+                });
+            }
+        }
+
+        Ok(SchemaSearchView {
+            connection_id: connection_id.to_string(),
+            pattern: pattern.to_string(),
+            matches,
+            truncated,
+        })
+    }
+
+    /// Discover the foreign-key relationships in `connection_id` (ADR-0054):
+    /// the directed edges of the schema, optionally filtered to those
+    /// touching `table_filter` at *either* endpoint — so one call answers
+    /// both "what does `orders` reference?" and "what references `orders`?".
+    ///
+    /// Composed from [`DatabaseAdapter::list_tables`] +
+    /// [`DatabaseAdapter::foreign_keys`] — no `query` path, no secret ever
+    /// serialized. A blank filter is treated as no filter.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] for an unknown id, or
+    /// [`ServiceError::Db`] if the adapter cannot list tables or introspect
+    /// a table's foreign keys.
+    pub async fn list_relationships(
+        &self,
+        connection_id: &str,
+        table_filter: Option<&str>,
+    ) -> Result<RelationshipView, ServiceError> {
+        // A blank filter means "no filter" — the tool takes an optional
+        // string and an agent passing "" should not silently match nothing.
+        let filter = table_filter
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_lowercase);
+
+        let adapter = self.adapter_for(connection_id).await?;
+        let tables = adapter.list_tables().await?;
+
+        let mut relationships = Vec::new();
+        let mut unreadable_tables = Vec::new();
+        let mut truncated = false;
+        'outer: for table in &tables {
+            if relationships.len() >= MAX_RELATIONSHIPS {
+                truncated = true;
+                break;
+            }
+            // One unreadable table must not take the whole schema with it.
+            // Cloudflare's reserved `_cf_%` tables are listed by
+            // `sqlite_master` but denied by the Workers authorizer, so this
+            // sweep used to abort with `SQLITE_AUTH` and blank the structure
+            // view for every *readable* table in the database. The same shape
+            // shows up wherever a listed table is not introspectable: a
+            // revoked grant, a table dropped between the list and the sweep.
+            let fks = match adapter.foreign_keys(table).await {
+                Ok(fks) => fks,
+                Err(e) => {
+                    tracing::debug!(table = %table.name, error = %e, "skipping unreadable table");
+                    unreadable_tables.push(table.clone());
+                    continue;
+                }
+            };
+            for fk in fks {
+                let edge = relationship_from_fk(table, fk);
+                // Keep an edge only if it touches the requested table at
+                // either endpoint (a relationship is inherently two-sided).
+                if filter
+                    .as_deref()
+                    .is_some_and(|want| !edge_touches(&edge, want))
+                {
+                    continue;
+                }
+                relationships.push(edge);
+                if relationships.len() >= MAX_RELATIONSHIPS {
+                    truncated = true;
+                    break 'outer;
+                }
+            }
+        }
+
+        Ok(RelationshipView {
+            connection_id: connection_id.to_string(),
+            table: filter,
+            relationships,
+            truncated,
+            unreadable_tables,
         })
     }
 
@@ -316,6 +737,16 @@ impl McpService {
         let adapter = connect_adapter(config).await?;
         cache.insert(connection_id.to_string(), Arc::clone(&adapter));
         Ok(adapter)
+    }
+
+    /// Evict any cached adapter for `connection_id`, forcing the next
+    /// access to rebuild it from the current config and keyring.
+    ///
+    /// Call this after a connection's credentials change or it is
+    /// removed, so a stale adapter (old password, or one pointing at a
+    /// now-deleted entry) is never handed back. A miss is a no-op.
+    pub async fn invalidate(&self, connection_id: &str) {
+        self.cache.lock().await.remove(connection_id);
     }
 
     async fn load_connection_file(&self) -> Result<store::ConnectionFile, ServiceError> {
@@ -358,6 +789,9 @@ mod tests {
     use super::*;
     use dbboard_config::annotations::AnnotationsAdmin;
     use dbboard_config::InMemorySecretStore;
+    use dbboard_core::{
+        Capabilities, DbResult, ForeignKey as CoreForeignKey, QueryResult as CoreQueryResult,
+    };
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -510,11 +944,288 @@ keyring_url_ref = "dbboard.prod-pg.url"
     }
 
     #[tokio::test]
+    async fn invalidate_drops_the_cached_adapter() {
+        // The seeded fixture holds a cached in-memory adapter with one table.
+        let fx = seeded_turso_fixture().await;
+        assert_eq!(
+            fx.service.list_tables("mem").await.expect("seeded").len(),
+            1
+        );
+        // After invalidation the next access rebuilds a fresh `:memory:`
+        // adapter — the seeded table is gone, proving the stale instance was
+        // evicted rather than reused.
+        fx.service.invalidate("mem").await;
+        assert!(fx
+            .service
+            .list_tables("mem")
+            .await
+            .expect("rebuilt")
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn list_tables_sees_the_seeded_table() {
         let fx = seeded_turso_fixture().await;
         let tables = fx.service.list_tables("mem").await.expect("list tables");
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].name, "items");
+    }
+
+    // ---- apply_row_update (desktop write path, ADR-0042) ----------------
+
+    use dbboard_core::{CellValue, RowKey, Value};
+
+    fn update_name(id: i64, new: CellValue) -> UpdatePlan {
+        UpdatePlan {
+            table: TableInfo::unqualified("items"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Integer(id))]),
+            edits: vec![("name".to_owned(), new)],
+        }
+    }
+
+    /// Read one cell back through the read-only path so the write is
+    /// confirmed against the same cached adapter.
+    async fn name_of(fx: &Fixture, id: i64) -> Option<Value> {
+        let out = fx
+            .service
+            .run_read_query(
+                "mem",
+                &format!("SELECT name FROM items WHERE id = {id}"),
+                None,
+            )
+            .await
+            .expect("read back");
+        out.rows.first().map(|r| r.values()[0].clone())
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_writes_exactly_one_row_and_reports_it() {
+        let fx = seeded_turso_fixture().await;
+        let affected = fx
+            .service
+            .apply_row_update(
+                "mem",
+                &update_name(3, CellValue::Text("renamed".to_owned())),
+            )
+            .await
+            .expect("update");
+        assert_eq!(affected, 1);
+        assert_eq!(
+            name_of(&fx, 3).await,
+            Some(Value::Text("renamed".to_owned()))
+        );
+        // A neighbouring row is untouched — the PK `WHERE` is exact.
+        assert_eq!(name_of(&fx, 2).await, Some(Value::Text("n2".to_owned())));
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_can_clear_a_cell_to_null() {
+        let fx = seeded_turso_fixture().await;
+        let affected = fx
+            .service
+            .apply_row_update("mem", &update_name(2, CellValue::Null))
+            .await
+            .expect("update to null");
+        assert_eq!(affected, 1);
+        assert_eq!(name_of(&fx, 2).await, Some(Value::Null));
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_reports_zero_when_the_key_matches_no_row() {
+        let fx = seeded_turso_fixture().await;
+        // No row has id 999: a well-formed UPDATE simply affects nothing.
+        // The caller (Tauri command) turns a non-1 count into a conflict.
+        let affected = fx
+            .service
+            .apply_row_update("mem", &update_name(999, CellValue::Text("x".to_owned())))
+            .await
+            .expect("no-op update");
+        assert_eq!(affected, 0);
+    }
+
+    #[tokio::test]
+    async fn apply_row_update_surfaces_a_write_back_refusal() {
+        let fx = seeded_turso_fixture().await;
+        // A blob identity value can't be a safe WHERE key — the core
+        // refuses before any SQL reaches the engine.
+        let plan = UpdatePlan {
+            table: TableInfo::unqualified("items"),
+            key: RowKey::Columns(vec![("id".to_owned(), Value::Blob(vec![1, 2]))]),
+            edits: vec![("name".to_owned(), CellValue::Text("x".to_owned()))],
+        };
+        let err = fx
+            .service
+            .apply_row_update("mem", &plan)
+            .await
+            .expect_err("blob key refused");
+        assert!(matches!(err, ServiceError::WriteBack(_)), "got {err:?}");
+    }
+
+    // ---- plan_dump / run_dump (desktop backup path, ADR-0049) -----------
+
+    /// Collect dump SQL into memory so a test can assert on its content
+    /// without touching the filesystem.
+    #[derive(Default)]
+    struct VecSink(String);
+
+    impl dbboard_core::DumpSink for VecSink {
+        fn write_str(&mut self, s: &str) -> Result<(), dbboard_core::DumpError> {
+            self.0.push_str(s);
+            Ok(())
+        }
+    }
+
+    /// A `DumpControl` that never cancels and discards progress — enough to
+    /// drive `run_dump` in a unit test.
+    struct NoopControl;
+
+    impl dbboard_core::DumpControl for NoopControl {
+        fn report(&self, _progress: &dbboard_core::DumpProgress) {}
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_dump_counts_the_seeded_rows() {
+        let fx = seeded_turso_fixture().await;
+        let plan = fx.service.plan_dump("mem").await.expect("plan");
+        assert_eq!(plan.tables.len(), 1, "one seeded table");
+        assert_eq!(plan.tables[0].table.name, "items");
+        assert_eq!(plan.total_rows(), 5, "5 seeded rows");
+    }
+
+    #[tokio::test]
+    async fn plan_dump_rejects_an_unknown_connection() {
+        let fx = seeded_turso_fixture().await;
+        let err = fx.service.plan_dump("nope").await.expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_dump_emits_data_inserts_and_reports_the_table() {
+        let fx = seeded_turso_fixture().await;
+        let plan = fx.service.plan_dump("mem").await.expect("plan");
+        let mut sink = VecSink::default();
+        let outcome = fx
+            .service
+            .run_dump("mem", &plan, &mut sink, &NoopControl)
+            .await
+            .expect("dump");
+
+        assert_eq!(outcome.tables_dumped, 1);
+        assert_eq!(outcome.rows_written, 5);
+        assert!(!outcome.cancelled);
+        assert!(outcome.failures.is_empty(), "no per-table failures");
+
+        let sql = sink.0;
+        // The SQLite/Turso dump is data-only by design (ADR-0049): no
+        // CREATE TABLE, just the INSERTs, under a dialect header comment.
+        assert!(
+            !sql.contains("CREATE TABLE"),
+            "sqlite dump must not emit DDL, got:\n{sql}"
+        );
+        assert!(
+            sql.contains("dbboard logical dump"),
+            "missing header:\n{sql}"
+        );
+        assert!(
+            sql.contains("INSERT INTO") && sql.contains("items"),
+            "expected inserts for items, got:\n{sql}"
+        );
+        // Every seeded value must appear in the dumped inserts.
+        for i in 1..=5 {
+            assert!(sql.contains(&format!("'n{i}'")), "missing n{i} in:\n{sql}");
+        }
+    }
+
+    // ---- plan_restore / run_restore (desktop import path, ADR-0051) -----
+
+    /// A `RestoreControl` that never cancels and discards progress — enough
+    /// to drive `run_restore` in a unit test.
+    struct NoopRestoreControl;
+
+    impl dbboard_core::RestoreControl for NoopRestoreControl {
+        fn report(&self, _progress: &dbboard_core::RestoreProgress) {}
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// A fresh, empty in-memory Turso connection — the unconfirmed-safe
+    /// restore target. Establishing the adapter here caches it, so a later
+    /// `run_restore` and the read-back query hit the same `:memory:` db.
+    async fn empty_turso_fixture() -> Fixture {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        fx.service.adapter_for("mem").await.expect("connect mem");
+        fx
+    }
+
+    const RESTORE_SCRIPT: &str = "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); \
+         INSERT INTO items (id, name) VALUES (1, 'a'); \
+         INSERT INTO items (id, name) VALUES (2, 'b')";
+
+    #[tokio::test]
+    async fn plan_restore_classifies_and_sees_an_empty_target() {
+        let fx = empty_turso_fixture().await;
+        let plan = fx
+            .service
+            .plan_restore("mem", RESTORE_SCRIPT)
+            .await
+            .expect("plan");
+        assert!(plan.is_target_empty(), "a fresh :memory: db has no tables");
+        assert_eq!(plan.runnable_count(), 3, "one CREATE + two INSERTs");
+    }
+
+    #[tokio::test]
+    async fn plan_restore_rejects_an_unknown_connection() {
+        let fx = empty_turso_fixture().await;
+        let err = fx
+            .service
+            .plan_restore("nope", RESTORE_SCRIPT)
+            .await
+            .expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_restore_applies_the_script_to_an_empty_target() {
+        let fx = empty_turso_fixture().await;
+        let plan = fx
+            .service
+            .plan_restore("mem", RESTORE_SCRIPT)
+            .await
+            .expect("plan");
+        let outcome = fx
+            .service
+            .run_restore("mem", &plan, RestoreOptions::default(), &NoopRestoreControl)
+            .await
+            .expect("restore");
+
+        assert_eq!(outcome.statements_run, 3);
+        assert_eq!(outcome.ddl_run, 1);
+        assert_eq!(outcome.data_run, 2);
+        assert!(!outcome.cancelled);
+        assert!(outcome.failures.is_empty(), "no per-statement failures");
+
+        // The restore landed in the same cached :memory: db: the rows are
+        // now queryable through the read path.
+        let out = fx
+            .service
+            .run_read_query("mem", "SELECT id, name FROM items ORDER BY id", None)
+            .await
+            .expect("query the restored table");
+        assert_eq!(out.row_count, 2);
     }
 
     #[tokio::test]
@@ -632,5 +1343,412 @@ keyring_url_ref = "dbboard.prod-pg.url"
             .await
             .expect("empty ok");
         assert!(out.tables.is_empty());
+    }
+
+    /// A two-table schema so search can distinguish a table-name hit from a
+    /// column-name hit, and match a column that lives in only one table.
+    async fn seeded_search_fixture() -> Fixture {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
+        adapter
+            .query("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+            .await
+            .expect("create items");
+        adapter
+            .query(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, item_id INTEGER, customer_email TEXT)",
+            )
+            .await
+            .expect("create orders");
+        fx
+    }
+
+    fn matched_col_names(m: &SchemaMatch) -> Vec<&str> {
+        m.matched_columns.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn search_schema_matches_a_column_name() {
+        let fx = seeded_search_fixture().await;
+        let out = fx
+            .service
+            .search_schema("mem", "email")
+            .await
+            .expect("search");
+        assert_eq!(out.matches.len(), 1, "only orders has an email column");
+        let m = &out.matches[0];
+        assert_eq!(m.table.name, "orders");
+        assert!(
+            !m.table_name_matched,
+            "the table name does not contain 'email'"
+        );
+        assert_eq!(matched_col_names(m), vec!["customer_email"]);
+    }
+
+    #[tokio::test]
+    async fn search_schema_matches_table_name_and_column_across_tables() {
+        let fx = seeded_search_fixture().await;
+        let out = fx
+            .service
+            .search_schema("mem", "item")
+            .await
+            .expect("search");
+        // `items` matches by table name; `orders` matches via `item_id`.
+        assert_eq!(out.matches.len(), 2);
+        let items = out
+            .matches
+            .iter()
+            .find(|m| m.table.name == "items")
+            .expect("items present");
+        assert!(items.table_name_matched);
+        assert!(
+            items.matched_columns.is_empty(),
+            "no `items` column name contains 'item'; the flag carries the hit"
+        );
+        let orders = out
+            .matches
+            .iter()
+            .find(|m| m.table.name == "orders")
+            .expect("orders present");
+        assert!(!orders.table_name_matched);
+        assert_eq!(matched_col_names(orders), vec!["item_id"]);
+    }
+
+    #[tokio::test]
+    async fn search_schema_is_case_insensitive() {
+        let fx = seeded_search_fixture().await;
+        let out = fx
+            .service
+            .search_schema("mem", "EMAIL")
+            .await
+            .expect("search");
+        assert_eq!(out.matches.len(), 1);
+        assert_eq!(matched_col_names(&out.matches[0]), vec!["customer_email"]);
+    }
+
+    #[tokio::test]
+    async fn search_schema_no_match_is_empty() {
+        let fx = seeded_search_fixture().await;
+        let out = fx
+            .service
+            .search_schema("mem", "zzz")
+            .await
+            .expect("search");
+        assert!(out.matches.is_empty());
+        assert_eq!(out.pattern, "zzz");
+        assert_eq!(out.connection_id, "mem");
+    }
+
+    #[tokio::test]
+    async fn search_schema_rejects_a_blank_pattern() {
+        let fx = seeded_search_fixture().await;
+        for blank in ["", "   ", "\t"] {
+            let err = fx
+                .service
+                .search_schema("mem", blank)
+                .await
+                .expect_err("blank pattern must be rejected");
+            assert!(
+                matches!(err, ServiceError::InvalidRequest(_)),
+                "blank {blank:?} should be InvalidRequest, got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn search_schema_unknown_connection_is_not_found() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        let err = fx
+            .service
+            .search_schema("nope", "x")
+            .await
+            .expect_err("unknown id");
+        assert!(matches!(err, ServiceError::ConnectionNotFound(id) if id == "nope"));
+    }
+
+    #[tokio::test]
+    async fn search_schema_caps_matches_and_flags_truncation() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
+        // One more table than the cap, every name containing the needle.
+        for i in 0..=MAX_SCHEMA_MATCHES {
+            adapter
+                .query(&format!("CREATE TABLE match_{i} (id INTEGER PRIMARY KEY)"))
+                .await
+                .expect("create");
+        }
+        let out = fx
+            .service
+            .search_schema("mem", "match")
+            .await
+            .expect("search");
+        assert_eq!(out.matches.len(), MAX_SCHEMA_MATCHES);
+        assert!(
+            out.truncated,
+            "more tables than the cap must flag truncated"
+        );
+    }
+
+    /// A three-table chain with two foreign keys:
+    /// `order_items` → `orders` → `customers`.
+    async fn seeded_relationship_fixture() -> Fixture {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
+        adapter
+            .query("CREATE TABLE customers (id INTEGER PRIMARY KEY, email TEXT)")
+            .await
+            .expect("create customers");
+        adapter
+            .query(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, \
+                 customer_id INTEGER REFERENCES customers(id))",
+            )
+            .await
+            .expect("create orders");
+        adapter
+            .query(
+                "CREATE TABLE order_items (id INTEGER PRIMARY KEY, \
+                 order_id INTEGER REFERENCES orders(id), sku TEXT)",
+            )
+            .await
+            .expect("create order_items");
+        fx
+    }
+
+    /// Find the edge from `from` (child) to `to` (parent) in a view.
+    fn edge<'a>(view: &'a RelationshipView, from: &str, to: &str) -> &'a Relationship {
+        view.relationships
+            .iter()
+            .find(|r| r.from_table.name == from && r.to_table.name == to)
+            .unwrap_or_else(|| panic!("edge {from} -> {to} not found in {:?}", view.relationships))
+    }
+
+    #[tokio::test]
+    async fn list_relationships_reports_every_foreign_key_edge() {
+        let fx = seeded_relationship_fixture().await;
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert_eq!(view.connection_id, "mem");
+        assert_eq!(view.table, None);
+        assert!(!view.truncated);
+        assert_eq!(view.relationships.len(), 2);
+
+        let o = edge(&view, "orders", "customers");
+        assert_eq!(o.from_columns, vec!["customer_id".to_owned()]);
+        assert_eq!(o.to_columns, vec!["id".to_owned()]);
+
+        let oi = edge(&view, "order_items", "orders");
+        assert_eq!(oi.from_columns, vec!["order_id".to_owned()]);
+        assert_eq!(oi.to_columns, vec!["id".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn list_relationships_filter_matches_edges_on_either_side() {
+        let fx = seeded_relationship_fixture().await;
+
+        // `orders` is a child of `customers` and a parent of `order_items`,
+        // so filtering on it must surface both edges (inbound + outbound).
+        let view = fx
+            .service
+            .list_relationships("mem", Some("orders"))
+            .await
+            .expect("filtered");
+        assert_eq!(view.table.as_deref(), Some("orders"));
+        assert_eq!(view.relationships.len(), 2);
+        edge(&view, "orders", "customers");
+        edge(&view, "order_items", "orders");
+
+        // `customers` is only ever a parent — one inbound edge.
+        let leaf = fx
+            .service
+            .list_relationships("mem", Some("customers"))
+            .await
+            .expect("leaf");
+        assert_eq!(leaf.relationships.len(), 1);
+        edge(&leaf, "orders", "customers");
+    }
+
+    #[tokio::test]
+    async fn list_relationships_filter_is_case_insensitive() {
+        let fx = seeded_relationship_fixture().await;
+        let view = fx
+            .service
+            .list_relationships("mem", Some("CUSTOMERS"))
+            .await
+            .expect("filtered");
+        assert_eq!(view.relationships.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_relationships_blank_filter_is_treated_as_no_filter() {
+        let fx = seeded_relationship_fixture().await;
+        for blank in ["", "   ", "\t"] {
+            let view = fx
+                .service
+                .list_relationships("mem", Some(blank))
+                .await
+                .expect("blank filter");
+            assert_eq!(view.table, None, "blank {blank:?} should clear the filter");
+            assert_eq!(view.relationships.len(), 2);
+        }
+    }
+
+    /// An adapter whose `foreign_keys` fails for exactly one table, the way a
+    /// D1 database's reserved `_cf_KV` does: `sqlite_master` lists it, but the
+    /// Workers authorizer denies the `PRAGMA`, so the lookup comes back as
+    /// `[7500] not authorized: SQLITE_AUTH`.
+    struct OneDeniedTable;
+
+    #[async_trait::async_trait]
+    impl DatabaseAdapter for OneDeniedTable {
+        fn id(&self) -> &'static str {
+            "denied"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                has_foreign_keys: true,
+                ..Default::default()
+            }
+        }
+        async fn ping(&self) -> DbResult<()> {
+            Ok(())
+        }
+        async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+            Ok(vec![
+                TableInfo::unqualified("_cf_KV"),
+                TableInfo::unqualified("orders"),
+            ])
+        }
+        async fn query(&self, _sql: &str) -> DbResult<CoreQueryResult> {
+            Ok(CoreQueryResult::empty())
+        }
+        async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<CoreForeignKey>> {
+            if table.name == "_cf_KV" {
+                return Err(DbError::Query("[7500] not authorized: SQLITE_AUTH".into()));
+            }
+            Ok(vec![CoreForeignKey {
+                columns: vec!["customer_id".into()],
+                referenced_table: TableInfo::unqualified("customers"),
+                referenced_columns: vec!["id".into()],
+                constraint_name: None,
+            }])
+        }
+    }
+
+    /// One unreadable table must not take the whole schema down with it. The
+    /// sweep visits every table, so aborting on the first error meant a single
+    /// reserved D1 table blanked the desktop structure view for the *entire*
+    /// database — the user saw nothing but `SQLITE_AUTH`, on tables that were
+    /// perfectly readable. Skip what we cannot read; report the rest.
+    #[tokio::test]
+    async fn list_relationships_skips_a_table_whose_foreign_keys_are_denied() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        fx.service
+            .cache
+            .lock()
+            .await
+            .insert("denied".to_string(), Arc::new(OneDeniedTable));
+
+        let view = fx
+            .service
+            .list_relationships("denied", None)
+            .await
+            .expect("one denied table must not fail the whole call");
+        assert_eq!(view.relationships.len(), 1);
+        edge(&view, "orders", "customers");
+        // Skipping must not be silent: the caller has to be able to tell
+        // "this table has no foreign keys" from "we could not look".
+        assert_eq!(
+            view.unreadable_tables,
+            vec![TableInfo::unqualified("_cf_KV")]
+        );
+    }
+
+    /// The happy path reports nothing unreadable — the field is a real signal,
+    /// not something that is always populated.
+    #[tokio::test]
+    async fn list_relationships_reports_no_unreadable_tables_when_all_succeed() {
+        let fx = seeded_relationship_fixture().await;
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert!(view.unreadable_tables.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_relationships_is_empty_when_no_foreign_keys() {
+        let fx = seeded_turso_fixture().await; // one table, no FKs
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert!(view.relationships.is_empty());
+        assert!(!view.truncated);
+    }
+
+    #[tokio::test]
+    async fn list_relationships_unknown_connection_is_not_found() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        let err = fx
+            .service
+            .list_relationships("nope", None)
+            .await
+            .expect_err("unknown id");
+        assert!(matches!(err, ServiceError::ConnectionNotFound(id) if id == "nope"));
+    }
+
+    #[tokio::test]
+    async fn list_relationships_caps_edges_and_flags_truncation() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1\n\n[[connections]]\nid=\"mem\"\nname=\"Mem\"\nkind=\"turso\"\npath=\":memory:\"\n",
+        );
+        let adapter = fx.service.adapter_for("mem").await.expect("connect mem");
+        adapter
+            .query("CREATE TABLE hub (id INTEGER PRIMARY KEY)")
+            .await
+            .expect("create hub");
+        // One more child table than the cap, each with a single FK to hub.
+        for i in 0..=MAX_RELATIONSHIPS {
+            adapter
+                .query(&format!(
+                    "CREATE TABLE child_{i} (id INTEGER PRIMARY KEY, \
+                     hub_id INTEGER REFERENCES hub(id))"
+                ))
+                .await
+                .expect("create child");
+        }
+        let view = fx
+            .service
+            .list_relationships("mem", None)
+            .await
+            .expect("relationships");
+        assert_eq!(view.relationships.len(), MAX_RELATIONSHIPS);
+        assert!(
+            view.truncated,
+            "more edges than the cap must flag truncated"
+        );
     }
 }

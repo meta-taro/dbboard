@@ -7,7 +7,7 @@ distributed databases.
 
 dbboard is a learning and reference project that explores multi-database
 integration, local-first tooling, and pluggable AI-assisted workflows. It
-exposes a unified, native UI for Neon, Supabase, Aurora DSQL, and
+exposes a unified, native UI for Neon, Supabase, Aurora DSQL, MySQL, and
 Turso/libSQL, with an adapter-based architecture that makes adding new
 databases straightforward.
 
@@ -16,14 +16,26 @@ databases straightforward.
 Pre-1.0; workspace at `0.3.0`. Phases 1, 3, and the Phase 4 AI assistant
 are closed, and dbboard now doubles as a **read-only MCP server**
 (`dbboard-mcp`) for external AI agents (ADR-0046). The Turso, Cloudflare
-D1, CockroachDB, Neon, Supabase, and AWS Aurora DSQL adapters all ship
-over the local HTTP backend. See [`CHANGELOG.md`](CHANGELOG.md) for what
+D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, and MySQL / MariaDB
+adapters all ship over the local HTTP backend. See
+[`CHANGELOG.md`](CHANGELOG.md) for what
 landed and [`docs/roadmap.md`](docs/roadmap.md) for the next phase.
 
 This is the **desktop** implementation. The web counterpart lives at
 [meta-taro/dbboard-web](https://github.com/meta-taro/dbboard-web) (Nuxt +
 NestJS). The two share concepts and feature parity goals but are
 independent codebases.
+
+## Download
+
+Prebuilt Windows (`.exe` / `.msi`) and macOS (`.dmg`) binaries for the
+latest release are on the **[download page](https://meta-taro.github.io/dbboard/)**
+(GitHub Pages), or directly on the
+[Releases](https://github.com/meta-taro/dbboard/releases) page. Every
+release ships a `SHA256SUMS.txt`; verify your download before running it.
+The binaries are not code-signed yet, so Windows SmartScreen / macOS
+Gatekeeper will warn on first launch (see [ADR-0047](docs/decisions.md)
+and [ADR-0044](docs/decisions.md)).
 
 ## Goals
 
@@ -40,8 +52,9 @@ independent codebases.
 - Neon (managed PostgreSQL)
 - Supabase (managed PostgreSQL)
 - AWS Aurora DSQL (managed PostgreSQL-wire)
+- MySQL / MariaDB (`mysql://…`, its own SQL dialect)
 
-All six adapters ship today. The four pg-wire flavors share the
+All seven adapters ship today. The four pg-wire flavors share the
 generic `dbboard-postgres` adapter (`sqlx` + `tls-rustls-ring`),
 differing only in the runtime label exposed by `DatabaseAdapter::id()`
 (`"postgres"`, `"neon"`, `"supabase"`, `"aurora-dsql"`) so the
@@ -49,6 +62,12 @@ connection picker and history records can label each connection
 precisely. See [ADR-0018](docs/decisions.md) (Neon),
 [ADR-0019](docs/decisions.md) (Supabase), and
 [ADR-0021](docs/decisions.md) (Aurora DSQL).
+
+MySQL / MariaDB is the first engine on a genuinely different SQL dialect
+(back-tick identifiers, back-slash string escapes, `X'…'` blobs, no
+`NaN`/`±Inf` in `DOUBLE`): it has its own `dbboard-mysql` adapter over
+`sqlx`'s MySQL driver and a distinct `SqlDialect::MySql`. See
+[ADR-0068](docs/decisions.md).
 
 Aurora DSQL also has a second connection kind, `aurora-dsql-iam`
 ([ADR-0036](docs/decisions.md)): instead of a manually supplied URL
@@ -120,8 +139,9 @@ with no configuration. The backend is chosen by, in priority order:
 
 1. The environment variables documented below
    (`DBBOARD_AURORA_DSQL_URL` > `DBBOARD_NEON_URL` >
-   `DBBOARD_SUPABASE_URL` > `DBBOARD_PG_URL` > `DBBOARD_D1_*` >
-   `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors the order is
+   `DBBOARD_SUPABASE_URL` > `DBBOARD_PG_URL` > `DBBOARD_MYSQL_URL` >
+   `DBBOARD_D1_*` > `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors
+   the order is
    alphabetical — setting two flavored vars at once is unusual but
    the precedence is fully defined.
 2. `DBBOARD_CONNECTION=<id>` resolved against `connections.toml` — the
@@ -147,6 +167,16 @@ keychain. Import is skip-and-report on id/reference conflicts. See
 [ADR-0038](docs/decisions.md) and
 [`docs/connections.md`](docs/connections.md#moving-connections-between-machines-encrypted-bundle).
 
+A connection to a database that only listens on a bastion's `localhost`
+can reach it through an **SSH tunnel**: the desktop connection form has an
+**SSH tunnel** section (for the Postgres family and MySQL) to set the
+bastion host/port/user, key- or password-based auth, and a mandatory
+server host-key pin (fingerprint or `known_hosts`). dbboard opens a
+pure-Rust local port forward (russh) and rewrites the connection URL to the
+tunnel before dialing; the key passphrase / SSH password live only in the
+keychain. See [ADR-0069](docs/decisions.md) and
+[`docs/connections.md`](docs/connections.md#ssh-tunnel-connectionsssh).
+
 The same menu bar carries a **Language** / **言語** submenu listing
 the 11 shipped locales by their native names. Picking one swaps the
 UI language in place; the `DBBOARD_LANG` env var still drives the
@@ -162,6 +192,31 @@ manual — there is no auto-download and nothing is replaced for you. The
 check is silent when offline or on any error, and you can turn it off
 completely by setting `DBBOARD_NO_UPDATE_CHECK` to any non-empty value. See
 [ADR-0040](docs/decisions.md).
+
+A **Backup…** button on the query toolbar dumps the active connection to a
+single self-contained `.sql` file — schema plus data, in the source engine's
+own dialect (verbatim DDL for the Turso/D1 SQLite family, reconstructed DDL
+for the Postgres family including Neon, Supabase, and Aurora DSQL). The dump
+streams `INSERT` batches straight to disk with keyset pagination, so a large
+database never buffers in memory. Before starting, a preflight row count warns
+if the database is bigger than a threshold (500k rows by default, adjustable
+under the **Backup** menu and remembered across restarts) so a giant dump
+isn't kicked off blindly; while running, a window shows table/row progress and
+a percentage bar and can **Cancel** at any time (the file keeps the partial
+dump). See [ADR-0049](docs/decisions.md) and [ADR-0050](docs/decisions.md) (the
+configurable threshold).
+
+A **Restore…** button on the same toolbar plays a `.sql` file back into the
+active connection — the read side of the backup above, and it also accepts
+foreign scripts (`pg_dump`, `sqlite3 .dump`). It runs whole-script against an
+engine of the matching family (SQLite for Turso/D1, Postgres for Neon,
+Supabase, and Aurora DSQL) and applies statements inside a transaction where
+the engine supports one (Aurora DSQL falls back to per-statement). To stay
+safe, restore targets **empty** databases: loading into a connection that
+already holds tables raises a confirmation rather than merging or diffing.
+A window shows per-statement progress and can **Cancel** mid-run; the summary
+reports how many schema and data statements applied and which failed. See
+[ADR-0051](docs/decisions.md).
 
 ### Local Turso/libSQL (default)
 
@@ -267,7 +322,8 @@ the dbboard-web HTTP contract — they go directly from the desktop
 binary's worker thread to the provider over `reqwest`.
 
 Responses stream incrementally for providers that advertise the
-capability (the wired Anthropic provider does — ADR-0026). Text
+capability (both wired providers do — the Anthropic provider per
+ADR-0026, the OpenAI provider per ADR-0052). Text
 appears chunk by chunk as the model generates it, and a running
 **Tokens: N in / M out** meter updates from the cumulative usage
 chunks. While a request is in flight the Send button is replaced
@@ -289,9 +345,10 @@ reset each session) for large schemas or metered keys. If some tables
 fail to describe, a warning shows the count and the suggestion
 proceeds with the rest.
 
-A single provider (Anthropic Messages API) is wired today, configured
-via **either** of two paths. They are evaluated in the order below;
-the first to resolve wins.
+Two providers are wired today — the **Anthropic** Messages API and
+the **OpenAI** Chat Completions API (ADR-0052, default model
+`gpt-4o`). Both are configured via **either** of two paths, evaluated
+in the order below; the first to resolve wins.
 
 #### 1. `ai-providers.toml` + OS keychain (recommended)
 
@@ -310,6 +367,10 @@ and its secret together. A hand-edited TOML works too — useful for
 seeding a new machine without opening the window — provided the
 `keyring_api_key_ref` it names has a matching keychain entry:
 
+The `kind` discriminator sits inline on each `[[providers]]` entry
+(`"anthropic"` or `"openai"`); `model` is optional and falls back to
+the provider's default when omitted:
+
 ```toml
 # ai-providers.toml
 version = 1
@@ -318,11 +379,20 @@ active_id = "primary"
 [[providers]]
 id = "primary"
 name = "Anthropic"
-[providers.kind]
-type = "anthropic"
+kind = "anthropic"
 model = "claude-sonnet-5"             # optional; omitted = default
 keyring_api_key_ref = "dbboard.ai.primary.api_key"
+
+[[providers]]
+id = "gpt"
+name = "ChatGPT"
+kind = "openai"
+model = "gpt-4o"                      # optional; omitted = gpt-4o
+keyring_api_key_ref = "dbboard.ai.gpt.api_key"
 ```
+
+The env-variable path below stays Anthropic-only; configure OpenAI
+through `ai-providers.toml` (or the **AI Providers** Settings window).
 
 #### 2. Environment variables (back-compat / CI)
 
@@ -359,6 +429,62 @@ schema-context in follow-ups and any secrets pasted into an
 Remaining deferred Stage 2 capability (full-DDL schema snapshots +
 function-calling — Group D) is tracked in ADR-0023 §9. Groups A / B
 / C are closed (ADR-0025 / ADR-0026 / ADR-0027).
+
+## MCP server (read-only)
+
+Besides being an AI *client*, dbboard also ships as a headless
+[MCP](https://modelcontextprotocol.io) *server* — `dbboard-mcp` — that
+hands the databases dbboard is already configured with to an external AI
+agent (Claude Desktop, Claude Code) as a small, **read-only** tool
+surface over stdio. It reuses the exact same `connections.toml` + OS
+keychain machinery as the GUI, so it adds no new place to keep
+credentials. See [ADR-0046](docs/decisions.md) and the crate README,
+[`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
+full spec.
+
+Five fixed tools: `list_connections`, `list_tables`, `describe_table`,
+`run_read_query`, and `get_annotations` (dbboard's local notes, ADR-0045).
+The security posture is the reason it is safe to point an agent at:
+
+- **Secrets never cross the wire.** The only connection metadata
+  serialized is `{ id, name, kind }` — no URLs, tokens, or keyring
+  references, and no error message embeds one.
+- **Read-only is engine-enforced, not string-matched.** Postgres-wire
+  runs each statement inside `BEGIN TRANSACTION READ ONLY`, libSQL/Turso
+  under `PRAGMA query_only`, and D1 classifies the AST — so `UPDATE`,
+  DDL, multi-statement batches, and `SELECT … FOR UPDATE` all fail at
+  the source.
+- **Result sets are bounded.** `run_read_query` clamps `max_rows` to a
+  hard cap of 1000 (default 200) with a `truncated` flag.
+- **stdout is sacred.** JSON-RPC frames own stdout; all logging goes to
+  stderr (`RUST_LOG`, default `info`).
+
+```sh
+cargo build --release -p dbboard-mcp
+# binary at target/release/dbboard-mcp(.exe)
+```
+
+Register it with Claude Desktop by adding the absolute path to the built
+binary in `claude_desktop_config.json`
+(`%APPDATA%\Claude\claude_desktop_config.json` on Windows,
+`~/Library/Application Support/Claude/claude_desktop_config.json` on
+macOS):
+
+```jsonc
+{
+  "mcpServers": {
+    "dbboard": {
+      "command": "C:\\path\\to\\dbboard-mcp.exe"
+    }
+  }
+}
+```
+
+With no arguments it reads the same per-user `connections.toml` the GUI
+uses; pass `--config` (or set `DBBOARD_CONFIG`) to point at a curated,
+least-privilege subset instead. Full configuration — including the
+per-OS config paths and running it under Claude Code — is documented in
+[`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md).
 
 ## Development
 
@@ -464,7 +590,18 @@ produced from Windows):
 
 ```sh
 cargo install cargo-bundle
-cargo bundle --release --package dbboard
+# cargo-bundle 0.6.0 has no package selector (`--package` is rejected), so
+# run it from the binary crate dir. It also can't read a workspace-inherited
+# version — `version.workspace = true` is a TOML map and it wants a string
+# ("invalid type: map, expected a string for key `package.version`"), so
+# temporarily inline the concrete version for the bundle only:
+cd apps/dbboard
+VERSION="$(cargo metadata --no-deps --format-version 1 \
+  | python3 -c 'import sys,json; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="dbboard"))')"
+cp Cargo.toml Cargo.toml.orig
+sed -i '' 's/^version\.workspace = true/version = "'"$VERSION"'"/' Cargo.toml
+cargo bundle --release
+mv Cargo.toml.orig Cargo.toml
 # → target/release/bundle/osx/dbboard.app
 # wrap it in a .dmg:
 hdiutil create -volname dbboard \

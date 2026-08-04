@@ -14,17 +14,38 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-05-26)**: `desktop` Phases 1 / 1.5 / 1.6 / 1.7 have
-  shipped and the workspace is at `0.1.0` (per ADR-0011). `web` has
-  closed its Phase 1: the pnpm + Nuxt 4 + NestJS 11 monorepo scaffold
-  with a `GET /health` smoke is on `develop`, and the contract is
-  byte-content-mirrored at `dbboard@89b7c70`. The baton is back on
-  `desktop` for Phase 2 (adapter trait + capability model +
-  `GET /capabilities`). When `/capabilities` lands, the desktop side
-  amends `docs/api-contract.md` and emits a handoff brief in the
-  format of `939fe22` so the web side can re-sync and pick up its
-  queued issues `0003` (NestJS HTTP surface), `0004` (Postgres
-  adapter), `0005` (row cap + body limit + conformance tests).
+- **Right now (2026-07-29)**: `desktop` has shipped Phases 1 through 5
+  and released **v0.3.0** — all six adapters (Turso, D1, CockroachDB,
+  Neon, Supabase, Aurora DSQL), the optional AI assistant (Phase 4), and
+  a read-only MCP server (`dbboard-mcp`, ADR-0046). In flight on
+  `feature/desktop-design-polish` (not yet released): the Tauri 2 +
+  SvelteKit client (`apps/desktop/`) has reached **full v0.4.0 feature
+  parity** with the egui client — every write/integration vertical is
+  ported (connections, cell edit, annotations, export, backup, restore,
+  AI) and it now updates itself in place via `tauri-plugin-updater`
+  (ADR-0067). On the same branch a **seventh adapter landed: MySQL /
+  MariaDB** (`dbboard-mysql`, ADR-0068) — the first engine on a genuinely
+  different SQL dialect (`SqlDialect::MySql`) rather than a SQLite- or
+  Postgres-wire flavor, wired through both clients with full parity. Also
+  on that branch, **SSH tunnelling** landed (`dbboard-tunnel`, a pure-Rust
+  russh local forward with mandatory host-key verification, ADR-0069) —
+  and its **editing UI is the first surface where the desktop client leads
+  egui** rather than catching up: the Tauri connection form can add and
+  edit a tunnel, while egui still needs `connections.toml` edited by hand.
+  The workspace is bumped to `0.4.0` on that branch; the
+  remaining gate before a v0.4.0 release is setting the
+  `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret (see
+  `docs/desktop-parity.md`). The tagged Release CI is proven green (see
+  Phase 5). The
+  `web` status below is **last-known as of the 2026-05-26 sync** and has
+  not been re-verified this session (`dbboard-web` is a separate repo,
+  not checked out here — only the HTTP contract and the history JSON
+  schema are shared). As of that sync `web` had closed its Phase 1 (pnpm
+  + Nuxt 4 + NestJS 11 monorepo scaffold with a `GET /health` smoke on
+  `develop`, contract byte-content-mirrored at `dbboard@89b7c70`), with
+  the baton back on `desktop`. No contract change in this v0.3.0 line
+  needs a web mirror — the MCP server is desktop-local and does not
+  touch the shared HTTP contract.
 - **Exception**: contract changes (endpoint shapes, error categories,
   schema metadata) are drafted in one repo, mirrored in the other
   immediately, and only then built against.
@@ -257,6 +278,14 @@ work without it. Trait + first-provider shape locked in
       against `POST /v1/messages`, `explain` / `suggest_sql`,
       construction-time key/model validation, redacted `Debug`,
       24 unit + 7 wiremock round-trip tests, no live network.)
+- [x] Second provider: ChatGPT (OpenAI API) — `dbboard-openai`
+      crate (ADR-0052; landed via PR #114 on 2026-07-24 — `reqwest`
+      against `POST /v1/chat/completions`, `explain` / `suggest_sql`
+      + full SSE streaming parity (`has_streaming: true`), Bearer
+      auth, default model `gpt-4o`, redacted `Debug`, 48 unit +
+      wiremock tests, no live network). Selectable alongside Anthropic
+      via the AI Providers settings window (`kind = "openai"`); the
+      `DBBOARD_ANTHROPIC_*` env path stays Anthropic-only.)
 - [x] `apps/dbboard` env-var wiring (ADR-0023; landed via PR #24
       on 2026-06-17 — `DBBOARD_ANTHROPIC_API_KEY` (required gate) +
       optional `DBBOARD_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
@@ -450,6 +479,16 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 - [x] Official logo — formalised the hand-authored, original app icon
       (ADR-0032) as the project logo: canonical asset, DESIGN.md +
       README usage, kept-source master (issue 0015, PR #78).
+- [x] Branded design system — a central `dbboard-ui::theme` module replaces
+      stock egui styling: one indigo-tinted palette registered for both Light
+      and Dark (Auto swaps for free), spacing/radius tokens, and a semantic
+      colour axis (`danger`/`warning`/`success`) so no call site hard-codes a
+      theme-blind colour ([ADR-0056](decisions.md)). Applied at the component
+      level: a filled accent **Run** primary button, a header strip below the
+      menu bar (active-connection pill + inline Auto | Light | Dark toggle), a
+      sidebar table-count badge, and a `×1/×1K/×1M` unit editor for the backup
+      warn threshold ([ADR-0057](decisions.md), PR #123). Font bundling (Inter +
+      JetBrains Mono) stays a deferred Phase 2 fast-follow.
 - [x] Local table/column annotations — an editable **Note** column in the
       Structure tab, stored per-user in `annotations.toml` (keyed on the
       stable connection id, so a rename keeps the notes) and written through
@@ -458,6 +497,58 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       *not* surface Postgres `pg_description` (its own ADR) or ride the
       `.dbbx` secret bundle ([ADR-0045](decisions.md), PR #90). Follow-up
       render refactor tracked in issue 0016.
+- [x] Read-only MCP server (`dbboard-mcp`) — dbboard now doubles as a
+      headless [MCP](https://modelcontextprotocol.io) server that hands its
+      already-configured databases to an external AI agent (Claude Desktop /
+      Claude Code) over stdio as a small **read-only** tool surface. Seven
+      read-only tools (`list_connections`, `list_tables`, `describe_table`,
+      `search_schema`, `list_relationships`, `run_read_query`,
+      `get_annotations`) — the surface opened at five and grew by
+      `search_schema` ([ADR-0053](decisions.md), PR #118) then
+      `list_relationships` ([ADR-0054](decisions.md), PR #120) — reusing the
+      exact `connections.toml` + OS-keychain machinery as the GUI. Secrets never
+      cross the wire (only `{id,name,kind}` is serialized); read-only is
+      **engine-enforced** (`BEGIN TRANSACTION READ ONLY` / `PRAGMA
+      query_only` / D1 AST classification), not string-matched; result sets
+      clamp to 1000 rows; stdout is reserved for JSON-RPC and all logs go to
+      stderr. The v0.3.0 headline feature ([ADR-0046](decisions.md), extended
+      by [ADR-0053](decisions.md) and [ADR-0054](decisions.md);
+      `crates/dbboard-mcp/`). This closes dbboard's AI story in both
+      directions: AI *client* (Phase 4) and AI *server* (here).
+- [x] Multi-column result sort — click a column header to sort it
+      (ascending → descending → off), Ctrl/Shift-click to add a secondary
+      then tertiary key (capped at three); headers show a ▲/▼ arrow and, when
+      more than one column sorts, a 1-based level number. The ordering lives in
+      `dbboard-core::sort` (out of the UI event handlers) and sorts by a
+      permutation of row indices rather than moving rows, so selection and
+      inline-edit row/PK mappings stay valid; a fresh result resets the sort
+      ([ADR-0048](decisions.md), PR #106).
+- [x] Logical backup (dump) — a **Backup…** toolbar button dumps the whole
+      connection to a single `.sql` file: an in-process worker task walks every
+      table (SQLite for Turso/D1, full schema reconstruction for the Postgres
+      family incl. Neon/Supabase/Aurora DSQL), streaming `INSERT` batches so a
+      large DB never buffers in memory. A preflight row count warns before a
+      dump crosses the warn threshold (500k rows by default) so a
+      giant DB isn't started blindly, a live progress window shows table/row
+      counters + a percent bar and can **Cancel** mid-dump (the file keeps the
+      partial dump), and the completion summary surfaces any skipped/truncated
+      tables. The read side ships as restore below ([ADR-0049](decisions.md)).
+- [x] Configurable backup warn threshold — the 500k dump warn limit is now a
+      persisted, user-editable setting under the **Backup** menu (stored in
+      `ui-settings.toml`, remembered across restarts) instead of a hard-coded
+      constant ([ADR-0050](decisions.md), PR #110). Editing follow-up
+      (PR #123): a `×1/×1K/×1M` unit selector so a round 500k reads "500 ×1K"
+      instead of scrubbing a raw six-digit `DragValue` ([ADR-0057](decisions.md)).
+- [x] Logical restore (import) — a **Restore…** toolbar button plays a `.sql`
+      file back into the active connection: a two-layer core pipeline (lexical
+      `split_statements` + sqlparser `classify_script`) accepts foreign
+      `pg_dump` / `sqlite3 .dump` scripts too, and runs whole-script against an
+      engine of the matching family (atomic transaction on Turso/Postgres,
+      per-statement on Aurora DSQL and D1). Restore targets **empty** databases
+      — a populated target raises a strong-confirm modal rather than merging or
+      diffing — and a live progress window can **Cancel** mid-run, with a
+      completion summary of applied schema/data statements and failures
+      ([ADR-0051](decisions.md), PR #112).
 - [ ] Export results (CSV / JSON)
 - [ ] Saved queries
 - [ ] Schema diff between two connections
@@ -470,7 +561,11 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       MSVC CRT so no VC++ Redistributable is needed) plus cargo-wix MSI
       installer sources ([ADR-0032](decisions.md), PR #52). Building the
       MSI is a maintainer step (`cargo wix`); the plain exe needs no
-      extra tooling.
+      extra tooling. In-use follow-up (PR #105): the MSI now installs a
+      **Start Menu** entry and a **Desktop** shortcut (non-advertised
+      `Shortcut` + per-user HKCU `RegistryValue` key-path + `RemoveFolder`),
+      both co-located in the Binaries feature to keep WiX ICE69 a benign
+      warning; uninstall removes them and the Start Menu folder.
 - [x] Collector setup pack — `docs/collector-setup/` ships a
       secret-free `connections.template.toml` (D1 / aurora-dsql-iam /
       supabase) plus a Windows `cmdkey` quickstart, so the
@@ -492,6 +587,17 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       hygiene) plus a tester onboarding guide (`docs/internal-testing.md`),
       and `.gitignore` rules that keep `*.dbbx` / `/dist/` /
       `connections.toml` out of the public repo (PR #72).
+- [x] PII / secret leak scanning — `scripts/pii-scan.sh` blocks real store
+      names, credentials, and maintainer PII from entering the public repo on
+      every commit (pre-commit), every commit message (commit-msg), and daily
+      in CI (`pii-scan.yml`). Two severities: a never-committed denylist
+      (`.pii-denylist` local / `PII_DENYLIST` CI secret) plus private-key/AWS
+      shapes BLOCK; the false-positive-prone shapes (passworded URL, personal
+      email, home path) are advisory-only. Matches are redacted so a public log
+      never echoes a hidden string. The preventive companion to the one-time
+      history rewrite (`docs/maintainer/history-sanitize-runbook.md`), which
+      remains the human's pending destructive ball ([ADR-0055](decisions.md),
+      PR #122).
 - [x] Build & hand off the collector release exe from develop — the
       ADR-0038-inclusive `dbboard.exe` was rebuilt and physically handed
       off to the data-collection operator (2026-07-16).
@@ -499,13 +605,28 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       builds Windows (exe + MSI) and macOS (`.dmg`) on native runners and
       publishes them to the matching GitHub Release with a combined
       `SHA256SUMS.txt`; `workflow_dispatch` runs the same build as a
-      non-publishing smoke test ([ADR-0044](decisions.md), PR #88). Authored
-      on Windows and **not yet proven green** — the first tag push (or a
-      dispatch smoke run) is the intended first live test.
+      non-publishing smoke test ([ADR-0044](decisions.md), PR #88). **Proven
+      green** by the v0.3.0 release (2026-07-22): the first live tag push
+      surfaced two macOS `cargo-bundle` quirks (no `--package` selector; can't
+      read a workspace-inherited `version.workspace = true` — fixed by
+      inlining the resolved version for the bundle step, PR #100) and one
+      operational gotcha — `gh release upload` only *attaches* to an existing
+      release, so the release object must be created before the publish job
+      runs (it did for v0.1.0/v0.2.0 by hand). Making the publish step
+      create-if-missing is a tracked follow-up.
 - [x] macOS packaging — `[package.metadata.bundle]` lets `cargo bundle
       --release` produce `dbboard.app` on a Mac; the release CI wraps it in a
       compressed `.dmg` via `hdiutil` ([ADR-0044](decisions.md), PR #88).
       Sources are in-tree; the build + code-signing/notarization run on a Mac.
+- [x] Download page on GitHub Pages — a single static page (`site/`) deployed
+      by a first-party Pages workflow (`configure-pages` /
+      `upload-pages-artifact` / `deploy-pages`) that links the latest release
+      assets, shows the `SHA256SUMS.txt` verification steps, and warns about
+      the unsigned-binary SmartScreen/Gatekeeper prompts. The in-app update
+      notice's "download page" link now resolves to a real page
+      ([ADR-0047](decisions.md), PR #104). The `.exe` is the primary (filled)
+      button and the `.msi` the secondary (outline) — a deliberate two-tier
+      layout, kept as-is.
 - [ ] Code signing (Authenticode / Apple Developer ID + notarization) —
       removes the SmartScreen / Gatekeeper "unknown publisher" warnings on the
       unsigned artifacts. Needs paid certs + repo secrets; the release

@@ -24,6 +24,7 @@ result-export-selected-csv = 儲存選取列為 CSV…
 result-clear-selection = 清除選取
 result-selected-count = 已選取 { $count } 列
 result-select-row-hint = 點擊選取該列（Ctrl / Shift 多選）
+result-sort-hint = 點擊排序；Ctrl / Shift 新增排序層級
 
 error-prefix-connection = 連線錯誤
 error-prefix-query = 查詢錯誤
@@ -107,6 +108,7 @@ ai-settings-field-model = 模型（選填）
 ai-settings-field-api-key = API 金鑰
 ai-settings-replace-api-key = 取代 API 金鑰
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = 使用中：{ $name }
 
 ai-include-details = 包含欄位詳細資訊
@@ -145,3 +147,49 @@ edit-set-null = 設為 NULL
 edit-revert-cell = 還原儲存格
 edit-cell-hint = 雙擊編輯 · 右鍵設為 NULL
 edit-save-unexpected-rows = 已停止儲存：應為 1 列，卻影響了 { $rows } 列
+
+# ADR-0049 backup (logical dump).
+backup-button = 備份…
+backup-button-hint = 將此資料庫的資料表匯出為 SQL 檔案
+backup-planning = 正在準備備份…
+backup-warn-title = 大型資料庫
+backup-warn-body = 此資料庫所有資料表共有 { $rows } 列。匯出可能需要一段時間並產生較大的檔案。
+backup-warn-continue = 仍然備份
+backup-warn-cancel = 取消
+backup-dialog-title = 備份另存為
+backup-progress-title = 正在備份
+backup-progress-table = 第 { $done } / { $total } 個資料表
+backup-progress-rows = { $done } / { $total } 列
+backup-progress-current = 目前：{ $table }
+backup-cancel-button = 取消
+backup-done-title = 備份完成
+backup-done-summary = 已匯出 { $tables } 個資料表，{ $rows } 列。
+backup-done-cancelled = 備份已取消 — 檔案包含部分匯出內容。
+backup-done-failures = 有 { $count } 個資料表無法讀取，已略過。
+backup-done-truncations = 有 { $count } 個資料表被中途截斷。
+backup-failed-title = 備份失敗
+backup-close-button = 關閉
+
+# ADR-0051：邏輯還原（匯入）。
+restore-button = 還原…
+restore-button-hint = 將 SQL 檔案套用到此資料庫
+restore-planning = 正在讀取檔案…
+restore-dialog-title = 選擇要還原的 SQL 檔案
+restore-warn-title = 目標非空
+restore-warn-body = 此資料庫已有 { $tables } 個資料表。還原 { $statements } 條陳述式可能會失敗或覆寫現有資料。
+restore-warn-continue = 仍然還原
+restore-warn-cancel = 取消
+restore-progress-title = 正在還原
+restore-progress-statements = 陳述式 { $done } / { $total }
+restore-cancel-button = 取消
+restore-done-title = 還原完成
+restore-done-summary = 已套用 { $statements } 條陳述式：{ $ddl } 條結構，{ $data } 條資料。
+restore-done-cancelled = 還原已取消 — 目標包含部分還原內容。
+restore-done-failures = 有 { $count } 條陳述式失敗，已略過。
+restore-close-button = 關閉
+restore-failed-title = 還原失敗
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = 備份
+backup-threshold-label = 警告閾值（列數）
+backup-threshold-hint = 傾印前，當總列數超過此值時顯示大型資料庫警告。儲存至 ui-settings.toml。

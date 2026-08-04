@@ -24,6 +24,7 @@ result-export-selected-csv = Enregistrer la sélection en CSV…
 result-clear-selection = Effacer la sélection
 result-selected-count = { $count } sélectionnée(s)
 result-select-row-hint = Cliquer pour sélectionner la ligne (Ctrl / Maj pour plusieurs)
+result-sort-hint = Cliquez pour trier ; Ctrl / Maj pour ajouter un niveau
 
 error-prefix-connection = Erreur de connexion
 error-prefix-query = Erreur de requête
@@ -108,6 +109,7 @@ ai-settings-field-model = Modèle (optionnel)
 ai-settings-field-api-key = Clé API
 ai-settings-replace-api-key = Remplacer la clé API
 ai-settings-kind-anthropic = Anthropic
+ai-settings-kind-openai = OpenAI
 ai-active-with-name = Actif : { $name }
 
 ai-include-details = Inclure les détails des colonnes
@@ -146,3 +148,49 @@ edit-set-null = Définir NULL
 edit-revert-cell = Rétablir la cellule
 edit-cell-hint = Double-cliquez pour modifier · clic droit pour NULL
 edit-save-unexpected-rows = Enregistrement arrêté : 1 ligne attendue, { $rows } affectée(s)
+
+# ADR-0049 backup (logical dump).
+backup-button = Sauvegarde…
+backup-button-hint = Exporter les tables de cette base de données dans un fichier SQL
+backup-planning = Préparation de la sauvegarde…
+backup-warn-title = Base de données volumineuse
+backup-warn-body = Cette base de données compte { $rows } lignes sur l'ensemble de ses tables. L'export peut être long et produire un fichier volumineux.
+backup-warn-continue = Sauvegarder quand même
+backup-warn-cancel = Annuler
+backup-dialog-title = Enregistrer la sauvegarde sous
+backup-progress-title = Sauvegarde en cours
+backup-progress-table = Table { $done } sur { $total }
+backup-progress-rows = { $done } / { $total } lignes
+backup-progress-current = En cours : { $table }
+backup-cancel-button = Annuler
+backup-done-title = Sauvegarde terminée
+backup-done-summary = { $tables } table(s), { $rows } lignes exportées.
+backup-done-cancelled = Sauvegarde annulée — le fichier contient un export partiel.
+backup-done-failures = { $count } table(s) n'ont pas pu être lues et ont été ignorées.
+backup-done-truncations = { $count } table(s) ont été tronquées en cours de route.
+backup-failed-title = Échec de la sauvegarde
+backup-close-button = Fermer
+
+# ADR-0051 : restauration logique (import).
+restore-button = Restaurer…
+restore-button-hint = Appliquer un fichier SQL à cette base de données
+restore-planning = Lecture du fichier…
+restore-dialog-title = Choisir un fichier SQL à restaurer
+restore-warn-title = La cible n'est pas vide
+restore-warn-body = Cette base de données contient déjà { $tables } table(s). Restaurer { $statements } instruction(s) peut échouer ou écraser des données existantes.
+restore-warn-continue = Restaurer quand même
+restore-warn-cancel = Annuler
+restore-progress-title = Restauration en cours
+restore-progress-statements = Instruction { $done } sur { $total }
+restore-cancel-button = Annuler
+restore-done-title = Restauration terminée
+restore-done-summary = { $statements } instruction(s) appliquée(s) : { $ddl } schéma, { $data } données.
+restore-done-cancelled = Restauration annulée — la cible contient une restauration partielle.
+restore-done-failures = { $count } instruction(s) ont échoué et ont été ignorées.
+restore-close-button = Fermer
+restore-failed-title = Échec de la restauration
+
+# ADR-0050: persisted, user-editable backup warn threshold.
+backup-settings-menu = Sauvegarde
+backup-threshold-label = Avertir au-delà de (lignes)
+backup-threshold-hint = Affiche l'avertissement de grande base de données avant le vidage lorsque le nombre total de lignes dépasse cette valeur. Enregistré dans ui-settings.toml.

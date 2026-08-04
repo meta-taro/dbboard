@@ -28,14 +28,17 @@ use std::sync::{Arc, PoisonError, RwLock, Weak};
 use async_trait::async_trait;
 use dbboard_core::{
     classify_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
-    DbError, DbResult, QueryResult, ReadOnlyStatement, Row, SqlDialect, TableInfo, TableSchema,
-    Value, MAX_RESULT_ROWS,
+    DbError, DbResult, ForeignKey, QueryResult, ReadOnlyStatement, Row, SqlDialect, TableInfo,
+    TableSchema, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
-use sqlx::{Column as _, Either, Row as _, TypeInfo as _, ValueRef as _};
+use sqlx::{Column as _, Either, Executor as _, Row as _, TypeInfo as _, ValueRef as _};
 
 mod dsql_auth;
+mod table_ddl;
+
+use table_ddl::{assemble_table_ddl, ColumnDef, ConstraintDef, SequenceDef, TableDdlParts};
 
 /// Where an adapter gets the `PgPool` to run the next statement.
 ///
@@ -118,6 +121,86 @@ const DESCRIBE_PK_SQL: &str = "SELECT kcu.column_name::TEXT \
      WHERE tc.constraint_type = 'PRIMARY KEY' \
        AND tc.table_schema = $1 AND tc.table_name = $2 \
      ORDER BY kcu.ordinal_position";
+
+/// Foreign keys of one table, one row per key column in key order
+/// (ADR-0054). Read from `pg_catalog` so composite keys keep their column
+/// order: `con.conkey`/`con.confkey` are parallel `smallint[]` arrays of
+/// local/referenced attribute numbers, unnested `WITH ORDINALITY` and
+/// re-joined on the shared position so local and referenced columns stay
+/// aligned. `contype = 'f'` selects foreign keys; the referenced table is
+/// resolved from `con.confrelid`. Grouped by constraint in the assembler.
+/// Names are cast to `TEXT` and the ordinal to `INT4` for the same
+/// cross-flavor decode reasons as [`DESCRIBE_COLUMNS_SQL`].
+const FOREIGN_KEYS_SQL: &str = "SELECT con.conname::TEXT, \
+     latt.attname::TEXT, \
+     fn.nspname::TEXT, \
+     fc.relname::TEXT, \
+     fatt.attname::TEXT \
+     FROM pg_catalog.pg_constraint con \
+     JOIN pg_catalog.pg_class c ON c.oid = con.conrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     JOIN pg_catalog.pg_class fc ON fc.oid = con.confrelid \
+     JOIN pg_catalog.pg_namespace fn ON fn.oid = fc.relnamespace \
+     JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS lk(attnum, ord) ON TRUE \
+     JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS rk(attnum, ord) ON rk.ord = lk.ord \
+     JOIN pg_catalog.pg_attribute latt ON latt.attrelid = con.conrelid AND latt.attnum = lk.attnum \
+     JOIN pg_catalog.pg_attribute fatt ON fatt.attrelid = con.confrelid AND fatt.attnum = rk.attnum \
+     WHERE con.contype = 'f' AND n.nspname = $1 AND c.relname = $2 \
+     ORDER BY con.conname, lk.ord";
+
+/// Columns of one table for DDL reconstruction (ADR-0049), read from
+/// `pg_catalog` so the type comes back canonicalised by `format_type` and
+/// the default verbatim from `pg_get_expr` — richer than the
+/// `information_schema` view `describe_table` uses.
+const DDL_COLUMNS_SQL: &str = "SELECT a.attname::TEXT, \
+     format_type(a.atttypid, a.atttypmod)::TEXT, \
+     a.attnotnull, \
+     pg_get_expr(ad.adbin, ad.adrelid)::TEXT \
+     FROM pg_catalog.pg_attribute a \
+     JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+     WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
+     ORDER BY a.attnum";
+
+/// All constraints of one table, with names preserved and the body from
+/// `pg_get_constraintdef`. Ordered primary-key-first for conventional
+/// output; constraint order does not affect the DDL's validity.
+const DDL_CONSTRAINTS_SQL: &str = "SELECT con.conname::TEXT, pg_get_constraintdef(con.oid)::TEXT \
+     FROM pg_catalog.pg_constraint con \
+     JOIN pg_catalog.pg_class c ON c.oid = con.conrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND c.relname = $2 \
+     ORDER BY (con.contype <> 'p'), con.conname";
+
+/// Standalone indexes of one table — those *not* backing a constraint,
+/// which are recreated implicitly by their constraint. Body verbatim from
+/// `pg_get_indexdef`.
+const DDL_INDEXES_SQL: &str = "SELECT pg_get_indexdef(idx.indexrelid)::TEXT \
+     FROM pg_catalog.pg_index idx \
+     JOIN pg_catalog.pg_class ic ON ic.oid = idx.indexrelid \
+     JOIN pg_catalog.pg_class tc ON tc.oid = idx.indrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = tc.relnamespace \
+     WHERE n.nspname = $1 AND tc.relname = $2 \
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint con \
+                       WHERE con.conindid = idx.indexrelid) \
+     ORDER BY ic.relname";
+
+/// Sequences owned by a column of one table (a `SERIAL`/`GENERATED`
+/// column's backing sequence). Emitted ahead of the table. Aurora DSQL has
+/// no sequences, so this query is skipped there (ADR-0021).
+const DDL_SEQUENCES_SQL: &str = "SELECT sn.nspname::TEXT, s.relname::TEXT, \
+     format_type(seq.seqtypid, NULL)::TEXT, \
+     seq.seqstart, seq.seqincrement, seq.seqmin, seq.seqmax, seq.seqcache, seq.seqcycle \
+     FROM pg_catalog.pg_class s \
+     JOIN pg_catalog.pg_namespace sn ON sn.oid = s.relnamespace \
+     JOIN pg_catalog.pg_sequence seq ON seq.seqrelid = s.oid \
+     JOIN pg_catalog.pg_depend d ON d.objid = s.oid \
+       AND d.classid = 'pg_class'::regclass AND d.deptype = 'a' \
+     JOIN pg_catalog.pg_class t ON t.oid = d.refobjid \
+     JOIN pg_catalog.pg_namespace tn ON tn.oid = t.relnamespace \
+     WHERE s.relkind = 'S' AND tn.nspname = $1 AND t.relname = $2 \
+     ORDER BY s.relname";
 
 /// Connection parameters for a PostgreSQL-wire database.
 ///
@@ -415,6 +498,19 @@ impl DatabaseAdapter for PostgresAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_describe_table: true,
+            has_table_ddl: true,
+            has_execute: true,
+            // Foreign keys are read from `pg_catalog` (ADR-0054). Aurora DSQL
+            // does not support foreign-key constraints, so the query simply
+            // returns no rows there — the capability stays advertised because
+            // the introspection path itself works on every flavor.
+            has_foreign_keys: true,
+            // Aurora DSQL rejects mixed DDL+DML in one transaction and caps a
+            // transaction at a single DDL statement (ADR-0021), so it cannot
+            // honour an atomic multi-statement restore — it falls back to
+            // per-statement, best-effort execution (ADR-0051). Every other
+            // Postgres flavor has ordinary multi-statement transactions.
+            has_atomic_restore: self.flavor != FLAVOR_AURORA_DSQL,
             ..Capabilities::default()
         }
     }
@@ -513,6 +609,140 @@ impl DatabaseAdapter for PostgresAdapter {
         })
     }
 
+    async fn foreign_keys(&self, table: &TableInfo) -> DbResult<Vec<ForeignKey>> {
+        // Unqualified `TableInfo` defaults to `public`, mirroring
+        // `describe_table`. Unlike SQLite, a table without foreign keys is
+        // simply an empty result — not an error — so no missing-table check
+        // is needed here; the caller already holds the table from
+        // `list_tables`.
+        let schema = table.schema.as_deref().unwrap_or("public");
+        let pool = self.pool.current();
+
+        // Extended protocol with binds: the schema/table names are
+        // introspection data and stay out of the SQL text.
+        let rows = sqlx::query(FOREIGN_KEYS_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+
+        let fk_rows = rows
+            .iter()
+            .map(|row| -> DbResult<FkRow> {
+                Ok(FkRow {
+                    constraint_name: row.try_get(0).map_err(|e| classify_error(&e))?,
+                    local_column: row.try_get(1).map_err(|e| classify_error(&e))?,
+                    referenced_schema: row.try_get(2).map_err(|e| classify_error(&e))?,
+                    referenced_table: row.try_get(3).map_err(|e| classify_error(&e))?,
+                    referenced_column: row.try_get(4).map_err(|e| classify_error(&e))?,
+                })
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+
+        Ok(assemble_foreign_keys(fk_rows))
+    }
+
+    async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
+        // Unqualified `TableInfo` defaults to `public`, matching
+        // `describe_table` and where unqualified DDL lands.
+        let schema = table.schema.as_deref().unwrap_or("public");
+        let pool = self.pool.current();
+
+        // Columns first: an empty set means the table does not exist
+        // (pg_catalog returns no rows rather than erroring), surfaced the
+        // same way `describe_table` reports a missing relation.
+        let column_rows = sqlx::query(DDL_COLUMNS_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        if column_rows.is_empty() {
+            return Err(DbError::Query(format!(
+                "relation \"{schema}.{}\" does not exist",
+                table.name
+            )));
+        }
+        let columns = column_rows
+            .iter()
+            .map(|row| -> DbResult<ColumnDef> {
+                Ok(ColumnDef {
+                    name: row.try_get(0).map_err(|e| classify_error(&e))?,
+                    type_name: row.try_get(1).map_err(|e| classify_error(&e))?,
+                    not_null: row.try_get(2).map_err(|e| classify_error(&e))?,
+                    default_expr: row.try_get(3).map_err(|e| classify_error(&e))?,
+                })
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+
+        let constraint_rows = sqlx::query(DDL_CONSTRAINTS_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        let constraints = constraint_rows
+            .iter()
+            .map(|row| -> DbResult<ConstraintDef> {
+                Ok(ConstraintDef {
+                    name: row.try_get(0).map_err(|e| classify_error(&e))?,
+                    def: row.try_get(1).map_err(|e| classify_error(&e))?,
+                })
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+
+        let index_rows = sqlx::query(DDL_INDEXES_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+        let indexes = index_rows
+            .iter()
+            .map(|row| row.try_get::<String, _>(0).map_err(|e| classify_error(&e)))
+            .collect::<DbResult<Vec<_>>>()?;
+
+        // Aurora DSQL has no sequences (ADR-0021): skip the query rather
+        // than depend on it returning empty against a catalog that may not
+        // model `pg_sequence`. Other flavors run it.
+        let sequences = if self.flavor == FLAVOR_AURORA_DSQL {
+            Vec::new()
+        } else {
+            let seq_rows = sqlx::query(DDL_SEQUENCES_SQL)
+                .bind(schema)
+                .bind(&table.name)
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| classify_error(&e))?;
+            seq_rows
+                .iter()
+                .map(|row| -> DbResult<SequenceDef> {
+                    Ok(SequenceDef {
+                        schema: row.try_get(0).map_err(|e| classify_error(&e))?,
+                        name: row.try_get(1).map_err(|e| classify_error(&e))?,
+                        type_name: row.try_get(2).map_err(|e| classify_error(&e))?,
+                        start: row.try_get(3).map_err(|e| classify_error(&e))?,
+                        increment: row.try_get(4).map_err(|e| classify_error(&e))?,
+                        min_value: row.try_get(5).map_err(|e| classify_error(&e))?,
+                        max_value: row.try_get(6).map_err(|e| classify_error(&e))?,
+                        cache: row.try_get(7).map_err(|e| classify_error(&e))?,
+                        cycle: row.try_get(8).map_err(|e| classify_error(&e))?,
+                    })
+                })
+                .collect::<DbResult<Vec<_>>>()?
+        };
+
+        Ok(assemble_table_ddl(&TableDdlParts {
+            schema: schema.to_owned(),
+            table: table.name.clone(),
+            columns,
+            constraints,
+            indexes,
+            sequences,
+        }))
+    }
+
     async fn query(&self, sql: &str) -> DbResult<QueryResult> {
         // sqlx::raw_sql uses the simple query protocol, which streams
         // row data and command-completion counts in one pass — so SELECT
@@ -566,45 +796,127 @@ impl DatabaseAdapter for PostgresAdapter {
         // sqlx `Executor` borrows inside an `#[async_trait]` method trips
         // the "implementation of `Executor` is not general enough" HRTB
         // error, which a plain async fn with concrete lifetimes avoids.
-        run_read_only_txn(self.pool.current(), sql, max_rows, kind).await
+        run_read_only_txn(self.pool.current(), self.flavor, sql, max_rows, kind).await
     }
+
+    async fn execute(&self, sql: &str) -> DbResult<u64> {
+        // Reuse the simple-query path: it already streams command-completion
+        // counts, so a DML statement reports its affected count and a
+        // row-returning statement (rare in a restore) runs and reports 0.
+        self.query(sql).await.map(|result| result.rows_affected)
+    }
+
+    async fn execute_in_transaction(&self, statements: &[String]) -> DbResult<()> {
+        // An empty batch would open and commit an empty transaction; skip it.
+        if statements.is_empty() {
+            return Ok(());
+        }
+        run_restore_txn(self.pool.current(), statements).await
+    }
+}
+
+/// Apply `statements` as one atomic transaction on a pooled connection.
+///
+/// The sqlx `Transaction` rolls back on drop, so an early `?` return from a
+/// failed statement leaves the target untouched rather than half-populated —
+/// the all-or-nothing guarantee ADR-0051 relies on for `has_atomic_restore`
+/// engines. Lives as a free `async fn` for the same reason as
+/// [`run_read_only_txn`]: borrowing the sqlx `Executor` inside an
+/// `#[async_trait]` method trips the "implementation of `Executor` is not
+/// general enough" HRTB error.
+async fn run_restore_txn(pool: PgPool, statements: &[String]) -> DbResult<()> {
+    let mut tx = pool.begin().await.map_err(|e| classify_error(&e))?;
+    for stmt in statements {
+        // Deref-coerce `&mut Transaction` to a concrete `&mut PgConnection`
+        // so the executor borrow has a single nameable lifetime, the same
+        // reason `fetch_via_cursor` takes a concrete connection.
+        exec_in_txn(&mut tx, stmt).await?;
+    }
+    tx.commit().await.map_err(|e| classify_error(&e))?;
+    Ok(())
+}
+
+/// Run one statement inside the restore transaction via the extended query
+/// protocol.
+///
+/// The extended protocol carries exactly one command per round-trip, which
+/// the restore splitter already guarantees, and a restore discards its result
+/// rows — so the binary result format costs nothing here. Row-producing paths
+/// must NOT copy this: they go through `raw_sql` so [`decode_cell`] sees
+/// text-format values. (The per-statement, non-atomic path — used by Aurora
+/// DSQL — goes through [`PostgresAdapter::query`]'s `raw_sql`, so it keeps the
+/// simple protocol's broader statement support.)
+async fn exec_in_txn(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<()> {
+    sqlx::query(sql)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| classify_error(&e))?;
+    Ok(())
+}
+
+/// Session statements that turn an open transaction into the read-only,
+/// self-cancelling one ADR-0046 §8 relies on: `SET TRANSACTION READ ONLY`
+/// (the engine rejects every write for the transaction's life) and a
+/// `SET LOCAL statement_timeout` (the server-side cancellation backstop).
+///
+/// Aurora DSQL supports neither: it parses `SET TRANSACTION` as a request
+/// to set a GUC named `TRANSACTION` and rejects it
+/// (`setting configuration parameter "TRANSACTION" not supported`), and it
+/// manages `statement_timeout` itself (both are engine-managed, ADR-0021).
+/// So it gets an empty preamble and the read-only guarantee rests solely on
+/// the pre-connection [`classify_read_only`] AST guard — which already
+/// rejects every write, multi-statement batch, and data-modifying CTE
+/// before a connection is even opened.
+fn read_only_preamble(flavor: &str) -> Vec<String> {
+    if flavor == FLAVOR_AURORA_DSQL {
+        return Vec::new();
+    }
+    vec![
+        "SET TRANSACTION READ ONLY".to_string(),
+        format!("SET LOCAL statement_timeout = '{READ_ONLY_STATEMENT_TIMEOUT_SECS}s'"),
+    ]
 }
 
 /// Execute a validated read-only statement inside a server-side
 /// `READ ONLY` transaction and return at most `max_rows` rows.
 ///
-/// A `READ ONLY` transaction makes Postgres itself reject every write for
-/// its whole duration — INSERT / UPDATE / DELETE / DDL, `nextval()`,
-/// data-modifying CTEs, and a writing `FOR UPDATE` — closing the
-/// simple-query multi-statement and CTE-DML hazards even if the
-/// classifier's grammar missed one. The sqlx `Transaction` rolls back on
-/// drop, so an early `?` return never leaves the pooled connection
-/// mid-transaction.
+/// On the standard Postgres flavors a `READ ONLY` transaction makes the
+/// engine itself reject every write for its whole duration — INSERT /
+/// UPDATE / DELETE / DDL, `nextval()`, data-modifying CTEs, and a writing
+/// `FOR UPDATE` — closing the simple-query multi-statement and CTE-DML
+/// hazards even if the classifier's grammar missed one. Aurora DSQL cannot
+/// take that preamble (see [`read_only_preamble`]), so there the
+/// classifier is the sole read-only guard. Either way the sqlx
+/// `Transaction` rolls back on drop, so an early `?` return never leaves
+/// the pooled connection mid-transaction.
 async fn run_read_only_txn(
     pool: PgPool,
+    flavor: &str,
     sql: &str,
     max_rows: usize,
     kind: ReadOnlyStatement,
 ) -> DbResult<QueryResult> {
     let mut tx = pool.begin().await.map_err(|e| classify_error(&e))?;
-    // Two single statements (not one `raw_sql` batch): the simple-query
+    // Each as a single statement (not one `raw_sql` batch): the simple-query
     // batch protocol widens the sqlx `Executor` lifetime bounds enough to
     // trip the "not general enough" HRTB error under `#[async_trait]`.
-    sqlx::query("SET TRANSACTION READ ONLY")
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| classify_error(&e))?;
-    let timeout = format!("SET LOCAL statement_timeout = '{READ_ONLY_STATEMENT_TIMEOUT_SECS}s'");
-    sqlx::query(&timeout)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| classify_error(&e))?;
+    for stmt in read_only_preamble(flavor) {
+        sqlx::query(&stmt)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| classify_error(&e))?;
+    }
 
     let fetched = match kind {
         // A plain query becomes a server-side cursor so at most
         // `max_rows` rows ever cross the wire — an engine-level cap,
-        // not a textual `LIMIT` wrapped around arbitrary SQL.
-        ReadOnlyStatement::Query => fetch_via_cursor(&mut tx, sql, max_rows).await,
+        // not a textual `LIMIT` wrapped around arbitrary SQL. Aurora DSQL
+        // rejects `DECLARE CURSOR`, so there we stream the portal and
+        // stop after `max_rows` instead (same wire cap, no cursor).
+        ReadOnlyStatement::Query if caps_with_cursor(flavor) => {
+            fetch_via_cursor(&mut tx, sql, max_rows).await
+        }
+        ReadOnlyStatement::Query => fetch_capped_stream(&mut tx, sql, max_rows).await,
         // EXPLAIN returns a small, bounded plan and cannot be a cursor
         // source, so run it directly and materialise its rows.
         ReadOnlyStatement::Explain => run_capped(&mut tx, sql).await,
@@ -624,6 +936,18 @@ async fn run_read_only_txn(
 /// the (already validated) statement, then `FETCH FORWARD max_rows`, so
 /// the server materialises only the rows we keep.
 ///
+/// Whether the read-only row-cap uses a server-side cursor.
+///
+/// Standard Postgres flavors cap with `DECLARE ... CURSOR` + `FETCH
+/// FORWARD` so only `max_rows` rows ever cross the wire. Aurora DSQL
+/// rejects `DECLARE CURSOR` (`unsupported statement: DeclareCursor`,
+/// ADR-0061) — cursors are on its unsupported-features list, correcting
+/// the original ADR-0061 assumption — so there the cap streams the portal
+/// and stops after `max_rows` instead ([`fetch_capped_stream`]).
+fn caps_with_cursor(flavor: &str) -> bool {
+    flavor != FLAVOR_AURORA_DSQL
+}
+
 /// Takes a concrete `&mut PgConnection` (not `&mut Transaction`) so the
 /// executor borrow has a single, nameable lifetime — passing the
 /// transaction and deref-ing inside trips the sqlx `Executor` HRTB error
@@ -639,19 +963,64 @@ async fn fetch_via_cursor(
         .await
         .map_err(|e| classify_error(&e))?;
 
+    // `raw_sql`, not `query`: only the simple query protocol returns values in
+    // text format, which is what `decode_cell` reads. `sqlx::query` always
+    // carries an (empty) argument list, so it goes through Bind/Execute with
+    // `result_formats: Binary` and every cell would be raw binary bytes.
+    //
+    // Handed to the executor rather than called as `raw_sql(..).fetch_all(conn)`:
+    // `RawSql`'s own helpers bound the executor as `Executor<'e>` with a single
+    // lifetime, which is what trips the "implementation of `Executor` is not
+    // general enough" HRTB error under `#[async_trait]`. `Executor::fetch_all`
+    // takes the two-lifetime form and infers cleanly.
     let fetch = format!("FETCH FORWARD {max_rows} FROM {READ_ONLY_CURSOR}");
-    let rows = sqlx::query(&fetch)
-        .fetch_all(&mut *conn)
+    let rows = conn
+        .fetch_all(sqlx::raw_sql(&fetch))
         .await
         .map_err(|e| classify_error(&e))?;
+    pg_rows_to_result(&rows)
+}
+
+/// Cap a read-only query without a cursor: stream the query's portal and
+/// stop after `max_rows` rows, then drop the stream so the server stops
+/// producing more. This is the Aurora DSQL path — it rejects `DECLARE
+/// CURSOR`, so the cursor cap in [`fetch_via_cursor`] is unavailable — and
+/// it keeps the same "at most `max_rows` rows cross the wire" property
+/// without wrapping arbitrary SQL in a `LIMIT` subquery (which would break
+/// on duplicate output column names).
+///
+/// Takes a concrete `&mut PgConnection` for the same `Executor` lifetime
+/// reason as [`fetch_via_cursor`].
+async fn fetch_capped_stream(
+    conn: &mut sqlx::PgConnection,
+    sql: &str,
+    max_rows: usize,
+) -> DbResult<QueryResult> {
+    // `raw_sql` for the same reason as [`fetch_via_cursor`]: the simple query
+    // protocol is the only one that delivers text-format values, and it is
+    // handed to the executor there rather than through `RawSql`'s helper.
+    let mut stream = conn.fetch(sqlx::raw_sql(sql));
+    let mut rows: Vec<PgRow> = Vec::with_capacity(max_rows.min(1024));
+    while rows.len() < max_rows {
+        match stream.try_next().await.map_err(|e| classify_error(&e))? {
+            Some(row) => rows.push(row),
+            None => break,
+        }
+    }
+    // Drop the portal stream before returning so the transaction can be
+    // rolled back cleanly without a half-consumed result set on the wire.
+    drop(stream);
     pg_rows_to_result(&rows)
 }
 
 /// Run `sql` directly on the connection (used for EXPLAIN, which cannot
 /// be a cursor source) and materialise its rows.
 async fn run_capped(conn: &mut sqlx::PgConnection, sql: &str) -> DbResult<QueryResult> {
-    let rows = sqlx::query(sql)
-        .fetch_all(&mut *conn)
+    // `raw_sql` for the same reason as [`fetch_via_cursor`]: the simple query
+    // protocol is the only one that delivers text-format values, and it is
+    // handed to the executor there rather than through `RawSql`'s helper.
+    let rows = conn
+        .fetch_all(sqlx::raw_sql(sql))
         .await
         .map_err(|e| classify_error(&e))?;
     pg_rows_to_result(&rows)
@@ -703,15 +1072,20 @@ fn decode_cell(raw: PgValueRef<'_>) -> DbResult<Value> {
     if raw.is_null() {
         return Ok(Value::Null);
     }
-    // Invariant: the simple query protocol delivers every value in text
-    // format. Assert in debug builds so a future regression (e.g. a path
-    // that switches to the extended/binary protocol) fails loudly here
-    // instead of silently mis-decoding binary bytes as a UTF-8 string.
-    debug_assert_eq!(
-        raw.format(),
-        sqlx::postgres::PgValueFormat::Text,
-        "expected text-format value under the simple query protocol"
-    );
+    // Invariant: every row-producing path uses the simple query protocol, so
+    // values arrive in text format. This is checked at runtime, not with a
+    // `debug_assert`, because the failure is silent rather than loud: a
+    // binary `int4` of 1 is `00 00 00 01`, which *is* valid UTF-8, so the
+    // cell would come back as invisible control characters instead of "1".
+    // Only wider types (uuid, timestamptz, large int8) happen to fail the
+    // UTF-8 check. A release build must refuse the row, not corrupt it.
+    if raw.format() != sqlx::postgres::PgValueFormat::Text {
+        return Err(DbError::TypeConversion(
+            "internal: row arrived in binary format — every row-producing \
+             path must use the simple query protocol"
+                .into(),
+        ));
+    }
     // Decode (not `try_get`) so the column's declared Postgres type does
     // not gate reading it as text — the value is already text-format.
     let text = <String as sqlx::Decode<sqlx::Postgres>>::decode(raw)
@@ -721,6 +1095,46 @@ fn decode_cell(raw: PgValueRef<'_>) -> DbResult<Value> {
 
 fn tuple_to_table(schema: String, name: String) -> TableInfo {
     TableInfo::qualified(schema, name)
+}
+
+/// One decoded row of [`FOREIGN_KEYS_SQL`], before rows are grouped into
+/// composite [`ForeignKey`]s. Rows arrive ordered by constraint name then
+/// key position, so a composite key's columns are consecutive and in order.
+struct FkRow {
+    constraint_name: String,
+    local_column: String,
+    referenced_schema: String,
+    referenced_table: String,
+    referenced_column: String,
+}
+
+/// Fold [`FOREIGN_KEYS_SQL`] rows into one [`ForeignKey`] per constraint.
+///
+/// Rows are pre-sorted by `(conname, key position)`, and a constraint name
+/// is unique within a single relation, so every row of one constraint is
+/// consecutive and in key order — folding against the last-built edge is
+/// enough to assemble composite keys without a secondary group pass.
+fn assemble_foreign_keys(rows: Vec<FkRow>) -> Vec<ForeignKey> {
+    let mut out: Vec<ForeignKey> = Vec::new();
+    for r in rows {
+        let extends_last = out
+            .last()
+            .and_then(|fk| fk.constraint_name.as_deref())
+            .is_some_and(|name| name == r.constraint_name);
+        if extends_last {
+            let last = out.last_mut().expect("extends_last implies a last edge");
+            last.columns.push(r.local_column);
+            last.referenced_columns.push(r.referenced_column);
+        } else {
+            out.push(ForeignKey {
+                columns: vec![r.local_column],
+                referenced_table: tuple_to_table(r.referenced_schema, r.referenced_table),
+                referenced_columns: vec![r.referenced_column],
+                constraint_name: Some(r.constraint_name),
+            });
+        }
+    }
+    out
 }
 
 /// Assemble a [`ColumnInfo`] from one `information_schema.columns` row.
@@ -836,10 +1250,11 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_error, column_from_parts, harden_ssl_mode, reclassify_schema, truncate,
-        tuple_to_table, FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        assemble_foreign_keys, caps_with_cursor, classify_error, column_from_parts,
+        harden_ssl_mode, read_only_preamble, reclassify_schema, truncate, tuple_to_table, FkRow,
+        FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
-    use dbboard_core::{DatabaseAdapter, DbError};
+    use dbboard_core::{DatabaseAdapter, DbError, ForeignKey, TableInfo};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 
     /// `id()` is part of the public contract documented in
@@ -910,6 +1325,154 @@ mod tests {
         assert!(adapter.capabilities().has_describe_table);
     }
 
+    /// The DDL-reconstruction capability (ADR-0049) is advertised by every
+    /// Postgres-wire flavor, including Aurora DSQL — DSQL degrades the
+    /// *contents* (no FK/sequence sections), not the capability itself.
+    #[tokio::test]
+    async fn capabilities_advertise_table_ddl() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_AURORA_DSQL] {
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool.clone()),
+                flavor,
+            };
+            assert!(adapter.capabilities().has_table_ddl);
+        }
+    }
+
+    /// Per-statement `execute` (ADR-0051) is advertised by every Postgres-wire
+    /// flavor, Aurora DSQL included — a single statement runs everywhere.
+    #[tokio::test]
+    async fn capabilities_advertise_execute_on_every_flavor() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        for flavor in [
+            FLAVOR_POSTGRES,
+            FLAVOR_NEON,
+            FLAVOR_SUPABASE,
+            FLAVOR_AURORA_DSQL,
+        ] {
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool.clone()),
+                flavor,
+            };
+            assert!(adapter.capabilities().has_execute, "flavor {flavor}");
+        }
+    }
+
+    /// Atomic restore (ADR-0051) is advertised by ordinary Postgres flavors
+    /// but *not* Aurora DSQL, which cannot mix DDL and DML in one transaction
+    /// (ADR-0021) and so falls back to per-statement execution.
+    #[tokio::test]
+    async fn only_non_dsql_flavors_advertise_atomic_restore() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_NEON, FLAVOR_SUPABASE] {
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool.clone()),
+                flavor,
+            };
+            assert!(adapter.capabilities().has_atomic_restore, "flavor {flavor}");
+        }
+        let dsql = super::PostgresAdapter {
+            pool: super::PoolHandle::Static(pool),
+            flavor: FLAVOR_AURORA_DSQL,
+        };
+        assert!(
+            !dsql.capabilities().has_atomic_restore,
+            "Aurora DSQL must not advertise atomic restore"
+        );
+    }
+
+    /// Every flavor advertises foreign-key introspection (ADR-0054),
+    /// including Aurora DSQL — the `pg_catalog` query works there and just
+    /// returns no rows, since DSQL has no foreign-key constraints.
+    #[tokio::test]
+    async fn every_flavor_advertises_foreign_keys() {
+        let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+        for flavor in [
+            FLAVOR_POSTGRES,
+            FLAVOR_NEON,
+            FLAVOR_SUPABASE,
+            FLAVOR_AURORA_DSQL,
+        ] {
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool.clone()),
+                flavor,
+            };
+            assert!(adapter.capabilities().has_foreign_keys, "flavor {flavor}");
+        }
+    }
+
+    fn fk_row(
+        constraint: &str,
+        local: &str,
+        ref_schema: &str,
+        ref_table: &str,
+        ref_col: &str,
+    ) -> FkRow {
+        FkRow {
+            constraint_name: constraint.into(),
+            local_column: local.into(),
+            referenced_schema: ref_schema.into(),
+            referenced_table: ref_table.into(),
+            referenced_column: ref_col.into(),
+        }
+    }
+
+    #[test]
+    fn assemble_foreign_keys_builds_one_edge_per_constraint() {
+        let edges = assemble_foreign_keys(vec![fk_row(
+            "orders_customer_id_fkey",
+            "customer_id",
+            "public",
+            "customers",
+            "id",
+        )]);
+        assert_eq!(
+            edges,
+            vec![ForeignKey {
+                columns: vec!["customer_id".into()],
+                referenced_table: TableInfo::qualified("public", "customers"),
+                referenced_columns: vec!["id".into()],
+                constraint_name: Some("orders_customer_id_fkey".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn assemble_foreign_keys_folds_a_composite_key_in_order() {
+        // Two consecutive rows sharing a constraint name are one composite
+        // edge; the SQL orders them by key position.
+        let edges = assemble_foreign_keys(vec![
+            fk_row("fk_ab", "a", "public", "parent", "pa"),
+            fk_row("fk_ab", "b", "public", "parent", "pb"),
+        ]);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].columns, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            edges[0].referenced_columns,
+            vec!["pa".to_string(), "pb".to_string()]
+        );
+    }
+
+    #[test]
+    fn assemble_foreign_keys_separates_distinct_constraints() {
+        let edges = assemble_foreign_keys(vec![
+            fk_row("fk_one", "customer_id", "public", "customers", "id"),
+            fk_row("fk_two", "product_id", "sales", "products", "id"),
+        ]);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].constraint_name.as_deref(), Some("fk_one"));
+        assert_eq!(
+            edges[1].referenced_table,
+            TableInfo::qualified("sales", "products")
+        );
+    }
+
+    #[test]
+    fn assemble_foreign_keys_is_empty_without_rows() {
+        assert!(assemble_foreign_keys(vec![]).is_empty());
+    }
+
     /// A `Static` handle hands back exactly the pool it wraps. `max_connections`
     /// is an observable, network-free property of a lazily-built pool, so it
     /// stands in for pool identity here (`PgPool` exposes no identity of its
@@ -932,6 +1495,53 @@ mod tests {
             pool: super::PoolHandle::Static(pool),
             flavor: FLAVOR_POSTGRES,
         }
+    }
+
+    /// The standard Postgres flavors enforce a read-only transaction with
+    /// two session statements: `SET TRANSACTION READ ONLY` (the engine
+    /// backstop) and a `SET LOCAL statement_timeout` (the cancellation
+    /// backstop). The `30s` timeout must be present so an abandoned query
+    /// cannot pin a pooled connection.
+    #[test]
+    fn read_only_preamble_sets_read_only_and_timeout_on_standard_postgres() {
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_NEON, FLAVOR_SUPABASE] {
+            let stmts = read_only_preamble(flavor);
+            assert_eq!(stmts.len(), 2, "flavor {flavor}");
+            assert_eq!(stmts[0], "SET TRANSACTION READ ONLY", "flavor {flavor}");
+            assert!(
+                stmts[1].contains("statement_timeout") && stmts[1].contains("30s"),
+                "flavor {flavor}: {}",
+                stmts[1]
+            );
+        }
+    }
+
+    /// Aurora DSQL rejects `SET TRANSACTION` (it parses the word as an
+    /// unknown GUC — `setting configuration parameter "TRANSACTION" not
+    /// supported`) and manages `statement_timeout` itself, so it gets no
+    /// preamble at all. The read-only guarantee then rests entirely on the
+    /// pre-connection classifier (ADR-0021, ADR-0046 §8).
+    #[test]
+    fn read_only_preamble_is_empty_on_aurora_dsql() {
+        assert!(read_only_preamble(FLAVOR_AURORA_DSQL).is_empty());
+    }
+
+    /// Standard Postgres flavors cap a read-only query with a server-side
+    /// cursor (`DECLARE ... CURSOR` + `FETCH FORWARD`), so only `max_rows`
+    /// rows ever cross the wire.
+    #[test]
+    fn caps_with_cursor_on_standard_postgres() {
+        for flavor in [FLAVOR_POSTGRES, FLAVOR_NEON, FLAVOR_SUPABASE] {
+            assert!(caps_with_cursor(flavor), "flavor {flavor}");
+        }
+    }
+
+    /// Aurora DSQL rejects `DECLARE CURSOR` (`unsupported statement:
+    /// DeclareCursor`, ADR-0061), so its read-only row-cap must stream the
+    /// portal and stop after `max_rows` rather than open a cursor.
+    #[test]
+    fn does_not_cap_with_cursor_on_aurora_dsql() {
+        assert!(!caps_with_cursor(FLAVOR_AURORA_DSQL));
     }
 
     /// `query_read_only` classifies before it connects: a write is
