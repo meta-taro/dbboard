@@ -8735,3 +8735,105 @@ it appears, and a single predicate is one thing to reason about instead of two.
 - ADR-0084's scope is unchanged. History still carries the personal address on
   every commit before the fix, and `docs/maintainer/history-sanitize-runbook.md`
   is still the only route to removing it.
+
+---
+
+## ADR-0086 — The desktop lib is an rlib, so its fingerprint can vary
+
+**Date:** 2026-08-04
+**Status:** Accepted
+
+### Context
+
+`pre-push` runs two commands in sequence:
+
+```sh
+cargo build --release
+cargo test --all-features --release
+```
+
+Both recompiled `dbboard-desktop` every time, on an otherwise untouched tree.
+The crate is the largest link unit in the workspace, so each recompile cost
+about 42s, and the hook paid it twice — once on the way into the build, once on
+the way into the test run.
+
+The obvious suspect was `build.rs`: `tauri_build::build()` with no
+`cargo:rerun-if-changed`, which is the usual cause of an unconditional rebuild.
+It was wrong. Running `cargo build --release` twice in a row finishes in 1s and
+compiles nothing. The rebuild is not unconditional; it appears only when the
+two commands *alternate*, which is exactly the shape `pre-push` has.
+
+`CARGO_LOG=cargo::core::compiler::fingerprint=info` names the reason without
+guessing:
+
+```
+fingerprint dirty for dbboard-desktop .../ lib_target("dbboard_desktop_lib",
+  ["staticlib", "cdylib", "rlib"], ...)
+    dirty: UnitDependencyInfoChanged { unit: UnitIndex(148) }
+```
+
+The binary follows as a cascade (`FsStatusOutdated(StaleDependency)`); the lib
+is where the decision is made. Both commands write the same file —
+`target/release/.fingerprint/dbboard-desktop-<hash>/lib-dbboard_desktop_lib.json` —
+and each rewrites what the other recorded.
+
+That is the whole mechanism, and it is specific to this crate's shape. Cargo
+normally separates two build configurations by hashing the unit into `-C
+metadata`, which gives each configuration its own fingerprint directory. A
+crate that emits `staticlib` or `cdylib` cannot take part: those artifacts have
+fixed filenames a linker is expected to find, so the hash cannot vary, and
+neither can the fingerprint path. Every other unit in the graph is separated
+this way. Comparing the two `.fingerprint` trees confirms the scope: **1210
+units compared, exactly one differs**, with nothing present in only one tree.
+
+What differs between the configurations is real, not incidental. `--all-features`
+is a no-op here — the workspace declares no features at all — but dev-dependencies
+still unify into the graph, and `cargo tree -e normal,build` against
+`-e normal,build,dev` shows `hyper` gaining `full` and `http2`, `hyper-util`
+gaining `http2`, `slab` gaining `default`, and `tempfile` gaining `getrandom`.
+Those are genuinely different dependency units, so the hashes the desktop lib
+records for them genuinely differ. The bug is not that cargo noticed; it is that
+both answers were being written to one slot.
+
+### Decision
+
+Build the desktop lib as `crate-type = ["rlib"]`.
+
+`staticlib` and `cdylib` were carried over from the Tauri template, where they
+exist so an iOS or Android host can link the library. This application is
+desktop-only: `main.rs` calls `run()` and nothing else, there is no
+`gen/android` or `gen/apple`, and no `#[cfg(mobile)]` appears in the source.
+Dropping them costs nothing that is used and restores the metadata hash, which
+gives each build configuration its own fingerprint directory.
+
+The alternative — making the two commands agree on one feature set — was
+rejected. It would mean shaping the dependency graph around a cache artifact,
+and it would not survive the next dev-dependency anyone adds.
+
+### Consequences
+
+Measured on a warm tree, alternating the two commands as `pre-push` does:
+
+| | before | after |
+|---|---|---|
+| `cargo build --release` after a test run | 42s, 1 crate recompiled | **2s, 0 recompiled** |
+| `cargo test --all-features --release` after a build | 94s, 1 crate recompiled | **56s, 0 recompiled** |
+| `pre-push` total | ~136s | **58s** |
+
+The remaining 56s is test execution, which this decision does not address and
+was explicitly out of scope.
+
+Issue #130 recorded 237s (build 99s / test 138s) for the same sequence on a
+loaded machine. The absolute totals move with machine load and with the
+antivirus scan of the release binary; what the fix removes is a fixed unit of
+work — one full recompile of the largest crate in the workspace, in each
+direction — and that part does not vary.
+
+- If mobile is ever targeted, `staticlib`/`cdylib` come back and the thrash
+  comes back with them. The fix then is a separate crate for the mobile host,
+  not a return to one crate serving both.
+- The comment in `apps/desktop/src-tauri/Cargo.toml` records this, because the
+  template's shape is what a reader would otherwise assume is correct.
+- `build.rs` is unchanged. Adding `cargo:rerun-if-changed` would have been a
+  plausible-looking edit that fixed nothing, and the fingerprint log is the
+  reason it was not made.
