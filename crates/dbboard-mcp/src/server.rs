@@ -10,8 +10,8 @@
 //!
 //! The tool set: `list_connections`, `list_tables`, `describe_table`,
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
-//! `search_schema` (ADR-0053), `list_relationships` (ADR-0054) and
-//! `run_write` (ADR-0087).
+//! `search_schema` (ADR-0053), `list_relationships` (ADR-0054), and
+//! `run_write` + `dump_database` (ADR-0087).
 //!
 //! Tool *descriptions* carry more of the write policy than a reader might
 //! expect. They are the only documentation the agent gets before it acts:
@@ -19,6 +19,7 @@
 //! breaking, and a permanent refusal it did not expect looks like a syntax
 //! problem worth retrying.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -110,6 +111,16 @@ pub struct RunWriteParams {
     /// A single write statement: `INSERT` / `UPDATE` / `DELETE` / `MERGE`,
     /// or `CREATE TABLE` / `VIEW` / `INDEX` / `SCHEMA` / `ALTER TABLE`.
     pub sql: String,
+}
+
+/// Parameters for [`DbboardMcp::dump_database`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DumpDatabaseParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// Absolute path of the `.sql` file to create. Its directory must
+    /// already exist and the file must not — dumps never overwrite.
+    pub output_path: String,
 }
 
 /// The MCP server: holds the shared [`McpService`] plus the generated
@@ -267,6 +278,28 @@ impl DbboardMcp {
         let out = self
             .service
             .run_write(&connection_id, &sql)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&out)
+    }
+
+    // The description leads with "before you write" because that is when a
+    // dump is worth anything, and an agent that only reads the parameters
+    // will take a backup after the change it wanted to be able to undo.
+    #[tool(
+        description = "Write a logical SQL dump of a whole connection to a file — take this before a run_write you might need to undo. Returns the path, table and row counts, byte size, and a `complete` flag; any tables the engine refused or cut short are named in `failed_tables` / `truncated_tables`, and the file is still valid SQL without them. \
+        \n\nThis reads the database, so it does NOT need `mcp_write` — it works on every connection. `output_path` must be absolute, its directory must already exist, and the file must not: dumps never overwrite, so pick a fresh name rather than retrying the same one. Restoring is not available here; a human does that in the dbboard app."
+    )]
+    async fn dump_database(
+        &self,
+        Parameters(DumpDatabaseParams {
+            connection_id,
+            output_path,
+        }): Parameters<DumpDatabaseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self
+            .service
+            .dump_to_file(&connection_id, Path::new(&output_path))
             .await
             .map_err(|e| to_mcp(&e))?;
         json_block(&out)

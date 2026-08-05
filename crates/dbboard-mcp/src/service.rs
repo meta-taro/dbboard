@@ -1,33 +1,41 @@
-//! The read-only tool surface, independent of the MCP wire layer.
+//! The tool surface, independent of the MCP wire layer.
 //!
 //! [`McpService`] owns the security-sensitive work — resolving a
 //! `connections.toml` entry plus its keyring secret into a connected
-//! adapter, and running the seven read-only operations exposed to an
-//! external agent (ADR-0046 Decision 5, ADR-0053, ADR-0054). It knows nothing about `rmcp`,
-//! JSON-RPC, or stdio: [`crate::server`] wraps each method as a tool and
-//! translates errors onto the MCP envelope. Keeping the logic here means
-//! it is testable against a real (in-memory) adapter with no transport.
+//! adapter, and running the operations exposed to an external agent
+//! (ADR-0046 Decision 5, ADR-0053, ADR-0054, ADR-0087). It knows nothing
+//! about `rmcp`, JSON-RPC, or stdio: [`crate::server`] wraps each method as
+//! a tool and translates errors onto the MCP envelope. Keeping the logic
+//! here means it is testable against a real (in-memory) adapter with no
+//! transport.
 //!
-//! Two invariants this layer enforces:
+//! Three invariants this layer enforces:
 //!
 //! - **Secrets never leave.** [`list_connections`](McpService::list_connections)
 //!   projects each entry to id/name/kind only; the keyring references and
 //!   the resolved URLs/tokens are never serialized into a tool result.
-//! - **Reads only, for agents.** Every method [`crate::server`] wraps as an
-//!   MCP tool goes through [`DatabaseAdapter::query_read_only`], enforced at
-//!   the engine (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`, D1
-//!   AST classification). The MCP surface never writes.
+//! - **Reading is read-only.** [`run_read_query`](McpService::run_read_query)
+//!   goes through [`DatabaseAdapter::query_read_only`], enforced at the
+//!   engine (Postgres `BEGIN READ ONLY`, libSQL `PRAGMA query_only`, D1 AST
+//!   classification) rather than by inspecting the SQL.
+//! - **Writing is off until a human turns it on, and never opens
+//!   everything.** [`run_write`](McpService::run_write) needs `mcp_write` on
+//!   the connection *and* an allowed statement; privilege and role changes,
+//!   `TRUNCATE` and `DROP` are refused on every connection with no setting
+//!   that enables them (ADR-0087).
 //!
 //! The desktop app also uses this service as its shared data-access layer
-//! (it owns the adapter cache and connection resolution). For it — and only
-//! it — [`apply_row_update`](McpService::apply_row_update) is a deliberate
-//! write path (inline cell editing, ADR-0042 / ADR-0062). It is **not**
-//! wrapped as an MCP tool, so it is unreachable by an external agent; the
-//! read-only invariant above is a property of the exposed tool set, not of
-//! every method on the struct.
+//! (it owns the adapter cache and connection resolution). Some methods
+//! exist only for it and are **not** wrapped as MCP tools —
+//! [`apply_row_update`](McpService::apply_row_update) (inline cell editing,
+//! ADR-0042 / ADR-0062) and the restore pair, which runs a script verbatim
+//! and so cannot honour the closed list. What an agent can reach is a
+//! property of the exposed tool set, not of every method on the struct.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
@@ -37,9 +45,10 @@ use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
     build_update_sql, classify_write, dialect_for_adapter_id, plan_dump as core_plan_dump,
     plan_restore as core_plan_restore, run_dump as core_run_dump, run_restore as core_run_restore,
-    Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl, DumpOutcome, DumpPlan, DumpSink,
-    ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan, Row, TableInfo,
-    TableSchema, UpdatePlan, WriteBackError, WritePolicyViolation, WriteStatement,
+    Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl, DumpError, DumpOutcome, DumpPlan,
+    DumpProgress, DumpResult, DumpSink, ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome,
+    RestorePlan, Row, TableInfo, TableSchema, UpdatePlan, WriteBackError, WritePolicyViolation,
+    WriteStatement,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -100,6 +109,123 @@ pub struct QueryOutput {
 pub struct WriteOutput {
     pub statement: String,
     pub rows_affected: u64,
+}
+
+/// Result of [`McpService::dump_to_file`].
+///
+/// Failures and truncations are reported as bare table names rather than
+/// with the engine's message: a dump that skipped a table is a fact the
+/// agent must see, but the engine's text is the one place a backup could
+/// leak connection detail into a transcript, and the agent can reproduce
+/// the error itself with `run_read_query` if it needs the reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DumpFileOutcome {
+    pub path: String,
+    pub tables_dumped: usize,
+    pub rows_written: u64,
+    pub bytes_written: u64,
+    /// Tables the engine refused to read. The dump is still valid SQL; it
+    /// is simply missing these.
+    pub failed_tables: Vec<String>,
+    /// Tables whose data was cut short (keyless tables larger than one
+    /// page cannot be keyset-paged).
+    pub truncated_tables: Vec<String>,
+    /// False when the file is valid SQL but does not cover the whole
+    /// database, so a caller that only reads one field reads the one that
+    /// matters.
+    pub complete: bool,
+}
+
+/// A [`DumpSink`] writing to a newly-created file, counting what it wrote.
+///
+/// Mirrors the desktop app's sink (`apps/desktop/src-tauri/src/dump.rs`),
+/// with one addition: the byte count. The desktop shows progress in rows
+/// because a human watches it run; an agent gets no progress at all and a
+/// size is the only cheap evidence the file is not empty.
+struct FileSink {
+    writer: BufWriter<File>,
+    bytes_written: u64,
+}
+
+impl FileSink {
+    /// Create `path`, failing if it already exists.
+    ///
+    /// The exclusivity is `create_new`, not a prior `exists()` check: the
+    /// check-then-create version can still clobber a file that appeared in
+    /// between, and the whole point of the destination rules is that a dump
+    /// never destroys anything.
+    fn create(path: &Path) -> std::io::Result<Self> {
+        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        Ok(Self {
+            writer: BufWriter::new(file),
+            bytes_written: 0,
+        })
+    }
+
+    /// Flush and return the byte count. Called explicitly rather than left
+    /// to `Drop`, because a `BufWriter` dropped with a full buffer discards
+    /// the write error and would report a truncated dump as a complete one.
+    fn finish(mut self) -> std::io::Result<u64> {
+        self.writer.flush()?;
+        Ok(self.bytes_written)
+    }
+}
+
+impl DumpSink for FileSink {
+    fn write_str(&mut self, chunk: &str) -> DumpResult<()> {
+        self.writer
+            .write_all(chunk.as_bytes())
+            .map_err(|e| DumpError::Sink(e.to_string()))?;
+        self.bytes_written += chunk.len() as u64;
+        Ok(())
+    }
+}
+
+/// A [`DumpControl`] for a dump nobody is watching: it discards progress
+/// and never cancels. An MCP tool call has no channel to report on and no
+/// second call that could interrupt the first.
+struct UnattendedDump;
+
+impl DumpControl for UnattendedDump {
+    fn report(&self, _progress: &DumpProgress) {}
+
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// Check that `path` names a file a dump may create, returning it as a
+/// string for the outcome.
+///
+/// The three rules exist because the agent, not the operator, chose this
+/// path:
+/// - **Absolute.** A relative path resolves against the server process's
+///   working directory, which the agent cannot see and the operator did not
+///   pick.
+/// - **Parent must exist.** Creating directories would let a typo scatter
+///   empty trees across the disk; an existing parent is the operator's
+///   consent to write somewhere.
+/// - **Must not exist.** The file is the only thing a dump could destroy.
+fn check_dump_destination(path: &Path) -> Result<String, ServiceError> {
+    if !path.is_absolute() {
+        return Err(ServiceError::InvalidRequest(
+            "output_path must be an absolute path".to_owned(),
+        ));
+    }
+    if path.exists() {
+        return Err(ServiceError::InvalidRequest(
+            "output_path already exists; dumps never overwrite — choose another name".to_owned(),
+        ));
+    }
+    match path.parent() {
+        Some(parent) if parent.is_dir() => {}
+        _ => {
+            return Err(ServiceError::InvalidRequest(
+                "the directory of output_path does not exist; create it first".to_owned(),
+            ))
+        }
+    }
+    Ok(path.display().to_string())
 }
 
 /// One table returned by [`McpService::search_schema`]: the table itself,
@@ -475,6 +601,67 @@ impl McpService {
         })
     }
 
+    /// Dump `connection_id` to a new file at `output_path` on an agent's
+    /// behalf (ADR-0087), so it can take a backup before it changes
+    /// anything.
+    ///
+    /// Deliberately **outside** the `mcp_write` gate. A dump reads the
+    /// database and writes somewhere else; requiring the write flag would
+    /// mean the safest thing an agent can do costs the same permission as
+    /// the least safe, which is how a flag ends up permanently on.
+    ///
+    /// The file is the one thing here an agent could destroy, so it is not
+    /// allowed to: the path must be absolute, its parent must already
+    /// exist, and it must not. There is no overwrite and no `mkdir -p`.
+    ///
+    /// Runs to completion with no progress reporting or cancellation —
+    /// there is no channel to report on. A caller that needs either wants
+    /// the desktop app.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::ConnectionNotFound`] for an unknown id.
+    /// - [`ServiceError::InvalidRequest`] if the path is relative, occupied,
+    ///   or in a directory that does not exist.
+    /// - [`ServiceError::NotDumpable`] if the adapter has no known dialect.
+    /// - [`ServiceError::Dump`] if writing the file fails.
+    pub async fn dump_to_file(
+        &self,
+        connection_id: &str,
+        output_path: &Path,
+    ) -> Result<DumpFileOutcome, ServiceError> {
+        let path = check_dump_destination(output_path)?;
+        let plan = self.plan_dump(connection_id).await?;
+
+        let mut sink = FileSink::create(output_path).map_err(|e| {
+            // Name the failure, not the path — the agent supplied the path
+            // and a bare reason is enough to act on.
+            ServiceError::Dump(format!("could not create the output file: {e}"))
+        })?;
+        let outcome = self
+            .run_dump(connection_id, &plan, &mut sink, &UnattendedDump)
+            .await?;
+        let bytes_written = sink
+            .finish()
+            .map_err(|e| ServiceError::Dump(format!("could not flush the output file: {e}")))?;
+
+        let failed_tables: Vec<String> = outcome.failures.iter().map(|f| f.table.clone()).collect();
+        let truncated_tables: Vec<String> = outcome
+            .truncations
+            .iter()
+            .map(|t| t.table.clone())
+            .collect();
+        Ok(DumpFileOutcome {
+            path,
+            tables_dumped: outcome.tables_dumped,
+            rows_written: outcome.rows_written,
+            bytes_written,
+            complete: failed_tables.is_empty() && truncated_tables.is_empty(),
+            failed_tables,
+            truncated_tables,
+        })
+    }
+
     /// Fail unless the operator has set `mcp_write` on `connection_id`.
     ///
     /// Deliberately reads the file rather than any cached view — see
@@ -545,9 +732,13 @@ impl McpService {
     /// caller-supplied output sink (a file on the desktop).
     ///
     /// Returns the [`DumpOutcome`] — including any per-table failures and
-    /// truncations — unless the sink itself fails, which is fatal. Like
-    /// [`apply_row_update`](Self::apply_row_update), this is a desktop-only
-    /// method and is deliberately **not** exposed as an MCP tool.
+    /// truncations — unless the sink itself fails, which is fatal.
+    ///
+    /// Takes a caller-supplied sink and control because the desktop drives
+    /// it with a file and a live progress channel. The MCP tool goes
+    /// through [`dump_to_file`](Self::dump_to_file) instead, which supplies
+    /// both itself: an agent may name a destination, but not hand this
+    /// method somewhere arbitrary to write.
     ///
     /// # Errors
     ///
@@ -889,7 +1080,9 @@ mod tests {
     /// A service pointing at a fresh temp config dir, plus the paths so a
     /// test can write the two TOML files it needs.
     struct Fixture {
-        _dir: TempDir,
+        /// Held for its `Drop` — the temp tree must outlive the service. The
+        /// dump tests also name files inside it.
+        dir: TempDir,
         service: McpService,
         config_path: PathBuf,
         annotations_path: PathBuf,
@@ -902,7 +1095,7 @@ mod tests {
         let secrets = Arc::new(InMemorySecretStore::default());
         let service = McpService::new(config_path.clone(), annotations_path.clone(), secrets);
         Fixture {
-            _dir: dir,
+            dir,
             service,
             config_path,
             annotations_path,
@@ -1519,6 +1712,93 @@ keyring_url_ref = "dbboard.prod-pg.url"
         let err = fx
             .service
             .run_write("nope", "UPDATE items SET name = 'x'")
+            .await
+            .expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "{err:?}"
+        );
+    }
+
+    /// Dump is outside the write gate: taking a backup does not change the
+    /// database, and needing the flag for it would mean the safest thing an
+    /// agent can do costs the same permission as the least safe.
+    #[tokio::test]
+    async fn dump_to_file_writes_a_backup_without_the_write_gate() {
+        let fx = seeded_turso_fixture().await;
+        let out_path = fx.dir.path().join("backup.sql");
+        let out = fx
+            .service
+            .dump_to_file("mem", &out_path)
+            .await
+            .expect("dump");
+        assert_eq!(out.tables_dumped, 1);
+        assert_eq!(out.rows_written, 5);
+        assert!(out.failed_tables.is_empty());
+
+        let text = std::fs::read_to_string(&out_path).expect("read back");
+        // Data-only under SQLite/Turso, as `run_dump` already documents
+        // (ADR-0049) — the file the tool writes is the file the desktop
+        // writes, not a second dump format for agents.
+        assert!(text.contains("INSERT INTO"), "should carry the rows");
+        assert_eq!(out.bytes_written, text.len() as u64);
+        assert!(out.complete, "nothing failed or truncated");
+    }
+
+    /// The one thing an agent could destroy through a read-only operation is
+    /// whatever was already at the path. It cannot.
+    #[tokio::test]
+    async fn dump_to_file_never_overwrites() {
+        let fx = seeded_turso_fixture().await;
+        let out_path = fx.dir.path().join("taken.sql");
+        std::fs::write(&out_path, "precious").expect("seed file");
+
+        let err = fx
+            .service
+            .dump_to_file("mem", &out_path)
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(err, ServiceError::InvalidRequest(_)), "{err:?}");
+        assert_eq!(
+            std::fs::read_to_string(&out_path).expect("still there"),
+            "precious"
+        );
+    }
+
+    /// A relative path resolves against the server's working directory,
+    /// which the agent cannot see and did not choose.
+    #[tokio::test]
+    async fn dump_to_file_requires_an_absolute_path() {
+        let fx = seeded_turso_fixture().await;
+        let err = fx
+            .service
+            .dump_to_file("mem", Path::new("backup.sql"))
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(err, ServiceError::InvalidRequest(_)), "{err:?}");
+    }
+
+    /// Creating the directory would be dbboard deciding where a backup
+    /// belongs; a missing parent usually means the agent guessed the path.
+    #[tokio::test]
+    async fn dump_to_file_does_not_create_the_directory() {
+        let fx = seeded_turso_fixture().await;
+        let out_path = fx.dir.path().join("nope").join("backup.sql");
+        let err = fx
+            .service
+            .dump_to_file("mem", &out_path)
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(err, ServiceError::InvalidRequest(_)), "{err:?}");
+        assert!(!out_path.parent().expect("parent").exists());
+    }
+
+    #[tokio::test]
+    async fn dump_to_file_rejects_an_unknown_connection() {
+        let fx = seeded_turso_fixture().await;
+        let err = fx
+            .service
+            .dump_to_file("nope", &fx.dir.path().join("b.sql"))
             .await
             .expect_err("unknown id");
         assert!(
