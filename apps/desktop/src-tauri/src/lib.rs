@@ -649,6 +649,7 @@ fn to_add_draft(
     name: String,
     kind: KindInput,
     ssh: Option<SshInput>,
+    mcp_write: bool,
 ) -> ConnectionDraft {
     let kind = match kind {
         KindInput::Turso { path } => ConnectionKindDraft::Turso { path },
@@ -670,6 +671,7 @@ fn to_add_draft(
         KindInput::AuroraDsql { url } => ConnectionKindDraft::AuroraDsql { url },
     };
     ConnectionDraft {
+        mcp_write,
         id,
         name,
         kind,
@@ -707,7 +709,12 @@ where
     })
 }
 
-fn to_edit_draft(name: String, kind: KindEditInput, ssh: SshEditInput) -> ConnectionEditDraft {
+fn to_edit_draft(
+    name: String,
+    kind: KindEditInput,
+    ssh: SshEditInput,
+    mcp_write: Option<bool>,
+) -> ConnectionEditDraft {
     let kind = match kind {
         KindEditInput::Turso { path } => ConnectionKindEditDraft::Turso { path },
         KindEditInput::D1 {
@@ -738,6 +745,7 @@ fn to_edit_draft(name: String, kind: KindEditInput, ssh: SshEditInput) -> Connec
         },
     };
     ConnectionEditDraft {
+        mcp_write,
         name,
         kind,
         ssh: to_ssh_edit_field(ssh),
@@ -827,6 +835,10 @@ struct EditFieldsResponse {
     kind: EditFieldsDto,
     ssh: Option<SshEditFieldsDto>,
     dsn: Option<DsnPartsDto>,
+    /// Whether the MCP server may write to this connection (ADR-0087). Not a
+    /// secret — it is a permission the operator granted — so unlike the DSN
+    /// password it can be read back and shown as the toggle's current state.
+    mcp_write: bool,
 }
 
 /// Project a stored [`dbboard_config::SshTunnelToml`] into its non-secret
@@ -876,6 +888,7 @@ fn connection_edit_fields(
         .find(|e| e.id == id)
         .ok_or_else(|| format!("no connection with id \"{id}\""))?;
     let ssh = entry.ssh.as_ref().map(ssh_edit_fields);
+    let mcp_write = entry.mcp_write;
     let dto = match &entry.kind {
         ConnectionKind::Turso { path } => EditFieldsDto::Turso { path: path.clone() },
         ConnectionKind::D1 {
@@ -915,6 +928,7 @@ fn connection_edit_fields(
         kind: dto,
         ssh,
         dsn,
+        mcp_write,
     })
 }
 
@@ -938,6 +952,10 @@ async fn probe_ssh_host_key(host: String, port: u16) -> Result<String, String> {
 /// Add a connection: writes the non-secret entry to `connections.toml`
 /// and the secret to the OS keyring atomically (rolled back together on
 /// failure). Fails with `DuplicateId` if the id is taken.
+///
+/// `mcp_write` defaults to closed when the caller omits it, so a form that
+/// never rendered the toggle cannot grant the MCP write permission by
+/// accident (ADR-0087).
 #[tauri::command]
 fn add_connection(
     state: tauri::State<'_, AppState>,
@@ -945,10 +963,17 @@ fn add_connection(
     name: String,
     kind: KindInput,
     ssh: Option<SshInput>,
+    mcp_write: Option<bool>,
 ) -> Result<(), String> {
     let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
     admin
-        .add(to_add_draft(id, name, kind, ssh))
+        .add(to_add_draft(
+            id,
+            name,
+            kind,
+            ssh,
+            mcp_write.unwrap_or(false),
+        ))
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
@@ -962,6 +987,10 @@ fn add_connection(
 /// rule (ADR-0080): the form rebuilt the DSN from host/port/user/database but
 /// the user did not retype the password, so the stored one is grafted back on
 /// here rather than being sent to the webview and back.
+///
+/// `mcp_write` is `Option` for the same reason (ADR-0087): omitting it keeps
+/// whatever is stored, so a caller with no toggle cannot revoke a permission
+/// it never showed.
 #[tauri::command]
 async fn update_connection(
     state: tauri::State<'_, AppState>,
@@ -970,6 +999,7 @@ async fn update_connection(
     kind: KindEditInput,
     ssh: SshEditInput,
     keep_password: Option<bool>,
+    mcp_write: Option<bool>,
 ) -> Result<(), String> {
     {
         let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
@@ -983,7 +1013,7 @@ async fn update_connection(
             kind
         };
         admin
-            .update(&id, to_edit_draft(name, kind, ssh))
+            .update(&id, to_edit_draft(name, kind, ssh, mcp_write))
             .map_err(|e| e.to_string())?;
     } // drop the guard before awaiting — keeps the command future Send.
     state.service.invalidate(&id).await;
@@ -1376,6 +1406,7 @@ mod tests {
                 token: "t".to_string(),
             },
             None,
+            false,
         );
         assert_eq!(draft.id, "d");
         assert_eq!(draft.name, "D");
@@ -1417,6 +1448,7 @@ mod tests {
                     path: ":memory:".to_string(),
                 },
                 None,
+                false,
             ))
             .expect("add turso");
         admin
@@ -1427,6 +1459,7 @@ mod tests {
                     url: "postgres://u:pw@h/db".to_string(),
                 },
                 None,
+                false,
             ))
             .expect("add postgres");
         assert_eq!(admin.entries().len(), 2);
@@ -1440,6 +1473,7 @@ mod tests {
                     "PG-renamed".to_string(),
                     KindEditInput::Postgres { url: None },
                     SshEditInput::Keep,
+                    None,
                 ),
             )
             .expect("rename postgres, keep secret");
@@ -1466,6 +1500,7 @@ mod tests {
                     path: ":memory:".to_string(),
                 },
                 None,
+                false,
             )
         };
         admin.add(mk()).expect("first add");
@@ -1485,6 +1520,7 @@ mod tests {
                 path: ":memory:".to_string(),
             },
             None,
+            false,
         ))
         .expect("seed source");
 

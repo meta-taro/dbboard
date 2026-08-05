@@ -3,11 +3,14 @@
 A headless [MCP](https://modelcontextprotocol.io) (Model Context Protocol)
 server for [dbboard](../../README.md). It hands the databases dbboard is
 already configured with to an external AI agent — Claude Desktop, Claude
-Code — as a small, **read-only** tool surface, served over stdio.
+Code — as a small tool surface, served over stdio.
 
-The agent can list connections, browse schemas, read rows, and see
-dbboard's local annotations. It **cannot write**, and it **never sees a
-secret**. See [ADR-0046](../../docs/decisions.md) for the design.
+The agent can list connections, browse schemas, read rows, take a dump,
+and see dbboard's local annotations. It **never sees a secret**, and it
+**cannot write** until a human opts a connection in — and not even then
+for privilege changes, `TRUNCATE` or `DROP`, which no setting opens. See
+[ADR-0046](../../docs/decisions.md) for the design and
+[ADR-0087](../../docs/decisions.md) for the write policy.
 
 ## What it exposes
 
@@ -17,9 +20,11 @@ desktop GUI: the `connections.toml` entry store plus the OS keychain
 adds no new place to keep credentials — it reads the ones dbboard already
 holds.
 
-Seven read-only tools (ADR-0046 Decision 5, extended by
-[ADR-0053](../../docs/decisions.md) and
-[ADR-0054](../../docs/decisions.md)):
+Nine tools (ADR-0046 Decision 5, extended by
+[ADR-0053](../../docs/decisions.md),
+[ADR-0054](../../docs/decisions.md) and
+[ADR-0087](../../docs/decisions.md)). Seven read, one writes behind a
+per-connection flag, one takes a backup:
 
 | Tool | What it returns |
 |---|---|
@@ -30,9 +35,12 @@ Seven read-only tools (ADR-0046 Decision 5, extended by
 | `list_relationships` | The foreign-key join graph as directed edges (`from_table.from_columns → to_table.to_columns`). With no `table`, the whole graph; with a `table`, every edge touching it on **either** side — the "how is `orders` connected?" lookup. Declared constraints only; Aurora DSQL (no FKs) returns none. Capped at 500 edges with a `truncated` flag. |
 | `run_read_query` | The rows from a single read-only SQL statement (`SELECT` / `WITH` / `EXPLAIN`), capped at `max_rows` (default 200, hard cap 1000) with a `truncated` flag. |
 | `get_annotations` | dbboard's local table/column notes ([ADR-0045](../../docs/decisions.md)) for a connection, optionally filtered to one table and/or column. |
+| `run_write` | Runs one write statement and returns the rows affected. Requires `mcp_write = true` on the connection; see the write policy below. |
+| `dump_database` | Writes a logical SQL dump of a whole connection to a file and reports the path, counts, byte size, and a `complete` flag. Reads only, so it needs **no** flag — it is what an agent should call before a `run_write` it might need to undo. |
 
-There is no write path. Any statement that is not a single read-only
-query is rejected **by the database engine**, not by string matching:
+`run_read_query` has no write path at all. Any statement that is not a
+single read-only query is rejected **by the database engine**, not by
+string matching:
 
 - Postgres-wire adapters run it inside `BEGIN TRANSACTION READ ONLY`.
 - libSQL/Turso runs it under `PRAGMA query_only`.
@@ -42,13 +50,47 @@ So `DELETE`, `UPDATE`, DDL, multi-statement batches, and locking reads
 (`SELECT … FOR UPDATE`) all fail at the source. See `dbboard-core`'s
 `query_read_only` and the per-adapter enforcement.
 
+## The write policy (ADR-0087)
+
+Writing is off. Turning it on does not turn everything on. Three tiers,
+each of which must pass:
+
+1. **The connection is opted in.** `mcp_write = true` in
+   `connections.toml`, or the "Let an AI agent write to this database"
+   toggle in the dbboard app. Absent means `false`, so every existing
+   connection stays read-only across the upgrade.
+2. **The statement is on the allowlist.** `run_write` parses the SQL to
+   an AST and accepts `INSERT` / `UPDATE` / `DELETE` / `MERGE` (data) and
+   `CREATE` / `ALTER` / `DROP INDEX` / `COMMENT` (schema). Anything it
+   cannot classify is refused — it fails closed.
+3. **The statement is not permanently closed.** No flag opens
+   `GRANT` / `REVOKE` / `DENY`, user or role DDL, `SET PASSWORD`,
+   `TRUNCATE`, or `DROP` of anything but an index. These are refused with
+   a distinct, permanent reason, so an agent that hits one knows there is
+   no setting to ask for.
+
+`DELETE` is allowed and `TRUNCATE` is not, deliberately: a `DELETE` has a
+`WHERE`, is transactional, and is the thing a dump can undo.
+
+Connection CRUD is closed by design — the MCP surface cannot add, edit or
+delete a connection, because that would mean handling credentials.
+Restore is closed too: its plan runs statements verbatim and covers
+`DROP`/`TRUNCATE`, which cannot be reconciled with an allowlist. A human
+restores, in the dbboard app.
+
 ## Security posture
 
 - **Secrets stay in the keychain.** The only connection metadata that
   crosses the wire is id/name/kind (`ConnectionView`). Resolved URLs,
   tokens, and keyring references are never part of a tool result, and no
   error message embeds one.
-- **Read-only is engine-enforced**, not advisory (see above).
+- **Reading is engine-enforced read-only**, not advisory (see above).
+- **Writing is off until a human turns it on**, per connection, and the
+  permanently-closed list holds regardless (see the write policy above).
+- **Dumps never overwrite.** `dump_database` takes an absolute path whose
+  parent already exists and whose file does not, created with
+  `create_new` — so an agent cannot clobber a backup, including one it
+  wrote a moment ago.
 - **Result sets are bounded.** `max_rows` is clamped to 1000; the read
   path is for reconnaissance, not bulk export, so a wide table cannot
   exhaust memory.
@@ -60,7 +102,9 @@ The agent is trusted to author SQL — it can read any row in any
 configured database. Point `dbboard-mcp` only at connections you are
 comfortable exposing to the agent read-only, and prefer a
 least-privilege database role in `connections.toml` where the engine
-supports one.
+supports one. Set `mcp_write` on top of that only where you would accept
+the agent editing rows and schema unattended; the database role is still
+the outer bound, and it is the one an engine enforces.
 
 ## Build
 
@@ -223,7 +267,7 @@ receives Ctrl-C.
 
 - `service.rs` — `McpService`, the transport-independent tool logic.
   Resolves a connection + keyring secret into a cached adapter, runs the
-  seven read-only operations, and enforces the row cap and secret
+  operations, and enforces the row cap, the write policy, and secret
   redaction. Testable against a real (in-memory) adapter with no MCP
   wiring.
 - `server.rs` — `DbboardMcp`, the thin `rmcp` `ServerHandler` that wraps
@@ -239,6 +283,8 @@ receives Ctrl-C.
   `search_schema` tool that extended the surface to six; and
   [ADR-0054](../../docs/decisions.md) — foreign-key introspection and the
   `list_relationships` tool that extends it to seven.
+- [ADR-0087](../../docs/decisions.md) — the three-tier write policy and
+  the `run_write` / `dump_database` tools that take the surface to nine.
 - [ADR-0045](../../docs/decisions.md) — local table/column annotations,
   surfaced by `get_annotations`.
 - [`docs/connections.md`](../../docs/connections.md) — `connections.toml`

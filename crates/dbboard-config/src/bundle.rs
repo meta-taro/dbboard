@@ -292,6 +292,7 @@ mod tests {
             version: crate::store::CONFIG_VERSION,
             connections: vec![
                 ConnectionEntry {
+                    mcp_write: false,
                     ssh: None,
                     id: "store-a".to_string(),
                     name: "store-a".to_string(),
@@ -303,6 +304,7 @@ mod tests {
                     },
                 },
                 ConnectionEntry {
+                    mcp_write: false,
                     ssh: None,
                     id: "store-c".to_string(),
                     name: "store-c".to_string(),

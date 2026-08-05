@@ -117,6 +117,8 @@ kind            = "mysql"
 # flavor. Same secret shape as the Postgres family (the keyring carries a
 # "mysql://…" URL), but served by the dbboard-mysql adapter. See ADR-0068.
 keyring_url_ref = "dbboard.shop-mysql.url"
+# Opt this connection in to MCP writes. Absent means false. See ADR-0087.
+mcp_write       = true
 
 [[connections]]
 id                     = "aurora-dsql-iam-prod"
@@ -158,6 +160,38 @@ keyring_secret_key_ref = "dbboard.aurora-dsql-iam-prod.secret_key"
   in the OS keychain. Pick something stable and recognisable; the
   string is what shows in the OS UI alongside the constant service
   name `"dbboard"`.
+- `mcp_write` — optional `bool`, default `false`. Lets the
+  `dbboard-mcp` server write to this connection. Cross-cutting like
+  `ssh`: valid on any `kind`. See below.
+
+### The MCP write gate (`mcp_write`)
+
+`dbboard-mcp` hands your connections to an AI agent. Reading is always
+allowed; **writing is off until you say otherwise, per connection**:
+
+```toml
+[[connections]]
+id              = "staging-pg"
+name            = "Staging"
+kind            = "postgres"
+keyring_url_ref = "dbboard.staging-pg.url"
+mcp_write       = true
+```
+
+Omitting the key means `false`, so every connection that predates this
+feature stays read-only across the upgrade — the gate exists to be off.
+
+Turning it on does not turn everything on. `run_write` still parses the
+statement and accepts only `INSERT` / `UPDATE` / `DELETE` / `MERGE` and
+`CREATE` / `ALTER` / `DROP INDEX` / `COMMENT`; anything it cannot
+classify is refused. `GRANT` / `REVOKE` / `DENY`, user and role DDL,
+`SET PASSWORD`, `TRUNCATE`, and `DROP` of anything but an index are
+refused **whatever this flag says**. The full policy is ADR-0087 and
+[`crates/dbboard-mcp/README.md`](../crates/dbboard-mcp/README.md).
+
+The flag is also editable in the app — *Connections → Edit → AI agent
+access*. The desktop app itself ignores it: it governs the MCP server
+only, not what you can do by hand in dbboard.
 
 ### Aurora DSQL: `aurora-dsql` vs `aurora-dsql-iam`
 

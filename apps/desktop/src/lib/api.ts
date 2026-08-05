@@ -329,12 +329,16 @@ export const probeSshHostKey = (host: string, port: number): Promise<string> =>
 // `ssh` is a tagged SshInput (or null for no tunnel) / SshEditInput, shaped by
 // `$lib/connections/draft`. The tunnel fronts the connection; its secrets ride
 // inline on add and keep-or-overwrite on edit (ADR-0069).
+//
+// `mcpWrite` is the MCP write gate (ADR-0087) — a permission, not a secret, so
+// it rides in plain and comes back out on edit.
 export const addConnection = (
   id: string,
   name: string,
   kind: Record<string, unknown>,
   ssh: Record<string, unknown> | null,
-): Promise<void> => invoke('add_connection', { id, name, kind, ssh });
+  mcpWrite: boolean,
+): Promise<void> => invoke('add_connection', { id, name, kind, ssh, mcpWrite });
 
 // `keepPassword` is the structured-input counterpart of a blank secret: the
 // form rebuilt the DSN from the parts it was shown, which never included the
@@ -345,8 +349,9 @@ export const updateConnection = (
   kind: Record<string, unknown>,
   ssh: Record<string, unknown>,
   keepPassword: boolean,
+  mcpWrite: boolean,
 ): Promise<void> =>
-  invoke('update_connection', { id, name, kind, ssh, keepPassword });
+  invoke('update_connection', { id, name, kind, ssh, keepPassword, mcpWrite });
 
 export const deleteConnection = (id: string): Promise<void> =>
   invoke('delete_connection', { id });

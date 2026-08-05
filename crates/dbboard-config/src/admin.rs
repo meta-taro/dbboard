@@ -57,6 +57,10 @@ pub struct ConnectionDraft {
     /// rather than inside it. `add` rejects it for a kind that cannot tunnel
     /// ([`ConnectionKind::supports_ssh_tunnel`]).
     pub ssh: Option<SshTunnelDraft>,
+    /// Whether the MCP server may write to this connection (ADR-0087).
+    /// Cross-cutting like `ssh`, and `false` for anything that does not
+    /// deliberately ask for it — the gate exists to be off by default.
+    pub mcp_write: bool,
 }
 
 /// Add-time SSH tunnel draft: bastion coordinates plus **inline** secrets (the
@@ -140,6 +144,12 @@ pub struct ConnectionEditDraft {
     /// an editor with no tunnel UI (the egui client) must be able to change a
     /// name without dropping the tunnel, so it sends [`SshEditField::Keep`].
     pub ssh: SshEditField,
+    /// How the update should treat the MCP write gate (ADR-0087). `None`
+    /// keeps whatever is stored, for the same reason [`SshEditField::Keep`]
+    /// exists: the gate is normally set by hand in `connections.toml`, and a
+    /// caller with no toggle — a rename, a URL rotation — must not revoke a
+    /// permission it never showed the operator.
+    pub mcp_write: Option<bool>,
 }
 
 /// Top-level SSH edit intent. Distinct from a plain `Option` so a caller that
@@ -440,6 +450,7 @@ impl ConnectionAdmin {
         }
 
         let new_entry = ConnectionEntry {
+            mcp_write: draft.mcp_write,
             ssh,
             id: draft.id,
             name: draft.name,
@@ -522,6 +533,7 @@ impl ConnectionAdmin {
         };
 
         let new_entry = ConnectionEntry {
+            mcp_write: draft.mcp_write.unwrap_or(existing.mcp_write),
             ssh: new_ssh,
             id: id.to_string(),
             name: draft.name,
@@ -1218,6 +1230,7 @@ mod tests {
 
     fn turso_draft(id: &str, name: &str, path: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: name.to_string(),
@@ -1229,6 +1242,7 @@ mod tests {
 
     fn d1_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("D1 {id}"),
@@ -1243,6 +1257,7 @@ mod tests {
 
     fn pg_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("PG {id}"),
@@ -1254,6 +1269,7 @@ mod tests {
 
     fn mysql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("MySQL {id}"),
@@ -1265,6 +1281,7 @@ mod tests {
 
     fn neon_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("Neon {id}"),
@@ -1276,6 +1293,7 @@ mod tests {
 
     fn supabase_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("Supabase {id}"),
@@ -1287,6 +1305,7 @@ mod tests {
 
     fn aurora_dsql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: None,
             id: id.to_string(),
             name: format!("Aurora DSQL {id}"),
@@ -1438,6 +1457,7 @@ mod tests {
             .update(
                 "dsql",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Aurora DSQL dsql".to_string(),
                     kind: ConnectionKindEditDraft::AuroraDsql {
@@ -1470,6 +1490,7 @@ mod tests {
             .update(
                 "dsql",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Aurora DSQL".to_string(),
                     kind: ConnectionKindEditDraft::AuroraDsql {
@@ -1499,6 +1520,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
                     kind: ConnectionKindEditDraft::AuroraDsql {
@@ -1550,6 +1572,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                mcp_write: false,
                 ssh: None,
                 id: "dsql-iam".to_string(),
                 name: "Aurora DSQL (IAM)".to_string(),
@@ -1586,6 +1609,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                mcp_write: false,
                 ssh: None,
                 id: "dsql-iam".to_string(),
                 name: "Aurora DSQL (IAM)".to_string(),
@@ -1605,6 +1629,7 @@ mod tests {
             .update(
                 "dsql-iam",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "renamed".to_string(),
                     kind: ConnectionKindEditDraft::AuroraDsql {
@@ -1633,6 +1658,7 @@ mod tests {
             .update(
                 "supabase",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Supabase supabase".to_string(),
                     kind: ConnectionKindEditDraft::Supabase {
@@ -1664,6 +1690,7 @@ mod tests {
             .update(
                 "supabase",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Supabase".to_string(),
                     kind: ConnectionKindEditDraft::Supabase {
@@ -1694,6 +1721,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
                     kind: ConnectionKindEditDraft::Supabase {
@@ -1742,6 +1770,7 @@ mod tests {
             .update(
                 "neon",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Neon neon".to_string(),
                     kind: ConnectionKindEditDraft::Neon {
@@ -1768,6 +1797,7 @@ mod tests {
             .update(
                 "neon",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Neon".to_string(),
                     kind: ConnectionKindEditDraft::Neon {
@@ -1797,6 +1827,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
                     kind: ConnectionKindEditDraft::Neon {
@@ -1908,6 +1939,7 @@ mod tests {
             .update(
                 "local",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "New".to_string(),
                     kind: ConnectionKindEditDraft::Turso {
@@ -1927,6 +1959,84 @@ mod tests {
         );
     }
 
+    // The MCP write gate (ADR-0087) is a permission, so the paths that could
+    // silently grant or revoke it are worth pinning down.
+
+    #[test]
+    fn add_defaults_the_mcp_write_gate_to_closed() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+        assert!(!entry.mcp_write, "a new connection must not be writable");
+    }
+
+    #[test]
+    fn add_can_open_the_mcp_write_gate() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(ConnectionDraft {
+                mcp_write: true,
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+        assert!(entry.mcp_write);
+    }
+
+    /// An edit that says nothing about the gate must leave it alone. The
+    /// gate is normally set by hand in `connections.toml`, so a caller with
+    /// no toggle — renaming a connection, rotating a URL — would otherwise
+    /// revoke a permission it never showed the user.
+    #[test]
+    fn update_without_an_opinion_keeps_the_mcp_write_gate() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                mcp_write: true,
+                ..turso_draft("local", "Old", ":memory:")
+            })
+            .expect("add");
+
+        admin
+            .update(
+                "local",
+                ConnectionEditDraft {
+                    mcp_write: None,
+                    ssh: SshEditField::Keep,
+                    name: "New".to_string(),
+                    kind: ConnectionKindEditDraft::Turso {
+                        path: ":memory:".to_string(),
+                    },
+                },
+            )
+            .expect("update");
+
+        assert!(admin.entries()[0].mcp_write, "rename must not revoke");
+    }
+
+    #[test]
+    fn update_can_open_and_close_the_mcp_write_gate() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+
+        let edit = |gate: Option<bool>| ConnectionEditDraft {
+            mcp_write: gate,
+            ssh: SshEditField::Keep,
+            name: "Local".to_string(),
+            kind: ConnectionKindEditDraft::Turso {
+                path: ":memory:".to_string(),
+            },
+        };
+
+        admin.update("local", edit(Some(true))).expect("open");
+        assert!(admin.entries()[0].mcp_write);
+
+        admin.update("local", edit(Some(false))).expect("close");
+        assert!(!admin.entries()[0].mcp_write);
+    }
+
     #[test]
     fn update_with_secret_keep_does_not_touch_the_keyring() {
         let (_dir, secrets, mut admin) = fresh_admin();
@@ -1937,6 +2047,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
                     kind: ConnectionKindEditDraft::D1 {
@@ -1970,6 +2081,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "D1 prod".to_string(),
                     kind: ConnectionKindEditDraft::D1 {
@@ -1995,6 +2107,7 @@ mod tests {
             .update(
                 "missing",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "X".to_string(),
                     kind: ConnectionKindEditDraft::Turso {
@@ -2019,6 +2132,7 @@ mod tests {
             .update(
                 "local",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "L".to_string(),
                     kind: ConnectionKindEditDraft::D1 {
@@ -2058,6 +2172,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
                     kind: ConnectionKindEditDraft::D1 {
@@ -2183,6 +2298,7 @@ mod tests {
         let (_dir, secrets, mut target) = fresh_admin();
         target
             .add(ConnectionDraft {
+                mcp_write: false,
                 ssh: None,
                 id: "store-a".to_string(),
                 name: "pre-existing".to_string(),
@@ -2264,6 +2380,7 @@ mod tests {
         // hijack the victim's live credentials on import.
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: "attacker".to_string(),
             name: "Attacker".to_string(),
@@ -2338,6 +2455,7 @@ mod tests {
 
     fn pg_ssh_key_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: Some(SshTunnelDraft {
                 host: "bastion.example".to_string(),
                 port: 2222,
@@ -2358,6 +2476,7 @@ mod tests {
 
     fn pg_ssh_password_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_write: false,
             ssh: Some(SshTunnelDraft {
                 host: "bastion.example".to_string(),
                 port: 22,
@@ -2478,6 +2597,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
                         port: 22,
@@ -2506,6 +2626,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
                         port: 2222,
@@ -2546,6 +2667,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
                     kind: ConnectionKindEditDraft::Postgres {
@@ -2575,6 +2697,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Disable,
                     name: "PG work".to_string(),
                     kind: ConnectionKindEditDraft::Postgres {
@@ -2600,6 +2723,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
                         port: 2222,
@@ -2646,6 +2770,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
                         port: 2222,
@@ -2681,6 +2806,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
                         port: 22,
@@ -2716,6 +2842,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
                         port: 22,

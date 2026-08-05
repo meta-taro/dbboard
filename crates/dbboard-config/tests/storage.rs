@@ -28,6 +28,7 @@ fn save_then_load_round_trips_through_disk() {
     let original = ConnectionFile {
         version: dbboard_config::CONFIG_VERSION,
         connections: vec![ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: "local-turso".to_string(),
             name: "Local libSQL".to_string(),
@@ -57,6 +58,7 @@ fn save_overwrites_an_existing_file_atomically() {
     let first = ConnectionFile {
         version: dbboard_config::CONFIG_VERSION,
         connections: vec![ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: "old".to_string(),
             name: "Old".to_string(),
@@ -70,6 +72,7 @@ fn save_overwrites_an_existing_file_atomically() {
     let second = ConnectionFile {
         version: dbboard_config::CONFIG_VERSION,
         connections: vec![ConnectionEntry {
+            mcp_write: false,
             ssh: None,
             id: "new".to_string(),
             name: "New".to_string(),
