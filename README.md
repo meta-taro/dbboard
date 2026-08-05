@@ -1,6 +1,11 @@
-<img src="apps/dbboard/assets/dbboard-logo-256.png" alt="dbboard logo" align="right" width="96" height="96">
+<img src="assets/dbboard-logo-256.png" alt="dbboard logo" align="right" width="96" height="96">
 
 # dbboard
+
+### ⬇️ [**Download dbboard**](https://meta-taro.github.io/dbboard/) — Windows `.exe` / macOS `.dmg`
+
+[![Download](https://img.shields.io/badge/Download-dbboard-2f81f7?style=for-the-badge)](https://meta-taro.github.io/dbboard/)
+[![Latest release](https://img.shields.io/github/v/release/meta-taro/dbboard?style=for-the-badge)](https://github.com/meta-taro/dbboard/releases/latest)
 
 A high-performance desktop database client for modern serverless and
 distributed databases.
@@ -13,13 +18,19 @@ databases straightforward.
 
 ## Status
 
-Pre-1.0; workspace at `0.3.0`. Phases 1, 3, and the Phase 4 AI assistant
-are closed, and dbboard now doubles as a **read-only MCP server**
-(`dbboard-mcp`) for external AI agents (ADR-0046). The Turso, Cloudflare
+Pre-1.0; workspace at `0.4.0`. Phases 1, 3, and the Phase 4 AI assistant
+are closed, and dbboard now doubles as an **MCP server** (`dbboard-mcp`)
+for external AI agents (ADR-0046) — read-only unless you opt a connection
+in, and never for privilege changes, `TRUNCATE` or `DROP` (ADR-0087).
+The Turso, Cloudflare
 D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, and MySQL / MariaDB
 adapters all ship over the local HTTP backend. See
 [`CHANGELOG.md`](CHANGELOG.md) for what
 landed and [`docs/roadmap.md`](docs/roadmap.md) for the next phase.
+
+The client is **Tauri 2 + SvelteKit** over the shared Rust core crates. The
+egui client it replaced shipped through v0.4.0 and was retired in
+[ADR-0089](docs/decisions.md); releases up to v0.4.0 still carry its binaries.
 
 This is the **desktop** implementation. The web counterpart lives at
 [meta-taro/dbboard-web](https://github.com/meta-taro/dbboard-web) (Nuxt +
@@ -28,7 +39,7 @@ independent codebases.
 
 ## Download
 
-Prebuilt Windows (`.exe` / `.msi`) and macOS (`.dmg`) binaries for the
+A prebuilt Windows installer (`.exe`) and macOS disk image (`.dmg`) for the
 latest release are on the **[download page](https://meta-taro.github.io/dbboard/)**
 (GitHub Pages), or directly on the
 [Releases](https://github.com/meta-taro/dbboard/releases) page. Every
@@ -39,7 +50,8 @@ and [ADR-0044](docs/decisions.md)).
 
 ## Goals
 
-- **Performance first** — native Rust UI built on egui.
+- **Performance first** — Rust core; the UI is a WebView shell over it, not a
+  bundled browser runtime.
 - **Local first** — no required external services to run.
 - **Modular** — database and AI layers are decoupled.
 - **Extensible** — new databases and AI providers can be added behind traits.
@@ -92,7 +104,8 @@ versioning and DB-support policy are defined in
 
 Three main layers, organised as a cargo workspace:
 
-- **UI layer** — Rust + egui, native desktop interface.
+- **UI layer** — a Tauri 2 shell (`apps/desktop`) with a SvelteKit frontend,
+  calling the core crates over Tauri IPC.
 - **Database adapter layer** — abstracts database-specific logic behind a
   single trait so multiple providers plug in.
 - **AI integration layer (optional)** — pluggable providers (Claude,
@@ -124,15 +137,18 @@ Running `cargo test` once installs the `cargo-husky` git hooks
 ## Run
 
 ```sh
-cargo run -p dbboard
+cd apps/desktop
+pnpm install        # first time only
+pnpm tauri dev
 ```
 
-On startup the binary boots a small HTTP server bound to loopback
-(`127.0.0.1`) on an OS-assigned port, and the UI talks to it over that
-local connection — the same API contract the web sibling implements (see
-[`docs/api-contract.md`](docs/api-contract.md)). The server is local-only
-and shuts down when you close the window; nothing listens on a public
-interface.
+The frontend never touches a database: it calls Tauri commands that wrap the
+same `McpService` the MCP server exposes, so the engine-enforced read-only
+path has one implementation. Nothing listens on a network interface. (The
+loopback HTTP backend in `crates/dbboard-server` is the executable statement
+of the contract the web sibling implements — see
+[`docs/api-contract.md`](docs/api-contract.md) — and is no longer booted by
+the client.)
 
 By default the app opens an in-memory Turso/libSQL database, so it runs
 with no configuration. The backend is chosen by, in priority order:
@@ -152,7 +168,7 @@ with no configuration. The backend is chosen by, in priority order:
 See [`docs/connections.md`](docs/connections.md) for the connection-store
 schema and where the file lives per OS.
 
-Once registered, the **Connections** window (top menu bar) lets you
+Once registered, the **Connections** window (top bar) lets you
 add / edit / delete entries and swap the active connection on the
 running process — the per-row **Connect** button swaps the backend
 in-place, no app restart needed (in-flight requests intentionally
@@ -177,20 +193,21 @@ tunnel before dialing; the key passphrase / SSH password live only in the
 keychain. See [ADR-0069](docs/decisions.md) and
 [`docs/connections.md`](docs/connections.md#ssh-tunnel-connectionsssh).
 
-The same menu bar carries a **Language** / **言語** submenu listing
+The top bar carries a **Language** / **言語** menu listing
 the 11 shipped locales by their native names. Picking one swaps the
 UI language in place; the `DBBOARD_LANG` env var still drives the
 startup default and is unchanged by the runtime switcher. See
 [ADR-0022](docs/decisions.md).
 
 The **Help** menu shows the running version and, when a newer release has
-been published, an **Update available** notice with the release notes and
-a link to the download page. This is the one network call dbboard makes on
-its own behalf: a single best-effort request to the public GitHub Releases
-API at startup, compared against the running version. Updating is entirely
-manual — there is no auto-download and nothing is replaced for you. The
-check is silent when offline or on any error, and you can turn it off
-completely by setting `DBBOARD_NO_UPDATE_CHECK` to any non-empty value. See
+been published, an **Update available** notice with the release notes. This is
+the one network call dbboard makes on its own behalf: a single best-effort
+check at startup against the signed `latest.json` published with each release,
+compared to the running version. You choose whether to install it; the
+download is verified against the release signing key before anything is
+replaced ([ADR-0067](docs/decisions.md)). The check is silent when offline or
+on any error, and you can turn it off completely by setting
+`DBBOARD_NO_UPDATE_CHECK` to any non-empty value. See
 [ADR-0040](docs/decisions.md).
 
 A **Backup…** button on the query toolbar dumps the active connection to a
@@ -218,6 +235,11 @@ A window shows per-statement progress and can **Cancel** mid-run; the summary
 reports how many schema and data statements applied and which failed. See
 [ADR-0051](docs/decisions.md).
 
+The examples below set an env var for one run; they assume the working
+directory is `apps/desktop` (that is where `pnpm tauri dev` lives). Anything
+you would rather keep is better placed in `connections.toml` — see
+[docs/connections.md](docs/connections.md).
+
 ### Local Turso/libSQL (default)
 
 | Variable | Purpose | Default |
@@ -243,7 +265,7 @@ falls back to the local Turso default.
 
 ```sh
 DBBOARD_D1_ACCOUNT_ID=... DBBOARD_D1_DATABASE_ID=... DBBOARD_D1_TOKEN=... \
-  cargo run -p dbboard
+  pnpm tauri dev
 ```
 
 ### CockroachDB / PostgreSQL
@@ -265,7 +287,7 @@ default SQL port is `26257`. CockroachDB requires TLS, so keep
 
 ```sh
 DBBOARD_PG_URL='postgresql://user:pass@host:26257/db?sslmode=verify-full' \
-  cargo run -p dbboard
+  pnpm tauri dev
 ```
 
 For **Neon**, **Supabase**, and **AWS Aurora DSQL** the same adapter is
@@ -285,14 +307,14 @@ control (use `.env`, which is gitignored). The app never logs them.
 
 ```sh
 DBBOARD_NEON_URL='postgres://user:pass@ep-…neon.tech/db?sslmode=require' \
-  cargo run -p dbboard
+  pnpm tauri dev
 
 DBBOARD_SUPABASE_URL='postgres://user:pass@db.<ref>.supabase.co:5432/postgres?sslmode=require' \
-  cargo run -p dbboard
+  pnpm tauri dev
 
 # Aurora DSQL: the password segment is a short-lived IAM token.
 DBBOARD_AURORA_DSQL_URL='postgres://admin:<IAM-token>@<cluster>.dsql.<region>.on.aws:5432/postgres?sslmode=require' \
-  cargo run -p dbboard
+  pnpm tauri dev
 ```
 
 Because the Aurora DSQL IAM token expires in ~15 minutes, the env-var
@@ -407,7 +429,7 @@ headless / CI use and avoids surprising a user who already exports
 the env var. Unset it to let the TOML path take over:
 
 ```sh
-DBBOARD_ANTHROPIC_API_KEY='sk-ant-…' cargo run -p dbboard
+DBBOARD_ANTHROPIC_API_KEY='sk-ant-…' pnpm tauri dev
 ```
 
 If neither path resolves a provider (or any branch fails — missing
@@ -430,41 +452,86 @@ Remaining deferred Stage 2 capability (full-DDL schema snapshots +
 function-calling — Group D) is tracked in ADR-0023 §9. Groups A / B
 / C are closed (ADR-0025 / ADR-0026 / ADR-0027).
 
-## MCP server (read-only)
+## MCP server
 
 Besides being an AI *client*, dbboard also ships as a headless
 [MCP](https://modelcontextprotocol.io) *server* — `dbboard-mcp` — that
 hands the databases dbboard is already configured with to an external AI
-agent (Claude Desktop, Claude Code) as a small, **read-only** tool
-surface over stdio. It reuses the exact same `connections.toml` + OS
-keychain machinery as the GUI, so it adds no new place to keep
-credentials. See [ADR-0046](docs/decisions.md) and the crate README,
+agent (Claude Desktop, Claude Code) as a small tool surface over stdio.
+It reuses the exact same `connections.toml` + OS keychain machinery as
+the GUI, so it adds no new place to keep credentials. See
+[ADR-0046](docs/decisions.md) and the crate README,
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
 full spec.
 
-Five fixed tools: `list_connections`, `list_tables`, `describe_table`,
-`run_read_query`, and `get_annotations` (dbboard's local notes, ADR-0045).
+Nine fixed tools. Seven read — `list_connections`, `list_tables`,
+`describe_table`, `search_schema` (ADR-0053), `list_relationships`
+(ADR-0054), `run_read_query`, and `get_annotations` (dbboard's local
+notes, ADR-0045) — plus `run_write` and `dump_database` (ADR-0087).
 The security posture is the reason it is safe to point an agent at:
 
 - **Secrets never cross the wire.** The only connection metadata
   serialized is `{ id, name, kind }` — no URLs, tokens, or keyring
   references, and no error message embeds one.
-- **Read-only is engine-enforced, not string-matched.** Postgres-wire
-  runs each statement inside `BEGIN TRANSACTION READ ONLY`, libSQL/Turso
-  under `PRAGMA query_only`, and D1 classifies the AST — so `UPDATE`,
-  DDL, multi-statement batches, and `SELECT … FOR UPDATE` all fail at
-  the source.
+- **Reading is engine-enforced read-only, not string-matched.**
+  Postgres-wire runs each statement inside `BEGIN TRANSACTION READ ONLY`,
+  libSQL/Turso under `PRAGMA query_only`, and D1 classifies the AST — so
+  `UPDATE`, DDL, multi-statement batches, and `SELECT … FOR UPDATE` all
+  fail at the source.
+- **Writing is off until a human turns it on, per connection**
+  (`mcp_write` in `connections.toml`, or *Connections → Edit → AI agent
+  access*). Even then `run_write` only accepts an allowlisted statement
+  — classified on the AST, failing closed — and `GRANT` / `REVOKE` /
+  `DENY`, user and role DDL, `SET PASSWORD`, `TRUNCATE`, and `DROP` of
+  anything but an index are refused whatever the flag says (ADR-0087).
 - **Result sets are bounded.** `run_read_query` clamps `max_rows` to a
   hard cap of 1000 (default 200) with a `truncated` flag.
 - **stdout is sacred.** JSON-RPC frames own stdout; all logging goes to
   stderr (`RUST_LOG`, default `info`).
+
+**Get it from the
+[latest release](https://github.com/meta-taro/dbboard/releases/latest)** —
+`dbboard-mcp-windows-x86_64.exe` or `dbboard-mcp-macos-universal`. It is a
+single executable with no runtime dependencies, and it is a *separate*
+download from the desktop app: the installer on the download page does not
+contain it. Put it somewhere stable, because the path goes into the agent's
+config:
+
+```powershell
+# Windows (PowerShell)
+mkdir -Force "$env:LOCALAPPDATA\dbboard"
+Move-Item -Force ~\Downloads\dbboard-mcp-windows-x86_64.exe "$env:LOCALAPPDATA\dbboard\dbboard-mcp.exe"
+```
+
+```sh
+# macOS
+mkdir -p ~/.local/bin
+mv ~/Downloads/dbboard-mcp-macos-universal ~/.local/bin/dbboard-mcp
+chmod +x ~/.local/bin/dbboard-mcp
+xattr -d com.apple.quarantine ~/.local/bin/dbboard-mcp   # Gatekeeper, unsigned build
+```
+
+Register it with **Claude Code** in one command — `--scope user` makes it
+available in every project on the machine:
+
+```sh
+# macOS / Linux
+claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"
+```
+
+```powershell
+# Windows (PowerShell)
+claude mcp add dbboard --scope user -- "$env:LOCALAPPDATA/dbboard/dbboard-mcp.exe"
+```
+
+To build it yourself instead:
 
 ```sh
 cargo build --release -p dbboard-mcp
 # binary at target/release/dbboard-mcp(.exe)
 ```
 
-Register it with Claude Desktop by adding the absolute path to the built
+Or with **Claude Desktop**, by adding the absolute path to the built
 binary in `claude_desktop_config.json`
 (`%APPDATA%\Claude\claude_desktop_config.json` on Windows,
 `~/Library/Application Support/Claude/claude_desktop_config.json` on
@@ -480,10 +547,19 @@ macOS):
 }
 ```
 
+Either way, **restart the agent afterwards.** Each client spawns its own
+`dbboard-mcp` process and holds it for the session, so an already-running
+agent keeps talking to the old one — and restarting the dbboard *desktop
+app* does nothing to it, because they are separate processes.
+
 With no arguments it reads the same per-user `connections.toml` the GUI
 uses; pass `--config` (or set `DBBOARD_CONFIG`) to point at a curated,
-least-privilege subset instead. Full configuration — including the
-per-OS config paths and running it under Claude Code — is documented in
+least-privilege subset instead. If your operating rules forbid writing
+credentials to a file at all, pass them as environment variables in the
+agent's own config — see *Credentials without writing a file* in the crate
+README. Full configuration — the per-OS config paths, running several
+agents at once, TLS behind a corporate proxy, and the literal error strings
+a failed connection produces — is documented in
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md).
 
 ## Development
@@ -535,104 +611,62 @@ CI does not run this yet; run it locally when adding or upgrading a
 dependency. New license expressions surfaced by the check go into
 `deny.toml`'s `licenses.allow` list with a one-line rationale.
 
-## Packaging & distribution (internal)
+## Packaging & distribution
 
-Primary target is Windows; macOS packaging is also wired (see below). The
-Windows release binary is a self-contained GUI app: no console window, an
-embedded icon + version metadata, and a statically-linked MSVC CRT (no
-Visual C++ Redistributable required on the target machine). See
-[ADR-0032](docs/decisions.md).
+Windows and macOS bundles are produced by the Tauri CLI from
+`apps/desktop`. Linux is not built today.
 
 > **Note on trust.** The artifacts are **not code-signed yet**, so Windows
 > SmartScreen and macOS Gatekeeper will warn about an unknown publisher.
 > Verify a download against the published `SHA256SUMS.txt` (see *Release
 > builds & checksums*). Signing is a planned follow-up ([ADR-0044](docs/decisions.md)).
+> This is separate from the *updater* signing key, which is already in use and
+> is what proves an auto-update came from this project ([ADR-0067](docs/decisions.md)).
 
-### Just the executable (Windows)
-
-```sh
-cargo build --release
-# → target\release\dbboard.exe  (single self-contained file, ~15 MB)
-```
-
-Copy `dbboard.exe` anywhere and run it. It needs no `.env`: it starts on
-an in-memory Turso database, and connections + AI providers are added
-from the UI, with secrets stored in Windows Credential Manager.
-
-### MSI installer
-
-The installer is built with [cargo-wix](https://github.com/volks73/cargo-wix)
-and the [WiX Toolset v3](https://wixtoolset.org/) (both are one-time
-installs, not required for the plain exe):
+### Building a bundle locally
 
 ```sh
-# one-time prerequisites
-#   1. Install WiX Toolset v3 (candle.exe / light.exe on PATH)
-#   2. cargo install cargo-wix
-
-# build the MSI (run from the binary package)
-cd apps/dbboard
-cargo wix --nocapture
-# → target\wix\dbboard-<version>-x86_64.msi
+cd apps/desktop
+pnpm install          # first time only
+pnpm tauri build
 ```
 
-The installer sources live in [`apps/dbboard/wix/`](apps/dbboard/wix/).
-The MSI installs to `%ProgramFiles%\dbboard`, registers a clean uninstall
-entry with the app icon, shows the MIT license, and offers an opt-out
-"add to PATH" feature. The UpgradeCode is fixed, so installing a newer
-version upgrades an existing install in place.
+The bundles land under `apps/desktop/src-tauri/target/release/bundle/`:
 
-### macOS app (.app / .dmg)
+| Platform | Artifact | Built on |
+|---|---|---|
+| Windows | `nsis/dbboard-desktop_<version>_x64-setup.exe` | Windows |
+| macOS | `dmg/dbboard-desktop_<version>_universal.dmg` | macOS (a `.dmg` cannot be produced from Windows) |
 
-The macOS bundle is built with [cargo-bundle](https://github.com/burtonageo/cargo-bundle)
-**on a Mac** (the `.app`/`.dmg`, and later signing/notarization, cannot be
-produced from Windows):
+App identity — bundle identifier, icons, window defaults, updater endpoint —
+lives in [`apps/desktop/src-tauri/tauri.conf.json`](apps/desktop/src-tauri/tauri.conf.json);
+the icons are generated from `assets/` (see [DESIGN.md](DESIGN.md)).
 
-```sh
-cargo install cargo-bundle
-# cargo-bundle 0.6.0 has no package selector (`--package` is rejected), so
-# run it from the binary crate dir. It also can't read a workspace-inherited
-# version — `version.workspace = true` is a TOML map and it wants a string
-# ("invalid type: map, expected a string for key `package.version`"), so
-# temporarily inline the concrete version for the bundle only:
-cd apps/dbboard
-VERSION="$(cargo metadata --no-deps --format-version 1 \
-  | python3 -c 'import sys,json; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="dbboard"))')"
-cp Cargo.toml Cargo.toml.orig
-sed -i '' 's/^version\.workspace = true/version = "'"$VERSION"'"/' Cargo.toml
-cargo bundle --release
-mv Cargo.toml.orig Cargo.toml
-# → target/release/bundle/osx/dbboard.app
-# wrap it in a .dmg:
-hdiutil create -volname dbboard \
-  -srcfolder target/release/bundle/osx/dbboard.app \
-  -ov -format UDZO dbboard.dmg
-```
-
-The bundle identity (identifier `com.meta-taro.dbboard`, category, icon,
-minimum macOS version) lives in `[package.metadata.bundle]` in
-[`apps/dbboard/Cargo.toml`](apps/dbboard/Cargo.toml). See
-[ADR-0044](docs/decisions.md).
+Because the frontend is a static SPA, `pnpm tauri build` runs the Vite build
+first; a stale `apps/desktop/build/` is never what ships.
 
 ### Release builds & checksums
 
 Pushing a `v*.*.*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
-which builds the Windows (exe + MSI) and macOS (.dmg) artifacts on their
-native runners and attaches them to the matching GitHub Release together
-with a combined `SHA256SUMS.txt`. A manual `workflow_dispatch` run builds
-the same artifacts as a smoke test without publishing. Verify a download:
+which builds the Windows and macOS bundles on their native runners and attaches
+them to the matching GitHub Release together with a combined `SHA256SUMS.txt`
+and the signed `latest.json` the in-app updater reads. A manual
+`workflow_dispatch` run builds the same artifacts as a smoke test without
+publishing. The [download page](https://meta-taro.github.io/dbboard/) then
+serves whatever the newest release holds — it reads the Releases API at load,
+so it needs no separate deploy. Verify a download:
 
 ```sh
 sha256sum -c SHA256SUMS.txt        # Linux/macOS
 # or on Windows PowerShell:
-#   (Get-FileHash .\dbboard-windows-x86_64.exe -Algorithm SHA256).Hash
+#   (Get-FileHash .\dbboard-desktop_<version>_x64-setup.exe -Algorithm SHA256).Hash
 ```
 
 ### Handing a build to someone
 
 Three role-specific guides cover the actual handoff:
 
-- **Producing a build** (maintainer): build the exe, optionally export an
+- **Producing a build** (maintainer): build the installer, optionally export an
   encrypted connection bundle, deliver, and keep artifacts out of the
   public repo — [`docs/maintainer/internal-distribution.md`](docs/maintainer/internal-distribution.md).
 - **Trying it as a tester**: install, run, and report feedback —

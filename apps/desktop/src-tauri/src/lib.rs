@@ -1,10 +1,10 @@
-//! Tauri command surface for the spike.
+//! Tauri command surface for the desktop client.
 //!
-//! Each command is a thin async wrapper over [`McpService`] — the same
+//! Each read command is a thin async wrapper over [`McpService`] — the same
 //! read-only service the `dbboard-mcp` stdio server exposes to external
-//! agents (ADR-0046). Reusing it is the point of the spike: it proves a
-//! WebView frontend can drive the egui-free core with no new DB logic,
-//! only a new transport (Tauri IPC in place of JSON-RPC over stdio).
+//! agents (ADR-0046). Sharing it is deliberate: the engine-enforced
+//! read-only guarantee has one implementation, and this crate adds a
+//! transport (Tauri IPC in place of JSON-RPC over stdio), not DB logic.
 //!
 //! Errors are flattened to `String` because Tauri serialises a command's
 //! `Err` to the frontend as JSON; the frontend only needs the message,
@@ -649,6 +649,8 @@ fn to_add_draft(
     name: String,
     kind: KindInput,
     ssh: Option<SshInput>,
+    mcp_write: bool,
+    mcp_alias: Option<String>,
 ) -> ConnectionDraft {
     let kind = match kind {
         KindInput::Turso { path } => ConnectionKindDraft::Turso { path },
@@ -670,6 +672,8 @@ fn to_add_draft(
         KindInput::AuroraDsql { url } => ConnectionKindDraft::AuroraDsql { url },
     };
     ConnectionDraft {
+        mcp_write,
+        mcp_alias,
         id,
         name,
         kind,
@@ -707,7 +711,13 @@ where
     })
 }
 
-fn to_edit_draft(name: String, kind: KindEditInput, ssh: SshEditInput) -> ConnectionEditDraft {
+fn to_edit_draft(
+    name: String,
+    kind: KindEditInput,
+    ssh: SshEditInput,
+    mcp_write: Option<bool>,
+    mcp_alias: Option<String>,
+) -> ConnectionEditDraft {
     let kind = match kind {
         KindEditInput::Turso { path } => ConnectionKindEditDraft::Turso { path },
         KindEditInput::D1 {
@@ -738,6 +748,8 @@ fn to_edit_draft(name: String, kind: KindEditInput, ssh: SshEditInput) -> Connec
         },
     };
     ConnectionEditDraft {
+        mcp_write,
+        mcp_alias,
         name,
         kind,
         ssh: to_ssh_edit_field(ssh),
@@ -827,6 +839,15 @@ struct EditFieldsResponse {
     kind: EditFieldsDto,
     ssh: Option<SshEditFieldsDto>,
     dsn: Option<DsnPartsDto>,
+    /// Whether the MCP server may write to this connection (ADR-0087). Not a
+    /// secret — it is a permission the operator granted — so unlike the DSN
+    /// password it can be read back and shown as the toggle's current state.
+    mcp_write: bool,
+    /// The agent-facing alias, or `None` when this connection has none
+    /// (ADR-0088). Sent back so the form opens with the stored alias in the
+    /// box: an alias input that always opened blank would send `Some("")` on
+    /// the next save and silently drop the alias the operator set.
+    mcp_alias: Option<String>,
 }
 
 /// Project a stored [`dbboard_config::SshTunnelToml`] into its non-secret
@@ -876,6 +897,8 @@ fn connection_edit_fields(
         .find(|e| e.id == id)
         .ok_or_else(|| format!("no connection with id \"{id}\""))?;
     let ssh = entry.ssh.as_ref().map(ssh_edit_fields);
+    let mcp_write = entry.mcp_write;
+    let mcp_alias = entry.mcp_alias.clone();
     let dto = match &entry.kind {
         ConnectionKind::Turso { path } => EditFieldsDto::Turso { path: path.clone() },
         ConnectionKind::D1 {
@@ -915,6 +938,8 @@ fn connection_edit_fields(
         kind: dto,
         ssh,
         dsn,
+        mcp_write,
+        mcp_alias,
     })
 }
 
@@ -938,6 +963,14 @@ async fn probe_ssh_host_key(host: String, port: u16) -> Result<String, String> {
 /// Add a connection: writes the non-secret entry to `connections.toml`
 /// and the secret to the OS keyring atomically (rolled back together on
 /// failure). Fails with `DuplicateId` if the id is taken.
+///
+/// `mcp_write` defaults to closed when the caller omits it, so a form that
+/// never rendered the toggle cannot grant the MCP write permission by
+/// accident (ADR-0087).
+///
+/// `mcp_alias` is optional for the mirror-image reason (ADR-0088): omitting it
+/// leaves the connection's real id and name visible to agents, which is what a
+/// caller with no alias input meant.
 #[tauri::command]
 fn add_connection(
     state: tauri::State<'_, AppState>,
@@ -945,10 +978,19 @@ fn add_connection(
     name: String,
     kind: KindInput,
     ssh: Option<SshInput>,
+    mcp_write: Option<bool>,
+    mcp_alias: Option<String>,
 ) -> Result<(), String> {
     let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
     admin
-        .add(to_add_draft(id, name, kind, ssh))
+        .add(to_add_draft(
+            id,
+            name,
+            kind,
+            ssh,
+            mcp_write.unwrap_or(false),
+            mcp_alias,
+        ))
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
@@ -962,6 +1004,16 @@ fn add_connection(
 /// rule (ADR-0080): the form rebuilt the DSN from host/port/user/database but
 /// the user did not retype the password, so the stored one is grafted back on
 /// here rather than being sent to the webview and back.
+///
+/// `mcp_write` is `Option` for the same reason (ADR-0087): omitting it keeps
+/// whatever is stored, so a caller with no toggle cannot revoke a permission
+/// it never showed. `mcp_alias` follows the same rule with one extra state
+/// (ADR-0088): omitted keeps, a filled string sets, and an empty string — what
+/// an emptied text input sends — clears the alias.
+// The parameter list *is* the wire contract: each name is a key the webview
+// sends. Folding them into one payload struct would rename every key for a
+// lint, so the arity is allowed to grow with the form instead.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn update_connection(
     state: tauri::State<'_, AppState>,
@@ -970,6 +1022,8 @@ async fn update_connection(
     kind: KindEditInput,
     ssh: SshEditInput,
     keep_password: Option<bool>,
+    mcp_write: Option<bool>,
+    mcp_alias: Option<String>,
 ) -> Result<(), String> {
     {
         let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
@@ -983,7 +1037,7 @@ async fn update_connection(
             kind
         };
         admin
-            .update(&id, to_edit_draft(name, kind, ssh))
+            .update(&id, to_edit_draft(name, kind, ssh, mcp_write, mcp_alias))
             .map_err(|e| e.to_string())?;
     } // drop the guard before awaiting — keeps the command future Send.
     state.service.invalidate(&id).await;
@@ -1376,6 +1430,8 @@ mod tests {
                 token: "t".to_string(),
             },
             None,
+            false,
+            None,
         );
         assert_eq!(draft.id, "d");
         assert_eq!(draft.name, "D");
@@ -1393,6 +1449,48 @@ mod tests {
             }
             _ => panic!("expected a D1 draft"),
         }
+    }
+
+    #[test]
+    fn to_add_draft_carries_the_mcp_alias() {
+        let with = |alias: Option<&str>| {
+            to_add_draft(
+                "d".to_string(),
+                "D".to_string(),
+                KindInput::Turso {
+                    path: ":memory:".to_string(),
+                },
+                None,
+                false,
+                alias.map(str::to_string),
+            )
+            .mcp_alias
+        };
+        assert_eq!(with(None), None, "no alias by default (ADR-0088)");
+        assert_eq!(with(Some("store-a")), Some("store-a".to_string()));
+    }
+
+    #[test]
+    fn to_edit_draft_passes_the_alias_through_unchanged() {
+        // The three states of ADR-0088's edit semantics have to survive the
+        // trip verbatim: the config layer, not this mapper, decides that a
+        // blank string clears. Flattening `Some("")` to `None` here would turn
+        // "clear the alias" into "keep it" and the alias could never be removed.
+        let with = |alias: Option<&str>| {
+            to_edit_draft(
+                "D".to_string(),
+                KindEditInput::Turso {
+                    path: ":memory:".to_string(),
+                },
+                SshEditInput::Keep,
+                None,
+                alias.map(str::to_string),
+            )
+            .mcp_alias
+        };
+        assert_eq!(with(None), None, "omitted → keep the stored alias");
+        assert_eq!(with(Some("store-a")), Some("store-a".to_string()));
+        assert_eq!(with(Some("")), Some(String::new()), "emptied → clear");
     }
 
     /// A `ConnectionAdmin` over a throwaway `connections.toml` paired with an
@@ -1417,6 +1515,8 @@ mod tests {
                     path: ":memory:".to_string(),
                 },
                 None,
+                false,
+                None,
             ))
             .expect("add turso");
         admin
@@ -1426,6 +1526,8 @@ mod tests {
                 KindInput::Postgres {
                     url: "postgres://u:pw@h/db".to_string(),
                 },
+                None,
+                false,
                 None,
             ))
             .expect("add postgres");
@@ -1440,6 +1542,8 @@ mod tests {
                     "PG-renamed".to_string(),
                     KindEditInput::Postgres { url: None },
                     SshEditInput::Keep,
+                    None,
+                    None,
                 ),
             )
             .expect("rename postgres, keep secret");
@@ -1466,6 +1570,8 @@ mod tests {
                     path: ":memory:".to_string(),
                 },
                 None,
+                false,
+                None,
             )
         };
         admin.add(mk()).expect("first add");
@@ -1484,6 +1590,8 @@ mod tests {
             KindInput::Turso {
                 path: ":memory:".to_string(),
             },
+            None,
+            false,
             None,
         ))
         .expect("seed source");

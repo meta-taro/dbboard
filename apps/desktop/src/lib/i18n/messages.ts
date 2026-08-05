@@ -1,12 +1,11 @@
-// Message catalogs for the desktop app i18n (feature parity with the egui
-// `dbboard-i18n` crate).
+// Message catalogs for the desktop app i18n (ADR-0015).
 //
-// Reused keys (tables-*, structure-*, help-*, theme-*, language-menu, …) are
-// ported verbatim from the egui Fluent catalogs so all 11 locales share
-// vetted translations. Tauri-specific keys (tab-query, sidebar-*, result-*,
-// about-*, history-*, win-*) are authored here: English is the source of
-// truth and Japanese is complete; the other 9 locales fall back to English
-// for those keys until translated.
+// Reused keys (tables-*, structure-*, help-*, theme-*, language-menu, …) were
+// ported verbatim from the retired egui client's Fluent catalogs (ADR-0089),
+// so all 11 locales share vetted translations. Keys authored for this client
+// (tab-query, sidebar-*, result-*, about-*, history-*, win-*) start here:
+// English is the source of truth and Japanese is complete; the other 9
+// locales fall back to English for those keys until translated.
 //
 // `en` is `as const` so its keys form the MessageKey union and the type of a
 // complete catalog. Per-locale catalogs are typed `Partial<Record<MessageKey,
@@ -137,7 +136,8 @@ export const en = {
   "conn-cancel": "Cancel",
   "conn-close": "Close",
   "conn-field-id": "ID",
-  "conn-field-id-hint": "A stable identifier — it cannot be changed later.",
+  "conn-field-id-hint":
+    "A stable identifier — it cannot be changed later. An AI agent sees it, so avoid host names and customer names here; if one is already in use, set an alias under AI agent access.",
   "conn-field-name": "Name",
   "conn-field-kind": "Type",
   "conn-field-path": "Database path",
@@ -205,6 +205,16 @@ export const en = {
   "conn-ssh-fetch-busy": "Asking…",
   "conn-ssh-known-hosts-hint":
     "The OpenSSH file you already trust this server in. On Windows it is usually .ssh\known_hosts under your user folder.",
+  // MCP write gate (ADR-0087)
+  "conn-mcp-section": "AI agent access",
+  "conn-mcp-write": "Let an AI agent write to this database",
+  "conn-mcp-write-hint":
+    "Off by default. An agent can always read; turning this on also lets it INSERT, UPDATE, DELETE, CREATE and ALTER. Granting privileges, TRUNCATE and DROP stay blocked either way.",
+  // Agent-facing connection alias (ADR-0088)
+  "conn-mcp-alias": "Name shown to AI agents",
+  "conn-mcp-alias-placeholder": "e.g. store-a",
+  "conn-mcp-alias-hint":
+    "Optional. When set, an agent sees this name in place of both the id and the display name above, and the real id stops working as a handle — so a host or customer name you already used as an id no longer reaches the agent's transcript. Leave blank to show the real ones.",
   // Connection bundle import/export (ADR-0038)
   "conn-export": "Export…",
   "conn-import": "Import…",
@@ -436,7 +446,8 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-cancel": "キャンセル",
   "conn-close": "閉じる",
   "conn-field-id": "ID",
-  "conn-field-id-hint": "安定した識別子です。後から変更できません。",
+  "conn-field-id-hint":
+    "安定した識別子です。後から変更できません。AI エージェントにも見えるため、ホスト名や実店舗名は避けてください。すでに使っている場合は「AI エージェントからの操作」で別名を設定してください。",
   "conn-field-name": "名前",
   "conn-field-kind": "種類",
   "conn-field-path": "データベースのパス",
@@ -504,6 +515,16 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-ssh-fetch-busy": "問い合わせ中…",
   "conn-ssh-known-hosts-hint":
     "このサーバーを既に登録済みの OpenSSH ファイルです。Windows では通常ユーザーフォルダ直下の .ssh\known_hosts です。",
+  // MCP 書き込みゲート (ADR-0087)
+  "conn-mcp-section": "AI エージェントからの操作",
+  "conn-mcp-write": "この接続への書き込みを AI エージェントに許可する",
+  "conn-mcp-write-hint":
+    "既定はオフです。エージェントは常に読み取れます。オンにすると INSERT / UPDATE / DELETE / CREATE / ALTER も実行できます。権限付与・TRUNCATE・DROP はどちらの状態でも禁止されたままです。",
+  // エージェント向けの接続別名 (ADR-0088)
+  "conn-mcp-alias": "AI エージェントに見せる名前",
+  "conn-mcp-alias-placeholder": "例: store-a",
+  "conn-mcp-alias-hint":
+    "任意です。設定すると、エージェントには上の ID と表示名の代わりにこの名前だけが見え、実の ID は接続先として使えなくなります。すでに ID にホスト名や店舗名を使っていても、エージェントの履歴には残りません。空の場合は実の ID と表示名が見えます。",
   // 接続バンドルのインポート/エクスポート (ADR-0038)
   "conn-export": "エクスポート…",
   "conn-import": "インポート…",

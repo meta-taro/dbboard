@@ -288,6 +288,44 @@ describe('formForEdit', () => {
   });
 });
 
+// The MCP write gate (ADR-0087). Unlike every other permission-ish field on
+// this form it is *not* a secret, so the backend does return it and edit must
+// show its real state — a toggle that always opens closed would read as "off"
+// for a connection an agent can already write to.
+describe('the MCP write gate', () => {
+  it('a new connection starts closed', () => {
+    expect(emptyForm().mcp_write).toBe(false);
+  });
+
+  it('an edit prefills the stored state', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon', mcp_write: true }).mcp_write).toBe(true);
+    expect(formForEdit('p', 'P', { kind: 'neon', mcp_write: false }).mcp_write).toBe(false);
+  });
+
+  it('a backend that omits it (an older build) is read as closed', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon' }).mcp_write).toBe(false);
+  });
+});
+
+// The agent-facing alias (ADR-0088). Same prefill argument as the write gate,
+// with a sharper failure mode: an alias box that always opened blank would send
+// "" on the next save, and clearing the alias re-exposes the real id and name to
+// every agent the operator was hiding them from.
+describe('the MCP alias', () => {
+  it('a new connection has none', () => {
+    expect(emptyForm().mcp_alias).toBe('');
+  });
+
+  it('an edit prefills the stored alias', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon', mcp_alias: 'store-a' }).mcp_alias).toBe('store-a');
+  });
+
+  it('no stored alias, or a backend that omits it, opens blank', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon', mcp_alias: null }).mcp_alias).toBe('');
+    expect(formForEdit('p', 'P', { kind: 'neon' }).mcp_alias).toBe('');
+  });
+});
+
 // The user's report: "「編集」で開くと URL モードは追加の時のフォームが変わるので
 // 困りますね" — add asked for host/port/user/password/database, edit asked for a
 // raw URL, and the same connection looked like two different products.

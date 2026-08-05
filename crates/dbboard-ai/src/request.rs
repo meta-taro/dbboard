@@ -45,7 +45,7 @@ pub struct AiResponse {
     /// Stable provider identifier that produced this response
     /// (ADR-0027). Mirrors [`super::AiProvider::identity`]'s first
     /// tuple element. Populated so callers holding only an `AiResponse`
-    /// can stamp history without a second trait call. The `dbboard-ui`
+    /// can stamp history without a second trait call. The client's AI
     /// worker uses its spawn-time `identity()` snapshot rather than
     /// this field when composing terminal replies (spawn-time identity
     /// is the contract, per ADR-0027 §Implementation Slice b), but the

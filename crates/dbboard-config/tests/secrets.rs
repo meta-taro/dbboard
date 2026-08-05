@@ -17,6 +17,8 @@ fn toml_round_trip_never_carries_a_secret_token() {
     let file = ConnectionFile {
         version: CONFIG_VERSION,
         connections: vec![ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
             ssh: None,
             id: "cf-d1".to_string(),
             name: "Cloudflare D1".to_string(),
@@ -46,6 +48,8 @@ fn toml_round_trip_never_carries_a_postgres_url() {
     let file = ConnectionFile {
         version: CONFIG_VERSION,
         connections: vec![ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
             ssh: None,
             id: "neon-prod".to_string(),
             name: "Neon prod".to_string(),
@@ -66,7 +70,7 @@ fn toml_round_trip_never_carries_a_postgres_url() {
 }
 
 /// Sanity check that a `Box<dyn SecretStore>` resolves a stored secret —
-/// the shape the `apps/dbboard` wiring will use.
+/// the shape the client's startup wiring uses.
 #[test]
 fn boxed_secret_store_resolves_a_keyring_reference() {
     let store: Box<dyn SecretStore> = Box::new(InMemorySecretStore::new());

@@ -170,6 +170,8 @@ pub fn encrypt_bundle(payload: &BundlePayload, passphrase: &str) -> Result<Vec<u
         return Err(BundleError::WeakPassphrase);
     }
 
+    let _kdf = kdf_guard();
+
     let mut plaintext = serde_json::to_vec(payload).map_err(BundleError::Serialize)?;
 
     let encryptor = age::Encryptor::with_user_passphrase(SecretString::from(passphrase.to_owned()));
@@ -205,6 +207,8 @@ pub fn encrypt_bundle(payload: &BundlePayload, passphrase: &str) -> Result<Vec<u
 ///   is newer than this build understands.
 /// - [`BundleError::Io`] for a reader failure at the age boundary.
 pub fn decrypt_bundle(blob: &[u8], passphrase: &str) -> Result<BundlePayload, BundleError> {
+    let _kdf = kdf_guard();
+
     // Header stage: a failure here is a malformed/non-age file — the
     // passphrase has not been consulted yet.
     let decryptor = age::Decryptor::new(blob).map_err(map_header_err)?;
@@ -243,6 +247,41 @@ pub fn validate_passphrase(passphrase: &str) -> Result<(), BundleError> {
         return Err(BundleError::WeakPassphrase);
     }
     Ok(())
+}
+
+/// Serialise the scrypt key derivation — **in tests only**.
+///
+/// age derives the file key with scrypt at `log_n` = 18, r = 8, so one encrypt
+/// or decrypt asks the allocator for a single contiguous 256 MiB buffer. The
+/// test harness runs one thread per core, and this crate has roughly twenty
+/// tests that go through the bundle, so a parallel run can demand several
+/// gigabytes at the same instant. When the machine cannot supply it, Rust's
+/// allocation-failure handler aborts the whole test binary and Windows
+/// reports the abort as `STATUS_STACK_BUFFER_OVERRUN` (0xc0000409) — which
+/// reads like a memory-safety bug and is not one. Whether it happens depends
+/// on how much RAM is free at that moment, so the same commit fails a push on
+/// a busy machine and passes on an idle one.
+///
+/// Production takes no lock. An export or an import is one deliberate,
+/// user-initiated operation, never twenty at once, and slowing it down to
+/// suit the test harness would be the tail wagging the dog.
+#[cfg(test)]
+fn kdf_guard() -> std::sync::MutexGuard<'static, ()> {
+    static KDF: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A panic in one test must not poison the lock for every later one.
+    KDF.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Outside tests the guard exists only so the call sites read the same in both
+/// builds. It is a zero-sized value rather than `()` so the binding is not a
+/// unit-typed local.
+#[cfg(not(test))]
+struct KdfGuard;
+
+#[cfg(not(test))]
+fn kdf_guard() -> KdfGuard {
+    KdfGuard
 }
 
 fn parse_payload(plaintext: &[u8]) -> Result<BundlePayload, BundleError> {
@@ -292,6 +331,8 @@ mod tests {
             version: crate::store::CONFIG_VERSION,
             connections: vec![
                 ConnectionEntry {
+                    mcp_alias: None,
+                    mcp_write: false,
                     ssh: None,
                     id: "store-a".to_string(),
                     name: "store-a".to_string(),
@@ -303,6 +344,8 @@ mod tests {
                     },
                 },
                 ConnectionEntry {
+                    mcp_alias: None,
+                    mcp_write: false,
                     ssh: None,
                     id: "store-c".to_string(),
                     name: "store-c".to_string(),

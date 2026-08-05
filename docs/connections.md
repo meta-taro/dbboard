@@ -117,6 +117,8 @@ kind            = "mysql"
 # flavor. Same secret shape as the Postgres family (the keyring carries a
 # "mysql://…" URL), but served by the dbboard-mysql adapter. See ADR-0068.
 keyring_url_ref = "dbboard.shop-mysql.url"
+# Opt this connection in to MCP writes. Absent means false. See ADR-0087.
+mcp_write       = true
 
 [[connections]]
 id                     = "aurora-dsql-iam-prod"
@@ -158,6 +160,77 @@ keyring_secret_key_ref = "dbboard.aurora-dsql-iam-prod.secret_key"
   in the OS keychain. Pick something stable and recognisable; the
   string is what shows in the OS UI alongside the constant service
   name `"dbboard"`.
+- `mcp_write` — optional `bool`, default `false`. Lets the
+  `dbboard-mcp` server write to this connection. Cross-cutting like
+  `ssh`: valid on any `kind`. See below.
+- `mcp_alias` — optional string, absent by default. The name
+  `dbboard-mcp` shows an AI agent *instead of* this entry's `id` **and**
+  `name`. Must be unique across every entry's alias and id. Also
+  cross-cutting. See below.
+
+### The MCP write gate (`mcp_write`)
+
+`dbboard-mcp` hands your connections to an AI agent. Reading is always
+allowed; **writing is off until you say otherwise, per connection**:
+
+```toml
+[[connections]]
+id              = "staging-pg"
+name            = "Staging"
+kind            = "postgres"
+keyring_url_ref = "dbboard.staging-pg.url"
+mcp_write       = true
+```
+
+Omitting the key means `false`, so every connection that predates this
+feature stays read-only across the upgrade — the gate exists to be off.
+
+Turning it on does not turn everything on. `run_write` still parses the
+statement and accepts only `INSERT` / `UPDATE` / `DELETE` / `MERGE` and
+`CREATE` / `ALTER` / `DROP INDEX` / `COMMENT`; anything it cannot
+classify is refused. `GRANT` / `REVOKE` / `DENY`, user and role DDL,
+`SET PASSWORD`, `TRUNCATE`, and `DROP` of anything but an index are
+refused **whatever this flag says**. The full policy is ADR-0087 and
+[`crates/dbboard-mcp/README.md`](../crates/dbboard-mcp/README.md).
+
+The flag is also editable in the app — *Connections → Edit → AI agent
+access*. The desktop app itself ignores it: it governs the MCP server
+only, not what you can do by hand in dbboard.
+
+### The agent-facing alias (`mcp_alias`)
+
+`id` and `name` are whatever you typed, and `dbboard-mcp` used to hand
+both to the agent verbatim. If your ids name a customer, a site, or a
+host, that string ends up in the agent's transcript, in the model
+provider's logs, and in every bug report anyone pastes it into.
+
+`mcp_alias` replaces both:
+
+```toml
+[[connections]]
+id              = "acme-prod"
+name            = "Acme Inc. (production)"
+kind            = "mysql"
+keyring_url_ref = "dbboard.acme-prod.url"
+mcp_alias       = "store-a"
+```
+
+The agent now sees exactly one string, `store-a`, as both the id and the
+name — and **`acme-prod` stops working as a handle**. That is the
+point: an id an agent picked up from an earlier session cannot be handed
+back and echoed into the new one. Everything below the MCP boundary is
+untouched, so `annotations.toml`, `DBBOARD_CONNECTION`, and the app's
+connection list keep using the real id.
+
+Aliases must be unique across every alias *and* every id — a handle that
+matched two connections would send a query to the wrong database. Using an
+entry's own id as its alias is allowed and means "show my id, nothing
+else".
+
+Absent means no alias: the agent sees the real id and name, exactly as
+before. Editable in the app in the same place as the write gate —
+*Connections → Edit → AI agent access*. Error messages are out of scope
+and may still name the real id (ADR-0088).
 
 ### Aurora DSQL: `aurora-dsql` vs `aurora-dsql-iam`
 

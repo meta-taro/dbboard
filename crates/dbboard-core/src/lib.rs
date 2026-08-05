@@ -20,6 +20,7 @@ mod schema;
 mod sort;
 mod value;
 mod write_back;
+mod write_policy;
 
 pub use adapter::DatabaseAdapter;
 pub use capabilities::{
@@ -50,3 +51,4 @@ pub use write_back::{
     build_update_sql, dialect_for_adapter_id, CellValue, RowIdentity, RowKey, SqlDialect,
     UpdatePlan, WriteBackError,
 };
+pub use write_policy::{classify_write, is_permitted_write, WritePolicyViolation, WriteStatement};
