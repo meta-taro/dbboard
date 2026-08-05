@@ -288,6 +288,25 @@ describe('formForEdit', () => {
   });
 });
 
+// The MCP write gate (ADR-0087). Unlike every other permission-ish field on
+// this form it is *not* a secret, so the backend does return it and edit must
+// show its real state — a toggle that always opens closed would read as "off"
+// for a connection an agent can already write to.
+describe('the MCP write gate', () => {
+  it('a new connection starts closed', () => {
+    expect(emptyForm().mcp_write).toBe(false);
+  });
+
+  it('an edit prefills the stored state', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon', mcp_write: true }).mcp_write).toBe(true);
+    expect(formForEdit('p', 'P', { kind: 'neon', mcp_write: false }).mcp_write).toBe(false);
+  });
+
+  it('a backend that omits it (an older build) is read as closed', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon' }).mcp_write).toBe(false);
+  });
+});
+
 // The user's report: "「編集」で開くと URL モードは追加の時のフォームが変わるので
 // 困りますね" — add asked for host/port/user/password/database, edit asked for a
 // raw URL, and the same connection looked like two different products.
