@@ -9,20 +9,29 @@ const REPO = "meta-taro/dbboard";
 const RELEASES_URL = `https://github.com/${REPO}/releases`;
 
 // Classify an asset by filename into a platform bucket. Names are set by our
-// own release CI (ADR-0044): dbboard-windows-x86_64.exe,
-// dbboard-<v>-x86_64.msi, dbboard-macos-universal-<v>.dmg, SHA256SUMS.txt.
-function bucketFor(name) {
+// own release CI (ADR-0044); the Tauri bundles all carry the product name
+// `dbboard-desktop`: dbboard-desktop_<v>_x64-setup.exe,
+// dbboard-desktop_<v>_universal.dmg, plus SHA256SUMS.txt.
+//
+// Matching that prefix rather than the extension is load-bearing. Releases up
+// to v0.4.0 also carry the retired egui client (ADR-0089) —
+// dbboard-windows-x86_64.exe, dbboard-<v>-x86_64.msi,
+// dbboard-macos-universal-<v>.dmg — and keying on the extension alone made
+// which build a card offered depend on the order the Releases API returned
+// assets in (#135). Anything that is not a recognised Tauri bundle, including
+// the updater's own `.app.tar.gz` / `.sig` / latest.json, is not a download.
+export function bucketFor(name) {
   const n = name.toLowerCase();
-  if (n.endsWith(".exe")) return "win-exe";
-  if (n.endsWith(".msi")) return "win-msi";
-  if (n.endsWith(".dmg")) return "mac-dmg";
   if (n === "sha256sums.txt") return "sums";
+  if (!n.startsWith("dbboard-desktop")) return null;
+  if (n.endsWith("-setup.exe")) return "win-setup";
+  if (n.endsWith(".dmg")) return "mac-dmg";
   return null;
 }
 
 // Only accept a download URL served by GitHub for this repo, so a surprising
 // API payload can never turn into an off-site link.
-function safeUrl(u) {
+export function safeUrl(u) {
   try {
     const url = new URL(u);
     return url.protocol === "https:" &&
@@ -59,7 +68,11 @@ function fail() {
   status.append("Couldn't load the release list here. ", a);
 }
 
-(async () => {
+// Guarded so `app.js` can be imported by `node --test site/app.test.mjs` for
+// the pure helpers above without rendering a page that isn't there.
+if (typeof document !== "undefined") boot();
+
+async function boot() {
   try {
     const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
       headers: { "Accept": "application/vnd.github+json" }
@@ -76,11 +89,10 @@ function fail() {
       rel.tag_name ? `— ${rel.tag_name}` : "";
 
     const cards = document.getElementById("cards");
-    if (assets["win-exe"] || assets["win-msi"]) {
+    if (assets["win-setup"]) {
       cards.append(card(
         "Windows", "64-bit (x86_64)",
-        { label: "Download .exe", url: assets["win-exe"] },
-        assets["win-msi"] ? { label: "Installer (.msi)", url: assets["win-msi"] } : null
+        { label: "Download installer (.exe)", url: assets["win-setup"] }, null
       ));
     }
     if (assets["mac-dmg"]) {
@@ -106,4 +118,4 @@ function fail() {
   } catch (e) {
     fail();
   }
-})();
+}

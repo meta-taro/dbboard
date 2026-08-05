@@ -4,8 +4,11 @@ This document is the **canonical** definition of the dbboard HTTP API.
 Both implementations conform to it:
 
 - **Desktop** (this repo): the in-process loopback server
-  `crates/dbboard-server` (axum), consumed by `crates/dbboard-ui` over
-  HTTP. See [ADR-0006](decisions.md) and [ADR-0009](decisions.md).
+  `crates/dbboard-server` (axum). See [ADR-0006](decisions.md) and
+  [ADR-0009](decisions.md). No client boots it today — the Tauri client
+  reaches the core crates over Tauri IPC instead (ADR-0089) — so the crate
+  now stands as the executable statement of this contract rather than a
+  live transport.
 - **Web** ([`dbboard-web`](https://github.com/meta-taro/dbboard-web)):
   the NestJS service mirrors this same surface.
 

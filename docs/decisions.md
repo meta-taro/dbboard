@@ -9032,3 +9032,108 @@ reads `server.rs` as text and asserts the line is present in each.
 - The egui client (retired under #139) has no alias input. Its edit path sends
   `None`, which means keep — so it cannot clear an alias set from the desktop
   app.
+
+## ADR-0089 — The egui client is retired; Tauri is the only client
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+### Context
+
+dbboard shipped two desktop clients from the same tag. `crates/dbboard-ui` +
+`apps/dbboard` is the original egui app; `apps/desktop` is the Tauri 2 +
+SvelteKit app that started as a presentation-layer spike (ADR-0064) and
+reached feature parity at v0.4.0 — connections, cell edit, annotations,
+export, backup, restore, AI.
+
+Parity was the condition for having this conversation, and it has already been
+passed. The Tauri connection form can add and edit an SSH tunnel; egui still
+requires hand-editing `connections.toml` (ADR-0069). That gap did not appear
+because egui is hard to write — it appeared because every write vertical was
+being built twice and the second build kept losing. v0.4.0 shipped ten release
+assets, four of them a client nobody was choosing to develop against.
+
+The layering makes the removal cheap. `dbboard-ui` was already the only crate
+that touched egui, nothing depends on it except `apps/dbboard`, and the domain
+crates never knew either UI existed — which is the dependency rule in
+`docs/architecture.md` paying for itself.
+
+### Decision
+
+**1. The egui client is retired.** `crates/dbboard-ui` and `apps/dbboard` are
+deleted, along with their workspace members and the `eframe` / `egui_extras` /
+`egui_commonmark` dependencies. The Tauri client is the client.
+
+**2. Release CI stops building it.** The `build-windows` / `build-macos` jobs
+go, and with them `dbboard-windows-x86_64.exe`, `dbboard-<v>-x86_64.msi`, and
+`dbboard-macos-universal-<v>.dmg`. `SHA256SUMS.txt` still covers everything
+that remains.
+
+**3. The download page classifies by product name, not by extension.** This
+supersedes #135. The page had been keying buckets on the file extension alone,
+so while both clients shipped, which build a card offered depended on the order
+the Releases API returned assets in. Retirement removes the ambiguity at the
+source, but releases up to v0.4.0 still carry the egui assets and the page
+fetches `releases/latest`. So `bucketFor` now matches the `dbboard-desktop`
+product-name prefix and treats everything else as not-a-download. The page
+renders correctly against v0.4.0 today and against every release after it.
+
+**4. The CJK font loader goes with the binary.** `load_first_cjk_font` and
+`install_cjk_font` are `egui::Context` code in `apps/dbboard/src/main.rs`.
+The Tauri client renders in the system webview, which resolves CJK from the OS
+font stack itself. Nothing outside egui used them. This was checked rather
+than assumed: that fallback chain has regressed twice.
+
+**5. `dbboard-i18n` goes; `dbboard-server` stays.** Both lost their only
+consumer in the same commit, and they are not the same case.
+`crates/dbboard-i18n` held egui's message catalogues; the Tauri client carries
+its own under `apps/desktop/src/lib/i18n/`, so keeping the crate would leave two
+sources of truth for one set of strings. It is deleted. `crates/dbboard-server`
+is the executable statement of the HTTP contract `dbboard-web` mirrors
+(`docs/api-contract.md`) — a spec that compiles and is tested. Nothing in this
+repo boots it any more, which makes it *look* like dead code and is exactly why
+the reason is written down here, in its module doc, and in `api-contract.md`.
+Removing it would be an architecture decision about the sibling contract, not
+part of retiring a UI, so it is out of this ADR's scope.
+
+**6. The download page gets advertised.** Retirement is also the moment the
+project stops having two answers to "where do I get it". Being published is not
+the same as being findable: an agent with web search, asked to use dbboard,
+concluded it was "not a publicly available tool" and proposed alternatives —
+because the repo had no homepage URL and no topics, the README buried the link
+below the fold, release pages listed raw asset filenames with no guidance, and
+the site had no canonical or Open Graph tags. All of that is fixed in this
+change: repo `homepageUrl` + 15 topics, an above-the-fold download block in
+`README.md`, `--notes` prepending the download link to every generated release
+page, `robots.txt` / `sitemap.xml` / canonical + `og:` tags on the site, and the
+URL in `CLAUDE.md` so every agent working in this repo can quote it.
+
+### Consequences
+
+- The retired client is in git history, not gone. Reviving it means reverting a
+  commit, not rewriting a UI.
+- Users on the egui build are not auto-migrated. It has no updater (that is
+  ADR-0067, Tauri-only), so they keep running v0.4.0 until they download the
+  Tauri app. The internal collector install is already on the Tauri build.
+- `docs/desktop-parity.md` has finished its job — it existed to track the gap
+  that this ADR closes — and is archived rather than kept as a live checklist.
+- The workspace loses its `rust-version = 1.92` floor rationale: that number
+  came from `egui_commonmark` 0.23 (ADR-0043). The floor is left where it is
+  rather than lowered speculatively; the maintainer builds on current stable
+  and no consumer is served by guessing at a new minimum.
+- `dbboard-web` is unaffected. It never shared code with either client, only
+  concepts (CLAUDE.md "Sibling Repository").
+- The brand assets moved to `assets/` (`dbboard.ico`, `dbboard-logo-256.png`).
+  They lived under the deleted binary's directory but were never egui's — the
+  Tauri icon set, the download page, and `README.md` all consume them.
+- Two `deny.toml` advisory ignores go with the tree they excused
+  (RUSTSEC-2026-0194 / -0195). Suppressions outlive the code that needed them
+  unless removal is part of the same change.
+- The rewritten docs keep egui in the past tense on purpose. "Ported from the
+  egui client" explains why something looks the way it does and stays; any
+  sentence implying egui is a current client is now false and was rewritten.
+- Discoverability is now a shipping surface with an owner. If the download URL
+  moves, the places to update are: `README.md`, `CLAUDE.md`,
+  `crates/dbboard-mcp/README.md`, `apps/desktop/README.md`,
+  `.github/workflows/release.yml`, `site/index.html`, `site/sitemap.xml`, and
+  the repo's homepage field.

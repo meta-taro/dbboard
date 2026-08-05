@@ -5,6 +5,46 @@
 
 ## 最終更新
 
+- 日付: 2026-08-05 (**issue #139 = egui クライアント退役 (ADR-0089) + 発見可能性の是正。**
+  ブランチ `chore/retire-egui`。
+  **削除**: `crates/dbboard-ui` / `apps/dbboard` / `crates/dbboard-i18n`、workspace
+  メンバ、`eframe` / `egui_extras` / `egui_commonmark`、`deny.toml` の
+  RUSTSEC-2026-0194 / -0195 の ignore 2 件 (抑制はそれを必要としたコードより長生き
+  するので同じ変更で外す)。ブランド資産は `assets/` へ移設 (`dbboard.ico` /
+  `dbboard-logo-256.png` — 削除したバイナリ配下にあっただけで egui のものではない)。
+  **残した**: `crates/dbboard-server`。in-repo の consumer は消えたが dbboard-web が
+  ミラーする HTTP 契約の実行可能な仕様書 = 削除はアーキテクチャ決定 (baseline §16)。
+  死んだコードに見えるのが分かっているので、理由を module doc / `docs/api-contract.md` /
+  `docs/architecture.md` の 3 箇所に書いた。
+  **リリース CI**: cargo 版の `build-windows` / `build-macos` を撤去。以降
+  `dbboard-windows-x86_64.exe` / `dbboard-<v>-x86_64.msi` /
+  `dbboard-macos-universal-<v>.dmg` は publish されない。`SHA256SUMS.txt` は残りを
+  引き続き網羅。
+  **DL ページ**: `bucketFor` を拡張子判定から `dbboard-desktop` 製品名接頭辞判定へ
+  (#135 を supersede)。v0.4.0 は両クライアントの資産を持つため、拡張子だけだと
+  Releases API の返す並び順で提示するビルドが変わっていた。`site/app.test.mjs` に
+  v0.4.0 の実資産 10 件を流す回帰テストあり (5 tests / 全緑)。
+  **文書**: README / CLAUDE.md / DESIGN.md / docs/architecture.md / api-contract.md /
+  compatibility.md / roadmap.md から現在形の egui 記述を一掃。「egui から移植した」と
+  いう由来の記述は残す (コードがそう見える理由の説明なので)。`docs/desktop-parity.md`
+  は archived バナー付きで凍結 (追跡すべき差分が無くなったため)。
+  **web 側ミラー不要 (明示的 no-op)** — 共有契約は一切変わっていない。
+  **発見可能性 (user 指摘「公開しただけじゃわからない」)**: web 検索を持つ別エージェントが
+  dbboard を「一般公開されているツールではない」と結論していた。原因は 4 つとも構造的
+  だったので全部潰した — リポジトリの `homepageUrl` が空 → DL ページに設定、topics が
+  0 個 → 15 個追加、README の DL リンクが fold 下 → タイトル直下にバッジ付きブロック、
+  リリースページが生の資産名だけ → `gh release create --notes` (これは
+  `--generate-notes` の出力に **prepend** される) で冒頭に DL リンク。加えて site に
+  canonical / og / `robots.txt` / `sitemap.xml`、CLAUDE.md・`crates/dbboard-mcp/README.md`・
+  `apps/desktop/README.md` に URL 明記 (CLAUDE.md には「姉妹リポでも聞かれたらこの URL を
+  答える」と書いた)。
+  **検証**: `cargo fmt --check` / `clippy -D warnings` / `check --all-targets` /
+  `test --all-features` 全緑 (0 failed)、`node --test site/app.test.mjs` 5/5、
+  `apps/desktop` の `pnpm check` 271 files 0 errors / `pnpm test` 346 passed。
+  **未着手**: 姉妹リポの `browser-verification.md` に dbboard の URL と
+  `claude mcp add` 行が無い — 当リポからは編集できない (baseline §27) ので user 中継待ち。
+  `crates/dbboard-server` の宙ぶらりん状態を扱う follow-up issue も未起票。)
+
 - 日付: 2026-08-04 その3 (**v0.4.0 リリース。CI の Node バージョンずれを 1 件修正。**
   リリースが 2 週間止まっていた理由は、`Cargo.toml` のバージョンだけ 0.4.0 に上がって
   `CHANGELOG.md` の `## [Unreleased]` が空だったこと = タグを打つ根拠が無かった。

@@ -38,6 +38,40 @@ public API is the HTTP contract in
   (`annotations.toml`, `DBBOARD_CONNECTION`, the connection list) keeps
   using the real id.
 
+### Changed
+
+- **The Tauri 2 + SvelteKit app is the only dbboard client** (ADR-0089).
+  It reached parity at v0.4.0 and has since led the egui client — the
+  connection form edits SSH tunnels, which egui never learned. Building
+  every write surface twice was costing more than the second build
+  returned.
+- The download page picks builds by product name (`dbboard-desktop…`)
+  rather than by file extension, so a release that still carries both
+  clients' assets — v0.4.0 does — cannot offer the retired one. This
+  supersedes #135, where the answer depended on the order the GitHub
+  Releases API happened to return assets in.
+- Every generated release page now opens with a link to the
+  [download page](https://meta-taro.github.io/dbboard/). A release lists
+  raw asset filenames; someone arriving from a search result should not
+  have to work out which one is theirs.
+
+### Removed
+
+- The egui client: `crates/dbboard-ui`, `apps/dbboard`, and the
+  `eframe` / `egui_extras` / `egui_commonmark` dependencies. Releases up
+  to and including v0.4.0 still carry its binaries and keep working;
+  nothing after v0.4.0 ships them. It has no updater, so an egui install
+  stays on v0.4.0 until it is replaced with a download from the page
+  above.
+- `dbboard-windows-x86_64.exe`, `dbboard-<version>-x86_64.msi`, and
+  `dbboard-macos-universal-<version>.dmg` are no longer built or
+  published. `SHA256SUMS.txt` still covers everything that is.
+- `crates/dbboard-i18n`, whose message catalogues were egui's; the Tauri
+  client carries its own under `apps/desktop/src/lib/i18n/`.
+  `crates/dbboard-server` is **kept** despite losing its last in-repo
+  consumer — it is the executable statement of the HTTP contract
+  `dbboard-web` mirrors ([`docs/api-contract.md`](docs/api-contract.md)).
+
 ### Fixed
 
 - The Tauri release jobs pinned Node 20 while `apps/desktop` pins pnpm 11,
@@ -54,6 +88,19 @@ public API is the HTTP contract in
   symptoms.
 - Download page: mention the MCP server, and list MySQL/MariaDB among the
   supported engines.
+- **dbboard is easier to find.** Publishing it was not the same as making
+  it findable: an agent searching the web for dbboard concluded it was
+  "not a publicly available tool". The repo now declares its homepage and
+  topics, `README.md` leads with the download link, the site carries
+  canonical / Open Graph tags plus `robots.txt` and `sitemap.xml`, and
+  `CLAUDE.md`, `crates/dbboard-mcp/README.md` and `apps/desktop/README.md`
+  all quote the URL so anyone — human or agent — reading the repo can
+  answer "where do I get it".
+- The top-level docs no longer describe egui as a current client:
+  `README.md`, `CLAUDE.md`, `DESIGN.md`, `docs/architecture.md`,
+  `docs/api-contract.md`, `docs/compatibility.md` and `docs/roadmap.md`
+  were rewritten around the Tauri client, and `docs/desktop-parity.md` is
+  marked archived — it tracked a gap that no longer exists.
 
 ## [0.4.0] — 2026-08-04
 

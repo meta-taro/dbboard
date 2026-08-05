@@ -100,9 +100,8 @@ export function exportValue(cell: Cell): string {
  * RFC-4180-quoted when they contain the delimiter, a quote, or a newline; TSV
  * (`\t`) fields have any tab/newline collapsed to a space so a paste into a
  * spreadsheet keeps its cell boundaries. Records are separated (no trailing
- * newline) — CSV joins with CRLF per RFC 4180, TSV with a bare LF, matching
- * dbboard-ui's `export` module (ADR-0035) so both frontends emit byte-for-byte
- * identical files.
+ * newline) — CSV joins with CRLF per RFC 4180, TSV with a bare LF, the byte
+ * layout ADR-0035 fixed for dbboard's exports.
  */
 export function toDelimited(
   columns: Column[],
@@ -120,8 +119,7 @@ export function toDelimited(
  * UTF-8 byte-order mark. Excel on Windows assumes the system ANSI code page
  * (Shift-JIS on Japanese Windows) for a BOM-less CSV and renders UTF-8 text as
  * mojibake; a leading BOM makes it auto-detect UTF-8. Harmless to BOM-aware
- * parsers and to the spreadsheet's own re-save. Mirrors dbboard-ui's
- * `export::UTF8_BOM` (ADR-0035).
+ * parsers and to the spreadsheet's own re-save (ADR-0035).
  */
 export const UTF8_BOM = '﻿';
 

@@ -2,8 +2,8 @@
 //!
 //! Lives in `dbboard-config` because this crate already owns the TOML
 //! surface ([`crate::store`]) and the keyring surface ([`crate::secrets`]).
-//! Adding the use-case here avoids `dbboard-ui` ever touching the
-//! filesystem or the OS keychain directly — the UI layer holds a
+//! Adding the use-case here avoids the presentation layer ever touching
+//! the filesystem or the OS keychain directly — the UI layer holds a
 //! `ConnectionAdmin` and calls `entries()` / `add()` / `update()` /
 //! `delete()` only.
 //!
@@ -145,8 +145,8 @@ pub struct ConnectionEditDraft {
     pub kind: ConnectionKindEditDraft,
     /// How the update should treat the entry's SSH tunnel (ADR-0069). Three
     /// states, because "no tunnel" and "don't touch the tunnel" are different:
-    /// an editor with no tunnel UI (the egui client) must be able to change a
-    /// name without dropping the tunnel, so it sends [`SshEditField::Keep`].
+    /// an editor that does not render the tunnel must be able to change a
+    /// name without dropping it, so it sends [`SshEditField::Keep`].
     pub ssh: SshEditField,
     /// How the update should treat the MCP write gate (ADR-0087). `None`
     /// keeps whatever is stored, for the same reason [`SshEditField::Keep`]
@@ -163,7 +163,7 @@ pub struct ConnectionEditDraft {
 }
 
 /// Top-level SSH edit intent. Distinct from a plain `Option` so a caller that
-/// does not render the tunnel (egui) can leave it untouched rather than
+/// does not render the tunnel can leave it untouched rather than
 /// silently removing it.
 #[derive(Debug, Clone)]
 pub enum SshEditField {
@@ -2962,7 +2962,7 @@ mod tests {
 
     #[test]
     fn update_with_ssh_keep_preserves_the_tunnel_and_its_secret() {
-        // The egui client has no tunnel UI, so it sends `Keep`; renaming a
+        // An editor that does not render the tunnel sends `Keep`; renaming a
         // tunneled connection there must not drop the tunnel (ADR-0069).
         let (_dir, secrets, mut admin) = fresh_admin();
         admin.add(pg_ssh_password_draft("work")).expect("add");

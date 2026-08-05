@@ -4,7 +4,7 @@
 //!
 //! - [`store`] — the on-disk shape of `connections.toml`, plus the
 //!   filesystem layer (`load_or_empty`, `save_atomic`) and the
-//!   `default_history_path()` helper that `dbboard-ui` uses to find
+//!   `default_history_path()` helper the client uses to find
 //!   `history.jsonl` (ADR-0017) under the same config dir.
 //! - [`ai_store`] — the on-disk shape of `ai-providers.toml`, the
 //!   companion file added in ADR-0025 Phase 4 Stage 2 Group A. Same
@@ -27,7 +27,7 @@
 //!   mutation, so neither reaches the HTTP envelope.
 //!
 //! The crate exists because `dbboard-core` is "no I/O" (ADR-0002 /
-//! ADR-0009) and `apps/dbboard` is wiring only — neither is the right
+//! ADR-0009) and the client binary is wiring only — neither is the right
 //! home for filesystem + OS-keychain persistence.
 
 pub mod admin;

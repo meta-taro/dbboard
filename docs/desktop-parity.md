@@ -1,5 +1,11 @@
 # Desktop (Tauri) ↔ egui feature parity
 
+> **Archived — closed 2026-08-05 by [ADR-0089](decisions.md).** This file tracked
+> the gap between the two clients. The egui client is retired and the Tauri
+> client is the only client, so there is no gap left to track and nothing below
+> is maintained. Kept as the record of how parity was reached; for what the
+> client does today, read `apps/desktop/README.md`.
+
 Status of the Tauri 2 + SvelteKit desktop app (`apps/desktop/`) against the
 mature egui client (`crates/dbboard-ui/`). The Tauri app began as a **read-only
 spike** (ADR-0046 / ADR-0059): a static SPA over 7 read-only IPC commands

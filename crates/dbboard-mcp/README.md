@@ -5,6 +5,10 @@ server for [dbboard](../../README.md). It hands the databases dbboard is
 already configured with to an external AI agent — Claude Desktop, Claude
 Code — as a small tool surface, served over stdio.
 
+dbboard is free and open source. Get a build from the
+**[download page](https://meta-taro.github.io/dbboard/)**, or build this crate
+from source with the instructions below.
+
 The agent can list connections, browse schemas, read rows, take a dump,
 and see dbboard's local annotations. It **never sees a secret**, and it
 **cannot write** until a human opts a connection in — and not even then

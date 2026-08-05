@@ -4,7 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Download dbboard</title>
-  <meta name="description" content="Download dbboard — a high-performance desktop database client for modern serverless and distributed databases.">
+  <meta name="description" content="Download dbboard — a free, open-source desktop database client (Windows, macOS) for MySQL/MariaDB, PostgreSQL, Neon, Supabase, Aurora DSQL, Turso/libSQL, CockroachDB and Cloudflare D1. Also ships dbboard-mcp, a read-only MCP server for AI agents.">
+  <link rel="canonical" href="https://meta-taro.github.io/dbboard/">
+
+  <!-- Link previews. A chat message or an issue comment that pastes this URL
+       is how most people will first meet the page, so it has to render as
+       something other than a bare link. -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="dbboard">
+  <meta property="og:url" content="https://meta-taro.github.io/dbboard/">
+  <meta property="og:title" content="Download dbboard — desktop database client">
+  <meta property="og:description" content="Free and open source. Windows .exe and macOS .dmg for MySQL, PostgreSQL, Neon, Supabase, Aurora DSQL, Turso and Cloudflare D1 — plus a read-only MCP server for AI agents.">
+  <meta property="og:image" content="https://meta-taro.github.io/dbboard/dbboard-logo-256.png">
+  <meta name="twitter:card" content="summary">
   <!-- Defense-in-depth (ADR-0047): scripts are same-origin only (no inline
        script is allowed, so an injected one cannot run), network egress is
        pinned to the GitHub Releases API, and there is no base/form surface.
@@ -99,7 +111,7 @@
 sha256sum -c SHA256SUMS.txt
 
 # Windows PowerShell
-(Get-FileHash .\dbboard-windows-x86_64.exe -Algorithm SHA256).Hash</pre>
+(Get-FileHash .\dbboard-desktop_0.5.0_x64-setup.exe -Algorithm SHA256).Hash</pre>
     <p id="checksums-link" class="meta"></p>
 
     <h2>Use it from an AI agent</h2>
@@ -139,6 +151,8 @@ claude mcp add dbboard --scope user -- /path/to/dbboard-mcp</pre>
     </footer>
   </div>
 
-  <script src="app.js"></script>
+  <!-- A module so the pure helpers can be unit-tested; still
+       same-origin, so script-src 'self' covers it. -->
+  <script type="module" src="app.js"></script>
 </body>
 </html>

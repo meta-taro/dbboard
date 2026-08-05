@@ -14,38 +14,29 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-07-29)**: `desktop` has shipped Phases 1 through 5
-  and released **v0.3.0** — all six adapters (Turso, D1, CockroachDB,
-  Neon, Supabase, Aurora DSQL), the optional AI assistant (Phase 4), and
-  a read-only MCP server (`dbboard-mcp`, ADR-0046). In flight on
-  `feature/desktop-design-polish` (not yet released): the Tauri 2 +
-  SvelteKit client (`apps/desktop/`) has reached **full v0.4.0 feature
-  parity** with the egui client — every write/integration vertical is
-  ported (connections, cell edit, annotations, export, backup, restore,
-  AI) and it now updates itself in place via `tauri-plugin-updater`
-  (ADR-0067). On the same branch a **seventh adapter landed: MySQL /
-  MariaDB** (`dbboard-mysql`, ADR-0068) — the first engine on a genuinely
-  different SQL dialect (`SqlDialect::MySql`) rather than a SQLite- or
-  Postgres-wire flavor, wired through both clients with full parity. Also
-  on that branch, **SSH tunnelling** landed (`dbboard-tunnel`, a pure-Rust
-  russh local forward with mandatory host-key verification, ADR-0069) —
-  and its **editing UI is the first surface where the desktop client leads
-  egui** rather than catching up: the Tauri connection form can add and
-  edit a tunnel, while egui still needs `connections.toml` edited by hand.
-  The workspace is bumped to `0.4.0` on that branch; the
-  remaining gate before a v0.4.0 release is setting the
-  `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret (see
-  `docs/desktop-parity.md`). The tagged Release CI is proven green (see
-  Phase 5). The
-  `web` status below is **last-known as of the 2026-05-26 sync** and has
-  not been re-verified this session (`dbboard-web` is a separate repo,
-  not checked out here — only the HTTP contract and the history JSON
-  schema are shared). As of that sync `web` had closed its Phase 1 (pnpm
-  + Nuxt 4 + NestJS 11 monorepo scaffold with a `GET /health` smoke on
-  `develop`, contract byte-content-mirrored at `dbboard@89b7c70`), with
-  the baton back on `desktop`. No contract change in this v0.3.0 line
-  needs a web mirror — the MCP server is desktop-local and does not
-  touch the shared HTTP contract.
+- **Right now (2026-08-05)**: `desktop` has shipped Phases 1 through 5 and
+  released **v0.4.0** — seven adapters (Turso, D1, CockroachDB, Neon,
+  Supabase, Aurora DSQL, and MySQL / MariaDB via `dbboard-mysql`, ADR-0068,
+  the first genuinely different SQL dialect), the optional AI assistant
+  (Phase 4), a read-only MCP server (`dbboard-mcp`, ADR-0046, write policy
+  ADR-0087), SSH tunnelling through a bastion (`dbboard-tunnel`, ADR-0069),
+  and in-place auto-update (`tauri-plugin-updater`, ADR-0067). Builds are
+  public at <https://meta-taro.github.io/dbboard/> (ADR-0047).
+
+  The Tauri 2 + SvelteKit client reached parity at v0.4.0 and is now the
+  **only** client: the egui app and its supporting crates were deleted in
+  ADR-0089. Releases up to v0.4.0 still carry the egui binaries; nothing
+  after that does.
+
+  The `web` status below is **last-known as of the 2026-05-26 sync** and has
+  not been re-verified since (`dbboard-web` is a separate repo, not checked
+  out here — only the HTTP contract and the history JSON schema are shared).
+  As of that sync `web` had closed its Phase 1 (pnpm + Nuxt 4 + NestJS 11
+  monorepo scaffold with a `GET /health` smoke on `develop`, contract
+  byte-content-mirrored at `dbboard@89b7c70`), with the baton back on
+  `desktop`. **Retiring egui needs no web mirror** — it changed no shared
+  contract; `crates/dbboard-server` still implements the HTTP surface
+  `dbboard-web` mirrors, it simply has no in-repo consumer now.
 - **Exception**: contract changes (endpoint shapes, error categories,
   schema metadata) are drafted in one repo, mirrored in the other
   immediately, and only then built against.
