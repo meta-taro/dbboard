@@ -7,6 +7,21 @@
 
 ## 最終更新
 
+- 日付: 2026-08-05 その3 (**push が 3 回落ちたが、どちらもコードではなくマシン側の枯渇。**
+  ① メモリ: age の scrypt (log_n=18, r=8) が 1 回の暗号化/復号で 256 MiB を確保し、
+  20 コア並列のテストハーネスが同時に何 GB も要求 → アロケート失敗 →
+  Windows が `STATUS_STACK_BUFFER_OVERRUN (0xc0000409)` と表示するのでメモリ安全性の
+  バグに見えるが違う。**空きメモリ次第で成功したり落ちたりする**のが最悪なので、
+  `crates/dbboard-config/src/bundle.rs` に `#[cfg(test)]` 限定の KDF mutex を入れた
+  (本番はロックしない = export/import は人が 1 回ずつ行う操作)。コミット `e6db331`。
+  ② ディスク: `target/debug` が **71.6 GB** に膨らみ C: の空きが 225 MB。
+  `link.exe exit code 1318` / `os error 112` として出るので **リンカのバグに見える**。
+  `cargo clean --profile dev` で解放 (pre-push が使う `release/` は残す)。
+  検証: fmt / clippy 緑、`cargo test --all-features` は **943 passed / 0 failed**、
+  既知の Windows libSQL teardown segfault のみ (= 唯一許可された `--no-verify` ケース。
+  PII スキャンは staged + message の両方を手で実行して clean 確認済み)。
+  **user 側ボール = `git push -u origin chore/retire-egui`。**)
+
 - 日付: 2026-08-05 その2 (**`dbboard-mcp` に配布経路が無かった件を潰した。ADR-0090。**
   user 経由で「使いたいのに使えない AI エージェント」の意見が届いた。原因は文書の
   書き方ではなく **バイナリが一度も配布されていなかったこと** — `tauri.conf.json` にも

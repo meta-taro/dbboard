@@ -5,6 +5,37 @@
 
 ## 最終更新
 
+- 日付: 2026-08-05 その3 (**push 失敗 3 連続の原因はコードではなくマシン資源の枯渇 2 種。
+  コミット `e6db331`。**
+  **① メモリ (対処済み・コード変更あり)**: `cargo test` が
+  `memory allocation of 268435456 bytes failed` → `dbboard_config-*.exe (exit code:
+  0xc0000409, STATUS_STACK_BUFFER_OVERRUN)` で異常終了。268435456 = ちょうど 256 MiB で、
+  age の scrypt KDF (log_n=18, r=8 → 128 × 2^18 × 8) が **暗号化 1 回 / 復号 1 回ごとに**
+  確保する連続領域。テストハーネスは論理コア数 (このマシンは 20) だけ並列に走るので、
+  bundle / export / import 系が同時に到達すると数 GB を一斉に要求する。Rust の
+  アロケート失敗ハンドラがプロセスを abort し、Windows がそれを
+  `STATUS_STACK_BUFFER_OVERRUN` という名前で報告するため **メモリ安全性のバグに見える**
+  が違う。**空きメモリ次第で通ったり落ちたりする**ため、pre-push が「リトライすれば
+  そのうち通る」学習を生む点が最も悪質。対処: `crates/dbboard-config/src/bundle.rs` の
+  `encrypt_bundle` / `decrypt_bundle` に `#[cfg(test)]` 限定の mutex (`kdf_guard`) を入れ、
+  テスト時のみ KDF を直列化。**本番はロックしない** — export / import は人が意図して
+  1 回ずつ行う操作であり、テストハーネスの都合で実運用を遅くするのは本末転倒。
+  新規テストは付けていない (挙動ではなくテストの実行のされ方を変える変更であり、
+  再現テストを書くと「そのマシンの空きメモリ」に依存する = 消したい非決定性そのもの)。
+  **② ディスク (対処済み・コード変更なし)**: `target/debug` が **71.6 GB**
+  (release は 11.9 GB) まで膨らみ、C: の空きが **225 MB**。症状は
+  `error: linking with 'link.exe' failed: exit code: 1318` と
+  `failed to build archive ...: ディスクに十分な空き領域がありません。 (os error 112)` で、
+  **リンカ/ツールチェーンの問題に見える**。`cargo clean --profile dev` で 71.6 GB 解放
+  (pre-push が使う `release/` は残す。全体 `cargo clean` だと pre-push が全ビルドし直しになる)。
+  **検証**: `cargo fmt --all -- --check` OK / `cargo clippy --all-targets --all-features
+  -- -D warnings` OK / `cargo test --all-features` = **943 passed / 0 failed**、
+  唯一の異常終了は既知の Windows libSQL teardown segfault (`dbboard-turso` の全テストが
+  ok を出した後に `STATUS_ACCESS_VIOLATION`) = 唯一許可された `--no-verify` ケース。
+  `scripts/pii-scan.sh --staged` と `--message` を手で実行し両方 clean を確認してから commit。
+  どちらもリポジトリ固有ではなくこのマシン固有の事象なので、`.claude/` ではなく
+  エージェントメモリ側に記録した。)
+
 - 日付: 2026-08-05 その2 (**`dbboard-mcp` の配布経路を新設。ADR-0090。コミット `c015b17`。**
   発端は user 経由で届いた「使いたいのに使えない AI エージェント」の意見。要求は
   (1) 入手元をリポジトリ内のファイルに書く (2) MCP 登録コマンドをコピペできる 1 行で。
