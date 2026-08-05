@@ -9,6 +9,25 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-05
+
+Fifth tagged release, and the one that makes dbboard usable by something
+other than a person. `dbboard-mcp` gains the ability to **write** behind
+a per-connection gate and a fail-closed allowlist, an **alias** that
+keeps real connection ids out of an agent's transcript, and — the part
+that was silently missing — **a way to be obtained at all**: the MCP
+server is now published as a release binary rather than existing only as
+a `cargo build` invocation.
+
+This release also **retires the egui client**. Tauri 2 + SvelteKit is
+the only client from here. Installs of the egui build stay on v0.4.0,
+which is still downloadable and still works; it has no updater, so
+moving off it means downloading the app from the
+[download page](https://meta-taro.github.io/dbboard/).
+
+The HTTP contract in [`docs/api-contract.md`](docs/api-contract.md) is
+unchanged from 0.2.0.
+
 ### Added
 
 - `dbboard-mcp` can **write** — `run_write` runs `INSERT` / `UPDATE` /
@@ -391,7 +410,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/meta-taro/dbboard/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/meta-taro/dbboard/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/meta-taro/dbboard/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/meta-taro/dbboard/compare/v0.1.0...v0.2.0
