@@ -26,7 +26,7 @@ pub struct SortKey {
 /// SQL leaves cross-type and NULL ordering largely engine-defined, but the
 /// grid just needs a *stable, predictable* order — not SQL semantics. So we
 /// fix one total order: NULLs first, then numbers (Integer/Real compared by
-/// magnitude), then text, then blobs. Within a bucket the natural order
+/// magnitude), then text, then blobs, then documents. Within a bucket the natural order
 /// applies; across buckets a bucket rank breaks the tie. Unlike a raw `f64`
 /// comparison this never panics (it uses `f64::total_cmp`, which also gives
 /// `NaN` a defined position).
@@ -38,6 +38,7 @@ pub fn compare_values(a: &Value, b: &Value) -> Ordering {
             Value::Integer(_) | Value::Real(_) => 1,
             Value::Text(_) => 2,
             Value::Blob(_) => 3,
+            Value::Json(_) => 4,
         }
     }
 
@@ -50,6 +51,9 @@ pub fn compare_values(a: &Value, b: &Value) -> Ordering {
         (Value::Real(x), Value::Integer(y)) => cmp_int_real(*y, *x).reverse(),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
+        // A document tree has no natural order, so compare its rendered form.
+        // That is stable and predictable, which is all the grid asks for.
+        (Value::Json(x), Value::Json(y)) => x.to_string().cmp(&y.to_string()),
         // Different buckets: order by bucket rank.
         _ => rank(a).cmp(&rank(b)),
     }
@@ -119,6 +123,30 @@ mod tests {
             column,
             ascending: false,
         }
+    }
+
+    #[test]
+    fn documents_sort_after_every_flat_variant() {
+        let doc = Value::Json(serde_json::json!({ "a": 1 }));
+        for lesser in [
+            Value::Null,
+            Value::Integer(0),
+            Value::Real(0.0),
+            Value::Text(String::new()),
+            Value::Blob(Vec::new()),
+        ] {
+            assert_eq!(compare_values(&lesser, &doc), Ordering::Less);
+            assert_eq!(compare_values(&doc, &lesser), Ordering::Greater);
+        }
+    }
+
+    #[test]
+    fn documents_compare_by_their_rendered_form_and_are_self_equal() {
+        let a = Value::Json(serde_json::json!({ "k": "a" }));
+        let b = Value::Json(serde_json::json!({ "k": "b" }));
+        assert_eq!(compare_values(&a, &a), Ordering::Equal);
+        assert_eq!(compare_values(&a, &b), Ordering::Less);
+        assert_eq!(compare_values(&b, &a), Ordering::Greater);
     }
 
     #[test]

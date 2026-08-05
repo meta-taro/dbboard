@@ -1,7 +1,7 @@
 // Pure helpers for the result grid: cell comparison, multi-key sort, and
 // delimited (CSV/TSV) export. Kept free of Svelte and the DOM so the logic is
 // unit-testable in isolation (a runner is not yet wired up, but the seam is).
-import { displayCell, type Cell, type Column } from '$lib/api';
+import { displayCell, isDocument, type Cell, type Column } from '$lib/api';
 
 export type SortDir = 'asc' | 'desc';
 export interface SortKey {
@@ -88,10 +88,12 @@ function flip(dir: SortDir): SortDir {
 }
 
 /** The value a cell contributes to an export: NULL is blank (spreadsheet
- *  convention), a blob is a placeholder, everything else its display text. */
+ *  convention), a blob is a placeholder, a document its JSON text, everything
+ *  else its display text. */
 export function exportValue(cell: Cell): string {
   if (cell === null) return '';
   if (typeof cell === 'object' && '$blob' in cell) return '<blob>';
+  if (isDocument(cell)) return JSON.stringify(cell.$json);
   return String(cell);
 }
 

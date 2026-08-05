@@ -9,6 +9,18 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Added
+
+- `Value::Json`, a cell variant carrying a nested document tree, encoded on
+  the wire as `{ "$json": … }` ([ADR-0091](docs/decisions.md), issue 0018).
+  The prerequisite for the Firestore and MongoDB adapters: a document is a
+  tree, and the flat variants had nowhere to put one. The payload is opaque
+  — a document containing a `"$blob"` key stays that document — and
+  `{ "$json": null }` is a document holding JSON null, not a SQL `NULL`.
+  Purely additive: no existing adapter emits it, and SQL `JSON`/`JSONB`
+  columns still arrive as `Text`. Consumers of the HTTP contract must accept
+  the tag; see the `$json` section of [`docs/api-contract.md`](docs/api-contract.md).
+
 ## [0.5.1] — 2026-08-06
 
 A patch release with nothing in it but two bugs found by using the thing.
