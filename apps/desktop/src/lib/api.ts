@@ -122,13 +122,23 @@ export interface Column {
 
 // A row is a positional list of cells aligned to `columns`. dbboard-core maps
 // each cell to a native JSON scalar (Null→null, Integer/Real→number,
-// Text→string); blobs are the one tagged shape (`{"$blob":"<base64>"}`).
-export type Cell = string | number | boolean | null | { $blob: string };
+// Text→string); blobs and documents are the two tagged shapes
+// (`{"$blob":"<base64>"}`, `{"$json":<tree>}` — see docs/api-contract.md).
+export type Cell = string | number | boolean | null | { $blob: string } | { $json: unknown };
 
-// Render a cell for the results grid: NULL is explicit, blobs are summarised.
+// Whether a cell is a document from a document store (ADR-0091). The tag is
+// what keeps it apart from a Text cell that merely looks like JSON.
+export function isDocument(cell: Cell): cell is { $json: unknown } {
+  return typeof cell === 'object' && cell !== null && '$json' in cell;
+}
+
+// Render a cell for the results grid: NULL is explicit, blobs are summarised,
+// documents show their JSON so a tree never reaches the grid as
+// "[object Object]".
 export function displayCell(cell: Cell): string {
   if (cell === null) return 'NULL';
   if (typeof cell === 'object' && '$blob' in cell) return '<blob>';
+  if (isDocument(cell)) return JSON.stringify(cell.$json);
   return String(cell);
 }
 

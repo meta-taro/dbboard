@@ -1,6 +1,7 @@
 # 0018: `Value` cannot hold a document, so no document store can return a row
 
-- **Status**: open
+- **Status**: closed 2026-08-05 (landed on `feature/nested-value` as
+  `Value::Json`, wire tag `$json`)
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),
@@ -47,12 +48,12 @@ change.
 
 ## Completion criteria
 
-- [ ] `Value` round-trips a nested document through serialize → deserialize with
+- [x] `Value` round-trips a nested document through serialize → deserialize with
       the tag documented in `docs/api-contract.md`
-- [ ] The tag is unambiguous against a natural string value, the way `$blob` is
-- [ ] No existing adapter's output changes (regression tests unchanged and green)
-- [ ] The frontend renders the new variant readably rather than as `[object Object]`
-- [ ] `docs/api-contract.md` states the tag, and `.claude/next-actions.md`
+- [x] The tag is unambiguous against a natural string value, the way `$blob` is
+- [x] No existing adapter's output changes (regression tests unchanged and green)
+- [x] The frontend renders the new variant readably rather than as `[object Object]`
+- [x] `docs/api-contract.md` states the tag, and `.claude/next-actions.md`
       carries the "tell the web repo" hand-off explicitly (silence there once
       blocked the sibling for three weeks)
 
@@ -62,3 +63,35 @@ change.
 cargo test -p dbboard-core --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+## Resolution
+
+`Value::Json(serde_json::Value)`, tagged `$json` on the wire.
+
+The payload is deliberately **opaque** — deserialized as raw `serde_json::Value`,
+never recursively as another `Value` — so a document that happens to contain a
+`"$blob"` key stays that document instead of being decoded as bytes. Only the
+outermost cell is tagged.
+
+Adding the variant broke three exhaustive matches, and each was answered on its
+own terms rather than with a catch-all arm (a `_` would have made the new variant
+silently wrong at all three):
+
+- `sort.rs` — a tree has no natural order, so documents rank after blobs and
+  compare by rendered form. Stable and predictable is all the grid asks for.
+- `dump/literal.rs` — the compact JSON text, single-quoted. Every dialect accepts
+  JSON as text and a `JSON`/`JSONB` column re-parses it, so the dumped `INSERT`
+  round-trips.
+- `write_back.rs` — **refused** as an identity value. Equality on a document is
+  engine-specific (key order, whitespace, json-vs-jsonb all change the answer),
+  so a `WHERE` built from one could match the wrong row or none at all.
+
+`Json(null)` is a document holding JSON null, **not** SQL `NULL`; conflating them
+would lose the distinction between "the column held nothing" and "the document
+held a null". The frontend renders a document as its compact JSON in the grid and
+in CSV/TSV export, and refuses to open the inline editor on one for the same
+reason write-back refuses it.
+
+No adapter emits `$json` yet — every `Value::Blob` site outside core was checked
+and all are construction sites (d1, mysql, turso) with no consumers, so this
+change is purely additive.

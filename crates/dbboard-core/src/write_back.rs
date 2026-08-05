@@ -156,7 +156,10 @@ impl std::fmt::Display for WriteBackError {
             Self::NoEdits => write!(f, "no columns were edited"),
             Self::EmptyKey => write!(f, "no row-identity columns to key the update on"),
             Self::UnsupportedKeyType(col) => {
-                write!(f, "identity column {col:?} has an unsupported (blob) value")
+                write!(
+                    f,
+                    "identity column {col:?} has an unsupported (blob or document) value"
+                )
             }
         }
     }
@@ -174,7 +177,7 @@ impl std::error::Error for WriteBackError {}
 /// - [`WriteBackError::NoEdits`] when `plan.edits` is empty.
 /// - [`WriteBackError::EmptyKey`] when the key has no columns.
 /// - [`WriteBackError::UnsupportedKeyType`] when an identity value is a
-///   blob.
+///   blob or a document.
 pub fn build_update_sql(plan: &UpdatePlan, dialect: SqlDialect) -> Result<String, WriteBackError> {
     if plan.edits.is_empty() {
         return Err(WriteBackError::NoEdits);
@@ -229,7 +232,12 @@ fn key_predicate(col: &str, val: &Value, dialect: SqlDialect) -> Result<String, 
         Value::Integer(n) => format!("{ident} = {n}"),
         Value::Real(x) => format!("{ident} = {x}"),
         Value::Text(s) => format!("{ident} = {}", quote_str(s, dialect)),
-        Value::Blob(_) => return Err(WriteBackError::UnsupportedKeyType(col.to_owned())),
+        // Equality on a document is engine-specific: key order, whitespace and
+        // json-vs-jsonb all change the answer, so a WHERE built from one could
+        // match the wrong row or none at all. Refuse rather than guess.
+        Value::Blob(_) | Value::Json(_) => {
+            return Err(WriteBackError::UnsupportedKeyType(col.to_owned()))
+        }
     })
 }
 
@@ -647,6 +655,26 @@ mod tests {
         let plan = UpdatePlan {
             table: TableInfo::unqualified("t"),
             key: RowKey::Columns(vec![("k".to_owned(), Value::Blob(vec![1, 2, 3]))]),
+            edits: vec![("a".to_owned(), CellValue::Text("v".to_owned()))],
+        };
+        assert_eq!(
+            build_update_sql(&plan, SqlDialect::Sqlite),
+            Err(WriteBackError::UnsupportedKeyType("k".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_document_identity_value_is_refused() {
+        // Equality on a document is engine-specific — key order, whitespace and
+        // json-vs-jsonb all change the answer — so a WHERE built from one could
+        // silently match the wrong row or none. Refusing is the safe answer,
+        // the same call as for a blob.
+        let plan = UpdatePlan {
+            table: TableInfo::unqualified("t"),
+            key: RowKey::Columns(vec![(
+                "k".to_owned(),
+                Value::Json(serde_json::json!({ "a": 1 })),
+            )]),
             edits: vec![("a".to_owned(), CellValue::Text("v".to_owned()))],
         };
         assert_eq!(

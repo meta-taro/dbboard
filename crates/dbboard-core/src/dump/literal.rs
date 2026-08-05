@@ -20,6 +20,7 @@ use crate::write_back::{quote_str, SqlDialect};
 /// - `Text` → single-quoted, with embedded `'` doubled (and `\` doubled on
 ///   `MySQL`).
 /// - `Blob` → `X'…'` (SQLite / `MySQL`) or `'\x…'::bytea` (Postgres).
+/// - `Json` → the compact JSON text, single-quoted like any other string.
 #[must_use]
 pub fn value_literal(value: &Value, dialect: SqlDialect) -> String {
     match value {
@@ -28,6 +29,9 @@ pub fn value_literal(value: &Value, dialect: SqlDialect) -> String {
         Value::Real(x) => real_literal(*x, dialect),
         Value::Text(s) => quote_str(s, dialect),
         Value::Blob(bytes) => blob_literal(bytes, dialect),
+        // Every dialect accepts JSON as text, and a JSON/JSONB column parses it
+        // back on insert, so the compact rendering re-parses in all three.
+        Value::Json(tree) => quote_str(&tree.to_string(), dialect),
     }
 }
 
@@ -87,6 +91,27 @@ fn blob_literal(bytes: &[u8], dialect: SqlDialect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn documents_render_as_a_quoted_json_string() {
+        // Every dialect accepts JSON as text, and a JSON/JSONB column parses
+        // it back, so the dumped INSERT re-parses and round-trips.
+        let doc = Value::Json(serde_json::json!({ "a": [1, 2] }));
+        assert_eq!(value_literal(&doc, SqlDialect::Sqlite), r#"'{"a":[1,2]}'"#);
+        assert_eq!(
+            value_literal(&doc, SqlDialect::Postgres),
+            r#"'{"a":[1,2]}'"#
+        );
+    }
+
+    #[test]
+    fn a_quote_inside_a_document_is_escaped_like_any_other_text() {
+        let doc = Value::Json(serde_json::json!({ "k": "it's" }));
+        assert_eq!(
+            value_literal(&doc, SqlDialect::Sqlite),
+            r#"'{"k":"it''s"}'"#
+        );
+    }
 
     #[test]
     fn null_is_the_bare_keyword() {
