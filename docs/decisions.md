@@ -8946,3 +8946,89 @@ upgrades them to a permanent refusal that names the category. A test asserts
 - New sqlparser `Statement` variants arrive refused by default. That is the
   intended failure direction, and the cost is a follow-up issue rather than a
   lost table.
+
+## ADR-0088 — The MCP surface shows an alias, not the connection's real id
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+### Context
+
+`list_connections` returned each connection's `id` and `name` verbatim, and
+both are whatever the operator typed when adding the connection. On this
+maintainer's install they are the thing the connection actually is: a store
+name, or a host. That string then travels wherever the agent's transcript
+does — the tool result, the model provider's logs, a pasted-in bug report,
+every later tool call that names the connection.
+
+The repository already treats those strings as leakable. `scripts/pii-scan.sh`
+blocks real store names from entering a tracked file or a commit message
+(ADR-0055), and `connections.toml` is untracked precisely because it holds
+them. The MCP surface was a hole straight through that: an id the scanner
+would refuse in a commit was handed to an external model on the first tool
+call.
+
+Renaming the ids is not free. An id is the primary key for
+`annotations.toml`, for `DBBOARD_CONNECTION`, and for every tool call already
+written down in a saved agent thread; changing it orphans notes and breaks
+whatever referenced it. And the leak is not only in the id — a connection
+named `店名 本番` leaks the same fact through `name`.
+
+### Decision
+
+A connection may carry an optional `mcp_alias`. When it has one, **the alias
+replaces both the id and the name** in everything `dbboard-mcp` hands an
+agent, and the real id stops being accepted as a handle.
+
+**1. It applies at the agent boundary only.** `ConnectionService::connections`
+and the desktop app keep returning real ids, because that is what
+`annotations.toml`, the connection picker, and the config file are keyed on.
+The projection is two new methods — `list_agent_connections` and
+`resolve_agent_handle` — and the MCP server is their only caller. Nothing
+below the boundary knows an alias exists.
+
+**2. The alias covers `name` as well as `id`.** Aliasing only the id would
+leave the display name leaking the same store, which is the failure this ADR
+exists to prevent. An aliased connection tells an agent one string and no
+other.
+
+**3. The real id is refused once an alias exists.** `resolve_agent_handle`
+matches an aliased entry by its alias and nothing else. This is the part that
+makes the change worth doing: an id learned from an older transcript cannot be
+handed back and echoed into the new one. It is the same reason a rotated
+credential must stop working rather than merely stop being displayed.
+
+**4. Uniqueness is enforced across aliases *and* ids.** A handle that matched
+two connections would route a query to whichever the resolver saw first, so
+`ConfigError::DuplicateAlias` rejects an alias colliding with another entry's
+alias or id, and a *new id* colliding with an existing alias. An entry's own
+id as its own alias is allowed — it says "show my id, and only my id".
+
+**5. Opt-in, and absent by default.** `skip_serializing_if` keeps the key out
+of `connections.toml` for everyone who never sets one, and a connection
+without an alias behaves exactly as before. Editing follows the `mcp_write`
+precedent with one extra state: omitted keeps the stored alias, a string sets
+it, and an empty string — what an emptied text input sends — clears it.
+
+**6. A source-text test guards the wire layer.** Every tool taking a
+`connection_id` opens with `self.resolve(&connection_id).await?`. The
+realistic future failure is not one of the eight existing tools losing that
+line, it is a ninth tool added without it — which no behavioural test of the
+existing eight can catch. `every_tool_taking_a_connection_id_resolves_it_first`
+reads `server.rs` as text and asserts the line is present in each.
+
+### Consequences
+
+- Error messages are out of scope, as the issue said. A refusal may still name
+  the real id; closing that would mean threading the projection through every
+  error path, and the leak this ADR closes is the one on the happy path that
+  fires on *every* session.
+- An operator who sets an alias must expect an agent working from an old
+  transcript to fail with "connection not found" for the real id. That is the
+  intended behaviour, and the tool description says the returned id is the
+  only one there is.
+- `dbboard-web` is unaffected: it has no MCP surface, and the HTTP contract
+  keeps real ids.
+- The egui client (retired under #139) has no alias input. Its edit path sends
+  `None`, which means keep — so it cannot clear an alias set from the desktop
+  app.

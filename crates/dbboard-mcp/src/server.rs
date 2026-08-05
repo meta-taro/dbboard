@@ -143,13 +143,28 @@ impl DbboardMcp {
         }
     }
 
+    /// Translate the `connection_id` an agent supplied into the real id
+    /// (ADR-0088).
+    ///
+    /// Every tool below goes through this. What `list_connections` hands out
+    /// may be an operator-chosen alias, and once a connection has one its
+    /// real id stops being a valid handle — so a tool that skipped this would
+    /// both reject the only id the agent was given and quietly accept the one
+    /// it was not supposed to know.
+    async fn resolve(&self, handle: &str) -> Result<String, McpError> {
+        self.service
+            .resolve_agent_handle(handle)
+            .await
+            .map_err(|e| to_mcp(&e))
+    }
+
     #[tool(
-        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, postgres, d1, neon, supabase, aurora-dsql). Secrets are never included. Use a returned id with the other tools."
+        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, postgres, d1, neon, supabase, aurora-dsql). Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
     )]
     async fn list_connections(&self) -> Result<CallToolResult, McpError> {
         let views = self
             .service
-            .list_connections()
+            .list_agent_connections()
             .await
             .map_err(|e| to_mcp(&e))?;
         json_block(&views)
@@ -162,6 +177,7 @@ impl DbboardMcp {
         &self,
         Parameters(ListTablesParams { connection_id }): Parameters<ListTablesParams>,
     ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
         let tables = self
             .service
             .list_tables(&connection_id)
@@ -181,6 +197,7 @@ impl DbboardMcp {
             table,
         }): Parameters<DescribeTableParams>,
     ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
         let out = self
             .service
             .describe_table(&connection_id, schema.as_deref(), &table)
@@ -200,6 +217,7 @@ impl DbboardMcp {
             max_rows,
         }): Parameters<RunReadQueryParams>,
     ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
         let out = self
             .service
             .run_read_query(&connection_id, &sql, max_rows)
@@ -219,6 +237,7 @@ impl DbboardMcp {
             column,
         }): Parameters<GetAnnotationsParams>,
     ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
         let out = self
             .service
             .get_annotations(&connection_id, table.as_deref(), column.as_deref())
@@ -237,6 +256,7 @@ impl DbboardMcp {
             pattern,
         }): Parameters<SearchSchemaParams>,
     ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
         let out = self
             .service
             .search_schema(&connection_id, &pattern)
@@ -255,6 +275,7 @@ impl DbboardMcp {
             table,
         }): Parameters<ListRelationshipsParams>,
     ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
         let out = self
             .service
             .list_relationships(&connection_id, table.as_deref())
@@ -275,6 +296,7 @@ impl DbboardMcp {
         &self,
         Parameters(RunWriteParams { connection_id, sql }): Parameters<RunWriteParams>,
     ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
         let out = self
             .service
             .run_write(&connection_id, &sql)
@@ -297,6 +319,7 @@ impl DbboardMcp {
             output_path,
         }): Parameters<DumpDatabaseParams>,
     ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
         let out = self
             .service
             .dump_to_file(&connection_id, Path::new(&output_path))
@@ -415,6 +438,36 @@ mod tests {
         // sent a statement it should not have.
         let err = to_mcp(&ServiceError::Db(DbError::Query("write rejected".into())));
         assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// Every tool that takes a `connection_id` must translate it through
+    /// [`DbboardMcp::resolve`] (ADR-0088).
+    ///
+    /// Checked against the source text rather than by calling the tools,
+    /// because the failure this guards against is a *new* tool added without
+    /// the line — which no test of the existing eight would catch. A tool that
+    /// forgets it rejects the alias the agent was given and accepts the real
+    /// id the operator hid, and both look like ordinary behaviour until
+    /// someone reads a transcript.
+    #[test]
+    fn every_tool_taking_a_connection_id_resolves_it_first() {
+        let source = include_str!("server.rs");
+        for chunk in source.split("#[tool(").skip(1) {
+            // Stop at the next attribute so a chunk is exactly one tool.
+            let body = chunk.split("\n    #[").next().unwrap_or(chunk);
+            if !body.contains("connection_id") {
+                continue;
+            }
+            let name = body
+                .split("async fn ")
+                .nth(1)
+                .and_then(|rest| rest.split('(').next())
+                .unwrap_or("<unknown>");
+            assert!(
+                body.contains("self.resolve(&connection_id).await?"),
+                "tool `{name}` uses the agent's connection_id without resolving it"
+            );
+        }
     }
 
     #[test]

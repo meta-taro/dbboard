@@ -26,6 +26,17 @@ public API is the HTTP contract in
   or from the app (*Connections → Edit → AI agent access*). Editing a
   connection without touching the toggle keeps whatever is stored, so a
   rename cannot silently revoke the permission.
+- Connections carry an optional `mcp_alias` — the name `dbboard-mcp`
+  shows an AI agent **instead of** the connection's id *and* name
+  (ADR-0088). Ids and names are whatever you typed, so on a real install
+  they leak a host or a store into the agent's transcript and its
+  provider's logs. With an alias set, that is the only string the agent
+  sees, and the real id stops working as a handle — one learned from an
+  older session cannot be handed back. Aliases must be unique across
+  every alias and id. Absent by default and settable in the same place
+  as the write gate; everything below the MCP boundary
+  (`annotations.toml`, `DBBOARD_CONNECTION`, the connection list) keeps
+  using the real id.
 
 ### Fixed
 

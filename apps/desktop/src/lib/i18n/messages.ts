@@ -137,7 +137,8 @@ export const en = {
   "conn-cancel": "Cancel",
   "conn-close": "Close",
   "conn-field-id": "ID",
-  "conn-field-id-hint": "A stable identifier — it cannot be changed later.",
+  "conn-field-id-hint":
+    "A stable identifier — it cannot be changed later. An AI agent sees it, so avoid host names and customer names here; if one is already in use, set an alias under AI agent access.",
   "conn-field-name": "Name",
   "conn-field-kind": "Type",
   "conn-field-path": "Database path",
@@ -210,6 +211,11 @@ export const en = {
   "conn-mcp-write": "Let an AI agent write to this database",
   "conn-mcp-write-hint":
     "Off by default. An agent can always read; turning this on also lets it INSERT, UPDATE, DELETE, CREATE and ALTER. Granting privileges, TRUNCATE and DROP stay blocked either way.",
+  // Agent-facing connection alias (ADR-0088)
+  "conn-mcp-alias": "Name shown to AI agents",
+  "conn-mcp-alias-placeholder": "e.g. store-a",
+  "conn-mcp-alias-hint":
+    "Optional. When set, an agent sees this name in place of both the id and the display name above, and the real id stops working as a handle — so a host or customer name you already used as an id no longer reaches the agent's transcript. Leave blank to show the real ones.",
   // Connection bundle import/export (ADR-0038)
   "conn-export": "Export…",
   "conn-import": "Import…",
@@ -441,7 +447,8 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-cancel": "キャンセル",
   "conn-close": "閉じる",
   "conn-field-id": "ID",
-  "conn-field-id-hint": "安定した識別子です。後から変更できません。",
+  "conn-field-id-hint":
+    "安定した識別子です。後から変更できません。AI エージェントにも見えるため、ホスト名や実店舗名は避けてください。すでに使っている場合は「AI エージェントからの操作」で別名を設定してください。",
   "conn-field-name": "名前",
   "conn-field-kind": "種類",
   "conn-field-path": "データベースのパス",
@@ -514,6 +521,11 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-mcp-write": "この接続への書き込みを AI エージェントに許可する",
   "conn-mcp-write-hint":
     "既定はオフです。エージェントは常に読み取れます。オンにすると INSERT / UPDATE / DELETE / CREATE / ALTER も実行できます。権限付与・TRUNCATE・DROP はどちらの状態でも禁止されたままです。",
+  // エージェント向けの接続別名 (ADR-0088)
+  "conn-mcp-alias": "AI エージェントに見せる名前",
+  "conn-mcp-alias-placeholder": "例: store-a",
+  "conn-mcp-alias-hint":
+    "任意です。設定すると、エージェントには上の ID と表示名の代わりにこの名前だけが見え、実の ID は接続先として使えなくなります。すでに ID にホスト名や店舗名を使っていても、エージェントの履歴には残りません。空の場合は実の ID と表示名が見えます。",
   // 接続バンドルのインポート/エクスポート (ADR-0038)
   "conn-export": "エクスポート…",
   "conn-import": "インポート…",

@@ -138,6 +138,9 @@ pub fn config_error_display(err: &ConfigError) -> DisplayError {
             expected = CONFIG_VERSION
         ),
         ConfigError::DuplicateId(id) => t_args!("config-error-duplicate-id", id = id.clone()),
+        ConfigError::DuplicateAlias(alias) => {
+            t_args!("config-error-duplicate-alias", alias = alias.clone())
+        }
         ConfigError::Io(e) => t_args!("config-error-io", detail = e.to_string()),
         ConfigError::Serialize(e) => t_args!("config-error-serialize", detail = e.to_string()),
         ConfigError::NoConfigDir => t!("config-error-no-config-dir"),

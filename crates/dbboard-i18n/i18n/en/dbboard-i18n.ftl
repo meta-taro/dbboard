@@ -84,6 +84,7 @@ secret-error-backend = The secret store operation failed (reference: { $referenc
 config-error-parse = Could not parse the configuration file: { $detail }
 config-error-unsupported-version = Unsupported configuration version: { $found } (only version { $expected } is supported).
 config-error-duplicate-id = Duplicate connection id: { $id }
+config-error-duplicate-alias = Connection alias already in use: { $alias }
 config-error-io = Configuration file access failed: { $detail }
 config-error-serialize = Could not write the configuration: { $detail }
 config-error-no-config-dir = Could not determine a per-user configuration directory.
