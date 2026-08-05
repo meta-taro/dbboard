@@ -5,6 +5,68 @@
 
 ## 最終更新
 
+- 日付: 2026-08-05 その4 (**v0.5.0 リリース + 文書ストアを Phase 6 に確定 (ADR-0091)。**
+
+  **① v0.5.0 を切った。** 動機は「文書が既に約束しているから」— README / クレート
+  README / DL ページの 3 箇所が `dbboard-mcp-windows-x86_64.exe` /
+  `dbboard-mcp-macos-universal` を「最新リリースから取れ」と書いているのに、タグが
+  存在しない間はどのリリースもそれを持っていない。**手順書はタグが存在して初めて
+  真になる。** 流れ: PR #144 (release/v0.5.0 → develop) → #145 (ADR-0091) →
+  #146 (develop → main、v0.4.0 から 87 コミット) → `main` 上で `v0.5.0` タグ push。
+  検証は `eeddf91` に対して fmt / clippy / debug テスト / release ビルド /
+  release テストを通しで実行し、**debug・release とも 985 passed / 0 failed
+  (43 バイナリ)**。今回は Windows libSQL teardown segfault も出ず、`--no-verify` は
+  一度も使っていない。
+  **リリースオブジェクトの手動作成はもう不要になっている** — publish ジョブに
+  `gh release view || gh release create --generate-notes` のブートストラップが入り、
+  タグ push だけで公開まで通る。v0.1.0〜v0.3.0 で必要だった手順は消えた。
+  `docs/roadmap.md` の Phase 5 に残っていた「create-if-missing は tracked follow-up」
+  という古い記述もこの機に訂正した。
+
+  **② `pii-scan` が #146 で赤。既知の未処理分であり、新規の混入ではない。**
+  identity チェックが指したのは **2026-07-22 のコミット群** (noreply アドレスへ
+  切り替える前のもの)。今回のセッションで作った 4 コミット
+  (`e6db331` / `b51fd25` / `eeddf91` / `622b186`) は author / committer とも
+  すべて noreply。develop → main の PR は「main に無い全コミット」を走査対象に
+  するため、87 コミット分に含まれる古い identity がまとめて出た。main への push 後の
+  `pii-scan` は緑。**~468 コミットの history 書き換えをやるか否かは user 判断待ちのまま**で、
+  今回のリリースはその母数を増やしていない。
+
+  **③ MongoDB / Firestore を stretch から確定フェーズへ格上げ (ADR-0091)。**
+  MongoDB は「Additional adapters (PlanetScale, MongoDB)」という 1 行の半分でしかなく、
+  Firestore はどこにも書かれていなかった (口頭合意のみ)。**記録されていない合意は
+  decisions.md が防ぐべき失敗そのもの**なので、実装前に方向を確定させた。
+  `dbboard-core` を読み直した結果、障害は 4 つあり **trait は障害ではなかった**:
+  - `DatabaseAdapter::query(&self, sql: &str)` — **問題なし**。trait 側は文字列を
+    一切パースしていない。Mongo のコマンドドキュメントも Firestore の
+    `StructuredQuery` も JSON 文字列なので、そのまま渡せる。中間クエリ IR は不要
+    (SQL と 2 つの非類似な文書 API をまたぐ抽象は、誰も求めていない上に非可逆)。
+  - `Value` (`Null | Integer | Real | Text | Blob`) — **障害**。平坦。文書は木。
+  - `read_only.rs` — **障害**。`sqlparser` ベースで、パースできない入力は
+    fail closed が原則。そのままだと Mongo のクエリを全拒否する。MCP の書き込みゲート
+    (ADR-0087) がこの上に乗っている。
+  - `describe_table` — **障害**。宣言済みカラム前提。コレクションには無い。
+
+  ここから順序が決まった: **入れ子 `Value` を単独で先に** (issue 0018。全アダプタの
+  行構築と dbboard-web との共有ワイヤ契約に触るので、単独で出さないと壊れたとき
+  原因が特定できない。`serde_json` が core の本番依存になるが、`serde` / `sqlparser` と
+  同じ「パースは純粋なデータ変換なので no-I/O 規則は保たれる」論拠が既にある) →
+  **Firestore** (issue 0019。REST が読み `:runQuery` / `:batchGet` と書き `:commit` を
+  **エンドポイントで分けている**ので、read-only は「どのエンドポイントを叩けるか」で
+  決まり、分類器そのものが存在しない = 間違えようがない) → **MongoDB** (issue 0020。
+  `runCommand` が何でも受けるので fail-closed の読み取り許可リストが必要。さらに
+  `$out` / `$merge` は read であるはずの `aggregate` の中から書くため、verb を見るだけでは
+  足りずパイプラインを歩く必要がある。`read_only.rs` が `starts_with("SELECT")` を
+  拒否しているのと同じ罠 —
+  `WITH x AS (DELETE … RETURNING *) SELECT * FROM x` は `WITH` で始まる書き込み)。
+  スキーマは**サンプリングして、サンプリングだと分かる形で出す** — 推論を宣言済み
+  スキーマと同じ見た目で描くと、人はそれを宣言済みとして信頼することを学習してしまう。
+  **PlanetScale は新規アダプタ不要** (MySQL 互換なので既存 `dbboard-mysql` で届く。
+  古い stretch 行は無関係な 2 つを束ねていた)。
+
+  コミット: `eeddf91` (release: v0.5.0)、`622b186` (ADR-0091 + roadmap Phase 6 +
+  issue 0018/0019/0020)。両方とも pre-commit フル通過。)
+
 - 日付: 2026-08-05 その3 (**push 失敗 3 連続の原因はコードではなくマシン資源の枯渇 2 種。
   コミット `e6db331`。**
   **① メモリ (対処済み・コード変更あり)**: `cargo test` が

@@ -7,6 +7,39 @@
 
 ## 最終更新
 
+- 日付: 2026-08-05 その4 (**v0.5.0 リリース + 文書ストア (MongoDB / Firestore) を
+  Phase 6 として確定。ADR-0091。**
+  ① **v0.5.0 を切った。** PR #144 (release/v0.5.0 → develop) → #145 (ADR-0091) →
+  #146 (develop → main、v0.4.0 から 87 コミット) → `main` 上で `v0.5.0` タグ push。
+  **リリースオブジェクトの手動作成はもう不要** — publish ジョブに
+  `gh release view || gh release create --generate-notes` のブートストラップが
+  入っているので、タグ push だけで公開まで通る (v0.1.0〜v0.3.0 で必要だった手順は消えた)。
+  ② **`pii-scan` が #146 で赤になったが既知の未処理分。** identity チェックが
+  2026-07-22 の古いコミット群 (noreply 切替前) を指しており、**今回のセッションで
+  作った 4 コミット (`e6db331` / `b51fd25` / `eeddf91` / `622b186`) はすべて noreply**。
+  develop → main の PR は「main に無い全コミット」を対象にするので古い分がまとめて
+  出ただけ。main への push 後の `pii-scan` は緑。**~468 コミットの history 書き換え
+  判断待ち = user 側ボールのまま**で、今回のリリースが増やしたものではない。
+  ③ **MongoDB / Firestore を stretch から確定フェーズへ格上げ (ADR-0091)。**
+  `dbboard-core` を読み直した結果、障害は 4 つあり **trait は障害ではなかった** —
+  `query(&self, sql: &str)` は trait 側で一切パースしていないので、Mongo の
+  コマンドドキュメントも Firestore の `StructuredQuery` もそのまま JSON 文字列で
+  渡せる (中間クエリ IR 不要)。実際の障害は `Value` が平坦で木を持てないこと、
+  `read_only.rs` が `sqlparser` ベースで「パースできない入力は fail closed」ゆえ
+  Mongo のクエリを全拒否してしまうこと、`describe_table` が宣言済みカラム前提であること。
+  ここから順序が決まる: **入れ子 `Value` を単独で先に** (issue 0018、全アダプタの
+  行構築と dbboard-web との共有ワイヤ契約に触るので単独で出す) → **Firestore**
+  (issue 0019、REST が `:runQuery` / `:commit` をエンドポイントで分けているので
+  read-only は「どのエンドポイントを叩けるか」で決まり、分類器が要らない) →
+  **MongoDB** (issue 0020、`runCommand` が何でも受けるので fail-closed 許可リストが
+  必要。しかも `$out` / `$merge` は read であるはずの `aggregate` の中から書くので
+  パイプラインを歩く必要がある = 一番高くつく上に安全側の要)。
+  **PlanetScale は新規アダプタ不要** (MySQL 互換なので既存 `dbboard-mysql` で届く)。
+  **user 側ボール = ① 姉妹リポへ `.claude/tools/dbboard.md` を貼る (v0.5.0 が出たので
+  「v0.5.0 以降」の記述が本当になった)、② MCP を
+  `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe` に置き直して再登録 + エージェント再起動、
+  ③ ~468 コミットの history 書き換えをやるか否かの判断。**)
+
 - 日付: 2026-08-05 その3 (**push が 3 回落ちたが、どちらもコードではなくマシン側の枯渇。**
   ① メモリ: age の scrypt (log_n=18, r=8) が 1 回の暗号化/復号で 256 MiB を確保し、
   20 コア並列のテストハーネスが同時に何 GB も要求 → アロケート失敗 →
