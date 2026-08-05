@@ -61,6 +61,10 @@ pub struct ConnectionDraft {
     /// Cross-cutting like `ssh`, and `false` for anything that does not
     /// deliberately ask for it — the gate exists to be off by default.
     pub mcp_write: bool,
+    /// Optional agent-facing name that hides this entry's `id` and `name` from
+    /// `dbboard-mcp` (ADR-0088). `None` — the default — keeps both as they are.
+    /// Trimmed, and a blank string is treated as `None`.
+    pub mcp_alias: Option<String>,
 }
 
 /// Add-time SSH tunnel draft: bastion coordinates plus **inline** secrets (the
@@ -150,6 +154,12 @@ pub struct ConnectionEditDraft {
     /// caller with no toggle — a rename, a URL rotation — must not revoke a
     /// permission it never showed the operator.
     pub mcp_write: Option<bool>,
+    /// How the update should treat the agent-facing alias (ADR-0088). Same
+    /// three states as `mcp_write`, expressed through one `Option`: `None`
+    /// keeps whatever is stored, `Some(alias)` sets it, and `Some("")` — a
+    /// blank or whitespace-only string, which is what an emptied text input
+    /// sends — clears it.
+    pub mcp_alias: Option<String>,
 }
 
 /// Top-level SSH edit intent. Distinct from a plain `Option` so a caller that
@@ -401,6 +411,8 @@ impl ConnectionAdmin {
     /// # Errors
     ///
     /// - [`ConfigError::DuplicateId`] if `draft.id` already exists.
+    /// - [`ConfigError::DuplicateAlias`] if `draft.mcp_alias`, or `draft.id`
+    ///   itself, collides with another entry's alias (ADR-0088).
     /// - [`ConfigError::Secret`] if a secret write fails.
     /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML
     ///   write; in this case any secret writes performed by this call
@@ -414,6 +426,15 @@ impl ConnectionAdmin {
     pub fn add(&mut self, draft: ConnectionDraft) -> Result<&ConnectionEntry, ConfigError> {
         if self.find_index(&draft.id).is_some() {
             return Err(ConfigError::DuplicateId(draft.id));
+        }
+
+        // Both the id and the alias are handles an agent may hand back, and the
+        // resolver tries aliases before ids — so neither may shadow an existing
+        // entry's alias (ADR-0088). Checked before any secret is written.
+        let mcp_alias = normalize_alias(draft.mcp_alias);
+        self.ensure_handle_is_free(&draft.id, &draft.id)?;
+        if let Some(alias) = mcp_alias.as_deref() {
+            self.ensure_handle_is_free(alias, &draft.id)?;
         }
 
         let (kind, mut secret_writes) = build_kind_for_add(&draft.id, draft.kind);
@@ -451,6 +472,7 @@ impl ConnectionAdmin {
 
         let new_entry = ConnectionEntry {
             mcp_write: draft.mcp_write,
+            mcp_alias,
             ssh,
             id: draft.id,
             name: draft.name,
@@ -504,6 +526,18 @@ impl ConnectionAdmin {
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
 
         let existing = self.file.connections[idx].clone();
+
+        // `None` keeps the stored alias, a blank string clears it (ADR-0088).
+        // Resolved and checked before any keyring write, so a collision costs
+        // nothing to roll back.
+        let mcp_alias = match draft.mcp_alias {
+            None => existing.mcp_alias.clone(),
+            Some(raw) => normalize_alias(Some(raw)),
+        };
+        if let Some(alias) = mcp_alias.as_deref() {
+            self.ensure_handle_is_free(alias, id)?;
+        }
+
         let (new_kind, mut applied_writes) =
             self.apply_update_kind(id, &existing.kind, draft.kind)?;
 
@@ -534,6 +568,7 @@ impl ConnectionAdmin {
 
         let new_entry = ConnectionEntry {
             mcp_write: draft.mcp_write.unwrap_or(existing.mcp_write),
+            mcp_alias,
             ssh: new_ssh,
             id: id.to_string(),
             name: draft.name,
@@ -764,6 +799,23 @@ impl ConnectionAdmin {
 
     fn find_index(&self, id: &str) -> Option<usize> {
         self.file.connections.iter().position(|e| e.id == id)
+    }
+
+    /// Reject `candidate` as an agent-facing handle if some *other* entry
+    /// already answers to it, by alias or by id (ADR-0088).
+    ///
+    /// `owner` is the id of the entry the candidate belongs to, so an entry
+    /// re-sending its own alias — which a form does on every save — and an
+    /// alias equal to the entry's own id are both fine.
+    fn ensure_handle_is_free(&self, candidate: &str, owner: &str) -> Result<(), ConfigError> {
+        let taken = self.file.connections.iter().any(|entry| {
+            entry.id != owner
+                && (entry.id == candidate || entry.mcp_alias.as_deref() == Some(candidate))
+        });
+        if taken {
+            return Err(ConfigError::DuplicateAlias(candidate.to_string()));
+        }
+        Ok(())
     }
 
     fn apply_update_kind(
@@ -1011,6 +1063,15 @@ impl ConnectionAdmin {
     }
 }
 
+/// Normalise an alias draft: trim it, and treat blank as absent (ADR-0088).
+///
+/// A cleared text input sends `Some("")`, which is the only way a form can say
+/// "no alias" — and a stored alias of `"  "` would be a handle nobody can type.
+fn normalize_alias(raw: Option<String>) -> Option<String> {
+    raw.map(|alias| alias.trim().to_string())
+        .filter(|alias| !alias.is_empty())
+}
+
 /// Compute the keyring ref for a given connection id and field.
 fn keyring_ref(id: &str, field: &str) -> String {
     format!("dbboard.{id}.{field}")
@@ -1230,6 +1291,7 @@ mod tests {
 
     fn turso_draft(id: &str, name: &str, path: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1242,6 +1304,7 @@ mod tests {
 
     fn d1_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1257,6 +1320,7 @@ mod tests {
 
     fn pg_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1269,6 +1333,7 @@ mod tests {
 
     fn mysql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1281,6 +1346,7 @@ mod tests {
 
     fn neon_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1293,6 +1359,7 @@ mod tests {
 
     fn supabase_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1305,6 +1372,7 @@ mod tests {
 
     fn aurora_dsql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1457,6 +1525,7 @@ mod tests {
             .update(
                 "dsql",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Aurora DSQL dsql".to_string(),
@@ -1490,6 +1559,7 @@ mod tests {
             .update(
                 "dsql",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Aurora DSQL".to_string(),
@@ -1520,6 +1590,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
@@ -1572,6 +1643,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "dsql-iam".to_string(),
@@ -1609,6 +1681,7 @@ mod tests {
         let file = ConnectionFile {
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "dsql-iam".to_string(),
@@ -1629,6 +1702,7 @@ mod tests {
             .update(
                 "dsql-iam",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "renamed".to_string(),
@@ -1658,6 +1732,7 @@ mod tests {
             .update(
                 "supabase",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Supabase supabase".to_string(),
@@ -1690,6 +1765,7 @@ mod tests {
             .update(
                 "supabase",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Supabase".to_string(),
@@ -1721,6 +1797,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
@@ -1770,6 +1847,7 @@ mod tests {
             .update(
                 "neon",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Neon neon".to_string(),
@@ -1797,6 +1875,7 @@ mod tests {
             .update(
                 "neon",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Neon".to_string(),
@@ -1827,6 +1906,7 @@ mod tests {
             .update(
                 "pg",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
@@ -1939,6 +2019,7 @@ mod tests {
             .update(
                 "local",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "New".to_string(),
@@ -2001,6 +2082,7 @@ mod tests {
             .update(
                 "local",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "New".to_string(),
@@ -2022,6 +2104,7 @@ mod tests {
             .expect("add");
 
         let edit = |gate: Option<bool>| ConnectionEditDraft {
+            mcp_alias: None,
             mcp_write: gate,
             ssh: SshEditField::Keep,
             name: "Local".to_string(),
@@ -2037,6 +2120,215 @@ mod tests {
         assert!(!admin.entries()[0].mcp_write);
     }
 
+    // The MCP alias (ADR-0088) is what an agent sees instead of the id. It has
+    // to be unambiguous — the agent hands it back as a handle — and it must
+    // survive an edit that does not mention it, for the same reason the write
+    // gate does.
+
+    fn alias_edit(alias: Option<String>) -> ConnectionEditDraft {
+        ConnectionEditDraft {
+            mcp_alias: alias,
+            mcp_write: None,
+            ssh: SshEditField::Keep,
+            name: "Local".to_string(),
+            kind: ConnectionKindEditDraft::Turso {
+                path: ":memory:".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn add_defaults_to_no_mcp_alias() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+        assert_eq!(entry.mcp_alias, None);
+    }
+
+    #[test]
+    fn add_can_set_an_mcp_alias() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("shop-db".to_string()),
+                ..turso_draft("app@db.internal", "Local", ":memory:")
+            })
+            .expect("add");
+        assert_eq!(entry.mcp_alias.as_deref(), Some("shop-db"));
+    }
+
+    #[test]
+    fn update_without_an_opinion_keeps_the_mcp_alias() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("shop-db".to_string()),
+                ..turso_draft("local", "Old", ":memory:")
+            })
+            .expect("add");
+
+        admin.update("local", alias_edit(None)).expect("update");
+
+        assert_eq!(
+            admin.entries()[0].mcp_alias.as_deref(),
+            Some("shop-db"),
+            "a rename must not expose the id to agents again"
+        );
+    }
+
+    #[test]
+    fn update_can_set_and_clear_the_mcp_alias() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+
+        admin
+            .update("local", alias_edit(Some("shop-db".to_string())))
+            .expect("set");
+        assert_eq!(admin.entries()[0].mcp_alias.as_deref(), Some("shop-db"));
+
+        // Blank is how a form says "no alias" — it has no other way to.
+        admin
+            .update("local", alias_edit(Some("  ".to_string())))
+            .expect("clear");
+        assert_eq!(admin.entries()[0].mcp_alias, None);
+    }
+
+    #[test]
+    fn an_alias_is_trimmed() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("  shop-db \n".to_string()),
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+        assert_eq!(entry.mcp_alias.as_deref(), Some("shop-db"));
+    }
+
+    #[test]
+    fn an_alias_may_not_collide_with_another_alias() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("shop-db".to_string()),
+                ..turso_draft("one", "One", ":memory:")
+            })
+            .expect("add");
+
+        let err = admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("shop-db".to_string()),
+                ..turso_draft("two", "Two", ":memory:")
+            })
+            .expect_err("a duplicate alias is ambiguous as a handle");
+        assert!(
+            matches!(err, ConfigError::DuplicateAlias(ref a) if a == "shop-db"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_alias_may_not_collide_with_another_connections_id() {
+        // Resolution accepts a plain id for a connection with no alias, so an
+        // alias equal to some other entry's id would make the handle
+        // ambiguous — and would let an agent reach a connection it was not
+        // shown.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("staging", "Staging", ":memory:"))
+            .expect("add");
+
+        let err = admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("staging".to_string()),
+                ..turso_draft("prod", "Prod", ":memory:")
+            })
+            .expect_err("an alias that shadows another id is ambiguous");
+        assert!(
+            matches!(err, ConfigError::DuplicateAlias(ref a) if a == "staging"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_alias_matching_the_entrys_own_id_is_allowed() {
+        // Not ambiguous, and it is the honest way to say "the id is fine to
+        // show" — a connection called `local` has nothing to hide.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("local".to_string()),
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+        assert_eq!(entry.mcp_alias.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn a_new_id_may_not_collide_with_an_existing_alias() {
+        // The mirror of the previous case. Resolution tries aliases first, so
+        // an id that shadows one would silently route an agent's handle to the
+        // wrong database.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("shop-db".to_string()),
+                ..turso_draft("one", "One", ":memory:")
+            })
+            .expect("add");
+
+        let err = admin
+            .add(turso_draft("shop-db", "Two", ":memory:"))
+            .expect_err("an id that shadows an alias is ambiguous");
+        assert!(
+            matches!(err, ConfigError::DuplicateAlias(ref a) if a == "shop-db"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn update_may_not_take_an_alias_already_in_use() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("shop-db".to_string()),
+                ..turso_draft("one", "One", ":memory:")
+            })
+            .expect("add");
+        admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+
+        let err = admin
+            .update("local", alias_edit(Some("shop-db".to_string())))
+            .expect_err("duplicate");
+        assert!(
+            matches!(err, ConfigError::DuplicateAlias(ref a) if a == "shop-db"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn update_may_keep_its_own_alias() {
+        // Re-sending the same alias is what a form does on every save; it is
+        // not a collision with itself.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                mcp_alias: Some("shop-db".to_string()),
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+
+        admin
+            .update("local", alias_edit(Some("shop-db".to_string())))
+            .expect("same alias is not a duplicate");
+        assert_eq!(admin.entries()[0].mcp_alias.as_deref(), Some("shop-db"));
+    }
+
     #[test]
     fn update_with_secret_keep_does_not_touch_the_keyring() {
         let (_dir, secrets, mut admin) = fresh_admin();
@@ -2047,6 +2339,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
@@ -2081,6 +2374,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "D1 prod".to_string(),
@@ -2107,6 +2401,7 @@ mod tests {
             .update(
                 "missing",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "X".to_string(),
@@ -2132,6 +2427,7 @@ mod tests {
             .update(
                 "local",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "L".to_string(),
@@ -2172,6 +2468,7 @@ mod tests {
             .update(
                 "prod",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
@@ -2298,6 +2595,7 @@ mod tests {
         let (_dir, secrets, mut target) = fresh_admin();
         target
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "store-a".to_string(),
@@ -2380,6 +2678,7 @@ mod tests {
         // hijack the victim's live credentials on import.
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: "attacker".to_string(),
@@ -2455,6 +2754,7 @@ mod tests {
 
     fn pg_ssh_key_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: Some(SshTunnelDraft {
                 host: "bastion.example".to_string(),
@@ -2476,6 +2776,7 @@ mod tests {
 
     fn pg_ssh_password_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
+            mcp_alias: None,
             mcp_write: false,
             ssh: Some(SshTunnelDraft {
                 host: "bastion.example".to_string(),
@@ -2597,6 +2898,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -2626,6 +2928,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -2667,6 +2970,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
@@ -2697,6 +3001,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Disable,
                     name: "PG work".to_string(),
@@ -2723,6 +3028,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -2770,6 +3076,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -2806,6 +3113,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -2842,6 +3150,7 @@ mod tests {
             .update(
                 "work",
                 ConnectionEditDraft {
+                    mcp_alias: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),

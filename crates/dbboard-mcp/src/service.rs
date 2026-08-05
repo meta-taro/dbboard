@@ -488,6 +488,65 @@ impl McpService {
             .collect())
     }
 
+    /// List every configured connection **as an agent may see it**
+    /// (ADR-0088): an entry with an `mcp_alias` reports that alias as both
+    /// its id and its name, so neither the real id nor the display name
+    /// reaches the transcript.
+    ///
+    /// This is the projection the tool surface serves.
+    /// [`McpService::list_connections`] stays as it is for the desktop app
+    /// and for anything keyed by the real id (`annotations.toml`).
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Config`] if `connections.toml` cannot be read or
+    /// parsed.
+    pub async fn list_agent_connections(&self) -> Result<Vec<ConnectionView>, ServiceError> {
+        let file = self.load_connection_file().await?;
+        Ok(file
+            .connections
+            .iter()
+            .map(|entry| {
+                let handle = entry.mcp_alias.as_deref().unwrap_or(&entry.id);
+                ConnectionView {
+                    id: handle.to_string(),
+                    name: entry
+                        .mcp_alias
+                        .as_deref()
+                        .unwrap_or(&entry.name)
+                        .to_string(),
+                    kind: kind_label(&entry.kind).to_string(),
+                }
+            })
+            .collect())
+    }
+
+    /// Translate a handle an agent supplied back into the real connection id
+    /// (ADR-0088).
+    ///
+    /// Aliases are tried first, then the ids of entries that have **no**
+    /// alias. An aliased entry's real id is deliberately not accepted: it is
+    /// the value the operator asked to keep out of the transcript, and
+    /// accepting it would let an agent that learned it elsewhere use it — and
+    /// echo it back — as if it were public.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] if no entry answers to `handle`,
+    /// or [`ServiceError::Config`] if the file cannot be read.
+    pub async fn resolve_agent_handle(&self, handle: &str) -> Result<String, ServiceError> {
+        let file = self.load_connection_file().await?;
+        let entry = file
+            .connections
+            .iter()
+            .find(|entry| match entry.mcp_alias.as_deref() {
+                Some(alias) => alias == handle,
+                None => entry.id == handle,
+            })
+            .ok_or_else(|| ServiceError::ConnectionNotFound(handle.to_string()))?;
+        Ok(entry.id.clone())
+    }
+
     /// List the tables in `connection_id`'s database.
     ///
     /// # Errors
@@ -1169,6 +1228,129 @@ keyring_url_ref = "dbboard.prod-pg.url"
         assert!(!json.contains("url"), "leaked a url field: {json}");
         assert!(!json.contains("path"), "leaked a path field: {json}");
         assert!(!json.contains(":memory:"), "leaked a path value: {json}");
+    }
+
+    // The agent-facing projection (ADR-0088). `list_connections` keeps
+    // returning the real id — the desktop app is built on it, and
+    // `annotations.toml` is keyed by it. What an agent sees goes through
+    // `list_agent_connections` / `resolve_agent_handle` instead.
+
+    const ALIASED: &str = r#"
+version = 1
+
+[[connections]]
+id        = "app@db.internal"
+name      = "Store A (Tokyo)"
+kind      = "postgres"
+keyring_url_ref = "dbboard.store-a.url"
+mcp_alias = "store-a"
+
+[[connections]]
+id   = "local"
+name = "Local libSQL"
+kind = "turso"
+path = ":memory:"
+"#;
+
+    #[tokio::test]
+    async fn an_aliased_connection_shows_the_agent_neither_its_id_nor_its_name() {
+        let fx = fixture();
+        write(&fx.config_path, ALIASED);
+
+        let views = fx
+            .service
+            .list_agent_connections()
+            .await
+            .expect("agent list");
+        assert_eq!(views[0].id, "store-a");
+        assert_eq!(
+            views[0].name, "store-a",
+            "the display name is identifying too — a store name is not less \
+             sensitive than a hostname"
+        );
+        assert_eq!(views[0].kind, "postgres", "the engine is not a secret");
+
+        let json = serde_json::to_string(&views).expect("serialize");
+        assert!(
+            !json.contains("db.internal") && !json.contains("app@"),
+            "the id reached the wire: {json}"
+        );
+        assert!(!json.contains("Tokyo"), "the name reached the wire: {json}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_without_an_alias_is_unchanged() {
+        // Renaming everyone's connections on upgrade would break every agent
+        // prompt that names one. The alias is opt-in.
+        let fx = fixture();
+        write(&fx.config_path, ALIASED);
+
+        let views = fx
+            .service
+            .list_agent_connections()
+            .await
+            .expect("agent list");
+        assert_eq!(views[1].id, "local");
+        assert_eq!(views[1].name, "Local libSQL");
+    }
+
+    #[tokio::test]
+    async fn an_alias_resolves_to_the_real_id() {
+        let fx = fixture();
+        write(&fx.config_path, ALIASED);
+        assert_eq!(
+            fx.service
+                .resolve_agent_handle("store-a")
+                .await
+                .expect("resolves"),
+            "app@db.internal"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unaliased_id_still_works_as_a_handle() {
+        let fx = fixture();
+        write(&fx.config_path, ALIASED);
+        assert_eq!(
+            fx.service
+                .resolve_agent_handle("local")
+                .await
+                .expect("resolves"),
+            "local"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_real_id_of_an_aliased_connection_is_refused() {
+        // Otherwise the id an operator hid would still work once the agent
+        // learned it from somewhere else — a transcript, an old prompt — and
+        // would be echoed back in the agent's own tool calls.
+        let fx = fixture();
+        write(&fx.config_path, ALIASED);
+        let err = fx
+            .service
+            .resolve_agent_handle("app@db.internal")
+            .await
+            .expect_err("the hidden id must not be a handle");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_handle_is_a_clean_not_found() {
+        let fx = fixture();
+        write(&fx.config_path, ALIASED);
+        let err = fx
+            .service
+            .resolve_agent_handle("nope")
+            .await
+            .expect_err("unknown");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[tokio::test]

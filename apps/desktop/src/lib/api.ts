@@ -331,14 +331,17 @@ export const probeSshHostKey = (host: string, port: number): Promise<string> =>
 // inline on add and keep-or-overwrite on edit (ADR-0069).
 //
 // `mcpWrite` is the MCP write gate (ADR-0087) — a permission, not a secret, so
-// it rides in plain and comes back out on edit.
+// it rides in plain and comes back out on edit. `mcpAlias` is the agent-facing
+// name (ADR-0088); blank means none, and the backend trims it.
 export const addConnection = (
   id: string,
   name: string,
   kind: Record<string, unknown>,
   ssh: Record<string, unknown> | null,
   mcpWrite: boolean,
-): Promise<void> => invoke('add_connection', { id, name, kind, ssh, mcpWrite });
+  mcpAlias: string,
+): Promise<void> =>
+  invoke('add_connection', { id, name, kind, ssh, mcpWrite, mcpAlias });
 
 // `keepPassword` is the structured-input counterpart of a blank secret: the
 // form rebuilt the DSN from the parts it was shown, which never included the
@@ -350,8 +353,17 @@ export const updateConnection = (
   ssh: Record<string, unknown>,
   keepPassword: boolean,
   mcpWrite: boolean,
+  mcpAlias: string,
 ): Promise<void> =>
-  invoke('update_connection', { id, name, kind, ssh, keepPassword, mcpWrite });
+  invoke('update_connection', {
+    id,
+    name,
+    kind,
+    ssh,
+    keepPassword,
+    mcpWrite,
+    mcpAlias,
+  });
 
 export const deleteConnection = (id: string): Promise<void> =>
   invoke('delete_connection', { id });

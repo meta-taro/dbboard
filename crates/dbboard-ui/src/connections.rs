@@ -836,6 +836,10 @@ impl AddFormState {
             },
         };
         ConnectionDraft {
+            // No agent-facing alias input here either (ADR-0088); the desktop
+            // app is the editor, and a connection added from egui simply shows
+            // an agent its real id until someone sets one there.
+            mcp_alias: None,
             mcp_write: false,
             // The egui client does not expose SSH tunnel editing (ADR-0069's
             // UI lives in the Tauri desktop); tunneled connections are added
@@ -976,6 +980,9 @@ impl EditFormState {
             EditKindState::AuroraDsqlIam => ConnectionKindEditDraft::AuroraDsqlIam,
         };
         ConnectionEditDraft {
+            // `None` keeps whatever alias is stored (ADR-0088) — egui has no
+            // input for it, so it must not clear one set from the desktop app.
+            mcp_alias: None,
             mcp_write: None,
             // egui has no tunnel UI (the desktop app is the editor), so it
             // must not disturb a stored tunnel: `Keep` leaves the block and
@@ -1379,6 +1386,7 @@ mod tests {
     fn start_edit_prefills_from_the_existing_entry_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: "prod".into(),
@@ -1422,6 +1430,7 @@ mod tests {
     fn start_delete_records_the_entry_id_and_name() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: "x".into(),
@@ -1547,6 +1556,7 @@ mod tests {
     fn start_edit_on_neon_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: "n".into(),
@@ -1579,6 +1589,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "n".into(),
@@ -1637,6 +1648,7 @@ mod tests {
     fn start_edit_on_supabase_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: "s".into(),
@@ -1669,6 +1681,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "s".into(),
@@ -1730,6 +1743,7 @@ mod tests {
     fn start_edit_on_aurora_dsql_entry_prefills_without_secret() {
         let mut view = ConnectionsView::new();
         let entry = ConnectionEntry {
+            mcp_alias: None,
             mcp_write: false,
             ssh: None,
             id: "d".into(),
@@ -1762,6 +1776,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "d".into(),
@@ -1798,6 +1813,7 @@ mod tests {
         // Pre-populate via admin so the second add collides.
         admin
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "dup".into(),
@@ -1826,6 +1842,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "prod".into(),
@@ -1859,6 +1876,7 @@ mod tests {
         let (_dir, secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "prod".into(),
@@ -1894,6 +1912,7 @@ mod tests {
         let (_dir, _secrets, mut admin) = build_admin();
         admin
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "x".into(),
@@ -1999,6 +2018,7 @@ mod tests {
     fn seed_one(admin: &mut ConnectionAdmin) {
         admin
             .add(ConnectionDraft {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "local".into(),
