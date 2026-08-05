@@ -662,6 +662,13 @@ paths, running several agents at once, TLS behind a corporate proxy, and
 the literal error strings a failed connection produces — is documented in
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md).
 
+To point an agent working in a *different* repository at dbboard, copy
+the block in
+[`docs/agent-onboarding.md`](docs/agent-onboarding.md) into that
+repository's `CLAUDE.md` / `AGENTS.md`. An agent does not go looking for
+tools it has not been told about — one that searched the web for dbboard
+concluded it was "not a publicly available tool".
+
 A walkthrough in Japanese, from downloading the binary to the first
 refused `DROP`, is on Zenn:
 [Claude Code に自分の DB を触らせる](https://zenn.dev/dokokade/articles/46b8c608715963).
