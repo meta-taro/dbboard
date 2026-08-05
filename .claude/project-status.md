@@ -5,6 +5,38 @@
 
 ## 最終更新
 
+- 日付: 2026-08-05 その2 (**`dbboard-mcp` の配布経路を新設。ADR-0090。コミット `c015b17`。**
+  発端は user 経由で届いた「使いたいのに使えない AI エージェント」の意見。要求は
+  (1) 入手元をリポジトリ内のファイルに書く (2) MCP 登録コマンドをコピペできる 1 行で。
+  調べた結果、**根本原因は文書ではなくバイナリが一度も配布されていなかったこと**。
+  `dbboard-mcp` は `tauri.conf.json` の `externalBin` / `resources` にも `release.yml` にも
+  存在せず、入手手段は `cargo build --release -p dbboard-mcp` のみだった。
+  **デスクトップインストーラへの同梱は却下** — エージェントが必要とするのは
+  `claude mcp add` に渡す絶対パスであり、インストールツリーに埋めると手順が
+  「このマシンのこの OS のこのインストーラ版ではどこか」の当て推量になる。
+  **release CI**: `build-mcp-windows` (cargo build のみ) と `build-mcp-macos`
+  (aarch64 + x86_64 → `lipo` universal) を追加、それぞれ checksum ファイル付き。
+  `publish.needs` を 4 ジョブに更新。`latest.json` の glob (`out/*-setup.exe` /
+  `out/*.app.tar.gz`) は MCP の資産名と一致しないので updater は無影響。
+  **DL ページ**: 意図的に出さない。`bucketFor` は製品名接頭辞判定なので
+  `dbboard-mcp-windows-x86_64.exe` は `.exe` でも null になる — 拡張子判定だったら
+  「Windows 版をダウンロード」を押した人に headless な stdio サーバーを渡していた。
+  `site/app.test.mjs` に固定テストを追加 (6 tests / 全緑)。
+  **文書**: README / `crates/dbboard-mcp/README.md` / `site/index.html` の 3 箇所に
+  OS 別の配置先 (`%LOCALAPPDATA%\dbboard\` / `~/.local/bin/`) とそこから導かれる
+  `claude mcp add ... --scope user -- <path>` を記載。macOS は未署名なので
+  `xattr -d com.apple.quarantine` も併記。クレート README には
+  *Credentials without writing a file* (`DBBOARD_*` を `mcpServers` の `env` に置く。
+  ただし `~/.claude.json` 自体がディスク上のファイルである点も明記) と
+  *Behind a TLS-terminating proxy* (OS トラストストアが唯一のモード = ADR-0034、
+  `--use-system-ca` 相当は**無い**、直す場所は OS 側) を新設。
+  エージェントが評価していたエラー文言そのままの表
+  (*Troubleshooting a failed connection*) は既存なので拡張のみ。
+  **姉妹リポ向け** `.claude/tools/dbboard.md` の中身は用意して user に渡した
+  (当リポからは編集不可 = baseline §27)。
+  **検証**: pre-commit フック全緑 (fmt / clippy / check / test)、`node --test
+  site/app.test.mjs` 6 pass / 0 fail、`yaml.safe_load` で release.yml のジョブ 5 件を確認。)
+
 - 日付: 2026-08-05 (**issue #139 = egui クライアント退役 (ADR-0089) + 発見可能性の是正。**
   ブランチ `chore/retire-egui`。
   **削除**: `crates/dbboard-ui` / `apps/dbboard` / `crates/dbboard-i18n`、workspace

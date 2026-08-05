@@ -7,6 +7,23 @@
 
 ## 最終更新
 
+- 日付: 2026-08-05 その2 (**`dbboard-mcp` に配布経路が無かった件を潰した。ADR-0090。**
+  user 経由で「使いたいのに使えない AI エージェント」の意見が届いた。原因は文書の
+  書き方ではなく **バイナリが一度も配布されていなかったこと** — `tauri.conf.json` にも
+  `release.yml` にも `dbboard-mcp` が無く、`cargo build` が唯一の入手手段だったので、
+  README の `claude mcp add dbboard -- /absolute/path/to/dbboard-mcp` は Rust
+  ツールチェーンの無いマシンでは存在し得ないファイルを指していた。対応: release CI に
+  `build-mcp-windows` / `build-mcp-macos` (lipo universal) を追加し
+  `dbboard-mcp-windows-x86_64.exe` / `dbboard-mcp-macos-universal` + checksum を publish、
+  DL ページには出さない (`bucketFor` は製品名接頭辞判定なので `.exe` でも null。
+  `site/app.test.mjs` にテスト追加 = 6 tests 全緑)、README / クレート README /
+  site の 3 箇所に OS 別の配置先 + コピペ可能な `claude mcp add` 1 行、
+  認証情報を `DBBOARD_*` 環境変数で渡す方法、TLS 終端プロキシ下では
+  `--use-system-ca` 相当のフラグが**無い** (OS トラストストアが唯一のモード = ADR-0034) と
+  明記。コミット `c015b17`。
+  **user 側ボール = 姉妹リポ用の `.claude/tools/dbboard.md` の中身をこちらで用意済み
+  (貼り付けるのは user。当リポからは編集できない = baseline §27)。**)
+
 - 日付: 2026-08-05 (**issue #139 = egui クライアントの退役。ADR-0089。**
   `crates/dbboard-ui` / `apps/dbboard` / `crates/dbboard-i18n` を削除し、Tauri 2 +
   SvelteKit が唯一のクライアントになった。リリース CI の `build-windows` /
