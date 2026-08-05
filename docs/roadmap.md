@@ -606,8 +606,9 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       inlining the resolved version for the bundle step, PR #100) and one
       operational gotcha — `gh release upload` only *attaches* to an existing
       release, so the release object must be created before the publish job
-      runs (it did for v0.1.0/v0.2.0 by hand). Making the publish step
-      create-if-missing is a tracked follow-up.
+      runs (it did for v0.1.0/v0.2.0 by hand). That last one is **fixed**: the
+      publish job now views-or-creates the release with `--generate-notes`
+      before uploading, so a tag push is self-sufficient.
 - [x] macOS packaging — `[package.metadata.bundle]` lets `cargo bundle
       --release` produce `dbboard.app` on a Mac; the release CI wraps it in a
       compressed `.dmg` via `hdiutil` ([ADR-0044](decisions.md), PR #88).
@@ -628,9 +629,40 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       placeholders (ADR-0044 §Future).
 - [ ] Linux packaging (AppImage / `.deb`)
 
-## Phase 6+ — Stretch
+## Phase 6 — Document stores (MongoDB, Firestore)
 
-- Additional adapters (PlanetScale, MongoDB)
+Committed, not stretch. Every adapter so far speaks SQL; these two do not, and
+the direction is fixed in [ADR-0091](decisions.md): they implement the same
+`DatabaseAdapter` trait with their own native JSON query text, and each brings
+its own fail-closed read-only classifier rather than sharing the SQL one.
+
+The order matters — the shared piece lands first so a regression in it is
+attributable to one change:
+
+- [ ] **Nested `Value`** — a variant that can hold a document tree, tagged on
+      the wire like `$blob` already is, with `docs/api-contract.md` updated
+      before any adapter code exists (the `dbboard-web` sibling reads that
+      contract and cannot be edited from this repo). Touches every adapter's
+      row construction and the frontend's cell rendering.
+- [ ] **Firestore adapter** (`dbboard-firestore`) — the cheaper of the two on
+      the safety side: the REST API splits `:runQuery` / `:batchGet` from
+      `:commit`, so read-only is enforced by which endpoint the adapter is
+      allowed to call, with no query string to classify.
+- [ ] **MongoDB adapter** (`dbboard-mongodb`) — `runCommand` accepts any verb,
+      so it needs an explicit allowlist of read commands plus a rejection of
+      the writing aggregation stages (`$out`, `$merge`), unit-tested against
+      adversarial input to the same bar as `read_only.rs`, before it is exposed
+      to the MCP server.
+- [ ] **Sampled schema** — `describe_table` over a collection reports the field
+      union from a bounded sample, together with the sample size and per-field
+      frequency, rendered so it is visibly an inference and not a declared
+      schema.
+
+PlanetScale, the other half of the old stretch bullet, needs no new adapter —
+it is MySQL-compatible and already reachable through `dbboard-mysql`.
+
+## Phase 7+ — Stretch
+
 - Advanced schema visualisation
 - Query performance analysis tools
 - Plugin system for community extensions

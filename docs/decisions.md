@@ -9204,3 +9204,89 @@ version. A standalone asset has one answer.
 - The version skew that bites source-built MCP servers — app on one release, MCP
   built from a checkout of another — stops being the default state. Both come from
   the same tag now.
+
+## ADR-0091 — Document stores join through the same trait, with a per-adapter read-only classifier
+
+**Date:** 2026-08-05
+**Status:** Accepted (direction; no adapter written yet)
+
+### Context
+
+Seven adapters ship, and every one of them speaks SQL. MongoDB sat in the
+roadmap as half of a one-line stretch bullet — "Additional adapters
+(PlanetScale, MongoDB)" — and Firestore was never written down anywhere. Both
+were agreed verbally and neither was recorded, which is the failure mode this
+log exists to prevent.
+
+Before promising a phase, the question worth answering is what actually stands
+in the way. Reading `dbboard-core`, it is four things, and only one of them is
+the trait:
+
+1. **`DatabaseAdapter::query(&self, sql: &str)`** (`adapter.rs:40`). This looks
+   like the blocker and is not. The parameter is a string of *the adapter's own
+   query text*; nothing in the trait parses it. MongoDB's wire protocol takes a
+   command document, and Firestore's REST API takes a `StructuredQuery` — both
+   are JSON, both are strings.
+2. **`Value` is flat** — `Null | Integer | Real | Text | Blob` (`value.rs:17`).
+   A row is a `Vec<Value>` under named columns. A document is a tree. There is
+   no variant that can hold one.
+3. **`read_only.rs` is `sqlparser`-based** and says so in its first line. It is
+   the primary enforcement for D1 and the defence-in-depth for everything else
+   (ADR-0046), and the MCP write gate (ADR-0087) is built on top of it. It
+   cannot classify a Mongo command document or a Firestore request, and a
+   classifier that cannot parse its input must fail closed — which would mean
+   every document-store query is refused.
+4. **`describe_table` assumes declared columns** (`schema.rs`). Collections have
+   no declared shape. Two documents in one collection need not share a field.
+
+### Decision
+
+1. **No second trait, and no query IR.** A document adapter implements
+   `DatabaseAdapter` and treats the `query` string as JSON in its own native
+   form. Inventing a neutral query language over SQL *and* two dissimilar
+   document APIs would be a translation layer nobody asked for, and it would
+   put a lossy abstraction between the user and a database they already know
+   how to address. The `sql` parameter name becomes wrong the day the first
+   document adapter lands; it gets renamed **in that PR**, not before —
+   renaming across seven adapters with nothing to justify it is churn.
+2. **`Value` gains a nested variant** carrying a parsed JSON tree, which makes
+   `serde_json` a real dependency of `dbboard-core` rather than a dev one. That
+   is consistent with the existing carve-outs: parsing JSON is a pure data
+   transformation, so the crate's no-I/O rule still holds, exactly as argued for
+   `serde` and `sqlparser`. The wire form is tagged the way blobs already are
+   (`$blob`, `value.rs:48`) so `dbboard-web` can round-trip it; the tag goes in
+   `docs/api-contract.md` before any adapter code is written, because the
+   contract is shared and the sibling repo cannot be edited from here.
+3. **Read-only enforcement is per-adapter and fail-closed, never a shared
+   parser.** `read_only.rs` stays SQL-only and keeps its name honest.
+   - **Firestore** gets it nearly free: the REST API splits reads
+     (`:runQuery`, `:batchGet`) from writes (`:commit`), so the *transport*
+     is the boundary — a read-only Firestore connection can only reach the read
+     endpoints, and there is no string to classify.
+   - **MongoDB** does not: `runCommand` accepts any verb, so it needs an
+     explicit allowlist of read commands (`find`, `aggregate`, `count`,
+     `distinct`, …) with everything unlisted refused, plus a rejection of
+     `$out` / `$merge`, which are aggregation *stages* that write. This mirrors
+     the closed list already used by the MCP write policy (ADR-0087).
+4. **Schema is sampled, and says so.** `describe_table` on a collection reads a
+   bounded sample and reports the field union, together with the sample size and
+   how often each field appeared. It must be visibly an inference — a UI that
+   renders a sampled shape identically to a declared one teaches people to trust
+   it as declared.
+
+### Consequences
+
+- The two adapters are not equal work. Firestore's read path is a documented
+  REST surface with no query-string classification problem; MongoDB needs the
+  allowlist to be right before it can be exposed to the MCP server at all.
+- `Value` changing shape touches every adapter's row construction, the frontend's
+  cell rendering, and the wire contract with `dbboard-web`. It lands on its own,
+  ahead of either adapter, so a regression there is attributable.
+- The MCP server gains document stores only after each one's read-only
+  classifier is unit-tested against adversarial input, the same bar `read_only.rs`
+  was held to.
+- Sampling costs a read per `describe_table` call. On a large collection that is
+  a bounded scan, not a full one, and the bound is the thing to make
+  configurable if it becomes a problem.
+- PlanetScale, the other half of the old stretch bullet, is unaffected — it is
+  MySQL-compatible and reachable through the existing `dbboard-mysql` adapter.
