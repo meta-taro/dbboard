@@ -1,0 +1,25 @@
+[package]
+name = "dbboard-firestore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Cloud Firestore adapter for dbboard (read-only, REST API)."
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+dbboard-core = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true

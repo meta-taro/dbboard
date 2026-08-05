@@ -10,6 +10,7 @@ members = [
     "crates/dbboard-connect",
     "crates/dbboard-core",
     "crates/dbboard-d1",
+    "crates/dbboard-firestore",
     "crates/dbboard-mcp",
     "crates/dbboard-mysql",
     "crates/dbboard-openai",
@@ -59,6 +60,11 @@ dbboard-connect = { path = "crates/dbboard-connect" }
 # backslash-escaped literals) over sqlx's mysql driver. Depends on
 # dbboard-core only, mirroring the Postgres-wire adapter's shape.
 dbboard-mysql = { path = "crates/dbboard-mysql" }
+# Cloud Firestore adapter (ADR-0092): a read-only HTTP client of the
+# Firestore REST API. Depends on dbboard-core only, like every other
+# adapter. Read-only is structural — the crate builds no URL that can
+# write, so there is no classifier to get wrong (ADR-0091).
+dbboard-firestore = { path = "crates/dbboard-firestore" }
 # SSH local-forward tunnel (ADR-0069): a pure-Rust SSH client (russh) that
 # opens a bastion-gated database's port on a loopback address so the ordinary
 # TCP adapters connect through it. Leaf crate — depends on russh + tokio only,
