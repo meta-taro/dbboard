@@ -70,7 +70,7 @@ fn toml_round_trip_never_carries_a_postgres_url() {
 }
 
 /// Sanity check that a `Box<dyn SecretStore>` resolves a stored secret —
-/// the shape the `apps/dbboard` wiring will use.
+/// the shape the client's startup wiring uses.
 #[test]
 fn boxed_secret_store_resolves_a_keyring_reference() {
     let store: Box<dyn SecretStore> = Box::new(InMemorySecretStore::new());

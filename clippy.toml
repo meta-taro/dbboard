@@ -12,8 +12,6 @@ doc-valid-idents = [
     "Neon",
     "Supabase",
     "axum",
-    "egui",
-    "eframe",
     "Nuxt",
     "NestJS",
 ]

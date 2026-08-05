@@ -198,7 +198,7 @@ impl AiProvider for AnthropicProvider {
     // ADR-0027 Decision 4: `(provider_id, model_id)` for history
     // stamping. `PROVIDER_ID` is a compile-time constant; `model` is a
     // per-instance `String` (constructor-time), so we hand back a
-    // borrow into the provider. The `dbboard-ui` worker snapshots this
+    // borrow into the provider. The client's AI worker snapshots this
     // tuple once at task spawn time (see `worker::spawn_ai_task`) and
     // reuses the snapshot for every terminal reply — a mid-request
     // provider swap changes the *next* request's identity, never the
@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn identity_returns_provider_id_and_configured_model() {
         // ADR-0027 Decision 4: `identity()` is the source of truth
-        // the `dbboard-ui` worker snapshots at task-spawn time and
+        // the client's AI worker snapshots at task-spawn time and
         // stamps on every terminal reply. Anthropic must return its
         // stable id and the model configured at construction — a
         // custom model surfaces here without re-plumbing.

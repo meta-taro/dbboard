@@ -1,12 +1,11 @@
-// Message catalogs for the desktop app i18n (feature parity with the egui
-// `dbboard-i18n` crate).
+// Message catalogs for the desktop app i18n (ADR-0015).
 //
-// Reused keys (tables-*, structure-*, help-*, theme-*, language-menu, …) are
-// ported verbatim from the egui Fluent catalogs so all 11 locales share
-// vetted translations. Tauri-specific keys (tab-query, sidebar-*, result-*,
-// about-*, history-*, win-*) are authored here: English is the source of
-// truth and Japanese is complete; the other 9 locales fall back to English
-// for those keys until translated.
+// Reused keys (tables-*, structure-*, help-*, theme-*, language-menu, …) were
+// ported verbatim from the retired egui client's Fluent catalogs (ADR-0089),
+// so all 11 locales share vetted translations. Keys authored for this client
+// (tab-query, sidebar-*, result-*, about-*, history-*, win-*) start here:
+// English is the source of truth and Japanese is complete; the other 9
+// locales fall back to English for those keys until translated.
 //
 // `en` is `as const` so its keys form the MessageKey union and the type of a
 // complete catalog. Per-locale catalogs are typed `Partial<Record<MessageKey,

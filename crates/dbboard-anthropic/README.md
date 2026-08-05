@@ -12,7 +12,7 @@ recorded in ADR-0023 §9.
 
 ## Configuration
 
-Stage 1 wiring is env-var-only and lives in `apps/dbboard`. The crate
+Stage 1 wiring is env-var-only and lives in the client binary. The crate
 itself accepts an [`AnthropicConfig`] / [`AnthropicProvider::new`]
 constructor that the binary populates from these variables:
 

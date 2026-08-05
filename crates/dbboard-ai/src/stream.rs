@@ -23,7 +23,7 @@ use crate::error::{AiError, AiResult};
 /// the streaming variants of [`crate::AiProvider`].
 ///
 /// The lifetime is `'static` so the stream can cross the
-/// `dbboard-ui` worker channel without borrowing from the provider
+/// client's AI worker channel without borrowing from the provider
 /// — mirrors the `Arc<dyn AiProvider>` ownership model where the
 /// provider itself is owned by an `Arc` rather than passed by
 /// reference (ADR-0023 Decision 2 + ADR-0026 Decision 1).
@@ -32,7 +32,7 @@ pub type AiStream = BoxStream<'static, AiResult<StreamEvent>>;
 /// Normalized streaming event surfaced by [`AiStream`].
 ///
 /// `Clone` + `Eq` are required because the events flow through the
-/// `dbboard-ui` worker channel (PR #43 baseline) and the panel's
+/// client's AI worker channel (PR #43 baseline) and the panel's
 /// state-machine tests assert on them by value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {

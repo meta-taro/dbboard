@@ -47,10 +47,21 @@ jobs:
 
       - uses: actions/configure-pages@v5
 
-      # Ship only the static site directory as the Pages artifact.
+      # `site/` also holds the page's unit tests and the `type: module` marker
+      # that lets `node --test site/` import `app.js`. Neither belongs on a
+      # public download page, so stage a copy without them; anything else added
+      # to `site/` still ships automatically.
+      - name: Stage the deployable files
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          rsync -a --exclude='*.test.mjs' --exclude='package.json' site/ _site/
+          ls -la _site
+
+      # Ship only the staged site directory as the Pages artifact.
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: _site
 
   deploy:
     needs: build

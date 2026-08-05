@@ -1,29 +1,36 @@
-# dbboard desktop — Tauri 2 + SvelteKit spike
+# dbboard desktop — Tauri 2 + SvelteKit
 
-A **thin vertical spike** proving dbboard's UI can move off egui onto the same
-stack md-business uses (Tauri 2 + SvelteKit), without touching the data path.
-See [ADR-0059](../../docs/decisions.md) for the why.
+**The** dbboard desktop client. Started as a spike proving the UI could move off
+egui onto the stack md-business uses ([ADR-0059](../../docs/decisions.md)); it
+reached parity at v0.4.0 (ADR-0062) and became the only client when the egui app
+was retired (ADR-0089).
 
-One screen: **pick a connection → run a SELECT → see a result grid**, driven by
-the real `connections.toml` and secrets in the OS keychain.
+A SvelteKit static SPA in a WebView, over a Rust shell that calls the same core
+crates the MCP server does. Connections come from the real `connections.toml`
+and the OS keychain — the frontend never touches a database directly.
 
 ## How it fits together
 
 ```
 apps/desktop/
 ├── src/                     SvelteKit frontend (static SPA, ssr=false)
-│   ├── routes/+page.svelte     the one screen
-│   └── lib/api.ts              typed wrappers over `invoke`
+│   ├── routes/+page.svelte     the app shell
+│   └── lib/                    api.ts (typed `invoke` wrappers) + feature modules
+│       ├── components/            sidebar, editor, result grid, dialogs
+│       ├── grid/ sql/ query/      pure logic, unit-tested with vitest
+│       └── i18n/                  11 locales, message catalogs
 ├── src-tauri/               Rust shell (crate: dbboard-desktop)
-│   └── src/lib.rs              3 commands over McpService
+│   ├── src/lib.rs              commands + the app entry point
+│   ├── src/ai.rs               AI assistant commands (ADR-0052)
+│   └── src/dump.rs, restore.rs backup / restore (ADR-0064)
 └── build/                   prerendered shell (git-ignored)
 ```
 
-The three Tauri commands (`list_connections`, `list_tables`, `run_read_query`)
-are thin wrappers over **`McpService`** — the same egui-free service the MCP
-server ships. Config, keychain secrets, adapter connect, and the
-engine-enforced **read-only** query path are all reused; the spike adds no new
-DB code.
+The read path (`list_connections`, `list_tables`, `describe_table`,
+`run_read_query`) is a thin wrapper over **`McpService`** — the same service the
+MCP server ships, so the engine-enforced **read-only** guarantee is one
+implementation, not two. Config, keychain secrets, and adapter connect are
+likewise reused; no DB logic lives in this crate.
 
 ## Prerequisites
 
@@ -39,16 +46,20 @@ pnpm install        # first time only
 pnpm tauri dev      # launches the WebView against the vite dev server
 ```
 
-The window opens on the one screen. It reads the same platform-default
-`connections.toml` as the GUI and MCP server, so whatever connections you have
-configured appear in the dropdown.
+It reads the same platform-default `connections.toml` as the MCP server, so
+whatever connections you have configured appear in the sidebar.
 
-## Build the frontend only
+## Checks
 
 ```sh
-pnpm build          # vite build → build/ (prerendered static shell)
 pnpm check          # svelte-check (type check)
+pnpm test           # vitest (frontend unit tests)
+pnpm build          # vite build → build/ (prerendered static shell)
 ```
+
+The Rust side is covered by the workspace commands in `CLAUDE.md`
+(`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test
+--all-features`).
 
 ## Supply-chain notes
 
@@ -59,8 +70,12 @@ from `package.json`'s `pnpm` field or `.npmrc`):
 - `allowBuilds` / `onlyBuiltDependencies` — only **esbuild** may run an install
   script, and only to link its already-present prebuilt platform binary.
 
-## Status
+## Releases
 
-Spike, not a committed migration. The egui app (`apps/dbboard`) remains the
-shipping UI. If the maintainer accepts the direction after trying this, the
-full screen-by-screen migration follows; if not, `apps/desktop` is removed.
+Tagging `v*.*.*` builds the NSIS installer and the macOS `.dmg` here and
+publishes them with checksums (ADR-0044), plus the signed `latest.json` the
+in-app updater verifies (ADR-0067). See `.github/workflows/release.yml`.
+
+Those bundles are what the public **[download page](https://meta-taro.github.io/dbboard/)**
+serves (ADR-0047) — it reads the latest release from the GitHub API and offers
+the asset matching the visitor's OS.

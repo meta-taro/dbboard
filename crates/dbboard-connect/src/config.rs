@@ -1,7 +1,7 @@
 //! Which database the server connects to, and how that choice is
 //! resolved from the environment and the local connection store.
 //!
-//! This logic moved here from `apps/dbboard` in Phase 1.5 (ADR-0009):
+//! This logic moved here from the desktop binary in Phase 1.5 (ADR-0009):
 //! the binary no longer reads database environment variables — the
 //! server owns backend selection so the desktop and (future) headless
 //! deployments share one source of truth. Phase 2 / ADR-0013 widens the
@@ -164,7 +164,7 @@ impl fmt::Debug for BackendConfig {
 ///    `":memory:"`), so a fresh checkout runs without configuration.
 ///
 /// This entry point does not consult `connections.toml`; for the
-/// merged resolver used by `apps/dbboard` see
+/// merged resolver used by the client see
 /// [`backend_config_from_env_and_store`].
 #[must_use]
 pub fn backend_config_from_env() -> BackendConfig {

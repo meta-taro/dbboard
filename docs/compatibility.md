@@ -22,8 +22,9 @@ Supabase) track the vendor's current API and the pinned client crate.
 
 | Item | Version | Notes |
 |---|---|---|
-| Rust toolchain | stable, **MSRV 1.75** | Declared in `Cargo.toml` (`workspace.package.rust-version`). |
-| OS | Windows 10+, macOS 13+, Linux (glibc 2.31+) | Mirrors `egui` / `eframe` 0.34 support. |
+| Rust toolchain | stable, **MSRV 1.92** | Declared in `Cargo.toml` (`workspace.package.rust-version`). |
+| Node.js + pnpm | Node 20+, pnpm via corepack | The client's frontend build. Version pinned by `apps/desktop/package.json`'s `packageManager`. |
+| OS | Windows 10+, macOS 13+ | Mirrors Tauri 2's WebView support (WebView2 on Windows, WKWebView on macOS). Linux is buildable but not released. |
 | C/C++ toolchain | per platform | Required by `libsql` native deps (see README). |
 
 ## Backend support

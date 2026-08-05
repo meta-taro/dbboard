@@ -2,8 +2,8 @@
 //!
 //! Independent of [`dbboard_core::DbError`]. AI errors never travel
 //! over the desktop ↔ web HTTP contract (ADR-0009's English-prefix
-//! translation rule does not apply), so `dbboard-ui` translates each
-//! variant directly to its own Fluent key.
+//! translation rule does not apply), so the desktop client translates
+//! each variant directly to its own message key.
 
 use thiserror::Error;
 

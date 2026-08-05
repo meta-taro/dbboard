@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn identity_returns_provider_id_and_configured_model() {
         // ADR-0027 Decision 4: `identity()` is the source of truth the
-        // `dbboard-ui` worker snapshots at task-spawn time and stamps on
+        // client's AI worker snapshots at task-spawn time and stamps on
         // every terminal reply. A custom model surfaces here without
         // re-plumbing.
         let provider = OpenAiProvider::new("test-key", "gpt-x").expect("construct");
