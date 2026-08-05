@@ -28,7 +28,7 @@ per-connection flag, one takes a backup:
 
 | Tool | What it returns |
 |---|---|
-| `list_connections` | Every configured connection as `{ id, name, kind }`. **No** keyring references, URLs, or tokens — secrets are never serialized. |
+| `list_connections` | Every configured connection as `{ id, name, kind }`. **No** keyring references, URLs, or tokens — secrets are never serialized. A connection with an `mcp_alias` shows that alias as *both* its id and its name, and the id you get back is the only one the other tools accept (see below). |
 | `list_tables` | The tables in a connection's database. |
 | `describe_table` | One table's columns (name, type, nullability, PK flag, ordinal) and primary key. `schema` is optional (the Postgres schema namespace; omit for SQLite/libSQL/D1). |
 | `search_schema` | The tables and columns across a connection whose **name** contains a case-insensitive substring — the fast "which table has the email column?" lookup, without `describe_table` on every table. Matches identifiers, not row data. Capped at 200 matched tables with a `truncated` flag. |
@@ -97,6 +97,20 @@ restores, in the dbboard app.
 - **stdout is sacred.** stdout carries the JSON-RPC frames. All logging
   goes to **stderr** (`RUST_LOG`, default `info`); a single stray byte on
   stdout would corrupt the stream.
+
+## Aliasing a connection (`mcp_alias`)
+
+An id like `db01.internal` or a name like `Acme Inc. (production)` says
+something about your business, and everything this server returns goes into the agent's
+transcript and its model provider's logs. Setting `mcp_alias = "store-a"`
+on a connection makes `store-a` the only string an agent ever sees for it,
+in place of both the id and the name — and the real id stops being accepted
+as a handle, so one picked up from an earlier session cannot be handed back.
+Connections without an alias are unchanged. See
+[ADR-0088](../../docs/decisions.md) and
+[`docs/connections.md`](../../docs/connections.md).
+
+Error messages are out of scope: a refusal may still name the real id.
 
 The agent is trusted to author SQL — it can read any row in any
 configured database. Point `dbboard-mcp` only at connections you are

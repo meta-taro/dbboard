@@ -138,6 +138,11 @@ export interface ConnectionForm extends DsnParts {
   // and unlike the secret fields it *is* prefilled on edit: it is a permission
   // the user granted, not a credential, so showing its real state is the point.
   mcp_write: boolean;
+  // The name an AI agent sees instead of this connection's id *and* name
+  // (ADR-0088). Blank means no alias — the agent sees the real id and name.
+  // Prefilled on edit for the same reason `mcp_write` is: a box that opened
+  // blank would send "" on the next save and quietly drop the alias.
+  mcp_alias: string;
 }
 
 // Non-secret SSH prefill the backend returns alongside the edit fields. Secrets
@@ -171,7 +176,12 @@ export type EditFields = (
   | { kind: 'turso'; path: string }
   | { kind: 'd1'; account_id: string; database_id: string; base_url: string | null }
   | { kind: 'postgres' | 'mysql' | 'neon' | 'supabase' | 'aurora_dsql' }
-) & { ssh?: SshPrefill | null; dsn?: DsnPrefill | null; mcp_write?: boolean };
+) & {
+  ssh?: SshPrefill | null;
+  dsn?: DsnPrefill | null;
+  mcp_write?: boolean;
+  mcp_alias?: string | null;
+};
 
 /** The non-secret half of a stored DSN, split apart by the backend so the edit
  *  form can show the same host/port/user/database inputs the add form does
@@ -215,6 +225,7 @@ export function emptyForm(): ConnectionForm {
     ssh_had_key_passphrase: false,
     ssh_had_password: false,
     mcp_write: false,
+    mcp_alias: '',
   };
 }
 
@@ -286,6 +297,9 @@ export function formForEdit(id: string, name: string, fields: EditFields): Conne
         // `?? false` rather than a required field: the gate is newer than this
         // form, and a payload without it means "not granted", not "unknown".
         mcp_write: fields.mcp_write ?? false,
+        // `null` (no alias stored) and an older backend that omits the key both
+        // mean the same thing to the form: an empty box.
+        mcp_alias: fields.mcp_alias ?? '',
       },
       fields.ssh,
     ),

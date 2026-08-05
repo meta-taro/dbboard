@@ -55,6 +55,28 @@ pub struct ConnectionEntry {
     /// every other entry in an existing file.
     #[serde(default, skip_serializing_if = "is_false")]
     pub mcp_write: bool,
+    /// The name `dbboard-mcp` shows an AI agent instead of this entry's `id`
+    /// **and** `name` (ADR-0088).
+    ///
+    /// Ids are typed by hand, and the obvious thing to type is what the
+    /// connect dialog already shows — `app@db.internal`. That id is on the
+    /// first tool result an agent produces and travels wherever its transcript
+    /// does. The display name is no better: a store's real name identifies a
+    /// business as precisely as its hostname identifies a server.
+    ///
+    /// `None` means the id and name are used as they are, so existing configs
+    /// behave exactly as before — ids are referenced by every other tool call
+    /// and by `annotations.toml`, so this is opt-in rather than a rename.
+    ///
+    /// Must be unique across every entry's alias *and* id
+    /// ([`ConfigError::DuplicateAlias`](crate::ConfigError::DuplicateAlias)): an
+    /// agent hands it back as a handle, and a handle that matches two
+    /// connections would route a query to the wrong database.
+    ///
+    /// Same TOML ordering constraint as `mcp_write` — a scalar, so it must be
+    /// emitted before the `ssh` table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_alias: Option<String>,
     /// Optional SSH local-forward tunnel (ADR-0069). Cross-cutting: it applies
     /// uniformly to the URL-bearing TCP engines and to none of the others, so
     /// it lives here on the entry rather than being copied onto each
@@ -786,6 +808,7 @@ path = ":memory:"
             version: CONFIG_VERSION,
             connections: vec![
                 ConnectionEntry {
+                    mcp_alias: None,
                     mcp_write: false,
                     ssh: None,
                     id: "local-turso".to_string(),
@@ -795,6 +818,7 @@ path = ":memory:"
                     },
                 },
                 ConnectionEntry {
+                    mcp_alias: None,
                     mcp_write: false,
                     ssh: None,
                     id: "prod-d1".to_string(),
@@ -807,6 +831,7 @@ path = ":memory:"
                     },
                 },
                 ConnectionEntry {
+                    mcp_alias: None,
                     mcp_write: false,
                     ssh: None,
                     id: "neon".to_string(),
@@ -816,6 +841,7 @@ path = ":memory:"
                     },
                 },
                 ConnectionEntry {
+                    mcp_alias: None,
                     mcp_write: false,
                     ssh: None,
                     id: "shop-mysql".to_string(),
@@ -825,6 +851,7 @@ path = ":memory:"
                     },
                 },
                 ConnectionEntry {
+                    mcp_alias: None,
                     mcp_write: false,
                     ssh: None,
                     id: "neon-managed".to_string(),
@@ -834,6 +861,7 @@ path = ":memory:"
                     },
                 },
                 ConnectionEntry {
+                    mcp_alias: None,
                     mcp_write: false,
                     ssh: None,
                     id: "supabase-prod".to_string(),
@@ -843,6 +871,7 @@ path = ":memory:"
                     },
                 },
                 ConnectionEntry {
+                    mcp_alias: None,
                     mcp_write: false,
                     ssh: None,
                     id: "dsql-prod".to_string(),
@@ -852,6 +881,7 @@ path = ":memory:"
                     },
                 },
                 ConnectionEntry {
+                    mcp_alias: None,
                     mcp_write: false,
                     ssh: None,
                     id: "dsql-iam".to_string(),
@@ -883,6 +913,7 @@ path = ":memory:"
         let file = ConnectionFile {
             version: CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "prod-d1".to_string(),
@@ -912,6 +943,7 @@ path = ":memory:"
         let file = ConnectionFile {
             version: CONFIG_VERSION,
             connections: vec![ConnectionEntry {
+                mcp_alias: None,
                 mcp_write: false,
                 ssh: None,
                 id: "d1".to_string(),
@@ -1171,6 +1203,70 @@ known_hosts = "/home/user/.ssh/known_hosts"
         let serialized = toml::to_string(&file).expect("serialize");
         assert!(
             !serialized.contains("mcp_write"),
+            "the default must stay absent from disk: {serialized}"
+        );
+    }
+
+    // `mcp_alias` (ADR-0088) is the name an AI agent sees instead of the id.
+    // Ids routinely carry a host and an account (`app@db.internal`), and the
+    // id is on the very first tool result an agent produces.
+
+    #[test]
+    fn mcp_alias_is_absent_by_default() {
+        let file = ConnectionFile::parse(pg_ssh_toml()).expect("parses");
+        assert_eq!(
+            file.connections[0].mcp_alias, None,
+            "no alias means the id is used, which is today's behaviour"
+        );
+    }
+
+    #[test]
+    fn mcp_alias_round_trips_and_stays_before_the_ssh_table() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id   = "work-mysql"
+name = "Work MySQL"
+kind = "mysql"
+keyring_url_ref = "dbboard.work-mysql.url"
+mcp_alias = "shop-db"
+
+[connections.ssh]
+host = "bastion.example"
+user = "deploy"
+keyring_password_ref = "dbboard.work-mysql.ssh_password"
+known_hosts = "/home/user/.ssh/known_hosts"
+"#;
+        let original = ConnectionFile::parse(toml_src).expect("parse");
+        assert_eq!(
+            original.connections[0].mcp_alias.as_deref(),
+            Some("shop-db")
+        );
+
+        let serialized = toml::to_string(&original).expect("serialize");
+        // Same TOML constraint as `mcp_write`: a scalar emitted after
+        // `[connections.ssh]` would land inside the tunnel table.
+        let alias_at = serialized.find("mcp_alias").expect("key is emitted");
+        let ssh_at = serialized
+            .find("[connections.ssh]")
+            .expect("ssh table is emitted");
+        assert!(
+            alias_at < ssh_at,
+            "mcp_alias must precede the ssh table: {serialized}"
+        );
+        assert_eq!(
+            original,
+            ConnectionFile::parse(&serialized).expect("re-parse")
+        );
+    }
+
+    #[test]
+    fn connections_without_an_alias_do_not_gain_the_key() {
+        let file = ConnectionFile::parse(pg_ssh_toml()).expect("parse");
+        let serialized = toml::to_string(&file).expect("serialize");
+        assert!(
+            !serialized.contains("mcp_alias"),
             "the default must stay absent from disk: {serialized}"
         );
     }

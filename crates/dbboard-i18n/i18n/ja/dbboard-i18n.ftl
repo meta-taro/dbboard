@@ -47,6 +47,7 @@ secret-error-backend = secret ストアの操作に失敗しました（参照: 
 config-error-parse = 設定ファイルを解析できませんでした: { $detail }
 config-error-unsupported-version = サポート外の設定バージョンです: { $found }（対応はバージョン { $expected } のみ）。
 config-error-duplicate-id = 接続 id が重複しています: { $id }
+config-error-duplicate-alias = その接続の別名はすでに使われています: { $alias }
 config-error-io = 設定ファイルへのアクセスに失敗しました: { $detail }
 config-error-serialize = 設定の書き出しに失敗しました: { $detail }
 config-error-no-config-dir = ユーザーごとの設定ディレクトリを特定できませんでした。
