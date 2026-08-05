@@ -23,8 +23,8 @@ use crate::secure_fs;
 pub const UI_SETTINGS_VERSION: u32 = 1;
 
 /// The user's colour-theme choice. `Auto` follows the OS light/dark
-/// setting at runtime (mapped to `egui::ThemePreference::System` by the
-/// binary); `Light` / `Dark` pin it.
+/// setting at runtime (the client maps it to the webview's
+/// `prefers-color-scheme`); `Light` / `Dark` pin it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemePreference {

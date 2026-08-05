@@ -1,9 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "apps/dbboard",
-    # Spike (spike/tauri-sveltekit): a Tauri 2 + SvelteKit shell reusing the
-    # egui-free core. Presentation-layer proof only; the egui app stays live.
+    # The one client (ADR-0089): a Tauri 2 + SvelteKit shell over the core
+    # crates. The egui app that used to sit beside it was retired at v0.4.0.
     "apps/desktop/src-tauri",
     "crates/dbboard-ai",
     "crates/dbboard-anthropic",
@@ -11,7 +10,6 @@ members = [
     "crates/dbboard-connect",
     "crates/dbboard-core",
     "crates/dbboard-d1",
-    "crates/dbboard-i18n",
     "crates/dbboard-mcp",
     "crates/dbboard-mysql",
     "crates/dbboard-openai",
@@ -19,7 +17,6 @@ members = [
     "crates/dbboard-server",
     "crates/dbboard-tunnel",
     "crates/dbboard-turso",
-    "crates/dbboard-ui",
 ]
 
 [workspace.package]
@@ -27,10 +24,10 @@ version = "0.4.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
-# Raised from 1.75 to 1.92 by egui_commonmark 0.23 (the egui-0.34-compatible
-# release), which renders the update notice's release notes. This is an
-# internal, never-published binary and the maintainer builds on current
-# stable, so tracking the real floor is honest and costs nothing (ADR-0043).
+# Raised from 1.75 to 1.92 by egui_commonmark 0.23 (ADR-0043). That crate left
+# with the egui client (ADR-0089); the floor stays where it is rather than
+# being lowered to a guess, since nothing is published from here and the
+# maintainer builds on current stable.
 rust-version = "1.92"
 # This is a binary project; the supporting crates are internal and never
 # published to crates.io. Each member opts in with `publish.workspace = true`.
@@ -68,9 +65,6 @@ dbboard-mysql = { path = "crates/dbboard-mysql" }
 # never on dbboard-core. Host-key verification is mandatory (Fingerprint pin
 # or known_hosts); there is no blind-accept path.
 dbboard-tunnel = { path = "crates/dbboard-tunnel" }
-# UI-only translation loader (ADR-0015). Consumed by `dbboard-ui` and
-# initialised once at startup from `apps/dbboard`.
-dbboard-i18n = { path = "crates/dbboard-i18n" }
 thiserror = "2"
 # Pure SQL parser for the read-only classifier (ADR-0046, Decision 6).
 # dbboard-core walks the parsed AST to prove a statement is a single
@@ -100,20 +94,6 @@ libsql = { version = "0.9", default-features = false, features = ["core"] }
 # forward target and to rewrite it to the loopback forward address
 # (ADR-0069) without hand-rolling password-safe URL surgery.
 url = "2"
-egui = "0.34"
-# eframe with the default glow renderer; wgpu lands later if needed.
-eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
-# egui's official companion crate. TableBuilder gives the result grid a
-# sticky header, virtualized rows, and per-column separators — none of
-# which egui::Grid offers. See ADR-0030.
-egui_extras = { version = "0.34", default-features = false }
-# Native Markdown rendering for the update notice's release notes, which
-# arrive as the GitHub release body in CommonMark (ADR-0043). Without it the
-# `**bold**`, `## headings`, `` `code` ``, and `[links]` render as literal
-# source. 0.23 is the egui-0.34-compatible release. default-features = false
-# drops the image loaders / syntax highlighter / network fetch — the notes
-# are short text-only Markdown — leaving just the pulldown-cmark parser.
-egui_commonmark = { version = "0.23", default-features = false, features = ["pulldown_cmark"] }
 # D1 (and the Anthropic AI provider) talk to REST APIs over HTTPS.
 # rustls avoids a system OpenSSL dependency, keeping the Windows build
 # self-contained. Roots come from the OS trust store (`*-native-roots`),
@@ -150,11 +130,6 @@ percent-encoding = "2"
 # now_utc() + compile-time format descriptions for the SigV4 amz-date
 # and credential-scope datestamp. `macros` for `format_description!`.
 time = { version = "0.3", features = ["formatting", "macros"] }
-# `CancellationToken` for cooperative cancel on the dbboard-ui worker's
-# streaming AI dispatch (ADR-0026 Decision 5). Lightweight Arc handle
-# whose `.cancelled()` future can be raced against the stream future via
-# `tokio::select!`; no `unsafe`, no manual abort plumbing.
-tokio-util = { version = "0.7", default-features = false }
 # Local in-process HTTP backend (Phase 1.5 / ADR-0009). The desktop UI
 # talks to this loopback server over the same contract as dbboard-web.
 axum = "0.8"

@@ -1,10 +1,10 @@
-//! Tauri command surface for the spike.
+//! Tauri command surface for the desktop client.
 //!
-//! Each command is a thin async wrapper over [`McpService`] — the same
+//! Each read command is a thin async wrapper over [`McpService`] — the same
 //! read-only service the `dbboard-mcp` stdio server exposes to external
-//! agents (ADR-0046). Reusing it is the point of the spike: it proves a
-//! WebView frontend can drive the egui-free core with no new DB logic,
-//! only a new transport (Tauri IPC in place of JSON-RPC over stdio).
+//! agents (ADR-0046). Sharing it is deliberate: the engine-enforced
+//! read-only guarantee has one implementation, and this crate adds a
+//! transport (Tauri IPC in place of JSON-RPC over stdio), not DB logic.
 //!
 //! Errors are flattened to `String` because Tauri serialises a command's
 //! `Err` to the frontend as JSON; the frontend only needs the message,

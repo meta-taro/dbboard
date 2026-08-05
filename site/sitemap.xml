@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- One page. It exists so a search engine has something to discover the site
+     with besides an inbound link. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://meta-taro.github.io/dbboard/</loc>
+    <changefreq>weekly</changefreq>
+  </url>
+</urlset>

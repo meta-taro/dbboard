@@ -12,7 +12,7 @@ same conceptual layering in TypeScript.
 2. Keep the AI integration optional and pluggable so the core works
    without it.
 3. Keep the UI free of business logic so logic stays testable without
-   spinning up egui.
+   starting a window.
 
 ## Crate Map
 
@@ -23,7 +23,6 @@ dbboard/
 └── crates/
     ├── dbboard-core/       # domain: traits, types, errors (no I/O; serde only)
     ├── dbboard-config/     # connections.toml + OS keychain (ADR-0013)
-    ├── dbboard-i18n/       # Fluent bundles (ADR-0015/0022)
     ├── dbboard-turso/      # adapter: Turso / libSQL
     ├── dbboard-d1/         # adapter: Cloudflare D1 (REST)
     ├── dbboard-postgres/   # adapter: PostgreSQL-wire (CockroachDB + Neon /
@@ -41,52 +40,66 @@ dbboard/
     │                       #   read-only unless a connection opts in (ADR-0087)
     ├── dbboard-ai/         # AI provider trait + value types (ADR-0023)
     ├── dbboard-anthropic/  # AI provider: Anthropic Messages API (ADR-0023)
-    └── dbboard-ui/         # egui views; HTTP client of dbboard-server
+    └── dbboard-openai/     # AI provider: OpenAI Chat Completions (ADR-0052)
+
+apps/
+    └── desktop/            # the client (ADR-0089)
+        ├── src/            #   SvelteKit frontend (static SPA in a WebView)
+        └── src-tauri/      #   Tauri shell (crate: dbboard-desktop); wraps
+                            #   McpService + the core crates as IPC commands
 ```
 
-As of the latest `develop`, `dbboard-core`, `dbboard-config`,
-`dbboard-i18n`, `dbboard-turso`, `dbboard-d1`, `dbboard-postgres` (with
-its three pg-wire flavors), `dbboard-mysql` (MySQL / MariaDB — the first
-genuinely new SQL dialect, ADR-0068), `dbboard-connect` (connection factory,
-ADR-0046), `dbboard-server`, `dbboard-mcp` (headless MCP server,
-ADR-0046; write policy ADR-0087), `dbboard-ui`, `dbboard-ai` (trait crate; landed via
-PR #20 on 2026-06-15), `dbboard-anthropic` (first concrete provider;
-landed via PR #22 on 2026-06-15), and `apps/dbboard` all ship.
-`dbboard-mcp` is a standalone stdio binary — the only workspace entry
-point other than `apps/dbboard`. The UI talks to the server over HTTP rather
-than calling adapters directly; `apps/dbboard` boots both in one
-process. The binary constructs `Option<Arc<dyn AiProvider>>` from env
-vars at startup (landed via PR #24 on 2026-06-17 —
-`DBBOARD_ANTHROPIC_API_KEY` is the opt-in gate, missing or construction
-failure degrades to `None`). The `dbboard-ui` AI panel consumes the
-provider behind `has_ai_provider()`; the worker thread routes
-`Command::AiExplain` / `Command::AiSuggest` through
-`tokio::runtime::block_on(provider.*)` and surfaces results as
-`Reply::AiResponded` / `Reply::AiFailed`. Eleven Fluent locales carry
-the `ai-*` strings; the menu entry and the panel are hidden entirely
-when no provider was wired (ADR-0023 Decision 11). Phase 4 Stage 1
-slice (b).
+Everything above ships. `dbboard-postgres` covers CockroachDB plus the three
+pg-wire flavors (Neon / Supabase / Aurora DSQL, ADR-0018/0019/0021), and
+`dbboard-mysql` (ADR-0068) was the first genuinely new SQL dialect.
+
+There are two entry points: the desktop client (`apps/desktop`) and the
+headless MCP stdio server (`dbboard-mcp`). Both reach a database the same
+way — `dbboard-connect` turns a `connections.toml` entry plus its keyring
+secret into a connected adapter, opening a `dbboard-tunnel` forward first when
+the entry carries an `ssh` block — and both route reads through the one
+`McpService`, so the engine-enforced read-only guarantee has a single
+implementation (ADR-0046, write policy ADR-0087).
+
+The AI layer stays optional: the shell constructs `Option<Arc<dyn AiProvider>>`
+at startup, missing configuration degrades to `None`, and the assistant UI is
+hidden entirely when nothing was wired (ADR-0023 Decision 11, ADR-0052).
+
+`dbboard-server` is the odd one out. It implements the loopback HTTP contract
+the web sibling mirrors ([api-contract.md](api-contract.md)), and it was the
+transport the retired egui client used; the Tauri client calls Tauri commands
+instead, so nothing boots it today. It is kept as the executable statement of
+that contract — retiring it would be a separate architecture decision
+(ADR-0089).
 
 ## Dependency Rules
 
 Strictly enforced via cargo workspace edges:
 
 ```
-apps/dbboard
-   ├──> dbboard-ui ────────────────┐         (HTTP client of dbboard-server)
-   ├──> dbboard-server ────────────┤
+apps/desktop/src (SvelteKit)
+   │  Tauri IPC
+   v
+apps/desktop/src-tauri  (crate: dbboard-desktop)
+   ├──> dbboard-mcp ───────────────┐         (McpService: the read path)
+   ├──> dbboard-connect ───────────┤
+   │       ├──> dbboard-config ────┤
+   │       ├──> dbboard-tunnel     │         (leaf: russh only)
    │       ├──> dbboard-turso ─────┤
    │       ├──> dbboard-d1 ────────┤──> dbboard-core
    │       ├──> dbboard-postgres ──┤
    │       └──> dbboard-mysql ─────┤
-   └──> (dbboard-anthropic) ───────┤         (concrete AI providers live alongside
-            └──> dbboard-ai ───────┘          the binary; in-process, no HTTP)
+   └──> (dbboard-anthropic,        │         (concrete AI providers live alongside
+         dbboard-openai) ──────────┤          the shell; in-process, no HTTP)
+            └──> dbboard-ai ───────┘
+
+crates/dbboard-server ──> dbboard-connect     (the HTTP contract; unbooted, ADR-0089)
+crates/dbboard-mcp     ──> dbboard-connect    (also a standalone stdio binary)
 ```
 
-The AI layer sits next to the binary, not under `dbboard-server`:
-`apps/dbboard` constructs `Option<Arc<dyn AiProvider>>` at startup and
-hands it to the UI worker directly. AI calls do not traverse the HTTP
-contract ([ADR-0023](decisions.md)).
+The AI layer sits next to the shell, not under an adapter: the shell
+constructs `Option<Arc<dyn AiProvider>>` at startup and calls it directly
+([ADR-0023](decisions.md)).
 
 - `dbboard-core` depends on nothing in this workspace (it derives
   `serde` for the wire format, which is pure data transformation, not
@@ -108,37 +121,32 @@ contract ([ADR-0023](decisions.md)).
   the DB's `host:port`, verifying the server host key against a pinned
   fingerprint or a `known_hosts` file — never blindly
   ([ADR-0069](decisions.md)).
-- `dbboard-server` depends on `dbboard-connect` (and `dbboard-core`); it
-  is reached from `apps/dbboard` and owns the HTTP contract. Since Phase
-  1.5 `apps/dbboard` reaches the adapter set only transitively through
-  the connect + server layer.
+- `dbboard-server` depends on `dbboard-connect` (and `dbboard-core`) and
+  owns the HTTP contract. No client boots it since the egui client was
+  retired (ADR-0089); it is kept as the executable statement of the
+  contract dbboard-web mirrors.
 - `dbboard-mcp` depends on `dbboard-connect`, `dbboard-core`, and
-  `dbboard-config`. It is a **standalone binary** (not booted by
-  `apps/dbboard`) that serves a read-only tool surface over stdio to an
-  external AI agent — a second consumer of the connection factory,
-  entirely independent of the HTTP server ([ADR-0046](decisions.md)).
-- `dbboard-ui` depends on `dbboard-core` among workspace crates only. It
-  talks to the local server **over HTTP** (via external crates `reqwest`
-  / `tokio`), not via direct function calls.
+  `dbboard-config`. It is both a **standalone stdio binary** serving a
+  read-only tool surface to an external AI agent, and a **library** whose
+  `McpService` the desktop shell reuses for its own read path — one
+  implementation of the read-only guarantee, two transports
+  ([ADR-0046](decisions.md)).
 - `dbboard-ai` (trait crate) depends on `dbboard-core` only — for
   `TableInfo`, which is re-exported so concrete providers do not need
   a direct `dbboard-core` dep. No I/O, no async runtime at runtime
   (`tokio` is a dev-only dep for trait tests).
-- Concrete AI providers (`dbboard-anthropic`, future peers) depend on
-  `dbboard-ai` only — never on `dbboard-server`, `dbboard-ui`, or each
-  other.
-- `apps/dbboard` boots `dbboard-server` (binding to `127.0.0.1:0`,
-  reading back the assigned port) and starts `dbboard-ui` with that
-  port. On exit it shuts the server down cleanly. The binary also
-  resolves the optional AI provider at startup
-  (`resolve_ai_provider`): when `DBBOARD_ANTHROPIC_API_KEY` is set,
-  it constructs an `AnthropicProvider` and passes
-  `Some(Arc::new(provider))` to `DbboardApp::connect`; otherwise
-  it passes `None` and the UI hides AI controls via
-  `has_ai_provider()`.
+- Concrete AI providers (`dbboard-anthropic`, `dbboard-openai`, future
+  peers) depend on `dbboard-ai` only — never on `dbboard-server`, on the
+  client, or on each other.
+- `apps/desktop/src-tauri` is the only crate that knows there is a UI. It
+  resolves the optional AI provider at startup; with no key configured it
+  holds `None` and the frontend hides the AI controls.
+- The frontend depends on no workspace crate at all. It reaches everything
+  through the commands the shell exposes, which is what keeps DB logic out
+  of it.
 
 This means new DB support is added by writing one crate that implements
-the trait, then wiring it into `dbboard-server`. No UI or core changes
+the trait, then wiring it into `dbboard-connect`. No UI or core changes
 required.
 
 ## Core Trait (sketch)
@@ -186,9 +194,9 @@ its `None` default — no code changes elsewhere.
 A separate trait in `dbboard-ai` that mirrors the adapter pattern.
 The trait crate is in `develop` as of PR #20 (2026-06-15); the first
 concrete provider `dbboard-anthropic` (Anthropic Messages API over
-`reqwest`) followed in PR #22 (2026-06-15). The `apps/dbboard`
-env-var wiring landed via PR #24 (2026-06-17), and the `dbboard-ui`
-AI panel slice (b) landed as the next PR against the same issue
+`reqwest`) followed in PR #22 (2026-06-15). OpenAI joined as a second
+provider (ADR-0052). The client resolves one from configuration at startup
+and hides the AI panel when it gets `None`
 ([ADR-0023](decisions.md);
 `.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`).
 The UI panel is registered only when `has_ai_provider()` returns
@@ -224,7 +232,7 @@ prefix-translation rule from ADR-0009 does not apply.
 Dependency rule: `dbboard-ai` depends on `dbboard-core` only (for
 `TableInfo`, re-exported so concrete providers do not need a direct
 `dbboard-core` dep). Concrete providers (`dbboard-anthropic`, future
-peers) depend on `dbboard-ai` only — never on `dbboard-ui` or on
+peers) depend on `dbboard-ai` only — never on the client or on
 each other.
 
 The UI calls `Option<Arc<dyn AiProvider>>`. When `None`, AI-related
@@ -232,19 +240,14 @@ controls are hidden or disabled.
 
 ## Async Runtime
 
-Two `tokio` runtimes coexist without nesting (ADR-0009):
+The client runs one `tokio` runtime, owned by Tauri. Every command is an
+`async fn`, so a slow query is awaited on that runtime rather than blocking
+the WebView — the frontend stays responsive because it is a separate process
+boundary, not because the Rust side spawns threads by hand.
 
-- **Server runtime** — a multi-thread runtime owned by `apps/dbboard`'s
-  `main`. It drives `dbboard-server` for the whole process lifetime and
-  is shut down after the UI exits.
-- **UI worker runtime** — a current-thread runtime owned by
-  `dbboard-ui`'s background worker thread. It runs the `reqwest` HTTP
-  client. egui itself runs synchronously on the main thread and never
-  blocks on I/O; the worker bridges back via `Command`/`Reply` channels
-  and wakes the UI with `egui::Context::request_repaint`.
-
-Because the two runtimes live on different threads, there is no
-`block_on`-within-`block_on` hazard.
+This is simpler than the two-runtime arrangement ADR-0009 described for the
+retired egui client, which had to bridge a synchronous immediate-mode UI to
+async I/O over channels. Nothing nests a `block_on` inside a `block_on`.
 
 ## Error Handling
 
@@ -260,9 +263,10 @@ Because the two runtimes live on different threads, there is no
 
 ## HTTP Contract
 
-The egui UI and the loopback server communicate over the JSON HTTP API
-defined in [`api-contract.md`](api-contract.md) — the canonical contract
-shared with `dbboard-web` (ADR-0009). The server is unauthenticated by
+`dbboard-server` speaks the JSON HTTP API defined in
+[`api-contract.md`](api-contract.md) — the canonical contract shared with
+`dbboard-web` (ADR-0009). The desktop client no longer uses it (ADR-0089);
+the description below is what any client of that contract gets. The server is unauthenticated by
 design, relying on the loopback bind and an OS-assigned ephemeral port;
 widening the bind or persisting the port requires adding a per-launch
 secret first.
@@ -289,7 +293,7 @@ User-facing configuration lives in a dedicated crate
   ADR-0024 at-rest hardening — secrets there are encrypted by the OS
   even on a recovered powered-off disk.
 
-`apps/dbboard::main` resolves a backend in this order:
+The client resolves a backend in this order:
 `DBBOARD_PG_URL` → `DBBOARD_MYSQL_URL` → `DBBOARD_D1_*` →
 `DBBOARD_TURSO_PATH` → `DBBOARD_CONNECTION=<id>` from `connections.toml` →
 single-entry auto-select → default Turso `:memory:` (the pg-wire flavor
@@ -303,7 +307,9 @@ additive; existing env-driven flows are unchanged.
 - Adapters: integration tests against real local instances where
   feasible (e.g. embedded libSQL). Network-bound tests are gated behind
   an env var.
-- `dbboard-ui`: view-model tests; egui rendering is not unit-tested.
+- Client: the frontend's pure logic (grid formatting, SQL helpers, query
+  state) is unit-tested with vitest; the Tauri commands are covered by Rust
+  tests in `apps/desktop/src-tauri`. Rendering is not unit-tested.
 
 ## Parity with `dbboard-web`
 

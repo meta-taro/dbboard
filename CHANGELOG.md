@@ -22,6 +22,21 @@ public API is the HTTP contract in
   across the upgrade, because an absent flag means `false`.
 - `dbboard-mcp` gained `dump_database`, so an agent can take a backup
   before it writes. It never overwrites an existing file.
+- **`dbboard-mcp` is a downloadable binary** (ADR-0090). Releases now
+  carry `dbboard-mcp-windows-x86_64.exe` and
+  `dbboard-mcp-macos-universal` with checksums, from the same tag as the
+  app. Until now the only way to get the MCP server was to build it, so
+  the documented `claude mcp add dbboard -- /absolute/path/to/dbboard-mcp`
+  named a file that could not exist without a Rust toolchain — an AI
+  agent told to use it searched, found nothing installable, and gave up.
+  The download page still offers only the desktop app; the MCP server is
+  a separate download from the release page, and the setup docs now give
+  a concrete install path and the exact `claude mcp add` line per OS.
+- `dbboard-mcp` documents passing credentials as environment variables
+  (`DBBOARD_*` in the agent's `env` block) for agents that operate under
+  a rule against writing credentials to a file, and states plainly that
+  TLS uses the OS trust store with no flag to pass behind a
+  TLS-terminating corporate proxy (ADR-0034).
 - Connections carry an `mcp_write` flag, settable in `connections.toml`
   or from the app (*Connections → Edit → AI agent access*). Editing a
   connection without touching the toggle keeps whatever is stored, so a
@@ -37,6 +52,40 @@ public API is the HTTP contract in
   as the write gate; everything below the MCP boundary
   (`annotations.toml`, `DBBOARD_CONNECTION`, the connection list) keeps
   using the real id.
+
+### Changed
+
+- **The Tauri 2 + SvelteKit app is the only dbboard client** (ADR-0089).
+  It reached parity at v0.4.0 and has since led the egui client — the
+  connection form edits SSH tunnels, which egui never learned. Building
+  every write surface twice was costing more than the second build
+  returned.
+- The download page picks builds by product name (`dbboard-desktop…`)
+  rather than by file extension, so a release that still carries both
+  clients' assets — v0.4.0 does — cannot offer the retired one. This
+  supersedes #135, where the answer depended on the order the GitHub
+  Releases API happened to return assets in.
+- Every generated release page now opens with a link to the
+  [download page](https://meta-taro.github.io/dbboard/). A release lists
+  raw asset filenames; someone arriving from a search result should not
+  have to work out which one is theirs.
+
+### Removed
+
+- The egui client: `crates/dbboard-ui`, `apps/dbboard`, and the
+  `eframe` / `egui_extras` / `egui_commonmark` dependencies. Releases up
+  to and including v0.4.0 still carry its binaries and keep working;
+  nothing after v0.4.0 ships them. It has no updater, so an egui install
+  stays on v0.4.0 until it is replaced with a download from the page
+  above.
+- `dbboard-windows-x86_64.exe`, `dbboard-<version>-x86_64.msi`, and
+  `dbboard-macos-universal-<version>.dmg` are no longer built or
+  published. `SHA256SUMS.txt` still covers everything that is.
+- `crates/dbboard-i18n`, whose message catalogues were egui's; the Tauri
+  client carries its own under `apps/desktop/src/lib/i18n/`.
+  `crates/dbboard-server` is **kept** despite losing its last in-repo
+  consumer — it is the executable statement of the HTTP contract
+  `dbboard-web` mirrors ([`docs/api-contract.md`](docs/api-contract.md)).
 
 ### Fixed
 
@@ -54,6 +103,19 @@ public API is the HTTP contract in
   symptoms.
 - Download page: mention the MCP server, and list MySQL/MariaDB among the
   supported engines.
+- **dbboard is easier to find.** Publishing it was not the same as making
+  it findable: an agent searching the web for dbboard concluded it was
+  "not a publicly available tool". The repo now declares its homepage and
+  topics, `README.md` leads with the download link, the site carries
+  canonical / Open Graph tags plus `robots.txt` and `sitemap.xml`, and
+  `CLAUDE.md`, `crates/dbboard-mcp/README.md` and `apps/desktop/README.md`
+  all quote the URL so anyone — human or agent — reading the repo can
+  answer "where do I get it".
+- The top-level docs no longer describe egui as a current client:
+  `README.md`, `CLAUDE.md`, `DESIGN.md`, `docs/architecture.md`,
+  `docs/api-contract.md`, `docs/compatibility.md` and `docs/roadmap.md`
+  were rewritten around the Tauri client, and `docs/desktop-parity.md` is
+  marked archived — it tracked a gap that no longer exists.
 
 ## [0.4.0] — 2026-08-04
 

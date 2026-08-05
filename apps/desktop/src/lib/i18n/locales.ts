@@ -1,4 +1,4 @@
-// The 11 locales dbboard ships, matching the egui `dbboard-i18n` crate exactly.
+// The 11 locales dbboard ships (ADR-0015).
 // Native labels are what each language calls itself so the switcher is legible
 // regardless of the current UI locale.
 export interface LocaleMeta {

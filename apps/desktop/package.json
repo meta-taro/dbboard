@@ -2,7 +2,7 @@
   "name": "@dbboard/desktop",
   "version": "0.4.0",
   "private": true,
-  "description": "dbboard desktop spike (Tauri 2 + SvelteKit) — proves the WebView↔core path against the egui-free Rust core.",
+  "description": "dbboard desktop client (Tauri 2 + SvelteKit) over the shared Rust core crates.",
   "license": "MIT",
   "type": "module",
   "scripts": {

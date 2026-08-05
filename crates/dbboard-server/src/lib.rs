@@ -1,9 +1,15 @@
 //! Local in-process HTTP backend for dbboard (Phase 1.5 / ADR-0009).
 //!
-//! The desktop binary boots this server on a loopback socket and the
-//! egui UI talks to it over HTTP, using the same contract as the
-//! dbboard-web sibling (`docs/api-contract.md`). The server owns the
-//! connected adapter; the UI never links an adapter directly.
+//! Serves the same contract as the dbboard-web sibling
+//! (`docs/api-contract.md`): a client talks to it over HTTP on a
+//! loopback socket, and the server owns the connected adapter so the
+//! client never links an adapter directly.
+//!
+//! No client boots it today — the retired egui binary was its only
+//! consumer, and the Tauri client calls the core crates through Tauri
+//! commands instead (ADR-0089). It is kept because it is the executable
+//! statement of the HTTP contract dbboard-web mirrors; retiring it would
+//! be a separate architecture decision.
 //!
 //! The server binds `127.0.0.1:0` so the OS assigns a free port, which
 //! the caller reads back via [`RunningServer::port`]. Binding to
@@ -34,8 +40,8 @@ use tokio::task::JoinHandle;
 // The connection factory moved to `dbboard-connect` (ADR-0046). The
 // adapter constructor stays an internal detail (as it was here before);
 // the config resolvers + `BackendConfig` are re-exported so this crate's
-// public surface — and every existing caller (`apps/dbboard`, the
-// http.rs tests) — is unchanged.
+// public surface — and every existing caller (the http.rs tests) — is
+// unchanged.
 use dbboard_connect::connect_adapter;
 
 pub use dbboard_connect::{
@@ -77,10 +83,10 @@ impl AppState {
     /// read guard is dropped before this function returns, so no lock
     /// is held across the handler's `.await`.
     ///
-    /// Public since ADR-0028 slice (c): the desktop binary implements
-    /// `dbboard-ui`'s `SchemaSource` over this snapshot so the UI
-    /// worker can fan out `describe_table` in-process — the HTTP
-    /// contract shared with dbboard-web stays untouched.
+    /// Public since ADR-0028 slice (c): a desktop binary can implement a
+    /// `SchemaSource` over this snapshot so its worker fans out
+    /// `describe_table` in-process — the HTTP contract shared with
+    /// dbboard-web stays untouched.
     pub fn current_adapter(&self) -> Arc<dyn DatabaseAdapter> {
         // A poisoned lock means a prior writer panicked mid-swap. The
         // inner `Arc<dyn DatabaseAdapter>` is still a valid handle —

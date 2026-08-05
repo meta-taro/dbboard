@@ -11,7 +11,7 @@ description = "Anthropic Messages API provider for dbboard's AI layer (ADR-0023)
 [dependencies]
 # Trait crate. Concrete providers depend on dbboard-ai only — never on
 # dbboard-core directly (it is re-exported through dbboard-ai for
-# `TableInfo`), never on dbboard-ui (ADR-0023 Decision 1).
+# `TableInfo`), never on a presentation crate (ADR-0023 Decision 1).
 dbboard-ai = { workspace = true }
 # `async-trait` desugars the `AiProvider` async methods to
 # `Pin<Box<dyn Future>>` so the trait is object-safe (same story as

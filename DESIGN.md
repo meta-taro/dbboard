@@ -4,10 +4,12 @@ This file captures the visual direction of dbboard. It is a living
 document: fill in concrete values as the UI phase progresses.
 
 > Status: **locked (v1)** — the palette, spacing, and radius tokens below are
-> implemented by the `dbboard-ui::theme` module (ADR-0056), which is the single
-> source of truth; this document mirrors it. Typography is specced but bundled
-> fonts land in a Phase 2 fast-follow (until then the platform system font is
-> used). Update this file and the module together.
+> implemented by `apps/desktop/src/lib/styles/tokens.css`, which is the single
+> source of truth; this document mirrors it. The values were carried over
+> intact from the retired egui client's `theme` module (ADR-0056, ADR-0089).
+> Typography is specced but bundled fonts land in a Phase 2 fast-follow (until
+> then the platform system font is used). Update this file and `tokens.css`
+> together.
 
 ## Vibe
 
@@ -21,8 +23,8 @@ document: fill in concrete values as the UI phase progresses.
 ## Color Palette
 
 Neutrals are tinted toward the accent (not pure grey) so the ground reads as
-chosen. Each token has a **Dark** and a **Light** value; egui picks per active
-theme. Values are the ones in `dbboard-ui::theme` (ADR-0056).
+chosen. Each token has a **Dark** and a **Light** value, selected per active
+theme. Values are the ones in `tokens.css` (ADR-0056).
 
 | Token | Role | Dark | Light |
 |---|---|---|---|
@@ -40,14 +42,14 @@ theme. Values are the ones in `dbboard-ui::theme` (ADR-0056).
 The accent is the brand indigo from the logo (light) and a brighter sibling on
 the dark ground so it keeps its punch. Semantic colours (danger/warning/
 success) are a **separate axis** from the accent and never double as it; they
-map onto egui's `error_fg_color` / `warn_fg_color` and are exposed as
-`theme::danger(dark_mode)` / `warning` / `success` for call sites that need a
-colour but only know the mode.
+are exposed as the `--danger` / `--warn` / `--success` custom properties, which
+resolve per theme, so a call site names the role and gets the right colour
+without knowing the mode.
 
 We offer a **Light**, **Dark**, and **Auto** (follow-OS) theme; Auto is the
 default (ADR-0041). Any brand-tinted UI colour (e.g. the accent, or the
-staged-edit tint in issue 0013) must be read from the active egui
-`Visuals` so it holds up in both themes rather than hard-coding one RGB.
+staged-edit tint in issue 0013) must be read from a token so it holds up in
+both themes rather than hard-coding one RGB.
 
 ## Logo
 
@@ -55,13 +57,13 @@ dbboard's logo is a **white database-cylinder mark on an indigo
 rounded square** — a stacked-disks "database" glyph, the same silhouette
 used for the schema browser.
 
-![dbboard logo](apps/dbboard/assets/dbboard-logo-256.png)
+![dbboard logo](assets/dbboard-logo-256.png)
 
-- **Master / source of truth**: `apps/dbboard/assets/dbboard.ico` is the
-  shipped multi-resolution icon (16–256 px, PNG-based) embedded in the
-  Windows `.exe` (`build.rs`) and the WiX installer (`wix/main.wxs`).
-  `apps/dbboard/assets/dbboard-logo-256.png` is the 256 px master used for
-  docs and for re-rendering at other sizes. Reference these files; do not
+- **Master / source of truth**: `assets/dbboard.ico` is the multi-resolution
+  icon (16–256 px, PNG-based); `assets/dbboard-logo-256.png` is the 256 px
+  master used for the docs, the download page, and for re-rendering at other
+  sizes. The shipped app icons are generated from these into
+  `apps/desktop/src-tauri/icons/` and referenced by `tauri.conf.json`. Reference these files; do not
   copy the image around ad hoc.
 - **Palette**: background indigo **`#4F46E5`**, mark **`#FFFFFF`**. The
   indigo is the project's `accent` colour above.
@@ -83,7 +85,7 @@ used for the schema browser.
   the platform system font is used; the palette and spacing carry the look.
 - **Code / SQL / results**: **JetBrains Mono** (OFL) — same Phase 2 bundle.
   Numeric columns use tabular figures so digits align.
-- **Sizes** (egui px):
+- **Sizes** (CSS px):
   - body: 13
   - small / hint: 11–12
   - heading: 15
@@ -117,9 +119,9 @@ Each component will get a small style spec in this file once it is built.
 - **Segmented theme toggle** — inline **Auto | Light | Dark** selectable group
   on the header strip below the menu bar, replacing the old dropdown. Selected
   segment reads active.
-- **Header strip** — a slim row under the menu bar: active-connection pill on
-  the left, theme toggle on the right. Kept off the menu bar so the two never
-  overlap the menus on a narrow window (egui menu bars do not wrap).
+- **Header strip** — a slim row under the top bar: active-connection pill on
+  the left, theme toggle on the right. Kept out of the top bar so the two never
+  overlap on a narrow window.
 - **Status dot** — the pill's leading dot signals *active*, not health; there
   is no live connectivity probe, so it never claims a connection is reachable.
 - **Count badge** — table-count pill on the Tables heading. Table count only;

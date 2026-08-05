@@ -1,9 +1,9 @@
 /*
  * dbboard design tokens (DESIGN.md / ADR-0056).
  *
- * The Rust `dbboard-ui::theme` module is the single source of truth for the
- * ground/border/accent/semantic values; these custom properties mirror it so
- * the Tauri frontend reads as the same product as the egui app.
+ * These custom properties are the single source of truth for the
+ * ground/border/accent/semantic values. They were mirrored from the retired
+ * egui client's `theme` module (ADR-0089), so the palette carries over intact.
  *
  * Theme resolution (Auto default, ADR-0041):
  *   - `:root` holds the LIGHT palette as the base.
@@ -66,8 +66,8 @@
 
   /*
    * Inter / JetBrains Mono are bundled in a Phase 2 fast-follow (DESIGN.md);
-   * until then the platform system font carries the look, exactly as the egui
-   * app does. Swapping in the bundled faces is a one-line change here.
+   * until then the platform system font carries the look. Swapping in the
+   * bundled faces is a one-line change here.
    */
   --font-ui:
     system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,

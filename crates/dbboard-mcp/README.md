@@ -5,6 +5,17 @@ server for [dbboard](../../README.md). It hands the databases dbboard is
 already configured with to an external AI agent — Claude Desktop, Claude
 Code — as a small tool surface, served over stdio.
 
+dbboard is free and open source.
+
+> **Get the server:** download `dbboard-mcp-windows-x86_64.exe` or
+> `dbboard-mcp-macos-universal` from the
+> **[latest release](https://github.com/meta-taro/dbboard/releases/latest)**,
+> then register it in one line — see [Install](#install) and
+> [Configure Claude Code](#configure-claude-code). It is a single executable
+> with no runtime dependencies. The desktop app is a separate download from
+> the **[download page](https://meta-taro.github.io/dbboard/)** and is not
+> required to run this.
+
 The agent can list connections, browse schemas, read rows, take a dump,
 and see dbboard's local annotations. It **never sees a secret**, and it
 **cannot write** until a human opts a connection in — and not even then
@@ -98,6 +109,61 @@ restores, in the dbboard app.
   goes to **stderr** (`RUST_LOG`, default `info`); a single stray byte on
   stdout would corrupt the stream.
 
+## Credentials without writing a file
+
+`connections.toml` + the OS keychain is the normal path, but an agent
+operating under "never write a credential to disk" can hand the server a
+whole connection through the environment instead. Set these in the
+`env` block of the MCP entry (or export them before launching):
+
+```jsonc
+{
+  "mcpServers": {
+    "dbboard": {
+      "type": "stdio",
+      "command": "C:/Users/<you>/AppData/Local/dbboard/dbboard-mcp.exe",
+      "env": {
+        "DBBOARD_MYSQL_URL": "mysql://user:pw@127.0.0.1:3306/appdb",
+        "DBBOARD_SSH_HOST": "bastion.example.com",
+        "DBBOARD_SSH_USER": "ec2-user",
+        "DBBOARD_SSH_KEY_PATH": "C:/Users/<you>/.ssh/id_ed25519",
+        "DBBOARD_SSH_FINGERPRINT": "SHA256:…"
+      }
+    }
+  }
+}
+```
+
+| Variable | For |
+|---|---|
+| `DBBOARD_MYSQL_URL` | MySQL / MariaDB |
+| `DBBOARD_PG_URL`, `DBBOARD_NEON_URL`, `DBBOARD_SUPABASE_URL`, `DBBOARD_AURORA_DSQL_URL` | the PostgreSQL-wire family |
+| `DBBOARD_TURSO_PATH` | local libSQL/SQLite file |
+| `DBBOARD_D1_ACCOUNT_ID`, `DBBOARD_D1_DATABASE_ID`, `DBBOARD_D1_TOKEN` | Cloudflare D1 |
+| `DBBOARD_SSH_HOST`, `_PORT`, `_USER`, `_KEY_PATH`, `_KEY_PASSPHRASE`, `_PASSWORD`, `_FINGERPRINT`, `_KNOWN_HOSTS` | SSH local-forward tunnel (ADR-0069) |
+| `DBBOARD_CONFIG`, `DBBOARD_CONNECTION` | which `connections.toml`, and which entry in it |
+
+Host-key verification is **mandatory** — supply `DBBOARD_SSH_FINGERPRINT`
+or `DBBOARD_SSH_KNOWN_HOSTS`. There is no blind-accept option, so a
+tunnel that "just won't connect" is usually a missing one of those two.
+
+An env-configured connection is not written anywhere; it lives as long as
+the process does. Note that anything in `~/.claude.json` **is** a file on
+disk — if that is the objection, export the variables in the shell that
+launches the agent instead.
+
+## Behind a TLS-terminating proxy
+
+Corporate networks that re-sign HTTPS (and AV products that do the same)
+break tools which trust a bundled CA list. dbboard reads the **OS trust
+store** for every TLS connection — Postgres-wire, MySQL, Cloudflare D1,
+and the AI providers alike (ADR-0034) — so the proxy's CA is trusted as
+soon as the machine trusts it. There is no `--use-system-ca` equivalent
+to pass: it is the only mode.
+
+If a connection still fails with a certificate error, the CA is not in
+the OS store; install it there rather than looking for a dbboard flag.
+
 ## Aliasing a connection (`mcp_alias`)
 
 An id like `db01.internal` or a name like `Acme Inc. (production)` says
@@ -120,27 +186,68 @@ supports one. Set `mcp_write` on top of that only where you would accept
 the agent editing rows and schema unattended; the database role is still
 the outer bound, and it is the one an engine enforces.
 
-## Build
+## Install
+
+The server is **one self-contained executable**. There is no npm package,
+no installer, and no runtime to install alongside it — download the file,
+put it somewhere stable, and point your agent host at that path.
+
+Get it from the [latest release](https://github.com/meta-taro/dbboard/releases/latest):
+
+| Platform | Asset |
+|---|---|
+| Windows x64 | `dbboard-mcp-windows-x86_64.exe` |
+| macOS (Intel + Apple silicon) | `dbboard-mcp-macos-universal` |
+
+The desktop app's installer does **not** contain it. They are separate
+products from the same tag: the app is for a human, this is for an agent.
+
+Where to put it — the paths the rest of this README assumes:
+
+```sh
+# Windows
+mkdir %LOCALAPPDATA%\dbboard
+#   → %LOCALAPPDATA%\dbboard\dbboard-mcp.exe
+#     i.e. C:\Users\<you>\AppData\Local\dbboard\dbboard-mcp.exe
+
+# macOS
+mkdir -p ~/.local/bin
+mv ~/Downloads/dbboard-mcp-macos-universal ~/.local/bin/dbboard-mcp
+chmod +x ~/.local/bin/dbboard-mcp
+xattr -d com.apple.quarantine ~/.local/bin/dbboard-mcp   # not notarized yet
+```
+
+Verify the download against `SHA256SUMS.txt` on the same release page.
+
+### Or build from source
 
 ```sh
 cargo build --release -p dbboard-mcp
 # binary at target/release/dbboard-mcp(.exe)
 ```
 
+**Copy it out of `target/` before registering it.** An agent holds its
+server process for the whole session, and on Windows a running executable
+cannot be replaced — so pointing `claude mcp add` straight at
+`target/release/dbboard-mcp.exe` means the next `cargo build --release`
+fails with `failed to remove file … (os error 5)` until every agent that
+ever started the server is closed. Registering a copy keeps building and
+serving independent.
+
 ## Configure Claude Code
 
 One command, run from anywhere. `--scope user` registers the server for
-every project on the machine rather than just the current one:
+every project on the machine rather than just the current one. Give the
+**absolute** path — the agent host does not resolve `PATH` or `~` here:
 
 ```sh
-claude mcp add dbboard --scope user -- /absolute/path/to/dbboard-mcp
+# macOS / Linux
+claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"
 ```
 
-On Windows, give the `.exe` and use forward slashes or escaped
-backslashes:
-
-```sh
-claude mcp add dbboard --scope user -- C:/path/to/dbboard-mcp.exe
+```powershell
+# Windows (PowerShell) — forward slashes, or escaped backslashes
+claude mcp add dbboard --scope user -- "$env:LOCALAPPDATA/dbboard/dbboard-mcp.exe"
 ```
 
 That writes an `mcpServers.dbboard` entry into `~/.claude.json`, which
