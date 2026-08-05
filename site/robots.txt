@@ -1,0 +1,6 @@
+# The download page is the public entry point for dbboard; nothing here is
+# private, so everything is crawlable.
+User-agent: *
+Allow: /
+
+Sitemap: https://meta-taro.github.io/dbboard/sitemap.xml

@@ -34,6 +34,13 @@ pub enum ConfigError {
     #[error("duplicate connection id: {0}")]
     DuplicateId(String),
 
+    /// An `mcp_alias` (ADR-0088) collides with another entry's alias or id.
+    /// The alias is the handle an agent hands back, and the resolver tries
+    /// aliases before ids, so a collision would route a query to whichever
+    /// entry the resolver happened to see first.
+    #[error("connection alias already in use: {0}")]
+    DuplicateAlias(String),
+
     /// Filesystem read or write failed. The path is *not* embedded so
     /// the message can be surfaced in logs without leaking a home
     /// directory; callers attach the path when they have it.

@@ -2,7 +2,7 @@
 //!
 //! This is **slice a** of issue 0013: the app's first mutation path,
 //! contained entirely in a pure, no-I/O module next to the adapter
-//! contract (CLAUDE.md forbids business logic in egui handlers). It turns
+//! contract (CLAUDE.md forbids business logic in UI event handlers). It turns
 //! a set of staged cell edits plus a row-identity key into a single
 //! `UPDATE … SET … WHERE …` string that the existing `query(sql)` path
 //! executes — **no new adapter method and no HTTP contract change**, so
@@ -48,8 +48,8 @@ pub enum SqlDialect {
 /// Map an adapter id ([`crate::DatabaseAdapter::id`]) to its SQL dialect
 /// family. Unknown ids yield `None` — a caller that cannot name the dialect
 /// must refuse to build write SQL rather than guess and emit the wrong
-/// escaping/qualification. Single source of truth for both the egui and the
-/// Tauri front ends (ADR-0042 write-back, ADR-0062 desktop parity).
+/// escaping/qualification. Single source of truth for the client's write-back
+/// path (ADR-0042 write-back, ADR-0062 desktop parity).
 #[must_use]
 pub fn dialect_for_adapter_id(id: &str) -> Option<SqlDialect> {
     match id {

@@ -8837,3 +8837,456 @@ direction — and that part does not vary.
 - `build.rs` is unchanged. Adding `cargo:rerun-if-changed` would have been a
   plausible-looking edit that fixed nothing, and the fingerprint log is the
   reason it was not made.
+
+## ADR-0087 — The MCP server writes, behind a per-connection flag and a closed list
+
+**Date:** 2026-08-04
+**Status:** Accepted
+
+### Context
+
+`dbboard-mcp` shipped read-only. Every tool went through `check_read_only`, and
+the one thing that changed data — `apply_row_update` — was not exposed as a
+tool at all. The reasoning at the time was that an agent holding a database
+handle is an agent holding a loaded gun, and that a read-only surface is the
+only one that cannot be misused.
+
+That reasoning does not survive contact with the work. The maintainer's
+statement was direct: *"MCP書き込みできないのはあかんです。alterとかcreatetable
+もです。"* An agent that can read a schema but cannot add a column has to hand
+the change back to a human to type, which is the entire cost the server was
+meant to remove. Asked whether destructive statements were a concern, the
+answer was that they are not normal work — *"通常破壊は行わないと思うので、
+もんだいないでうs"* — but that privilege changes and `TRUNCATE` are a different
+matter: *"granteとかremoveみたいなはなしですかね？それなら制限はあったほうが
+いいです。truncateとか。"*
+
+So the question is not "read or write". It is which writes, gated how.
+
+An earlier draft of this design got it wrong in a way worth recording. It
+proposed a single `run_write` tool with no classification, on the grounds that
+the database already parses SQL and dbboard classifying it a second time would
+only produce a second, wrong answer. That argument is sound about *syntax* and
+useless about *policy*: the engine will happily tell you that
+`GRANT ALL ON *.* TO 'agent'@'%'` is valid SQL, because it is. The engine has
+no opinion about who is asking. Policy is exactly the thing dbboard has to
+decide for itself, and the draft would have passed both categories the
+maintainer named straight through to the server.
+
+### Decision
+
+Three tiers.
+
+**1. Off by default, per connection.** `ConnectionEntry` gains
+`mcp_write: bool`, default `false`. No connection writes until the operator
+sets it. The flag is per connection, not global, because the same
+`connections.toml` backs the desktop app and can name a production database
+alongside a scratch one; a single global switch would hand DDL rights over
+every entry the moment one of them needed it.
+
+It is `skip_serializing_if = "is_false"`, so turning it on for one connection
+does not rewrite a key into every other entry of an existing file. It sits
+*before* `ssh` in the struct because TOML requires scalars to precede tables,
+and `[connections.ssh]` is a table — a test asserts the ordering rather than
+leaving it to whoever next edits the struct.
+
+**2. An allowlist, decided by AST.** `crates/dbboard-core/src/write_policy.rs`
+classifies a statement as `Data` (`INSERT`/`UPDATE`/`DELETE`/`MERGE`) or
+`Schema` (`CREATE TABLE`/`VIEW`/`INDEX`/`SCHEMA`, `ALTER TABLE`) and refuses
+everything else. It mirrors `read_only.rs`: single statement only, parsed not
+prefix-matched, fails closed on anything unrecognised, and never echoes the SQL
+back in the refusal. Batches are refused however they end, so
+`UPDATE t SET a = 1; DROP TABLE t` cannot ride in on a permitted first
+statement.
+
+**3. A closed list that no flag opens.** Privilege changes (`GRANT`, `REVOKE`,
+`DENY`), principal changes (`CREATE`/`ALTER`/`DROP` of a `USER`/`ROLE`/`GROUP`,
+`SET PASSWORD`), `TRUNCATE`, and `DROP` are refused *permanently* — the refusal
+says so, and points at the desktop app's SQL editor. There is no configuration
+that turns them on.
+
+The line between `DELETE` (permitted) and `TRUNCATE`/`DROP` (closed) is not
+squeamishness about the word "destructive". A `DELETE` is row-logged and rolls
+back inside a transaction; `TRUNCATE` and `DROP` are DDL that commit implicitly
+on MySQL and leave nothing to undo. Privilege and principal changes are closed
+for a different reason: an agent that can grant is an agent that can widen its
+own reach past the connection it was handed, which makes tier 1 meaningless.
+
+Connection CRUD — creating or editing entries in `connections.toml` — stays
+closed regardless, under baseline §15. Credentials are the human's to place.
+
+### The prefilter, and why it can only refuse
+
+`classify_write` runs a leading-keyword check before the parser. This looks
+like the string matching `read_only.rs` explicitly rejects, so the constraint
+is written into the code: **the prefilter can only ever refuse; the AST is the
+sole authority on what is permitted.** A wrong guess there costs a false
+refusal, never a false permit.
+
+It exists because sqlparser 0.62 does not parse every vendor spelling of
+`CREATE USER` — not `CREATE USER a PASSWORD 'x'`, not `WITH PASSWORD`, not
+MySQL's `'a'@'%' IDENTIFIED BY`. Those already failed closed, but with the
+reason "could not be parsed", which reads as a syntax complaint and invites an
+agent to retry with different syntax until something lands. The prefilter
+upgrades them to a permanent refusal that names the category. A test asserts
+`CREATE TABLE` and `ALTER TABLE` are not caught by it.
+
+### Consequences
+
+- Dump stays *outside* the write gate. Taking a backup does not change the
+  database, and requiring the flag for it would mean the safest thing an agent
+  can do needs the same permission as the least safe. Restore is a write and is
+  gated.
+- The refusal text is part of the contract. An agent that gets "refused
+  permanently" should stop, not retry; one that gets a plain refusal may
+  legitimately rephrase. That distinction is why `WritePolicyViolation` carries
+  `is_permanent()` rather than a single opaque message.
+- `read_only.rs` is untouched. The read tools keep their row cap and their own
+  classifier; nothing about writes weakens what a read tool may do.
+- New sqlparser `Statement` variants arrive refused by default. That is the
+  intended failure direction, and the cost is a follow-up issue rather than a
+  lost table.
+
+## ADR-0088 — The MCP surface shows an alias, not the connection's real id
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+### Context
+
+`list_connections` returned each connection's `id` and `name` verbatim, and
+both are whatever the operator typed when adding the connection. On this
+maintainer's install they are the thing the connection actually is: a store
+name, or a host. That string then travels wherever the agent's transcript
+does — the tool result, the model provider's logs, a pasted-in bug report,
+every later tool call that names the connection.
+
+The repository already treats those strings as leakable. `scripts/pii-scan.sh`
+blocks real store names from entering a tracked file or a commit message
+(ADR-0055), and `connections.toml` is untracked precisely because it holds
+them. The MCP surface was a hole straight through that: an id the scanner
+would refuse in a commit was handed to an external model on the first tool
+call.
+
+Renaming the ids is not free. An id is the primary key for
+`annotations.toml`, for `DBBOARD_CONNECTION`, and for every tool call already
+written down in a saved agent thread; changing it orphans notes and breaks
+whatever referenced it. And the leak is not only in the id — a connection
+named `店名 本番` leaks the same fact through `name`.
+
+### Decision
+
+A connection may carry an optional `mcp_alias`. When it has one, **the alias
+replaces both the id and the name** in everything `dbboard-mcp` hands an
+agent, and the real id stops being accepted as a handle.
+
+**1. It applies at the agent boundary only.** `ConnectionService::connections`
+and the desktop app keep returning real ids, because that is what
+`annotations.toml`, the connection picker, and the config file are keyed on.
+The projection is two new methods — `list_agent_connections` and
+`resolve_agent_handle` — and the MCP server is their only caller. Nothing
+below the boundary knows an alias exists.
+
+**2. The alias covers `name` as well as `id`.** Aliasing only the id would
+leave the display name leaking the same store, which is the failure this ADR
+exists to prevent. An aliased connection tells an agent one string and no
+other.
+
+**3. The real id is refused once an alias exists.** `resolve_agent_handle`
+matches an aliased entry by its alias and nothing else. This is the part that
+makes the change worth doing: an id learned from an older transcript cannot be
+handed back and echoed into the new one. It is the same reason a rotated
+credential must stop working rather than merely stop being displayed.
+
+**4. Uniqueness is enforced across aliases *and* ids.** A handle that matched
+two connections would route a query to whichever the resolver saw first, so
+`ConfigError::DuplicateAlias` rejects an alias colliding with another entry's
+alias or id, and a *new id* colliding with an existing alias. An entry's own
+id as its own alias is allowed — it says "show my id, and only my id".
+
+**5. Opt-in, and absent by default.** `skip_serializing_if` keeps the key out
+of `connections.toml` for everyone who never sets one, and a connection
+without an alias behaves exactly as before. Editing follows the `mcp_write`
+precedent with one extra state: omitted keeps the stored alias, a string sets
+it, and an empty string — what an emptied text input sends — clears it.
+
+**6. A source-text test guards the wire layer.** Every tool taking a
+`connection_id` opens with `self.resolve(&connection_id).await?`. The
+realistic future failure is not one of the eight existing tools losing that
+line, it is a ninth tool added without it — which no behavioural test of the
+existing eight can catch. `every_tool_taking_a_connection_id_resolves_it_first`
+reads `server.rs` as text and asserts the line is present in each.
+
+### Consequences
+
+- Error messages are out of scope, as the issue said. A refusal may still name
+  the real id; closing that would mean threading the projection through every
+  error path, and the leak this ADR closes is the one on the happy path that
+  fires on *every* session.
+- An operator who sets an alias must expect an agent working from an old
+  transcript to fail with "connection not found" for the real id. That is the
+  intended behaviour, and the tool description says the returned id is the
+  only one there is.
+- `dbboard-web` is unaffected: it has no MCP surface, and the HTTP contract
+  keeps real ids.
+- The egui client (retired under #139) has no alias input. Its edit path sends
+  `None`, which means keep — so it cannot clear an alias set from the desktop
+  app.
+
+## ADR-0089 — The egui client is retired; Tauri is the only client
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+### Context
+
+dbboard shipped two desktop clients from the same tag. `crates/dbboard-ui` +
+`apps/dbboard` is the original egui app; `apps/desktop` is the Tauri 2 +
+SvelteKit app that started as a presentation-layer spike (ADR-0064) and
+reached feature parity at v0.4.0 — connections, cell edit, annotations,
+export, backup, restore, AI.
+
+Parity was the condition for having this conversation, and it has already been
+passed. The Tauri connection form can add and edit an SSH tunnel; egui still
+requires hand-editing `connections.toml` (ADR-0069). That gap did not appear
+because egui is hard to write — it appeared because every write vertical was
+being built twice and the second build kept losing. v0.4.0 shipped ten release
+assets, four of them a client nobody was choosing to develop against.
+
+The layering makes the removal cheap. `dbboard-ui` was already the only crate
+that touched egui, nothing depends on it except `apps/dbboard`, and the domain
+crates never knew either UI existed — which is the dependency rule in
+`docs/architecture.md` paying for itself.
+
+### Decision
+
+**1. The egui client is retired.** `crates/dbboard-ui` and `apps/dbboard` are
+deleted, along with their workspace members and the `eframe` / `egui_extras` /
+`egui_commonmark` dependencies. The Tauri client is the client.
+
+**2. Release CI stops building it.** The `build-windows` / `build-macos` jobs
+go, and with them `dbboard-windows-x86_64.exe`, `dbboard-<v>-x86_64.msi`, and
+`dbboard-macos-universal-<v>.dmg`. `SHA256SUMS.txt` still covers everything
+that remains.
+
+**3. The download page classifies by product name, not by extension.** This
+supersedes #135. The page had been keying buckets on the file extension alone,
+so while both clients shipped, which build a card offered depended on the order
+the Releases API returned assets in. Retirement removes the ambiguity at the
+source, but releases up to v0.4.0 still carry the egui assets and the page
+fetches `releases/latest`. So `bucketFor` now matches the `dbboard-desktop`
+product-name prefix and treats everything else as not-a-download. The page
+renders correctly against v0.4.0 today and against every release after it.
+
+**4. The CJK font loader goes with the binary.** `load_first_cjk_font` and
+`install_cjk_font` are `egui::Context` code in `apps/dbboard/src/main.rs`.
+The Tauri client renders in the system webview, which resolves CJK from the OS
+font stack itself. Nothing outside egui used them. This was checked rather
+than assumed: that fallback chain has regressed twice.
+
+**5. `dbboard-i18n` goes; `dbboard-server` stays.** Both lost their only
+consumer in the same commit, and they are not the same case.
+`crates/dbboard-i18n` held egui's message catalogues; the Tauri client carries
+its own under `apps/desktop/src/lib/i18n/`, so keeping the crate would leave two
+sources of truth for one set of strings. It is deleted. `crates/dbboard-server`
+is the executable statement of the HTTP contract `dbboard-web` mirrors
+(`docs/api-contract.md`) — a spec that compiles and is tested. Nothing in this
+repo boots it any more, which makes it *look* like dead code and is exactly why
+the reason is written down here, in its module doc, and in `api-contract.md`.
+Removing it would be an architecture decision about the sibling contract, not
+part of retiring a UI, so it is out of this ADR's scope.
+
+**6. The download page gets advertised.** Retirement is also the moment the
+project stops having two answers to "where do I get it". Being published is not
+the same as being findable: an agent with web search, asked to use dbboard,
+concluded it was "not a publicly available tool" and proposed alternatives —
+because the repo had no homepage URL and no topics, the README buried the link
+below the fold, release pages listed raw asset filenames with no guidance, and
+the site had no canonical or Open Graph tags. All of that is fixed in this
+change: repo `homepageUrl` + 15 topics, an above-the-fold download block in
+`README.md`, `--notes` prepending the download link to every generated release
+page, `robots.txt` / `sitemap.xml` / canonical + `og:` tags on the site, and the
+URL in `CLAUDE.md` so every agent working in this repo can quote it.
+
+### Consequences
+
+- The retired client is in git history, not gone. Reviving it means reverting a
+  commit, not rewriting a UI.
+- Users on the egui build are not auto-migrated. It has no updater (that is
+  ADR-0067, Tauri-only), so they keep running v0.4.0 until they download the
+  Tauri app. The internal collector install is already on the Tauri build.
+- `docs/desktop-parity.md` has finished its job — it existed to track the gap
+  that this ADR closes — and is archived rather than kept as a live checklist.
+- The workspace loses its `rust-version = 1.92` floor rationale: that number
+  came from `egui_commonmark` 0.23 (ADR-0043). The floor is left where it is
+  rather than lowered speculatively; the maintainer builds on current stable
+  and no consumer is served by guessing at a new minimum.
+- `dbboard-web` is unaffected. It never shared code with either client, only
+  concepts (CLAUDE.md "Sibling Repository").
+- The brand assets moved to `assets/` (`dbboard.ico`, `dbboard-logo-256.png`).
+  They lived under the deleted binary's directory but were never egui's — the
+  Tauri icon set, the download page, and `README.md` all consume them.
+- Two `deny.toml` advisory ignores go with the tree they excused
+  (RUSTSEC-2026-0194 / -0195). Suppressions outlive the code that needed them
+  unless removal is part of the same change.
+- The rewritten docs keep egui in the past tense on purpose. "Ported from the
+  egui client" explains why something looks the way it does and stays; any
+  sentence implying egui is a current client is now false and was rewritten.
+- Discoverability is now a shipping surface with an owner. If the download URL
+  moves, the places to update are: `README.md`, `CLAUDE.md`,
+  `crates/dbboard-mcp/README.md`, `apps/desktop/README.md`,
+  `.github/workflows/release.yml`, `site/index.html`, `site/sitemap.xml`, and
+  the repo's homepage field.
+
+## ADR-0090 — The MCP server is a released binary, not a `cargo build` step
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+### Context
+
+`dbboard-mcp` (ADR-0046) had documentation, a nine-tool surface, a write policy
+(ADR-0087), an alias scheme (ADR-0088) — and no distribution channel. It was
+absent from `tauri.conf.json` (no `externalBin`, no `resources`) and absent from
+`release.yml`. The only way to obtain it was `cargo build --release -p
+dbboard-mcp`, so the README's `claude mcp add dbboard -- /absolute/path/to/dbboard-mcp`
+named a file that could not exist on a machine without a Rust toolchain.
+
+This is how it surfaced. An AI agent was told by its own operating notes to use
+the dbboard MCP server. Those notes covered usage and failure handling but not
+where to get it; searching found nothing installable; it stopped at "it clearly
+exists but I can't install it" and switched to a different tool. The failure was
+not phrasing. No amount of rewriting reaches a binary that is never published.
+
+Bundling it inside the desktop installer was considered and rejected. The agent
+does not launch the app — it needs an absolute path to hand `claude mcp add`, and
+burying the executable in an install tree means every setup instruction becomes a
+guess about where that tree is on this machine, on this OS, for this installer
+version. A standalone asset has one answer.
+
+### Decision
+
+1. **The release workflow publishes the MCP server as its own asset**, from the
+   same tag as the desktop app: `dbboard-mcp-windows-x86_64.exe` and
+   `dbboard-mcp-macos-universal` (a `lipo` fat binary), each with a checksum file.
+   Two product lines, one tag.
+2. **The download page does not offer it.** `bucketFor` classifies on the
+   product-name prefix (ADR-0089), so `dbboard-mcp-windows-x86_64.exe` resolves to
+   `null` despite ending in `.exe`, and a unit test pins that. Someone clicking
+   "Download for Windows" wants a GUI, not a headless stdio server.
+3. **Setup is a copy-pasteable line, not prose.** `README.md`,
+   `crates/dbboard-mcp/README.md` and `site/index.html` give a concrete install
+   path per OS and the exact `claude mcp add … --scope user -- <path>` that follows
+   from it. An agent reading the docs can execute them without inventing a path.
+4. **Credentials can be passed as environment variables.** Agents commonly operate
+   under a rule that forbids writing credentials to a file, which made
+   `connections.toml` a hard stop. The `DBBOARD_*` variables were already read;
+   they are now documented against an `mcpServers` `env` block, with the caveat
+   that `~/.claude.json` is itself a file on disk.
+
+### Consequences
+
+- The release job count goes from three to five. The two new jobs are
+  `cargo build` only — no bundler, no signing, no notarization — so they are the
+  cheapest jobs in the workflow.
+- `latest.json` is untouched. The updater globs `out/*-setup.exe` and
+  `out/*.app.tar.gz`; neither matches an MCP asset name.
+- The MCP binaries are unsigned, like the desktop ones. macOS users need
+  `xattr -d com.apple.quarantine`, which is now written down next to the download
+  instruction rather than left to be discovered.
+- Building from source still works and is still documented — it is now the
+  fallback, not the only path.
+- There is no `--use-system-ca` flag to add for corporate TLS-terminating
+  proxies, and the docs say so explicitly rather than staying silent. dbboard
+  reads the OS trust store for every TLS connection (ADR-0034); that is the only
+  mode, so a certificate failure means the proxy CA is missing from the OS store,
+  and the fix is at the OS level.
+- The version skew that bites source-built MCP servers — app on one release, MCP
+  built from a checkout of another — stops being the default state. Both come from
+  the same tag now.
+
+## ADR-0091 — Document stores join through the same trait, with a per-adapter read-only classifier
+
+**Date:** 2026-08-05
+**Status:** Accepted (direction; no adapter written yet)
+
+### Context
+
+Seven adapters ship, and every one of them speaks SQL. MongoDB sat in the
+roadmap as half of a one-line stretch bullet — "Additional adapters
+(PlanetScale, MongoDB)" — and Firestore was never written down anywhere. Both
+were agreed verbally and neither was recorded, which is the failure mode this
+log exists to prevent.
+
+Before promising a phase, the question worth answering is what actually stands
+in the way. Reading `dbboard-core`, it is four things, and only one of them is
+the trait:
+
+1. **`DatabaseAdapter::query(&self, sql: &str)`** (`adapter.rs:40`). This looks
+   like the blocker and is not. The parameter is a string of *the adapter's own
+   query text*; nothing in the trait parses it. MongoDB's wire protocol takes a
+   command document, and Firestore's REST API takes a `StructuredQuery` — both
+   are JSON, both are strings.
+2. **`Value` is flat** — `Null | Integer | Real | Text | Blob` (`value.rs:17`).
+   A row is a `Vec<Value>` under named columns. A document is a tree. There is
+   no variant that can hold one.
+3. **`read_only.rs` is `sqlparser`-based** and says so in its first line. It is
+   the primary enforcement for D1 and the defence-in-depth for everything else
+   (ADR-0046), and the MCP write gate (ADR-0087) is built on top of it. It
+   cannot classify a Mongo command document or a Firestore request, and a
+   classifier that cannot parse its input must fail closed — which would mean
+   every document-store query is refused.
+4. **`describe_table` assumes declared columns** (`schema.rs`). Collections have
+   no declared shape. Two documents in one collection need not share a field.
+
+### Decision
+
+1. **No second trait, and no query IR.** A document adapter implements
+   `DatabaseAdapter` and treats the `query` string as JSON in its own native
+   form. Inventing a neutral query language over SQL *and* two dissimilar
+   document APIs would be a translation layer nobody asked for, and it would
+   put a lossy abstraction between the user and a database they already know
+   how to address. The `sql` parameter name becomes wrong the day the first
+   document adapter lands; it gets renamed **in that PR**, not before —
+   renaming across seven adapters with nothing to justify it is churn.
+2. **`Value` gains a nested variant** carrying a parsed JSON tree, which makes
+   `serde_json` a real dependency of `dbboard-core` rather than a dev one. That
+   is consistent with the existing carve-outs: parsing JSON is a pure data
+   transformation, so the crate's no-I/O rule still holds, exactly as argued for
+   `serde` and `sqlparser`. The wire form is tagged the way blobs already are
+   (`$blob`, `value.rs:48`) so `dbboard-web` can round-trip it; the tag goes in
+   `docs/api-contract.md` before any adapter code is written, because the
+   contract is shared and the sibling repo cannot be edited from here.
+3. **Read-only enforcement is per-adapter and fail-closed, never a shared
+   parser.** `read_only.rs` stays SQL-only and keeps its name honest.
+   - **Firestore** gets it nearly free: the REST API splits reads
+     (`:runQuery`, `:batchGet`) from writes (`:commit`), so the *transport*
+     is the boundary — a read-only Firestore connection can only reach the read
+     endpoints, and there is no string to classify.
+   - **MongoDB** does not: `runCommand` accepts any verb, so it needs an
+     explicit allowlist of read commands (`find`, `aggregate`, `count`,
+     `distinct`, …) with everything unlisted refused, plus a rejection of
+     `$out` / `$merge`, which are aggregation *stages* that write. This mirrors
+     the closed list already used by the MCP write policy (ADR-0087).
+4. **Schema is sampled, and says so.** `describe_table` on a collection reads a
+   bounded sample and reports the field union, together with the sample size and
+   how often each field appeared. It must be visibly an inference — a UI that
+   renders a sampled shape identically to a declared one teaches people to trust
+   it as declared.
+
+### Consequences
+
+- The two adapters are not equal work. Firestore's read path is a documented
+  REST surface with no query-string classification problem; MongoDB needs the
+  allowlist to be right before it can be exposed to the MCP server at all.
+- `Value` changing shape touches every adapter's row construction, the frontend's
+  cell rendering, and the wire contract with `dbboard-web`. It lands on its own,
+  ahead of either adapter, so a regression there is attributable.
+- The MCP server gains document stores only after each one's read-only
+  classifier is unit-tested against adversarial input, the same bar `read_only.rs`
+  was held to.
+- Sampling costs a read per `describe_table` call. On a large collection that is
+  a bounded scan, not a full one, and the bound is the thing to make
+  configurable if it becomes a problem.
+- PlanetScale, the other half of the old stretch bullet, is unaffected — it is
+  MySQL-compatible and reachable through the existing `dbboard-mysql` adapter.

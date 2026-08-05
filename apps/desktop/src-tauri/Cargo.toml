@@ -53,7 +53,7 @@ dbboard-config = { path = "../../../crates/dbboard-config" }
 # the frontend consumes them as JSON, so they cross the Tauri boundary here.
 dbboard-core = { path = "../../../crates/dbboard-core" }
 # AI assistant vertical (ADR-0052): the I/O-free provider trait plus the two
-# concrete providers, wired exactly as the egui app wires them. The
+# concrete providers. The
 # AiSettingsAdmin + keyring store it reads from already ship in dbboard-config
 # above; only the provider crates are new here.
 dbboard-ai = { path = "../../../crates/dbboard-ai" }

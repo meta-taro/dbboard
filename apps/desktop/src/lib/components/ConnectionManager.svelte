@@ -274,7 +274,14 @@
     error = '';
     try {
       if (editorMode === 'add') {
-        await addConnection(form.id, form.name, buildKindInput(form), buildSshInput(form));
+        await addConnection(
+          form.id,
+          form.name,
+          buildKindInput(form),
+          buildSshInput(form),
+          form.mcp_write,
+          form.mcp_alias,
+        );
       } else {
         await updateConnection(
           form.id,
@@ -282,6 +289,8 @@
           buildKindEditInput(form),
           buildSshEditInput(form),
           keepStoredPassword(form, editorMode),
+          form.mcp_write,
+          form.mcp_alias,
         );
       }
       await workspace.refreshConnections();
@@ -812,6 +821,32 @@
             {/if}
           </fieldset>
         {/if}
+
+        <!-- Rendered in both modes on purpose: an edit form without this
+             toggle would send no opinion and the gate would look absent,
+             which is the opposite of what a permission screen should do. -->
+        <fieldset class="ssh">
+          <legend>{i18n.t('conn-mcp-section')}</legend>
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={form.mcp_write}
+              onchange={(e) => (form.mcp_write = e.currentTarget.checked)}
+            />
+            <span>{i18n.t('conn-mcp-write')}</span>
+          </label>
+          <p class="note">{i18n.t('conn-mcp-write-hint')}</p>
+          <label class="field">
+            <span class="label">{i18n.t('conn-mcp-alias')}</span>
+            <input
+              value={form.mcp_alias}
+              oninput={(e) => (form.mcp_alias = e.currentTarget.value)}
+              placeholder={i18n.t('conn-mcp-alias-placeholder')}
+              spellcheck="false"
+            />
+            <span class="hint">{i18n.t('conn-mcp-alias-hint')}</span>
+          </label>
+        </fieldset>
 
         <div class="actions">
           <button type="button" class="ghost" disabled={busy} onclick={goList}>

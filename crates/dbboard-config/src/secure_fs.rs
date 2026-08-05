@@ -1,5 +1,5 @@
-//! At-rest file permission helpers shared by `dbboard-config` and
-//! `dbboard-ui` (ADR-0024).
+//! At-rest file permission helpers shared by `dbboard-config` and the
+//! client (ADR-0024).
 //!
 //! Two operations and a path classifier:
 //!

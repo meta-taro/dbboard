@@ -14,38 +14,32 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-07-29)**: `desktop` has shipped Phases 1 through 5
-  and released **v0.3.0** — all six adapters (Turso, D1, CockroachDB,
-  Neon, Supabase, Aurora DSQL), the optional AI assistant (Phase 4), and
-  a read-only MCP server (`dbboard-mcp`, ADR-0046). In flight on
-  `feature/desktop-design-polish` (not yet released): the Tauri 2 +
-  SvelteKit client (`apps/desktop/`) has reached **full v0.4.0 feature
-  parity** with the egui client — every write/integration vertical is
-  ported (connections, cell edit, annotations, export, backup, restore,
-  AI) and it now updates itself in place via `tauri-plugin-updater`
-  (ADR-0067). On the same branch a **seventh adapter landed: MySQL /
-  MariaDB** (`dbboard-mysql`, ADR-0068) — the first engine on a genuinely
-  different SQL dialect (`SqlDialect::MySql`) rather than a SQLite- or
-  Postgres-wire flavor, wired through both clients with full parity. Also
-  on that branch, **SSH tunnelling** landed (`dbboard-tunnel`, a pure-Rust
-  russh local forward with mandatory host-key verification, ADR-0069) —
-  and its **editing UI is the first surface where the desktop client leads
-  egui** rather than catching up: the Tauri connection form can add and
-  edit a tunnel, while egui still needs `connections.toml` edited by hand.
-  The workspace is bumped to `0.4.0` on that branch; the
-  remaining gate before a v0.4.0 release is setting the
-  `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret (see
-  `docs/desktop-parity.md`). The tagged Release CI is proven green (see
-  Phase 5). The
-  `web` status below is **last-known as of the 2026-05-26 sync** and has
-  not been re-verified this session (`dbboard-web` is a separate repo,
-  not checked out here — only the HTTP contract and the history JSON
-  schema are shared). As of that sync `web` had closed its Phase 1 (pnpm
-  + Nuxt 4 + NestJS 11 monorepo scaffold with a `GET /health` smoke on
-  `develop`, contract byte-content-mirrored at `dbboard@89b7c70`), with
-  the baton back on `desktop`. No contract change in this v0.3.0 line
-  needs a web mirror — the MCP server is desktop-local and does not
-  touch the shared HTTP contract.
+- **Right now (2026-08-05)**: `desktop` has shipped Phases 1 through 5 and
+  released **v0.5.0** — seven adapters (Turso, D1, CockroachDB, Neon,
+  Supabase, Aurora DSQL, and MySQL / MariaDB via `dbboard-mysql`, ADR-0068,
+  the first genuinely different SQL dialect), the optional AI assistant
+  (Phase 4), an MCP server (`dbboard-mcp`, ADR-0046) that can now write
+  behind a per-connection gate (ADR-0087) and is **published as a release
+  binary** rather than something you had to build (ADR-0090), SSH
+  tunnelling through a bastion (`dbboard-tunnel`, ADR-0069), and in-place
+  auto-update (`tauri-plugin-updater`, ADR-0067). Builds are public at
+  <https://meta-taro.github.io/dbboard/> (ADR-0047); the MCP server is a
+  separate download from the release page.
+
+  The Tauri 2 + SvelteKit client reached parity at v0.4.0 and is now the
+  **only** client: the egui app and its supporting crates were deleted in
+  ADR-0089. Releases up to v0.4.0 still carry the egui binaries; nothing
+  after that does.
+
+  The `web` status below is **last-known as of the 2026-05-26 sync** and has
+  not been re-verified since (`dbboard-web` is a separate repo, not checked
+  out here — only the HTTP contract and the history JSON schema are shared).
+  As of that sync `web` had closed its Phase 1 (pnpm + Nuxt 4 + NestJS 11
+  monorepo scaffold with a `GET /health` smoke on `develop`, contract
+  byte-content-mirrored at `dbboard@89b7c70`), with the baton back on
+  `desktop`. **Retiring egui needs no web mirror** — it changed no shared
+  contract; `crates/dbboard-server` still implements the HTTP surface
+  `dbboard-web` mirrors, it simply has no in-repo consumer now.
 - **Exception**: contract changes (endpoint shapes, error categories,
   schema metadata) are drafted in one repo, mirrored in the other
   immediately, and only then built against.
@@ -612,8 +606,9 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       inlining the resolved version for the bundle step, PR #100) and one
       operational gotcha — `gh release upload` only *attaches* to an existing
       release, so the release object must be created before the publish job
-      runs (it did for v0.1.0/v0.2.0 by hand). Making the publish step
-      create-if-missing is a tracked follow-up.
+      runs (it did for v0.1.0/v0.2.0 by hand). That last one is **fixed**: the
+      publish job now views-or-creates the release with `--generate-notes`
+      before uploading, so a tag push is self-sufficient.
 - [x] macOS packaging — `[package.metadata.bundle]` lets `cargo bundle
       --release` produce `dbboard.app` on a Mac; the release CI wraps it in a
       compressed `.dmg` via `hdiutil` ([ADR-0044](decisions.md), PR #88).
@@ -634,9 +629,40 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       placeholders (ADR-0044 §Future).
 - [ ] Linux packaging (AppImage / `.deb`)
 
-## Phase 6+ — Stretch
+## Phase 6 — Document stores (MongoDB, Firestore)
 
-- Additional adapters (PlanetScale, MongoDB)
+Committed, not stretch. Every adapter so far speaks SQL; these two do not, and
+the direction is fixed in [ADR-0091](decisions.md): they implement the same
+`DatabaseAdapter` trait with their own native JSON query text, and each brings
+its own fail-closed read-only classifier rather than sharing the SQL one.
+
+The order matters — the shared piece lands first so a regression in it is
+attributable to one change:
+
+- [ ] **Nested `Value`** — a variant that can hold a document tree, tagged on
+      the wire like `$blob` already is, with `docs/api-contract.md` updated
+      before any adapter code exists (the `dbboard-web` sibling reads that
+      contract and cannot be edited from this repo). Touches every adapter's
+      row construction and the frontend's cell rendering.
+- [ ] **Firestore adapter** (`dbboard-firestore`) — the cheaper of the two on
+      the safety side: the REST API splits `:runQuery` / `:batchGet` from
+      `:commit`, so read-only is enforced by which endpoint the adapter is
+      allowed to call, with no query string to classify.
+- [ ] **MongoDB adapter** (`dbboard-mongodb`) — `runCommand` accepts any verb,
+      so it needs an explicit allowlist of read commands plus a rejection of
+      the writing aggregation stages (`$out`, `$merge`), unit-tested against
+      adversarial input to the same bar as `read_only.rs`, before it is exposed
+      to the MCP server.
+- [ ] **Sampled schema** — `describe_table` over a collection reports the field
+      union from a bounded sample, together with the sample size and per-field
+      frequency, rendered so it is visibly an inference and not a declared
+      schema.
+
+PlanetScale, the other half of the old stretch bullet, needs no new adapter —
+it is MySQL-compatible and already reachable through `dbboard-mysql`.
+
+## Phase 7+ — Stretch
+
 - Advanced schema visualisation
 - Query performance analysis tools
 - Plugin system for community extensions

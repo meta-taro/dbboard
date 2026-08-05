@@ -5,6 +5,148 @@
 
 ## 最終更新
 
+- 日付: 2026-08-05 その3 (**push 失敗 3 連続の原因はコードではなくマシン資源の枯渇 2 種。
+  コミット `e6db331`。**
+  **① メモリ (対処済み・コード変更あり)**: `cargo test` が
+  `memory allocation of 268435456 bytes failed` → `dbboard_config-*.exe (exit code:
+  0xc0000409, STATUS_STACK_BUFFER_OVERRUN)` で異常終了。268435456 = ちょうど 256 MiB で、
+  age の scrypt KDF (log_n=18, r=8 → 128 × 2^18 × 8) が **暗号化 1 回 / 復号 1 回ごとに**
+  確保する連続領域。テストハーネスは論理コア数 (このマシンは 20) だけ並列に走るので、
+  bundle / export / import 系が同時に到達すると数 GB を一斉に要求する。Rust の
+  アロケート失敗ハンドラがプロセスを abort し、Windows がそれを
+  `STATUS_STACK_BUFFER_OVERRUN` という名前で報告するため **メモリ安全性のバグに見える**
+  が違う。**空きメモリ次第で通ったり落ちたりする**ため、pre-push が「リトライすれば
+  そのうち通る」学習を生む点が最も悪質。対処: `crates/dbboard-config/src/bundle.rs` の
+  `encrypt_bundle` / `decrypt_bundle` に `#[cfg(test)]` 限定の mutex (`kdf_guard`) を入れ、
+  テスト時のみ KDF を直列化。**本番はロックしない** — export / import は人が意図して
+  1 回ずつ行う操作であり、テストハーネスの都合で実運用を遅くするのは本末転倒。
+  新規テストは付けていない (挙動ではなくテストの実行のされ方を変える変更であり、
+  再現テストを書くと「そのマシンの空きメモリ」に依存する = 消したい非決定性そのもの)。
+  **② ディスク (対処済み・コード変更なし)**: `target/debug` が **71.6 GB**
+  (release は 11.9 GB) まで膨らみ、C: の空きが **225 MB**。症状は
+  `error: linking with 'link.exe' failed: exit code: 1318` と
+  `failed to build archive ...: ディスクに十分な空き領域がありません。 (os error 112)` で、
+  **リンカ/ツールチェーンの問題に見える**。`cargo clean --profile dev` で 71.6 GB 解放
+  (pre-push が使う `release/` は残す。全体 `cargo clean` だと pre-push が全ビルドし直しになる)。
+  **検証**: `cargo fmt --all -- --check` OK / `cargo clippy --all-targets --all-features
+  -- -D warnings` OK / `cargo test --all-features` = **943 passed / 0 failed**、
+  唯一の異常終了は既知の Windows libSQL teardown segfault (`dbboard-turso` の全テストが
+  ok を出した後に `STATUS_ACCESS_VIOLATION`) = 唯一許可された `--no-verify` ケース。
+  `scripts/pii-scan.sh --staged` と `--message` を手で実行し両方 clean を確認してから commit。
+  どちらもリポジトリ固有ではなくこのマシン固有の事象なので、`.claude/` ではなく
+  エージェントメモリ側に記録した。)
+
+- 日付: 2026-08-05 その2 (**`dbboard-mcp` の配布経路を新設。ADR-0090。コミット `c015b17`。**
+  発端は user 経由で届いた「使いたいのに使えない AI エージェント」の意見。要求は
+  (1) 入手元をリポジトリ内のファイルに書く (2) MCP 登録コマンドをコピペできる 1 行で。
+  調べた結果、**根本原因は文書ではなくバイナリが一度も配布されていなかったこと**。
+  `dbboard-mcp` は `tauri.conf.json` の `externalBin` / `resources` にも `release.yml` にも
+  存在せず、入手手段は `cargo build --release -p dbboard-mcp` のみだった。
+  **デスクトップインストーラへの同梱は却下** — エージェントが必要とするのは
+  `claude mcp add` に渡す絶対パスであり、インストールツリーに埋めると手順が
+  「このマシンのこの OS のこのインストーラ版ではどこか」の当て推量になる。
+  **release CI**: `build-mcp-windows` (cargo build のみ) と `build-mcp-macos`
+  (aarch64 + x86_64 → `lipo` universal) を追加、それぞれ checksum ファイル付き。
+  `publish.needs` を 4 ジョブに更新。`latest.json` の glob (`out/*-setup.exe` /
+  `out/*.app.tar.gz`) は MCP の資産名と一致しないので updater は無影響。
+  **DL ページ**: 意図的に出さない。`bucketFor` は製品名接頭辞判定なので
+  `dbboard-mcp-windows-x86_64.exe` は `.exe` でも null になる — 拡張子判定だったら
+  「Windows 版をダウンロード」を押した人に headless な stdio サーバーを渡していた。
+  `site/app.test.mjs` に固定テストを追加 (6 tests / 全緑)。
+  **文書**: README / `crates/dbboard-mcp/README.md` / `site/index.html` の 3 箇所に
+  OS 別の配置先 (`%LOCALAPPDATA%\dbboard\` / `~/.local/bin/`) とそこから導かれる
+  `claude mcp add ... --scope user -- <path>` を記載。macOS は未署名なので
+  `xattr -d com.apple.quarantine` も併記。クレート README には
+  *Credentials without writing a file* (`DBBOARD_*` を `mcpServers` の `env` に置く。
+  ただし `~/.claude.json` 自体がディスク上のファイルである点も明記) と
+  *Behind a TLS-terminating proxy* (OS トラストストアが唯一のモード = ADR-0034、
+  `--use-system-ca` 相当は**無い**、直す場所は OS 側) を新設。
+  エージェントが評価していたエラー文言そのままの表
+  (*Troubleshooting a failed connection*) は既存なので拡張のみ。
+  **姉妹リポ向け** `.claude/tools/dbboard.md` の中身は用意して user に渡した
+  (当リポからは編集不可 = baseline §27)。
+  **検証**: pre-commit フック全緑 (fmt / clippy / check / test)、`node --test
+  site/app.test.mjs` 6 pass / 0 fail、`yaml.safe_load` で release.yml のジョブ 5 件を確認。)
+
+- 日付: 2026-08-05 (**issue #139 = egui クライアント退役 (ADR-0089) + 発見可能性の是正。**
+  ブランチ `chore/retire-egui`。
+  **削除**: `crates/dbboard-ui` / `apps/dbboard` / `crates/dbboard-i18n`、workspace
+  メンバ、`eframe` / `egui_extras` / `egui_commonmark`、`deny.toml` の
+  RUSTSEC-2026-0194 / -0195 の ignore 2 件 (抑制はそれを必要としたコードより長生き
+  するので同じ変更で外す)。ブランド資産は `assets/` へ移設 (`dbboard.ico` /
+  `dbboard-logo-256.png` — 削除したバイナリ配下にあっただけで egui のものではない)。
+  **残した**: `crates/dbboard-server`。in-repo の consumer は消えたが dbboard-web が
+  ミラーする HTTP 契約の実行可能な仕様書 = 削除はアーキテクチャ決定 (baseline §16)。
+  死んだコードに見えるのが分かっているので、理由を module doc / `docs/api-contract.md` /
+  `docs/architecture.md` の 3 箇所に書いた。
+  **リリース CI**: cargo 版の `build-windows` / `build-macos` を撤去。以降
+  `dbboard-windows-x86_64.exe` / `dbboard-<v>-x86_64.msi` /
+  `dbboard-macos-universal-<v>.dmg` は publish されない。`SHA256SUMS.txt` は残りを
+  引き続き網羅。
+  **DL ページ**: `bucketFor` を拡張子判定から `dbboard-desktop` 製品名接頭辞判定へ
+  (#135 を supersede)。v0.4.0 は両クライアントの資産を持つため、拡張子だけだと
+  Releases API の返す並び順で提示するビルドが変わっていた。`site/app.test.mjs` に
+  v0.4.0 の実資産 10 件を流す回帰テストあり (5 tests / 全緑)。
+  **文書**: README / CLAUDE.md / DESIGN.md / docs/architecture.md / api-contract.md /
+  compatibility.md / roadmap.md から現在形の egui 記述を一掃。「egui から移植した」と
+  いう由来の記述は残す (コードがそう見える理由の説明なので)。`docs/desktop-parity.md`
+  は archived バナー付きで凍結 (追跡すべき差分が無くなったため)。
+  **web 側ミラー不要 (明示的 no-op)** — 共有契約は一切変わっていない。
+  **発見可能性 (user 指摘「公開しただけじゃわからない」)**: web 検索を持つ別エージェントが
+  dbboard を「一般公開されているツールではない」と結論していた。原因は 4 つとも構造的
+  だったので全部潰した — リポジトリの `homepageUrl` が空 → DL ページに設定、topics が
+  0 個 → 15 個追加、README の DL リンクが fold 下 → タイトル直下にバッジ付きブロック、
+  リリースページが生の資産名だけ → `gh release create --notes` (これは
+  `--generate-notes` の出力に **prepend** される) で冒頭に DL リンク。加えて site に
+  canonical / og / `robots.txt` / `sitemap.xml`、CLAUDE.md・`crates/dbboard-mcp/README.md`・
+  `apps/desktop/README.md` に URL 明記 (CLAUDE.md には「姉妹リポでも聞かれたらこの URL を
+  答える」と書いた)。
+  **検証**: `cargo fmt --check` / `clippy -D warnings` / `check --all-targets` /
+  `test --all-features` 全緑 (0 failed)、`node --test site/app.test.mjs` 5/5、
+  `apps/desktop` の `pnpm check` 271 files 0 errors / `pnpm test` 346 passed。
+  **未着手**: 姉妹リポの `browser-verification.md` に dbboard の URL と
+  `claude mcp add` 行が無い — 当リポからは編集できない (baseline §27) ので user 中継待ち。
+  `crates/dbboard-server` の宙ぶらりん状態を扱う follow-up issue も未起票。)
+
+- 日付: 2026-08-04 その3 (**v0.4.0 リリース。CI の Node バージョンずれを 1 件修正。**
+  リリースが 2 週間止まっていた理由は、`Cargo.toml` のバージョンだけ 0.4.0 に上がって
+  `CHANGELOG.md` の `## [Unreleased]` が空だったこと = タグを打つ根拠が無かった。
+  ADR-0047〜0086 を棚卸しして 0.4.0 節を書き (`7bc5e60`)、compare リンクも v0.4.0 を
+  追加して修正。PR #133 で main へ、タグ `v0.4.0` を push。
+  **1 回目のタグビルド (run 30885499852) は Tauri 2 の 2 ジョブが `Install frontend deps`
+  で即死**: `Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite`。
+  `release.yml` の `actions/setup-node` が `node-version: 20` 固定、一方
+  `apps/desktop/package.json` は `"packageManager": "pnpm@11.1.1"` を pin しており、
+  pnpm 11 は `node:sqlite` を import する (Node 22.5 以降にしか存在しない)。
+  つまり pnpm が 1 パッケージも解決しないまま落ちる。**手元の Node は v22.22.2 なので
+  ローカルでは絶対に再現しない種類の失敗** — CI 側の pin だけが古かった。
+  cargo のみの `build-windows` / `build-macos` は成功し `publish` は skip されたため、
+  **release object が作られておらず何も publish されていない** (`gh release view v0.4.0`
+  → release not found) = タグを安全に張り直せる状態だった。
+  修正は両 `setup-node` を `node-version: 22` にするだけ (PR #134)。
+  ただし #133 が squash マージだったため develop と main が `release.yml` で衝突し、
+  `origin/main` を develop に取り込んで解決 (`d977403`)。#134 は **merge commit** で
+  取り込み (`174fb97`) — squash を続けると同じ乖離が毎回出るため。
+  タグは `git tag -d` + `git push origin :refs/tags/v0.4.0` で消してから main 先端
+  (`1dad53e`) に張り直し、**run 30888094754 は 5 ジョブ全緑で publish まで到達**。
+  リリース v0.4.0 (draft=false) に 10 資産が付いた: `dbboard-windows-x86_64.exe` /
+  `dbboard-macos-universal-0.4.0.dmg` / `dbboard-0.4.0-x86_64.msi` /
+  `dbboard-desktop_0.4.0_x64-setup.exe` (+`.sig`) /
+  `dbboard-desktop_0.4.0_universal.dmg` / `dbboard-desktop.app.tar.gz` (+`.sig`) /
+  `latest.json` / `SHA256SUMS.txt` = egui 版と Tauri 版の両方、updater 署名込み。
+  **運用方針 (user から常設)**: リリースは良い区切りで頻繁に切る。
+  → エージェント側は **feat PR ごとに `## [Unreleased]` へ 1 行足す**ことで、
+  いつタグを打っても変更履歴が揃っている状態を維持する。
+  **MCP の書き込み対応が未決**: 現状の 7 tool は全て読み取り専用で、user から
+  「使い物にならない」と指摘。`crates/dbboard-mcp/src/service.rs` には未公開の
+  `apply_row_update` / `plan_dump` / `run_dump` / `plan_restore` / `run_restore` がある。
+  公開してよいのは `apply_row_update` まで。**接続 CRUD は開けない** — agent が接続定義と
+  keychain ref を書き換えられるようになり、baseline §15 の「credential 操作は人間のみ」を
+  構造的に壊すため。dump/restore も同様に破壊的。v0.5.0 スコープにするかは user 未回答。
+  なお commit `d531e20` と `d977403` は pre-commit の cargo test が例の Windows libSQL
+  teardown segfault (rc=139) で落ちたため `--no-verify`。pii-scan は両方 clean、
+  変更は YAML のみ。)
+
 - 日付: 2026-08-04 その2 (**#130 クローズ + 記録の訂正 2 件。**
   PR #132 (squash `051c9cd`) が develop にマージされ、issue #130 はクローズ済
   (計測値を添えたコメントを投稿)。`feature/desktop-design-polish` の 14 コミットも
@@ -120,150 +262,7 @@
   `refs/original/*` とバックアップ ref は削除 (Gmail を持つコミットオブジェクトを
   到達可能なまま残さないため。復旧は reflog から可能)。
   **残るのは origin 上の 468 コミット** = force-push を伴うので human 判断。)
-- 日付: 2026-07-29 (**SSH トンネルが着地 — デスクトップ (Tauri) が初めて egui を追い越した**
-  (branch `feature/desktop-design-polish`, commits `8bfe07b`→`22892b6`, ADR-0069)。
-  **動機:** バスチオン越しにしか届かない DB (VPS 側が `localhost` のみ listen) は、これまで
-  第二のツールでトンネルを張らないと dbboard から一切使えなかった。dbboard が単体で完結する
-  クライアントであるためには**自分でトンネルを開く**必要がある。**設計の肝 = 純 Rust の
-  `dbboard-tunnel` クレート (russh 0.62)** — `ssh`/`plink` へのシェルアウトではないので
-  外部バイナリに依存せず、ADR-0034 の rustls-**ring** 制約 (aws-lc-rs 不可) も満たす。
-  **ホスト鍵検証は必須 = 盲信経路を一切持たない:** 固定 fingerprint XOR OpenSSH
-  `known_hosts` のどちらかで検証し、不一致は `Err` = 接続断 (MITM は静かな足がかりになる)。
-  **ライフタイム束縛:** `connect_adapter` がトンネルを先に開き、URL の `host:port` を
-  `127.0.0.1:<ephemeral>` に書き換えてから内側アダプタを作り、`TunneledAdapter { inner,
-  _tunnel }` デコレータで包む → drop 順でプール → トンネルの順に落ちるので dangling
-  フォワードが残らない。`dbboard-server` (単一アダプタ) と `dbboard-mcp` (id ごとのキャッシュ)
-  の両方に配線。**設定は `ConnectionEntry` の横断的な `ssh` サブテーブル** (URL を持つ
-  各 `ConnectionKind` のフィールドではない) = トンネルは種別によらず一様に効く。
-  **秘匿情報は ADR-0016 と同じ扱い:** 鍵ファイルの**パス**と非秘匿な host/port/user は
-  TOML インライン、鍵**パスフレーズ**と SSH **パスワード**は OS キーチェーンのみ
-  (`ssh_passphrase`/`ssh_password` ref)。env 面 `DBBOARD_SSH_*` も並行提供。
-  **編集 UI (`22892b6`) は desktop のみ = ここで初めて desktop が egui を先行**。
-  対象は tunnel 可能な種別 (Postgres ファミリ + MySQL)。egui は `connections.toml` 手編集の
-  まま (意図的、desktop が「トンネル編集の正本」)。**3 人の並列レビュー
-  (security/rust/typescript) が同一の実バグに独立収束** → 「維持すべきものが無いのに keep」
-  (認証方式の切替、または未暗号化鍵に暗号化フラグを新たに ON) が、書き込まれていない
-  keyring ref を永続化していた。**両層で拒否**するよう修正 = config 層 `apply_update_ssh` は
-  既存ブロックから keep を解決 (id からの再導出をやめる)、フォーム `validateSsh` は
-  edit-prefill provenance フラグで秘匿情報を必須化。保存経路に belt-and-suspenders な
-  `SshTunnelToml::validate()` も追加。**TDD:** config に RED-first で 3 テスト (keep/switch の
-  2 バグ + 安全な password-keep)、TS に 6 テスト。live 検証は env-gated (`DBBOARD_SSH_*`) で
-  CI はオフラインのまま。全ゲート green (fmt/clippy clean・config 187・ui 329・desktop 38・
-  svelte-check 0・vitest 161)、pre-commit は**既知・良性の turso teardown segfault のみ**
-  `--no-verify` (memory `env-windows-libsql-segfault`、PII 無し確認済み)。**docs 同梱** =
-  ADR-0069・connections.md の SSH セクション・README・architecture.md (dbboard-tunnel
-  クレート + 依存ルール)・desktop-parity.md。**今の user 側ボール = (1)
-  `feature/desktop-design-polish` の push、(2) v0.4.0 リリース前に
-  `TAURI_SIGNING_PRIVATE_KEY` シークレット設定、(3) #42 = 外部 bastion 経由の live MySQL
-  検証 — **実接続なので user の明示的 GO と認証情報が必要。エージェントは勝手に接続しない**。)
-- 日付: 2026-07-29 (**MySQL / MariaDB アダプタが着地 — 初の「別 SQL 方言」エンジン**
-  (branch `feature/desktop-design-polish`, commit `6b6e887`, ADR-0068)。仕事で MySQL を
-  使う maintainer からの要望 (#36) をフルパリティで実装 = 読み取り専用プレビューではなく
-  接続・クエリ・イントロスペクション・セル書き戻し・エクスポート・ダンプ・アトミック
-  リストア・read-only MCP/AI 面・接続マネージャ UI の全バーティカルを満たす。**設計の肝 =
-  `SqlDialect::MySql` という新方言:** これまでの全アダプタは SQLite-wire (Turso/D1) か
-  Postgres-wire (Cockroach/Neon/Supabase/Aurora DSQL) の派生だったが、MySQL は SQL テキスト
-  自体が異なる初のエンジン。バッククォート識別子 (埋め込みは二重化)・バックスラッシュ +
-  シングルクォート二重化のリテラルエスケープ・DOUBLE は NaN/±Inf 不可 (→NULL)・SQLite と
-  共通の `X'…'` blob。read-only AST ガードと restore プランナは sqlparser の `MySqlDialect`
-  に対応。**アダプタ `dbboard-mysql`** = sqlx の MySQL ドライバ上のシブリングクレート
-  (dbboard-core のみ依存)。秘匿な `MySqlConfig`、TLS を `Disabled` から格上げ、エラーは
-  固定文字列化で URL パスワード漏洩を防止。イントロスペクションは `information_schema` を
-  prepared プロトコルでバインド (`COALESCE(?, DATABASE())`)、`table_ddl` は `SHOW CREATE
-  TABLE`。read-only は `SET TRANSACTION READ ONLY` + `max_execution_time` バックストップ、
-  restore はデータのみ INSERT バッチの InnoDB 単一トランザクション (`has_atomic_restore`)。
-  テキストプロトコルなので値は `Value::Text` / NULL は `Value::Null`。**配線はコンパイラ
-  誘導で上から下まで:** `ConnectionKind::MySql` (config) → `BackendConfig::MySql` +
-  `DBBOARD_MYSQL_URL` env 解決 (connect) → egui + SvelteKit の接続フォーム → Tauri コマンド
-  DTO → MCP `kind_label`。serde タグ enum は `#[serde(rename = "mysql")]` を固定 (自動の
-  `my_sql` を回避)。URL は秘匿値で OS キーチェーン格納 (Postgres 系と同じ)。**TDD:** 方言
-  ルールを dbboard-core で単体、アダプタ挙動を dbboard-mysql で単体 (SSL/クォート/FK 組立/
-  カラム解析/エラー分類)、config/connect の伝播を既存ラウンドトリップ、live env-gated
-  `mysql_roundtrip.rs` (`DBBOARD_MYSQL_URL`) で connect/DML/SELECT・複合 PK describe_table・
-  単一 + 複合 foreign_keys・read-only 切り詰めキャップ・10_000 行 MAX_RESULT_ROWS 境界
-  (generate_series が無いので 4 桁クロス結合で生成)。全ゲート green (fmt/clippy/check/test)、
-  pre-commit は**既知・良性の turso teardown segfault のみ** `--no-verify` (memory
-  `env-windows-libsql-segfault`、PII 無し確認済み)。**これで v0.4.0 パリティ + MySQL 拡張が
-  完了。今の user 側ボール = (1) `feature/desktop-design-polish` の push、(2) 初回 v0.4.0
-  リリース前に `TAURI_SIGNING_PRIVATE_KEY` シークレットを設定 (前エントリ参照)。**)
-- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ完了: 自動更新 + リリース CI が着地**
-  (branch `feature/desktop-design-polish`, commit `d65c008`, ADR-0067)。
-  上位方針は不変 = egui 版全機能を Tauri 2 + SvelteKit へ一括移植し **v0.4.0
-  (パリティ + 自動更新)** として出荷。**今回のバーティカル (ADR-0067):** egui の
-  inform-only 更新チェック (ADR-0040) を一歩超え、Tauri は**その場で更新・再起動**する。
-  `tauri-plugin-updater` が署名済み `latest.json` を検証してインストール →
-  `tauri-plugin-process` が再起動。**設計の肝 = 純ロジックとトランスポートの分離:**
-  `$lib/update/notice.ts` は Tauri 非依存の純関数群 (`parseVersion`/`isNewer` =
-  解析不能なら phantom を出さず false、`foldDownload`/`downloadPercent` = 進捗畳み込み)、
-  RED-first vitest 15 本。UI は非モーダル右下カード `UpdateNotice.svelte` (5 フェーズ、
-  determinate/indeterminate プログレス、prefers-reduced-motion 対応)。**egui と同じ
-  `DBBOARD_NO_UPDATE_CHECK` opt-out** = Rust `update_opt_out` (空文字無効の `opt_out`
-  ヘルパ + 単体 1)。起動時チェックは best-effort = 失敗握りつぶしでアプリ起動を壊さない。
-  **リリースノートは Markdown ライブラリ不使用の pre-wrap プレーン表示** (pnpm 方針尊重、
-  ADR-0067 にフォローアップ明記)。`release.yml` に `build-tauri-windows`/
-  `build-tauri-macos` を追加 (NSIS setup.exe / universal app.tar.gz + `.sig` を署名
-  env で生成)、Python heredoc で `latest.json` 組み立て (`one()` fail-loud)、
-  「リリースオブジェクトを先に用意」ステップで tag CI ブートストラップ失敗も解消。
-  **全ゲート green:** cargo fmt/clippy/check/test + pnpm check/test/build。pre-commit は
-  **既知・良性の turso teardown segfault のみ** `--no-verify` (memory
-  `env-windows-libsql-segfault`、PII 無し確認済み)。**これで v0.4.0 フィーチャーパリティ
-  全バーティカル完了** (接続 CRUD・セル編集・注釈・エクスポート・ダンプ・リストア・AI・
-  自動更新)。残る ⛔ は row insert/delete のみ (両クライアント新規面、ポート非該当)。
-  **今の user 側ボール = (1) `feature/desktop-design-polish` の push、(2) 初回 v0.4.0
-  リリース前に GitHub Actions シークレット `TAURI_SIGNING_PRIVATE_KEY` を生成済み
-  minisign 秘密鍵で設定 (`_PASSWORD` は空) → scratchpad の鍵コピー削除。これが無いと
-  `build-tauri-*` が署名できず失敗する。** **次の作業 (「両方まとめて連続で」):**
-  MySQL アダプタ (#36, ADR-0068 見込み)。)
-- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ: AI アシスタントが着地**
-  (branch `feature/desktop-design-polish`, commit `c1ccec5`, ADR-0066)。
-  上位方針は不変 = egui 版全機能を Tauri 2 + SvelteKit へ一括移植し **v0.4.0
-  (パリティ + 自動更新)** として出荷。**今回のバーティカル (ADR-0066):** egui の
-  AI アシスタント (ai.rs + ai_settings.rs) をトランスポートだけ差し替えて移植。
-  プロバイダトレイト + 2 実装 (dbboard-ai / dbboard-anthropic / dbboard-openai) は
-  そのまま再利用。egui のワーカーチャネル → Tauri コマンド、ストリーミングデルタ →
-  `ai:chunk` イベント (pure `accumulate()` = テキスト追記・トークン累計は置換)。
-  **核ガードレール不変: SQL を実行せず行データを一切見ない** = Explain は SQL テキスト
-  のみ、Suggest はプロンプト + テーブル/カラム名 (`list_tables` / opt-in で
-  `describe_table`)。`run_read_query` 出力はプロバイダに届かない。**API キーは
-  keyring (`dbboard.ai.<id>.api_key`) のみ** = TOML/ログ/WebView に出さず、`AiProviderView`
-  にキーフィールド無し。**9 AI コマンドはどれも MCP ツール未登録** = 外部エージェントは
-  読み取り専用のまま。エントリボタン常時表示 (接続前でもプロバイダ追加可)、Suggest のみ
-  接続必須。**TDD (RED-first):** desktop 単体 9 + フロント pure `panel.test.ts` 単体 19。
-  About ダイアログに「About AI Assistant」安全性ブロックを追加 (egui パリティ)。**全ゲート
-  green:** cargo fmt/clippy/check/test + pnpm check/test(118)/build。pre-commit 通過
-  (desktop 34 テスト, `--no-verify` 不使用)。**残バーティカル (未着手):** 自動更新 +
-  リリース CI (ADR-0044/0043, 0.3.0→0.4.0) の 1 本のみ。**今の user 側ボール =
-  (1) `feature/desktop-design-polish` の push、(2) 最後のバーティカル auto-update +
-  release CI へ着手。**)
-- 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ: インラインセル編集が着地**
-  (branch `feature/desktop-design-polish`, commit `c5f165f`, ADR-0063)。
-  上位方針 = user 厳命「小さくきらないで機能面の仕様を全部いれる。くぎっては
-  ならない」= egui 版全機能を Tauri 2 + SvelteKit (`apps/desktop/`) へ一括移植し
-  **v0.4.0 (パリティ + 自動更新)** として出荷する。Tauri は読み取り専用スパイク
-  (ADR-0046/0059) から出発し、書き込み面を 1 バーティカルずつ ADR 付きで解禁中。
-  **v0.4.0 で既に着地したバーティカル:** 接続 CRUD + バンドル入出力 (ADR-0062)・
-  ローカル注釈編集 (ADR-0045)・データセット Export (ADR-0049)・**セル編集 (今回)**。
-  **今回の設計判断 (ADR-0063):** ①書き込み経路 `McpService::apply_row_update` は
-  共有データアクセス層のメソッドだが **MCP ツールには意図的に未登録** → 外部
-  エージェントは読み取り専用のまま (ADR-0046 §8 の禁止を維持)。②編集可否は
-  **宣言済み PK** で判定 (フロント): サイドバー「Select top 100」由来 (TableInfo
-  を保持) かつ `describeTable` の `primary_key` が非空の表のみ編集可。任意クエリ・
-  rowid 専用 SQLite・ビューは読み取り専用 (egui パリティ)。③`update_row` コマンドが
-  `rows_affected == 1` コミットゲートを強制 (0/n>1 はエラーで staged 維持 = egui
-  `advance_save` パリティ)。純粋なグルーピング (staged セル→行単位 UPDATE) は
-  `apps/desktop/src/lib/grid/edit.ts` に切り出し単体テスト。**TDD (RED-first):**
-  `dbboard-mcp` 統合 4 (1 行だけ書いて報告・NULL クリア・キー不一致で 0・書き戻し
-  拒否) + `edit.test.ts` 単体 8。**副次リファクタ:** `dialect_for_adapter_id` を
-  `dbboard-core` に単一定義化 (egui `edit.rs` は `pub use` で委譲)。**全ゲート
-  green:** cargo fmt/clippy/check/test + pnpm check/test(70)/build。pre-commit
-  フックも通過 (`--no-verify` 不使用)。**残バーティカル (未着手):** 論理バックアップ/
-  ダンプ (ADR-0049/0050)・論理リストア/インポート (ADR-0051)・AI アシスタント
-  (ADR-0052)・自動更新 + リリース CI (ADR-0044/0043, 0.3.0→0.4.0)。**今の user 側
-  ボール = (1) `feature/desktop-design-polish` の push、(2) 次バーティカル選定
-  (backup/restore か AI か auto-update)。方針「くぎってはならない」ゆえ最終的に全部
-  入れる。**)
-
-> 2026-07-26 以前のセッションログは、baseline §31 に基づき
+> 2026-07-29 以前のセッションログは、baseline §31 に基づき
 > [`.claude/archive/project-status-2026-07.md`](archive/project-status-2026-07.md)
 > へ全文退避した (要約ではない)。
 

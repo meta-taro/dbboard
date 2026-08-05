@@ -53,7 +53,7 @@ pub enum SecretError {
 /// Read / write / delete secrets keyed by an opaque reference string.
 ///
 /// Implementations must be `Send + Sync` so they can be shared as
-/// `Arc<dyn SecretStore>` across the `apps/dbboard` startup wiring.
+/// `Arc<dyn SecretStore>` across the client's startup wiring.
 pub trait SecretStore: Send + Sync {
     /// Fetch the secret stored under `key_ref`.
     ///

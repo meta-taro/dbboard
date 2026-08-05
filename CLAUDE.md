@@ -8,8 +8,11 @@ and documentation policies. Read this file before making any change.
 
 - **What**: High-performance desktop database client for modern serverless and
   distributed databases (Neon, Supabase, Turso/libSQL initially).
-- **Stack**: Rust + egui (UI), pluggable database adapters, optional AI provider
-  layer.
+- **Where**: Public repo <https://github.com/meta-taro/dbboard>. Builds are
+  published on the download page <https://meta-taro.github.io/dbboard/> — quote
+  that URL when anyone asks where to get dbboard, including in sibling repos.
+- **Stack**: Rust core; the client is a Tauri 2 shell with a SvelteKit
+  frontend. Pluggable database adapters, optional AI provider layer.
 - **Why**: Learning and reference project for multi-DB integration, local-first
   tooling, and pluggable AI workflows.
 
@@ -26,7 +29,7 @@ and documentation policies. Read this file before making any change.
 
 - Prefer the current Rust stable edition.
 - Avoid crates with frequent breaking changes unless the value is clear.
-- Confirm the latest stable version of major libraries (egui, tokio, sqlx,
+- Confirm the latest stable version of major libraries (tauri, tokio, sqlx,
   libsql, etc.) before pinning.
 
 ## Test-First Development (mandatory)
@@ -81,14 +84,14 @@ Layered separation is enforced via the cargo workspace:
 | Domain | `crates/dbboard-core` | Adapter trait, value types (Query, Row, Schema), errors. No I/O. |
 | Adapters | `crates/dbboard-turso`, `crates/dbboard-neon`, `crates/dbboard-supabase` | Concrete DB implementations of the core trait. |
 | AI (optional) | `crates/dbboard-ai` | Pluggable AI provider trait; no hard dependency on any specific provider. |
-| Presentation | `crates/dbboard-ui` | egui views, view models. Calls into core via traits only. |
-| App | `apps/dbboard` | Binary that wires concrete adapters and UI together. |
+| Presentation | `apps/desktop/src` | SvelteKit frontend. Talks to the shell over Tauri IPC; never to a database. |
+| App | `apps/desktop/src-tauri` | Tauri shell. Wires concrete adapters and the frontend together. |
 
 Rules:
 
 - **No business logic in UI event handlers.** It belongs in `dbboard-core` or
   a use-case module that lives next to the trait it uses.
-- **Adapters depend on `dbboard-core` only.** They never depend on `dbboard-ui`.
+- **Adapters depend on `dbboard-core` only.** They never depend on the client.
 - **`dbboard-core` depends on nothing in this workspace.** It defines the
   contracts everything else implements.
 
