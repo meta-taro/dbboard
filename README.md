@@ -14,8 +14,10 @@ databases straightforward.
 ## Status
 
 Pre-1.0; workspace at `0.3.0`. Phases 1, 3, and the Phase 4 AI assistant
-are closed, and dbboard now doubles as a **read-only MCP server**
-(`dbboard-mcp`) for external AI agents (ADR-0046). The Turso, Cloudflare
+are closed, and dbboard now doubles as an **MCP server** (`dbboard-mcp`)
+for external AI agents (ADR-0046) — read-only unless you opt a connection
+in, and never for privilege changes, `TRUNCATE` or `DROP` (ADR-0087).
+The Turso, Cloudflare
 D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, and MySQL / MariaDB
 adapters all ship over the local HTTP backend. See
 [`CHANGELOG.md`](CHANGELOG.md) for what
@@ -430,31 +432,38 @@ Remaining deferred Stage 2 capability (full-DDL schema snapshots +
 function-calling — Group D) is tracked in ADR-0023 §9. Groups A / B
 / C are closed (ADR-0025 / ADR-0026 / ADR-0027).
 
-## MCP server (read-only)
+## MCP server
 
 Besides being an AI *client*, dbboard also ships as a headless
 [MCP](https://modelcontextprotocol.io) *server* — `dbboard-mcp` — that
 hands the databases dbboard is already configured with to an external AI
-agent (Claude Desktop, Claude Code) as a small, **read-only** tool
-surface over stdio. It reuses the exact same `connections.toml` + OS
-keychain machinery as the GUI, so it adds no new place to keep
-credentials. See [ADR-0046](docs/decisions.md) and the crate README,
+agent (Claude Desktop, Claude Code) as a small tool surface over stdio.
+It reuses the exact same `connections.toml` + OS keychain machinery as
+the GUI, so it adds no new place to keep credentials. See
+[ADR-0046](docs/decisions.md) and the crate README,
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
 full spec.
 
-Seven fixed tools: `list_connections`, `list_tables`, `describe_table`,
-`search_schema` (ADR-0053), `list_relationships` (ADR-0054),
-`run_read_query`, and `get_annotations` (dbboard's local notes, ADR-0045).
+Nine fixed tools. Seven read — `list_connections`, `list_tables`,
+`describe_table`, `search_schema` (ADR-0053), `list_relationships`
+(ADR-0054), `run_read_query`, and `get_annotations` (dbboard's local
+notes, ADR-0045) — plus `run_write` and `dump_database` (ADR-0087).
 The security posture is the reason it is safe to point an agent at:
 
 - **Secrets never cross the wire.** The only connection metadata
   serialized is `{ id, name, kind }` — no URLs, tokens, or keyring
   references, and no error message embeds one.
-- **Read-only is engine-enforced, not string-matched.** Postgres-wire
-  runs each statement inside `BEGIN TRANSACTION READ ONLY`, libSQL/Turso
-  under `PRAGMA query_only`, and D1 classifies the AST — so `UPDATE`,
-  DDL, multi-statement batches, and `SELECT … FOR UPDATE` all fail at
-  the source.
+- **Reading is engine-enforced read-only, not string-matched.**
+  Postgres-wire runs each statement inside `BEGIN TRANSACTION READ ONLY`,
+  libSQL/Turso under `PRAGMA query_only`, and D1 classifies the AST — so
+  `UPDATE`, DDL, multi-statement batches, and `SELECT … FOR UPDATE` all
+  fail at the source.
+- **Writing is off until a human turns it on, per connection**
+  (`mcp_write` in `connections.toml`, or *Connections → Edit → AI agent
+  access*). Even then `run_write` only accepts an allowlisted statement
+  — classified on the AST, failing closed — and `GRANT` / `REVOKE` /
+  `DENY`, user and role DDL, `SET PASSWORD`, `TRUNCATE`, and `DROP` of
+  anything but an index are refused whatever the flag says (ADR-0087).
 - **Result sets are bounded.** `run_read_query` clamps `max_rows` to a
   hard cap of 1000 (default 200) with a `truncated` flag.
 - **stdout is sacred.** JSON-RPC frames own stdout; all logging goes to

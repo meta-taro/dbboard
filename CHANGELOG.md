@@ -9,6 +9,24 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Added
+
+- `dbboard-mcp` can **write** — `run_write` runs `INSERT` / `UPDATE` /
+  `DELETE` / `MERGE` and `CREATE` / `ALTER` / `DROP INDEX` / `COMMENT`
+  behind a three-tier policy (ADR-0087): the connection must be opted in
+  with `mcp_write = true`, the statement must parse to something on the
+  allowlist, and a permanently-closed list — `GRANT` / `REVOKE` / `DENY`,
+  user and role DDL, `SET PASSWORD`, `TRUNCATE`, and `DROP` of anything
+  but an index — is refused whatever the flag says. Classification is on
+  the AST and fails closed. Every existing connection stays read-only
+  across the upgrade, because an absent flag means `false`.
+- `dbboard-mcp` gained `dump_database`, so an agent can take a backup
+  before it writes. It never overwrites an existing file.
+- Connections carry an `mcp_write` flag, settable in `connections.toml`
+  or from the app (*Connections → Edit → AI agent access*). Editing a
+  connection without touching the toggle keeps whatever is stored, so a
+  rename cannot silently revoke the permission.
+
 ### Fixed
 
 - The Tauri release jobs pinned Node 20 while `apps/desktop` pins pnpm 11,

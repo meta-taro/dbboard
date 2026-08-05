@@ -37,7 +37,8 @@ dbboard/
     │                       #   opens a dbboard-tunnel forward first when the
     │                       #   entry carries an ssh block (ADR-0069)
     ├── dbboard-server/     # local axum HTTP backend (ADR-0006)
-    ├── dbboard-mcp/        # headless read-only MCP server over stdio (ADR-0046)
+    ├── dbboard-mcp/        # headless MCP server over stdio (ADR-0046),
+    │                       #   read-only unless a connection opts in (ADR-0087)
     ├── dbboard-ai/         # AI provider trait + value types (ADR-0023)
     ├── dbboard-anthropic/  # AI provider: Anthropic Messages API (ADR-0023)
     └── dbboard-ui/         # egui views; HTTP client of dbboard-server
@@ -47,8 +48,8 @@ As of the latest `develop`, `dbboard-core`, `dbboard-config`,
 `dbboard-i18n`, `dbboard-turso`, `dbboard-d1`, `dbboard-postgres` (with
 its three pg-wire flavors), `dbboard-mysql` (MySQL / MariaDB — the first
 genuinely new SQL dialect, ADR-0068), `dbboard-connect` (connection factory,
-ADR-0046), `dbboard-server`, `dbboard-mcp` (headless read-only MCP
-server, ADR-0046), `dbboard-ui`, `dbboard-ai` (trait crate; landed via
+ADR-0046), `dbboard-server`, `dbboard-mcp` (headless MCP server,
+ADR-0046; write policy ADR-0087), `dbboard-ui`, `dbboard-ai` (trait crate; landed via
 PR #20 on 2026-06-15), `dbboard-anthropic` (first concrete provider;
 landed via PR #22 on 2026-06-15), and `apps/dbboard` all ship.
 `dbboard-mcp` is a standalone stdio binary — the only workspace entry
