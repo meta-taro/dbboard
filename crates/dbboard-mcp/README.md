@@ -226,6 +226,14 @@ cargo build --release -p dbboard-mcp
 # binary at target/release/dbboard-mcp(.exe)
 ```
 
+**Copy it out of `target/` before registering it.** An agent holds its
+server process for the whole session, and on Windows a running executable
+cannot be replaced — so pointing `claude mcp add` straight at
+`target/release/dbboard-mcp.exe` means the next `cargo build --release`
+fails with `failed to remove file … (os error 5)` until every agent that
+ever started the server is closed. Registering a copy keeps building and
+serving independent.
+
 ## Configure Claude Code
 
 One command, run from anywhere. `--scope user` registers the server for
