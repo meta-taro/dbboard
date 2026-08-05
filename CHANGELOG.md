@@ -22,6 +22,21 @@ public API is the HTTP contract in
   across the upgrade, because an absent flag means `false`.
 - `dbboard-mcp` gained `dump_database`, so an agent can take a backup
   before it writes. It never overwrites an existing file.
+- **`dbboard-mcp` is a downloadable binary** (ADR-0090). Releases now
+  carry `dbboard-mcp-windows-x86_64.exe` and
+  `dbboard-mcp-macos-universal` with checksums, from the same tag as the
+  app. Until now the only way to get the MCP server was to build it, so
+  the documented `claude mcp add dbboard -- /absolute/path/to/dbboard-mcp`
+  named a file that could not exist without a Rust toolchain — an AI
+  agent told to use it searched, found nothing installable, and gave up.
+  The download page still offers only the desktop app; the MCP server is
+  a separate download from the release page, and the setup docs now give
+  a concrete install path and the exact `claude mcp add` line per OS.
+- `dbboard-mcp` documents passing credentials as environment variables
+  (`DBBOARD_*` in the agent's `env` block) for agents that operate under
+  a rule against writing credentials to a file, and states plainly that
+  TLS uses the OS trust store with no flag to pass behind a
+  TLS-terminating corporate proxy (ADR-0034).
 - Connections carry an `mcp_write` flag, settable in `connections.toml`
   or from the app (*Connections → Edit → AI agent access*). Editing a
   connection without touching the toggle keeps whatever is stored, so a

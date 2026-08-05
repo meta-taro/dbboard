@@ -125,12 +125,23 @@ sha256sum -c SHA256SUMS.txt
       <code>connections.toml</code> and OS keychain the app uses, so it adds no
       new place to keep credentials, and secrets never cross the wire.
     </p>
+    <p>
+      It is a separate download from the app above — grab
+      <code>dbboard-mcp-windows-x86_64.exe</code> or
+      <code>dbboard-mcp-macos-universal</code> from the
+      <a href="https://github.com/meta-taro/dbboard/releases/latest">latest
+      release</a>, put it somewhere stable, then register it in one line:
+    </p>
     <pre>
-claude mcp add dbboard --scope user -- /path/to/dbboard-mcp</pre>
+# Windows (PowerShell)
+claude mcp add dbboard --scope user -- "$env:LOCALAPPDATA/dbboard/dbboard-mcp.exe"
+
+# macOS
+claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
     <p class="meta">
       Restart the agent afterwards — each client holds its own server process
-      for the session. Setup, the nine tools, the write policy, and
-      troubleshooting are in the
+      for the session. Setup, the nine tools, the write policy, passing
+      credentials as environment variables, and troubleshooting are in the
       <a href="https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md">dbboard-mcp
       README</a>.
     </p>

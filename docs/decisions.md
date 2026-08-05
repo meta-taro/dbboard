@@ -9137,3 +9137,70 @@ URL in `CLAUDE.md` so every agent working in this repo can quote it.
   `crates/dbboard-mcp/README.md`, `apps/desktop/README.md`,
   `.github/workflows/release.yml`, `site/index.html`, `site/sitemap.xml`, and
   the repo's homepage field.
+
+## ADR-0090 — The MCP server is a released binary, not a `cargo build` step
+
+**Date:** 2026-08-05
+**Status:** Accepted
+
+### Context
+
+`dbboard-mcp` (ADR-0046) had documentation, a nine-tool surface, a write policy
+(ADR-0087), an alias scheme (ADR-0088) — and no distribution channel. It was
+absent from `tauri.conf.json` (no `externalBin`, no `resources`) and absent from
+`release.yml`. The only way to obtain it was `cargo build --release -p
+dbboard-mcp`, so the README's `claude mcp add dbboard -- /absolute/path/to/dbboard-mcp`
+named a file that could not exist on a machine without a Rust toolchain.
+
+This is how it surfaced. An AI agent was told by its own operating notes to use
+the dbboard MCP server. Those notes covered usage and failure handling but not
+where to get it; searching found nothing installable; it stopped at "it clearly
+exists but I can't install it" and switched to a different tool. The failure was
+not phrasing. No amount of rewriting reaches a binary that is never published.
+
+Bundling it inside the desktop installer was considered and rejected. The agent
+does not launch the app — it needs an absolute path to hand `claude mcp add`, and
+burying the executable in an install tree means every setup instruction becomes a
+guess about where that tree is on this machine, on this OS, for this installer
+version. A standalone asset has one answer.
+
+### Decision
+
+1. **The release workflow publishes the MCP server as its own asset**, from the
+   same tag as the desktop app: `dbboard-mcp-windows-x86_64.exe` and
+   `dbboard-mcp-macos-universal` (a `lipo` fat binary), each with a checksum file.
+   Two product lines, one tag.
+2. **The download page does not offer it.** `bucketFor` classifies on the
+   product-name prefix (ADR-0089), so `dbboard-mcp-windows-x86_64.exe` resolves to
+   `null` despite ending in `.exe`, and a unit test pins that. Someone clicking
+   "Download for Windows" wants a GUI, not a headless stdio server.
+3. **Setup is a copy-pasteable line, not prose.** `README.md`,
+   `crates/dbboard-mcp/README.md` and `site/index.html` give a concrete install
+   path per OS and the exact `claude mcp add … --scope user -- <path>` that follows
+   from it. An agent reading the docs can execute them without inventing a path.
+4. **Credentials can be passed as environment variables.** Agents commonly operate
+   under a rule that forbids writing credentials to a file, which made
+   `connections.toml` a hard stop. The `DBBOARD_*` variables were already read;
+   they are now documented against an `mcpServers` `env` block, with the caveat
+   that `~/.claude.json` is itself a file on disk.
+
+### Consequences
+
+- The release job count goes from three to five. The two new jobs are
+  `cargo build` only — no bundler, no signing, no notarization — so they are the
+  cheapest jobs in the workflow.
+- `latest.json` is untouched. The updater globs `out/*-setup.exe` and
+  `out/*.app.tar.gz`; neither matches an MCP asset name.
+- The MCP binaries are unsigned, like the desktop ones. macOS users need
+  `xattr -d com.apple.quarantine`, which is now written down next to the download
+  instruction rather than left to be discovered.
+- Building from source still works and is still documented — it is now the
+  fallback, not the only path.
+- There is no `--use-system-ca` flag to add for corporate TLS-terminating
+  proxies, and the docs say so explicitly rather than staying silent. dbboard
+  reads the OS trust store for every TLS connection (ADR-0034); that is the only
+  mode, so a certificate failure means the proxy CA is missing from the OS store,
+  and the fix is at the OS level.
+- The version skew that bites source-built MCP servers — app on one release, MCP
+  built from a checkout of another — stops being the default state. Both come from
+  the same tag now.

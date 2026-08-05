@@ -7,10 +7,20 @@
 # to). Checksums are the highest-leverage trust signal for an OSS binary:
 # anyone can verify a download against the value the CI computed.
 #
-# One product line ships from a tag: the Tauri desktop app (build-tauri-* →
-# NSIS setup .exe / .dmg plus the updater's signed `.app.tar.gz`/`.sig`). The
-# publish job additionally assembles `latest.json` — the manifest
-# tauri-plugin-updater fetches to discover + verify a newer build (ADR-0067).
+# Two product lines ship from a tag:
+#
+#   1. The Tauri desktop app (build-tauri-* → NSIS setup .exe / .dmg plus the
+#      updater's signed `.app.tar.gz`/`.sig`). The publish job additionally
+#      assembles `latest.json` — the manifest tauri-plugin-updater fetches to
+#      discover + verify a newer build (ADR-0067).
+#   2. The MCP server (build-mcp-* → a single standalone executable per
+#      platform). It is a separate product from the desktop app: an AI agent
+#      needs the binary and nothing else, and until v0.4.0 the only way to get
+#      one was `cargo build`, which put dbboard out of reach of anyone who
+#      could not compile Rust. The desktop installer does not carry it —
+#      bundling would hide the file inside an install tree the agent's
+#      `claude mcp add` line then has to guess at.
+#
 # The egui binary shipped from here through v0.4.0 and was retired in
 # ADR-0089; releases up to v0.4.0 still carry its assets.
 #
@@ -136,8 +146,68 @@ jobs:
           name: tauri-macos
           path: dist/
 
+  # --- MCP server (ADR-0046) ---------------------------------------------
+  #
+  # A plain `cargo build -p dbboard-mcp`: no Node, no bundler, no installer.
+  # The output is one self-contained executable that an agent host launches
+  # over stdio, so "install" means "download the file and point
+  # `claude mcp add` at it". The asset name carries the product prefix
+  # `dbboard-mcp-`, which keeps it out of the download page's buckets — that
+  # page offers the desktop client, and `bucketFor` only claims
+  # `dbboard-desktop*` (ADR-0089).
+  build-mcp-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the MCP server
+        run: cargo build --release -p dbboard-mcp
+      - name: Stage artifact + checksum
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/dbboard-mcp.exe dist/dbboard-mcp-windows-x86_64.exe
+          (Get-FileHash dist/dbboard-mcp-windows-x86_64.exe -Algorithm SHA256).Hash.ToLower() +
+            "  dbboard-mcp-windows-x86_64.exe" |
+            Out-File -Encoding ascii dist/SHA256SUMS.mcp-windows.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-windows
+          path: dist/
+
+  build-mcp-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # One universal binary serves both darwin arches, matching how the
+      # desktop .dmg ships — an agent host on either Mac gets the same file.
+      - name: Add both macOS Rust targets (universal build)
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build the MCP server for both arches
+        run: |
+          set -euo pipefail
+          cargo build --release -p dbboard-mcp --target aarch64-apple-darwin
+          cargo build --release -p dbboard-mcp --target x86_64-apple-darwin
+      - name: Stage artifact + checksum
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          lipo -create -output dist/dbboard-mcp-macos-universal \
+            target/aarch64-apple-darwin/release/dbboard-mcp \
+            target/x86_64-apple-darwin/release/dbboard-mcp
+          chmod +x dist/dbboard-mcp-macos-universal
+          cd dist
+          shasum -a 256 dbboard-mcp-macos-universal > SHA256SUMS.mcp-macos.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-macos
+          path: dist/
+
   publish:
-    needs: [build-tauri-windows, build-tauri-macos]
+    needs: [build-tauri-windows, build-tauri-macos, build-mcp-windows, build-mcp-macos]
     # Only publish for a real tag *push*. Checking event_name as well as
     # ref_type is load-bearing: a manual workflow_dispatch run can also be
     # aimed at an existing tag (via the "Run workflow" ref picker or
@@ -245,7 +315,7 @@ jobs:
           gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
             || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
                  --title "${GITHUB_REF_NAME}" --generate-notes \
-                 --notes "**[Download dbboard](https://meta-taro.github.io/dbboard/)** picks the right installer for your OS. Verify what you get against SHA256SUMS.txt below."
+                 --notes "**[Download dbboard](https://meta-taro.github.io/dbboard/)** picks the right installer for your OS. For the MCP server that hands your databases to an AI agent, grab \`dbboard-mcp-windows-x86_64.exe\` or \`dbboard-mcp-macos-universal\` from the assets below and follow [the setup](https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md). Verify what you get against SHA256SUMS.txt."
 
       # Runner-bundled gh CLI + built-in token; no third-party release
       # action. `--clobber` makes re-runs idempotent.

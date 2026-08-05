@@ -41,6 +41,14 @@ test("the retired egui assets are ignored", () => {
   assert.equal(bucketFor("dbboard-macos-universal-0.4.0.dmg"), null);
 });
 
+test("the MCP server binaries are not desktop downloads", () => {
+  // Published from the same tag but a different product (ADR-0046). The
+  // Windows one ends in `.exe`, so an extension-keyed classifier would offer
+  // a headless stdio server to someone clicking "Download for Windows".
+  assert.equal(bucketFor("dbboard-mcp-windows-x86_64.exe"), null);
+  assert.equal(bucketFor("dbboard-mcp-macos-universal"), null);
+});
+
 test("the updater's own artifacts are not downloads", () => {
   // `.app.tar.gz` and the signatures exist for tauri-plugin-updater, not for
   // a human clicking a button.

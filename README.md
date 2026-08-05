@@ -489,16 +489,46 @@ The security posture is the reason it is safe to point an agent at:
 - **stdout is sacred.** JSON-RPC frames own stdout; all logging goes to
   stderr (`RUST_LOG`, default `info`).
 
+**Get it from the
+[latest release](https://github.com/meta-taro/dbboard/releases/latest)** —
+`dbboard-mcp-windows-x86_64.exe` or `dbboard-mcp-macos-universal`. It is a
+single executable with no runtime dependencies, and it is a *separate*
+download from the desktop app: the installer on the download page does not
+contain it. Put it somewhere stable, because the path goes into the agent's
+config:
+
+```powershell
+# Windows (PowerShell)
+mkdir -Force "$env:LOCALAPPDATA\dbboard"
+Move-Item -Force ~\Downloads\dbboard-mcp-windows-x86_64.exe "$env:LOCALAPPDATA\dbboard\dbboard-mcp.exe"
+```
+
 ```sh
-cargo build --release -p dbboard-mcp
-# binary at target/release/dbboard-mcp(.exe)
+# macOS
+mkdir -p ~/.local/bin
+mv ~/Downloads/dbboard-mcp-macos-universal ~/.local/bin/dbboard-mcp
+chmod +x ~/.local/bin/dbboard-mcp
+xattr -d com.apple.quarantine ~/.local/bin/dbboard-mcp   # Gatekeeper, unsigned build
 ```
 
 Register it with **Claude Code** in one command — `--scope user` makes it
 available in every project on the machine:
 
 ```sh
-claude mcp add dbboard --scope user -- /absolute/path/to/dbboard-mcp
+# macOS / Linux
+claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"
+```
+
+```powershell
+# Windows (PowerShell)
+claude mcp add dbboard --scope user -- "$env:LOCALAPPDATA/dbboard/dbboard-mcp.exe"
+```
+
+To build it yourself instead:
+
+```sh
+cargo build --release -p dbboard-mcp
+# binary at target/release/dbboard-mcp(.exe)
 ```
 
 Or with **Claude Desktop**, by adding the absolute path to the built
@@ -524,9 +554,12 @@ app* does nothing to it, because they are separate processes.
 
 With no arguments it reads the same per-user `connections.toml` the GUI
 uses; pass `--config` (or set `DBBOARD_CONFIG`) to point at a curated,
-least-privilege subset instead. Full configuration — the per-OS config
-paths, running several agents at once, and what to check when a
-connection fails — is documented in
+least-privilege subset instead. If your operating rules forbid writing
+credentials to a file at all, pass them as environment variables in the
+agent's own config — see *Credentials without writing a file* in the crate
+README. Full configuration — the per-OS config paths, running several
+agents at once, TLS behind a corporate proxy, and the literal error strings
+a failed connection produces — is documented in
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md).
 
 ## Development
