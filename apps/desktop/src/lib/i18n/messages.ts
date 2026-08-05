@@ -205,6 +205,11 @@ export const en = {
   "conn-ssh-fetch-busy": "Asking…",
   "conn-ssh-known-hosts-hint":
     "The OpenSSH file you already trust this server in. On Windows it is usually .ssh\known_hosts under your user folder.",
+  // MCP write gate (ADR-0087)
+  "conn-mcp-section": "AI agent access",
+  "conn-mcp-write": "Let an AI agent write to this database",
+  "conn-mcp-write-hint":
+    "Off by default. An agent can always read; turning this on also lets it INSERT, UPDATE, DELETE, CREATE and ALTER. Granting privileges, TRUNCATE and DROP stay blocked either way.",
   // Connection bundle import/export (ADR-0038)
   "conn-export": "Export…",
   "conn-import": "Import…",
@@ -504,6 +509,11 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-ssh-fetch-busy": "問い合わせ中…",
   "conn-ssh-known-hosts-hint":
     "このサーバーを既に登録済みの OpenSSH ファイルです。Windows では通常ユーザーフォルダ直下の .ssh\known_hosts です。",
+  // MCP 書き込みゲート (ADR-0087)
+  "conn-mcp-section": "AI エージェントからの操作",
+  "conn-mcp-write": "この接続への書き込みを AI エージェントに許可する",
+  "conn-mcp-write-hint":
+    "既定はオフです。エージェントは常に読み取れます。オンにすると INSERT / UPDATE / DELETE / CREATE / ALTER も実行できます。権限付与・TRUNCATE・DROP はどちらの状態でも禁止されたままです。",
   // 接続バンドルのインポート/エクスポート (ADR-0038)
   "conn-export": "エクスポート…",
   "conn-import": "インポート…",

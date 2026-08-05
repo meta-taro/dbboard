@@ -106,8 +106,10 @@ sha256sum -c SHA256SUMS.txt
     <p>
       dbboard also ships <code>dbboard-mcp</code>, a headless
       <a href="https://modelcontextprotocol.io">MCP</a> server that hands the
-      connections you have already configured to an AI agent as a
-      <strong>read-only</strong> tool surface over stdio. It reuses the same
+      connections you have already configured to an AI agent as a tool surface
+      over stdio. Reading is always on; writing stays off until you opt a
+      connection in, and privilege changes, <code>TRUNCATE</code> and
+      <code>DROP</code> are blocked either way. It reuses the same
       <code>connections.toml</code> and OS keychain the app uses, so it adds no
       new place to keep credentials, and secrets never cross the wire.
     </p>
@@ -115,7 +117,8 @@ sha256sum -c SHA256SUMS.txt
 claude mcp add dbboard --scope user -- /path/to/dbboard-mcp</pre>
     <p class="meta">
       Restart the agent afterwards — each client holds its own server process
-      for the session. Setup, the seven tools, and troubleshooting are in the
+      for the session. Setup, the nine tools, the write policy, and
+      troubleshooting are in the
       <a href="https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md">dbboard-mcp
       README</a>.
     </p>

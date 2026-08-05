@@ -274,7 +274,13 @@
     error = '';
     try {
       if (editorMode === 'add') {
-        await addConnection(form.id, form.name, buildKindInput(form), buildSshInput(form));
+        await addConnection(
+          form.id,
+          form.name,
+          buildKindInput(form),
+          buildSshInput(form),
+          form.mcp_write,
+        );
       } else {
         await updateConnection(
           form.id,
@@ -282,6 +288,7 @@
           buildKindEditInput(form),
           buildSshEditInput(form),
           keepStoredPassword(form, editorMode),
+          form.mcp_write,
         );
       }
       await workspace.refreshConnections();
@@ -812,6 +819,22 @@
             {/if}
           </fieldset>
         {/if}
+
+        <!-- Rendered in both modes on purpose: an edit form without this
+             toggle would send no opinion and the gate would look absent,
+             which is the opposite of what a permission screen should do. -->
+        <fieldset class="ssh">
+          <legend>{i18n.t('conn-mcp-section')}</legend>
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={form.mcp_write}
+              onchange={(e) => (form.mcp_write = e.currentTarget.checked)}
+            />
+            <span>{i18n.t('conn-mcp-write')}</span>
+          </label>
+          <p class="note">{i18n.t('conn-mcp-write-hint')}</p>
+        </fieldset>
 
         <div class="actions">
           <button type="button" class="ghost" disabled={busy} onclick={goList}>

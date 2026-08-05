@@ -1471,6 +1471,7 @@ mod tests {
         use dbboard_config::store::{ConnectionEntry, ConnectionKind};
         let entries = vec![
             ConnectionEntry {
+                mcp_write: false,
                 ssh: None,
                 id: "store-a".into(),
                 name: "Store A".into(),
@@ -1479,6 +1480,7 @@ mod tests {
                 },
             },
             ConnectionEntry {
+                mcp_write: false,
                 ssh: None,
                 id: "store-b".into(),
                 name: "Store B".into(),
