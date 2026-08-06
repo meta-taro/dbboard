@@ -9,6 +9,47 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-06
+
+A patch release with nothing in it but two bugs found by using the thing.
+Both broke a real workflow rather than an edge case: a connection through
+an SSH bastion would die and stay dead until the app was restarted, and
+schema introspection failed against every MySQL 8 table — which also meant
+the MCP tool `list_relationships` had been returning an empty result
+instead of an error.
+
+No contract change; [`docs/api-contract.md`](docs/api-contract.md) is
+unchanged from 0.2.0.
+
+### Fixed
+
+- **A connection through an SSH bastion could die and stay dead until the
+  app was restarted** ([ADR-0092](docs/decisions.md)). Every call after it
+  failed with `expected to read 4 bytes, got 0 bytes at EOF`. The tunnel now
+  sends SSH keepalives (russh sends none by default, so an idle session was
+  simply reaped), and a cached connection that has been idle for 30 seconds
+  is pinged before it is used again — a failed ping throws it away and dials
+  a fresh one, which is what rebuilds the forward.
+
+- MySQL schema introspection failed on every table against MySQL 8, with
+  `type conversion failed: … Rust type alloc::string::String (as SQL type
+  VARCHAR) is not compatible with SQL type BLOB`. Since 8.0 the
+  `information_schema` views are served from the data dictionary, which
+  declares `TABLE_NAME` as `VARBINARY` and `DATA_TYPE` as `BLOB`, so
+  sqlx's type check rejected bytes that were perfectly good UTF-8. Metadata
+  text is now read as bytes and validated here, the way query cells already
+  were. This unbreaks `describe_table`, `table_ddl`, `foreign_keys` and —
+  through them — the MCP tools `describe_table`, `search_schema` and
+  `list_relationships`, the last of which had been failing *quietly*: it
+  swallows a per-table introspection error, so it returned an empty set of
+  relationships instead of an error.
+
+### Added
+
+- **A reconnect action**: a reload icon on the connection pill, and a
+  Reconnect button in the error banner. The app now heals a dead connection
+  on its own, so this is for recovering *now* rather than on the next call.
+
 ## [0.5.0] — 2026-08-05
 
 Fifth tagged release, and the one that makes dbboard usable by something
@@ -410,7 +451,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/meta-taro/dbboard/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/meta-taro/dbboard/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/meta-taro/dbboard/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/meta-taro/dbboard/compare/v0.2.0...v0.3.0

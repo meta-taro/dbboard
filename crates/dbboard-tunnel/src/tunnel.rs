@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 
@@ -49,6 +50,54 @@ impl Drop for SshTunnel {
     }
 }
 
+/// How long the session may go quiet before the client pokes the bastion.
+///
+/// russh leaves keepalives off by default, which is what let an idle tunnel
+/// die unnoticed: a database session that nobody queries for a while sends
+/// nothing, sshd (or a NAT/firewall in between) reaps the connection, and the
+/// loopback forward stops working while the [`SshTunnel`] guard is still held.
+/// The next query then fails with `expected to read 4 bytes, got 0 bytes at
+/// EOF` and keeps failing, because nothing in the process knows to rebuild it.
+///
+/// Thirty seconds is comfortably under the shortest idle window that is
+/// commonly configured — OpenSSH's own `ClientAliveInterval` guidance, NAT
+/// table entries (typically 300 s) and cloud load-balancer idle timeouts
+/// (60–350 s) — so the forward stays warm without meaningful traffic.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How many unanswered keepalives end the session.
+///
+/// This is the *other* half of the point: a bastion that has silently gone
+/// away should surface as a closed session (and therefore a failed connect on
+/// the next attempt) rather than as a forward that accepts sockets and never
+/// answers. Three misses is 90 s of confirmed silence.
+const KEEPALIVE_MAX: usize = 3;
+
+// The two numbers above only work together. Checked at compile time rather
+// than in a test because they are properties of the constants themselves:
+// nothing runs, so nothing can observe them going wrong.
+const _: () = assert!(
+    KEEPALIVE_INTERVAL.as_secs() * 2 <= 60,
+    "two pokes must fit inside the shortest idle window worth surviving (60 s)"
+);
+const _: () = assert!(
+    KEEPALIVE_MAX > 0,
+    "0 means never give up, which would keep a session that can no longer \
+     forward anything"
+);
+
+/// The russh client configuration used for every tunnel.
+///
+/// Split out from [`open`] so the keepalive settings — the whole reason this
+/// is not `Config::default()` — can be asserted without a bastion.
+fn client_config() -> russh::client::Config {
+    russh::client::Config {
+        keepalive_interval: Some(KEEPALIVE_INTERVAL),
+        keepalive_max: KEEPALIVE_MAX,
+        ..Default::default()
+    }
+}
+
 /// Connect to the bastion, verify its host key, authenticate, and start
 /// forwarding a fresh loopback port to `forward_host:forward_port` on the far
 /// side.
@@ -71,7 +120,7 @@ pub async fn open(config: SshTunnelConfig) -> TunnelResult<SshTunnel> {
         rejection: Arc::clone(&rejection),
     };
 
-    let ssh_config = Arc::new(russh::client::Config::default());
+    let ssh_config = Arc::new(client_config());
     let mut session =
         russh::client::connect(ssh_config, (config.host.as_str(), config.port), handler)
             .await
@@ -278,5 +327,22 @@ impl russh::client::Handler for ProbeHandler {
         *self.captured.lock().expect("probe lock poisoned") =
             Some(server_public_key.fingerprint(HashAlg::Sha256).to_string());
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{client_config, KEEPALIVE_INTERVAL, KEEPALIVE_MAX};
+
+    #[test]
+    fn the_session_is_kept_alive_while_idle() {
+        let config = client_config();
+        assert_eq!(
+            config.keepalive_interval,
+            Some(KEEPALIVE_INTERVAL),
+            "russh defaults keepalives off, which lets an idle tunnel be reaped \
+             while the guard is still held"
+        );
+        assert_eq!(config.keepalive_max, KEEPALIVE_MAX);
     }
 }

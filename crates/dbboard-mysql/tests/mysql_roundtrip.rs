@@ -339,3 +339,44 @@ async fn read_only_decodes_wide_types_as_printed_text() {
         Some(&Value::Text("2026-07-30 12:34:56".to_string()))
     );
 }
+
+/// `table_ddl` round-trip. `SHOW CREATE TABLE` is the one metadata path with no
+/// `CAST(… AS CHAR)` escape hatch — `SHOW` takes no expressions — so if the
+/// server hands the statement back under a binary type, reading it as bytes is
+/// the only way through. A multi-byte identifier is included because the same
+/// read is what turns those bytes back into a string.
+#[tokio::test]
+async fn table_ddl_round_trips_including_multibyte_identifiers() {
+    use dbboard_core::TableInfo;
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_MYSQL_URL not set");
+        return;
+    };
+
+    let adapter = MySqlAdapter::connect(config).await.expect("connect");
+
+    let table = format!("dbboard_mysql_ddl_{}", std::process::id());
+    let drop_sql = format!("DROP TABLE IF EXISTS `{table}`");
+    adapter.query(&drop_sql).await.expect("pre-drop");
+    adapter
+        .query(&format!(
+            "CREATE TABLE `{table}` (\
+             id INT NOT NULL PRIMARY KEY, \
+             `点検日` DATE NULL)"
+        ))
+        .await
+        .expect("create");
+
+    let ddl = adapter
+        .table_ddl(&TableInfo::unqualified(&table))
+        .await
+        .expect("table_ddl");
+
+    assert!(ddl.contains(&table), "DDL should name the table: {ddl}");
+    assert!(
+        ddl.contains("点検日"),
+        "a multi-byte column name must survive the decode: {ddl}"
+    );
+
+    adapter.query(&drop_sql).await.expect("cleanup drop");
+}

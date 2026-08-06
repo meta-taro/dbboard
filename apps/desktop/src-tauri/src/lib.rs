@@ -253,6 +253,7 @@ pub fn run() {
             add_connection,
             update_connection,
             delete_connection,
+            reconnect_connection,
             export_connections,
             import_connections,
             save_text_file,
@@ -1054,6 +1055,24 @@ async fn delete_connection(state: tauri::State<'_, AppState>, id: String) -> Res
     }
     state.service.invalidate(&id).await;
     Ok(())
+}
+
+/// Drop the cached adapter for `id` and open a fresh connection.
+///
+/// The read path already re-checks an idle adapter before handing it out, so
+/// this is not needed to *recover* — it is needed to recover *now*. A user
+/// looking at a pane that just failed should not have to guess whether
+/// clicking again will work; through an SSH bastion the dead thing is the
+/// tunnel, and only dropping the adapter rebuilds the forward.
+///
+/// Connecting pings, so an `Ok` here means the database answered.
+#[tauri::command]
+async fn reconnect_connection(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .service
+        .reconnect(&id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Export every connection (entries + secrets) to a passphrase-encrypted

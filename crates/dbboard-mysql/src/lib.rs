@@ -235,17 +235,18 @@ impl DatabaseAdapter for MySqlAdapter {
             .map_err(|e| classify_error(&e))?;
         let primary_key = pk_rows
             .iter()
-            .map(|row| row.try_get(0).map_err(|e| classify_error(&e)))
+            .map(|row| text_at(row, 0))
             .collect::<DbResult<Vec<String>>>()?;
 
         let columns = column_rows
             .iter()
             .map(|row| -> DbResult<ColumnInfo> {
-                let name: String = row.try_get(0).map_err(|e| classify_error(&e))?;
-                let data_type: String = row.try_get(1).map_err(|e| classify_error(&e))?;
-                let is_nullable: String = row.try_get(2).map_err(|e| classify_error(&e))?;
-                let default_value: Option<String> =
-                    row.try_get(3).map_err(|e| classify_error(&e))?;
+                let name = text_at(row, 0)?;
+                let data_type = text_at(row, 1)?;
+                let is_nullable = text_at(row, 2)?;
+                let default_value = opt_text_at(row, 3)?;
+                // `ordinal_position` is `CAST(… AS SIGNED)` in the query, so it
+                // is the one metadata column with a type we control.
                 let ordinal: i64 = row.try_get(4).map_err(|e| classify_error(&e))?;
                 column_from_parts(
                     name,
@@ -279,11 +280,11 @@ impl DatabaseAdapter for MySqlAdapter {
             .iter()
             .map(|row| -> DbResult<FkRow> {
                 Ok(FkRow {
-                    constraint_name: row.try_get(0).map_err(|e| classify_error(&e))?,
-                    local_column: row.try_get(1).map_err(|e| classify_error(&e))?,
-                    referenced_schema: row.try_get(2).map_err(|e| classify_error(&e))?,
-                    referenced_table: row.try_get(3).map_err(|e| classify_error(&e))?,
-                    referenced_column: row.try_get(4).map_err(|e| classify_error(&e))?,
+                    constraint_name: text_at(row, 0)?,
+                    local_column: text_at(row, 1)?,
+                    referenced_schema: text_at(row, 2)?,
+                    referenced_table: text_at(row, 3)?,
+                    referenced_column: text_at(row, 4)?,
                 })
             })
             .collect::<DbResult<Vec<_>>>()?;
@@ -303,8 +304,10 @@ impl DatabaseAdapter for MySqlAdapter {
             .await
             .map_err(|e| classify_error(&e))?;
         // `SHOW CREATE TABLE` returns two columns: the table name, then the
-        // `CREATE TABLE` statement.
-        row.try_get::<String, _>(1).map_err(|e| classify_error(&e))
+        // `CREATE TABLE` statement. Read as bytes for the same reason the
+        // information_schema paths do — and here a `CAST` is not even available
+        // as an alternative, since `SHOW` takes no expressions.
+        text_at(&row, 1)
     }
 
     async fn query(&self, sql: &str) -> DbResult<QueryResult> {
@@ -705,6 +708,58 @@ fn decode_cell(raw: MySqlValueRef<'_>) -> DbResult<Value> {
     }
 }
 
+/// Read a metadata column as text, whatever type the server declared it to be.
+///
+/// `MySQL` makes no promise about the declared type of the columns
+/// `information_schema` exposes. Since 8.0 those views are served from the data
+/// dictionary, where `TABLE_NAME` arrives as `VARBINARY` and `DATA_TYPE` as
+/// `BLOB`. A `try_get::<String>` there fails sqlx's type check on bytes that
+/// are perfectly good UTF-8 — the mismatch is in the *declaration*, not the
+/// data — and takes `describe_table`, `foreign_keys` and `table_ddl` down with
+/// it on every table. The text protocol never hits this, which is why
+/// `list_tables` (which goes through [`decode_cell`]) kept working while the
+/// prepared-statement metadata paths all failed.
+///
+/// Reading the bytes and validating them here is the same move [`decode_cell`]
+/// already makes, so the crate has one story for text. It is deliberately an
+/// accessor rather than a `CAST(… AS CHAR)` per column: a cast has to be
+/// remembered at every call site and cannot be applied to `SHOW CREATE TABLE`
+/// at all, whereas this cannot be forgotten because it *is* how metadata text
+/// is read.
+fn text_at(row: &MySqlRow, index: usize) -> DbResult<String> {
+    opt_text_at(row, index)?.ok_or_else(|| {
+        DbError::Schema(format!(
+            "information_schema returned NULL for column {index}, which is declared NOT NULL"
+        ))
+    })
+}
+
+/// [`text_at`] for a column that is genuinely nullable (`COLUMN_DEFAULT`).
+fn opt_text_at(row: &MySqlRow, index: usize) -> DbResult<Option<String>> {
+    let raw = row.try_get_raw(index).map_err(|e| classify_error(&e))?;
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let bytes = <Vec<u8> as sqlx::Decode<sqlx::MySql>>::decode(raw)
+        .map_err(|e| DbError::TypeConversion(truncate(&e.to_string())))?;
+    bytes_to_text(bytes, index).map(Some)
+}
+
+/// Interpret metadata bytes as UTF-8.
+///
+/// Unlike [`decode_cell`], invalid UTF-8 is an error rather than a
+/// [`Value::Blob`]: an identifier or type name that is not text has no useful
+/// representation in a [`TableSchema`], and silently substituting one would
+/// hand the caller a name it cannot use to address the object.
+fn bytes_to_text(bytes: Vec<u8>, index: usize) -> DbResult<String> {
+    String::from_utf8(bytes).map_err(|e| {
+        DbError::Schema(format!(
+            "information_schema column {index} is not valid UTF-8: {}",
+            truncate(&e.to_string())
+        ))
+    })
+}
+
 fn tuple_to_table(schema: String, name: String) -> TableInfo {
     TableInfo::qualified(schema, name)
 }
@@ -876,7 +931,7 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        assemble_foreign_keys, classify_error, column_from_parts, harden_ssl_mode,
+        assemble_foreign_keys, bytes_to_text, classify_error, column_from_parts, harden_ssl_mode,
         is_unknown_system_variable, qualified_ident, quote_ident, reclassify_schema, styles_to_try,
         truncate, FkRow, TimeoutStyle, FLAVOR_MYSQL, PROBE_ORDER,
     };
@@ -1175,6 +1230,32 @@ mod tests {
             reclassify_schema(DbError::Connection("x".into())),
             DbError::Connection(_)
         ));
+    }
+
+    /// Metadata bytes are read without consulting the column's declared type,
+    /// which is what lets `describe_table` survive `information_schema`
+    /// handing back `VARBINARY`/`BLOB` for identifiers and type names on
+    /// `MySQL` 8. Valid UTF-8 must come back verbatim, multi-byte included.
+    #[test]
+    fn metadata_bytes_decode_as_utf8_whatever_the_declared_type_was() {
+        assert_eq!(bytes_to_text(b"orders".to_vec(), 0).unwrap(), "orders");
+        assert_eq!(
+            bytes_to_text("設備点検ログ".as_bytes().to_vec(), 1).unwrap(),
+            "設備点検ログ"
+        );
+        assert_eq!(bytes_to_text(Vec::new(), 2).unwrap(), "");
+    }
+
+    /// Unlike a query cell, a metadata cell that is not text has no useful
+    /// fallback: an identifier the caller cannot spell is worse than an error.
+    #[test]
+    fn metadata_bytes_that_are_not_utf8_are_a_schema_error() {
+        let err = bytes_to_text(vec![0xff, 0xfe], 3).expect_err("invalid UTF-8");
+        assert!(matches!(err, DbError::Schema(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("column 3"),
+            "the message must say which column: {err}"
+        );
     }
 
     #[test]
