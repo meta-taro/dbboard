@@ -184,13 +184,43 @@
           <span class="conn-pill" title={workspace.connection.id}>
             <span class="dot" aria-hidden="true"></span>
             {workspace.connection.name}
+            <button
+              type="button"
+              class="pill-reload"
+              onclick={() => workspace.reconnect()}
+              disabled={workspace.reconnecting}
+              title={i18n.t('reconnect-button-title')}
+              aria-label={i18n.t('reconnect-button-title')}
+            >
+              <svg class="reload-icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89" />
+                <path d="M13.5 2v3.5H10" />
+              </svg>
+            </button>
           </span>
         {/if}
       </div>
     </nav>
 
+    <!-- A failed load is very often a connection that died out from under us
+         (a dropped SSH tunnel, a suspended laptop), so the banner carries the
+         one action that fixes it rather than making you hunt for it. -->
     {#if workspace.error}
-      <p class="shell-error">{workspace.error}</p>
+      <p class="shell-error">
+        <span class="shell-error-text">{workspace.error}</span>
+        {#if workspace.connectionId}
+          <button
+            type="button"
+            class="shell-error-action"
+            onclick={() => workspace.reconnect()}
+            disabled={workspace.reconnecting}
+          >
+            {workspace.reconnecting
+              ? i18n.t('reconnect-busy')
+              : i18n.t('reconnect-error-action')}
+          </button>
+        {/if}
+      </p>
     {/if}
 
     <!-- Both panels stay mounted; hiding (not unmounting) preserves the SQL
@@ -345,7 +375,40 @@
     flex: none;
   }
 
+  .pill-reload {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 -4px 0 2px;
+    padding: 2px;
+    border: 0;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    border-radius: var(--radius-pill);
+  }
+  .pill-reload:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--bg-surface-alt);
+  }
+  .pill-reload:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .reload-icon {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
   .shell-error {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
     margin: 0;
     padding: var(--space-2) var(--space-4);
     color: var(--danger);
@@ -354,6 +417,27 @@
     font-family: var(--font-mono);
     font-size: var(--text-small);
     white-space: pre-wrap;
+  }
+  .shell-error-text {
+    flex: 1;
+    min-width: 0;
+  }
+  .shell-error-action {
+    flex: none;
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 1px solid currentColor;
+    border-radius: var(--radius-widget);
+    padding: 1px 8px;
+    cursor: pointer;
+  }
+  .shell-error-action:hover:not(:disabled) {
+    background: var(--danger-weak);
+  }
+  .shell-error-action:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   .content {

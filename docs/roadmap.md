@@ -14,8 +14,8 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-08-05)**: `desktop` has shipped Phases 1 through 5 and
-  released **v0.5.0** — seven adapters (Turso, D1, CockroachDB, Neon,
+- **Right now (2026-08-06)**: `desktop` has shipped Phases 1 through 5 and
+  released **v0.5.1** — seven adapters (Turso, D1, CockroachDB, Neon,
   Supabase, Aurora DSQL, and MySQL / MariaDB via `dbboard-mysql`, ADR-0068,
   the first genuinely different SQL dialect), the optional AI assistant
   (Phase 4), an MCP server (`dbboard-mcp`, ADR-0046) that can now write
@@ -24,7 +24,10 @@ focus:
   tunnelling through a bastion (`dbboard-tunnel`, ADR-0069), and in-place
   auto-update (`tauri-plugin-updater`, ADR-0067). Builds are public at
   <https://meta-taro.github.io/dbboard/> (ADR-0047); the MCP server is a
-  separate download from the release page.
+  separate download from the release page. v0.5.1 is a patch on top: it
+  fixes an SSH-tunnelled connection that could die and stay dead until
+  restart (ADR-0092) and MySQL 8 schema introspection, which failed on
+  every table because `information_schema` serves its metadata as bytes.
 
   The Tauri 2 + SvelteKit client reached parity at v0.4.0 and is now the
   **only** client: the egui app and its supporting crates were deleted in

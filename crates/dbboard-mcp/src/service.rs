@@ -37,6 +37,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
 use dbboard_config::store::{self, ConnectionKind};
@@ -430,8 +431,45 @@ pub struct McpService {
     // `:memory:`, would silently open a fresh empty database each time
     // (see `dbboard_connect::connect_adapter`). A tokio `Mutex` because
     // the miss path connects across an `.await`.
-    cache: Mutex<HashMap<String, Arc<dyn DatabaseAdapter>>>,
+    cache: Mutex<HashMap<String, CachedAdapter>>,
 }
+
+/// A cached adapter and when it last completed a round-trip.
+///
+/// The timestamp is what makes the cache recoverable. A cached adapter can
+/// stop working without anything in this process noticing: through an SSH
+/// bastion the adapter owns the tunnel guard
+/// (`dbboard_connect::tunneled::TunneledAdapter`), and when the bastion drops
+/// the session the loopback forward dies while the guard stays held. sqlx
+/// then cannot heal it either — it discards the dead socket and dials the
+/// same dead forward — so every call keeps failing with `expected to read 4
+/// bytes, got 0 bytes at EOF` until the process restarts. Re-checking an idle
+/// entry before handing it out turns that permanent wedge into one failed
+/// call.
+struct CachedAdapter {
+    adapter: Arc<dyn DatabaseAdapter>,
+    checked_at: Instant,
+}
+
+impl CachedAdapter {
+    fn new(adapter: Arc<dyn DatabaseAdapter>) -> Self {
+        Self {
+            adapter,
+            checked_at: Instant::now(),
+        }
+    }
+}
+
+/// How long a cached adapter is trusted without proof.
+///
+/// A cache hit younger than this is handed straight back; an older one is
+/// pinged first. The window exists because the ping is a real round-trip:
+/// paying it on every call would put one on the front of every keystroke in
+/// the UI, and paying it never is what left a dead tunnel wedged. Thirty
+/// seconds keeps it off interactive bursts while still catching the case that
+/// actually breaks — a connection left alone long enough for a bastion or a
+/// laptop suspend to kill it.
+const HEALTH_CHECK_AFTER_IDLE: Duration = Duration::from_secs(30);
 
 impl McpService {
     /// Build a service reading connections from `config_path` and
@@ -1056,8 +1094,28 @@ impl McpService {
         connection_id: &str,
     ) -> Result<Arc<dyn DatabaseAdapter>, ServiceError> {
         let mut cache = self.cache.lock().await;
-        if let Some(adapter) = cache.get(connection_id) {
-            return Ok(Arc::clone(adapter));
+        let cached = cache
+            .get(connection_id)
+            .map(|e| (Arc::clone(&e.adapter), e.checked_at));
+        if let Some((adapter, checked_at)) = cached {
+            if checked_at.elapsed() < HEALTH_CHECK_AFTER_IDLE {
+                return Ok(adapter);
+            }
+            // The ping runs under the cache lock, like the connect below it:
+            // one round-trip serialises the other connections briefly, but a
+            // second caller racing in would otherwise get the entry this one
+            // is about to evict.
+            if adapter.ping().await.is_ok() {
+                if let Some(entry) = cache.get_mut(connection_id) {
+                    entry.checked_at = Instant::now();
+                }
+                return Ok(adapter);
+            }
+            // Unreachable, so it is not an adapter any more. Dropping it here
+            // also drops any SSH tunnel guard it owns, which is what lets the
+            // rebuild below open a *new* forward instead of reusing the dead
+            // one.
+            cache.remove(connection_id);
         }
 
         let file = self.load_connection_file().await?;
@@ -1076,7 +1134,10 @@ impl McpService {
                 .map_err(|e| ServiceError::Task(e.to_string()))??;
 
         let adapter = connect_adapter(config).await?;
-        cache.insert(connection_id.to_string(), Arc::clone(&adapter));
+        cache.insert(
+            connection_id.to_string(),
+            CachedAdapter::new(Arc::clone(&adapter)),
+        );
         Ok(adapter)
     }
 
@@ -1088,6 +1149,24 @@ impl McpService {
     /// now-deleted entry) is never handed back. A miss is a no-op.
     pub async fn invalidate(&self, connection_id: &str) {
         self.cache.lock().await.remove(connection_id);
+    }
+
+    /// Drop the cached adapter for `connection_id` and build a fresh one,
+    /// tunnel included.
+    ///
+    /// This is the manual form of what [`Self::adapter_for`] does on its own
+    /// after an idle period: it exists so a user staring at a failed pane can
+    /// fix it now rather than wait out [`HEALTH_CHECK_AFTER_IDLE`]. Connecting
+    /// pings, so a success here means the connection is genuinely usable and
+    /// not merely re-dialled.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] if no such connection is
+    /// configured, or [`ServiceError::Db`] if the fresh connection fails.
+    pub async fn reconnect(&self, connection_id: &str) -> Result<(), ServiceError> {
+        self.invalidate(connection_id).await;
+        self.adapter_for(connection_id).await.map(|_| ())
     }
 
     async fn load_connection_file(&self) -> Result<store::ConnectionFile, ServiceError> {
@@ -1134,6 +1213,7 @@ mod tests {
         Capabilities, DbResult, ForeignKey as CoreForeignKey, QueryResult as CoreQueryResult,
     };
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     /// A service pointing at a fresh temp config dir, plus the paths so a
@@ -1436,6 +1516,178 @@ path = ":memory:"
             .await
             .expect("rebuilt")
             .is_empty());
+    }
+
+    /// An adapter that counts its pings and can be told to stop answering —
+    /// the shape of a connection through an SSH bastion that has dropped the
+    /// session while this process still holds the tunnel guard.
+    struct CountingPing {
+        alive: bool,
+        pings: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl DatabaseAdapter for CountingPing {
+        fn id(&self) -> &'static str {
+            "counting"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
+        async fn ping(&self) -> DbResult<()> {
+            self.pings.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.alive {
+                Ok(())
+            } else {
+                Err(DbError::Connection(
+                    "error communicating with database: expected to read 4 bytes,                      got 0 bytes at EOF"
+                        .into(),
+                ))
+            }
+        }
+        async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+            Ok(vec![TableInfo::unqualified("kept")])
+        }
+        async fn query(&self, _sql: &str) -> DbResult<CoreQueryResult> {
+            Ok(CoreQueryResult::empty())
+        }
+    }
+
+    /// Seed the cache with an adapter that was last checked `age` ago.
+    async fn cache_aged(fx: &Fixture, id: &str, alive: bool, age: Duration) -> Arc<AtomicUsize> {
+        let pings = Arc::new(AtomicUsize::new(0));
+        let checked_at = Instant::now().checked_sub(age).expect(
+            "Instant::now() is less than `age` past the boot instant —              the machine was booted seconds ago",
+        );
+        fx.service.cache.lock().await.insert(
+            id.to_string(),
+            CachedAdapter {
+                adapter: Arc::new(CountingPing {
+                    alive,
+                    pings: Arc::clone(&pings),
+                }),
+                checked_at,
+            },
+        );
+        pings
+    }
+
+    /// A cached adapter can stop working with nothing in this process
+    /// noticing. Through an SSH bastion the adapter owns the tunnel guard, so
+    /// when the bastion drops the session the loopback forward dies while the
+    /// guard stays held — and sqlx cannot heal that, because discarding the
+    /// dead socket only makes it dial the same dead forward. Nothing evicted
+    /// the entry, so every later call failed with `got 0 bytes at EOF` until
+    /// the app was restarted. An idle adapter that no longer answers must be
+    /// dropped, which also drops the guard and frees the rebuild to open a
+    /// new forward.
+    #[tokio::test]
+    async fn an_idle_adapter_that_stopped_answering_is_dropped_not_handed_back() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1
+",
+        );
+        let pings = cache_aged(&fx, "dead", false, HEALTH_CHECK_AFTER_IDLE * 2).await;
+
+        // With the entry gone and no matching config, the rebuild has nothing
+        // to build from — which is exactly how we can tell it was attempted.
+        let err = fx
+            .service
+            .list_tables("dead")
+            .await
+            .expect_err("a dead adapter must not be handed back");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "expected a rebuild attempt, got {err:?}"
+        );
+        assert_eq!(pings.load(Ordering::SeqCst), 1, "the entry must be probed");
+        assert!(
+            fx.service.cache.lock().await.get("dead").is_none(),
+            "a probe failure must evict, or the next call wedges the same way"
+        );
+    }
+
+    /// The probe is a health check, not a reconnect: an idle connection that
+    /// is still up keeps its adapter (and, with it, its live tunnel and warm
+    /// pool) and simply has its check refreshed.
+    #[tokio::test]
+    async fn an_idle_adapter_that_still_answers_is_kept_and_re_marked() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1
+",
+        );
+        let pings = cache_aged(&fx, "live", true, HEALTH_CHECK_AFTER_IDLE * 2).await;
+
+        let tables = fx.service.list_tables("live").await.expect("still up");
+        assert_eq!(tables.len(), 1, "the cached adapter served the call");
+        assert_eq!(pings.load(Ordering::SeqCst), 1);
+
+        let cache = fx.service.cache.lock().await;
+        let entry = cache.get("live").expect("a healthy adapter is kept");
+        assert!(
+            entry.checked_at.elapsed() < HEALTH_CHECK_AFTER_IDLE,
+            "a passed probe must reset the clock, or every later call pays one"
+        );
+    }
+
+    /// The probe costs a round-trip, so a recently-used connection skips it.
+    /// Without the window, clicking through tables in the UI would put a ping
+    /// in front of every click.
+    #[tokio::test]
+    async fn a_recently_checked_adapter_is_not_probed_again() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1
+",
+        );
+        let pings = cache_aged(&fx, "warm", true, Duration::from_secs(0)).await;
+
+        fx.service.list_tables("warm").await.expect("warm");
+        fx.service.list_tables("warm").await.expect("warm again");
+        assert_eq!(pings.load(Ordering::SeqCst), 0);
+    }
+
+    /// `reconnect` is the manual form of the probe, for a user looking at a
+    /// failed pane who should not have to wait out the idle window. A fresh
+    /// `:memory:` database is empty, which is how we can see it rebuilt
+    /// rather than re-used.
+    #[tokio::test]
+    async fn reconnect_rebuilds_the_adapter() {
+        let fx = seeded_turso_fixture().await;
+        assert_eq!(
+            fx.service.list_tables("mem").await.expect("seeded").len(),
+            1
+        );
+        fx.service.reconnect("mem").await.expect("reconnect");
+        assert!(fx
+            .service
+            .list_tables("mem")
+            .await
+            .expect("rebuilt")
+            .is_empty());
+    }
+
+    /// Reconnecting something that is not configured is a lookup failure, not
+    /// a connection failure — the button must not report a database problem
+    /// for a connection that was deleted out from under it.
+    #[tokio::test]
+    async fn reconnect_on_an_unknown_connection_is_not_found() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            "version = 1
+",
+        );
+        let err = fx.service.reconnect("nope").await.expect_err("unknown");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
@@ -2353,11 +2605,10 @@ path = ":memory:"
     async fn list_relationships_skips_a_table_whose_foreign_keys_are_denied() {
         let fx = fixture();
         write(&fx.config_path, "version = 1\n");
-        fx.service
-            .cache
-            .lock()
-            .await
-            .insert("denied".to_string(), Arc::new(OneDeniedTable));
+        fx.service.cache.lock().await.insert(
+            "denied".to_string(),
+            super::CachedAdapter::new(Arc::new(OneDeniedTable)),
+        );
 
         let view = fx
             .service

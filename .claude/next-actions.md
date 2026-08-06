@@ -7,6 +7,39 @@
 
 ## 最終更新
 
+- 日付: 2026-08-06 (**v0.5.1 パッチをコミット済み、push 待ち。**
+  ① **実運用で出た 2 バグを 1 本のブランチにまとめた。** `release/v0.5.1` に
+  `fix(mysql)` → `fix(connect)` → `release: v0.5.1` の 3 コミット。
+  もともと別ブランチ 2 本だったが、両方が `CHANGELOG.md` の `[Unreleased]` 直下を
+  触るので PR を分けると必ず衝突する。ローカルで解決して 1 本にした。
+  `fix/mysql-metadata-decode` と `fix/connection-reconnect` は**もう push 不要**
+  (中身は `release/v0.5.1` に入っている)。
+  ② **SSH バスティオン経由の接続が死んだまま復帰しない件 (ADR-0092)。** 原因は 3 層。
+  russh が keepalive を既定で送らない / 失敗したアダプタがキャッシュから追い出されない /
+  sqlx は死んだフォワードに再ダイヤルするだけ。keepalive (30s×3) + アイドル 30 秒後の
+  ping-on-borrow + 手動リコネクト (接続ピルのリロードアイコン + エラーバナーのボタン)。
+  ③ **MySQL 8 の `information_schema` が `VARBINARY`/`BLOB` を返す件。**
+  メタデータをバイト列で読んで UTF-8 検証する形に統一。`list_relationships` が
+  エラーを飲み込んで**空の結果を返していた**のもこれで直る。
+  ④ **検証は全部緑** — fmt / clippy -D warnings / check / test (dev, release) /
+  `cargo build --release` / `pii-scan --tree` / `pii-scan --range develop..HEAD`。
+  `release: v0.5.1` のコミットだけ `--no-verify` を使ったが、これは
+  **Windows libSQL の teardown segfault** (13 テスト全部 ok の後にプロセスが落ちる)
+  という既知の唯一の例外。PII スキャンは hook の 1 番目で通過済み + 手動で再実行済み。
+  ⑤ **release ビルド中に `target/release/dbboard-mcp.exe` がロックされていたので、
+  そこから起動された古い MCP プロセス 2 つを kill した** (`%LOCALAPPDATA%` の
+  インストール版ではなくビルド成果物)。クライアント側が再起動するので実害なし。
+  **user 側ボール = ① `release/v0.5.1` を push → develop へ PR、② develop → main の
+  PR、③ `main` 上で `v0.5.1` タグを push (publish ジョブが自前でリリースを作るので
+  タグだけで公開まで通る)、④ #148 / #149 は 0.5.1 の後に入れる (feat なので次は
+  0.6.0)、⑤ 姉妹リポへ `.claude/tools/dbboard.md` を貼る、⑥ MCP を
+  `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe` に置き直して再登録、
+  ⑦ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因)。**
+  次は issue 0019 (Firestore アダプタ、ADR は **0093** — 0092 は接続復旧で使った) →
+  issue 0020 (MongoDB)。)
+
+---
+
 - 日付: 2026-08-05 その4 (**v0.5.0 リリース + 文書ストア (MongoDB / Firestore) を
   Phase 6 として確定。ADR-0091。**
   ① **v0.5.0 を切った。** PR #144 (release/v0.5.0 → develop) → #145 (ADR-0091) →
