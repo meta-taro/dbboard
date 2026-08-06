@@ -2,6 +2,7 @@
   import { save } from '@tauri-apps/plugin-dialog';
   import {
     displayCell,
+    isDocument,
     saveTextFile,
     updateRow,
     type Cell,
@@ -86,10 +87,14 @@
     return !!edit && !edit.pk.includes(columns[ci].name);
   }
 
-  // A blob cell has no sensible text editor, so editing skips it even in an
-  // otherwise-editable column.
-  function isBlob(cell: Cell): boolean {
-    return typeof cell === 'object' && cell !== null && '$blob' in cell;
+  // Neither a blob nor a document has a sensible single-line text editor — one
+  // is bytes, the other a tree that a free-text edit could leave unparseable —
+  // so editing skips both even in an otherwise-editable column.
+  function isUneditable(cell: Cell): boolean {
+    return (
+      (typeof cell === 'object' && cell !== null && '$blob' in cell) ||
+      isDocument(cell)
+    );
   }
 
   function stagedAt(origIdx: number, ci: number): StagedValue | undefined {
@@ -123,12 +128,12 @@
   }
 
   function beginEdit(origIdx: number, ci: number, cell: Cell) {
-    if (!columnEditable(ci) || isBlob(cell)) return;
+    if (!columnEditable(ci) || isUneditable(cell)) return;
     editing = { row: origIdx, col: ci, draft: draftFor(origIdx, ci, cell) };
   }
 
   function openExpanded(origIdx: number, ci: number, cell: Cell) {
-    if (!columnEditable(ci) || isBlob(cell)) return;
+    if (!columnEditable(ci) || isUneditable(cell)) return;
     editing = null;
     expanded = { row: origIdx, col: ci, draft: draftFor(origIdx, ci, cell) };
   }
@@ -207,7 +212,7 @@
   }
 
   function onCellDblClick(origIdx: number, ci: number, cell: Cell) {
-    if (!columnEditable(ci) || isBlob(cell)) {
+    if (!columnEditable(ci) || isUneditable(cell)) {
       openCell(columns[ci].name, cell);
       return;
     }
@@ -441,9 +446,9 @@
                 class:null-cell={cellIsNull(origIdx, ci, cell)}
                 class:num-cell={typeof cell === 'number' && !isDirty(origIdx, ci)}
                 class:dirty={isDirty(origIdx, ci)}
-                class:editable={columnEditable(ci) && !isBlob(cell)}
+                class:editable={columnEditable(ci) && !isUneditable(cell)}
                 class:editing={isEditing}
-                title={columnEditable(ci) && !isBlob(cell)
+                title={columnEditable(ci) && !isUneditable(cell)
                   ? i18n.t('edit-cell-hint')
                   : cellIsNull(origIdx, ci, cell)
                     ? 'NULL'

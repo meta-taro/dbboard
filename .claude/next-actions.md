@@ -54,6 +54,42 @@
 
 ---
 
+- 日付: 2026-08-05 その5 (**issue 0018 = 入れ子 `Value` が着地。ブランチ
+  `feature/nested-value`。ADR-0091 の Phase 6 の 1 本目。**
+  `Value::Json(serde_json::Value)`、ワイヤタグは **`$json`**。`$blob` と同じく
+  1 キーのタグ付きオブジェクトで、`Value` は serde の外部タグ付けを使っていない
+  (ワイヤが普通の JSON に見えるようにするため) のでハンドライトのアームを足した。
+  **ペイロードは opaque** — 生の `serde_json::Value` として読み、`Value` として
+  再帰的には読まない。したがって `"$blob"` キーを含む文書はバイト列に化けずに
+  文書のまま。タグが付くのは最も外側のセルだけ。
+  `Json(null)` は **SQL `NULL` ではない** (「列に何も無かった」と「文書が null を
+  持っていた」の区別が消えるため)。
+  variant を足したことで exhaustive match が 3 つ壊れたが、`_` アームは使わず
+  1 つずつ答えを決めた (`_` にすると新 variant が 3 箇所で黙って間違う):
+  sort = 木に自然な順序は無いので描画形で比較・blob の次にランク、
+  dump/literal = コンパクト JSON をシングルクォート (どの方言も JSON をテキストと
+  して受け、`JSON`/`JSONB` 列が読み直すので `INSERT` が round-trip する)、
+  write_back = **identity 値としては拒否** (文書の等価性はエンジン依存 —
+  キー順・空白・json vs jsonb で答えが変わるので、そこから組んだ `WHERE` は
+  別の行に当たるか 1 行も当たらない)。
+  フロントは grid と CSV/TSV export でコンパクト JSON を出し、インライン編集は
+  blob と同様に開かない。既存アダプタの出力は一切変わらない (core の外の
+  `Value::Blob` を全て確認したが d1 / mysql / turso の構築側だけで消費側は無い = 純粋に加算的)。
+  検証: `cargo test --all-features` ワークスペース全体 0 failed、
+  `pnpm vitest run` 353 passed、`pnpm check` 0 errors、clippy / fmt 緑。
+  **→ dbboard-web に `$json` を伝えること (明示ハンドオフ)。**
+  `docs/api-contract.md` に `$json` 節を追加済み (タグの形、opaque であること、
+  `{"$json": null}` と SQL `NULL` の違い、Text セルと見分けが付かないのでタグが
+  唯一の判別子であること、`[object Object]` で出さないこと、**今日どの SQL
+  アダプタも `$json` を出さない**が variant はワイヤに乗っているので受理は必須、
+  を明記)。当リポからは姉妹リポを編集できない (baseline §27) ので、**契約文書を
+  先に出すことが web 側の着手条件**。以前これを黙っていて 3 週間ブロックした。
+  **user 側ボール = ① `git push -u origin feature/nested-value` と PR、
+  ② dbboard-web へ `docs/api-contract.md` の `$json` 節を中継。**
+  次: issue 0019 (Firestore) → issue 0020 (MongoDB) の順。
+  別件で **MCP 紹介文を `docs/` にトラック済みファイルとして置く** — 他リポの
+  エージェント向けの導入手順を毎回チャットで作り直しているため。0018 着地後の別コミット。)
+
 - 日付: 2026-08-05 その4 (**v0.5.0 リリース + 文書ストア (MongoDB / Firestore) を
   Phase 6 として確定。ADR-0091。**
   ① **v0.5.0 を切った。** PR #144 (release/v0.5.0 → develop) → #145 (ADR-0091) →

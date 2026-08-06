@@ -23,9 +23,11 @@ async-trait = { workspace = true }
 # Read-only SQL classifier (ADR-0046). Parsing SQL text into an AST is a
 # pure transformation — no I/O — so the crate's "no I/O" rule holds.
 sqlparser = { workspace = true }
+# Value::Json carries a parsed document tree (ADR-0091). Same argument as
+# the crates above: parsing is a pure data transformation, not I/O.
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 # `#[tokio::test]` for exercising async trait default impls
 # (`describe_table`, ADR-0028). Dev-only — the crate still does no I/O.
 tokio = { workspace = true }
