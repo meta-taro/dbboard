@@ -9,6 +9,21 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Fixed
+
+- MySQL schema introspection failed on every table against MySQL 8, with
+  `type conversion failed: … Rust type alloc::string::String (as SQL type
+  VARCHAR) is not compatible with SQL type BLOB`. Since 8.0 the
+  `information_schema` views are served from the data dictionary, which
+  declares `TABLE_NAME` as `VARBINARY` and `DATA_TYPE` as `BLOB`, so
+  sqlx's type check rejected bytes that were perfectly good UTF-8. Metadata
+  text is now read as bytes and validated here, the way query cells already
+  were. This unbreaks `describe_table`, `table_ddl`, `foreign_keys` and —
+  through them — the MCP tools `describe_table`, `search_schema` and
+  `list_relationships`, the last of which had been failing *quietly*: it
+  swallows a per-table introspection error, so it returned an empty set of
+  relationships instead of an error.
+
 ## [0.5.0] — 2026-08-05
 
 Fifth tagged release, and the one that makes dbboard usable by something
