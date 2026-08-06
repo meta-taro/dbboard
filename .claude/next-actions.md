@@ -7,13 +7,12 @@
 
 ## 最終更新
 
-- 日付: 2026-08-06 (**v0.5.1 パッチをコミット済み、push 待ち。**
+- 日付: 2026-08-06 (**v0.5.1 リリース済み。タグは `main` の `b98f7a6`。**
   ① **実運用で出た 2 バグを 1 本のブランチにまとめた。** `release/v0.5.1` に
   `fix(mysql)` → `fix(connect)` → `release: v0.5.1` の 3 コミット。
   もともと別ブランチ 2 本だったが、両方が `CHANGELOG.md` の `[Unreleased]` 直下を
   触るので PR を分けると必ず衝突する。ローカルで解決して 1 本にした。
-  `fix/mysql-metadata-decode` と `fix/connection-reconnect` は**もう push 不要**
-  (中身は `release/v0.5.1` に入っている)。
+  PR #150 (→ develop) → PR #151 (develop → main) → `main` 上で `v0.5.1` タグ。
   ② **SSH バスティオン経由の接続が死んだまま復帰しない件 (ADR-0092)。** 原因は 3 層。
   russh が keepalive を既定で送らない / 失敗したアダプタがキャッシュから追い出されない /
   sqlx は死んだフォワードに再ダイヤルするだけ。keepalive (30s×3) + アイドル 30 秒後の
@@ -21,20 +20,35 @@
   ③ **MySQL 8 の `information_schema` が `VARBINARY`/`BLOB` を返す件。**
   メタデータをバイト列で読んで UTF-8 検証する形に統一。`list_relationships` が
   エラーを飲み込んで**空の結果を返していた**のもこれで直る。
-  ④ **検証は全部緑** — fmt / clippy -D warnings / check / test (dev, release) /
+  ④ **タグを打つ順序を間違えて 1 度やり直した。** develop → main の PR を作る前に
+  `main` でタグを打ったので、`v0.5.0` の中身が `v0.5.1` として公開されかけた
+  (run 31069887884 をキャンセル、リリースオブジェクトは未作成だったので実害なし)。
+  **タグは develop → main のマージが `main` に入ってから**。手順を書くときは
+  マージを独立したステップとして明示すること。
+  ⑤ **リリースの develop → main は squash をやめて真のマージにした。** #134 と #146 が
+  squash だったせいで共通祖先が `v0.4.0` まで戻り、#151 が 9 ファイル全部
+  (`Cargo.lock` / `CHANGELOG.md` 含む) で衝突した。真マージにしたので develop が
+  main の祖先に戻り、**次のリリース PR は衝突しない**。
+  代償として、**`main` の `pii-scan` identity が赤になった** — squash が隠していた
+  noreply 切替前の古いコミットが main から到達可能になったため。アドレス自体は
+  元から develop 側で公開済みなので新規の漏洩ではないが、履歴書き換えをするまで
+  main の CI は赤のまま。
+  ⑥ **検証は全部緑** — fmt / clippy -D warnings / check / test (dev, release) /
   `cargo build --release` / `pii-scan --tree` / `pii-scan --range develop..HEAD`。
   `release: v0.5.1` のコミットだけ `--no-verify` を使ったが、これは
   **Windows libSQL の teardown segfault** (13 テスト全部 ok の後にプロセスが落ちる)
   という既知の唯一の例外。PII スキャンは hook の 1 番目で通過済み + 手動で再実行済み。
-  ⑤ **release ビルド中に `target/release/dbboard-mcp.exe` がロックされていたので、
+  マージコミット `b98f7a6` は hook を全部通している。
+  ⑦ **release ビルド中に `target/release/dbboard-mcp.exe` がロックされていたので、
   そこから起動された古い MCP プロセス 2 つを kill した** (`%LOCALAPPDATA%` の
   インストール版ではなくビルド成果物)。クライアント側が再起動するので実害なし。
-  **user 側ボール = ① `release/v0.5.1` を push → develop へ PR、② develop → main の
-  PR、③ `main` 上で `v0.5.1` タグを push (publish ジョブが自前でリリースを作るので
-  タグだけで公開まで通る)、④ #148 / #149 は 0.5.1 の後に入れる (feat なので次は
-  0.6.0)、⑤ 姉妹リポへ `.claude/tools/dbboard.md` を貼る、⑥ MCP を
+  ⑧ `fix/mysql-metadata-decode` / `fix/connection-reconnect` / `release/v0.5.1` の
+  ローカルブランチは削除済み (中身は develop と同一であることを確認した)。
+  **user 側ボール = ① #148 / #149 を入れる (feat なので次は 0.6.0)、
+  ② 姉妹リポへ `.claude/tools/dbboard.md` を貼る、③ MCP を
   `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe` に置き直して再登録、
-  ⑦ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因)。**
+  ④ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因。
+  ⑤ により main でも赤くなったので、放置のコストが上がった)。**
   次は issue 0019 (Firestore アダプタ、ADR は **0093** — 0092 は接続復旧で使った) →
   issue 0020 (MongoDB)。)
 
