@@ -1,6 +1,6 @@
 {
   "name": "@dbboard/desktop",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "dbboard desktop client (Tauri 2 + SvelteKit) over the shared Rust core crates.",
   "license": "MIT",

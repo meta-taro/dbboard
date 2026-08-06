@@ -10,6 +10,7 @@
 import {
   listConnections,
   listTables,
+  reconnectConnection,
   tableKey,
   type ConnectionView,
   type TableInfo,
@@ -30,6 +31,7 @@ class Workspace {
    *  next successful action. */
   error = $state('');
   loadingTables = $state(false);
+  reconnecting = $state(false);
 
   /** A request to load SQL into the query editor and run it — raised by the
    *  sidebar context menu ("Select top 100"), consumed by the Query panel.
@@ -86,6 +88,30 @@ class Workspace {
     this.tables = [];
     this.error = '';
     await this.#refreshTables();
+  }
+
+  /** Throw away the live connection and open a new one, then reload the table
+   *  list.
+   *
+   *  Needed because a connection can die in a way this process cannot see:
+   *  through an SSH bastion the tunnel dies while the adapter holding it stays
+   *  cached, and every call then fails with `expected to read 4 bytes, got 0
+   *  bytes at EOF` until the app is restarted. The backend now heals that on
+   *  its own once the connection has been idle a while, so this button is
+   *  about not having to wait — and about not having to guess whether
+   *  clicking again would have worked. */
+  async reconnect(): Promise<void> {
+    if (!this.connectionId || this.reconnecting) return;
+    this.reconnecting = true;
+    try {
+      await reconnectConnection(this.connectionId);
+      this.error = '';
+      await this.#refreshTables();
+    } catch (e) {
+      this.error = String(e);
+    } finally {
+      this.reconnecting = false;
+    }
   }
 
   /** Focus a table and jump to the Structure tab — clicking a table in the

@@ -368,6 +368,13 @@ export const updateConnection = (
 export const deleteConnection = (id: string): Promise<void> =>
   invoke('delete_connection', { id });
 
+// Drop the cached adapter and dial again. The backend already re-checks an
+// idle adapter before handing it out, so this is not needed to *recover* — it
+// is needed to recover now, without guessing whether the next click will work.
+// Resolves only once the fresh connection has answered a ping.
+export const reconnectConnection = (id: string): Promise<void> =>
+  invoke('reconnect_connection', { id });
+
 // Additive, non-destructive import: ids already present are skipped, never
 // overwritten (ADR-0038). Mirrors the backend `ImportReportDto`.
 export interface ImportReport {

@@ -250,6 +250,10 @@ export const en = {
   "backup-truncations": "{ $count } table(s) were truncated (too large to page without a key).",
   "backup-close": "Close",
   "backup-note": "The dump is a plain .sql file of INSERT statements. For SQLite/libSQL it holds data only (no CREATE TABLE).",
+  // Reconnect (ADR-0092): recovering a connection that died out from under us
+  "reconnect-button-title": "Reconnect to this database",
+  "reconnect-busy": "Reconnecting…",
+  "reconnect-error-action": "Reconnect",
   // Logical restore / import (write-into-DB path, ADR-0051)
   "restore-button": "Restore…",
   "restore-button-title": "Restore this database from a .sql file",
@@ -560,6 +564,9 @@ const ja: Partial<Record<MessageKey, string>> = {
   "backup-truncations": "{ $count } テーブルが打ち切られました（キーがなくページングできないほど大きい）。",
   "backup-close": "閉じる",
   "backup-note": "ダンプは INSERT 文からなるプレーンな .sql ファイルです。SQLite/libSQL ではデータのみ（CREATE TABLE なし）を含みます。",
+  "reconnect-button-title": "このデータベースに接続し直す",
+  "reconnect-busy": "接続し直しています…",
+  "reconnect-error-action": "接続し直す",
   "restore-button": "リストア…",
   "restore-button-title": "このデータベースを .sql ファイルからリストア",
   "restore-title": "データベースをリストア",
