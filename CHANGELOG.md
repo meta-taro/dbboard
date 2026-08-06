@@ -20,6 +20,18 @@ public API is the HTTP contract in
   Purely additive: no existing adapter emits it, and SQL `JSON`/`JSONB`
   columns still arrive as `Text`. Consumers of the HTTP contract must accept
   the tag; see the `$json` section of [`docs/api-contract.md`](docs/api-contract.md).
+- **`dbboard-firestore`**, the first non-SQL adapter
+  ([ADR-0093](docs/decisions.md), issue 0019). `ping`, `list_tables`,
+  `query` and `describe_table` against Cloud Firestore over its REST API,
+  with service-account or emulator credentials. The query text is a
+  Firestore `StructuredQuery` in JSON — the same object Google's docs show,
+  with no translation layer — and results come back as ordinary rows, with
+  nested documents in the new `Value::Json` cells. `describe_table` samples
+  a collection and reports each field with the sample it was inferred from
+  (`string (12/20 sampled)`), so an inference never renders as a declared
+  schema. Read-only is structural rather than parsed: the crate contains no
+  code able to build a Firestore write URL. Not yet selectable in the
+  desktop client — that is the next slice of issue 0019.
 
 ## [0.5.1] — 2026-08-06
 

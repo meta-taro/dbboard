@@ -15,10 +15,11 @@
 //!    write URL — see [`endpoint`]. Nothing classifies a query string, so
 //!    there is no classifier to get wrong.
 
-// TODO(next-slice): drop both `allow`s once the HTTP client lands. Until an
-// adapter calls them, every item here is reachable only from its own tests,
-// which reads as dead code to the compiler.
-#[allow(dead_code)]
+mod adapter;
+mod auth;
+mod credentials;
 mod document;
-#[allow(dead_code)]
 mod endpoint;
+mod sample;
+
+pub use adapter::{FirestoreAdapter, FirestoreConfig, FirestoreCredentials, DEFAULT_BASE_URL};

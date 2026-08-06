@@ -9371,3 +9371,88 @@ Three changes, at the three layers that were each individually wrong.
   not worth making configurable until someone reports otherwise.
 - Nothing here helps a connection that dies *during* a query. That surfaces as
   a plain error, the user sees it, and the reconnect button is right there.
+
+---
+
+## ADR-0093 — The Firestore adapter calls REST directly, signs with `ring`, and overrides `query_read_only`
+
+**Date:** 2026-08-06
+**Status:** Accepted
+
+### Context
+
+ADR-0091 settled the direction for document stores and left two questions to
+answer while writing the first one: which crate, if any, to depend on instead
+of calling the REST API directly, and how to test without a live Google Cloud
+project or a real credential.
+
+A third question only appeared once the code existed, and it is the one with
+teeth. `DatabaseAdapter::query_read_only` has a default implementation that
+runs `check_read_only(sql, SqlDialect::Postgres)` before delegating to `query`.
+A Firestore query is a `StructuredQuery` in JSON. The parser cannot read it,
+and a classifier that cannot parse its input fails closed — so inheriting the
+default would refuse **every** Firestore query, and only on the MCP surface,
+where nobody would see it until an agent asked.
+
+### Decision
+
+1. **Call the REST API directly; add no Firestore client crate.** The three
+   endpoints this adapter needs (`:runQuery`, `:listCollectionIds`, and a
+   documents `GET`) are a documented, stable HTTP surface, and `reqwest` and
+   `serde_json` are already in the tree. The gRPC clients in the ecosystem
+   would pull a `tonic` stack in for that, and — decisively — a client that
+   exposes writes would defeat point 3 below: the read-only guarantee is that
+   this crate contains no code able to build a write URL.
+
+2. **Sign the service-account assertion with `ring`.** Access without a browser
+   means the JWT-bearer grant: sign a short-lived assertion with the account's
+   private key and exchange it at Google's token endpoint. `ring` 0.17 is
+   already in `Cargo.lock` via rustls-ring, so this adds no new dependency, its
+   RSA signing is constant-time, and it is the backend ADR-0034 already
+   committed to (`aws-lc-rs` stays out). The obvious alternative, `rsa` 0.9,
+   carries RUSTSEC-2023-0071 — a timing sidechannel on exactly the private-key
+   operation this performs.
+
+3. **Read-only is structural, and `query_read_only` is overridden to say so.**
+   `ReadEndpoint` enumerates every URL the adapter can build and has no write
+   variant; `is_read` matches exhaustively with no catch-all, so adding one
+   would fail to compile until someone answered for it. Because the guarantee
+   does not depend on reading the query text, the override does no
+   classification at all — it runs the query and truncates. This is the single
+   most important line in the crate, and it is covered by a test that names the
+   trap.
+
+4. **Tests need no cloud project and no committed key.** Every HTTP path is
+   exercised against `wiremock`, and the credential tests generate a throwaway
+   2048-bit key at runtime. `rsa` and `rand` are **dev-dependencies only**,
+   where RUSTSEC-2023-0071 cannot reach a real credential, and `rsa` is the
+   only pure-Rust RSA *keygen* in the ecosystem. A committed test key would be
+   a `scripts/pii-scan.sh` blocking finding, and rightly so.
+
+5. **A service-account token is never sent over plain HTTP.** `connect` refuses
+   an `http://` base URL when service-account credentials are configured, and
+   the client is built with `https_only` so an `https → http` redirect cannot
+   route around it. The emulator is exempt because it issues no credential to
+   leak — it accepts the fixed string `owner`.
+
+### Consequences
+
+- Two dev-dependencies (`rsa`, `rand`) and one production dependency (`ring`)
+  that was already being compiled. `num-bigint-dig` gets `opt-level = 3` in the
+  dev profile, because generating a key unoptimised turns a sub-second
+  operation into tens of seconds and would make `cargo test` unpleasant.
+- The read-only guarantee is now stronger than the SQL adapters': theirs rests
+  on a parser being right, this one rests on a URL not existing. It is also
+  narrower — it says nothing about *which* documents may be read, which is
+  Firestore Security Rules' job and stays there.
+- Every error path that touches the token endpoint quotes back only the OAuth
+  `error` and `error_description` fields. A token endpoint's response body is
+  the one place an access token is guaranteed to appear, so it is never echoed.
+- `describe_table` reports each field's type together with the sample it came
+  from (`string (12/20 sampled)`), because `TableSchema` has nowhere else to
+  put the caveat required by ADR-0091 §4 — and the frequency doubles as the
+  evidence for the `nullable` flag beside it.
+- The crate is complete and tested but not yet reachable from the desktop
+  client: `BackendConfig` has no Firestore variant, and the service-account
+  JSON needs the same keychain handling every other secret gets. That is the
+  next slice of issue 0019, deliberately separate so this one is reviewable.

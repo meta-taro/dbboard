@@ -1368,14 +1368,18 @@ dependencies = [
 
 [[package]]
 name = "dbboard-firestore"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "dbboard-core",
+ "rand 0.8.6",
  "reqwest 0.12.28",
+ "ring",
+ "rsa 0.9.10",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "wiremock",
 ]

@@ -1,9 +1,10 @@
 # 0019: Firestore adapter (`dbboard-firestore`)
 
-- **Status**: open
+- **Status**: open — the crate is done; wiring it into the client is not
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),
+  ADR-0093 (REST directly, `ring` for signing, `query_read_only` overridden),
   ADR-0046 (read-only MCP surface), ADR-0087 (MCP write policy)
 - **Blocked by**: 0018 (nested `Value`)
 
@@ -44,23 +45,40 @@ in ADR-0091 actually holds: native JSON query text through `query`, nested
   sense; the trait already returns a capability error for each rather than
   faking one.
 
-## Open questions to settle during implementation
+## Open questions — settled (ADR-0093)
 
-- Which crate, if any, is worth depending on versus calling the REST API
-  directly. Per CLAUDE.md, a non-trivial crate choice gets its own ADR entry.
-- Emulator support for tests. No test should require a live Google Cloud
-  project or a real credential.
+- **Which crate.** None: the three endpoints needed are a documented, stable
+  REST surface, and `reqwest`/`serde_json` are already in the tree. A client
+  crate that exposes writes would also defeat the read-only story below.
+  Signing the service-account assertion uses `ring`, already present via
+  rustls-ring; `rsa`/`rand` are dev-dependencies for generating throwaway test
+  keys.
+- **Emulator support.** Every HTTP path is covered by `wiremock`, and the
+  emulator's fixed `Bearer owner` credential is a first-class variant. No test
+  touches a cloud project, and no key is committed.
 
 ## Completion criteria
 
-- [ ] `ping`, `list_tables`, `query`, `describe_table` implemented against the
+- [x] `ping`, `list_tables`, `query`, `describe_table` implemented against the
       emulator, with unit tests that need no cloud project
-- [ ] A read-only connection has no reachable write path, proven by a test, not
+- [x] A read-only connection has no reachable write path, proven by a test, not
       by inspection
-- [ ] Nested documents round-trip through the `Value` variant from issue 0018
-- [ ] `capabilities()` matches what is actually implemented
-- [ ] ADR entry for any non-trivial crate added
+- [x] Nested documents round-trip through the `Value` variant from issue 0018
+- [x] `capabilities()` matches what is actually implemented
+- [x] ADR entry for any non-trivial crate added
 - [ ] Exposed to the MCP server only after the read-only guarantee is tested
+
+## Remaining: reachable from the client
+
+The crate is complete and green; nothing outside it knows Firestore exists.
+The next slice is the wiring, kept separate because it touches secret storage
+and the UI rather than the adapter:
+
+- `BackendConfig::Firestore` + a `connect_adapter` arm in `dbboard-connect`.
+- Service-account JSON through the same keychain path every other secret takes
+  — never a tracked file. `DBBOARD_*` env vars for the agent case (ADR-0090 §4).
+- Connection add **and** edit forms in the desktop client, changed together.
+- `dbboard-mcp` registration, which the read-only test above now unblocks.
 
 ## Verification
 
