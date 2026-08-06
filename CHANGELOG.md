@@ -9,6 +9,18 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-06
+
+A patch release with nothing in it but two bugs found by using the thing.
+Both broke a real workflow rather than an edge case: a connection through
+an SSH bastion would die and stay dead until the app was restarted, and
+schema introspection failed against every MySQL 8 table — which also meant
+the MCP tool `list_relationships` had been returning an empty result
+instead of an error.
+
+No contract change; [`docs/api-contract.md`](docs/api-contract.md) is
+unchanged from 0.2.0.
+
 ### Fixed
 
 - **A connection through an SSH bastion could die and stay dead until the
@@ -439,7 +451,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/meta-taro/dbboard/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/meta-taro/dbboard/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/meta-taro/dbboard/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/meta-taro/dbboard/compare/v0.2.0...v0.3.0
