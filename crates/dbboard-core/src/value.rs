@@ -20,9 +20,23 @@ pub enum Value {
     Real(f64),
     Text(String),
     Blob(Vec<u8>),
+    /// A structured value: an object, an array, or any JSON scalar nested
+    /// inside one. Document stores return trees, and the flat variants above
+    /// have nowhere to put one (ADR-0091).
+    ///
+    /// The payload is opaque. It is carried as parsed JSON rather than as a
+    /// string so the frontend never has to guess whether a `Text` cell is
+    /// prose or a serialized document — the same reason `Blob` is tagged
+    /// instead of base64 hidden in a string.
+    Json(serde_json::Value),
 }
 
 impl Value {
+    /// Whether this cell is a SQL `NULL`.
+    ///
+    /// A JSON null *inside* a document is not one: it is a value the document
+    /// carries, and an adapter has to be able to report which of the two it
+    /// received. So `Json(null)` is not null here.
     #[must_use]
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
@@ -37,6 +51,9 @@ impl fmt::Display for Value {
             Self::Real(x) => write!(f, "{x}"),
             Self::Text(s) => write!(f, "{s}"),
             Self::Blob(b) => write!(f, "<blob: {} bytes>", b.len()),
+            // serde_json::Value's own Display is compact JSON, which is the
+            // most faithful one-line rendering of a tree.
+            Self::Json(v) => write!(f, "{v}"),
         }
     }
 }
@@ -47,11 +64,19 @@ impl fmt::Display for Value {
 /// natural string value, which serializes as a bare JSON string.
 const BLOB_KEY: &str = "$blob";
 
+/// JSON object key that tags a nested document (ADR-0091). Also fixed by
+/// `docs/api-contract.md`. The tag is what keeps a document distinguishable
+/// from a `Text` cell that merely looks like JSON; without it the frontend
+/// would have to guess, and guessing wrong on prose that begins with `{` is
+/// exactly the failure `$blob` was introduced to avoid.
+const JSON_KEY: &str = "$json";
+
 // Value maps onto native JSON scalars rather than serde's default
 // externally-tagged form (`{"Integer":1}`) so the wire format reads
-// like ordinary JSON and mirrors dbboard-web. Blobs are the one
-// exception: JSON has no byte type, so they ride inside a tagged
-// object `{"$blob":"<base64>"}`.
+// like ordinary JSON and mirrors dbboard-web. Blobs and documents are
+// the two exceptions: JSON has no byte type, so blobs ride inside
+// `{"$blob":"<base64>"}`, and a bare tree would be indistinguishable
+// from a string, so documents ride inside `{"$json":<tree>}`.
 impl Serialize for Value {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -65,6 +90,11 @@ impl Serialize for Value {
             Self::Blob(bytes) => {
                 let mut map = serializer.serialize_map(Some(1))?;
                 map.serialize_entry(BLOB_KEY, &BASE64.encode(bytes))?;
+                map.end()
+            }
+            Self::Json(tree) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(JSON_KEY, tree)?;
                 map.end()
             }
         }
@@ -89,7 +119,7 @@ impl<'de> Visitor<'de> for ValueVisitor {
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "null, a number, a string, or a {{\"{BLOB_KEY}\":...}} object"
+            "null, a number, a string, or a {{\"{BLOB_KEY}\":...}} or {{\"{JSON_KEY}\":...}} object"
         )
     }
 
@@ -137,11 +167,21 @@ impl<'de> Visitor<'de> for ValueVisitor {
                 }
                 Ok(Value::Blob(bytes))
             }
+            Some(JSON_KEY) => {
+                // Read the payload as raw JSON, not as another Value: the tree
+                // is opaque, so a document that happens to contain a "$blob"
+                // key stays a document instead of being decoded as bytes.
+                let tree: serde_json::Value = map.next_value()?;
+                if map.next_key::<String>()?.is_some() {
+                    return Err(de::Error::custom("unexpected extra key in json object"));
+                }
+                Ok(Value::Json(tree))
+            }
             Some(other) => Err(de::Error::custom(format!(
-                "unexpected key {other:?}, expected {BLOB_KEY}"
+                "unexpected key {other:?}, expected {BLOB_KEY} or {JSON_KEY}"
             ))),
             None => Err(de::Error::custom(
-                "expected a blob object, got an empty map",
+                "expected a blob or json object, got an empty map",
             )),
         }
     }
@@ -240,5 +280,89 @@ mod tests {
     fn malformed_blob_object_is_rejected() {
         assert!(serde_json::from_str::<Value>(r#"{"$blob":"not base64!!"}"#).is_err());
         assert!(serde_json::from_str::<Value>(r#"{"other":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn json_serializes_as_tagged_tree() {
+        let doc = Value::Json(serde_json::json!({"a": 1, "b": ["x", null]}));
+        assert_eq!(
+            serde_json::to_string(&doc).unwrap(),
+            r#"{"$json":{"a":1,"b":["x",null]}}"#
+        );
+        assert_eq!(round_trip(&doc), doc);
+    }
+
+    #[test]
+    fn json_round_trips_nested_objects_and_arrays() {
+        let doc = Value::Json(serde_json::json!({
+            "id": "abc",
+            "tags": ["a", "b"],
+            "meta": { "depth": { "deeper": [1, 2, {"leaf": true}] } },
+            "missing": null,
+            "score": 1.5,
+        }));
+        assert_eq!(round_trip(&doc), doc);
+    }
+
+    #[test]
+    fn json_carries_scalars_that_value_itself_has_no_variant_for() {
+        // A document may hold a boolean even though a top-level cell cannot.
+        let doc = Value::Json(serde_json::json!({ "active": true }));
+        assert_eq!(round_trip(&doc), doc);
+    }
+
+    #[test]
+    fn json_payload_is_opaque_so_an_inner_blob_key_is_not_reinterpreted() {
+        // The tree is deserialized as raw JSON, never as another Value, so a
+        // document that happens to contain "$blob" survives unchanged instead
+        // of being decoded as bytes.
+        let doc = Value::Json(serde_json::json!({ "$blob": "AP8M" }));
+        assert_eq!(round_trip(&doc), doc);
+        assert_ne!(round_trip(&doc), Value::Blob(vec![0, 255, 12]));
+    }
+
+    #[test]
+    fn json_holding_a_bare_scalar_round_trips() {
+        for tree in [
+            serde_json::json!(null),
+            serde_json::json!(7),
+            serde_json::json!("plain"),
+        ] {
+            let doc = Value::Json(tree);
+            assert_eq!(round_trip(&doc), doc);
+        }
+    }
+
+    #[test]
+    fn json_is_distinct_from_text_holding_the_same_characters() {
+        let doc = Value::Json(serde_json::json!({ "a": 1 }));
+        let text = Value::Text(r#"{"a":1}"#.into());
+        assert_ne!(doc, text);
+        assert_ne!(
+            serde_json::to_string(&doc).unwrap(),
+            serde_json::to_string(&text).unwrap()
+        );
+    }
+
+    #[test]
+    fn json_null_is_not_sql_null() {
+        // A JSON null inside a document is a value the document carries; a SQL
+        // NULL is the absence of one. Conflating them would make an adapter
+        // unable to report which it received.
+        assert!(!Value::Json(serde_json::json!(null)).is_null());
+        assert!(Value::Null.is_null());
+    }
+
+    #[test]
+    fn display_renders_json_as_compact_json() {
+        assert_eq!(
+            Value::Json(serde_json::json!({"a": [1, 2]})).to_string(),
+            r#"{"a":[1,2]}"#
+        );
+    }
+
+    #[test]
+    fn malformed_json_object_is_rejected() {
+        assert!(serde_json::from_str::<Value>(r#"{"$json":{},"extra":1}"#).is_err());
     }
 }
