@@ -11,6 +11,14 @@ public API is the HTTP contract in
 
 ### Fixed
 
+- **A connection through an SSH bastion could die and stay dead until the
+  app was restarted** ([ADR-0092](docs/decisions.md)). Every call after it
+  failed with `expected to read 4 bytes, got 0 bytes at EOF`. The tunnel now
+  sends SSH keepalives (russh sends none by default, so an idle session was
+  simply reaped), and a cached connection that has been idle for 30 seconds
+  is pinged before it is used again — a failed ping throws it away and dials
+  a fresh one, which is what rebuilds the forward.
+
 - MySQL schema introspection failed on every table against MySQL 8, with
   `type conversion failed: … Rust type alloc::string::String (as SQL type
   VARCHAR) is not compatible with SQL type BLOB`. Since 8.0 the
@@ -23,6 +31,12 @@ public API is the HTTP contract in
   `list_relationships`, the last of which had been failing *quietly*: it
   swallows a per-table introspection error, so it returned an empty set of
   relationships instead of an error.
+
+### Added
+
+- **A reconnect action**: a reload icon on the connection pill, and a
+  Reconnect button in the error banner. The app now heals a dead connection
+  on its own, so this is for recovering *now* rather than on the next call.
 
 ## [0.5.0] — 2026-08-05
 

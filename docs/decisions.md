@@ -9290,3 +9290,84 @@ the trait:
   configurable if it becomes a problem.
 - PlanetScale, the other half of the old stretch bullet, is unaffected — it is
   MySQL-compatible and reachable through the existing `dbboard-mysql` adapter.
+
+---
+
+## ADR-0092 — A cached connection must prove it is alive before it is handed out
+
+**Date:** 2026-08-06
+**Status:** Accepted
+
+### Context
+
+In use, a connection through an SSH bastion stopped working. Every subsequent
+call failed with
+
+```
+connection failed: error communicating with database: expected to read 4 bytes, got 0 bytes at EOF
+```
+
+and it kept failing until the app was quit and started again. Restarting fixed
+it every time, which is the tell: nothing about the database had changed, only
+something this process was holding on to.
+
+The first diagnosis — a stale pooled connection — was wrong, and worth
+recording as wrong. sqlx's `PoolOptions::test_before_acquire` already defaults
+to `true`, so the pool pings before lending a connection out and re-dials if
+the ping fails. sqlx was doing its job.
+
+The actual mechanism is one layer up, and has two halves:
+
+1. **`McpService::adapter_for` caches adapters for the lifetime of the
+   process.** The only eviction is `invalidate()`, called when a connection's
+   configuration is written. Nothing evicts on failure.
+2. **Through a bastion the cached adapter owns the tunnel.**
+   `TunneledAdapter` holds the `SshTunnel` guard. When the bastion drops the
+   SSH session the loopback forward dies while the guard stays held — so the
+   port is still bound and still accepts, but nothing survives the far side.
+   sqlx cannot heal that: it discards the dead socket and dials the *same dead
+   forward*, forever.
+
+Together they are a permanent wedge. And the reason the session was dropped in
+the first place is that `dbboard-tunnel` set no keepalive at all — russh
+defaults `keepalive_interval` to `None`, so an idle tunnel sends nothing and
+gets reaped by sshd, a NAT table, or a load balancer.
+
+### Decision
+
+Three changes, at the three layers that were each individually wrong.
+
+1. **Keep the session warm.** `dbboard-tunnel` sets `keepalive_interval` to
+   30 s and `keepalive_max` to 3. Thirty seconds is inside the shortest idle
+   window worth surviving (a 60 s load-balancer timeout); three misses means a
+   bastion that has genuinely vanished closes the session instead of leaving a
+   forward that accepts and never answers.
+
+2. **Re-check an idle adapter before lending it out.** A cache entry now
+   carries the time it last completed a round-trip. Within
+   `HEALTH_CHECK_AFTER_IDLE` (30 s) it is handed out unchecked; past that it is
+   pinged first, and a failed ping evicts it — which drops the tunnel guard,
+   which is what lets the rebuild open a *new* forward. This is test-on-borrow
+   with an idle window, the same shape sqlx uses one layer down, chosen over
+   pinging every call because an interactive burst of ten queries should not
+   cost ten extra round-trips.
+
+3. **Offer the user the same thing on demand.** A `reconnect` service method,
+   a `reconnect_connection` Tauri command, a reload icon on the connection pill
+   and a Reconnect action in the error banner. The read path recovers on its
+   own now, so this is not needed to recover — it is needed to recover *now*,
+   without the user having to guess whether clicking again would have worked.
+
+### Consequences
+
+- The wedge becomes one failed call at worst, and usually none.
+- The ping runs while holding the cache lock, so a health check briefly
+  serialises other connections. Releasing the lock first would let a second
+  caller take the entry this one is about to evict, which is the bug again.
+- Thirty seconds is a guess in both places, deliberately the same guess. If a
+  bastion is found that reaps faster, the tunnel interval is the one to lower;
+  the cache window only affects how long a *known* death goes unnoticed.
+- The keepalive costs one small packet per idle connection per 30 s, which is
+  not worth making configurable until someone reports otherwise.
+- Nothing here helps a connection that dies *during* a query. That surfaces as
+  a plain error, the user sees it, and the reconnect button is right there.
