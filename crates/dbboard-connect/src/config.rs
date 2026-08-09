@@ -12,6 +12,7 @@ use std::fmt;
 
 use dbboard_config::{ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind, SecretStore};
 use dbboard_d1::D1Config;
+use dbboard_firestore::{FirestoreConfig, FirestoreCredentials};
 
 use crate::ssh::{resolved_ssh_from_env, ResolvedSsh, SshEnv};
 
@@ -31,6 +32,11 @@ const D1_ACCOUNT_ID_ENV: &str = "DBBOARD_D1_ACCOUNT_ID";
 const D1_DATABASE_ID_ENV: &str = "DBBOARD_D1_DATABASE_ID";
 const D1_TOKEN_ENV: &str = "DBBOARD_D1_TOKEN";
 const D1_BASE_URL_ENV: &str = "DBBOARD_D1_BASE_URL";
+
+const FIRESTORE_PROJECT_ID_ENV: &str = "DBBOARD_FIRESTORE_PROJECT_ID";
+const FIRESTORE_SERVICE_ACCOUNT_ENV: &str = "DBBOARD_FIRESTORE_SERVICE_ACCOUNT";
+const FIRESTORE_DATABASE_ID_ENV: &str = "DBBOARD_FIRESTORE_DATABASE_ID";
+const FIRESTORE_BASE_URL_ENV: &str = "DBBOARD_FIRESTORE_BASE_URL";
 
 const PG_URL_ENV: &str = "DBBOARD_PG_URL";
 const MYSQL_URL_ENV: &str = "DBBOARD_MYSQL_URL";
@@ -112,6 +118,11 @@ pub enum BackendConfig {
         access_key_id: String,
         secret_key: String,
     },
+    /// Cloud Firestore over REST (ADR-0091, ADR-0093). The first non-SQL
+    /// backend, and the only one whose credential is genuinely optional:
+    /// [`FirestoreCredentials::Emulator`] carries none, because the local
+    /// emulator accepts a fixed `Bearer owner`.
+    Firestore(FirestoreConfig),
 }
 
 impl BackendConfig {
@@ -140,6 +151,8 @@ impl fmt::Debug for BackendConfig {
             // secret_key must never surface — redact the whole struct to
             // keep the Debug impl trivially safe against field reordering.
             Self::AuroraDsqlIam { .. } => f.write_str("AuroraDsqlIam(<redacted>)"),
+            // The service-account JSON embeds an RSA private key.
+            Self::Firestore(_) => f.write_str("Firestore(<redacted>)"),
         }
     }
 }
@@ -160,7 +173,10 @@ impl fmt::Debug for BackendConfig {
 ///    distinct dialect, not a pg-wire flavor; ranks just below the
 ///    Postgres-wire family.
 /// 6. The `DBBOARD_D1_*` trio — Cloudflare D1 over REST.
-/// 7. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
+/// 7. `DBBOARD_FIRESTORE_PROJECT_ID` — Cloud Firestore over REST
+///    (ADR-0093). The project id alone is enough: without
+///    `DBBOARD_FIRESTORE_SERVICE_ACCOUNT` this targets the local emulator.
+/// 8. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
 ///    `":memory:"`), so a fresh checkout runs without configuration.
 ///
 /// This entry point does not consult `connections.toml`; for the
@@ -186,10 +202,12 @@ pub fn backend_config_from_env() -> BackendConfig {
 /// 5. `DBBOARD_MYSQL_URL` — wins outright (`MySQL` / `MariaDB`, ADR-0068;
 ///    a distinct dialect ranked just below the Postgres-wire family).
 /// 6. The `DBBOARD_D1_*` trio — wins outright.
-/// 7. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
-/// 8. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
-/// 9. If `file` has exactly one entry — auto-select it.
-/// 10. Otherwise Turso `:memory:` (the unchanged default).
+/// 7. `DBBOARD_FIRESTORE_PROJECT_ID` — wins outright (Cloud Firestore,
+///    ADR-0093; the emulator when no service account accompanies it).
+/// 8. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
+/// 9. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
+/// 10. If `file` has exactly one entry — auto-select it.
+/// 11. Otherwise Turso `:memory:` (the unchanged default).
 ///
 /// Secret-bearing entries (D1, Postgres, `MySQL`) resolve their credentials
 /// through `secrets`, propagating [`ConfigError::Secret`] on miss so
@@ -226,6 +244,10 @@ struct EnvSnapshot {
     d1_database_id: Option<String>,
     d1_token: Option<String>,
     d1_base_url: Option<String>,
+    firestore_project_id: Option<String>,
+    firestore_service_account: Option<String>,
+    firestore_database_id: Option<String>,
+    firestore_base_url: Option<String>,
     turso_path: Option<String>,
     connection_selector: Option<String>,
     ssh: SshEnv,
@@ -243,6 +265,10 @@ impl EnvSnapshot {
             d1_database_id: non_empty(std::env::var(D1_DATABASE_ID_ENV).ok()),
             d1_token: non_empty(std::env::var(D1_TOKEN_ENV).ok()),
             d1_base_url: non_empty(std::env::var(D1_BASE_URL_ENV).ok()),
+            firestore_project_id: non_empty(std::env::var(FIRESTORE_PROJECT_ID_ENV).ok()),
+            firestore_service_account: non_empty(std::env::var(FIRESTORE_SERVICE_ACCOUNT_ENV).ok()),
+            firestore_database_id: non_empty(std::env::var(FIRESTORE_DATABASE_ID_ENV).ok()),
+            firestore_base_url: non_empty(std::env::var(FIRESTORE_BASE_URL_ENV).ok()),
             turso_path: non_empty(std::env::var(TURSO_PATH_ENV).ok()),
             connection_selector: non_empty(std::env::var(CONNECTION_SELECTOR_ENV).ok()),
             ssh: SshEnv {
@@ -268,7 +294,8 @@ fn non_empty(s: Option<String>) -> Option<String> {
 /// Attach an env-provided SSH tunnel (`DBBOARD_SSH_*`) to a backend resolved
 /// from an env-var URL. A no-op when no bastion host is set. Errors if the
 /// bastion env is malformed, or if it names a backend that cannot be tunneled
-/// (Turso local file, D1 HTTPS) — the same policy the stored path enforces.
+/// (Turso local file, D1 and Firestore HTTPS) — the same policy the stored
+/// path enforces.
 fn attach_env_ssh(backend: BackendConfig, env: &EnvSnapshot) -> Result<BackendConfig, ConfigError> {
     let Some(resolved) = resolved_ssh_from_env(&env.ssh)? else {
         return Ok(backend);
@@ -309,7 +336,33 @@ fn attach_env_ssh(backend: BackendConfig, env: &EnvSnapshot) -> Result<BackendCo
             id: "env".to_string(),
             kind: "Aurora DSQL (IAM)",
         }),
+        BackendConfig::Firestore(_) => Err(ConfigError::SshUnsupportedKind {
+            id: "env".to_string(),
+            kind: "Firestore",
+        }),
     }
+}
+
+/// A Firestore backend from `DBBOARD_FIRESTORE_*`, or `None` when the
+/// project id is absent.
+///
+/// The project id alone is a complete configuration: with no
+/// `DBBOARD_FIRESTORE_SERVICE_ACCOUNT` this is the local emulator, exactly
+/// as a stored entry with no `keyring_service_account_ref` is. So the
+/// service account cannot be part of the trigger condition the way the D1
+/// trio's token is — requiring it would make the emulator unreachable from
+/// the environment.
+fn firestore_from_env(env: &EnvSnapshot) -> Option<FirestoreConfig> {
+    let project_id = env.firestore_project_id.clone()?;
+    Some(FirestoreConfig {
+        project_id,
+        database_id: env.firestore_database_id.clone(),
+        credentials: env.firestore_service_account.clone().map_or(
+            FirestoreCredentials::Emulator,
+            FirestoreCredentials::ServiceAccountJson,
+        ),
+        base_url: env.firestore_base_url.clone(),
+    })
 }
 
 fn resolve_from_env_only(env: &EnvSnapshot) -> BackendConfig {
@@ -343,6 +396,9 @@ fn resolve_from_env_only(env: &EnvSnapshot) -> BackendConfig {
             base_url: env.d1_base_url.clone(),
         });
     }
+    if let Some(firestore) = firestore_from_env(env) {
+        return BackendConfig::Firestore(firestore);
+    }
     BackendConfig::Turso {
         path: env
             .turso_path
@@ -372,6 +428,10 @@ fn resolve_backend(
     if env.d1_account_id.is_some() && env.d1_database_id.is_some() && env.d1_token.is_some() {
         // D1 cannot be tunneled; surface a configured bastion as an error
         // rather than dropping it silently.
+        return attach_env_ssh(resolve_from_env_only(env), env);
+    }
+    if env.firestore_project_id.is_some() {
+        // Firestore is an HTTPS API; same refusal as D1.
         return attach_env_ssh(resolve_from_env_only(env), env);
     }
     if env.turso_path.is_some() {
@@ -416,7 +476,7 @@ fn resolve_backend(
 /// shape:
 ///
 /// - Env-only wins (env var path of [`backend_config_from_env_and_store`]):
-///   `"env:postgres"`, `"env:d1"`, `"env:turso"` so the user can see at
+///   `"env:postgres"`, `"env:d1"`, `"env:firestore"`, `"env:turso"` so the user can see at
 ///   a glance that the connection came from an environment variable.
 /// - Explicit `DBBOARD_CONNECTION=<id>` returns `<id>` when the id
 ///   exists in the file; an unknown id falls through to the in-memory
@@ -447,6 +507,9 @@ fn label_for(env: &EnvSnapshot, file: &ConnectionFile) -> String {
     }
     if env.d1_account_id.is_some() && env.d1_database_id.is_some() && env.d1_token.is_some() {
         return "env:d1".to_string();
+    }
+    if env.firestore_project_id.is_some() {
+        return "env:firestore".to_string();
     }
     if env.turso_path.is_some() {
         return "env:turso".to_string();
@@ -572,6 +635,26 @@ fn entry_to_backend(
                 access_key_id: access_key_id.clone(),
                 secret_key,
             })
+        }
+        ConnectionKind::Firestore {
+            project_id,
+            database_id,
+            base_url,
+            keyring_service_account_ref,
+        } => {
+            // No reference means the emulator, which has no credential —
+            // so the secret store is never consulted, and an emulator
+            // connection cannot fail on a keychain miss.
+            let credentials = match keyring_service_account_ref {
+                Some(key_ref) => FirestoreCredentials::ServiceAccountJson(secrets.get(key_ref)?),
+                None => FirestoreCredentials::Emulator,
+            };
+            Ok(BackendConfig::Firestore(FirestoreConfig {
+                project_id: project_id.clone(),
+                database_id: database_id.clone(),
+                credentials,
+                base_url: base_url.clone(),
+            }))
         }
     }
 }
@@ -706,6 +789,213 @@ mod tests {
                 keyring_secret_key_ref: secret_ref.to_string(),
             },
         }
+    }
+
+    /// `service_account_ref: None` is the emulator — the one kind whose
+    /// keychain reference is optional (see `ConnectionKind::Firestore`).
+    fn firestore_entry(id: &str, service_account_ref: Option<&str>) -> ConnectionEntry {
+        ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("firestore {id}"),
+            kind: ConnectionKind::Firestore {
+                project_id: "demo-project".to_string(),
+                database_id: None,
+                base_url: None,
+                keyring_service_account_ref: service_account_ref.map(ToString::to_string),
+            },
+        }
+    }
+
+    #[test]
+    fn firestore_entry_resolves_the_service_account_through_the_secret_store() {
+        let file = file_with(vec![firestore_entry(
+            "fs",
+            Some("dbboard.fs.service_account"),
+        )]);
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set(
+                "dbboard.fs.service_account",
+                r#"{"type":"service_account"}"#,
+            )
+            .expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::Firestore(fs) => {
+                assert_eq!(fs.project_id, "demo-project");
+                assert_eq!(fs.database_id, None);
+                assert_eq!(fs.base_url, None);
+                match fs.credentials {
+                    FirestoreCredentials::ServiceAccountJson(json) => {
+                        assert_eq!(json, r#"{"type":"service_account"}"#);
+                    }
+                    other @ FirestoreCredentials::Emulator => {
+                        panic!("expected a service account, got {other:?}")
+                    }
+                }
+            }
+            other => panic!("expected Firestore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn firestore_emulator_entry_resolves_with_no_credential_at_all() {
+        // No ref means the emulator. An empty secret store proves the
+        // resolver never reaches for a credential that does not exist —
+        // an emulator connection must not fail on a keychain miss.
+        let file = file_with(vec![ConnectionEntry {
+            kind: ConnectionKind::Firestore {
+                project_id: "demo-project".to_string(),
+                database_id: Some("(default)".to_string()),
+                base_url: Some("http://127.0.0.1:8080/v1".to_string()),
+                keyring_service_account_ref: None,
+            },
+            ..firestore_entry("emu", None)
+        }]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::Firestore(fs) => {
+                assert_eq!(fs.database_id.as_deref(), Some("(default)"));
+                assert_eq!(fs.base_url.as_deref(), Some("http://127.0.0.1:8080/v1"));
+                assert!(
+                    matches!(fs.credentials, FirestoreCredentials::Emulator),
+                    "a missing service-account ref means the emulator"
+                );
+            }
+            other => panic!("expected Firestore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn firestore_entry_with_missing_secret_propagates_secret_error() {
+        let file = file_with(vec![firestore_entry(
+            "fs",
+            Some("dbboard.fs.service_account"),
+        )]);
+        let secrets = InMemorySecretStore::new();
+        let err = resolve_backend(&empty_env(), &file, &secrets)
+            .expect_err("a referenced but absent secret must surface");
+        assert!(
+            matches!(err, ConfigError::Secret(_)),
+            "expected ConfigError::Secret, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn firestore_env_vars_win_over_the_file_store() {
+        let mut env = empty_env();
+        env.firestore_project_id = Some("env-project".to_string());
+        env.firestore_service_account = Some(r#"{"type":"service_account"}"#.to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::Firestore(fs) => {
+                assert_eq!(fs.project_id, "env-project");
+                assert!(matches!(
+                    fs.credentials,
+                    FirestoreCredentials::ServiceAccountJson(_)
+                ));
+            }
+            other => panic!("expected Firestore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn firestore_env_without_a_service_account_targets_the_emulator() {
+        // Same rule as the stored entry: project id alone is a complete
+        // emulator configuration, so it must not fall through to Turso.
+        let mut env = empty_env();
+        env.firestore_project_id = Some("env-project".to_string());
+        env.firestore_base_url = Some("http://127.0.0.1:8080/v1".to_string());
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &empty_file(), &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::Firestore(fs) => {
+                assert!(matches!(fs.credentials, FirestoreCredentials::Emulator));
+                assert_eq!(fs.base_url.as_deref(), Some("http://127.0.0.1:8080/v1"));
+            }
+            other => panic!("expected Firestore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn d1_env_outranks_firestore_env() {
+        let mut env = empty_env();
+        env.d1_account_id = Some("acct".to_string());
+        env.d1_database_id = Some("db".to_string());
+        env.d1_token = Some("tok".to_string());
+        env.firestore_project_id = Some("env-project".to_string());
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &empty_file(), &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::D1(_)),
+            "D1 ranks above Firestore, got {cfg:?}"
+        );
+    }
+
+    #[test]
+    fn firestore_env_outranks_turso_env() {
+        let mut env = empty_env();
+        env.firestore_project_id = Some("env-project".to_string());
+        env.turso_path = Some("/tmp/x.db".to_string());
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &empty_file(), &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Firestore(_)),
+            "Firestore ranks above the Turso fallback, got {cfg:?}"
+        );
+    }
+
+    #[test]
+    fn resolved_label_firestore_env_wins() {
+        let mut env = empty_env();
+        env.firestore_project_id = Some("env-project".to_string());
+        assert_eq!(label_for(&env, &empty_file()), "env:firestore");
+    }
+
+    #[test]
+    fn env_ssh_on_firestore_is_rejected() {
+        // Firestore is an HTTPS API; a configured bastion must be an error
+        // rather than silently dropped, exactly as for D1.
+        let mut env = empty_env();
+        env.firestore_project_id = Some("env-project".to_string());
+        env.ssh.host = Some("bastion.example".to_string());
+        env.ssh.user = Some("ec2-user".to_string());
+        env.ssh.key_path = Some("/tmp/key.pem".to_string());
+        // A host-key policy is validated before the kind is even looked at,
+        // so supply one — otherwise this asserts the wrong refusal.
+        env.ssh.fingerprint = Some("SHA256:AAAA".to_string());
+        let secrets = InMemorySecretStore::new();
+        let err = resolve_backend(&env, &empty_file(), &secrets)
+            .expect_err("a tunnel on Firestore must be refused");
+        assert!(
+            matches!(
+                err,
+                ConfigError::SshUnsupportedKind {
+                    kind: "Firestore",
+                    ..
+                }
+            ),
+            "expected SshUnsupportedKind for Firestore, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn firestore_entry_with_an_ssh_block_is_rejected_by_the_store_layer() {
+        // The kind refuses a tunnel at parse time; assert the property the
+        // resolver relies on rather than duplicating the loader's test.
+        assert!(!ConnectionKind::Firestore {
+            project_id: "demo-project".to_string(),
+            database_id: None,
+            base_url: None,
+            keyring_service_account_ref: None,
+        }
+        .supports_ssh_tunnel());
     }
 
     #[test]
@@ -1264,6 +1554,24 @@ mod tests {
         assert!(
             !rendered_aurora_dsql_iam.contains("super-secret-aws-key"),
             "{rendered_aurora_dsql_iam}"
+        );
+
+        let firestore = BackendConfig::Firestore(FirestoreConfig {
+            project_id: "demo-project".to_string(),
+            database_id: None,
+            // Deliberately carries no PEM armour line: the assertion below is
+            // about the sentinel, and armour in a tracked file only costs us a
+            // blocking `pii-scan` finding plus an allowlist entry that would
+            // weaken the check against a real key.
+            credentials: FirestoreCredentials::ServiceAccountJson(
+                r#"{"private_key":"never-appear"}"#.to_string(),
+            ),
+            base_url: None,
+        });
+        let rendered_firestore = format!("{firestore:?}");
+        assert!(
+            !rendered_firestore.contains("never-appear"),
+            "{rendered_firestore}"
         );
     }
 }

@@ -416,6 +416,7 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::Supabase { .. } => "supabase",
         ConnectionKind::AuroraDsql { .. } => "aurora-dsql",
         ConnectionKind::AuroraDsqlIam { .. } => "aurora-dsql-iam",
+        ConnectionKind::Firestore { .. } => "firestore",
     }
 }
 
@@ -1269,6 +1270,15 @@ mod tests {
                 keyring_secret_key_ref: "s".into(),
             }),
             "aurora-dsql-iam"
+        );
+        assert_eq!(
+            kind_label(&ConnectionKind::Firestore {
+                project_id: "p".into(),
+                database_id: None,
+                base_url: None,
+                keyring_service_account_ref: None,
+            }),
+            "firestore"
         );
     }
 

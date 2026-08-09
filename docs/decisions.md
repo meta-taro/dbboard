@@ -9456,3 +9456,81 @@ where nobody would see it until an agent asked.
   client: `BackendConfig` has no Firestore variant, and the service-account
   JSON needs the same keychain handling every other secret gets. That is the
   next slice of issue 0019, deliberately separate so this one is reviewable.
+
+---
+
+## ADR-0094 — A blank credential is a *choice*, and a Firestore browse is not SQL
+
+**Date:** 2026-08-06
+**Status:** Accepted
+
+### Context
+
+ADR-0093 left the Firestore adapter complete but unreachable: nothing in
+`dbboard-config`, `dbboard-connect` or the desktop client could name it. Wiring
+it through the five layers every other adapter already passes through surfaced
+two problems that no SQL adapter has.
+
+The first is the credential. Every kind so far has exactly one answer to "where
+is the secret?" — the OS keychain. Firestore has two, because the local
+emulator has no credential at all: it accepts the fixed string `owner`. So a
+blank service-account box is not an unfinished form. It is a valid, deliberate
+configuration — and it collides with the meaning a blank secret box already
+has on the *edit* form, where blank means "keep the stored one" (ADR-0016,
+which also forbids reading a stored secret back to show it).
+
+The second is the query text. The sidebar generates `SELECT * FROM … LIMIT n`
+for a table and `SELECT COUNT(*)` beside it. Firestore takes a
+`StructuredQuery` in JSON. This is not a quoting dialect the way MySQL's
+back-ticks are; there is no spelling of that `SELECT` that Firestore can run.
+
+### Decision
+
+1. **The mode gets its own flag.** `FirestoreCredentialField` is a three-state
+   enum — `Keep`, `Set(json)`, `Emulator` — matching the shape
+   `SshPassphraseField` already uses for its own "there is deliberately no
+   secret here" case. In the form it is `use_emulator: boolean` beside
+   `service_account: string`, and the checkbox **wins** over anything left in
+   the credential box. Half-applying a contradictory pair would be worse than
+   either reading of it.
+
+2. **`use_emulator` is sent back to the webview on edit; the credential is
+   not.** It is a mode, not a secret — ADR-0016 forbids reading the
+   service-account JSON back, and says nothing about whether one exists.
+   Without the flag the edit form cannot open in the state the connection is
+   actually in, which is the one thing an edit form must do.
+
+3. **Required-ness is per kind, not per field.** `requiredFields` used to
+   exclude one hardcoded name (`base_url`). Firestore adds two more optional
+   fields — a blank `database_id` means the project's `(default)` database, and
+   a blank `service_account` means the emulator — so the exclusion moved into
+   `optionalFields(kind)`. Firestore is consequently the only kind that can be
+   added with no credential of any sort.
+
+4. **The generated query follows the connection's language, not its dialect.**
+   `browseQuery(table, n, kind)` returns a `StructuredQuery` for Firestore and
+   SQL for everything else; `countQuery` returns `null` for Firestore and the
+   sidebar drops the menu entry. Counting in Firestore is
+   `:runAggregationQuery`, a separate endpoint the read-only adapter does not
+   implement — a greyed-out entry would still claim the feature exists.
+
+5. **A Firestore browse is read-only in the grid.** Inline cell editing
+   composes an `UPDATE`, so a connection that cannot be sent SQL cannot be
+   edited inline, whatever its schema declares. Firestore's `describe_table`
+   *does* declare a primary key (the document path), so this had to be decided
+   explicitly rather than falling out of the existing no-primary-key check.
+
+### Consequences
+
+- The service-account key is entered in a `<textarea>`, not a masked input. It
+  is a multi-line JSON document, and a paste nobody can read back is a paste
+  nobody can tell went wrong. It is still keychain-stored and never read back.
+- Firestore carries no DSN and cannot front an SSH tunnel; both exclusions are
+  now data (`NON_DSN_KINDS`, `SSH_TUNNELABLE_KINDS`) rather than a condition
+  written at each call site.
+- `dialectForKind` still answers `ansi` for `firestore`. Nothing asks it any
+  more on that path, and giving it a third answer would imply Firestore has a
+  quoting style, which is the misconception this ADR exists to remove.
+- The next adapter that is not SQL (MongoDB, issue 0020) inherits all of this:
+  it needs a `STRUCTURED_QUERY_KINDS` entry and its own query builder, not a
+  new set of concepts.

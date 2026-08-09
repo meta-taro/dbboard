@@ -455,7 +455,7 @@ describe('isEditableInApp', () => {
 });
 
 describe('CONNECTION_KINDS', () => {
-  it('lists all seven kinds with turso first', () => {
+  it('lists all eight kinds with turso first', () => {
     expect(CONNECTION_KINDS).toEqual([
       'turso',
       'd1',
@@ -464,7 +464,146 @@ describe('CONNECTION_KINDS', () => {
       'neon',
       'supabase',
       'aurora_dsql',
+      'firestore',
     ]);
+  });
+});
+
+// Firestore (ADR-0093). The only kind whose credential is genuinely optional:
+// a blank service account is not an unfinished form, it is the local emulator,
+// which authenticates with a fixed `Bearer owner` and has no key at all.
+describe('firestore', () => {
+  const emulator = {
+    kind: 'firestore' as const,
+    id: 'fs',
+    name: 'FS',
+    project_id: 'demo-project',
+  };
+
+  it('asks for the project, the database, the base url and the credential', () => {
+    expect(fieldsForKind('firestore')).toEqual([
+      'project_id',
+      'database_id',
+      'base_url',
+      'service_account',
+    ]);
+  });
+
+  it('treats the service-account JSON as the secret', () => {
+    expect(secretFields('firestore')).toEqual(['service_account']);
+  });
+
+  // `database_id` blank means `(default)`, and a blank credential means the
+  // emulator — so unlike D1, only the project id is actually required.
+  it('requires only the project id, on add as well as edit', () => {
+    expect(requiredFields('firestore', 'add')).toEqual(['id', 'name', 'project_id']);
+    expect(requiredFields('firestore', 'edit')).toEqual(['name', 'project_id']);
+  });
+
+  it('validates an emulator add form that carries no credential', () => {
+    expect(validate(form(emulator), 'add')).toEqual([]);
+  });
+
+  it('has no DSN parts to fill in', () => {
+    expect(validateDsnFields(form({ kind: 'firestore', use_url: false }))).toEqual([]);
+  });
+
+  it('cannot front an SSH tunnel', () => {
+    expect(supportsSshTunnel('firestore')).toBe(false);
+  });
+
+  it('sends a service account on add, with the optional fields collapsed to null', () => {
+    expect(
+      buildKindInput(
+        form({ ...emulator, database_id: '  ', base_url: '', service_account: '{"a":1}' }),
+      ),
+    ).toEqual({
+      kind: 'firestore',
+      project_id: 'demo-project',
+      database_id: null,
+      base_url: null,
+      service_account: '{"a":1}',
+    });
+  });
+
+  it('sends a null service account on add when the emulator is chosen', () => {
+    expect(buildKindInput(form({ ...emulator, use_emulator: true }))).toEqual({
+      kind: 'firestore',
+      project_id: 'demo-project',
+      database_id: null,
+      base_url: null,
+      service_account: null,
+    });
+  });
+
+  // The emulator checkbox beats a credential left in the box, the same way an
+  // unencrypted SSH key discards a typed passphrase rather than half-applying
+  // the user's choice.
+  it('lets the emulator checkbox win over a typed credential on add', () => {
+    expect(
+      buildKindInput(form({ ...emulator, use_emulator: true, service_account: '{"a":1}' })),
+    ).toMatchObject({ service_account: null });
+  });
+
+  it('edit sends use_emulator alongside the credential', () => {
+    expect(
+      buildKindEditInput(
+        form({ ...emulator, database_id: 'shop', service_account: '{"a":1}' }),
+      ),
+    ).toEqual({
+      kind: 'firestore',
+      project_id: 'demo-project',
+      database_id: 'shop',
+      base_url: null,
+      use_emulator: false,
+      service_account: '{"a":1}',
+    });
+  });
+
+  // Blank is "keep the stored credential" on edit, exactly as it is for the D1
+  // token — it is *not* a switch to the emulator, which needs the checkbox.
+  it('edit sends a blank credential as null so the backend keeps the stored one', () => {
+    expect(buildKindEditInput(form(emulator))).toMatchObject({
+      use_emulator: false,
+      service_account: null,
+    });
+  });
+
+  it('edit sends use_emulator when the checkbox is on', () => {
+    expect(
+      buildKindEditInput(form({ ...emulator, use_emulator: true, service_account: '{"a":1}' })),
+    ).toMatchObject({ use_emulator: true, service_account: null });
+  });
+
+  it('seeds the edit form from the stored fields and opens on the emulator', () => {
+    const f = formForEdit('fs', 'FS', {
+      kind: 'firestore',
+      project_id: 'demo-project',
+      database_id: null,
+      base_url: 'http://127.0.0.1:8080',
+      use_emulator: true,
+    });
+    expect(f.kind).toBe('firestore');
+    expect(f.project_id).toBe('demo-project');
+    expect(f.database_id).toBe('');
+    expect(f.base_url).toBe('http://127.0.0.1:8080');
+    expect(f.use_emulator).toBe(true);
+    // The credential is never sent back (ADR-0016).
+    expect(f.service_account).toBe('');
+    expect(validate(f, 'edit')).toEqual([]);
+  });
+
+  it('opens a service-account connection with the emulator box unchecked', () => {
+    const f = formForEdit('fs', 'FS', {
+      kind: 'firestore',
+      project_id: 'demo-project',
+      database_id: 'shop',
+      base_url: null,
+      use_emulator: false,
+    });
+    expect(f.use_emulator).toBe(false);
+    expect(f.database_id).toBe('shop');
+    expect(f.base_url).toBe('');
   });
 });
 

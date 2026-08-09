@@ -30,8 +30,20 @@ public API is the HTTP contract in
   a collection and reports each field with the sample it was inferred from
   (`string (12/20 sampled)`), so an inference never renders as a declared
   schema. Read-only is structural rather than parsed: the crate contains no
-  code able to build a Firestore write URL. Not yet selectable in the
-  desktop client — that is the next slice of issue 0019.
+  code able to build a Firestore write URL.
+- **Cloud Firestore is selectable in the desktop client**
+  ([ADR-0094](docs/decisions.md), issue 0019). It is the first connection
+  whose credential is optional: leaving the service-account box blank and
+  ticking *Connect to the local emulator* is a valid configuration, not an
+  unfinished form, and the edit form reopens in whichever of the two states
+  the connection is actually in. The service-account JSON is stored in the
+  OS keychain like every other secret and is never read back. A blank
+  *Database ID* means the project's `(default)` database. The sidebar
+  generates a bounded `StructuredQuery` instead of `SELECT * … LIMIT`, and
+  drops *Count rows*, which Firestore answers through an endpoint this
+  adapter does not implement; a browsed collection is read-only in the grid.
+  Configurable without the UI through `DBBOARD_FIRESTORE_PROJECT_ID` and
+  friends.
 
 ## [0.5.1] — 2026-08-06
 

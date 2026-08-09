@@ -1,10 +1,12 @@
 # 0019: Firestore adapter (`dbboard-firestore`)
 
-- **Status**: open — the crate is done; wiring it into the client is not
+- **Status**: open — the crate is done and reachable from the client; only the
+  MCP registration is left
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),
   ADR-0093 (REST directly, `ring` for signing, `query_read_only` overridden),
+  ADR-0094 (optional credential, and a browse that is not SQL),
   ADR-0046 (read-only MCP surface), ADR-0087 (MCP write policy)
 - **Blocked by**: 0018 (nested `Value`)
 
@@ -68,17 +70,26 @@ in ADR-0091 actually holds: native JSON query text through `query`, nested
 - [x] ADR entry for any non-trivial crate added
 - [ ] Exposed to the MCP server only after the read-only guarantee is tested
 
-## Remaining: reachable from the client
+## Slice 2: reachable from the client — done (ADR-0094)
 
-The crate is complete and green; nothing outside it knows Firestore exists.
-The next slice is the wiring, kept separate because it touches secret storage
-and the UI rather than the adapter:
+- [x] `BackendConfig::Firestore` + a `connect_adapter` arm in `dbboard-connect`.
+- [x] Service-account JSON through the same keychain path every other secret
+      takes — never a tracked file. `DBBOARD_FIRESTORE_*` env vars for the agent
+      case (ADR-0090 §4).
+- [x] Connection add **and** edit forms in the desktop client, changed together.
+      The emulator is a checkbox, because a blank credential is a *choice* here
+      and not an unfinished form (ADR-0094 §1).
+- [x] The sidebar generates a `StructuredQuery` rather than SQL, and offers no
+      *Count rows* on a connection that cannot count (ADR-0094 §4).
+- [ ] `dbboard-mcp` registration, which the read-only test above now unblocks.
 
-- `BackendConfig::Firestore` + a `connect_adapter` arm in `dbboard-connect`.
-- Service-account JSON through the same keychain path every other secret takes
-  — never a tracked file. `DBBOARD_*` env vars for the agent case (ADR-0090 §4).
-- Connection add **and** edit forms in the desktop client, changed together.
-- `dbboard-mcp` registration, which the read-only test above now unblocks.
+## Remaining
+
+- MCP registration (the last unticked completion criterion).
+- Verification against a real Firestore project or the local emulator. The
+  emulator is the cheaper first target: it needs no credential at all — tick
+  *Connect to the local emulator* and point *Base URL* at
+  `http://127.0.0.1:8080`.
 
 ## Verification
 

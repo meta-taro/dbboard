@@ -20,9 +20,9 @@ mod restore;
 use dbboard_config::secrets::{KeyringStore, SecretStore};
 use dbboard_config::{
     AnnotationsAdmin, ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKind,
-    ConnectionKindDraft, ConnectionKindEditDraft, SecretField, SshAuthDraft, SshAuthEditDraft,
-    SshEditField, SshHostKeyDraft, SshPassphraseField, SshTunnelDraft, SshTunnelEditDraft,
-    SshTunnelToml,
+    ConnectionKindDraft, ConnectionKindEditDraft, FirestoreCredentialField, SecretField,
+    SshAuthDraft, SshAuthEditDraft, SshEditField, SshHostKeyDraft, SshPassphraseField,
+    SshTunnelDraft, SshTunnelEditDraft, SshTunnelToml,
 };
 use dbboard_core::{CellValue, RowKey, TableInfo, TableSchema, UpdatePlan, Value};
 use dbboard_mcp::service::{
@@ -443,6 +443,14 @@ enum KindInput {
     AuroraDsql {
         url: String,
     },
+    /// Firestore (ADR-0093). A blank `service_account` means the local
+    /// emulator, which has no credential — not an empty secret.
+    Firestore {
+        project_id: String,
+        database_id: Option<String>,
+        base_url: Option<String>,
+        service_account: Option<String>,
+    },
 }
 
 /// Edit-time kind. Secret fields are `Option`: absent or blank means
@@ -475,6 +483,16 @@ enum KindEditInput {
     },
     AuroraDsql {
         url: Option<String>,
+    },
+    /// Firestore (ADR-0093). Three states, like the SSH passphrase:
+    /// `use_emulator` drops the credential outright, otherwise a blank
+    /// `service_account` keeps the stored one and a non-blank one replaces it.
+    Firestore {
+        project_id: String,
+        database_id: Option<String>,
+        base_url: Option<String>,
+        use_emulator: bool,
+        service_account: Option<String>,
     },
 }
 
@@ -671,6 +689,19 @@ fn to_add_draft(
         KindInput::Neon { url } => ConnectionKindDraft::Neon { url },
         KindInput::Supabase { url } => ConnectionKindDraft::Supabase { url },
         KindInput::AuroraDsql { url } => ConnectionKindDraft::AuroraDsql { url },
+        KindInput::Firestore {
+            project_id,
+            database_id,
+            base_url,
+            service_account,
+        } => ConnectionKindDraft::Firestore {
+            project_id,
+            database_id: none_if_blank(database_id),
+            base_url: none_if_blank(base_url),
+            // Blank is the emulator, so it must collapse to None rather than
+            // seeding an empty-string secret that later reads as a real one.
+            service_account: none_if_blank(service_account),
+        },
     };
     ConnectionDraft {
         mcp_write,
@@ -747,6 +778,28 @@ fn to_edit_draft(
         KindEditInput::AuroraDsql { url } => ConnectionKindEditDraft::AuroraDsql {
             url: secret_field(url),
         },
+        KindEditInput::Firestore {
+            project_id,
+            database_id,
+            base_url,
+            use_emulator,
+            service_account,
+        } => ConnectionKindEditDraft::Firestore {
+            project_id,
+            database_id: none_if_blank(database_id),
+            base_url: none_if_blank(base_url),
+            service_account: if use_emulator {
+                // The emulator wins over anything left in the credential box,
+                // matching how an unencrypted SSH key discards a typed
+                // passphrase rather than half-applying the user's choice.
+                FirestoreCredentialField::Emulator
+            } else {
+                match service_account {
+                    Some(s) if !s.trim().is_empty() => FirestoreCredentialField::Set(s),
+                    _ => FirestoreCredentialField::Keep,
+                }
+            },
+        },
     };
     ConnectionEditDraft {
         mcp_write,
@@ -780,6 +833,16 @@ enum EditFieldsDto {
     Neon {},
     Supabase {},
     AuroraDsql {},
+    /// `use_emulator` is the read-back of "no stored credential" (ADR-0093).
+    /// It is not a secret — it is which mode the connection is in — so unlike
+    /// the service-account JSON it can be sent to the form, which needs it to
+    /// open with the right box shown.
+    Firestore {
+        project_id: String,
+        database_id: Option<String>,
+        base_url: Option<String>,
+        use_emulator: bool,
+    },
 }
 
 /// Non-secret SSH auth prefill. The passphrase/password secrets are never sent
@@ -917,6 +980,17 @@ fn connection_edit_fields(
         ConnectionKind::Neon { .. } => EditFieldsDto::Neon {},
         ConnectionKind::Supabase { .. } => EditFieldsDto::Supabase {},
         ConnectionKind::AuroraDsql { .. } => EditFieldsDto::AuroraDsql {},
+        ConnectionKind::Firestore {
+            project_id,
+            database_id,
+            base_url,
+            keyring_service_account_ref,
+        } => EditFieldsDto::Firestore {
+            project_id: project_id.clone(),
+            database_id: database_id.clone(),
+            base_url: base_url.clone(),
+            use_emulator: keyring_service_account_ref.is_none(),
+        },
         ConnectionKind::AuroraDsqlIam { .. } => {
             return Err(
                 "Aurora DSQL (IAM) connections are configured in connections.toml \
@@ -1325,8 +1399,9 @@ mod tests {
         SshAuthEditInput, SshAuthFieldsDto, SshAuthInput, SshEditInput, SshHostKeyInput, SshInput,
     };
     use dbboard_config::{
-        ConnectionAdmin, ConnectionKindDraft, SecretField, SshAuthDraft, SshAuthEditDraft,
-        SshEditField, SshHostKeyDraft, SshPassphraseField, SshTunnelToml,
+        ConnectionAdmin, ConnectionKindDraft, ConnectionKindEditDraft, FirestoreCredentialField,
+        SecretField, SshAuthDraft, SshAuthEditDraft, SshEditField, SshHostKeyDraft,
+        SshPassphraseField, SshTunnelToml,
     };
 
     #[test]
@@ -1468,6 +1543,126 @@ mod tests {
             }
             _ => panic!("expected a D1 draft"),
         }
+    }
+
+    #[test]
+    fn to_add_draft_maps_a_firestore_service_account() {
+        let draft = to_add_draft(
+            "fs".to_string(),
+            "FS".to_string(),
+            KindInput::Firestore {
+                project_id: "demo-project".to_string(),
+                database_id: Some("  ".to_string()),
+                base_url: None,
+                service_account: Some(r#"{"type":"service_account"}"#.to_string()),
+            },
+            None,
+            false,
+            None,
+        );
+        match draft.kind {
+            ConnectionKindDraft::Firestore {
+                project_id,
+                database_id,
+                base_url,
+                service_account,
+            } => {
+                assert_eq!(project_id, "demo-project");
+                assert!(database_id.is_none(), "blank database_id collapses to None");
+                assert!(base_url.is_none());
+                assert_eq!(
+                    service_account.as_deref(),
+                    Some(r#"{"type":"service_account"}"#)
+                );
+            }
+            _ => panic!("expected a Firestore draft"),
+        }
+    }
+
+    #[test]
+    fn to_add_draft_treats_a_blank_firestore_service_account_as_the_emulator() {
+        // The form hides the credential box when "use the emulator" is on, so
+        // what arrives is blank — and blank must mean "no credential", not an
+        // empty-string secret written into the keychain.
+        let draft = to_add_draft(
+            "fs".to_string(),
+            "FS".to_string(),
+            KindInput::Firestore {
+                project_id: "demo-project".to_string(),
+                database_id: None,
+                base_url: Some("http://127.0.0.1:8080/v1".to_string()),
+                service_account: Some("   ".to_string()),
+            },
+            None,
+            false,
+            None,
+        );
+        match draft.kind {
+            ConnectionKindDraft::Firestore {
+                base_url,
+                service_account,
+                ..
+            } => {
+                assert_eq!(base_url.as_deref(), Some("http://127.0.0.1:8080/v1"));
+                assert!(service_account.is_none(), "blank → emulator");
+            }
+            _ => panic!("expected a Firestore draft"),
+        }
+    }
+
+    #[test]
+    fn to_edit_draft_firestore_maps_all_three_credential_states() {
+        let with = |use_emulator: bool, service_account: Option<&str>| {
+            to_edit_draft(
+                "FS".to_string(),
+                KindEditInput::Firestore {
+                    project_id: "demo-project".to_string(),
+                    database_id: None,
+                    base_url: None,
+                    use_emulator,
+                    service_account: service_account.map(str::to_string),
+                },
+                SshEditInput::Keep,
+                None,
+                None,
+            )
+            .kind
+        };
+        let keep = with(false, Some("  "));
+        assert!(
+            matches!(
+                keep,
+                ConnectionKindEditDraft::Firestore {
+                    service_account: FirestoreCredentialField::Keep,
+                    ..
+                }
+            ),
+            "blank with the emulator off → keep the stored credential"
+        );
+        let set = with(false, Some("{\"type\":\"service_account\"}"));
+        assert!(
+            matches!(
+                set,
+                ConnectionKindEditDraft::Firestore {
+                    service_account: FirestoreCredentialField::Set(v),
+                    ..
+                } if v == "{\"type\":\"service_account\"}"
+            ),
+            "a supplied value overwrites"
+        );
+        // Even a supplied value is ignored once the emulator is chosen —
+        // the same precedence `to_ssh_edit_field` gives an unencrypted key.
+        let emulator = with(true, Some("{\"type\":\"service_account\"}"));
+        assert!(
+            matches!(
+                emulator,
+                ConnectionKindEditDraft::Firestore {
+                    service_account: FirestoreCredentialField::Emulator,
+                    ..
+                }
+            ),
+            "the emulator toggle wins over a typed credential"
+        );
     }
 
     #[test]
