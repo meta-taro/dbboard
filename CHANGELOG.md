@@ -62,6 +62,28 @@ document has somewhere to land.
   mistake. `list_connections` now names every kind the server can return,
   guarded by a test against the source rather than a hand-kept list: that
   list had already gone stale twice.
+- **`dbboard-mongodb`**, the second non-SQL adapter
+  ([ADR-0095](docs/decisions.md), [ADR-0096](docs/decisions.md), issue
+  0020). `ping`, `list_tables`, `query` and `describe_table` against
+  MongoDB through the official driver. The query text is a command document
+  as JSON — `{"find": "users", "limit": 10}` — which is MongoDB's own native
+  form, with no translation layer, and results come back as ordinary rows
+  with nested documents in `Value::Json` cells. `describe_table` samples a
+  collection and reports each field with the sample it was inferred from
+  (`string (12/20 sampled)`), because a collection declares no schema.
+
+  Unlike Firestore, read-only here cannot be structural: every MongoDB
+  command travels the same `runCommand` path, so the guarantee is a
+  classifier. It allowlists both the commands and, per command, their
+  *options* — so `{"find": …, "insert": …}` is refused because `insert` is
+  not a `find` option, rather than because someone remembered it writes. It
+  walks the whole document for `$out` and `$merge` at any depth, refuses
+  server-side JavaScript deliberately, and never quotes the caller's command
+  back in a refusal. Verified end-to-end against MongoDB 8, including that a
+  refused write leaves the collection untouched.
+
+  Not yet selectable in the desktop client or reachable from the MCP server
+  — that wiring is the next slice of issue 0020.
 
 ### Fixed
 

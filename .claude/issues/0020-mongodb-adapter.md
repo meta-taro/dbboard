@@ -1,11 +1,13 @@
 # 0020: MongoDB adapter (`dbboard-mongodb`)
 
-- **Status**: open — slice 1 (the classifier) is done; the driver and the
-  adapter are next
+- **Status**: open — slices 1 (the classifier) and 2 (the driver and the
+  adapter) are done; the wiring into `dbboard-connect`, the desktop client and
+  the MCP server is next
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),
-  ADR-0046 (read-only classifier), ADR-0087 (MCP write policy)
+  ADR-0046 (read-only classifier), ADR-0087 (MCP write policy),
+  ADR-0095 (the command allowlist), ADR-0096 (the driver and the double parse)
 - **Blocked by**: 0018 (nested `Value`)
 
 ## Goal
@@ -79,23 +81,44 @@ Server-side JavaScript (`$where`, `$function`, `$accumulator`) is refused —
 recorded in ADR-0095 §5 so that re-allowing it is a decision someone makes
 rather than a gap someone finds.
 
-## Open questions to settle during implementation
+## Slice 2: the driver and the adapter — done (ADR-0096)
 
-- The official `mongodb` crate versus the REST-ish alternatives. A non-trivial
-  crate choice gets its own ADR entry per CLAUDE.md.
-- Whether transactions map onto `execute_in_transaction` usefully, or whether
-  that capability is better declared absent than half-implemented.
+The official `mongodb` crate at 3.8, default features plus `redact-errors`;
+`MongoAdapter` with `ping`, `list_tables`, `query`, `query_read_only` and
+`describe_table`; and three pure modules beside it — `document.rs` (BSON to
+`Value`), `command.rs` (approved text to the wire document) and `sample.rs`
+(bounded-sample schema inference). 67 unit tests, none of which needs a
+server, plus 10 `#[ignore]`d end-to-end tests in `tests/live_mongodb.rs` that
+were run green against `mongo:8` in Docker.
+
+The two open questions above are now settled:
+
+- **The official driver.** MongoDB's wire protocol is binary, with SCRAM,
+  server discovery and pooling behind it — a much larger surface to
+  reimplement than to depend on. Its default TLS is `rustls/ring`, which is
+  what ADR-0034 asks for. The one gap, recorded rather than papered over, is
+  that the driver offers no native-roots option (ADR-0096).
+- **Transactions are declared absent.** This adapter cannot write at all, so
+  there is nothing for `execute_in_transaction` to wrap.
+
+One thing worth writing down because it was not obvious: the command text is
+parsed *twice*, once as `serde_json` for the classifier and once as
+`bson::Document` for the wire. `serde_json`'s map is sorted, so a two-key
+`sort` would silently become a different sort, and `{"$oid": …}` would go out
+as a subdocument and match nothing. Both parsers keep the last of a duplicated
+key and the classifier walks every duplicate, so the classifier still sees a
+superset of what the server is asked to run (ADR-0096 §3).
 
 ## Completion criteria
 
 - [x] The read-only classifier is unit-tested against adversarial input to the
       same bar as `read_only.rs`, including `$out` / `$merge` inside an
       otherwise-read `aggregate`, and refuses anything it cannot prove read-only
-- [ ] `ping`, `list_tables`, `query`, `describe_table` implemented, with tests
+- [x] `ping`, `list_tables`, `query`, `describe_table` implemented, with tests
       that need no live cluster
-- [ ] Nested documents round-trip through the `Value` variant from issue 0018
-- [ ] `capabilities()` matches what is actually implemented
-- [ ] ADR entry for any non-trivial crate added
+- [x] Nested documents round-trip through the `Value` variant from issue 0018
+- [x] `capabilities()` matches what is actually implemented
+- [x] ADR entry for any non-trivial crate added (ADR-0096)
 - [ ] Exposed to the MCP server only after the classifier tests are green
 
 ## Verification
@@ -103,4 +126,12 @@ rather than a gap someone finds.
 ```sh
 cargo test -p dbboard-mongodb --all-features
 cargo clippy --all-targets --all-features -- -D warnings
+```
+
+End-to-end against a real server, which CI has none of:
+
+```sh
+docker run -d --rm --name dbboard-mongo-test -p 27117:27017 mongo:8
+DBBOARD_TEST_MONGODB_URI=mongodb://127.0.0.1:27117/dbboard_test   cargo test -p dbboard-mongodb --test live_mongodb -- --ignored
+docker stop dbboard-mongo-test
 ```

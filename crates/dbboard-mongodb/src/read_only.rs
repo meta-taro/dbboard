@@ -193,6 +193,28 @@ pub enum ReadCommand {
     ListIndexes,
 }
 
+impl ReadCommand {
+    /// Whether the server answers this command with a cursor rather than with
+    /// a single reply document. `count` and `distinct` answer in one document;
+    /// everything else on the read list streams.
+    #[must_use]
+    pub fn returns_cursor(self) -> bool {
+        !matches!(self, Self::Count | Self::Distinct)
+    }
+
+    /// Whether `option` is one of the fields this command may carry.
+    ///
+    /// The answer comes from the same table the classifier decides with, so
+    /// there is one list to keep right rather than two.
+    #[must_use]
+    pub fn allows_option(self, option: &str) -> bool {
+        READ_COMMANDS
+            .iter()
+            .find(|(_, command, _)| *command == self)
+            .is_some_and(|(_, _, options)| options.contains(&option))
+    }
+}
+
 /// A command document with its field order intact.
 ///
 /// `serde_json::Value`'s map is sorted, and `MongoDB` takes the *first* field as

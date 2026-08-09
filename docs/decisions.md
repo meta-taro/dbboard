@@ -9617,3 +9617,91 @@ Three properties of the command language make it more than a verb check.
 - Recursion is bounded by the parse: `serde_json` refuses to build a `Value`
   nested past its own limit, so a hostile document fails while parsing rather
   than while being walked.
+
+## ADR-0096 — The MongoDB adapter uses the official driver, and parses the command twice
+
+- **Status**: accepted
+- **Date**: 2026-08-09
+- **Context**: issue 0020, building on ADR-0095 (the classifier), ADR-0091
+  (document stores join through the same trait), ADR-0034 (pure-Rust TLS) and
+  ADR-0055 (this project's hostnames are business-identifying)
+
+### Context
+
+ADR-0095 settled how a MongoDB command is judged read-only. This one settles
+the two things that follow: what talks to the server, and how approved text
+becomes what goes on the wire.
+
+Firestore (ADR-0093) went to REST directly, because its wire protocol is HTTP
+and JSON and a hand-written client was smaller than the generated one. MongoDB
+is the opposite case: a binary wire protocol, SCRAM authentication, server
+discovery and monitoring, and connection pooling. Reimplementing that would be
+a much larger surface to get wrong than the driver is to depend on.
+
+### Decision
+
+1. **Depend on the official `mongodb` crate (3.8), with default features.**
+   Its default TLS backend is `rustls-tls` = `rustls/ring`, which is exactly
+   the pure-Rust stack ADR-0034 asks for. `rustls-tls-aws-lc` is the sibling
+   that would pull `aws-lc-sys` and is never selected.
+
+2. **Enable `redact-errors`.** The driver's `Redact<T>` replaces server
+   addresses and hostnames in error strings with `<redacted>`. Those strings
+   reach the UI, and this project's hosts are business-identifying (ADR-0055).
+   It is the same call `without_url()` makes in the Firestore adapter: the
+   caller already knows which connection it picked, so the host adds nothing to
+   the message and costs something if it is copied into an issue.
+
+3. **Parse the command text twice, with the same parser into two types.** The
+   classifier reads it as `serde_json` — pure, driver-free, reviewable on its
+   own terms (ADR-0095). What travels to the server is deserialized straight
+   into a `bson::Document`, which `serde_json::Value` cannot stand in for:
+   - **Field order at every depth.** `serde_json`'s map is sorted, and a
+     `{"sort": {"a": 1, "b": -1}}` that arrives as `{"b": -1, "a": 1}` sorts by
+     a different key.
+   - **Extended JSON.** `{"_id": {"$oid": "…"}}` has to become an `ObjectId`,
+     or a query by id matches nothing.
+
+   The double parse is sound in the direction that matters: both parsers keep
+   the *last* of a duplicated key, and the classifier holds duplicates in a
+   `Vec` and walks all of them. The classifier's view is therefore a superset
+   of what the server is asked to run.
+
+4. **The invariant is "no caller text reaches the server unclassified", not
+   "every command is classified".** The adapter's own commands — `ping`, the
+   collection listing, the `find` behind `describe_table` — are constants in
+   the adapter file and none of them writes. Routing them through the
+   classifier would test the classifier against input we wrote, which proves
+   nothing.
+
+5. **Inject `cursor` from the classifier's option table, not from a list of
+   verbs.** `aggregate` and `listCollections` are errors without a `cursor`
+   option, and a caller asking for their rows meant to receive them. `find`
+   streams but has no `cursor` option, and sending one makes the server refuse
+   the command. So the injection asks `ReadCommand::allows_option("cursor")` —
+   the same table the classifier decides with — and `find` is excluded without
+   being named.
+
+6. **Refuse a connection that names no database.** MongoDB's URI makes the
+   database optional. Falling back to `admin` or `test` would run the caller's
+   query somewhere they never named, which is worse than not connecting.
+
+7. **A command the *server* turns down is `DbError::Query`; everything else is
+   `DbError::Connection`.** Same line the Firestore adapter draws — the socket
+   being fine is what distinguishes a bad query from a bad connection.
+
+### Consequences
+
+- **Known gap: the driver offers no native-roots option.** Unlike `reqwest` and
+  `sqlx` elsewhere in this workspace, it trusts the bundled `webpki-roots`. A
+  server whose CA is in the OS store but not in that bundle — a private CA, an
+  enterprise proxy — will fail the handshake with no way to point the driver at
+  the OS store. Recorded here rather than papered over; if it bites, the fix is
+  a driver-level `TlsOptions` with an explicit CA file path.
+- No connection timeout is configured. The workspace has no precedent for one,
+  and the driver's defaults are the vendor's, so inventing a number here would
+  be a guess presented as a decision.
+- The crate is verified end-to-end against a real server in
+  `tests/live_mongodb.rs`, ignored by default and pointed at a local container.
+  Unit tests prove the crate sends what we think MongoDB accepts; that file
+  proves MongoDB accepts it.
