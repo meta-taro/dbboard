@@ -1,0 +1,17 @@
+[package]
+name = "dbboard-mongodb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "MongoDB adapter for dbboard (read-only command classifier first)."
+
+[dependencies]
+dbboard-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

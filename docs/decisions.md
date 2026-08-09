@@ -9534,3 +9534,86 @@ back-ticks are; there is no spelling of that `SELECT` that Firestore can run.
 - The next adapter that is not SQL (MongoDB, issue 0020) inherits all of this:
   it needs a `STRUCTURED_QUERY_KINDS` entry and its own query builder, not a
   new set of concepts.
+
+## ADR-0095 — MongoDB's read-only guarantee is an allowlist of commands *and* of their options
+
+- **Status**: accepted
+- **Date**: 2026-08-09
+- **Context**: issue 0020, building on ADR-0091 (document stores join through
+  the same trait) and ADR-0087 (the MCP write policy that sits on top)
+
+### Context
+
+Firestore (ADR-0093) is read-only by construction: reads and writes are
+different REST endpoints, so a crate that never builds a write URL has no
+classifier to get wrong. MongoDB has no such split. Every command — `find`,
+`insert`, `dropDatabase` — travels the same `runCommand` path, and the wire
+carries no hint about which of them mutate.
+
+`dbboard_core::read_only` cannot help. It is `sqlparser`-based by design and
+says so in its first line; a classifier that cannot parse its input must fail
+closed, which here would mean refusing every MongoDB query.
+
+So MongoDB needs a classifier of its own, and it is this adapter's
+safety-critical piece: the MCP read-only surface is built on top of it.
+
+Three properties of the command language make it more than a verb check.
+
+- **The command name is the document's first field.** That is MongoDB's own
+  rule. `serde_json::Value` sorts its map, so a classifier built on `Value`
+  would read `find` from `{"filter": …, "find": …}` — a document the server
+  would reject, classified as one it would accept.
+- **`$out` and `$merge` are aggregation stages that write.** `aggregate` has to
+  be on any useful read list, and an `aggregate` can still mutate. This is the
+  same shape as `WITH x AS (DELETE … RETURNING *) SELECT * FROM x`, which is
+  why the SQL classifier walks an AST instead of matching a prefix.
+- **`$where`, `$function` and `$accumulator` run JavaScript on the server.**
+  They do not write by themselves.
+
+### Decision
+
+1. **Allowlist the commands.** `find`, `aggregate`, `count`, `distinct`,
+   `listCollections`, `listIndexes`. Everything else is refused, including
+   commands that plainly read. The list grows one reviewed entry at a time.
+   `mapReduce` is the reason this is not a denylist of writes: it reads like a
+   read and writes through its `out` clause.
+
+2. **Allowlist the *options* too, per command.** A denylist of write verbs has
+   to be complete to be sound, and MongoDB adds commands. With an option
+   allowlist, `{"find": …, "insert": …, "documents": …}` is refused because
+   `insert` is not a `find` option — nobody has to remember that it writes.
+
+3. **Parse with field order intact.** `CommandDoc` keeps `Vec<(String, Value)>`
+   rather than a map, so "the first field" means what MongoDB means by it. This
+   is a local `Deserialize` impl rather than `serde_json/preserve_order`, whose
+   feature unification would change map ordering for every crate in the build.
+
+4. **Walk the whole document for forbidden keys, at any depth.** `$out` inside
+   a `$facet`, a `$lookup.pipeline` or a `$unionWith.pipeline` is still a
+   write. Keys only — a document whose *value* is the string `"$out"` is
+   ordinary data, and refusing it would be a false positive on real queries.
+
+5. **Refuse server-side JavaScript deliberately.** `$where`, `$function` and
+   `$accumulator` are on the forbidden list even though they do not write. This
+   is the classifier behind a surface an agent drives (ADR-0087), and arbitrary
+   server-side code execution is not a thing to arrive at by omission. It is
+   recorded here so that re-allowing it is a decision someone makes, not a gap
+   someone finds.
+
+6. **Never echo the command in a refusal.** Same rule as
+   `ReadOnlyViolation`: the reason names a category, and the constants it
+   quotes (`$out`, the option list) are ours, not the caller's. A refusal is
+   often logged, and a filter holds real data.
+
+### Consequences
+
+- A legitimate query using an option nobody has reviewed is refused. That is
+  the fail-closed trade, and the refusal lists the reviewed options for that
+  command so the fix is visible rather than a guess.
+- The classifier is pure and I/O-free, so it is unit-tested against adversarial
+  input with no cluster running — the same property that let the SQL classifier
+  be reviewed on its own terms, and the reason this crate leads with it instead
+  of with a driver.
+- Recursion is bounded by the parse: `serde_json` refuses to build a `Value`
+  nested past its own limit, so a hostile document fails while parsing rather
+  than while being walked.

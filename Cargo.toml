@@ -12,6 +12,7 @@ members = [
     "crates/dbboard-d1",
     "crates/dbboard-firestore",
     "crates/dbboard-mcp",
+    "crates/dbboard-mongodb",
     "crates/dbboard-mysql",
     "crates/dbboard-openai",
     "crates/dbboard-postgres",
@@ -65,6 +66,12 @@ dbboard-mysql = { path = "crates/dbboard-mysql" }
 # adapter. Read-only is structural — the crate builds no URL that can
 # write, so there is no classifier to get wrong (ADR-0091).
 dbboard-firestore = { path = "crates/dbboard-firestore" }
+# MongoDB adapter (issue 0020). Firestore's read-only guarantee is structural;
+# this one cannot be, because every MongoDB command travels the same
+# `runCommand` path. So the crate leads with a classifier — an allowlist of
+# read commands that also walks the document for writing aggregation stages —
+# and the adapter is built on top of it, not beside it.
+dbboard-mongodb = { path = "crates/dbboard-mongodb" }
 # SSH local-forward tunnel (ADR-0069): a pure-Rust SSH client (russh) that
 # opens a bastion-gated database's port on a loopback address so the ordinary
 # TCP adapters connect through it. Leaf crate — depends on russh + tokio only,

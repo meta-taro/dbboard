@@ -1,6 +1,7 @@
 # 0020: MongoDB adapter (`dbboard-mongodb`)
 
-- **Status**: open
+- **Status**: open — slice 1 (the classifier) is done; the driver and the
+  adapter are next
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),
@@ -54,6 +55,30 @@ MCP write gate (ADR-0087) would be built on top of it.
 - **`capabilities()`** declares honestly what is absent — no foreign keys, no
   DDL reconstruction.
 
+## Slice 1: the classifier — done (ADR-0095)
+
+`crates/dbboard-mongodb/src/read_only.rs`, pure and I/O-free, 18 tests. The
+crate leads with this rather than with a driver, so the safety-critical piece
+is reviewable on its own terms before anything can connect.
+
+Two decisions that were not obvious going in:
+
+- **The options are allowlisted too, not just the verbs.** A denylist of write
+  verbs has to be complete to be sound, and MongoDB adds commands. With an
+  option allowlist, `{"find": …, "insert": …, "documents": …}` is refused
+  because `insert` is not a `find` option — nobody has to remember that it
+  writes.
+- **The parse keeps field order.** MongoDB reads the command name from the
+  document's *first* field, and `serde_json::Value` sorts its map, so a
+  classifier built on `Value` would read `find` out of
+  `{"filter": …, "find": …}`. `CommandDoc` is a `Vec<(String, Value)>` with a
+  local `Deserialize` impl, rather than the `preserve_order` feature, whose
+  unification would reorder maps for every crate in the build.
+
+Server-side JavaScript (`$where`, `$function`, `$accumulator`) is refused —
+recorded in ADR-0095 §5 so that re-allowing it is a decision someone makes
+rather than a gap someone finds.
+
 ## Open questions to settle during implementation
 
 - The official `mongodb` crate versus the REST-ish alternatives. A non-trivial
@@ -63,7 +88,7 @@ MCP write gate (ADR-0087) would be built on top of it.
 
 ## Completion criteria
 
-- [ ] The read-only classifier is unit-tested against adversarial input to the
+- [x] The read-only classifier is unit-tested against adversarial input to the
       same bar as `read_only.rs`, including `$out` / `$merge` inside an
       otherwise-read `aggregate`, and refuses anything it cannot prove read-only
 - [ ] `ping`, `list_tables`, `query`, `describe_table` implemented, with tests
