@@ -44,6 +44,14 @@ public API is the HTTP contract in
   adapter does not implement; a browsed collection is read-only in the grid.
   Configurable without the UI through `DBBOARD_FIRESTORE_PROJECT_ID` and
   friends.
+- **Firestore connections are usable from the MCP server** (issue 0019). No
+  new wiring — every tool already went through the adapter trait — but the
+  tool descriptions now say which kinds exist and that `firestore` takes a
+  `StructuredQuery` rather than SQL, with an example. An agent that is only
+  told "SQL" sends a `SELECT`, gets a parse error, and reads it as its own
+  mistake. `list_connections` now names every kind the server can return,
+  guarded by a test against the source rather than a hand-kept list: that
+  list had already gone stale twice.
 
 ## [0.5.1] — 2026-08-06
 

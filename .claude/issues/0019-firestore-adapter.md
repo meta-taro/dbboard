@@ -1,7 +1,7 @@
 # 0019: Firestore adapter (`dbboard-firestore`)
 
-- **Status**: open — the crate is done and reachable from the client; only the
-  MCP registration is left
+- **Status**: open — the crate is done and reachable from both the client and
+  the MCP server; only verification against a live project is left
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),
@@ -68,7 +68,7 @@ in ADR-0091 actually holds: native JSON query text through `query`, nested
 - [x] Nested documents round-trip through the `Value` variant from issue 0018
 - [x] `capabilities()` matches what is actually implemented
 - [x] ADR entry for any non-trivial crate added
-- [ ] Exposed to the MCP server only after the read-only guarantee is tested
+- [x] Exposed to the MCP server only after the read-only guarantee is tested
 
 ## Slice 2: reachable from the client — done (ADR-0094)
 
@@ -81,11 +81,28 @@ in ADR-0091 actually holds: native JSON query text through `query`, nested
       and not an unfinished form (ADR-0094 §1).
 - [x] The sidebar generates a `StructuredQuery` rather than SQL, and offers no
       *Count rows* on a connection that cannot count (ADR-0094 §4).
-- [ ] `dbboard-mcp` registration, which the read-only test above now unblocks.
+- [x] `dbboard-mcp` registration, which the read-only test above now unblocks.
+
+## Slice 3: reachable from an agent — done
+
+There was no wiring to add: the MCP service opens connections through
+`backend_config_for_entry` + `connect_adapter`, which slice 2 already taught
+about Firestore, and every tool goes through the trait. What was missing was
+*honesty*, which is the part an agent actually consumes.
+
+- [x] `list_connections` names every kind `kind_label` can return, guarded by a
+      test that reads the two source spans rather than a hand-kept list — it
+      had already gone stale twice (MySQL, Aurora DSQL IAM) before Firestore
+      made staleness expensive.
+- [x] `run_read_query` states that a `firestore` connection takes a
+      `StructuredQuery` rather than SQL, with a bounded example. Without this
+      an agent sends `SELECT`, gets a parse error, and reads it as its own
+      mistake.
+- [x] `describe_table` says its Firestore result is inferred from a sample, not
+      declared.
 
 ## Remaining
 
-- MCP registration (the last unticked completion criterion).
 - Verification against a real Firestore project or the local emulator. The
   emulator is the cheaper first target: it needs no credential at all — tick
   *Connect to the local emulator* and point *Base URL* at
