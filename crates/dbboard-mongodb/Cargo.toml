@@ -9,9 +9,16 @@ publish.workspace = true
 description = "MongoDB adapter for dbboard (read-only command classifier first)."
 
 [dependencies]
+async-trait = { workspace = true }
 dbboard-core = { workspace = true }
+# Consumes the cursor a `find` or an `aggregate` comes back as.
+futures-util = { workspace = true }
+mongodb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
 
 [lints]
 workspace = true

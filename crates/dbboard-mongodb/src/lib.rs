@@ -12,8 +12,13 @@
 //! fail closed on anything it cannot prove read-only, and never decide by
 //! looking at the shape of a string.
 
+mod adapter;
+mod command;
+mod document;
 mod read_only;
+mod sample;
 
+pub use adapter::{MongoAdapter, MongoConfig};
 pub use read_only::{
     check_read_only, classify_read_only, CommandDoc, CommandViolation, ReadCommand,
 };
