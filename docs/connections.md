@@ -187,9 +187,10 @@ feature stays read-only across the upgrade — the gate exists to be off.
 
 Turning it on does not turn everything on. `run_write` still parses the
 statement and accepts only `INSERT` / `UPDATE` / `DELETE` / `MERGE` and
-`CREATE` / `ALTER` / `DROP INDEX` / `COMMENT`; anything it cannot
-classify is refused. `GRANT` / `REVOKE` / `DENY`, user and role DDL,
-`SET PASSWORD`, `TRUNCATE`, and `DROP` of anything but an index are
+`CREATE TABLE` / `CREATE VIEW` / `CREATE INDEX` / `CREATE SCHEMA` /
+`ALTER TABLE`; anything else — `COMMENT ON` included — is refused.
+`GRANT` / `REVOKE` / `DENY`, user and role DDL, `SET PASSWORD`,
+`TRUNCATE`, and `DROP` of anything at all (an index included) are
 refused **whatever this flag says**. The full policy is ADR-0087 and
 [`crates/dbboard-mcp/README.md`](../crates/dbboard-mcp/README.md).
 

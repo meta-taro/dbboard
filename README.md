@@ -533,9 +533,11 @@ The security posture is the reason it is safe to point an agent at:
 - **Writing is off until a human turns it on, per connection**
   (`mcp_write` in `connections.toml`, or *Connections → Edit → AI agent
   access*). Even then `run_write` only accepts an allowlisted statement
-  — classified on the AST, failing closed — and `GRANT` / `REVOKE` /
-  `DENY`, user and role DDL, `SET PASSWORD`, `TRUNCATE`, and `DROP` of
-  anything but an index are refused whatever the flag says (ADR-0087).
+  (`INSERT` / `UPDATE` / `DELETE` / `MERGE`, `CREATE TABLE` / `VIEW` /
+  `INDEX` / `SCHEMA`, `ALTER TABLE`) — classified on the AST, failing
+  closed — and `GRANT` / `REVOKE` / `DENY`, user and role DDL,
+  `SET PASSWORD`, `TRUNCATE`, and `DROP` of anything at all are refused
+  whatever the flag says (ADR-0087).
 - **Result sets are bounded.** `run_read_query` clamps `max_rows` to a
   hard cap of 1000 (default 200) with a `truncated` flag.
 - **stdout is sacred.** JSON-RPC frames own stdout; all logging goes to

@@ -72,13 +72,16 @@ each of which must pass:
    connection stays read-only across the upgrade.
 2. **The statement is on the allowlist.** `run_write` parses the SQL to
    an AST and accepts `INSERT` / `UPDATE` / `DELETE` / `MERGE` (data) and
-   `CREATE` / `ALTER` / `DROP INDEX` / `COMMENT` (schema). Anything it
-   cannot classify is refused — it fails closed.
+   `CREATE TABLE` / `CREATE VIEW` / `CREATE INDEX` / `CREATE SCHEMA` /
+   `ALTER TABLE` (schema). Everything else — including harmless-looking
+   things nobody listed, like `COMMENT ON` — is refused. It fails closed.
 3. **The statement is not permanently closed.** No flag opens
    `GRANT` / `REVOKE` / `DENY`, user or role DDL, `SET PASSWORD`,
-   `TRUNCATE`, or `DROP` of anything but an index. These are refused with
-   a distinct, permanent reason, so an agent that hits one knows there is
-   no setting to ask for.
+   `TRUNCATE`, or `DROP` of anything at all (an index included: creating
+   one is permitted, dropping one is not). These are refused with a
+   distinct, permanent
+   reason, so an agent that hits one knows there is no setting to ask
+   for.
 
 `DELETE` is allowed and `TRUNCATE` is not, deliberately: a `DELETE` has a
 `WHERE`, is transactional, and is the thing a dump can undo.
@@ -109,12 +112,22 @@ restores, in the dbboard app.
   goes to **stderr** (`RUST_LOG`, default `info`); a single stray byte on
   stdout would corrupt the stream.
 
-## Credentials without writing a file
+## Which connection store it reads
 
-`connections.toml` + the OS keychain is the normal path, but an agent
-operating under "never write a credential to disk" can hand the server a
-whole connection through the environment instead. Set these in the
-`env` block of the MCP entry (or export them before launching):
+Every connection this server can reach is an entry in `connections.toml`.
+There is no way to hand it a connection through the environment: a tool
+call names a `connection_id`, and the server resolves that id against the
+store file and the OS keychain, nothing else. A store file that does not
+exist is not an error — it simply means no connections, and
+`list_connections` answers with an empty list.
+
+The one thing the environment selects is **which store file**:
+
+| Variable / flag | For |
+|---|---|
+| `--config <path>` | the `connections.toml` to read (wins over the variable) |
+| `DBBOARD_CONFIG` | same, as an environment variable |
+| `RUST_LOG` | log level on stderr (default `info`) |
 
 ```jsonc
 {
@@ -123,34 +136,20 @@ whole connection through the environment instead. Set these in the
       "type": "stdio",
       "command": "C:/Users/<you>/AppData/Local/dbboard/dbboard-mcp.exe",
       "env": {
-        "DBBOARD_MYSQL_URL": "mysql://user:pw@127.0.0.1:3306/appdb",
-        "DBBOARD_SSH_HOST": "bastion.example.com",
-        "DBBOARD_SSH_USER": "ec2-user",
-        "DBBOARD_SSH_KEY_PATH": "C:/Users/<you>/.ssh/id_ed25519",
-        "DBBOARD_SSH_FINGERPRINT": "SHA256:…"
+        "DBBOARD_CONFIG": "C:/Users/<you>/dbboard-agent/connections.toml"
       }
     }
   }
 }
 ```
 
-| Variable | For |
-|---|---|
-| `DBBOARD_MYSQL_URL` | MySQL / MariaDB |
-| `DBBOARD_PG_URL`, `DBBOARD_NEON_URL`, `DBBOARD_SUPABASE_URL`, `DBBOARD_AURORA_DSQL_URL` | the PostgreSQL-wire family |
-| `DBBOARD_TURSO_PATH` | local libSQL/SQLite file |
-| `DBBOARD_D1_ACCOUNT_ID`, `DBBOARD_D1_DATABASE_ID`, `DBBOARD_D1_TOKEN` | Cloudflare D1 |
-| `DBBOARD_SSH_HOST`, `_PORT`, `_USER`, `_KEY_PATH`, `_KEY_PASSPHRASE`, `_PASSWORD`, `_FINGERPRINT`, `_KNOWN_HOSTS` | SSH local-forward tunnel (ADR-0069) |
-| `DBBOARD_CONFIG`, `DBBOARD_CONNECTION` | which `connections.toml`, and which entry in it |
-
-Host-key verification is **mandatory** — supply `DBBOARD_SSH_FINGERPRINT`
-or `DBBOARD_SSH_KNOWN_HOSTS`. There is no blind-accept option, so a
-tunnel that "just won't connect" is usually a missing one of those two.
-
-An env-configured connection is not written anywhere; it lives as long as
-the process does. Note that anything in `~/.claude.json` **is** a file on
-disk — if that is the objection, export the variables in the shell that
-launches the agent instead.
+The `DBBOARD_MYSQL_URL` / `DBBOARD_PG_URL` / `DBBOARD_TURSO_PATH` /
+`DBBOARD_D1_*` / `DBBOARD_SSH_*` / `DBBOARD_CONNECTION` variables
+documented in [`docs/connections.md`](../../docs/connections.md) belong to
+the single-connection resolution path used by `dbboard-server`. This
+server does not read them. A tunnelled connection is configured by the
+`[connections.ssh]` block on the entry instead, where host-key
+verification is mandatory the same way.
 
 ## Behind a TLS-terminating proxy
 

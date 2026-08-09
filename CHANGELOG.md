@@ -56,6 +56,24 @@ public API is the HTTP contract in
   guarded by a test against the source rather than a hand-kept list: that
   list had already gone stale twice.
 
+### Fixed
+
+- Documentation described a write policy the code does not have. `run_write`
+  never accepted `DROP INDEX` or `COMMENT ON`, and `DROP` is permanently
+  closed for *every* object including an index — the allowlist is
+  `INSERT` / `UPDATE` / `DELETE` / `MERGE` plus `CREATE TABLE` / `VIEW` /
+  `INDEX` / `SCHEMA` and `ALTER TABLE`, exactly as ADR-0087 decided. The
+  README, `docs/connections.md` and the 0.5.0 entry below said otherwise;
+  two tests now pin the behaviour so the wording cannot drift again.
+- `crates/dbboard-mcp/README.md` documented handing the MCP server a whole
+  connection through `DBBOARD_MYSQL_URL` and friends. Those variables belong
+  to `dbboard-server`'s single-connection resolution path; the MCP server
+  resolves a tool call's `connection_id` against `connections.toml` and the
+  keychain and reads none of them. It honours `--config` / `DBBOARD_CONFIG`,
+  which choose *which* store file, and that is now what the section says.
+- `docs/compatibility.md` had no MySQL / MariaDB section at all, three
+  releases after the adapter shipped (ADR-0068).
+
 ## [0.5.1] — 2026-08-06
 
 A patch release with nothing in it but two bugs found by using the thing.
@@ -119,12 +137,13 @@ unchanged from 0.2.0.
 ### Added
 
 - `dbboard-mcp` can **write** — `run_write` runs `INSERT` / `UPDATE` /
-  `DELETE` / `MERGE` and `CREATE` / `ALTER` / `DROP INDEX` / `COMMENT`
+  `DELETE` / `MERGE` and `CREATE TABLE` / `VIEW` / `INDEX` / `SCHEMA` /
+  `ALTER TABLE`
   behind a three-tier policy (ADR-0087): the connection must be opted in
   with `mcp_write = true`, the statement must parse to something on the
   allowlist, and a permanently-closed list — `GRANT` / `REVOKE` / `DENY`,
   user and role DDL, `SET PASSWORD`, `TRUNCATE`, and `DROP` of anything
-  but an index — is refused whatever the flag says. Classification is on
+  at all — is refused whatever the flag says. Classification is on
   the AST and fails closed. Every existing connection stays read-only
   across the upgrade, because an absent flag means `false`.
 - `dbboard-mcp` gained `dump_database`, so an agent can take a backup

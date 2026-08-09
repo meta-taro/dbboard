@@ -410,6 +410,32 @@ mod tests {
         assert!(refused.is_permanent());
     }
 
+    /// `CREATE INDEX` is permitted, so "drop" reads like its undo — but a
+    /// dropped index takes a rebuild to get back, and on a large table that
+    /// rebuild is an outage. `DROP` is closed for every object, with no
+    /// exception carved out here.
+    #[test]
+    fn dropping_an_index_is_closed_even_though_creating_one_is_not() {
+        assert_eq!(
+            classify_write("CREATE INDEX idx_users_email ON users (email)", PG)
+                .expect("create index is permitted"),
+            WriteStatement::Schema,
+        );
+        let refused = violation("DROP INDEX idx_users_email", PG);
+        assert!(refused.is_permanent());
+    }
+
+    /// `COMMENT ON` changes no data and no shape, but it is not on the list,
+    /// and "not listed" means refused rather than waved through.
+    #[test]
+    fn commenting_is_refused_because_nothing_listed_it() {
+        let refused = violation("COMMENT ON TABLE t IS 'note'", PG);
+        assert!(
+            !refused.is_permanent(),
+            "nothing about a comment is dangerous; it is simply unlisted"
+        );
+    }
+
     #[test]
     fn a_read_is_refused_so_it_cannot_dodge_the_row_cap() {
         let refused = violation("SELECT * FROM t", PG);
