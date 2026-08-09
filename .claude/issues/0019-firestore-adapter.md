@@ -1,7 +1,7 @@
 # 0019: Firestore adapter (`dbboard-firestore`)
 
-- **Status**: open — the crate is done and reachable from both the client and
-  the MCP server; only verification against a live project is left
+- **Status**: closed — the crate is done, reachable from both the client and the
+  MCP server, and verified end-to-end against the local Firestore emulator
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),
@@ -101,12 +101,30 @@ about Firestore, and every tool goes through the trait. What was missing was
 - [x] `describe_table` says its Firestore result is inferred from a sample, not
       declared.
 
+## Slice 4: verified against a real Firestore — done
+
+`wiremock` proves the crate sends what we *believe* Firestore accepts. It cannot
+prove Firestore accepts it. `crates/dbboard-connect/tests/firestore_emulator.rs`
+closes that gap against the local emulator, and goes through `connect_adapter`
+rather than the adapter directly, so it covers the same wiring the desktop
+client and the MCP server both use.
+
+- [x] `ping`, `list_tables`, `query`, `describe_table` answered by the emulator.
+- [x] The browse query is asserted as the *exact* string `browseQuery` generates
+      (ADR-0094 §4) — a change there that the emulator would reject fails here
+      rather than in front of a user.
+- [x] A nested map survives as an `address` column (the issue 0018 `Value::Json`
+      variant), and no collection is reported with a schema namespace.
+- [x] `execute` is refused rather than attempted.
+
+The tests are `#[ignore]`d and gated on `DBBOARD_TEST_FIRESTORE_EMULATOR`, so
+CI — which has no emulator — is unaffected.
+
 ## Remaining
 
-- Verification against a real Firestore project or the local emulator. The
-  emulator is the cheaper first target: it needs no credential at all — tick
-  *Connect to the local emulator* and point *Base URL* at
-  `http://127.0.0.1:8080`.
+Nothing blocking. Pointing the client at a real cloud project still needs a
+service-account credential, but that path is the same one every other secret
+takes and the emulator exercises everything above it.
 
 ## Verification
 
@@ -114,3 +132,23 @@ about Firestore, and every tool goes through the trait. What was missing was
 cargo test -p dbboard-firestore --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+And, against the emulator. The port is not a CLI flag — it comes from a
+`firebase.json` in whatever directory you start it from, so put one in a scratch
+directory. 8385 rather than the default 8080 because this machine is shared and
+8080 is usually already taken:
+
+```json
+{ "emulators": { "firestore": { "port": 8385, "host": "127.0.0.1" }, "ui": { "enabled": false } },
+  "firestore": { "rules": "firestore.rules" } }
+```
+
+```sh
+firebase emulators:start --only firestore --project demo-dbboard
+DBBOARD_TEST_FIRESTORE_EMULATOR=http://127.0.0.1:8385/v1 \
+  cargo test -p dbboard-connect --test firestore_emulator --all-features -- --ignored
+```
+
+The project id must stay `demo-`prefixed: that is the Firebase tooling's own
+marker for "never contact production", and it is what stops a stray credential
+from turning this into a live write.

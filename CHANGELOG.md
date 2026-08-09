@@ -30,7 +30,10 @@ public API is the HTTP contract in
   a collection and reports each field with the sample it was inferred from
   (`string (12/20 sampled)`), so an inference never renders as a declared
   schema. Read-only is structural rather than parsed: the crate contains no
-  code able to build a Firestore write URL.
+  code able to build a Firestore write URL. Verified end-to-end against the
+  local Firestore emulator, through the same `connect_adapter` path the
+  client and the MCP server use, and with the browse query asserted as the
+  exact text the sidebar generates.
 - **Cloud Firestore is selectable in the desktop client**
   ([ADR-0094](docs/decisions.md), issue 0019). It is the first connection
   whose credential is optional: leaving the service-account box blank and
