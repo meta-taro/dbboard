@@ -15,6 +15,9 @@ dbboard is free and open source.
 > with no runtime dependencies. The desktop app is a separate download from
 > the **[download page](https://meta-taro.github.io/dbboard/)** and is not
 > required to run this.
+>
+> Prefer prose to a reference? There is a walkthrough in Japanese:
+> **[Claude Code に自分の DB を触らせる](https://zenn.dev/dokokade/articles/46b8c608715963)**.
 
 The agent can list connections, browse schemas, read rows, take a dump,
 and see dbboard's local annotations. It **never sees a secret**, and it

@@ -3,8 +3,15 @@ title: "Claude Code に自分の DB を触らせる — dbboard の MCP サー�
 emoji: "🗄️"
 type: "tech"
 topics: ["mcp", "claudecode", "database", "rust", "mysql"]
-published: false
+published: true
 ---
+
+<!--
+Published at https://zenn.dev/dokokade/articles/46b8c608715963
+Zenn builds from a separate repository, where this file carries the slug
+as its name. This copy is the source of record: edit here first, then
+copy across, so the article and the docs it describes move together.
+-->
 
 Claude Code に「このテーブルの構造どうなってる？」と聞くために、スキーマを
 コピペして貼り付けている人向けの記事です。

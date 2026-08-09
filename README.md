@@ -608,13 +608,17 @@ app* does nothing to it, because they are separate processes.
 
 With no arguments it reads the same per-user `connections.toml` the GUI
 uses; pass `--config` (or set `DBBOARD_CONFIG`) to point at a curated,
-least-privilege subset instead. If your operating rules forbid writing
-credentials to a file at all, pass them as environment variables in the
-agent's own config — see *Credentials without writing a file* in the crate
-README. Full configuration — the per-OS config paths, running several
-agents at once, TLS behind a corporate proxy, and the literal error strings
-a failed connection produces — is documented in
+least-privilege subset instead. That is the only thing the environment
+decides: a tool call names a `connection_id`, and the server resolves it
+against the store file and the keychain, so a connection the store does
+not describe cannot be reached. Full configuration — the per-OS config
+paths, running several agents at once, TLS behind a corporate proxy, and
+the literal error strings a failed connection produces — is documented in
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md).
+
+A walkthrough in Japanese, from downloading the binary to the first
+refused `DROP`, is on Zenn:
+[Claude Code に自分の DB を触らせる](https://zenn.dev/dokokade/articles/46b8c608715963).
 
 ## Development
 
