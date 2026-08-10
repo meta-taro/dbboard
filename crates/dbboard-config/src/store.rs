@@ -195,6 +195,25 @@ pub enum ConnectionKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keyring_service_account_ref: Option<String>,
     },
+    /// A `MongoDB` connection (ADR-0096). Like [`ConnectionKind::Postgres`] it
+    /// stores only a keychain reference — here to a `mongodb://…` or
+    /// `mongodb+srv://…` URI, which carries the password in its authority.
+    ///
+    /// `database` is optional because the URI may name it in the path
+    /// (`mongodb://host/orders`). When neither names one the adapter refuses
+    /// rather than guessing; that check belongs to the adapter, not the store,
+    /// so a file written by an older build still parses.
+    ///
+    /// The variant is spelled `MongoDb` in Rust, but `rename_all = "snake_case"`
+    /// would emit `mongo_db`, so the TOML discriminator is pinned to
+    /// `kind = "mongodb"` — the same reason [`ConnectionKind::MySql`] pins
+    /// `mysql`.
+    #[serde(rename = "mongodb")]
+    MongoDb {
+        keyring_url_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        database: Option<String>,
+    },
 }
 
 impl ConnectionKind {
@@ -216,6 +235,7 @@ impl ConnectionKind {
             ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
             ConnectionKind::AuroraDsqlIam { .. } => "Aurora DSQL (IAM)",
             ConnectionKind::Firestore { .. } => "Firestore",
+            ConnectionKind::MongoDb { .. } => "MongoDB",
         }
     }
 
@@ -226,6 +246,13 @@ impl ConnectionKind {
     /// APIs, and the Aurora DSQL IAM kind mints its own endpoint at connect; none
     /// of them route through a forwarded TCP port, so a tunnel on them is a
     /// configuration error rather than silently ignored.
+    ///
+    /// `MongoDB` is excluded for a different reason: it *is* TCP, but a
+    /// `mongodb://` URI may list several hosts and `mongodb+srv://` discovers a
+    /// whole replica set out of DNS. Rewriting one host to a loopback forward
+    /// would leave the driver failing over to the untunnelled members, so it
+    /// would appear to work and then silently stop. Refusing is the honest
+    /// answer until a tunnel can front every member.
     #[must_use]
     pub fn supports_ssh_tunnel(&self) -> bool {
         matches!(
@@ -785,6 +812,70 @@ base_url    = "http://127.0.0.1:8080"
             .adapter_label(),
             "Firestore"
         );
+    }
+
+    #[test]
+    fn parses_a_mongodb_entry() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id              = "mongo-local"
+name            = "Mongo (local)"
+kind            = "mongodb"
+keyring_url_ref = "dbboard.mongo-local.url"
+database        = "dbboard_test"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("mongodb entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::MongoDb {
+                keyring_url_ref: "dbboard.mongo-local.url".to_string(),
+                database: Some("dbboard_test".to_string()),
+            }
+        );
+    }
+
+    /// The URI can name the database in its path (`mongodb://host/dbname`), so
+    /// the explicit field is optional — but only one of the two may be absent.
+    /// The adapter refuses a connection that names neither rather than picking
+    /// one, and that refusal belongs there, not here.
+    #[test]
+    fn parses_a_mongodb_entry_that_leaves_the_database_to_the_uri() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id              = "mongo-atlas"
+name            = "Mongo (atlas)"
+kind            = "mongodb"
+keyring_url_ref = "dbboard.mongo-atlas.url"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("mongodb entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::MongoDb {
+                keyring_url_ref: "dbboard.mongo-atlas.url".to_string(),
+                database: None,
+            }
+        );
+    }
+
+    /// `MongoDB` *is* a TCP protocol on `host:port`, so unlike D1 and Firestore
+    /// the refusal is not "there is nothing to forward". It is that a
+    /// `mongodb://` URI may name several hosts and `mongodb+srv://` resolves a
+    /// whole replica set out of DNS; rewriting one host to a loopback forward
+    /// would leave the driver talking to a different node than the one the
+    /// tunnel fronts, and failing over to the untunnelled ones. Better refused
+    /// than quietly wrong (ADR-0069).
+    #[test]
+    fn mongodb_refuses_an_ssh_tunnel() {
+        let kind = ConnectionKind::MongoDb {
+            keyring_url_ref: "r".into(),
+            database: None,
+        };
+        assert!(!kind.supports_ssh_tunnel());
+        assert_eq!(kind.adapter_label(), "MongoDB");
     }
 
     #[test]

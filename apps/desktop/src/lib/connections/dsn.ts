@@ -58,7 +58,14 @@ export function emptyDsnParts(): DsnParts {
 /** Kinds whose credential is a DSN, and so can be entered as parts. Turso
  *  (a file path or libSQL URL), D1 (account/database ids) and Firestore
  *  (project id + service account) are not. */
-const NON_DSN_KINDS: readonly ConnectionKind[] = ['turso', 'd1', 'firestore'] as const;
+// MongoDB is here despite having a host and port: one URI may list several of
+// them, plus a replica-set name and options the five boxes cannot express.
+const NON_DSN_KINDS: readonly ConnectionKind[] = [
+  'turso',
+  'd1',
+  'firestore',
+  'mongodb',
+] as const;
 
 export function usesDsnFields(kind: ConnectionKind): boolean {
   return !NON_DSN_KINDS.includes(kind);

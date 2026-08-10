@@ -119,7 +119,7 @@ superset of what the server is asked to run (ADR-0096 §3).
 - [x] Nested documents round-trip through the `Value` variant from issue 0018
 - [x] `capabilities()` matches what is actually implemented
 - [x] ADR entry for any non-trivial crate added (ADR-0096)
-- [ ] Exposed to the MCP server only after the classifier tests are green
+- [x] Exposed to the MCP server only after the classifier tests are green
 
 ## Verification
 
