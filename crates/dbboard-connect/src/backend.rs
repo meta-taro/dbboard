@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use dbboard_core::{DatabaseAdapter, DbError, DbResult};
 use dbboard_d1::D1Adapter;
+use dbboard_firestore::FirestoreAdapter;
 use dbboard_mysql::{MySqlAdapter, MySqlConfig};
 use dbboard_postgres::{AuroraDsqlIamParams, PostgresAdapter, PostgresConfig};
 use dbboard_tunnel::SshTunnel;
@@ -168,6 +169,16 @@ pub async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn Database
                 secret_key,
             })
             .await?;
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
+        }
+        BackendConfig::Firestore(cfg) => {
+            let adapter = FirestoreAdapter::connect(cfg)?;
+            // Like D1, `connect` only builds the HTTP client — and for a
+            // service account it has not yet exchanged the signed assertion
+            // for an access token. `ping` is what proves the credentials
+            // actually work, so a bad key fails at startup rather than on
+            // the first query.
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }

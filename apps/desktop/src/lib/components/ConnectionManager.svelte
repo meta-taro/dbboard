@@ -87,6 +87,7 @@
     neon: 'conn-kind-neon',
     supabase: 'conn-kind-supabase',
     aurora_dsql: 'conn-kind-aurora_dsql',
+    firestore: 'conn-kind-firestore',
   };
 
   const FIELD_LABEL: Record<FormField, MessageKey> = {
@@ -98,6 +99,8 @@
     base_url: 'conn-field-base-url',
     token: 'conn-field-token',
     url: 'conn-field-url',
+    project_id: 'conn-field-project-id',
+    service_account: 'conn-field-service-account',
   };
 
   const DSN_LABEL: Record<DsnField, MessageKey> = {
@@ -537,29 +540,64 @@
         <!-- The DSN kinds render their credential in the Server fieldset below,
              either as parts or as one URL; every other field is plain. -->
         {#each fieldsForKind(form.kind) as f (f)}
-          {#if !(f === 'url' && usesDsnFields(form.kind))}
+          <!-- The emulator toggle sits directly above the credential it
+               replaces, and hides it: a blank credential box already means
+               "keep the stored one" on edit, so leaving both visible would
+               offer two contradictory ways to say the same thing. Rendered
+               inside the loop so add and edit cannot drift apart. -->
+          {#if f === 'service_account'}
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={form.use_emulator}
+                onchange={(e) => (form.use_emulator = e.currentTarget.checked)}
+              />
+              <span>{i18n.t('conn-firestore-emulator')}</span>
+            </label>
+            <span class="hint">{i18n.t('conn-firestore-emulator-hint')}</span>
+          {/if}
+          {#if !(f === 'url' && usesDsnFields(form.kind)) && !(f === 'service_account' && form.use_emulator)}
             <label class="field">
               <span class="label">{i18n.t(FIELD_LABEL[f])}</span>
-              <div class="with-action">
-                <input
+              {#if f === 'service_account'}
+                <!-- A textarea, not a masked input: the service-account key is
+                     a multi-line JSON document, and a paste nobody can read
+                     back is a paste nobody can tell went wrong. It still never
+                     leaves the keychain once saved. -->
+                <textarea
                   class:bad={invalid.includes(f)}
-                  type={isSecret(f) ? 'password' : 'text'}
+                  rows="4"
                   value={form[f]}
                   oninput={(e) => setField(f, e.currentTarget.value)}
                   spellcheck="false"
                   autocomplete="off"
-                />
-                {#if isPathField(f)}
-                  <button
-                    type="button"
-                    class="ghost"
-                    disabled={busy}
-                    onclick={() => browseFor(f)}
-                  >
-                    {i18n.t('conn-browse')}
-                  </button>
-                {/if}
-              </div>
+                ></textarea>
+                <span class="hint">{i18n.t('conn-field-service-account-hint')}</span>
+              {:else}
+                <div class="with-action">
+                  <input
+                    class:bad={invalid.includes(f)}
+                    type={isSecret(f) ? 'password' : 'text'}
+                    value={form[f]}
+                    oninput={(e) => setField(f, e.currentTarget.value)}
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  {#if isPathField(f)}
+                    <button
+                      type="button"
+                      class="ghost"
+                      disabled={busy}
+                      onclick={() => browseFor(f)}
+                    >
+                      {i18n.t('conn-browse')}
+                    </button>
+                  {/if}
+                </div>
+              {/if}
+              {#if f === 'database_id' && form.kind === 'firestore'}
+                <span class="hint">{i18n.t('conn-firestore-database-hint')}</span>
+              {/if}
               {#if isSecret(f) && editorMode === 'edit'}
                 <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
               {/if}
@@ -1086,7 +1124,8 @@
     white-space: nowrap;
   }
   .field input,
-  .field select {
+  .field select,
+  .field textarea {
     width: 100%;
     background: var(--bg-surface-alt);
     color: var(--text);
@@ -1096,12 +1135,21 @@
     font-size: var(--text-body);
   }
   .field input:focus-visible,
-  .field select:focus-visible {
+  .field select:focus-visible,
+  .field textarea:focus-visible {
     outline: none;
     border-color: var(--accent);
   }
-  .field input.bad {
+  .field input.bad,
+  .field textarea.bad {
     border-color: var(--danger);
+  }
+  /* JSON, so monospace — a stray character in a pasted key is only findable
+     when the columns line up. */
+  .field textarea {
+    font-family: var(--font-mono);
+    font-size: var(--text-small);
+    resize: vertical;
   }
   .field input.readonly {
     color: var(--text-muted);

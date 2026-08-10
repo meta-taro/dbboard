@@ -10,6 +10,7 @@ members = [
     "crates/dbboard-connect",
     "crates/dbboard-core",
     "crates/dbboard-d1",
+    "crates/dbboard-firestore",
     "crates/dbboard-mcp",
     "crates/dbboard-mysql",
     "crates/dbboard-openai",
@@ -20,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
@@ -59,6 +60,11 @@ dbboard-connect = { path = "crates/dbboard-connect" }
 # backslash-escaped literals) over sqlx's mysql driver. Depends on
 # dbboard-core only, mirroring the Postgres-wire adapter's shape.
 dbboard-mysql = { path = "crates/dbboard-mysql" }
+# Cloud Firestore adapter (ADR-0093): a read-only HTTP client of the
+# Firestore REST API. Depends on dbboard-core only, like every other
+# adapter. Read-only is structural — the crate builds no URL that can
+# write, so there is no classifier to get wrong (ADR-0091).
+dbboard-firestore = { path = "crates/dbboard-firestore" }
 # SSH local-forward tunnel (ADR-0069): a pure-Rust SSH client (russh) that
 # opens a bastion-gated database's port on a loopback address so the ordinary
 # TCP adapters connect through it. Leaf crate — depends on russh + tokio only,
@@ -191,6 +197,28 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Pure-Rust mock HTTP server for dbboard-anthropic's round-trip tests.
 # Dev-dep only — the production code never depends on it.
 wiremock = "0.6"
+# RS256 signing for the Firestore service-account grant (ADR-0093). Already
+# in the tree via rustls-ring, so this adds no new dependency — which is the
+# point: the obvious alternative (`rsa`) carries RUSTSEC-2023-0071, a timing
+# sidechannel on exactly the private-key operation this performs. ring's RSA
+# signing is constant-time and is the same backend ADR-0034 already committed
+# to; `aws-lc-rs` stays out of the tree.
+ring = "0.17"
+# Firestore's tests need a private key to sign with, and a committed one is
+# both a `scripts/pii-scan.sh` blocking finding and wrong in a public repo —
+# so the tests generate a throwaway key at runtime. `rsa` is the only pure-Rust
+# RSA *keygen* in the ecosystem; it is a dev-dependency only, where
+# RUSTSEC-2023-0071 cannot reach a real credential. `rand` 0.8 is the version
+# whose `rand_core` matches rsa 0.9.
+rsa = "0.9"
+rand = "0.8"
+
+# Generating a 2048-bit RSA key for the Firestore credential tests runs
+# `num-bigint-dig` unoptimised in a debug build, which turns a sub-second
+# operation into tens of seconds. Optimising just this one dependency keeps
+# `cargo test` usable without giving up debug info anywhere else.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

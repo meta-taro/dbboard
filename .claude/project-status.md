@@ -5,6 +5,48 @@
 
 ## 最終更新
 
+- 日付: 2026-08-06 (**v0.5.1 パッチリリース。実運用で出た 2 バグ。**
+
+  **① 中身。** どちらもエッジケースではなく実際の作業を止めたバグ。
+  SSH バスティオン経由の接続が死んだまま再起動するまで復帰しない件 (ADR-0092) と、
+  MySQL 8 のスキーマ内省が全テーブルで失敗する件。前者の原因は 3 層に分かれていて、
+  russh が keepalive を既定で送らない / 失敗したアダプタがキャッシュから追い出されない /
+  sqlx は死んだフォワードに再ダイヤルするだけ、のどれか 1 つを直しても解決しない。
+  keepalive (30s×3) + アイドル 30 秒後の ping-on-borrow + 手動リコネクト UI で塞いだ。
+  後者は `information_schema` がデータディクショナリ由来で `VARBINARY`/`BLOB` を
+  宣言するため。**MCP の `list_relationships` がテーブル単位のエラーを飲み込んで
+  空の結果を返していた**のも同時に直っている (エラーではなく空、が一番たちが悪い)。
+
+  **② タグを打つ順序を間違えた。** develop → main の PR を作る前に `main` で
+  `v0.5.1` タグを打ったので、`main` はまだ `v0.5.0` の中身のままだった。
+  リリースワークフローが v0.5.0 の内容を v0.5.1 として組み立て始めたところで気づき、
+  run をキャンセル。`gh release view v0.5.1` が `release not found` で、
+  リリースオブジェクトは未作成 = 公開物は出ていない。タグを削除してやり直した。
+  **原因は手順の書き方**で、develop → main のマージを独立したステップとして
+  示さないまま「`main` 上でタグを push」と書いたこと。次回は必ずマージを
+  前提コマンドとして並べる。
+
+  **③ develop → main を squash から真のマージに変えた (今回の構造的な変更)。**
+  #134 と #146 が squash merge だったため develop のコミットが main の祖先にならず、
+  #151 の共通祖先が `v0.4.0` まで戻って、両側が触った 9 ファイル
+  (`Cargo.lock` / `CHANGELOG.md` を含む) が全部衝突した。**リリースのたびに悪化する。**
+  main の内容は develop に完全に含まれていた (`git log develop..main` の 2 コミットは
+  どちらも develop の内容の squash) ので、`merge -s ours --no-commit` +
+  `read-tree --reset -u develop` でツリーを develop と一致させたマージコミット
+  `b98f7a6` を作った。これで develop が main の祖先に戻り、次のリリース PR は
+  衝突しない。
+  **代償**: squash が隠していた noreply 切替前の古いコミットが main から到達可能に
+  なり、**`main` の `pii-scan` identity が赤になった**。アドレス自体は元から develop
+  側で公開されているので新規の漏洩ではないが、~468 コミットの history 書き換えを
+  やるまで main の CI は赤のまま = 放置のコストが上がった。
+
+  **④ 検証。** fmt / clippy -D warnings / check / test (dev, release) /
+  `cargo build --release` / `pii-scan --tree` / `pii-scan --range develop..HEAD`
+  がすべて緑。`release: v0.5.1` のコミット 1 本だけ `--no-verify` を使ったが、これは
+  Windows libSQL の teardown segfault (13 テスト全部 ok の後にプロセスが落ちる)
+  という既知の唯一の例外で、PII スキャンは hook の 1 番目で通過済み + 手動で再実行済み。
+  マージコミット `b98f7a6` は hook を全部通している。)
+
 - 日付: 2026-08-05 その4 (**v0.5.0 リリース + 文書ストアを Phase 6 に確定 (ADR-0091)。**
 
   **① v0.5.0 を切った。** 動機は「文書が既に約束しているから」— README / クレート

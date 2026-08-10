@@ -642,12 +642,12 @@ its own fail-closed read-only classifier rather than sharing the SQL one.
 The order matters — the shared piece lands first so a regression in it is
 attributable to one change:
 
-- [ ] **Nested `Value`** — a variant that can hold a document tree, tagged on
+- [x] **Nested `Value`** — a variant that can hold a document tree, tagged on
       the wire like `$blob` already is, with `docs/api-contract.md` updated
       before any adapter code exists (the `dbboard-web` sibling reads that
       contract and cannot be edited from this repo). Touches every adapter's
       row construction and the frontend's cell rendering.
-- [ ] **Firestore adapter** (`dbboard-firestore`) — the cheaper of the two on
+- [x] **Firestore adapter** (`dbboard-firestore`) — the cheaper of the two on
       the safety side: the REST API splits `:runQuery` / `:batchGet` from
       `:commit`, so read-only is enforced by which endpoint the adapter is
       allowed to call, with no query string to classify.

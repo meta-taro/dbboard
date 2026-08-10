@@ -17,6 +17,7 @@ dbboard-config = { workspace = true }
 # path (not workspace deps) exactly as `dbboard-server` did before the
 # ADR-0046 extraction.
 dbboard-d1 = { path = "../dbboard-d1" }
+dbboard-firestore = { path = "../dbboard-firestore" }
 dbboard-mysql = { path = "../dbboard-mysql" }
 dbboard-postgres = { path = "../dbboard-postgres" }
 dbboard-turso = { path = "../dbboard-turso" }
@@ -33,6 +34,10 @@ async-trait = { workspace = true }
 [dev-dependencies]
 # Async delegation tests for TunneledAdapter.
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Seed the local Firestore emulator in `tests/firestore_emulator.rs`. The
+# adapter is read-only by construction, so it cannot create its own fixture.
+reqwest = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

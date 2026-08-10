@@ -72,4 +72,30 @@ describe('tableMenuActions', () => {
       'copy-name',
     ]);
   });
+
+  // Firestore's browse is a StructuredQuery, and it has no count at all:
+  // counting is `:runAggregationQuery`, which the read-only adapter does not
+  // implement. Dropping the entry is better than shipping one that always
+  // fails (ADR-0093).
+  describe('on a Firestore connection', () => {
+    const users = { schema: null, name: 'users' };
+
+    it('offers browse and copy, but no count', () => {
+      expect(tableMenuActions(users, 'firestore').map((a) => a.id)).toEqual([
+        'open-structure',
+        'select-top',
+        'copy-name',
+      ]);
+    });
+
+    it('browses with a bounded StructuredQuery rather than SQL', () => {
+      expect(
+        tableMenuActions(users, 'firestore').find((a) => a.id === 'select-top'),
+      ).toEqual({
+        id: 'select-top',
+        n: BROWSE_ROWS,
+        sql: `{\n  "from": [{ "collectionId": "users" }],\n  "limit": ${BROWSE_ROWS}\n}`,
+      });
+    });
+  });
 });

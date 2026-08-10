@@ -34,6 +34,14 @@ describe('toDelimited', () => {
     expect(toDelimited(cols, rows, ',')).toBe('data\r\n<blob>');
   });
 
+  it('exports a document as its JSON text, not as [object Object]', () => {
+    const cols = [col('doc')];
+    const rows: Cell[][] = [[{ $json: { a: 1 } }]];
+    // The JSON carries quotes, so RFC-4180 quoting has to apply to a document
+    // exactly as it does to any other text field.
+    expect(toDelimited(cols, rows, ',')).toBe('doc\r\n"{""a"":1}"');
+  });
+
   it('collapses embedded tabs/newlines in a TSV field to a space', () => {
     const cols = [col('note')];
     const rows: Cell[][] = [['a\tb'], ['x\ny']];

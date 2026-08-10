@@ -61,3 +61,57 @@ export function countRows(
 ): string {
   return `SELECT COUNT(*) FROM ${qualifiedName(table, dialect)};`;
 }
+
+/** Kinds whose query text is not SQL at all. Everything below this line exists
+ *  because a dialect is a *spelling* difference, and Firestore's is not one:
+ *  it runs a `StructuredQuery` in JSON (ADR-0093), so no amount of quoting
+ *  makes `SELECT * FROM …` reach it. */
+const STRUCTURED_QUERY_KINDS = ['firestore'];
+
+/** Whether `kind` states its queries as a `StructuredQuery` instead of SQL.
+ *
+ *  Also the answer to "can the result grid write a cell back?": the write path
+ *  composes an `UPDATE`, so a connection that cannot be sent SQL cannot be
+ *  edited inline either, however many primary keys its schema declares. */
+export function usesStructuredQuery(kind: string | undefined): boolean {
+  return kind !== undefined && STRUCTURED_QUERY_KINDS.includes(kind);
+}
+
+/** A bounded Firestore `StructuredQuery`, as the JSON text the editor shows.
+ *
+ *  Written out rather than `JSON.stringify`d with an indent: this lands in an
+ *  editor for a human to extend with `where`/`orderBy`, and one collection per
+ *  line reads as a query where a four-line `from` array reads as a data dump.
+ *  `table.schema` is ignored — Firestore's `list_tables` reports top-level
+ *  collection ids, so the collection id is the whole identity. */
+export function structuredQuery(table: TableInfo, n: number): string {
+  const limit = Math.max(1, Math.floor(n));
+  // The collection id is user data going into JSON, so it is escaped by the
+  // serialiser rather than by hand-written quotes.
+  const collection = JSON.stringify(table.name);
+  return `{\n  "from": [{ "collectionId": ${collection} }],\n  "limit": ${limit}\n}`;
+}
+
+/** The "show me this table's first rows" query for a connection of `kind`,
+ *  in whatever language that connection speaks. */
+export function browseQuery(
+  table: TableInfo,
+  n: number,
+  kind: string | undefined,
+): string {
+  return usesStructuredQuery(kind)
+    ? structuredQuery(table, n)
+    : selectTopN(table, n, dialectForKind(kind));
+}
+
+/** The "how big is this?" query, or `null` where the connection has no way to
+ *  answer it. Firestore counts through `:runAggregationQuery`, a separate
+ *  endpoint the read-only adapter does not implement, so the caller drops the
+ *  affordance instead of offering one that can only fail. */
+export function countQuery(
+  table: TableInfo,
+  kind: string | undefined,
+): string | null {
+  if (usesStructuredQuery(kind)) return null;
+  return countRows(table, dialectForKind(kind));
+}

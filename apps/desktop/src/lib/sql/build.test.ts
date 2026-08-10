@@ -5,6 +5,10 @@ import {
   selectTopN,
   countRows,
   dialectForKind,
+  structuredQuery,
+  browseQuery,
+  countQuery,
+  usesStructuredQuery,
 } from './build';
 
 describe('dialectForKind', () => {
@@ -120,5 +124,91 @@ describe('countRows', () => {
     expect(countRows({ schema: 'shop', name: 'orders' }, 'mysql')).toBe(
       'SELECT COUNT(*) FROM `shop`.`orders`;',
     );
+  });
+});
+
+describe('structuredQuery', () => {
+  it('builds the bounded StructuredQuery the Firestore adapter runs', () => {
+    expect(structuredQuery({ schema: null, name: 'orders' }, 100)).toBe(
+      '{\n  "from": [{ "collectionId": "orders" }],\n  "limit": 100\n}',
+    );
+  });
+
+  // Firestore has no schema layer: `list_tables` reports top-level collection
+  // ids, so anything in `schema` is not part of the collection's identity and
+  // must not leak into the query.
+  it('names the collection alone, ignoring any schema', () => {
+    expect(structuredQuery({ schema: 'public', name: 'orders' }, 100)).toBe(
+      '{\n  "from": [{ "collectionId": "orders" }],\n  "limit": 100\n}',
+    );
+  });
+
+  // A collection id is user data, and the query is JSON: an unescaped quote
+  // would not be a wrong result but an unparseable request.
+  it('escapes a collection id containing JSON-significant characters', () => {
+    expect(structuredQuery({ schema: null, name: 'we"ird\\one' }, 1)).toBe(
+      '{\n  "from": [{ "collectionId": "we\\"ird\\\\one" }],\n  "limit": 1\n}',
+    );
+  });
+
+  it('floors the limit to a positive integer, as selectTopN does', () => {
+    expect(structuredQuery({ schema: null, name: 't' }, 3.9)).toContain('"limit": 3');
+    expect(structuredQuery({ schema: null, name: 't' }, 0)).toContain('"limit": 1');
+  });
+});
+
+describe('usesStructuredQuery', () => {
+  it('is true for Firestore, whose query text is JSON', () => {
+    expect(usesStructuredQuery('firestore')).toBe(true);
+  });
+
+  it.each(['postgres', 'mysql', 'turso', 'd1', 'neon', undefined])(
+    'is false for the SQL engine %s',
+    (kind) => {
+      expect(usesStructuredQuery(kind)).toBe(false);
+    },
+  );
+});
+
+describe('browseQuery', () => {
+  it.each(['postgres', 'turso', 'd1', undefined])(
+    'generates ANSI SQL for %s',
+    (kind) => {
+      expect(browseQuery({ schema: 'public', name: 'orders' }, 100, kind)).toBe(
+        'SELECT * FROM "public"."orders" LIMIT 100;',
+      );
+    },
+  );
+
+  it('generates MySQL-quoted SQL for MySQL', () => {
+    expect(browseQuery({ schema: 'shop', name: 'orders' }, 100, 'mysql')).toBe(
+      'SELECT * FROM `shop`.`orders` LIMIT 100;',
+    );
+  });
+
+  // Firestore takes a StructuredQuery in JSON (ADR-0093); SQL is not a dialect
+  // it is bad at, it is a language it does not have.
+  it('generates a StructuredQuery for Firestore', () => {
+    expect(browseQuery({ schema: null, name: 'orders' }, 100, 'firestore')).toBe(
+      structuredQuery({ schema: null, name: 'orders' }, 100),
+    );
+  });
+});
+
+describe('countQuery', () => {
+  it('counts rows with SQL on the SQL engines', () => {
+    expect(countQuery({ schema: 'public', name: 'orders' }, 'postgres')).toBe(
+      'SELECT COUNT(*) FROM "public"."orders";',
+    );
+    expect(countQuery({ schema: 'shop', name: 'orders' }, 'mysql')).toBe(
+      'SELECT COUNT(*) FROM `shop`.`orders`;',
+    );
+  });
+
+  // Counting in Firestore is `:runAggregationQuery`, a different endpoint the
+  // read-only adapter does not implement. Offering the action anyway would put
+  // a menu entry there that can only ever fail.
+  it('has no counterpart on Firestore', () => {
+    expect(countQuery({ schema: null, name: 'orders' }, 'firestore')).toBeNull();
   });
 });
