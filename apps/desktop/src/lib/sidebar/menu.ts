@@ -3,7 +3,7 @@
 // is unit-testable without a DOM; the component only maps these onto labels
 // and side effects.
 import { tableKey, type TableInfo } from '$lib/api';
-import { countRows, dialectForKind, selectTopN } from '$lib/sql/build';
+import { browseQuery, countQuery } from '$lib/sql/build';
 
 /** Rows a "select top N" browse fetches. Matches the row cap the query panel
  *  treats as an editable browse (ADR-0042). */
@@ -23,15 +23,19 @@ export function tableMenuActions(
   table: TableInfo,
   kind: string | undefined,
 ): TableMenuAction[] {
-  const dialect = dialectForKind(kind);
+  const count = countQuery(table, kind);
   return [
     { id: 'open-structure' },
     {
       id: 'select-top',
       n: BROWSE_ROWS,
-      sql: selectTopN(table, BROWSE_ROWS, dialect),
+      sql: browseQuery(table, BROWSE_ROWS, kind),
     },
-    { id: 'count-rows', sql: countRows(table, dialect) },
+    // Omitted rather than disabled where the connection cannot count at all
+    // (Firestore): a greyed-out entry still reads as "this exists somewhere",
+    // which is the wrong thing to tell someone about an endpoint we do not
+    // implement.
+    ...(count === null ? [] : [{ id: 'count-rows' as const, sql: count }]),
     { id: 'copy-name', text: tableKey(table) },
   ];
 }

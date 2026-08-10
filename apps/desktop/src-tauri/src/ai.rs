@@ -214,6 +214,10 @@ fn dialect_label_for_kind(kind: &ConnectionKind) -> Option<String> {
         ConnectionKind::Neon { .. } => "neon",
         ConnectionKind::Supabase { .. } => "supabase",
         ConnectionKind::AuroraDsql { .. } | ConnectionKind::AuroraDsqlIam { .. } => "aurora-dsql",
+        // Firestore has no SQL dialect at all; `dialect_for_adapter_id`
+        // deliberately does not map it, so the prompt stays untagged rather
+        // than being told to write SQL against a document store.
+        ConnectionKind::Firestore { .. } => "firestore",
     };
     dialect_for_adapter_id(adapter_id).map(|d| match d {
         SqlDialect::Sqlite => "sqlite".to_string(),

@@ -12,9 +12,9 @@ distributed databases.
 
 dbboard is a learning and reference project that explores multi-database
 integration, local-first tooling, and pluggable AI-assisted workflows. It
-exposes a unified, native UI for Neon, Supabase, Aurora DSQL, MySQL, and
-Turso/libSQL, with an adapter-based architecture that makes adding new
-databases straightforward.
+exposes a unified, native UI for Neon, Supabase, Aurora DSQL, MySQL,
+Turso/libSQL and Cloud Firestore, with an adapter-based architecture that
+makes adding new databases straightforward.
 
 ## Status
 
@@ -23,8 +23,8 @@ are closed, and dbboard now doubles as an **MCP server** (`dbboard-mcp`)
 for external AI agents (ADR-0046) — read-only unless you opt a connection
 in, and never for privilege changes, `TRUNCATE` or `DROP` (ADR-0087).
 The Turso, Cloudflare
-D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, and MySQL / MariaDB
-adapters all ship over the local HTTP backend. See
+D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, MySQL / MariaDB and
+Cloud Firestore adapters all ship over the local HTTP backend. See
 [`CHANGELOG.md`](CHANGELOG.md) for what
 landed and [`docs/roadmap.md`](docs/roadmap.md) for the next phase.
 
@@ -65,8 +65,9 @@ and [ADR-0044](docs/decisions.md)).
 - Supabase (managed PostgreSQL)
 - AWS Aurora DSQL (managed PostgreSQL-wire)
 - MySQL / MariaDB (`mysql://…`, its own SQL dialect)
+- Cloud Firestore (document store, REST API — read-only)
 
-All seven adapters ship today. The four pg-wire flavors share the
+All eight adapters ship today. The four pg-wire flavors share the
 generic `dbboard-postgres` adapter (`sqlx` + `tls-rustls-ring`),
 differing only in the runtime label exposed by `DatabaseAdapter::id()`
 (`"postgres"`, `"neon"`, `"supabase"`, `"aurora-dsql"`) so the
@@ -80,6 +81,17 @@ MySQL / MariaDB is the first engine on a genuinely different SQL dialect
 `NaN`/`±Inf` in `DOUBLE`): it has its own `dbboard-mysql` adapter over
 `sqlx`'s MySQL driver and a distinct `SqlDialect::MySql`. See
 [ADR-0068](docs/decisions.md).
+
+Cloud Firestore is the first adapter that is not SQL at all. A query is a
+Firestore [`StructuredQuery`](https://firebase.google.com/docs/firestore/reference/rest/v1/StructuredQuery)
+written as JSON — the same object Google's docs show, with no translation
+layer and no invented query language — and nested documents come back in
+`Value::Json` cells. It is **read-only by construction**: the REST API splits
+reads from writes at the endpoint, and the crate contains no code able to
+build a write URL. It connects with a service-account key (stored in the OS
+keychain, never in `connections.toml`) or, with no credential at all, to the
+local emulator. See [ADR-0091](docs/decisions.md),
+[ADR-0093](docs/decisions.md), and [ADR-0094](docs/decisions.md).
 
 Aurora DSQL also has a second connection kind, `aurora-dsql-iam`
 ([ADR-0036](docs/decisions.md)): instead of a manually supplied URL
@@ -156,7 +168,8 @@ with no configuration. The backend is chosen by, in priority order:
 1. The environment variables documented below
    (`DBBOARD_AURORA_DSQL_URL` > `DBBOARD_NEON_URL` >
    `DBBOARD_SUPABASE_URL` > `DBBOARD_PG_URL` > `DBBOARD_MYSQL_URL` >
-   `DBBOARD_D1_*` > `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors
+   `DBBOARD_D1_*` > `DBBOARD_FIRESTORE_PROJECT_ID` >
+   `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors
    the order is
    alphabetical — setting two flavored vars at once is unusual but
    the precedence is fully defined.
@@ -266,6 +279,45 @@ falls back to the local Turso default.
 ```sh
 DBBOARD_D1_ACCOUNT_ID=... DBBOARD_D1_DATABASE_ID=... DBBOARD_D1_TOKEN=... \
   pnpm tauri dev
+```
+
+### Cloud Firestore
+
+The project id alone is enough to select Firestore. Everything else is
+optional, which makes the emulator the zero-configuration case:
+
+| Variable | Purpose |
+|---|---|
+| `DBBOARD_FIRESTORE_PROJECT_ID` | Google Cloud project id. Selects the Firestore backend. |
+| `DBBOARD_FIRESTORE_SERVICE_ACCOUNT` | _(optional)_ The service-account key, as the JSON file's whole contents. **Omit it to talk to the local emulator**, which authenticates every request as `owner`. |
+| `DBBOARD_FIRESTORE_DATABASE_ID` | _(optional)_ Named database; defaults to the project's `(default)`. |
+| `DBBOARD_FIRESTORE_BASE_URL` | _(optional)_ API root override; defaults to `https://firestore.googleapis.com`. This is where the emulator's address goes. |
+
+A service-account key is never sent over plain HTTP: an `http://` base URL
+is refused outright when one is configured, and the client is built
+`https_only` so a redirect cannot route around it. The emulator is exempt
+because it issues no credential to leak.
+
+```sh
+# The local emulator — no credential at all.
+DBBOARD_FIRESTORE_PROJECT_ID=demo-project \
+DBBOARD_FIRESTORE_BASE_URL=http://127.0.0.1:8080 \
+  pnpm tauri dev
+
+# A real project. The key is a secret: keep it out of version control.
+DBBOARD_FIRESTORE_PROJECT_ID=my-project \
+DBBOARD_FIRESTORE_SERVICE_ACCOUNT="$(cat key.json)" \
+  pnpm tauri dev
+```
+
+Queries are Firestore `StructuredQuery` objects in JSON, not SQL — the
+sidebar's *Select top 100* generates one for you:
+
+```json
+{
+  "from": [{ "collectionId": "users" }],
+  "limit": 100
+}
 ```
 
 ### CockroachDB / PostgreSQL
@@ -481,9 +533,11 @@ The security posture is the reason it is safe to point an agent at:
 - **Writing is off until a human turns it on, per connection**
   (`mcp_write` in `connections.toml`, or *Connections → Edit → AI agent
   access*). Even then `run_write` only accepts an allowlisted statement
-  — classified on the AST, failing closed — and `GRANT` / `REVOKE` /
-  `DENY`, user and role DDL, `SET PASSWORD`, `TRUNCATE`, and `DROP` of
-  anything but an index are refused whatever the flag says (ADR-0087).
+  (`INSERT` / `UPDATE` / `DELETE` / `MERGE`, `CREATE TABLE` / `VIEW` /
+  `INDEX` / `SCHEMA`, `ALTER TABLE`) — classified on the AST, failing
+  closed — and `GRANT` / `REVOKE` / `DENY`, user and role DDL,
+  `SET PASSWORD`, `TRUNCATE`, and `DROP` of anything at all are refused
+  whatever the flag says (ADR-0087).
 - **Result sets are bounded.** `run_read_query` clamps `max_rows` to a
   hard cap of 1000 (default 200) with a `truncated` flag.
 - **stdout is sacred.** JSON-RPC frames own stdout; all logging goes to
@@ -554,13 +608,17 @@ app* does nothing to it, because they are separate processes.
 
 With no arguments it reads the same per-user `connections.toml` the GUI
 uses; pass `--config` (or set `DBBOARD_CONFIG`) to point at a curated,
-least-privilege subset instead. If your operating rules forbid writing
-credentials to a file at all, pass them as environment variables in the
-agent's own config — see *Credentials without writing a file* in the crate
-README. Full configuration — the per-OS config paths, running several
-agents at once, TLS behind a corporate proxy, and the literal error strings
-a failed connection produces — is documented in
+least-privilege subset instead. That is the only thing the environment
+decides: a tool call names a `connection_id`, and the server resolves it
+against the store file and the keychain, so a connection the store does
+not describe cannot be reached. Full configuration — the per-OS config
+paths, running several agents at once, TLS behind a corporate proxy, and
+the literal error strings a failed connection produces — is documented in
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md).
+
+A walkthrough in Japanese, from downloading the binary to the first
+refused `DROP`, is on Zenn:
+[Claude Code に自分の DB を触らせる](https://zenn.dev/dokokade/articles/46b8c608715963).
 
 ## Development
 

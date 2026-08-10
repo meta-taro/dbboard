@@ -30,7 +30,7 @@ describe('usesDsnFields', () => {
     },
   );
 
-  it.each(['turso', 'd1'] as ConnectionKind[])(
+  it.each(['turso', 'd1', 'firestore'] as ConnectionKind[])(
     'is false for %s, which has no host:port to describe',
     (kind) => {
       expect(usesDsnFields(kind)).toBe(false);

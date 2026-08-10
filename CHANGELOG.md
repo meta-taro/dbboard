@@ -20,6 +20,59 @@ public API is the HTTP contract in
   Purely additive: no existing adapter emits it, and SQL `JSON`/`JSONB`
   columns still arrive as `Text`. Consumers of the HTTP contract must accept
   the tag; see the `$json` section of [`docs/api-contract.md`](docs/api-contract.md).
+- **`dbboard-firestore`**, the first non-SQL adapter
+  ([ADR-0093](docs/decisions.md), issue 0019). `ping`, `list_tables`,
+  `query` and `describe_table` against Cloud Firestore over its REST API,
+  with service-account or emulator credentials. The query text is a
+  Firestore `StructuredQuery` in JSON — the same object Google's docs show,
+  with no translation layer — and results come back as ordinary rows, with
+  nested documents in the new `Value::Json` cells. `describe_table` samples
+  a collection and reports each field with the sample it was inferred from
+  (`string (12/20 sampled)`), so an inference never renders as a declared
+  schema. Read-only is structural rather than parsed: the crate contains no
+  code able to build a Firestore write URL. Verified end-to-end against the
+  local Firestore emulator, through the same `connect_adapter` path the
+  client and the MCP server use, and with the browse query asserted as the
+  exact text the sidebar generates.
+- **Cloud Firestore is selectable in the desktop client**
+  ([ADR-0094](docs/decisions.md), issue 0019). It is the first connection
+  whose credential is optional: leaving the service-account box blank and
+  ticking *Connect to the local emulator* is a valid configuration, not an
+  unfinished form, and the edit form reopens in whichever of the two states
+  the connection is actually in. The service-account JSON is stored in the
+  OS keychain like every other secret and is never read back. A blank
+  *Database ID* means the project's `(default)` database. The sidebar
+  generates a bounded `StructuredQuery` instead of `SELECT * … LIMIT`, and
+  drops *Count rows*, which Firestore answers through an endpoint this
+  adapter does not implement; a browsed collection is read-only in the grid.
+  Configurable without the UI through `DBBOARD_FIRESTORE_PROJECT_ID` and
+  friends.
+- **Firestore connections are usable from the MCP server** (issue 0019). No
+  new wiring — every tool already went through the adapter trait — but the
+  tool descriptions now say which kinds exist and that `firestore` takes a
+  `StructuredQuery` rather than SQL, with an example. An agent that is only
+  told "SQL" sends a `SELECT`, gets a parse error, and reads it as its own
+  mistake. `list_connections` now names every kind the server can return,
+  guarded by a test against the source rather than a hand-kept list: that
+  list had already gone stale twice.
+
+### Fixed
+
+- Documentation described a write policy the code does not have. `run_write`
+  never accepted `DROP INDEX` or `COMMENT ON`, and `DROP` is permanently
+  closed for *every* object including an index — the allowlist is
+  `INSERT` / `UPDATE` / `DELETE` / `MERGE` plus `CREATE TABLE` / `VIEW` /
+  `INDEX` / `SCHEMA` and `ALTER TABLE`, exactly as ADR-0087 decided. The
+  README, `docs/connections.md` and the 0.5.0 entry below said otherwise;
+  two tests now pin the behaviour so the wording cannot drift again.
+- `crates/dbboard-mcp/README.md` documented handing the MCP server a whole
+  connection through `DBBOARD_MYSQL_URL` and friends. Those variables belong
+  to `dbboard-server`'s single-connection resolution path; the MCP server
+  resolves a tool call's `connection_id` against `connections.toml` and the
+  keychain and reads none of them. It honours `--config` / `DBBOARD_CONFIG`,
+  which choose *which* store file, and that is now what the section says.
+- `docs/compatibility.md` had no MySQL / MariaDB section at all, three
+  releases after the adapter shipped (ADR-0068).
 
 ## [0.5.1] — 2026-08-06
 
@@ -84,12 +137,13 @@ unchanged from 0.2.0.
 ### Added
 
 - `dbboard-mcp` can **write** — `run_write` runs `INSERT` / `UPDATE` /
-  `DELETE` / `MERGE` and `CREATE` / `ALTER` / `DROP INDEX` / `COMMENT`
+  `DELETE` / `MERGE` and `CREATE TABLE` / `VIEW` / `INDEX` / `SCHEMA` /
+  `ALTER TABLE`
   behind a three-tier policy (ADR-0087): the connection must be opted in
   with `mcp_write = true`, the statement must parse to something on the
   allowlist, and a permanently-closed list — `GRANT` / `REVOKE` / `DENY`,
   user and role DDL, `SET PASSWORD`, `TRUNCATE`, and `DROP` of anything
-  but an index — is refused whatever the flag says. Classification is on
+  at all — is refused whatever the flag says. Classification is on
   the AST and fails closed. Every existing connection stays read-only
   across the upgrade, because an absent flag means `false`.
 - `dbboard-mcp` gained `dump_database`, so an agent can take a backup

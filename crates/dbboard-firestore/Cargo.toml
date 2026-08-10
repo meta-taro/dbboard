@@ -1,0 +1,34 @@
+[package]
+name = "dbboard-firestore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Cloud Firestore adapter for dbboard (read-only, REST API)."
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+dbboard-core = { workspace = true }
+reqwest = { workspace = true }
+ring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+# Throwaway RSA keys for the credential tests, and the verifying half of the
+# signature check. Never used by the adapter itself — see the workspace
+# manifest for why signing uses `ring` instead.
+rand = { workspace = true }
+rsa = { workspace = true }
+# `oid` is what lets rsa build a PKCS#1 v1.5 verifier for SHA-256; without it
+# the digest carries no algorithm identifier to put in the signature prefix.
+sha2 = { workspace = true, features = ["oid"] }
+tokio = { workspace = true }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true

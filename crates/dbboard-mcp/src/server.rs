@@ -46,7 +46,7 @@ pub struct DescribeTableParams {
     /// The connection id from `list_connections`.
     pub connection_id: String,
     /// Schema namespace (e.g. `public` on Postgres). Omit for
-    /// SQLite/libSQL/D1, which have no schema concept.
+    /// SQLite/libSQL/D1/Firestore, which have no schema concept.
     #[serde(default)]
     pub schema: Option<String>,
     /// The table name.
@@ -58,7 +58,12 @@ pub struct DescribeTableParams {
 pub struct RunReadQueryParams {
     /// The connection id from `list_connections`.
     pub connection_id: String,
-    /// A single read-only SQL statement (`SELECT` / `WITH` / `EXPLAIN`).
+    /// The query text, in whatever language the connection speaks: a single
+    /// read-only SQL statement (`SELECT` / `WITH` / `EXPLAIN`) on a SQL
+    /// connection, or a Firestore `StructuredQuery` as JSON on a `firestore`
+    /// one. Named `sql` for compatibility with agents that already call this
+    /// tool; renaming it would break them for a connection kind most of them
+    /// will never see.
     pub sql: String,
     /// Maximum rows to return (default 200, hard cap 1000). More rows
     /// than this are dropped and `truncated` is set.
@@ -159,7 +164,7 @@ impl DbboardMcp {
     }
 
     #[tool(
-        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, postgres, d1, neon, supabase, aurora-dsql). Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
+        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore). Check the kind before you write a query: every kind above except firestore takes SQL, and firestore takes a Firestore StructuredQuery as JSON. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
     )]
     async fn list_connections(&self) -> Result<CallToolResult, McpError> {
         let views = self
@@ -187,7 +192,7 @@ impl DbboardMcp {
     }
 
     #[tool(
-        description = "Describe one table: its columns (name, declared type, nullability, primary-key flag, ordinal) and primary key. `schema` is optional (the Postgres schema namespace; omit for SQLite/libSQL/D1)."
+        description = "Describe one table: its columns (name, declared type, nullability, primary-key flag, ordinal) and primary key. `schema` is optional (the Postgres schema namespace; omit for SQLite/libSQL/D1/Firestore). On a firestore connection the table is a collection and the columns are inferred from a bounded sample of documents, so treat the result as evidence of what is usually there rather than a declared schema."
     )]
     async fn describe_table(
         &self,
@@ -207,7 +212,7 @@ impl DbboardMcp {
     }
 
     #[tool(
-        description = "Run a single READ-ONLY SQL statement (SELECT / WITH / EXPLAIN) and return the rows. Writes, DDL, multi-statement batches, and locking reads (FOR UPDATE) are rejected at the database engine, not just by string matching. Returns at most `max_rows` rows (default 200, hard cap 1000) plus a `truncated` flag telling you there were more."
+        description = "Run a single READ-ONLY query and return the rows. On a SQL connection that is one statement (SELECT / WITH / EXPLAIN); writes, DDL, multi-statement batches, and locking reads (FOR UPDATE) are rejected at the database engine, not just by string matching. On a firestore connection the query is not SQL at all: send a Firestore StructuredQuery as JSON, with or without the outer structuredQuery wrapper — a bounded example is {`from`: [{`collectionId`: `orders`}], `limit`: 100} with real double quotes. Firestore reads through an endpoint that has no write form, so there is nothing there to reject. Returns at most `max_rows` rows (default 200, hard cap 1000) plus a `truncated` flag telling you there were more."
     )]
     async fn run_read_query(
         &self,
@@ -468,6 +473,72 @@ mod tests {
                 "tool `{name}` uses the agent's connection_id without resolving it"
             );
         }
+    }
+
+    /// Extract the kind labels `service::kind_label` can return, from its
+    /// source. The list in the `list_connections` description is the agent's
+    /// only advance notice of what it might be handed, and it went stale twice
+    /// (`MySQL`, then Aurora DSQL IAM) before Firestore made staleness costly:
+    /// a kind the agent has never heard of is also the one kind whose queries
+    /// are not SQL.
+    fn kind_labels() -> Vec<String> {
+        let source = include_str!("service.rs");
+        let body = source
+            .split("fn kind_label(kind: &ConnectionKind) -> &'static str {")
+            .nth(1)
+            .expect("kind_label has moved or been renamed")
+            .split("\n}")
+            .next()
+            .expect("kind_label body is not terminated");
+        body.split("=> \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn list_connections_names_every_kind_it_can_return() {
+        let source = include_str!("server.rs");
+        let description = source
+            .split("description = \"List the database connections")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the list_connections description has moved");
+        let labels = kind_labels();
+        assert!(!labels.is_empty(), "no kind labels were extracted");
+        for label in labels {
+            assert!(
+                description.contains(&label),
+                "kind `{label}` is missing from the list_connections description"
+            );
+        }
+    }
+
+    /// Not every connection speaks SQL. Firestore's query text is a
+    /// `StructuredQuery` in JSON (ADR-0093), so a description that says only
+    /// "SQL" tells an agent to send something that cannot parse — and the
+    /// error it gets back looks like its own mistake.
+    #[test]
+    fn the_read_query_tool_says_that_some_kinds_are_not_sql() {
+        let source = include_str!("server.rs");
+        let chunk = source
+            .split("async fn run_read_query")
+            .next()
+            .expect("run_read_query has moved");
+        let description = chunk
+            .rsplit("description = \"")
+            .next()
+            .and_then(|rest| rest.split('"').next())
+            .expect("the run_read_query description has moved");
+        assert!(
+            description.contains("firestore"),
+            "run_read_query does not tell the agent what a firestore connection expects"
+        );
+        assert!(
+            description.contains("StructuredQuery"),
+            "run_read_query names firestore but not the query form it takes"
+        );
     }
 
     #[test]

@@ -175,6 +175,26 @@ pub enum ConnectionKind {
         access_key_id: String,
         keyring_secret_key_ref: String,
     },
+    /// A Cloud Firestore connection (ADR-0091, ADR-0093). `project_id` is
+    /// mandatory; `database_id` defaults to `(default)` and `base_url` to the
+    /// production REST host when absent.
+    ///
+    /// `keyring_service_account_ref` is the only optional keychain reference in
+    /// this enum, and deliberately so: a connection pointed at the local
+    /// Firestore emulator has **no credential at all** — the emulator accepts a
+    /// fixed `Bearer owner` — so a mandatory reference would make an emulator
+    /// connection unrepresentable, or force an empty-string secret that reads
+    /// as a real one. `None` therefore means "emulator", not "not filled in
+    /// yet".
+    Firestore {
+        project_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        database_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keyring_service_account_ref: Option<String>,
+    },
 }
 
 impl ConnectionKind {
@@ -195,14 +215,15 @@ impl ConnectionKind {
             ConnectionKind::Supabase { .. } => "Supabase",
             ConnectionKind::AuroraDsql { .. } => "Aurora DSQL",
             ConnectionKind::AuroraDsqlIam { .. } => "Aurora DSQL (IAM)",
+            ConnectionKind::Firestore { .. } => "Firestore",
         }
     }
 
     /// Whether an SSH tunnel (ADR-0069) can front this kind. Tunnels apply
     /// only to the URL-bearing TCP engines — the Postgres-wire family and
     /// `MySQL` — whose connection is a plain `host:port` we can redirect to a
-    /// loopback forward. Turso is a local file, D1 is an HTTPS API, and the
-    /// Aurora DSQL IAM kind mints its own endpoint/token at connect time; none
+    /// loopback forward. Turso is a local file, D1 and Firestore are HTTPS
+    /// APIs, and the Aurora DSQL IAM kind mints its own endpoint at connect; none
     /// of them route through a forwarded TCP port, so a tunnel on them is a
     /// configuration error rather than silently ignored.
     #[must_use]
@@ -687,6 +708,82 @@ keyring_secret_key_ref = "dbboard.store-b.secret_key"
                 access_key_id: "AKIAEXAMPLE".to_string(),
                 keyring_secret_key_ref: "dbboard.store-b.secret_key".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn parses_a_firestore_entry_with_a_service_account() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id                          = "fs-prod"
+name                        = "Firestore (prod)"
+kind                        = "firestore"
+project_id                  = "example-project"
+keyring_service_account_ref = "dbboard.fs-prod.service_account"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("firestore entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::Firestore {
+                project_id: "example-project".to_string(),
+                database_id: None,
+                base_url: None,
+                keyring_service_account_ref: Some("dbboard.fs-prod.service_account".to_string()),
+            }
+        );
+    }
+
+    /// The emulator has no credential at all — not an empty one. Every other
+    /// secret-bearing kind makes its keychain reference mandatory; Firestore
+    /// cannot, or a local emulator connection would be unrepresentable.
+    #[test]
+    fn parses_a_firestore_emulator_entry_with_no_credential_reference() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id          = "fs-local"
+name        = "Firestore (emulator)"
+kind        = "firestore"
+project_id  = "demo-project"
+database_id = "(default)"
+base_url    = "http://127.0.0.1:8080"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("firestore emulator entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::Firestore {
+                project_id: "demo-project".to_string(),
+                database_id: Some("(default)".to_string()),
+                base_url: Some("http://127.0.0.1:8080".to_string()),
+                keyring_service_account_ref: None,
+            }
+        );
+    }
+
+    /// Firestore is an HTTPS REST API, so there is no `host:port` to forward.
+    /// Like D1, a tunnel on it is a configuration error rather than a
+    /// silently-ignored field.
+    #[test]
+    fn firestore_refuses_an_ssh_tunnel() {
+        assert!(!ConnectionKind::Firestore {
+            project_id: "p".into(),
+            database_id: None,
+            base_url: None,
+            keyring_service_account_ref: None,
+        }
+        .supports_ssh_tunnel());
+        assert_eq!(
+            ConnectionKind::Firestore {
+                project_id: "p".into(),
+                database_id: None,
+                base_url: None,
+                keyring_service_account_ref: None,
+            }
+            .adapter_label(),
+            "Firestore"
         );
     }
 
