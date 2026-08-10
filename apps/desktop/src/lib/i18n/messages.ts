@@ -146,6 +146,14 @@ export const en = {
   "conn-field-base-url": "Base URL (optional)",
   "conn-field-token": "API token",
   "conn-field-url": "Connection URL",
+  "conn-field-project-id": "Project ID",
+  "conn-field-service-account": "Service account JSON",
+  "conn-field-service-account-hint":
+    "Paste the whole contents of the service-account key file. It is stored in the OS keychain, never in connections.toml.",
+  "conn-firestore-database-hint": "Leave blank for the project's (default) database.",
+  "conn-firestore-emulator": "Connect to the local emulator",
+  "conn-firestore-emulator-hint":
+    "The emulator accepts any request without a credential. Put its address in Base URL — usually http://127.0.0.1:8080.",
   "conn-dsn-section": "Server",
   "conn-field-db-host": "Host",
   "conn-field-db-port": "Port",
@@ -176,6 +184,7 @@ export const en = {
   "conn-kind-neon": "Neon",
   "conn-kind-supabase": "Supabase",
   "conn-kind-aurora_dsql": "Aurora DSQL",
+  "conn-kind-firestore": "Cloud Firestore",
   // SSH tunnel (ADR-0069)
   "conn-ssh-section": "SSH tunnel",
   "conn-ssh-enable": "Connect through an SSH tunnel",
@@ -460,6 +469,14 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-field-base-url": "ベース URL（任意）",
   "conn-field-token": "API トークン",
   "conn-field-url": "接続 URL",
+  "conn-field-project-id": "プロジェクト ID",
+  "conn-field-service-account": "サービスアカウント JSON",
+  "conn-field-service-account-hint":
+    "サービスアカウントキーのファイル内容をそのまま貼り付けてください。OS のキーチェーンに保存され、connections.toml には書き込まれません。",
+  "conn-firestore-database-hint": "空欄のままにするとプロジェクトの (default) データベースを使います。",
+  "conn-firestore-emulator": "ローカルエミュレーターに接続する",
+  "conn-firestore-emulator-hint":
+    "エミュレーターは認証情報なしで接続を受け付けます。アドレスはベース URL に入力してください（通常は http://127.0.0.1:8080）。",
   "conn-dsn-section": "サーバー",
   "conn-field-db-host": "ホスト",
   "conn-field-db-port": "ポート",
@@ -490,6 +507,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-kind-neon": "Neon",
   "conn-kind-supabase": "Supabase",
   "conn-kind-aurora_dsql": "Aurora DSQL",
+  "conn-kind-firestore": "Cloud Firestore",
   // SSH トンネル (ADR-0069)
   "conn-ssh-section": "SSH トンネル",
   "conn-ssh-enable": "SSH トンネル経由で接続する",

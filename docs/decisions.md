@@ -9371,3 +9371,166 @@ Three changes, at the three layers that were each individually wrong.
   not worth making configurable until someone reports otherwise.
 - Nothing here helps a connection that dies *during* a query. That surfaces as
   a plain error, the user sees it, and the reconnect button is right there.
+
+---
+
+## ADR-0093 — The Firestore adapter calls REST directly, signs with `ring`, and overrides `query_read_only`
+
+**Date:** 2026-08-06
+**Status:** Accepted
+
+### Context
+
+ADR-0091 settled the direction for document stores and left two questions to
+answer while writing the first one: which crate, if any, to depend on instead
+of calling the REST API directly, and how to test without a live Google Cloud
+project or a real credential.
+
+A third question only appeared once the code existed, and it is the one with
+teeth. `DatabaseAdapter::query_read_only` has a default implementation that
+runs `check_read_only(sql, SqlDialect::Postgres)` before delegating to `query`.
+A Firestore query is a `StructuredQuery` in JSON. The parser cannot read it,
+and a classifier that cannot parse its input fails closed — so inheriting the
+default would refuse **every** Firestore query, and only on the MCP surface,
+where nobody would see it until an agent asked.
+
+### Decision
+
+1. **Call the REST API directly; add no Firestore client crate.** The three
+   endpoints this adapter needs (`:runQuery`, `:listCollectionIds`, and a
+   documents `GET`) are a documented, stable HTTP surface, and `reqwest` and
+   `serde_json` are already in the tree. The gRPC clients in the ecosystem
+   would pull a `tonic` stack in for that, and — decisively — a client that
+   exposes writes would defeat point 3 below: the read-only guarantee is that
+   this crate contains no code able to build a write URL.
+
+2. **Sign the service-account assertion with `ring`.** Access without a browser
+   means the JWT-bearer grant: sign a short-lived assertion with the account's
+   private key and exchange it at Google's token endpoint. `ring` 0.17 is
+   already in `Cargo.lock` via rustls-ring, so this adds no new dependency, its
+   RSA signing is constant-time, and it is the backend ADR-0034 already
+   committed to (`aws-lc-rs` stays out). The obvious alternative, `rsa` 0.9,
+   carries RUSTSEC-2023-0071 — a timing sidechannel on exactly the private-key
+   operation this performs.
+
+3. **Read-only is structural, and `query_read_only` is overridden to say so.**
+   `ReadEndpoint` enumerates every URL the adapter can build and has no write
+   variant; `is_read` matches exhaustively with no catch-all, so adding one
+   would fail to compile until someone answered for it. Because the guarantee
+   does not depend on reading the query text, the override does no
+   classification at all — it runs the query and truncates. This is the single
+   most important line in the crate, and it is covered by a test that names the
+   trap.
+
+4. **Tests need no cloud project and no committed key.** Every HTTP path is
+   exercised against `wiremock`, and the credential tests generate a throwaway
+   2048-bit key at runtime. `rsa` and `rand` are **dev-dependencies only**,
+   where RUSTSEC-2023-0071 cannot reach a real credential, and `rsa` is the
+   only pure-Rust RSA *keygen* in the ecosystem. A committed test key would be
+   a `scripts/pii-scan.sh` blocking finding, and rightly so.
+
+5. **A service-account token is never sent over plain HTTP.** `connect` refuses
+   an `http://` base URL when service-account credentials are configured, and
+   the client is built with `https_only` so an `https → http` redirect cannot
+   route around it. The emulator is exempt because it issues no credential to
+   leak — it accepts the fixed string `owner`.
+
+### Consequences
+
+- Two dev-dependencies (`rsa`, `rand`) and one production dependency (`ring`)
+  that was already being compiled. `num-bigint-dig` gets `opt-level = 3` in the
+  dev profile, because generating a key unoptimised turns a sub-second
+  operation into tens of seconds and would make `cargo test` unpleasant.
+- The read-only guarantee is now stronger than the SQL adapters': theirs rests
+  on a parser being right, this one rests on a URL not existing. It is also
+  narrower — it says nothing about *which* documents may be read, which is
+  Firestore Security Rules' job and stays there.
+- Every error path that touches the token endpoint quotes back only the OAuth
+  `error` and `error_description` fields. A token endpoint's response body is
+  the one place an access token is guaranteed to appear, so it is never echoed.
+- `describe_table` reports each field's type together with the sample it came
+  from (`string (12/20 sampled)`), because `TableSchema` has nowhere else to
+  put the caveat required by ADR-0091 §4 — and the frequency doubles as the
+  evidence for the `nullable` flag beside it.
+- The crate is complete and tested but not yet reachable from the desktop
+  client: `BackendConfig` has no Firestore variant, and the service-account
+  JSON needs the same keychain handling every other secret gets. That is the
+  next slice of issue 0019, deliberately separate so this one is reviewable.
+
+---
+
+## ADR-0094 — A blank credential is a *choice*, and a Firestore browse is not SQL
+
+**Date:** 2026-08-06
+**Status:** Accepted
+
+### Context
+
+ADR-0093 left the Firestore adapter complete but unreachable: nothing in
+`dbboard-config`, `dbboard-connect` or the desktop client could name it. Wiring
+it through the five layers every other adapter already passes through surfaced
+two problems that no SQL adapter has.
+
+The first is the credential. Every kind so far has exactly one answer to "where
+is the secret?" — the OS keychain. Firestore has two, because the local
+emulator has no credential at all: it accepts the fixed string `owner`. So a
+blank service-account box is not an unfinished form. It is a valid, deliberate
+configuration — and it collides with the meaning a blank secret box already
+has on the *edit* form, where blank means "keep the stored one" (ADR-0016,
+which also forbids reading a stored secret back to show it).
+
+The second is the query text. The sidebar generates `SELECT * FROM … LIMIT n`
+for a table and `SELECT COUNT(*)` beside it. Firestore takes a
+`StructuredQuery` in JSON. This is not a quoting dialect the way MySQL's
+back-ticks are; there is no spelling of that `SELECT` that Firestore can run.
+
+### Decision
+
+1. **The mode gets its own flag.** `FirestoreCredentialField` is a three-state
+   enum — `Keep`, `Set(json)`, `Emulator` — matching the shape
+   `SshPassphraseField` already uses for its own "there is deliberately no
+   secret here" case. In the form it is `use_emulator: boolean` beside
+   `service_account: string`, and the checkbox **wins** over anything left in
+   the credential box. Half-applying a contradictory pair would be worse than
+   either reading of it.
+
+2. **`use_emulator` is sent back to the webview on edit; the credential is
+   not.** It is a mode, not a secret — ADR-0016 forbids reading the
+   service-account JSON back, and says nothing about whether one exists.
+   Without the flag the edit form cannot open in the state the connection is
+   actually in, which is the one thing an edit form must do.
+
+3. **Required-ness is per kind, not per field.** `requiredFields` used to
+   exclude one hardcoded name (`base_url`). Firestore adds two more optional
+   fields — a blank `database_id` means the project's `(default)` database, and
+   a blank `service_account` means the emulator — so the exclusion moved into
+   `optionalFields(kind)`. Firestore is consequently the only kind that can be
+   added with no credential of any sort.
+
+4. **The generated query follows the connection's language, not its dialect.**
+   `browseQuery(table, n, kind)` returns a `StructuredQuery` for Firestore and
+   SQL for everything else; `countQuery` returns `null` for Firestore and the
+   sidebar drops the menu entry. Counting in Firestore is
+   `:runAggregationQuery`, a separate endpoint the read-only adapter does not
+   implement — a greyed-out entry would still claim the feature exists.
+
+5. **A Firestore browse is read-only in the grid.** Inline cell editing
+   composes an `UPDATE`, so a connection that cannot be sent SQL cannot be
+   edited inline, whatever its schema declares. Firestore's `describe_table`
+   *does* declare a primary key (the document path), so this had to be decided
+   explicitly rather than falling out of the existing no-primary-key check.
+
+### Consequences
+
+- The service-account key is entered in a `<textarea>`, not a masked input. It
+  is a multi-line JSON document, and a paste nobody can read back is a paste
+  nobody can tell went wrong. It is still keychain-stored and never read back.
+- Firestore carries no DSN and cannot front an SSH tunnel; both exclusions are
+  now data (`NON_DSN_KINDS`, `SSH_TUNNELABLE_KINDS`) rather than a condition
+  written at each call site.
+- `dialectForKind` still answers `ansi` for `firestore`. Nothing asks it any
+  more on that path, and giving it a third answer would imply Firestore has a
+  quoting style, which is the misconception this ADR exists to remove.
+- The next adapter that is not SQL (MongoDB, issue 0020) inherits all of this:
+  it needs a `STRUCTURED_QUERY_KINDS` entry and its own query builder, not a
+  new set of concepts.

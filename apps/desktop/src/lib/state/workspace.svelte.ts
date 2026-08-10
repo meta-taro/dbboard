@@ -16,7 +16,7 @@ import {
   type TableInfo,
 } from '$lib/api';
 import { BROWSE_ROWS } from '$lib/sidebar/menu';
-import { dialectForKind, selectTopN } from '$lib/sql/build';
+import { browseQuery, usesStructuredQuery } from '$lib/sql/build';
 
 export type MainTab = 'query' | 'structure';
 
@@ -138,8 +138,15 @@ class Workspace {
    *  primary key and the grid can offer inline cell editing (ADR-0042). */
   browse(table: TableInfo): void {
     const seq = (this.queryRequest?.seq ?? 0) + 1;
-    const sql = selectTopN(table, BROWSE_ROWS, dialectForKind(this.connection?.kind));
-    this.queryRequest = { sql, seq, table };
+    const kind = this.connection?.kind;
+    const sql = browseQuery(table, BROWSE_ROWS, kind);
+    // A StructuredQuery connection (Firestore) browses read-only: the grid's
+    // write-back composes an `UPDATE`, so offering inline editing there would
+    // put a cursor in a cell whose save can only fail. Withholding the table
+    // identity is what marks the result non-editable.
+    this.queryRequest = usesStructuredQuery(kind)
+      ? { sql, seq }
+      : { sql, seq, table };
     this.activeTab = 'query';
   }
 

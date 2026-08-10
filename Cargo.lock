@@ -1310,10 +1310,13 @@ dependencies = [
  "dbboard-config",
  "dbboard-core",
  "dbboard-d1",
+ "dbboard-firestore",
  "dbboard-mysql",
  "dbboard-postgres",
  "dbboard-tunnel",
  "dbboard-turso",
+ "reqwest 0.12.28",
+ "serde_json",
  "tokio",
  "url",
 ]
@@ -1364,6 +1367,24 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "dbboard-firestore"
+version = "0.5.1"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "dbboard-core",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "ring",
+ "rsa 0.9.10",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

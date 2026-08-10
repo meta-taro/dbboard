@@ -16,7 +16,8 @@ introduces or drops a version.
 Server-side databases with a public version number (Postgres,
 CockroachDB) follow a **current major + previous major** rule. Managed
 services without a user-visible version (Turso platform, Cloudflare D1,
-Supabase) track the vendor's current API and the pinned client crate.
+Supabase, Firestore) track the vendor's current API and the pinned
+client crate.
 
 ## Host (build) requirements
 
@@ -47,6 +48,23 @@ Supabase) track the vendor's current API and the pinned client crate.
 D1 does not expose a user-visible version; the service is treated as a
 single moving target tracked by the integration test.
 
+### Cloud Firestore
+
+Read-only over the REST API (ADR-0091, ADR-0093, ADR-0094). Runtime
+adapter id is `"firestore"`.
+
+| Layer | Tier 1 | Tier 2 | Notes |
+|---|---|---|---|
+| REST API | `v1` (current) | — | Base URL `https://firestore.googleapis.com/v1`; overridable per connection, which is how the emulator is reached. |
+| Firestore emulator | covered | — | Live test gated on `DBBOARD_TEST_FIRESTORE_URL`; run `firebase emulators:start --only firestore`. Needs no credential, so this is the one live test any contributor can run. |
+| Production Firestore | — | current service | Same `v1` surface, reached with a service-account key. No automated test pins it: doing so would mean holding a real Google credential. |
+| Datastore-mode databases | — | — | Out of scope. The REST surface differs, and `:runQuery` is not offered. |
+
+Firestore has no user-visible version; the service is treated as a
+single moving target tracked by the emulator test. Queries are
+Firestore `StructuredQuery` JSON, not SQL — see `docs/architecture.md`
+for why the adapter has no write path rather than a blocked one.
+
 ### PostgreSQL-wire (CockroachDB / Neon / Supabase / Aurora DSQL / vanilla Postgres)
 
 Shared `dbboard-postgres` adapter on `sqlx 0.8 + tls-rustls-ring`.
@@ -75,6 +93,21 @@ the AWS SDK, so the rustls-`ring` crypto stack (ADR-0034) is preserved.
 v1 mints the token when the connection is built (startup and each
 connection switch); continuous in-pool refresh before expiry is a
 planned follow-up ADR.
+
+### MySQL / MariaDB
+
+Separate `dbboard-mysql` adapter on `sqlx 0.8 + tls-rustls-ring-native-roots` — a
+distinct SQL dialect, not a pg-wire flavor (ADR-0068). Runtime adapter id
+is `"mysql"` for every server below.
+
+| Server | Tier 1 | Tier 2 | Notes |
+|---|---|---|---|
+| MySQL | `8.x` | `5.7.8`–`5.7.x` | Live test gated on `DBBOARD_MYSQL_URL`. Read-only queries run inside `SET TRANSACTION READ ONLY`, with the statement timeout spelled `max_execution_time` (milliseconds). 8.x serves `information_schema` from the data dictionary, which declares `TABLE_NAME` as VARBINARY and `DATA_TYPE` as BLOB — introspection decodes those as bytes (fixed in 0.5.1). |
+| MariaDB | — | `10.1`+, `11.x` | Same wire protocol and same adapter; the statement timeout is spelled `max_statement_time` (seconds) and the adapter probes for the spelling once per connection, because asking a server for the variable it does not have is a hard error. No automated test pins a MariaDB version. |
+| PlanetScale | — | current service | MySQL-wire; untested here. |
+
+MySQL `5.6` and older have neither timeout variable. They are best
+effort: queries still run, but the read-only path cannot bound them.
 
 ## Adding or moving a version
 

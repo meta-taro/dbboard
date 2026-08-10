@@ -23,7 +23,8 @@ export type ConnectionKind =
   | 'mysql'
   | 'neon'
   | 'supabase'
-  | 'aurora_dsql';
+  | 'aurora_dsql'
+  | 'firestore';
 
 // Order shown in the kind picker. `turso` first: it's the zero-credential
 // local/libSQL case and the friendliest default.
@@ -35,10 +36,13 @@ export const CONNECTION_KINDS: readonly ConnectionKind[] = [
   'neon',
   'supabase',
   'aurora_dsql',
+  'firestore',
 ] as const;
 
 // Every field the union of all kinds can carry. A given kind uses only a
 // subset; unused fields stay blank and are ignored by the payload builders.
+// `database_id` and `base_url` are shared by D1 and Firestore, which mean
+// different things by them but ask for them the same way.
 export type FormField =
   | 'id'
   | 'name'
@@ -47,7 +51,9 @@ export type FormField =
   | 'database_id'
   | 'base_url'
   | 'token'
-  | 'url';
+  | 'url'
+  | 'project_id'
+  | 'service_account';
 
 // Kinds that can front an SSH tunnel (ADR-0069): the TCP/URL-bearing engines.
 // Turso (embedded/libSQL HTTP) and D1 (HTTP) have no host:port to forward, so
@@ -105,6 +111,13 @@ export interface ConnectionForm extends DsnParts {
   base_url: string; // d1 (optional)
   token: string; // d1 secret
   url: string; // postgres / neon / supabase / aurora_dsql secret
+  project_id: string; // firestore
+  service_account: string; // firestore secret (service-account JSON)
+  // Firestore only (ADR-0093): connect to the local emulator, which has no
+  // credential at all. Distinct from a blank `service_account`, which on edit
+  // means "keep the stored one" — so the choice needs its own flag, exactly as
+  // an unencrypted SSH key does.
+  use_emulator: boolean;
   // How the DSN is being supplied. `false` (the default on add) means the
   // structured `db_*` parts, which is what every other client asks for; `true`
   // means the raw URL, kept as the escape hatch for what a form can't express
@@ -175,6 +188,16 @@ export type EditorMode = 'add' | 'edit';
 export type EditFields = (
   | { kind: 'turso'; path: string }
   | { kind: 'd1'; account_id: string; database_id: string; base_url: string | null }
+  // `use_emulator` is the read-back of "no stored credential" (ADR-0093). It is
+  // a mode, not a secret, so unlike the service-account JSON the backend does
+  // send it — without it the edit form could not open in the right state.
+  | {
+      kind: 'firestore';
+      project_id: string;
+      database_id: string | null;
+      base_url: string | null;
+      use_emulator: boolean;
+    }
   | { kind: 'postgres' | 'mysql' | 'neon' | 'supabase' | 'aurora_dsql' }
 ) & {
   ssh?: SshPrefill | null;
@@ -208,6 +231,9 @@ export function emptyForm(): ConnectionForm {
     base_url: '',
     token: '',
     url: '',
+    project_id: '',
+    service_account: '',
+    use_emulator: false,
     use_url: false,
     ...emptyDsnParts(),
     ssh_enabled: false,
@@ -315,6 +341,14 @@ export function formForEdit(id: string, name: string, fields: EditFields): Conne
         database_id: fields.database_id,
         base_url: fields.base_url ?? '',
       };
+    case 'firestore':
+      return {
+        ...base,
+        project_id: fields.project_id,
+        database_id: fields.database_id ?? '',
+        base_url: fields.base_url ?? '',
+        use_emulator: fields.use_emulator,
+      };
     default:
       // Postgres-family: only name + the secret url are editable.
       return base;
@@ -346,6 +380,8 @@ export function fieldsForKind(kind: ConnectionKind): FormField[] {
       return ['path'];
     case 'd1':
       return ['account_id', 'database_id', 'base_url', 'token'];
+    case 'firestore':
+      return ['project_id', 'database_id', 'base_url', 'service_account'];
     case 'postgres':
     case 'mysql':
     case 'neon':
@@ -355,12 +391,24 @@ export function fieldsForKind(kind: ConnectionKind): FormField[] {
   }
 }
 
+// Fields a kind shows but does not require. `base_url` is optional everywhere.
+// Firestore adds two more: a blank `database_id` means the project's `(default)`
+// database, and a blank `service_account` means the emulator — so Firestore is
+// the one kind that can be submitted on `add` with no credential at all.
+function optionalFields(kind: ConnectionKind): readonly FormField[] {
+  return kind === 'firestore'
+    ? (['base_url', 'database_id', 'service_account'] as const)
+    : (['base_url'] as const);
+}
+
 // Which of a kind's fields hold secret material (masked input; on edit a blank
 // value means "keep the stored secret", never "clear it").
 export function secretFields(kind: ConnectionKind): FormField[] {
   switch (kind) {
     case 'd1':
       return ['token'];
+    case 'firestore':
+      return ['service_account'];
     case 'postgres':
     case 'mysql':
     case 'neon':
@@ -372,9 +420,10 @@ export function secretFields(kind: ConnectionKind): FormField[] {
   }
 }
 
-// Fields that must be non-blank to submit. `base_url` is always optional. On
-// edit, secret fields drop out of the required set: a blank secret keeps the
-// stored one (the existing value is never sent back to the form).
+// Fields that must be non-blank to submit. See `optionalFields` for the ones a
+// kind shows but never requires. On edit, secret fields drop out of the required
+// set too: a blank secret keeps the stored one (the existing value is never sent
+// back to the form).
 export function requiredFields(
   kind: ConnectionKind,
   mode: EditorMode,
@@ -382,9 +431,10 @@ export function requiredFields(
 ): FormField[] {
   const common: FormField[] = mode === 'add' ? ['id', 'name'] : ['name'];
   const secrets = new Set(secretFields(kind));
+  const optional = new Set(optionalFields(kind));
   const kindFields = fieldsForKind(kind).filter(
     (f) =>
-      f !== 'base_url' &&
+      !optional.has(f) &&
       !(mode === 'edit' && secrets.has(f)) &&
       // In fields mode the URL is composed, never typed, so it is not an input.
       !(f === 'url' && !useUrl),
@@ -552,6 +602,16 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
         base_url: blank(form.base_url) ? null : form.base_url,
         token: form.token,
       };
+    case 'firestore':
+      return {
+        kind: 'firestore',
+        project_id: form.project_id,
+        database_id: blank(form.database_id) ? null : form.database_id,
+        base_url: blank(form.base_url) ? null : form.base_url,
+        // `null` is the emulator, so the checkbox has to beat anything left in
+        // the credential box rather than half-applying the user's choice.
+        service_account: firestoreCredential(form),
+      };
     case 'postgres':
     case 'mysql':
     case 'neon':
@@ -559,6 +619,14 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
     case 'aurora_dsql':
       return { kind: form.kind, url: dsnFor(form) };
   }
+}
+
+// The service-account JSON to send, or `null`. On add `null` means the
+// emulator; on edit it means "keep the stored credential" unless `use_emulator`
+// is also set, which is why the two are always sent together there.
+function firestoreCredential(form: ConnectionForm): string | null {
+  if (form.use_emulator || blank(form.service_account)) return null;
+  return form.service_account;
 }
 
 // The `kind` object the `update_connection` command expects (a KindEditInput).
@@ -575,6 +643,15 @@ export function buildKindEditInput(form: ConnectionForm): Record<string, unknown
         database_id: form.database_id,
         base_url: blank(form.base_url) ? null : form.base_url,
         token: form.token,
+      };
+    case 'firestore':
+      return {
+        kind: 'firestore',
+        project_id: form.project_id,
+        database_id: blank(form.database_id) ? null : form.database_id,
+        base_url: blank(form.base_url) ? null : form.base_url,
+        use_emulator: form.use_emulator,
+        service_account: firestoreCredential(form),
       };
     case 'postgres':
     case 'mysql':

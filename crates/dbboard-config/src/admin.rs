@@ -129,6 +129,15 @@ pub enum ConnectionKindDraft {
     AuroraDsql {
         url: String,
     },
+    /// Firestore (ADR-0093). `service_account` is `None` for the local
+    /// emulator, which authenticates with a fixed `Bearer owner` and therefore
+    /// has no credential to seed into the keychain.
+    Firestore {
+        project_id: String,
+        database_id: Option<String>,
+        base_url: Option<String>,
+        service_account: Option<String>,
+    },
 }
 
 /// User-supplied draft for **editing** an existing connection.
@@ -247,6 +256,28 @@ pub enum ConnectionKindEditDraft {
     /// [`ConnectionAdmin::apply_update_kind`]'s catch-all as a
     /// [`ConfigError::KindMismatch`].
     AuroraDsqlIam,
+    Firestore {
+        project_id: String,
+        database_id: Option<String>,
+        base_url: Option<String>,
+        service_account: FirestoreCredentialField,
+    },
+}
+
+/// Three-state edit control for a Firestore service account. Like
+/// [`SshPassphraseField`], and for the same reason: "no credential" is a real,
+/// reachable state — a connection pointed at the local emulator — distinct
+/// from "keep the stored one". A mandatory [`SecretField`] could only express
+/// the emulator as an empty string, which reads as a real credential and makes
+/// a later `Keep` ambiguous.
+#[derive(Debug, Clone)]
+pub enum FirestoreCredentialField {
+    /// Reuse whatever is stored (a service account, or nothing at all).
+    Keep,
+    /// Overwrite the stored service-account JSON with this new value.
+    Set(String),
+    /// Point at the emulator; drop any stored service account.
+    Emulator,
 }
 
 /// Whether an editable secret field should be left alone or rewritten.
@@ -585,15 +616,12 @@ impl ConnectionAdmin {
 
         self.file = new_file;
 
-        // Best-effort purge of ssh secrets the old entry referenced but the new
-        // one no longer does — the tunnel was removed, or auth switched
-        // key<->password. Mirrors `delete`: once unreferenced, an orphan secret
-        // is harmless and a purge failure must not fail an otherwise-saved
-        // update.
-        self.purge_orphaned_ssh_secrets(
-            existing.ssh.as_ref(),
-            self.file.connections[idx].ssh.as_ref(),
-        );
+        // Best-effort purge of secrets the old entry referenced but the new one
+        // no longer does — the tunnel was removed, auth switched
+        // key<->password, or a Firestore connection was pointed back at the
+        // emulator. Mirrors `delete`: once unreferenced, an orphan secret is
+        // harmless and a purge failure must not fail an otherwise-saved update.
+        self.purge_orphaned_secrets(&existing, &self.file.connections[idx]);
 
         Ok(&self.file.connections[idx])
     }
@@ -900,12 +928,71 @@ impl ConnectionAdmin {
                     keyring_url_ref: keyring_url_ref.clone(),
                 }
             }
+            (
+                ConnectionKind::Firestore {
+                    keyring_service_account_ref,
+                    ..
+                },
+                draft @ ConnectionKindEditDraft::Firestore { .. },
+            ) => self.apply_firestore_edit(
+                id,
+                keyring_service_account_ref.as_deref(),
+                draft,
+                &mut applied,
+            )?,
             (_, _) => {
                 return Err(ConfigError::KindMismatch { id: id.to_string() });
             }
         };
 
         Ok((new_kind, applied))
+    }
+
+    /// The Firestore arm of [`Self::apply_update_kind`], lifted out because it
+    /// is the only kind whose credential has three states rather than two
+    /// (ADR-0094) and so does not fit the one-line shape of the others.
+    fn apply_firestore_edit(
+        &self,
+        id: &str,
+        existing_ref: Option<&str>,
+        draft: ConnectionKindEditDraft,
+        applied: &mut Vec<AppliedSecretWrite>,
+    ) -> Result<ConnectionKind, ConfigError> {
+        let ConnectionKindEditDraft::Firestore {
+            project_id,
+            database_id,
+            base_url,
+            service_account,
+        } = draft
+        else {
+            return Err(ConfigError::KindMismatch { id: id.to_string() });
+        };
+
+        let keyring_service_account_ref = match service_account {
+            // Unlike an SSH "keep" with nothing stored, this is not an error: a
+            // Firestore connection with no credential is the emulator, so
+            // keeping "nothing" keeps a valid state.
+            FirestoreCredentialField::Keep => existing_ref.map(ToOwned::to_owned),
+            FirestoreCredentialField::Set(new_value) => {
+                // An emulator connection has no ref yet, so derive one the same
+                // way `add` does rather than failing.
+                let key_ref = existing_ref.map_or_else(
+                    || keyring_ref(id, FIRESTORE_SERVICE_ACCOUNT_FIELD),
+                    ToOwned::to_owned,
+                );
+                self.apply_secret_write(&key_ref, &new_value, applied)?;
+                Some(key_ref)
+            }
+            // The post-save purge deletes the now-unreferenced secret.
+            FirestoreCredentialField::Emulator => None,
+        };
+
+        Ok(ConnectionKind::Firestore {
+            project_id,
+            database_id,
+            base_url,
+            keyring_service_account_ref,
+        })
     }
 
     fn apply_secret_write(
@@ -945,16 +1032,16 @@ impl ConnectionAdmin {
     /// Delete the keyring secrets `old` referenced that `new` no longer does.
     /// Best-effort: an unreferenced secret is harmless (the TOML is the source
     /// of truth) so a delete failure is ignored.
-    fn purge_orphaned_ssh_secrets(&self, old: Option<&SshTunnelToml>, new: Option<&SshTunnelToml>) {
-        let Some(old) = old else { return };
-        let kept: HashSet<&str> = new
-            .map(SshTunnelToml::keyring_refs)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        for old_ref in old.keyring_refs() {
-            if !kept.contains(old_ref) {
-                let _ = self.secrets.delete(old_ref);
+    ///
+    /// Covers the kind's own secret as well as the tunnel's, because a kind can
+    /// stop referencing one without being deleted: a Firestore connection moved
+    /// back to the emulator drops its service-account ref, and the credential
+    /// behind it would otherwise outlive every pointer to it.
+    fn purge_orphaned_secrets(&self, old: &ConnectionEntry, new: &ConnectionEntry) {
+        let kept: HashSet<String> = entry_keyring_refs(new).into_iter().collect();
+        for old_ref in entry_keyring_refs(old) {
+            if !kept.contains(&old_ref) {
+                let _ = self.secrets.delete(&old_ref);
             }
         }
     }
@@ -1082,6 +1169,10 @@ fn keyring_ref(id: &str, field: &str) -> String {
 const SSH_PASSPHRASE_FIELD: &str = "ssh_passphrase";
 const SSH_PASSWORD_FIELD: &str = "ssh_password";
 
+/// Keyring field name for a Firestore service account, for the same reason as
+/// the SSH consts above: `add` and `update` must derive the identical ref.
+const FIRESTORE_SERVICE_ACCOUNT_FIELD: &str = "service_account";
+
 /// Split a host-key draft into the `(fingerprint, known_hosts)` pair
 /// [`SshTunnelToml`] stores — exactly one is `Some`.
 fn split_host_key(host_key: SshHostKeyDraft) -> (Option<String>, Option<String>) {
@@ -1156,7 +1247,8 @@ fn zeroize_secret_writes(writes: &mut [(String, String)]) {
 /// Enumerate every keyring ref that a given [`ConnectionKind`] points
 /// at. `Turso` has none; `D1`, `Postgres`, `MySql`, `Neon`, `Supabase`,
 /// and `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its
-/// AWS secret-key ref (its other fields are non-secret and live inline).
+/// AWS secret-key ref (its other fields are non-secret and live inline);
+/// `Firestore` carries one only when it is not pointed at the emulator.
 fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
     match kind {
         ConnectionKind::Turso { .. } => Vec::new(),
@@ -1174,6 +1266,10 @@ fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
             keyring_secret_key_ref,
             ..
         } => vec![keyring_secret_key_ref.clone()],
+        ConnectionKind::Firestore {
+            keyring_service_account_ref,
+            ..
+        } => keyring_service_account_ref.clone().into_iter().collect(),
     }
 }
 
@@ -1269,6 +1365,31 @@ fn build_kind_for_add(
                 key_ref: url_ref,
                 value: url,
             }];
+            (kind, writes)
+        }
+        ConnectionKindDraft::Firestore {
+            project_id,
+            database_id,
+            base_url,
+            service_account,
+        } => {
+            // No service account means the emulator, which has no credential
+            // to store — so no ref is minted and no keychain entry is written.
+            let mut writes = Vec::new();
+            let keyring_service_account_ref = service_account.map(|value| {
+                let key_ref = keyring_ref(id, FIRESTORE_SERVICE_ACCOUNT_FIELD);
+                writes.push(PendingSecretWrite {
+                    key_ref: key_ref.clone(),
+                    value,
+                });
+                key_ref
+            });
+            let kind = ConnectionKind::Firestore {
+                project_id,
+                database_id,
+                base_url,
+                keyring_service_account_ref,
+            };
             (kind, writes)
         }
     }
@@ -1381,6 +1502,198 @@ mod tests {
                 url: url.to_string(),
             },
         }
+    }
+
+    /// `service_account: None` is the emulator: no credential exists to store.
+    fn firestore_draft(id: &str, service_account: Option<&str>) -> ConnectionDraft {
+        ConnectionDraft {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("Firestore {id}"),
+            kind: ConnectionKindDraft::Firestore {
+                project_id: "example-project".to_string(),
+                database_id: None,
+                base_url: None,
+                service_account: service_account.map(str::to_string),
+            },
+        }
+    }
+
+    fn firestore_edit(
+        name: &str,
+        service_account: FirestoreCredentialField,
+    ) -> ConnectionEditDraft {
+        ConnectionEditDraft {
+            name: name.to_string(),
+            kind: ConnectionKindEditDraft::Firestore {
+                project_id: "example-project".to_string(),
+                database_id: None,
+                base_url: None,
+                service_account,
+            },
+            ssh: SshEditField::Keep,
+            mcp_write: None,
+            mcp_alias: None,
+        }
+    }
+
+    fn firestore_service_account_ref(entry: &ConnectionEntry) -> Option<&str> {
+        match &entry.kind {
+            ConnectionKind::Firestore {
+                keyring_service_account_ref,
+                ..
+            } => keyring_service_account_ref.as_deref(),
+            other => panic!("expected Firestore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_firestore_routes_the_service_account_through_the_secret_store() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(firestore_draft(
+                "fs-prod",
+                Some(r#"{"type":"service_account"}"#),
+            ))
+            .expect("add firestore");
+        assert_eq!(
+            firestore_service_account_ref(&admin.entries()[0]),
+            Some("dbboard.fs-prod.service_account")
+        );
+        assert_eq!(
+            secrets
+                .get("dbboard.fs-prod.service_account")
+                .expect("service account"),
+            r#"{"type":"service_account"}"#
+        );
+    }
+
+    /// An emulator connection has no credential — not a blank one. Writing an
+    /// empty secret would leave a keychain entry that reads as real, and would
+    /// make `Keep` on a later edit ambiguous.
+    #[test]
+    fn add_firestore_for_the_emulator_stores_no_credential_at_all() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(firestore_draft("fs-local", None))
+            .expect("add firestore emulator");
+        assert_eq!(firestore_service_account_ref(&admin.entries()[0]), None);
+        assert!(matches!(
+            secrets.get("dbboard.fs-local.service_account"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn update_firestore_can_promote_an_emulator_connection_to_a_service_account() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(firestore_draft("fs", None))
+            .expect("add firestore emulator");
+        admin
+            .update(
+                "fs",
+                firestore_edit(
+                    "Firestore (prod)",
+                    FirestoreCredentialField::Set(r#"{"type":"service_account"}"#.to_string()),
+                ),
+            )
+            .expect("promote to service account");
+        assert_eq!(
+            firestore_service_account_ref(&admin.entries()[0]),
+            Some("dbboard.fs.service_account")
+        );
+        assert_eq!(
+            secrets
+                .get("dbboard.fs.service_account")
+                .expect("service account"),
+            r#"{"type":"service_account"}"#
+        );
+    }
+
+    /// Switching back to the emulator drops the reference, so the stored
+    /// credential must go too — otherwise a service-account key outlives every
+    /// pointer to it, invisible in both the TOML and the UI.
+    #[test]
+    fn update_firestore_switching_to_the_emulator_purges_the_stored_credential() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(firestore_draft("fs", Some(r#"{"type":"service_account"}"#)))
+            .expect("add firestore");
+        admin
+            .update(
+                "fs",
+                firestore_edit("Firestore (emulator)", FirestoreCredentialField::Emulator),
+            )
+            .expect("demote to emulator");
+        assert_eq!(firestore_service_account_ref(&admin.entries()[0]), None);
+        assert!(matches!(
+            secrets.get("dbboard.fs.service_account"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn update_firestore_keep_leaves_the_stored_credential_untouched() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(firestore_draft("fs", Some(r#"{"type":"service_account"}"#)))
+            .expect("add firestore");
+        admin
+            .update(
+                "fs",
+                firestore_edit("Renamed", FirestoreCredentialField::Keep),
+            )
+            .expect("rename only");
+        assert_eq!(admin.entries()[0].name, "Renamed");
+        assert_eq!(
+            firestore_service_account_ref(&admin.entries()[0]),
+            Some("dbboard.fs.service_account")
+        );
+        assert_eq!(
+            secrets
+                .get("dbboard.fs.service_account")
+                .expect("service account"),
+            r#"{"type":"service_account"}"#
+        );
+    }
+
+    #[test]
+    fn delete_firestore_purges_the_service_account_ref() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(firestore_draft("fs", Some(r#"{"type":"service_account"}"#)))
+            .expect("add firestore");
+        admin.delete("fs").expect("delete");
+        assert!(matches!(
+            secrets.get("dbboard.fs.service_account"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    /// Firestore is an HTTPS API; a tunnel on it is a configuration error, and
+    /// the add path must reject it before any secret is written.
+    #[test]
+    fn add_firestore_with_an_ssh_tunnel_is_rejected() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        let mut draft = firestore_draft("fs", Some(r#"{"type":"service_account"}"#));
+        draft.ssh = Some(SshTunnelDraft {
+            host: "bastion.example.com".to_string(),
+            port: 22,
+            user: "ops".to_string(),
+            auth: SshAuthDraft::Password("pw".to_string()),
+            host_key: SshHostKeyDraft::Fingerprint("SHA256:abc".to_string()),
+        });
+        assert!(matches!(
+            admin.add(draft),
+            Err(ConfigError::SshUnsupportedKind { .. })
+        ));
+        assert!(matches!(
+            secrets.get("dbboard.fs.service_account"),
+            Err(SecretError::NotFound(_))
+        ));
     }
 
     #[test]

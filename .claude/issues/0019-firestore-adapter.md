@@ -1,9 +1,12 @@
 # 0019: Firestore adapter (`dbboard-firestore`)
 
-- **Status**: open
+- **Status**: closed — the crate is done, reachable from both the client and the
+  MCP server, and verified end-to-end against the local Firestore emulator
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),
+  ADR-0093 (REST directly, `ring` for signing, `query_read_only` overridden),
+  ADR-0094 (optional credential, and a browse that is not SQL),
   ADR-0046 (read-only MCP surface), ADR-0087 (MCP write policy)
 - **Blocked by**: 0018 (nested `Value`)
 
@@ -44,23 +47,84 @@ in ADR-0091 actually holds: native JSON query text through `query`, nested
   sense; the trait already returns a capability error for each rather than
   faking one.
 
-## Open questions to settle during implementation
+## Open questions — settled (ADR-0093)
 
-- Which crate, if any, is worth depending on versus calling the REST API
-  directly. Per CLAUDE.md, a non-trivial crate choice gets its own ADR entry.
-- Emulator support for tests. No test should require a live Google Cloud
-  project or a real credential.
+- **Which crate.** None: the three endpoints needed are a documented, stable
+  REST surface, and `reqwest`/`serde_json` are already in the tree. A client
+  crate that exposes writes would also defeat the read-only story below.
+  Signing the service-account assertion uses `ring`, already present via
+  rustls-ring; `rsa`/`rand` are dev-dependencies for generating throwaway test
+  keys.
+- **Emulator support.** Every HTTP path is covered by `wiremock`, and the
+  emulator's fixed `Bearer owner` credential is a first-class variant. No test
+  touches a cloud project, and no key is committed.
 
 ## Completion criteria
 
-- [ ] `ping`, `list_tables`, `query`, `describe_table` implemented against the
+- [x] `ping`, `list_tables`, `query`, `describe_table` implemented against the
       emulator, with unit tests that need no cloud project
-- [ ] A read-only connection has no reachable write path, proven by a test, not
+- [x] A read-only connection has no reachable write path, proven by a test, not
       by inspection
-- [ ] Nested documents round-trip through the `Value` variant from issue 0018
-- [ ] `capabilities()` matches what is actually implemented
-- [ ] ADR entry for any non-trivial crate added
-- [ ] Exposed to the MCP server only after the read-only guarantee is tested
+- [x] Nested documents round-trip through the `Value` variant from issue 0018
+- [x] `capabilities()` matches what is actually implemented
+- [x] ADR entry for any non-trivial crate added
+- [x] Exposed to the MCP server only after the read-only guarantee is tested
+
+## Slice 2: reachable from the client — done (ADR-0094)
+
+- [x] `BackendConfig::Firestore` + a `connect_adapter` arm in `dbboard-connect`.
+- [x] Service-account JSON through the same keychain path every other secret
+      takes — never a tracked file. `DBBOARD_FIRESTORE_*` env vars for the agent
+      case (ADR-0090 §4).
+- [x] Connection add **and** edit forms in the desktop client, changed together.
+      The emulator is a checkbox, because a blank credential is a *choice* here
+      and not an unfinished form (ADR-0094 §1).
+- [x] The sidebar generates a `StructuredQuery` rather than SQL, and offers no
+      *Count rows* on a connection that cannot count (ADR-0094 §4).
+- [x] `dbboard-mcp` registration, which the read-only test above now unblocks.
+
+## Slice 3: reachable from an agent — done
+
+There was no wiring to add: the MCP service opens connections through
+`backend_config_for_entry` + `connect_adapter`, which slice 2 already taught
+about Firestore, and every tool goes through the trait. What was missing was
+*honesty*, which is the part an agent actually consumes.
+
+- [x] `list_connections` names every kind `kind_label` can return, guarded by a
+      test that reads the two source spans rather than a hand-kept list — it
+      had already gone stale twice (MySQL, Aurora DSQL IAM) before Firestore
+      made staleness expensive.
+- [x] `run_read_query` states that a `firestore` connection takes a
+      `StructuredQuery` rather than SQL, with a bounded example. Without this
+      an agent sends `SELECT`, gets a parse error, and reads it as its own
+      mistake.
+- [x] `describe_table` says its Firestore result is inferred from a sample, not
+      declared.
+
+## Slice 4: verified against a real Firestore — done
+
+`wiremock` proves the crate sends what we *believe* Firestore accepts. It cannot
+prove Firestore accepts it. `crates/dbboard-connect/tests/firestore_emulator.rs`
+closes that gap against the local emulator, and goes through `connect_adapter`
+rather than the adapter directly, so it covers the same wiring the desktop
+client and the MCP server both use.
+
+- [x] `ping`, `list_tables`, `query`, `describe_table` answered by the emulator.
+- [x] The browse query is asserted as the *exact* string `browseQuery` generates
+      (ADR-0094 §4) — a change there that the emulator would reject fails here
+      rather than in front of a user.
+- [x] A nested map survives as an `address` column (the issue 0018 `Value::Json`
+      variant), and no collection is reported with a schema namespace.
+- [x] `execute` is refused rather than attempted.
+
+The tests are `#[ignore]`d and gated on `DBBOARD_TEST_FIRESTORE_EMULATOR`, so
+CI — which has no emulator — is unaffected.
+
+## Remaining
+
+Nothing blocking. Pointing the client at a real cloud project still needs a
+service-account credential, but that path is the same one every other secret
+takes and the emulator exercises everything above it.
 
 ## Verification
 
@@ -68,3 +132,23 @@ in ADR-0091 actually holds: native JSON query text through `query`, nested
 cargo test -p dbboard-firestore --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+And, against the emulator. The port is not a CLI flag — it comes from a
+`firebase.json` in whatever directory you start it from, so put one in a scratch
+directory. 8385 rather than the default 8080 because this machine is shared and
+8080 is usually already taken:
+
+```json
+{ "emulators": { "firestore": { "port": 8385, "host": "127.0.0.1" }, "ui": { "enabled": false } },
+  "firestore": { "rules": "firestore.rules" } }
+```
+
+```sh
+firebase emulators:start --only firestore --project demo-dbboard
+DBBOARD_TEST_FIRESTORE_EMULATOR=http://127.0.0.1:8385/v1 \
+  cargo test -p dbboard-connect --test firestore_emulator --all-features -- --ignored
+```
+
+The project id must stay `demo-`prefixed: that is the Firebase tooling's own
+marker for "never contact production", and it is what stops a stray credential
+from turning this into a live write.
