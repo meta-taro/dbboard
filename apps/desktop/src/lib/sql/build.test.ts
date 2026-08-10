@@ -6,6 +6,7 @@ import {
   countRows,
   dialectForKind,
   structuredQuery,
+  mongoFindCommand,
   browseQuery,
   countQuery,
   usesStructuredQuery,
@@ -157,9 +158,36 @@ describe('structuredQuery', () => {
   });
 });
 
+describe('mongoFindCommand', () => {
+  // The collection is the whole identity: `list_tables` reports collection
+  // names with no schema, exactly as it does for Firestore.
+  it('builds a bounded find command', () => {
+    expect(mongoFindCommand({ schema: null, name: 'orders' }, 100)).toBe(
+      '{\n  "find": "orders",\n  "limit": 100\n}',
+    );
+  });
+
+  it('escapes a collection name containing JSON-significant characters', () => {
+    expect(mongoFindCommand({ schema: null, name: 'we"ird\\one' }, 1)).toBe(
+      '{\n  "find": "we\\"ird\\\\one",\n  "limit": 1\n}',
+    );
+  });
+
+  it('floors the limit to a positive integer, as selectTopN does', () => {
+    expect(mongoFindCommand({ schema: null, name: 't' }, 3.9)).toContain('"limit": 3');
+    expect(mongoFindCommand({ schema: null, name: 't' }, 0)).toContain('"limit": 1');
+  });
+});
+
 describe('usesStructuredQuery', () => {
   it('is true for Firestore, whose query text is JSON', () => {
     expect(usesStructuredQuery('firestore')).toBe(true);
+  });
+
+  // MongoDB's query text is a command document, also JSON — so the grid must
+  // not offer inline editing there either, however many keys the schema has.
+  it('is true for MongoDB, whose query text is a command document', () => {
+    expect(usesStructuredQuery('mongodb')).toBe(true);
   });
 
   it.each(['postgres', 'mysql', 'turso', 'd1', 'neon', undefined])(
@@ -193,6 +221,15 @@ describe('browseQuery', () => {
       structuredQuery({ schema: null, name: 'orders' }, 100),
     );
   });
+
+  // Both are JSON, but not the same JSON: Firestore reads `from`/`collectionId`
+  // and MongoDB reads `find`. Sending either shape to the other is a rejected
+  // command, so the two must not share a builder.
+  it('generates a find command for MongoDB', () => {
+    expect(browseQuery({ schema: null, name: 'orders' }, 100, 'mongodb')).toBe(
+      mongoFindCommand({ schema: null, name: 'orders' }, 100),
+    );
+  });
 });
 
 describe('countQuery', () => {
@@ -210,5 +247,14 @@ describe('countQuery', () => {
   // a menu entry there that can only ever fail.
   it('has no counterpart on Firestore', () => {
     expect(countQuery({ schema: null, name: 'orders' }, 'firestore')).toBeNull();
+  });
+
+  // MongoDB does have one — `count` is on the adapter's read allowlist — so
+  // dropping the action for every structured-query kind would remove a
+  // working affordance, not an impossible one.
+  it('counts documents with a count command on MongoDB', () => {
+    expect(countQuery({ schema: null, name: 'orders' }, 'mongodb')).toBe(
+      '{ "count": "orders" }',
+    );
   });
 });

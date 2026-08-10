@@ -46,7 +46,7 @@ pub struct DescribeTableParams {
     /// The connection id from `list_connections`.
     pub connection_id: String,
     /// Schema namespace (e.g. `public` on Postgres). Omit for
-    /// SQLite/libSQL/D1/Firestore, which have no schema concept.
+    /// SQLite/libSQL/D1/Firestore/MongoDB, which have no schema concept.
     #[serde(default)]
     pub schema: Option<String>,
     /// The table name.
@@ -60,8 +60,9 @@ pub struct RunReadQueryParams {
     pub connection_id: String,
     /// The query text, in whatever language the connection speaks: a single
     /// read-only SQL statement (`SELECT` / `WITH` / `EXPLAIN`) on a SQL
-    /// connection, or a Firestore `StructuredQuery` as JSON on a `firestore`
-    /// one. Named `sql` for compatibility with agents that already call this
+    /// connection, a Firestore `StructuredQuery` as JSON on a `firestore`
+    /// one, or a `MongoDB` command document as JSON on a `mongodb` one. Named
+    /// `sql` for compatibility with agents that already call this
     /// tool; renaming it would break them for a connection kind most of them
     /// will never see.
     pub sql: String,
@@ -164,7 +165,7 @@ impl DbboardMcp {
     }
 
     #[tool(
-        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore). Check the kind before you write a query: every kind above except firestore takes SQL, and firestore takes a Firestore StructuredQuery as JSON. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
+        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb). Check the kind before you write a query: every kind above except firestore and mongodb takes SQL, firestore takes a Firestore StructuredQuery as JSON, and mongodb takes a MongoDB command document as JSON. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
     )]
     async fn list_connections(&self) -> Result<CallToolResult, McpError> {
         let views = self
@@ -192,7 +193,7 @@ impl DbboardMcp {
     }
 
     #[tool(
-        description = "Describe one table: its columns (name, declared type, nullability, primary-key flag, ordinal) and primary key. `schema` is optional (the Postgres schema namespace; omit for SQLite/libSQL/D1/Firestore). On a firestore connection the table is a collection and the columns are inferred from a bounded sample of documents, so treat the result as evidence of what is usually there rather than a declared schema."
+        description = "Describe one table: its columns (name, declared type, nullability, primary-key flag, ordinal) and primary key. `schema` is optional (the Postgres schema namespace; omit for SQLite/libSQL/D1/Firestore/MongoDB). On a firestore or mongodb connection the table is a collection and the columns are inferred from a bounded sample of documents, so treat the result as evidence of what is usually there rather than a declared schema."
     )]
     async fn describe_table(
         &self,
@@ -212,7 +213,7 @@ impl DbboardMcp {
     }
 
     #[tool(
-        description = "Run a single READ-ONLY query and return the rows. On a SQL connection that is one statement (SELECT / WITH / EXPLAIN); writes, DDL, multi-statement batches, and locking reads (FOR UPDATE) are rejected at the database engine, not just by string matching. On a firestore connection the query is not SQL at all: send a Firestore StructuredQuery as JSON, with or without the outer structuredQuery wrapper — a bounded example is {`from`: [{`collectionId`: `orders`}], `limit`: 100} with real double quotes. Firestore reads through an endpoint that has no write form, so there is nothing there to reject. Returns at most `max_rows` rows (default 200, hard cap 1000) plus a `truncated` flag telling you there were more."
+        description = "Run a single READ-ONLY query and return the rows. On a SQL connection that is one statement (SELECT / WITH / EXPLAIN); writes, DDL, multi-statement batches, and locking reads (FOR UPDATE) are rejected at the database engine, not just by string matching. On a firestore connection the query is not SQL at all: send a Firestore StructuredQuery as JSON, with or without the outer structuredQuery wrapper — a bounded example is {`from`: [{`collectionId`: `orders`}], `limit`: 100} with real double quotes. Firestore reads through an endpoint that has no write form, so there is nothing there to reject. On a mongodb connection send a command document as JSON — a bounded example is {`find`: `orders`, `limit`: 100} with real double quotes, and `aggregate`, `count`, `distinct`, `listCollections`, and `listIndexes` are accepted too; anything that writes is refused. Returns at most `max_rows` rows (default 200, hard cap 1000) plus a `truncated` flag telling you there were more."
     )]
     async fn run_read_query(
         &self,
@@ -538,6 +539,17 @@ mod tests {
         assert!(
             description.contains("StructuredQuery"),
             "run_read_query names firestore but not the query form it takes"
+        );
+        // MongoDB's query text is JSON too, but not the same JSON: the adapter
+        // dispatches on the command name, so an agent that sends Firestore's
+        // `from`/`collectionId` shape gets a rejected command.
+        assert!(
+            description.contains("mongodb"),
+            "run_read_query does not tell the agent what a mongodb connection expects"
+        );
+        assert!(
+            description.contains("find"),
+            "run_read_query names mongodb but not the command it takes"
         );
     }
 

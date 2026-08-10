@@ -13,6 +13,7 @@ use std::fmt;
 use dbboard_config::{ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind, SecretStore};
 use dbboard_d1::D1Config;
 use dbboard_firestore::{FirestoreConfig, FirestoreCredentials};
+use dbboard_mongodb::MongoConfig;
 
 use crate::ssh::{resolved_ssh_from_env, ResolvedSsh, SshEnv};
 
@@ -37,6 +38,9 @@ const FIRESTORE_PROJECT_ID_ENV: &str = "DBBOARD_FIRESTORE_PROJECT_ID";
 const FIRESTORE_SERVICE_ACCOUNT_ENV: &str = "DBBOARD_FIRESTORE_SERVICE_ACCOUNT";
 const FIRESTORE_DATABASE_ID_ENV: &str = "DBBOARD_FIRESTORE_DATABASE_ID";
 const FIRESTORE_BASE_URL_ENV: &str = "DBBOARD_FIRESTORE_BASE_URL";
+
+const MONGODB_URI_ENV: &str = "DBBOARD_MONGODB_URI";
+const MONGODB_DATABASE_ENV: &str = "DBBOARD_MONGODB_DATABASE";
 
 const PG_URL_ENV: &str = "DBBOARD_PG_URL";
 const MYSQL_URL_ENV: &str = "DBBOARD_MYSQL_URL";
@@ -123,6 +127,10 @@ pub enum BackendConfig {
     /// [`FirestoreCredentials::Emulator`] carries none, because the local
     /// emulator accepts a fixed `Bearer owner`.
     Firestore(FirestoreConfig),
+    /// `MongoDB` over the wire protocol (ADR-0096). The URI embeds the
+    /// password in its authority, so the whole struct is redacted in `Debug`
+    /// exactly like the Postgres-wire URLs.
+    MongoDb(MongoConfig),
 }
 
 impl BackendConfig {
@@ -153,6 +161,8 @@ impl fmt::Debug for BackendConfig {
             Self::AuroraDsqlIam { .. } => f.write_str("AuroraDsqlIam(<redacted>)"),
             // The service-account JSON embeds an RSA private key.
             Self::Firestore(_) => f.write_str("Firestore(<redacted>)"),
+            // The URI's authority carries the password.
+            Self::MongoDb(_) => f.write_str("MongoDb(<redacted>)"),
         }
     }
 }
@@ -176,7 +186,11 @@ impl fmt::Debug for BackendConfig {
 /// 7. `DBBOARD_FIRESTORE_PROJECT_ID` — Cloud Firestore over REST
 ///    (ADR-0093). The project id alone is enough: without
 ///    `DBBOARD_FIRESTORE_SERVICE_ACCOUNT` this targets the local emulator.
-/// 8. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
+/// 8. `DBBOARD_MONGODB_URI` — a `MongoDB` deployment (ADR-0096). Ranked
+///    below Firestore so an environment configured before `MongoDB` existed
+///    keeps resolving to what it did. `DBBOARD_MONGODB_DATABASE` is optional
+///    because the URI may name the database in its path.
+/// 9. Otherwise local Turso/libSQL at `DBBOARD_TURSO_PATH` (default
 ///    `":memory:"`), so a fresh checkout runs without configuration.
 ///
 /// This entry point does not consult `connections.toml`; for the
@@ -204,12 +218,15 @@ pub fn backend_config_from_env() -> BackendConfig {
 /// 6. The `DBBOARD_D1_*` trio — wins outright.
 /// 7. `DBBOARD_FIRESTORE_PROJECT_ID` — wins outright (Cloud Firestore,
 ///    ADR-0093; the emulator when no service account accompanies it).
-/// 8. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
-/// 9. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
-/// 10. If `file` has exactly one entry — auto-select it.
-/// 11. Otherwise Turso `:memory:` (the unchanged default).
+/// 8. `DBBOARD_MONGODB_URI` — wins outright (`MongoDB`, ADR-0096; ranked
+///    below Firestore so an environment configured before it existed keeps
+///    resolving to what it did).
+/// 9. `DBBOARD_TURSO_PATH` — wins outright (explicit local path).
+/// 10. `DBBOARD_CONNECTION=<id>` — picks the matching entry from `file`.
+/// 11. If `file` has exactly one entry — auto-select it.
+/// 12. Otherwise Turso `:memory:` (the unchanged default).
 ///
-/// Secret-bearing entries (D1, Postgres, `MySQL`) resolve their credentials
+/// Secret-bearing entries (D1, Postgres, `MySQL`, `MongoDB`) resolve their credentials
 /// through `secrets`, propagating [`ConfigError::Secret`] on miss so
 /// the binary aborts before the loopback server binds.
 ///
@@ -248,6 +265,8 @@ struct EnvSnapshot {
     firestore_service_account: Option<String>,
     firestore_database_id: Option<String>,
     firestore_base_url: Option<String>,
+    mongodb_uri: Option<String>,
+    mongodb_database: Option<String>,
     turso_path: Option<String>,
     connection_selector: Option<String>,
     ssh: SshEnv,
@@ -269,6 +288,8 @@ impl EnvSnapshot {
             firestore_service_account: non_empty(std::env::var(FIRESTORE_SERVICE_ACCOUNT_ENV).ok()),
             firestore_database_id: non_empty(std::env::var(FIRESTORE_DATABASE_ID_ENV).ok()),
             firestore_base_url: non_empty(std::env::var(FIRESTORE_BASE_URL_ENV).ok()),
+            mongodb_uri: non_empty(std::env::var(MONGODB_URI_ENV).ok()),
+            mongodb_database: non_empty(std::env::var(MONGODB_DATABASE_ENV).ok()),
             turso_path: non_empty(std::env::var(TURSO_PATH_ENV).ok()),
             connection_selector: non_empty(std::env::var(CONNECTION_SELECTOR_ENV).ok()),
             ssh: SshEnv {
@@ -340,6 +361,14 @@ fn attach_env_ssh(backend: BackendConfig, env: &EnvSnapshot) -> Result<BackendCo
             id: "env".to_string(),
             kind: "Firestore",
         }),
+        // MongoDB does speak TCP, but a URI may list several hosts and
+        // `mongodb+srv://` discovers a replica set from DNS. Rewriting one host
+        // to a loopback forward leaves the driver failing over to the members
+        // the tunnel does not front — working at first, then silently not.
+        BackendConfig::MongoDb(_) => Err(ConfigError::SshUnsupportedKind {
+            id: "env".to_string(),
+            kind: "MongoDB",
+        }),
     }
 }
 
@@ -399,6 +428,12 @@ fn resolve_from_env_only(env: &EnvSnapshot) -> BackendConfig {
     if let Some(firestore) = firestore_from_env(env) {
         return BackendConfig::Firestore(firestore);
     }
+    if let Some(uri) = env.mongodb_uri.clone() {
+        return BackendConfig::MongoDb(MongoConfig {
+            uri,
+            database: env.mongodb_database.clone(),
+        });
+    }
     BackendConfig::Turso {
         path: env
             .turso_path
@@ -432,6 +467,11 @@ fn resolve_backend(
     }
     if env.firestore_project_id.is_some() {
         // Firestore is an HTTPS API; same refusal as D1.
+        return attach_env_ssh(resolve_from_env_only(env), env);
+    }
+    if env.mongodb_uri.is_some() {
+        // MongoDB refuses a tunnel too, for the multi-host reason in
+        // `attach_env_ssh`; route it through the same check.
         return attach_env_ssh(resolve_from_env_only(env), env);
     }
     if env.turso_path.is_some() {
@@ -510,6 +550,9 @@ fn label_for(env: &EnvSnapshot, file: &ConnectionFile) -> String {
     }
     if env.firestore_project_id.is_some() {
         return "env:firestore".to_string();
+    }
+    if env.mongodb_uri.is_some() {
+        return "env:mongodb".to_string();
     }
     if env.turso_path.is_some() {
         return "env:turso".to_string();
@@ -654,6 +697,16 @@ fn entry_to_backend(
                 database_id: database_id.clone(),
                 credentials,
                 base_url: base_url.clone(),
+            }))
+        }
+        ConnectionKind::MongoDb {
+            keyring_url_ref,
+            database,
+        } => {
+            let uri = secrets.get(keyring_url_ref)?;
+            Ok(BackendConfig::MongoDb(MongoConfig {
+                uri,
+                database: database.clone(),
             }))
         }
     }
@@ -982,6 +1035,144 @@ mod tests {
                 }
             ),
             "expected SshUnsupportedKind for Firestore, got {err:?}"
+        );
+    }
+
+    fn mongodb_entry(id: &str, url_ref: &str, database: Option<&str>) -> ConnectionEntry {
+        ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("mongo {id}"),
+            kind: ConnectionKind::MongoDb {
+                keyring_url_ref: url_ref.to_string(),
+                database: database.map(ToString::to_string),
+            },
+        }
+    }
+
+    #[test]
+    fn mongodb_entry_resolves_the_uri_through_the_secret_store() {
+        let file = file_with(vec![mongodb_entry(
+            "mongo",
+            "dbboard.mongo.url",
+            Some("orders"),
+        )]);
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set("dbboard.mongo.url", "mongodb://user:pw@127.0.0.1:27117")
+            .expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::MongoDb(m) => {
+                assert_eq!(m.uri, "mongodb://user:pw@127.0.0.1:27117");
+                assert_eq!(m.database.as_deref(), Some("orders"));
+            }
+            other => panic!("expected MongoDb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mongodb_entry_with_missing_secret_propagates_secret_error() {
+        let file = file_with(vec![mongodb_entry("mongo", "dbboard.mongo.url", None)]);
+        let secrets = InMemorySecretStore::new();
+        let err = resolve_backend(&empty_env(), &file, &secrets)
+            .expect_err("a referenced but absent secret must surface");
+        assert!(
+            matches!(err, ConfigError::Secret(_)),
+            "expected ConfigError::Secret, got {err:?}"
+        );
+    }
+
+    /// The URI carries the password in its authority, so it must never reach a
+    /// log line — the same guarantee the Postgres and D1 variants make.
+    #[test]
+    fn mongodb_debug_never_prints_the_uri() {
+        let cfg = BackendConfig::MongoDb(MongoConfig {
+            uri: "mongodb://user:hunter2@127.0.0.1:27117".to_string(),
+            database: Some("orders".to_string()),
+        });
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("hunter2"), "leaked: {rendered}");
+        assert!(!rendered.contains("127.0.0.1"), "leaked: {rendered}");
+    }
+
+    #[test]
+    fn mongodb_env_uri_wins_over_the_file_store() {
+        let mut env = empty_env();
+        env.mongodb_uri = Some("mongodb://127.0.0.1:27117".to_string());
+        env.mongodb_database = Some("orders".to_string());
+        let file = file_with(vec![turso_entry("local", "/tmp/x.db")]);
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::MongoDb(m) => {
+                assert_eq!(m.uri, "mongodb://127.0.0.1:27117");
+                assert_eq!(m.database.as_deref(), Some("orders"));
+            }
+            other => panic!("expected MongoDb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn firestore_env_outranks_mongodb_env() {
+        // Firestore was resolved before MongoDB existed; keeping it above
+        // preserves what an already-configured environment resolves to.
+        let mut env = empty_env();
+        env.firestore_project_id = Some("env-project".to_string());
+        env.mongodb_uri = Some("mongodb://127.0.0.1:27117".to_string());
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &empty_file(), &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::Firestore(_)),
+            "Firestore ranks above MongoDB, got {cfg:?}"
+        );
+    }
+
+    #[test]
+    fn mongodb_env_outranks_turso_env() {
+        let mut env = empty_env();
+        env.mongodb_uri = Some("mongodb://127.0.0.1:27117".to_string());
+        env.turso_path = Some("/tmp/x.db".to_string());
+        let secrets = InMemorySecretStore::new();
+        let cfg = resolve_backend(&env, &empty_file(), &secrets).expect("resolve");
+        assert!(
+            matches!(cfg, BackendConfig::MongoDb(_)),
+            "MongoDB ranks above the Turso fallback, got {cfg:?}"
+        );
+    }
+
+    #[test]
+    fn resolved_label_mongodb_env_wins() {
+        let mut env = empty_env();
+        env.mongodb_uri = Some("mongodb://127.0.0.1:27117".to_string());
+        assert_eq!(label_for(&env, &empty_file()), "env:mongodb");
+    }
+
+    #[test]
+    fn env_ssh_on_mongodb_is_rejected() {
+        // Not because MongoDB lacks a TCP port, but because a URI may name
+        // several hosts (and `mongodb+srv://` a whole replica set); forwarding
+        // one of them would fail over to the untunnelled rest.
+        let mut env = empty_env();
+        env.mongodb_uri = Some("mongodb://127.0.0.1:27117".to_string());
+        env.ssh.host = Some("bastion.example".to_string());
+        env.ssh.user = Some("ec2-user".to_string());
+        env.ssh.key_path = Some("/tmp/key.pem".to_string());
+        env.ssh.fingerprint = Some("SHA256:AAAA".to_string());
+        let secrets = InMemorySecretStore::new();
+        let err = resolve_backend(&env, &empty_file(), &secrets)
+            .expect_err("a tunnel on MongoDB must be refused");
+        assert!(
+            matches!(
+                err,
+                ConfigError::SshUnsupportedKind {
+                    kind: "MongoDB",
+                    ..
+                }
+            ),
+            "expected SshUnsupportedKind for MongoDB, got {err:?}"
         );
     }
 

@@ -1409,6 +1409,7 @@ dependencies = [
  "dbboard-core",
  "dbboard-d1",
  "dbboard-firestore",
+ "dbboard-mongodb",
  "dbboard-mysql",
  "dbboard-postgres",
  "dbboard-tunnel",

@@ -417,6 +417,7 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::AuroraDsql { .. } => "aurora-dsql",
         ConnectionKind::AuroraDsqlIam { .. } => "aurora-dsql-iam",
         ConnectionKind::Firestore { .. } => "firestore",
+        ConnectionKind::MongoDb { .. } => "mongodb",
     }
 }
 
