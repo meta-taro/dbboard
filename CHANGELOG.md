@@ -9,6 +9,13 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-10
+
+The first database that is not a SQL database. A Cloud Firestore
+collection is now listable, queryable and describable from the desktop
+client and from the MCP server, and the row model grew a nested cell so a
+document has somewhere to land.
+
 ### Added
 
 - `Value::Json`, a cell variant carrying a nested document tree, encoded on
@@ -517,7 +524,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/meta-taro/dbboard/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/meta-taro/dbboard/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/meta-taro/dbboard/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/meta-taro/dbboard/compare/v0.3.0...v0.4.0
