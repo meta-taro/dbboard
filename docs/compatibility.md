@@ -65,6 +65,33 @@ single moving target tracked by the emulator test. Queries are
 Firestore `StructuredQuery` JSON, not SQL — see `docs/architecture.md`
 for why the adapter has no write path rather than a blocked one.
 
+### MongoDB
+
+Read-only over the official driver (ADR-0091, ADR-0095, ADR-0096).
+Runtime adapter id is `"mongodb"`.
+
+| Server | Tier 1 | Tier 2 | Notes |
+|---|---|---|---|
+| MongoDB | `8.x` | `6.x`, `7.x` | Live test gated on `DBBOARD_TEST_MONGODB_URI`; run `docker run -d --rm -p 27117:27017 mongo:8`. The commands the adapter sends have been stable since 4.4, but only 8.x is pinned by a test. |
+| MongoDB Atlas | — | current service | Same driver and same commands; `mongodb+srv://` discovers the replica set from DNS SRV. Untested here. |
+| Amazon DocumentDB / Azure Cosmos (Mongo API) | — | — | Wire-compatible in principle, but neither implements every command in the read allowlist. Best effort. |
+
+| Layer | Tier 1 | Tier 2 | Notes |
+|---|---|---|---|
+| `mongodb` driver crate | `3.x` | — | Pinned in `Cargo.toml` (`workspace.dependencies.mongodb`). |
+
+Queries are MongoDB command documents as JSON, not SQL. The adapter
+accepts `aggregate`, `count`, `distinct`, `find`, `listCollections`,
+and `listIndexes`, and refuses everything else — including a read that
+smuggles in `$merge`, `$out`, `$where`, `$function`, or
+`$accumulator`.
+
+MongoDB connections cannot be tunnelled over SSH. One URI may name
+several hosts, and `mongodb+srv://` discovers a whole replica set from
+DNS, so rewriting a single host to a loopback forward leaves the driver
+failing over to members the tunnel never covered — it appears to work,
+then silently stops.
+
 ### PostgreSQL-wire (CockroachDB / Neon / Supabase / Aurora DSQL / vanilla Postgres)
 
 Shared `dbboard-postgres` adapter on `sqlx 0.8 + tls-rustls-ring`.
