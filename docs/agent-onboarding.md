@@ -82,7 +82,9 @@ keychain.
 `run_write` exists but is **refused unless the connection is opted in**
 with `mcp_write = true`, and a permanently-closed list (grants, user and
 role DDL, `TRUNCATE`, `DROP` of anything but an index) is refused
-whatever that flag says.
+whatever that flag says. On a `firestore` or `mongodb` connection the
+flag opens nothing at all — neither adapter implements a write path, so
+those two are read-only for every caller.
 
 Start with `list_connections`; the id it returns is the handle every
 other tool takes.
