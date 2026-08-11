@@ -9534,3 +9534,174 @@ back-ticks are; there is no spelling of that `SELECT` that Firestore can run.
 - The next adapter that is not SQL (MongoDB, issue 0020) inherits all of this:
   it needs a `STRUCTURED_QUERY_KINDS` entry and its own query builder, not a
   new set of concepts.
+
+## ADR-0095 — MongoDB's read-only guarantee is an allowlist of commands *and* of their options
+
+- **Status**: accepted
+- **Date**: 2026-08-09
+- **Context**: issue 0020, building on ADR-0091 (document stores join through
+  the same trait) and ADR-0087 (the MCP write policy that sits on top)
+
+### Context
+
+Firestore (ADR-0093) is read-only by construction: reads and writes are
+different REST endpoints, so a crate that never builds a write URL has no
+classifier to get wrong. MongoDB has no such split. Every command — `find`,
+`insert`, `dropDatabase` — travels the same `runCommand` path, and the wire
+carries no hint about which of them mutate.
+
+`dbboard_core::read_only` cannot help. It is `sqlparser`-based by design and
+says so in its first line; a classifier that cannot parse its input must fail
+closed, which here would mean refusing every MongoDB query.
+
+So MongoDB needs a classifier of its own, and it is this adapter's
+safety-critical piece: the MCP read-only surface is built on top of it.
+
+Three properties of the command language make it more than a verb check.
+
+- **The command name is the document's first field.** That is MongoDB's own
+  rule. `serde_json::Value` sorts its map, so a classifier built on `Value`
+  would read `find` from `{"filter": …, "find": …}` — a document the server
+  would reject, classified as one it would accept.
+- **`$out` and `$merge` are aggregation stages that write.** `aggregate` has to
+  be on any useful read list, and an `aggregate` can still mutate. This is the
+  same shape as `WITH x AS (DELETE … RETURNING *) SELECT * FROM x`, which is
+  why the SQL classifier walks an AST instead of matching a prefix.
+- **`$where`, `$function` and `$accumulator` run JavaScript on the server.**
+  They do not write by themselves.
+
+### Decision
+
+1. **Allowlist the commands.** `find`, `aggregate`, `count`, `distinct`,
+   `listCollections`, `listIndexes`. Everything else is refused, including
+   commands that plainly read. The list grows one reviewed entry at a time.
+   `mapReduce` is the reason this is not a denylist of writes: it reads like a
+   read and writes through its `out` clause.
+
+2. **Allowlist the *options* too, per command.** A denylist of write verbs has
+   to be complete to be sound, and MongoDB adds commands. With an option
+   allowlist, `{"find": …, "insert": …, "documents": …}` is refused because
+   `insert` is not a `find` option — nobody has to remember that it writes.
+
+3. **Parse with field order intact.** `CommandDoc` keeps `Vec<(String, Value)>`
+   rather than a map, so "the first field" means what MongoDB means by it. This
+   is a local `Deserialize` impl rather than `serde_json/preserve_order`, whose
+   feature unification would change map ordering for every crate in the build.
+
+4. **Walk the whole document for forbidden keys, at any depth.** `$out` inside
+   a `$facet`, a `$lookup.pipeline` or a `$unionWith.pipeline` is still a
+   write. Keys only — a document whose *value* is the string `"$out"` is
+   ordinary data, and refusing it would be a false positive on real queries.
+
+5. **Refuse server-side JavaScript deliberately.** `$where`, `$function` and
+   `$accumulator` are on the forbidden list even though they do not write. This
+   is the classifier behind a surface an agent drives (ADR-0087), and arbitrary
+   server-side code execution is not a thing to arrive at by omission. It is
+   recorded here so that re-allowing it is a decision someone makes, not a gap
+   someone finds.
+
+6. **Never echo the command in a refusal.** Same rule as
+   `ReadOnlyViolation`: the reason names a category, and the constants it
+   quotes (`$out`, the option list) are ours, not the caller's. A refusal is
+   often logged, and a filter holds real data.
+
+### Consequences
+
+- A legitimate query using an option nobody has reviewed is refused. That is
+  the fail-closed trade, and the refusal lists the reviewed options for that
+  command so the fix is visible rather than a guess.
+- The classifier is pure and I/O-free, so it is unit-tested against adversarial
+  input with no cluster running — the same property that let the SQL classifier
+  be reviewed on its own terms, and the reason this crate leads with it instead
+  of with a driver.
+- Recursion is bounded by the parse: `serde_json` refuses to build a `Value`
+  nested past its own limit, so a hostile document fails while parsing rather
+  than while being walked.
+
+## ADR-0096 — The MongoDB adapter uses the official driver, and parses the command twice
+
+- **Status**: accepted
+- **Date**: 2026-08-09
+- **Context**: issue 0020, building on ADR-0095 (the classifier), ADR-0091
+  (document stores join through the same trait), ADR-0034 (pure-Rust TLS) and
+  ADR-0055 (this project's hostnames are business-identifying)
+
+### Context
+
+ADR-0095 settled how a MongoDB command is judged read-only. This one settles
+the two things that follow: what talks to the server, and how approved text
+becomes what goes on the wire.
+
+Firestore (ADR-0093) went to REST directly, because its wire protocol is HTTP
+and JSON and a hand-written client was smaller than the generated one. MongoDB
+is the opposite case: a binary wire protocol, SCRAM authentication, server
+discovery and monitoring, and connection pooling. Reimplementing that would be
+a much larger surface to get wrong than the driver is to depend on.
+
+### Decision
+
+1. **Depend on the official `mongodb` crate (3.8), with default features.**
+   Its default TLS backend is `rustls-tls` = `rustls/ring`, which is exactly
+   the pure-Rust stack ADR-0034 asks for. `rustls-tls-aws-lc` is the sibling
+   that would pull `aws-lc-sys` and is never selected.
+
+2. **Enable `redact-errors`.** The driver's `Redact<T>` replaces server
+   addresses and hostnames in error strings with `<redacted>`. Those strings
+   reach the UI, and this project's hosts are business-identifying (ADR-0055).
+   It is the same call `without_url()` makes in the Firestore adapter: the
+   caller already knows which connection it picked, so the host adds nothing to
+   the message and costs something if it is copied into an issue.
+
+3. **Parse the command text twice, with the same parser into two types.** The
+   classifier reads it as `serde_json` — pure, driver-free, reviewable on its
+   own terms (ADR-0095). What travels to the server is deserialized straight
+   into a `bson::Document`, which `serde_json::Value` cannot stand in for:
+   - **Field order at every depth.** `serde_json`'s map is sorted, and a
+     `{"sort": {"a": 1, "b": -1}}` that arrives as `{"b": -1, "a": 1}` sorts by
+     a different key.
+   - **Extended JSON.** `{"_id": {"$oid": "…"}}` has to become an `ObjectId`,
+     or a query by id matches nothing.
+
+   The double parse is sound in the direction that matters: both parsers keep
+   the *last* of a duplicated key, and the classifier holds duplicates in a
+   `Vec` and walks all of them. The classifier's view is therefore a superset
+   of what the server is asked to run.
+
+4. **The invariant is "no caller text reaches the server unclassified", not
+   "every command is classified".** The adapter's own commands — `ping`, the
+   collection listing, the `find` behind `describe_table` — are constants in
+   the adapter file and none of them writes. Routing them through the
+   classifier would test the classifier against input we wrote, which proves
+   nothing.
+
+5. **Inject `cursor` from the classifier's option table, not from a list of
+   verbs.** `aggregate` and `listCollections` are errors without a `cursor`
+   option, and a caller asking for their rows meant to receive them. `find`
+   streams but has no `cursor` option, and sending one makes the server refuse
+   the command. So the injection asks `ReadCommand::allows_option("cursor")` —
+   the same table the classifier decides with — and `find` is excluded without
+   being named.
+
+6. **Refuse a connection that names no database.** MongoDB's URI makes the
+   database optional. Falling back to `admin` or `test` would run the caller's
+   query somewhere they never named, which is worse than not connecting.
+
+7. **A command the *server* turns down is `DbError::Query`; everything else is
+   `DbError::Connection`.** Same line the Firestore adapter draws — the socket
+   being fine is what distinguishes a bad query from a bad connection.
+
+### Consequences
+
+- **Known gap: the driver offers no native-roots option.** Unlike `reqwest` and
+  `sqlx` elsewhere in this workspace, it trusts the bundled `webpki-roots`. A
+  server whose CA is in the OS store but not in that bundle — a private CA, an
+  enterprise proxy — will fail the handshake with no way to point the driver at
+  the OS store. Recorded here rather than papered over; if it bites, the fix is
+  a driver-level `TlsOptions` with an explicit CA file path.
+- No connection timeout is configured. The workspace has no precedent for one,
+  and the driver's defaults are the vendor's, so inventing a number here would
+  be a guess presented as a decision.
+- The crate is verified end-to-end against a real server in
+  `tests/live_mongodb.rs`, ignored by default and pointed at a local container.
+  Unit tests prove the crate sends what we think MongoDB accepts; that file
+  proves MongoDB accepts it.

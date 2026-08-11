@@ -218,6 +218,8 @@ fn dialect_label_for_kind(kind: &ConnectionKind) -> Option<String> {
         // deliberately does not map it, so the prompt stays untagged rather
         // than being told to write SQL against a document store.
         ConnectionKind::Firestore { .. } => "firestore",
+        // Same as Firestore: a document store with no SQL dialect to tag.
+        ConnectionKind::MongoDb { .. } => "mongodb",
     };
     dialect_for_adapter_id(adapter_id).map(|d| match d {
         SqlDialect::Sqlite => "sqlite".to_string(),

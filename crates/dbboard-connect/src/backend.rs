@@ -17,6 +17,7 @@ use std::sync::Arc;
 use dbboard_core::{DatabaseAdapter, DbError, DbResult};
 use dbboard_d1::D1Adapter;
 use dbboard_firestore::FirestoreAdapter;
+use dbboard_mongodb::MongoAdapter;
 use dbboard_mysql::{MySqlAdapter, MySqlConfig};
 use dbboard_postgres::{AuroraDsqlIamParams, PostgresAdapter, PostgresConfig};
 use dbboard_tunnel::SshTunnel;
@@ -179,6 +180,14 @@ pub async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn Database
             // for an access token. `ping` is what proves the credentials
             // actually work, so a bad key fails at startup rather than on
             // the first query.
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
+        }
+        BackendConfig::MongoDb(cfg) => {
+            // `connect` parses the URI (and resolves SRV) but opens no socket
+            // for a plain `mongodb://`, so without this ping an unreachable
+            // server would only surface on the first query.
+            let adapter = MongoAdapter::connect(cfg).await?;
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }
