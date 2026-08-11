@@ -9705,3 +9705,76 @@ a much larger surface to get wrong than the driver is to depend on.
   `tests/live_mongodb.rs`, ignored by default and pointed at a local container.
   Unit tests prove the crate sends what we think MongoDB accepts; that file
   proves MongoDB accepts it.
+
+---
+
+## ADR-0097 — `DBBOARD_CONFIG_DIR` moves the whole profile, or nothing
+
+**Status**: Accepted · 2026-08-11
+
+### Context
+
+There was no supported way to start dbboard against a config directory
+other than the per-user one. That is fine until you need to show the app
+to somebody: a screenshot of dbboard as installed puts the connection
+list on screen, and the connection list renders a `user@host` label
+holding a real database host. The download page therefore says nothing
+about what the app looks like, which is the one thing a download page is
+for.
+
+The obvious workaround does not work on Windows. `directories`, which
+resolves the config dir, reads the known-folder API rather than
+`%APPDATA%`; launching a second instance with the environment variable
+redirected still opens the real profile. Verified empirically, not
+assumed.
+
+Five files are involved, and each one was doing its own `ProjectDirs`
+lookup: `connections.toml`, `history.jsonl`, `ai-providers.toml`,
+`annotations.toml`, `ui-settings.toml`.
+
+### Decision
+
+1. **One env var, `DBBOARD_CONFIG_DIR`, resolved in one place.**
+   `store::config_dir()` is the only `ProjectDirs` call site left; the
+   other four modules route through it.
+
+2. **All five files move together, or the override is worse than
+   nothing.** A half-honoured override would sit a demo profile's
+   connections next to the real profile's query history — a screenshot
+   taken in good faith would then leak the very thing the override was
+   added to hide. The integration test asserts togetherness rather than
+   the variable, because that is the property the safety rests on.
+
+3. **A blank value is not a config dir.** `""`, `"   "` and `"\t"` all
+   fall back to the per-user lookup. An exported-but-empty variable
+   would otherwise resolve to the process's working directory and write
+   credentials wherever the app happened to be started from — the
+   failure mode is silent and the file is a credential store, so it is
+   worth three lines to refuse.
+
+4. **The env-reading is separated from the decision-making.**
+   `config_dir_from(Option<&str>)` is pure and carries the unit tests;
+   `config_dir()` is the two-line wrapper that reads the environment.
+   `unsafe_code` is `forbid` workspace-wide and `std::env::set_var` is
+   unsafe as of Rust 2024, so a test that sets the variable cannot
+   compile — and `forbid` is not something to weaken for a test's
+   convenience. Splitting the function tests the same logic without
+   mutating global state, which is the better shape regardless.
+
+5. **The keychain is deliberately *not* redirected.** Secrets are keyed
+   by `(KEYRING_SERVICE, connection id + field)`. A demo profile has its
+   own ids and therefore no entries to find; nothing in it can reach the
+   real profile's secrets. Adding a keychain namespace would be a second
+   mechanism to get wrong for no gain.
+
+### Consequences
+
+- dbboard can be launched with an empty profile, which makes the
+  download-page screenshots possible without hand-editing files.
+- The override is an escape hatch, not a supported multi-profile
+  feature: nothing in the UI shows which config dir is live, so a user
+  who sets it permanently has no in-app reminder. If profiles ever
+  become a real feature, this variable is the seam to build on.
+- Anyone adding a sixth per-user file must route it through
+  `store::config_dir()`. The integration test does not know about files
+  it was not told about, so this stays a review obligation.

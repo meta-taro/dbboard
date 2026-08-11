@@ -692,7 +692,11 @@ You can run these manually at any time.
 ### Security checks
 
 dbboard creates `connections.toml` and `history.jsonl` under your
-per-user config dir. On Unix both land as mode `0o600`; on Windows
+per-user config dir (`DBBOARD_CONFIG_DIR=<path>` replaces it — every
+file dbboard owns moves together, which is how you start it with an
+empty profile for a demo or a screenshot; see
+[`docs/connections.md`](docs/connections.md#pointing-dbboard-at-a-different-config-dir)).
+On Unix both land as mode `0o600`; on Windows
 they inherit the user-only DACL of `%APPDATA%\Roaming\<user>\`. If
 the resolved config dir lives under a cloud-sync vendor folder
 (OneDrive Known Folder Move, iCloud Drive, Dropbox, Google Drive),
