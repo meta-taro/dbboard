@@ -34,13 +34,19 @@ At startup the binary picks a backend in this order:
    pg-wire flavor; the adapter is labelled `mysql`. See
    [ADR-0068](decisions.md)).
 6. The `DBBOARD_D1_*` trio (account id + database id + token).
-7. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
-8. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
-   missing id aborts startup — dbboard refuses to silently fall back to
-   a different backend than the user asked for.
-9. If `connections.toml` contains exactly one entry, that one is
-   auto-selected.
-10. Otherwise an in-memory Turso/libSQL database (`:memory:`).
+7. `DBBOARD_FIRESTORE_PROJECT_ID` (Cloud Firestore over REST, read-only
+   — see [ADR-0091](decisions.md), [ADR-0093](decisions.md); the adapter
+   is labelled `firestore`).
+8. `DBBOARD_MONGODB_URI` (MongoDB over the official driver, read-only —
+   see [ADR-0095](decisions.md), [ADR-0096](decisions.md); the adapter is
+   labelled `mongodb`).
+9. `DBBOARD_TURSO_PATH` (explicit local libSQL path).
+10. `DBBOARD_CONNECTION=<id>` matched against `connections.toml`. A
+    missing id aborts startup — dbboard refuses to silently fall back to
+    a different backend than the user asked for.
+11. If `connections.toml` contains exactly one entry, that one is
+    auto-selected.
+12. Otherwise an in-memory Turso/libSQL database (`:memory:`).
 
 `DBBOARD_AURORA_DSQL_URL`, `DBBOARD_NEON_URL`, and
 `DBBOARD_SUPABASE_URL` all outrank `DBBOARD_PG_URL` because they carry
@@ -135,6 +141,34 @@ database               = "postgres"
 username               = "admin"
 access_key_id          = "AKIAEXAMPLE1234567890"
 keyring_secret_key_ref = "dbboard.aurora-dsql-iam-prod.secret_key"
+
+[[connections]]
+id                          = "firestore-prod"
+name                        = "Firestore (prod)"
+kind                        = "firestore"
+project_id                  = "my-gcp-project"
+# Optional. Absent means Firestore's own default database, "(default)".
+# database_id               = "analytics"
+# Optional REST root override; absent means production. This is how the
+# local emulator is reached.
+# base_url                  = "http://127.0.0.1:8080/v1"
+# Optional — and the only optional keychain reference in the file. Absent
+# means "this connection points at the emulator, which wants no
+# credential", not "not filled in yet". See ADR-0094.
+keyring_service_account_ref = "dbboard.firestore-prod.service_account"
+
+[[connections]]
+id              = "orders-mongo"
+name            = "Orders (MongoDB)"
+kind            = "mongodb"
+# The whole "mongodb://…" or "mongodb+srv://…" URI lives in the keychain,
+# because the password rides in its authority. Same secret shape as the
+# Postgres family. See ADR-0096.
+keyring_url_ref = "dbboard.orders-mongo.url"
+# Optional. Omit it when the URI's path already names a database
+# ("mongodb://host/orders"). When neither names one the adapter refuses
+# rather than guessing.
+database        = "orders"
 ```
 
 ### Fields
@@ -145,7 +179,8 @@ keyring_secret_key_ref = "dbboard.aurora-dsql-iam-prod.secret_key"
   are a hard error at load time.
 - `name` — display label for the (future) connection picker.
 - `kind` — `"turso"`, `"d1"`, `"postgres"`, `"neon"`, `"supabase"`,
-  `"aurora-dsql"`, `"aurora-dsql-iam"`, or `"mysql"`. `"neon"`,
+  `"aurora-dsql"`, `"aurora-dsql-iam"`, `"mysql"`, `"firestore"`, or
+  `"mongodb"`. `"neon"`,
   `"supabase"`, `"aurora-dsql"`, and `"postgres"` share the same wire
   shape (the keyring carries a `postgres://…` URL either way); the only
   difference is the runtime adapter label, which the connection picker and
@@ -156,6 +191,13 @@ keyring_secret_key_ref = "dbboard.aurora-dsql-iam-prod.secret_key"
   fields inline (`endpoint`, `region`, `database`, `username`,
   `access_key_id`) and stores only the AWS secret access key in the
   keychain, because dbboard mints the IAM token itself (see below).
+  `"firestore"` and `"mongodb"` are the two document stores, both
+  read-only (ADR-0091). `"firestore"` carries `project_id` inline and is
+  the one kind whose keychain reference is *optional* — absent means the
+  connection points at the emulator, which wants no credential at all
+  (ADR-0094). `"mongodb"` stores a `mongodb://…` URI in the keychain
+  exactly like the SQL families, with an optional inline `database` for
+  when the URI's path does not name one.
 - `keyring_*_ref` — opaque account string used to look up the secret
   in the OS keychain. Pick something stable and recognisable; the
   string is what shows in the OS UI alongside the constant service
@@ -270,8 +312,15 @@ can reach it through an **SSH tunnel**: dbboard opens a local port
 forward over SSH, then rewrites the connection URL's host/port to the
 local end of that forward before the adapter dials. The tunnel is a
 cross-cutting `ssh` sub-table on any connection whose `kind` supports it
-(`postgres`, `neon`, `supabase`, `aurora-dsql`, `mysql`); the D1 and
-Turso kinds do not. See [ADR-0069](decisions.md) for the design.
+(`postgres`, `neon`, `supabase`, `aurora-dsql`, `mysql`). The rest refuse
+it rather than ignoring it, for two different reasons: `turso` is a local
+file and `d1`, `firestore` and `aurora-dsql-iam` are HTTPS APIs or mint
+their own endpoint, so none of them dial a `host:port` a forward could
+stand in for. `mongodb` is refused despite being TCP — one URI may list
+several hosts and `mongodb+srv://` discovers a whole replica set from
+DNS, so rewriting a single host would leave the driver failing over to
+members the tunnel never covered: working at first, then silently not
+(ADR-0096). See [ADR-0069](decisions.md) for the design.
 
 ```toml
 [[connections]]
