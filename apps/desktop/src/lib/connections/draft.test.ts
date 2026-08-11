@@ -455,7 +455,7 @@ describe('isEditableInApp', () => {
 });
 
 describe('CONNECTION_KINDS', () => {
-  it('lists all eight kinds with turso first', () => {
+  it('lists all nine kinds with turso first', () => {
     expect(CONNECTION_KINDS).toEqual([
       'turso',
       'd1',
@@ -465,7 +465,89 @@ describe('CONNECTION_KINDS', () => {
       'supabase',
       'aurora_dsql',
       'firestore',
+      'mongodb',
     ]);
+  });
+});
+
+// MongoDB (ADR-0096). The URI is the whole secret — the password rides in its
+// authority — so it is one masked field rather than the host/user/password
+// parts the Postgres family is entered as.
+describe('mongodb', () => {
+  const mongo = {
+    kind: 'mongodb' as const,
+    id: 'mg',
+    name: 'MG',
+    uri: 'mongodb://app:hunter2@127.0.0.1:27117',
+  };
+
+  it('asks for the uri and the database', () => {
+    expect(fieldsForKind('mongodb')).toEqual(['uri', 'database']);
+  });
+
+  it('treats the whole uri as the secret', () => {
+    expect(secretFields('mongodb')).toEqual(['uri']);
+  });
+
+  // The URI may name the database in its path, so the explicit field is
+  // optional — the adapter refuses a connection that names neither.
+  it('requires only the uri on add, and nothing kind-specific on edit', () => {
+    expect(requiredFields('mongodb', 'add')).toEqual(['id', 'name', 'uri']);
+    expect(requiredFields('mongodb', 'edit')).toEqual(['name']);
+  });
+
+  it('has no DSN parts to fill in', () => {
+    expect(validateDsnFields(form({ kind: 'mongodb', use_url: false }))).toEqual([]);
+  });
+
+  // Not "there is nothing to forward" — MongoDB is TCP. A URI may list several
+  // hosts and `mongodb+srv://` discovers a replica set from DNS, so rewriting
+  // one host to a loopback forward leaves the driver failing over to
+  // untunnelled members.
+  it('cannot front an SSH tunnel', () => {
+    expect(supportsSshTunnel('mongodb')).toBe(false);
+  });
+
+  it('sends the uri on add with a blank database collapsed to null', () => {
+    expect(buildKindInput(form({ ...mongo, database: '  ' }))).toEqual({
+      kind: 'mongodb',
+      uri: 'mongodb://app:hunter2@127.0.0.1:27117',
+      database: null,
+    });
+  });
+
+  it('sends the database on add when it is given', () => {
+    expect(buildKindInput(form({ ...mongo, database: 'shop' }))).toMatchObject({
+      database: 'shop',
+    });
+  });
+
+  // Blank is "keep the stored URI" on edit, exactly as it is for the D1 token.
+  it('edit sends a blank uri as null so the backend keeps the stored one', () => {
+    expect(buildKindEditInput(form({ ...mongo, uri: '', database: 'shop' }))).toEqual({
+      kind: 'mongodb',
+      uri: null,
+      database: 'shop',
+    });
+  });
+
+  it('edit sends a retyped uri verbatim', () => {
+    expect(buildKindEditInput(form(mongo))).toMatchObject({
+      uri: 'mongodb://app:hunter2@127.0.0.1:27117',
+    });
+  });
+
+  it('seeds the edit form from the stored database, leaving the uri blank', () => {
+    const f = formForEdit('mg', 'MG', { kind: 'mongodb', database: 'shop' });
+    expect(f.kind).toBe('mongodb');
+    expect(f.database).toBe('shop');
+    // The URI is never sent back (ADR-0016).
+    expect(f.uri).toBe('');
+    expect(validate(f, 'edit')).toEqual([]);
+  });
+
+  it('opens a connection whose database comes from the uri with the box empty', () => {
+    expect(formForEdit('mg', 'MG', { kind: 'mongodb', database: null }).database).toBe('');
   });
 });
 

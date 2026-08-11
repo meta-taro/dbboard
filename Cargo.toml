@@ -12,6 +12,7 @@ members = [
     "crates/dbboard-d1",
     "crates/dbboard-firestore",
     "crates/dbboard-mcp",
+    "crates/dbboard-mongodb",
     "crates/dbboard-mysql",
     "crates/dbboard-openai",
     "crates/dbboard-postgres",
@@ -21,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
@@ -65,6 +66,12 @@ dbboard-mysql = { path = "crates/dbboard-mysql" }
 # adapter. Read-only is structural — the crate builds no URL that can
 # write, so there is no classifier to get wrong (ADR-0091).
 dbboard-firestore = { path = "crates/dbboard-firestore" }
+# MongoDB adapter (issue 0020). Firestore's read-only guarantee is structural;
+# this one cannot be, because every MongoDB command travels the same
+# `runCommand` path. So the crate leads with a classifier — an allowlist of
+# read commands that also walks the document for writing aggregation stages —
+# and the adapter is built on top of it, not beside it.
+dbboard-mongodb = { path = "crates/dbboard-mongodb" }
 # SSH local-forward tunnel (ADR-0069): a pure-Rust SSH client (russh) that
 # opens a bastion-gated database's port on a loopback address so the ordinary
 # TCP adapters connect through it. Leaf crate — depends on russh + tokio only,
@@ -95,6 +102,17 @@ russh = { version = "0.62", default-features = false, features = ["ring", "flate
 # libsql core only — no remote/sync/replication/tls. Phase 1.5 will
 # widen this when the local HTTP backend introduces remote Turso.
 libsql = { version = "0.9", default-features = false, features = ["core"] }
+# The official MongoDB driver (issue 0020, ADR-0096). Its default TLS backend
+# is `rustls-tls` = rustls/ring, which is the pure-Rust stack ADR-0034 asks
+# for; `rustls-tls-aws-lc` is the sibling that would pull `aws-lc-sys` and is
+# never selected. The driver offers no native-roots option, so unlike reqwest
+# and sqlx above it trusts the webpki bundle — recorded as a known gap in
+# ADR-0096 rather than papered over. `redact-errors` replaces server addresses
+# and hostnames in driver error strings with `<redacted>`; those strings reach
+# the UI, and this project's hosts are business-identifying (ADR-0055). It is
+# the same call reqwest's `without_url()` makes in the Firestore adapter: the
+# caller already knows which connection it picked.
+mongodb = { version = "3.8", features = ["redact-errors"] }
 # WHATWG URL parser (already in the tree via reqwest). Used by the
 # connection factory to extract a database URL's host:port as the SSH
 # forward target and to rewrite it to the loopback forward address

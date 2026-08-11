@@ -451,6 +451,15 @@ enum KindInput {
         base_url: Option<String>,
         service_account: Option<String>,
     },
+    // snake_case would emit `mongo_db`; pin the tag to `mongodb` to match
+    // `ConnectionKind::MongoDb`'s discriminator (ADR-0096).
+    #[serde(rename = "mongodb")]
+    MongoDb {
+        /// The whole URI is the secret — the password rides in its authority —
+        /// so it is submitted as one field rather than host/user/password parts.
+        uri: String,
+        database: Option<String>,
+    },
 }
 
 /// Edit-time kind. Secret fields are `Option`: absent or blank means
@@ -493,6 +502,13 @@ enum KindEditInput {
         base_url: Option<String>,
         use_emulator: bool,
         service_account: Option<String>,
+    },
+    /// `MongoDB` (ADR-0096). Two states, not Firestore's three: a MongoDB
+    /// connection always has a URI, so there is no "drop the credential" mode.
+    #[serde(rename = "mongodb")]
+    MongoDb {
+        uri: Option<String>,
+        database: Option<String>,
     },
 }
 
@@ -702,6 +718,12 @@ fn to_add_draft(
             // seeding an empty-string secret that later reads as a real one.
             service_account: none_if_blank(service_account),
         },
+        KindInput::MongoDb { uri, database } => ConnectionKindDraft::MongoDb {
+            uri,
+            // Blank means "the URI's path names it"; an empty-string database
+            // would instead be written to the TOML as a real, unusable name.
+            database: none_if_blank(database),
+        },
     };
     ConnectionDraft {
         mcp_write,
@@ -722,7 +744,9 @@ fn to_add_draft(
 /// holds it.
 ///
 /// Kinds with no DSN, and a blank URL (the URL-mode "keep the whole secret"
-/// signal), pass through untouched.
+/// signal), pass through untouched. MongoDB is among them despite carrying a
+/// URI: its edit form shows the URI whole rather than in parts, so there is no
+/// password to put back — grafting one would rewrite what the user just typed.
 fn graft_url<F>(kind: KindEditInput, graft: F) -> Result<KindEditInput, String>
 where
     F: Fn(&str) -> Result<String, String>,
@@ -800,6 +824,10 @@ fn to_edit_draft(
                 }
             },
         },
+        KindEditInput::MongoDb { uri, database } => ConnectionKindEditDraft::MongoDb {
+            uri: secret_field(uri),
+            database: none_if_blank(database),
+        },
     };
     ConnectionEditDraft {
         mcp_write,
@@ -842,6 +870,13 @@ enum EditFieldsDto {
         database_id: Option<String>,
         base_url: Option<String>,
         use_emulator: bool,
+    },
+    /// The URI is absent for the usual reason — it is the secret (ADR-0096).
+    /// Only the explicit database name, which the TOML stores in the clear,
+    /// comes back.
+    #[serde(rename = "mongodb")]
+    MongoDb {
+        database: Option<String>,
     },
 }
 
@@ -990,6 +1025,9 @@ fn connection_edit_fields(
             database_id: database_id.clone(),
             base_url: base_url.clone(),
             use_emulator: keyring_service_account_ref.is_none(),
+        },
+        ConnectionKind::MongoDb { database, .. } => EditFieldsDto::MongoDb {
+            database: database.clone(),
         },
         ConnectionKind::AuroraDsqlIam { .. } => {
             return Err(
@@ -1663,6 +1701,86 @@ mod tests {
             ),
             "the emulator toggle wins over a typed credential"
         );
+    }
+
+    #[test]
+    fn to_add_draft_maps_a_mongodb_uri() {
+        let draft = to_add_draft(
+            "mg".to_string(),
+            "MG".to_string(),
+            KindInput::MongoDb {
+                uri: "mongodb://app:hunter2@127.0.0.1:27117".to_string(),
+                database: Some("  ".to_string()),
+            },
+            None,
+            false,
+            None,
+        );
+        match draft.kind {
+            ConnectionKindDraft::MongoDb { uri, database } => {
+                assert_eq!(uri, "mongodb://app:hunter2@127.0.0.1:27117");
+                // The URI may name the database in its path, so blank means
+                // "let the URI decide" — not an empty database name.
+                assert!(database.is_none(), "blank database collapses to None");
+            }
+            _ => panic!("expected a MongoDB draft"),
+        }
+    }
+
+    #[test]
+    fn to_edit_draft_mongodb_maps_both_uri_states() {
+        let with = |uri: Option<&str>| {
+            to_edit_draft(
+                "MG".to_string(),
+                KindEditInput::MongoDb {
+                    uri: uri.map(str::to_string),
+                    database: Some("shop".to_string()),
+                },
+                SshEditInput::Keep,
+                None,
+                None,
+            )
+            .kind
+        };
+        assert!(
+            matches!(
+                with(Some("   ")),
+                ConnectionKindEditDraft::MongoDb {
+                    uri: SecretField::Keep,
+                    ..
+                }
+            ),
+            "blank → keep the stored URI"
+        );
+        assert!(
+            matches!(
+                with(Some("mongodb://other:27017")),
+                ConnectionKindEditDraft::MongoDb {
+                    uri: SecretField::Set(v),
+                    database,
+                } if v == "mongodb://other:27017" && database.as_deref() == Some("shop")
+            ),
+            "a supplied URI overwrites"
+        );
+    }
+
+    #[test]
+    fn graft_url_leaves_a_mongodb_uri_alone() {
+        // `graft` exists for the DSN-parts form, which is pg-wire shaped. A
+        // Mongo URI is edited whole, so grafting a stored password into it
+        // would rewrite a URI the user just typed in full.
+        let out = graft_url(
+            KindEditInput::MongoDb {
+                uri: Some("mongodb://app@127.0.0.1:27117".to_string()),
+                database: None,
+            },
+            |_| panic!("graft must not be called for MongoDB"),
+        )
+        .expect("graft_url");
+        assert!(matches!(
+            out,
+            KindEditInput::MongoDb { uri: Some(u), .. } if u == "mongodb://app@127.0.0.1:27117"
+        ));
     }
 
     #[test]

@@ -632,7 +632,7 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       placeholders (ADR-0044 §Future).
 - [ ] Linux packaging (AppImage / `.deb`)
 
-## Phase 6 — Document stores (MongoDB, Firestore)
+## Phase 6 — Document stores (MongoDB, Firestore) ✅ done (2026-08-11)
 
 Committed, not stretch. Every adapter so far speaks SQL; these two do not, and
 the direction is fixed in [ADR-0091](decisions.md): they implement the same
@@ -651,12 +651,12 @@ attributable to one change:
       the safety side: the REST API splits `:runQuery` / `:batchGet` from
       `:commit`, so read-only is enforced by which endpoint the adapter is
       allowed to call, with no query string to classify.
-- [ ] **MongoDB adapter** (`dbboard-mongodb`) — `runCommand` accepts any verb,
+- [x] **MongoDB adapter** (`dbboard-mongodb`) — `runCommand` accepts any verb,
       so it needs an explicit allowlist of read commands plus a rejection of
       the writing aggregation stages (`$out`, `$merge`), unit-tested against
       adversarial input to the same bar as `read_only.rs`, before it is exposed
       to the MCP server.
-- [ ] **Sampled schema** — `describe_table` over a collection reports the field
+- [x] **Sampled schema** — `describe_table` over a collection reports the field
       union from a bounded sample, together with the sample size and per-field
       frequency, rendered so it is visibly an inference and not a declared
       schema.

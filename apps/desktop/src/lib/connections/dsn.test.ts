@@ -30,8 +30,11 @@ describe('usesDsnFields', () => {
     },
   );
 
-  it.each(['turso', 'd1', 'firestore'] as ConnectionKind[])(
-    'is false for %s, which has no host:port to describe',
+  // MongoDB is the one entry here that *does* have a host:port — but a URI may
+  // carry several of them, plus a replica-set name and options the five boxes
+  // cannot express, so it is entered whole rather than composed.
+  it.each(['turso', 'd1', 'firestore', 'mongodb'] as ConnectionKind[])(
+    'is false for %s, which the five DSN boxes cannot describe',
     (kind) => {
       expect(usesDsnFields(kind)).toBe(false);
     },

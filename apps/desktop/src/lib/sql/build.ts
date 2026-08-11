@@ -66,7 +66,7 @@ export function countRows(
  *  because a dialect is a *spelling* difference, and Firestore's is not one:
  *  it runs a `StructuredQuery` in JSON (ADR-0093), so no amount of quoting
  *  makes `SELECT * FROM …` reach it. */
-const STRUCTURED_QUERY_KINDS = ['firestore'];
+const STRUCTURED_QUERY_KINDS = ['firestore', 'mongodb'];
 
 /** Whether `kind` states its queries as a `StructuredQuery` instead of SQL.
  *
@@ -92,6 +92,18 @@ export function structuredQuery(table: TableInfo, n: number): string {
   return `{\n  "from": [{ "collectionId": ${collection} }],\n  "limit": ${limit}\n}`;
 }
 
+/** A bounded MongoDB `find` command, as the JSON text the editor shows.
+ *
+ *  Also JSON, but not Firestore's JSON: the adapter dispatches on the first
+ *  key, so `find` and `from` are two different commands and one builder cannot
+ *  serve both. `table.schema` is ignored for the same reason as above — the
+ *  collection name is the whole identity. */
+export function mongoFindCommand(table: TableInfo, n: number): string {
+  const limit = Math.max(1, Math.floor(n));
+  const collection = JSON.stringify(table.name);
+  return `{\n  "find": ${collection},\n  "limit": ${limit}\n}`;
+}
+
 /** The "show me this table's first rows" query for a connection of `kind`,
  *  in whatever language that connection speaks. */
 export function browseQuery(
@@ -99,19 +111,22 @@ export function browseQuery(
   n: number,
   kind: string | undefined,
 ): string {
-  return usesStructuredQuery(kind)
-    ? structuredQuery(table, n)
-    : selectTopN(table, n, dialectForKind(kind));
+  if (kind === 'firestore') return structuredQuery(table, n);
+  if (kind === 'mongodb') return mongoFindCommand(table, n);
+  return selectTopN(table, n, dialectForKind(kind));
 }
 
 /** The "how big is this?" query, or `null` where the connection has no way to
  *  answer it. Firestore counts through `:runAggregationQuery`, a separate
  *  endpoint the read-only adapter does not implement, so the caller drops the
- *  affordance instead of offering one that can only fail. */
+ *  affordance instead of offering one that can only fail. MongoDB does have
+ *  one — `count` is on the adapter's read allowlist — so this branches per
+ *  kind rather than dropping the action for structured queries as a class. */
 export function countQuery(
   table: TableInfo,
   kind: string | undefined,
 ): string | null {
-  if (usesStructuredQuery(kind)) return null;
+  if (kind === 'firestore') return null;
+  if (kind === 'mongodb') return `{ "count": ${JSON.stringify(table.name)} }`;
   return countRows(table, dialectForKind(kind));
 }
