@@ -9,6 +9,49 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Added
+
+- **`dbboard-mongodb`**, the second non-SQL adapter
+  ([ADR-0095](docs/decisions.md), [ADR-0096](docs/decisions.md), issue
+  0020). `ping`, `list_tables`, `query` and `describe_table` against
+  MongoDB through the official driver. The query text is a command document
+  as JSON — `{"find": "users", "limit": 10}` — which is MongoDB's own native
+  form, with no translation layer, and results come back as ordinary rows
+  with nested documents in `Value::Json` cells. `describe_table` samples a
+  collection and reports each field with the sample it was inferred from
+  (`string (12/20 sampled)`), because a collection declares no schema.
+
+  Unlike Firestore, read-only here cannot be structural: every MongoDB
+  command travels the same `runCommand` path, so the guarantee is a
+  classifier. It allowlists both the commands and, per command, their
+  *options* — so `{"find": …, "insert": …}` is refused because `insert` is
+  not a `find` option, rather than because someone remembered it writes. It
+  walks the whole document for `$out` and `$merge` at any depth, refuses
+  server-side JavaScript deliberately, and never quotes the caller's command
+  back in a refusal. Verified end-to-end against MongoDB 8, including that a
+  refused write leaves the collection untouched.
+- **MongoDB is selectable in the desktop client** (issue 0020). The whole
+  connection URI is one masked field rather than the five DSN boxes,
+  because the password rides in its authority — it goes to the OS keychain
+  like every other secret and is never read back. *Database* may be left
+  blank when the URI's path already names one. The sidebar generates a
+  bounded `{"find": …}` command instead of `SELECT * … LIMIT`, and keeps
+  *Count rows*, which MongoDB answers through a command the read allowlist
+  already permits.
+- **MongoDB connections are usable from the MCP server** (issue 0020). The
+  tool descriptions say that `mongodb` takes a command document rather than
+  SQL, with an example, so an agent told only "SQL" does not send a
+  `SELECT` and read the parse error as its own mistake.
+
+### Changed
+
+- **MongoDB connections refuse an SSH tunnel** ([ADR-0096](docs/decisions.md)).
+  One URI may name several hosts and `mongodb+srv://` discovers a whole
+  replica set from DNS, so rewriting a single host to a loopback forward
+  leaves the driver failing over to members the tunnel never covered — it
+  appears to work, then silently stops. Refusing at configuration time is
+  the honest failure.
+
 ## [0.6.0] — 2026-08-10
 
 The first database that is not a SQL database. A Cloud Firestore
@@ -62,7 +105,6 @@ document has somewhere to land.
   mistake. `list_connections` now names every kind the server can return,
   guarded by a test against the source rather than a hand-kept list: that
   list had already gone stale twice.
-
 ### Fixed
 
 - Documentation described a write policy the code does not have. `run_write`

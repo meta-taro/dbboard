@@ -138,6 +138,13 @@ pub enum ConnectionKindDraft {
         base_url: Option<String>,
         service_account: Option<String>,
     },
+    /// `MongoDB` (ADR-0096). The whole URI is the secret — the password rides
+    /// in its authority — so it is the only field that reaches the keychain.
+    /// `database` is optional: the URI may name it in its path.
+    MongoDb {
+        uri: String,
+        database: Option<String>,
+    },
 }
 
 /// User-supplied draft for **editing** an existing connection.
@@ -261,6 +268,12 @@ pub enum ConnectionKindEditDraft {
         database_id: Option<String>,
         base_url: Option<String>,
         service_account: FirestoreCredentialField,
+    },
+    /// `MongoDB` (ADR-0096). Two states are enough for the URI, unlike
+    /// Firestore's three: a `MongoDB` connection always has one.
+    MongoDb {
+        uri: SecretField,
+        database: Option<String>,
     },
 }
 
@@ -846,6 +859,23 @@ impl ConnectionAdmin {
         Ok(())
     }
 
+    /// The URL-backed kinds again (see `url_backed_add`): commit the secret only
+    /// when it was retyped, then rebuild the variant around the ref it already
+    /// had. The ref is never re-minted on edit — a new one would orphan the
+    /// keychain entry the connection is still pointing at.
+    fn apply_url_edit(
+        &self,
+        keyring_url_ref: &str,
+        url: SecretField,
+        applied: &mut Vec<AppliedSecretWrite>,
+        build: impl FnOnce(String) -> ConnectionKind,
+    ) -> Result<ConnectionKind, ConfigError> {
+        if let SecretField::Set(new_value) = url {
+            self.apply_secret_write(keyring_url_ref, &new_value, applied)?;
+        }
+        Ok(build(keyring_url_ref.to_string()))
+    }
+
     fn apply_update_kind(
         &self,
         id: &str,
@@ -882,52 +912,31 @@ impl ConnectionAdmin {
             (
                 ConnectionKind::Postgres { keyring_url_ref },
                 ConnectionKindEditDraft::Postgres { url },
-            ) => {
-                if let SecretField::Set(new_value) = url {
-                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
-                }
-                ConnectionKind::Postgres {
-                    keyring_url_ref: keyring_url_ref.clone(),
-                }
-            }
+            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                ConnectionKind::Postgres { keyring_url_ref }
+            })?,
             (ConnectionKind::MySql { keyring_url_ref }, ConnectionKindEditDraft::MySql { url }) => {
-                if let SecretField::Set(new_value) = url {
-                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
-                }
-                ConnectionKind::MySql {
-                    keyring_url_ref: keyring_url_ref.clone(),
-                }
+                self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                    ConnectionKind::MySql { keyring_url_ref }
+                })?
             }
             (ConnectionKind::Neon { keyring_url_ref }, ConnectionKindEditDraft::Neon { url }) => {
-                if let SecretField::Set(new_value) = url {
-                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
-                }
-                ConnectionKind::Neon {
-                    keyring_url_ref: keyring_url_ref.clone(),
-                }
+                self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                    ConnectionKind::Neon { keyring_url_ref }
+                })?
             }
             (
                 ConnectionKind::Supabase { keyring_url_ref },
                 ConnectionKindEditDraft::Supabase { url },
-            ) => {
-                if let SecretField::Set(new_value) = url {
-                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
-                }
-                ConnectionKind::Supabase {
-                    keyring_url_ref: keyring_url_ref.clone(),
-                }
-            }
+            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                ConnectionKind::Supabase { keyring_url_ref }
+            })?,
             (
                 ConnectionKind::AuroraDsql { keyring_url_ref },
                 ConnectionKindEditDraft::AuroraDsql { url },
-            ) => {
-                if let SecretField::Set(new_value) = url {
-                    self.apply_secret_write(keyring_url_ref, &new_value, &mut applied)?;
-                }
-                ConnectionKind::AuroraDsql {
-                    keyring_url_ref: keyring_url_ref.clone(),
-                }
-            }
+            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                ConnectionKind::AuroraDsql { keyring_url_ref }
+            })?,
             (
                 ConnectionKind::Firestore {
                     keyring_service_account_ref,
@@ -940,6 +949,17 @@ impl ConnectionAdmin {
                 draft,
                 &mut applied,
             )?,
+            (
+                ConnectionKind::MongoDb {
+                    keyring_url_ref, ..
+                },
+                ConnectionKindEditDraft::MongoDb { uri, database },
+            ) => self.apply_url_edit(keyring_url_ref, uri, &mut applied, |keyring_url_ref| {
+                ConnectionKind::MongoDb {
+                    keyring_url_ref,
+                    database,
+                }
+            })?,
             (_, _) => {
                 return Err(ConfigError::KindMismatch { id: id.to_string() });
             }
@@ -1248,7 +1268,9 @@ fn zeroize_secret_writes(writes: &mut [(String, String)]) {
 /// at. `Turso` has none; `D1`, `Postgres`, `MySql`, `Neon`, `Supabase`,
 /// and `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its
 /// AWS secret-key ref (its other fields are non-secret and live inline);
-/// `Firestore` carries one only when it is not pointed at the emulator.
+/// `Firestore` carries one only when it is not pointed at the emulator;
+/// `MongoDb` carries its URI ref (the password rides in the URI's authority,
+/// so the whole URI is the secret).
 fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
     match kind {
         ConnectionKind::Turso { .. } => Vec::new(),
@@ -1259,7 +1281,10 @@ fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
         | ConnectionKind::MySql { keyring_url_ref }
         | ConnectionKind::Neon { keyring_url_ref }
         | ConnectionKind::Supabase { keyring_url_ref }
-        | ConnectionKind::AuroraDsql { keyring_url_ref } => {
+        | ConnectionKind::AuroraDsql { keyring_url_ref }
+        | ConnectionKind::MongoDb {
+            keyring_url_ref, ..
+        } => {
             vec![keyring_url_ref.clone()]
         }
         ConnectionKind::AuroraDsqlIam {
@@ -1287,6 +1312,23 @@ struct AppliedSecretWrite {
     old_value: Option<String>,
 }
 
+/// The URL-backed kinds differ only in which variant they build: the secret is
+/// one string under the `url` ref, and the stored kind holds nothing but that
+/// ref. Sharing the body keeps them from drifting apart one paste at a time.
+fn url_backed_add(
+    id: &str,
+    url: String,
+    build: impl FnOnce(String) -> ConnectionKind,
+) -> (ConnectionKind, Vec<PendingSecretWrite>) {
+    let url_ref = keyring_ref(id, "url");
+    let kind = build(url_ref.clone());
+    let writes = vec![PendingSecretWrite {
+        key_ref: url_ref,
+        value: url,
+    }];
+    (kind, writes)
+}
+
 fn build_kind_for_add(
     id: &str,
     draft: ConnectionKindDraft,
@@ -1312,61 +1354,21 @@ fn build_kind_for_add(
             }];
             (kind, writes)
         }
-        ConnectionKindDraft::Postgres { url } => {
-            let url_ref = keyring_ref(id, "url");
-            let kind = ConnectionKind::Postgres {
-                keyring_url_ref: url_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: url_ref,
-                value: url,
-            }];
-            (kind, writes)
-        }
-        ConnectionKindDraft::MySql { url } => {
-            let url_ref = keyring_ref(id, "url");
-            let kind = ConnectionKind::MySql {
-                keyring_url_ref: url_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: url_ref,
-                value: url,
-            }];
-            (kind, writes)
-        }
-        ConnectionKindDraft::Neon { url } => {
-            let url_ref = keyring_ref(id, "url");
-            let kind = ConnectionKind::Neon {
-                keyring_url_ref: url_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: url_ref,
-                value: url,
-            }];
-            (kind, writes)
-        }
-        ConnectionKindDraft::Supabase { url } => {
-            let url_ref = keyring_ref(id, "url");
-            let kind = ConnectionKind::Supabase {
-                keyring_url_ref: url_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: url_ref,
-                value: url,
-            }];
-            (kind, writes)
-        }
-        ConnectionKindDraft::AuroraDsql { url } => {
-            let url_ref = keyring_ref(id, "url");
-            let kind = ConnectionKind::AuroraDsql {
-                keyring_url_ref: url_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: url_ref,
-                value: url,
-            }];
-            (kind, writes)
-        }
+        ConnectionKindDraft::Postgres { url } => url_backed_add(id, url, |keyring_url_ref| {
+            ConnectionKind::Postgres { keyring_url_ref }
+        }),
+        ConnectionKindDraft::MySql { url } => url_backed_add(id, url, |keyring_url_ref| {
+            ConnectionKind::MySql { keyring_url_ref }
+        }),
+        ConnectionKindDraft::Neon { url } => url_backed_add(id, url, |keyring_url_ref| {
+            ConnectionKind::Neon { keyring_url_ref }
+        }),
+        ConnectionKindDraft::Supabase { url } => url_backed_add(id, url, |keyring_url_ref| {
+            ConnectionKind::Supabase { keyring_url_ref }
+        }),
+        ConnectionKindDraft::AuroraDsql { url } => url_backed_add(id, url, |keyring_url_ref| {
+            ConnectionKind::AuroraDsql { keyring_url_ref }
+        }),
         ConnectionKindDraft::Firestore {
             project_id,
             database_id,
@@ -1391,6 +1393,12 @@ fn build_kind_for_add(
                 keyring_service_account_ref,
             };
             (kind, writes)
+        }
+        ConnectionKindDraft::MongoDb { uri, database } => {
+            url_backed_add(id, uri, |keyring_url_ref| ConnectionKind::MongoDb {
+                keyring_url_ref,
+                database,
+            })
         }
     }
 }
@@ -1547,6 +1555,125 @@ mod tests {
             } => keyring_service_account_ref.as_deref(),
             other => panic!("expected Firestore, got {other:?}"),
         }
+    }
+
+    fn mongodb_draft(id: &str, uri: &str, database: Option<&str>) -> ConnectionDraft {
+        ConnectionDraft {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("MongoDB {id}"),
+            kind: ConnectionKindDraft::MongoDb {
+                uri: uri.to_string(),
+                database: database.map(str::to_string),
+            },
+        }
+    }
+
+    #[test]
+    fn add_mongodb_routes_the_uri_through_the_secret_store() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(mongodb_draft(
+                "mongo-prod",
+                "mongodb://user:pw@127.0.0.1:27117",
+                Some("orders"),
+            ))
+            .expect("add mongodb");
+        match &admin.entries()[0].kind {
+            ConnectionKind::MongoDb {
+                keyring_url_ref,
+                database,
+            } => {
+                assert_eq!(keyring_url_ref, "dbboard.mongo-prod.url");
+                assert_eq!(database.as_deref(), Some("orders"));
+            }
+            other => panic!("expected MongoDb, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.mongo-prod.url").expect("uri"),
+            "mongodb://user:pw@127.0.0.1:27117"
+        );
+    }
+
+    /// The whole URI is the secret (the password rides in its authority), so
+    /// the TOML must never carry it — the same guarantee the Postgres kinds make.
+    #[test]
+    fn mongodb_toml_never_carries_the_uri() {
+        let (dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(mongodb_draft(
+                "mongo-prod",
+                "mongodb://user:hunter2@127.0.0.1:27117",
+                None,
+            ))
+            .expect("add mongodb");
+        let written = std::fs::read_to_string(dir.path().join("connections.toml")).expect("read");
+        assert!(!written.contains("hunter2"), "leaked: {written}");
+        assert!(written.contains(r#"kind = "mongodb""#), "got: {written}");
+    }
+
+    #[test]
+    fn update_mongodb_keeps_the_stored_uri_when_the_field_is_untouched() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(mongodb_draft("mongo", "mongodb://127.0.0.1:27117", None))
+            .expect("add mongodb");
+        admin
+            .update(
+                "mongo",
+                ConnectionEditDraft {
+                    name: "Renamed".to_string(),
+                    kind: ConnectionKindEditDraft::MongoDb {
+                        uri: SecretField::Keep,
+                        database: Some("orders".to_string()),
+                    },
+                    ssh: SshEditField::Keep,
+                    mcp_write: None,
+                    mcp_alias: None,
+                },
+            )
+            .expect("update mongodb");
+        assert_eq!(admin.entries()[0].name, "Renamed");
+        match &admin.entries()[0].kind {
+            ConnectionKind::MongoDb { database, .. } => {
+                assert_eq!(database.as_deref(), Some("orders"));
+            }
+            other => panic!("expected MongoDb, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.mongo.url").expect("uri"),
+            "mongodb://127.0.0.1:27117",
+            "a Keep must not disturb the stored URI"
+        );
+    }
+
+    #[test]
+    fn update_mongodb_overwrites_the_uri_when_set() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(mongodb_draft("mongo", "mongodb://127.0.0.1:27117", None))
+            .expect("add mongodb");
+        admin
+            .update(
+                "mongo",
+                ConnectionEditDraft {
+                    name: "MongoDB mongo".to_string(),
+                    kind: ConnectionKindEditDraft::MongoDb {
+                        uri: SecretField::Set("mongodb://127.0.0.1:27118".to_string()),
+                        database: None,
+                    },
+                    ssh: SshEditField::Keep,
+                    mcp_write: None,
+                    mcp_alias: None,
+                },
+            )
+            .expect("update mongodb");
+        assert_eq!(
+            secrets.get("dbboard.mongo.url").expect("uri"),
+            "mongodb://127.0.0.1:27118"
+        );
     }
 
     #[test]

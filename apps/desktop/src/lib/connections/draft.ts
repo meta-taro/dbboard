@@ -24,7 +24,8 @@ export type ConnectionKind =
   | 'neon'
   | 'supabase'
   | 'aurora_dsql'
-  | 'firestore';
+  | 'firestore'
+  | 'mongodb';
 
 // Order shown in the kind picker. `turso` first: it's the zero-credential
 // local/libSQL case and the friendliest default.
@@ -37,6 +38,7 @@ export const CONNECTION_KINDS: readonly ConnectionKind[] = [
   'supabase',
   'aurora_dsql',
   'firestore',
+  'mongodb',
 ] as const;
 
 // Every field the union of all kinds can carry. A given kind uses only a
@@ -53,7 +55,9 @@ export type FormField =
   | 'token'
   | 'url'
   | 'project_id'
-  | 'service_account';
+  | 'service_account'
+  | 'uri'
+  | 'database';
 
 // Kinds that can front an SSH tunnel (ADR-0069): the TCP/URL-bearing engines.
 // Turso (embedded/libSQL HTTP) and D1 (HTTP) have no host:port to forward, so
@@ -113,6 +117,8 @@ export interface ConnectionForm extends DsnParts {
   url: string; // postgres / neon / supabase / aurora_dsql secret
   project_id: string; // firestore
   service_account: string; // firestore secret (service-account JSON)
+  uri: string; // mongodb secret (the password rides in the URI's authority)
+  database: string; // mongodb (optional — the URI's path may name it instead)
   // Firestore only (ADR-0093): connect to the local emulator, which has no
   // credential at all. Distinct from a blank `service_account`, which on edit
   // means "keep the stored one" — so the choice needs its own flag, exactly as
@@ -198,6 +204,9 @@ export type EditFields = (
       base_url: string | null;
       use_emulator: boolean;
     }
+  // Only the explicit database name comes back; the URI is the secret
+  // (ADR-0096). `null` means the URI's path names it.
+  | { kind: 'mongodb'; database: string | null }
   | { kind: 'postgres' | 'mysql' | 'neon' | 'supabase' | 'aurora_dsql' }
 ) & {
   ssh?: SshPrefill | null;
@@ -233,6 +242,8 @@ export function emptyForm(): ConnectionForm {
     url: '',
     project_id: '',
     service_account: '',
+    uri: '',
+    database: '',
     use_emulator: false,
     use_url: false,
     ...emptyDsnParts(),
@@ -349,6 +360,8 @@ export function formForEdit(id: string, name: string, fields: EditFields): Conne
         base_url: fields.base_url ?? '',
         use_emulator: fields.use_emulator,
       };
+    case 'mongodb':
+      return { ...base, database: fields.database ?? '' };
     default:
       // Postgres-family: only name + the secret url are editable.
       return base;
@@ -382,6 +395,8 @@ export function fieldsForKind(kind: ConnectionKind): FormField[] {
       return ['account_id', 'database_id', 'base_url', 'token'];
     case 'firestore':
       return ['project_id', 'database_id', 'base_url', 'service_account'];
+    case 'mongodb':
+      return ['uri', 'database'];
     case 'postgres':
     case 'mysql':
     case 'neon':
@@ -396,9 +411,13 @@ export function fieldsForKind(kind: ConnectionKind): FormField[] {
 // database, and a blank `service_account` means the emulator — so Firestore is
 // the one kind that can be submitted on `add` with no credential at all.
 function optionalFields(kind: ConnectionKind): readonly FormField[] {
-  return kind === 'firestore'
-    ? (['base_url', 'database_id', 'service_account'] as const)
-    : (['base_url'] as const);
+  if (kind === 'firestore') {
+    return ['base_url', 'database_id', 'service_account'] as const;
+  }
+  // MongoDB's `database` is optional for a different reason than Firestore's:
+  // not a default to fall back on, but that the URI's own path may name it.
+  if (kind === 'mongodb') return ['base_url', 'database'] as const;
+  return ['base_url'] as const;
 }
 
 // Which of a kind's fields hold secret material (masked input; on edit a blank
@@ -409,6 +428,8 @@ export function secretFields(kind: ConnectionKind): FormField[] {
       return ['token'];
     case 'firestore':
       return ['service_account'];
+    case 'mongodb':
+      return ['uri'];
     case 'postgres':
     case 'mysql':
     case 'neon':
@@ -612,6 +633,13 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
         // the credential box rather than half-applying the user's choice.
         service_account: firestoreCredential(form),
       };
+    case 'mongodb':
+      return {
+        kind: 'mongodb',
+        uri: form.uri,
+        // Blank means "the URI's path names it" — not a database called "".
+        database: blank(form.database) ? null : form.database,
+      };
     case 'postgres':
     case 'mysql':
     case 'neon':
@@ -652,6 +680,14 @@ export function buildKindEditInput(form: ConnectionForm): Record<string, unknown
         base_url: blank(form.base_url) ? null : form.base_url,
         use_emulator: form.use_emulator,
         service_account: firestoreCredential(form),
+      };
+    case 'mongodb':
+      return {
+        kind: 'mongodb',
+        // Blank is "keep the stored URI", as it is for the D1 token. There is
+        // no emulator-style third state: a MongoDB connection always has one.
+        uri: blank(form.uri) ? null : form.uri,
+        database: blank(form.database) ? null : form.database,
       };
     case 'postgres':
     case 'mysql':

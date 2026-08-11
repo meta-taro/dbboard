@@ -13,18 +13,18 @@ distributed databases.
 dbboard is a learning and reference project that explores multi-database
 integration, local-first tooling, and pluggable AI-assisted workflows. It
 exposes a unified, native UI for Neon, Supabase, Aurora DSQL, MySQL,
-Turso/libSQL and Cloud Firestore, with an adapter-based architecture that
+Turso/libSQL, Cloud Firestore and MongoDB, with an adapter-based architecture that
 makes adding new databases straightforward.
 
 ## Status
 
-Pre-1.0; workspace at `0.4.0`. Phases 1, 3, and the Phase 4 AI assistant
+Pre-1.0. Phases 1, 3, 6, and the Phase 4 AI assistant
 are closed, and dbboard now doubles as an **MCP server** (`dbboard-mcp`)
 for external AI agents (ADR-0046) — read-only unless you opt a connection
 in, and never for privilege changes, `TRUNCATE` or `DROP` (ADR-0087).
 The Turso, Cloudflare
-D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, MySQL / MariaDB and
-Cloud Firestore adapters all ship over the local HTTP backend. See
+D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, MySQL / MariaDB,
+Cloud Firestore and MongoDB adapters all ship over the local HTTP backend. See
 [`CHANGELOG.md`](CHANGELOG.md) for what
 landed and [`docs/roadmap.md`](docs/roadmap.md) for the next phase.
 
@@ -66,8 +66,9 @@ and [ADR-0044](docs/decisions.md)).
 - AWS Aurora DSQL (managed PostgreSQL-wire)
 - MySQL / MariaDB (`mysql://…`, its own SQL dialect)
 - Cloud Firestore (document store, REST API — read-only)
+- MongoDB (document store, official driver — read-only)
 
-All eight adapters ship today. The four pg-wire flavors share the
+All nine adapters ship today. The four pg-wire flavors share the
 generic `dbboard-postgres` adapter (`sqlx` + `tls-rustls-ring`),
 differing only in the runtime label exposed by `DatabaseAdapter::id()`
 (`"postgres"`, `"neon"`, `"supabase"`, `"aurora-dsql"`) so the
@@ -92,6 +93,21 @@ build a write URL. It connects with a service-account key (stored in the OS
 keychain, never in `connections.toml`) or, with no credential at all, to the
 local emulator. See [ADR-0091](docs/decisions.md),
 [ADR-0093](docs/decisions.md), and [ADR-0094](docs/decisions.md).
+
+MongoDB is the second, and it needed a different guarantee. A query is a
+command document written as JSON — `{"find": "orders", "limit": 100}`, the
+same object the `mongosh` docs show. Every MongoDB command travels one
+`runCommand` path, so read-only cannot be structural the way Firestore's is:
+it is an **allowlist of commands and, per command, of their options**, which
+is why `{"find": …, "insert": …}` is refused for having an option `find`
+does not take rather than for a remembered verb. `$out` and `$merge` are
+walked for at any depth, and server-side JavaScript is refused outright.
+The whole connection URI is the secret and lives in the OS keychain.
+MongoDB connections cannot be tunnelled over SSH — one URI may name several
+hosts and `mongodb+srv://` discovers a replica set from DNS, so forwarding a
+single host leaves the driver failing over to members the tunnel never
+covered. See [ADR-0095](docs/decisions.md) and
+[ADR-0096](docs/decisions.md).
 
 Aurora DSQL also has a second connection kind, `aurora-dsql-iam`
 ([ADR-0036](docs/decisions.md)): instead of a manually supplied URL
@@ -169,7 +185,7 @@ with no configuration. The backend is chosen by, in priority order:
    (`DBBOARD_AURORA_DSQL_URL` > `DBBOARD_NEON_URL` >
    `DBBOARD_SUPABASE_URL` > `DBBOARD_PG_URL` > `DBBOARD_MYSQL_URL` >
    `DBBOARD_D1_*` > `DBBOARD_FIRESTORE_PROJECT_ID` >
-   `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors
+   `DBBOARD_MONGODB_URI` > `DBBOARD_TURSO_PATH`). Among the four pg-wire flavors
    the order is
    alphabetical — setting two flavored vars at once is unusual but
    the precedence is fully defined.
@@ -319,6 +335,36 @@ sidebar's *Select top 100* generates one for you:
   "limit": 100
 }
 ```
+
+### MongoDB
+
+| Variable | Purpose |
+|---|---|
+| `DBBOARD_MONGODB_URI` | The whole connection URI, `mongodb://…` or `mongodb+srv://…`. Selects the MongoDB backend. The password rides in the URI's authority, so treat the variable itself as the secret. |
+| `DBBOARD_MONGODB_DATABASE` | _(optional)_ Database name. Omit it when the URI's path already names one. |
+
+```sh
+# A local server started with:
+#   docker run -d --rm -p 27017:27017 mongo:8
+DBBOARD_MONGODB_URI=mongodb://127.0.0.1:27017 DBBOARD_MONGODB_DATABASE=test   pnpm tauri dev
+```
+
+`DBBOARD_SSH_*` is refused on a MongoDB backend rather than ignored: a URI
+may list several hosts and `mongodb+srv://` discovers a replica set from
+DNS, so a single-host forward would appear to work and then fail over to a
+member the tunnel does not front.
+
+Queries are command documents in JSON, not SQL — the sidebar's *Select top
+100* generates one for you:
+
+```json
+{ "find": "users", "limit": 100 }
+```
+
+Reads are the allowlist `aggregate`, `count`, `distinct`, `find`,
+`listCollections` and `listIndexes`; anything else, including a read
+carrying `$out`, `$merge`, `$where`, `$function` or `$accumulator`, is
+refused before it reaches the server.
 
 ### CockroachDB / PostgreSQL
 

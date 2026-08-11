@@ -151,6 +151,12 @@ export const en = {
   "conn-field-service-account-hint":
     "Paste the whole contents of the service-account key file. It is stored in the OS keychain, never in connections.toml.",
   "conn-firestore-database-hint": "Leave blank for the project's (default) database.",
+  "conn-field-uri": "Connection URI",
+  "conn-field-uri-hint":
+    "The whole URI, including the password — mongodb://… or mongodb+srv://…. It is stored in the OS keychain, never in connections.toml.",
+  "conn-field-database": "Database",
+  "conn-mongodb-database-hint":
+    "Leave blank if the URI's path already names the database.",
   "conn-firestore-emulator": "Connect to the local emulator",
   "conn-firestore-emulator-hint":
     "The emulator accepts any request without a credential. Put its address in Base URL — usually http://127.0.0.1:8080.",
@@ -185,6 +191,7 @@ export const en = {
   "conn-kind-supabase": "Supabase",
   "conn-kind-aurora_dsql": "Aurora DSQL",
   "conn-kind-firestore": "Cloud Firestore",
+  "conn-kind-mongodb": "MongoDB",
   // SSH tunnel (ADR-0069)
   "conn-ssh-section": "SSH tunnel",
   "conn-ssh-enable": "Connect through an SSH tunnel",
@@ -474,6 +481,12 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-field-service-account-hint":
     "サービスアカウントキーのファイル内容をそのまま貼り付けてください。OS のキーチェーンに保存され、connections.toml には書き込まれません。",
   "conn-firestore-database-hint": "空欄のままにするとプロジェクトの (default) データベースを使います。",
+  "conn-field-uri": "接続 URI",
+  "conn-field-uri-hint":
+    "パスワードを含む URI 全体を入力してください（mongodb://… または mongodb+srv://…）。OS のキーチェーンに保存され、connections.toml には書き込まれません。",
+  "conn-field-database": "データベース",
+  "conn-mongodb-database-hint":
+    "URI のパスでデータベース名を指定している場合は空欄のままで構いません。",
   "conn-firestore-emulator": "ローカルエミュレーターに接続する",
   "conn-firestore-emulator-hint":
     "エミュレーターは認証情報なしで接続を受け付けます。アドレスはベース URL に入力してください（通常は http://127.0.0.1:8080）。",
@@ -508,6 +521,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-kind-supabase": "Supabase",
   "conn-kind-aurora_dsql": "Aurora DSQL",
   "conn-kind-firestore": "Cloud Firestore",
+  "conn-kind-mongodb": "MongoDB",
   // SSH トンネル (ADR-0069)
   "conn-ssh-section": "SSH トンネル",
   "conn-ssh-enable": "SSH トンネル経由で接続する",

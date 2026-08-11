@@ -88,6 +88,7 @@
     supabase: 'conn-kind-supabase',
     aurora_dsql: 'conn-kind-aurora_dsql',
     firestore: 'conn-kind-firestore',
+    mongodb: 'conn-kind-mongodb',
   };
 
   const FIELD_LABEL: Record<FormField, MessageKey> = {
@@ -101,6 +102,8 @@
     url: 'conn-field-url',
     project_id: 'conn-field-project-id',
     service_account: 'conn-field-service-account',
+    uri: 'conn-field-uri',
+    database: 'conn-field-database',
   };
 
   const DSN_LABEL: Record<DsnField, MessageKey> = {
@@ -597,6 +600,15 @@
               {/if}
               {#if f === 'database_id' && form.kind === 'firestore'}
                 <span class="hint">{i18n.t('conn-firestore-database-hint')}</span>
+              {/if}
+              <!-- `uri` and `database` belong to MongoDB alone, so these need no
+                   kind guard. The URI is masked like any other secret; the hint
+                   says why the password is in it rather than in its own box. -->
+              {#if f === 'uri'}
+                <span class="hint">{i18n.t('conn-field-uri-hint')}</span>
+              {/if}
+              {#if f === 'database'}
+                <span class="hint">{i18n.t('conn-mongodb-database-hint')}</span>
               {/if}
               {#if isSecret(f) && editorMode === 'edit'}
                 <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
