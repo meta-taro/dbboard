@@ -15,8 +15,14 @@
   <meta property="og:url" content="https://meta-taro.github.io/dbboard/">
   <meta property="og:title" content="Download dbboard — desktop database client">
   <meta property="og:description" content="Free and open source. Windows .exe and macOS .dmg for MySQL, PostgreSQL, Neon, Supabase, Aurora DSQL, Turso and Cloudflare D1 — plus a read-only MCP server for AI agents.">
-  <meta property="og:image" content="https://meta-taro.github.io/dbboard/dbboard-logo-256.png">
-  <meta name="twitter:card" content="summary">
+  <!-- The screenshot rather than the logo: a preview card is the one place the
+       app gets shown to someone who did not go looking for it. Absolute by
+       necessity -- the crawler fetching it has no page to resolve against. -->
+  <meta property="og:image" content="https://meta-taro.github.io/dbboard/screenshots/query-light.png">
+  <meta property="og:image:width" content="1360">
+  <meta property="og:image:height" content="860">
+  <meta property="og:image:alt" content="dbboard running a JOIN across two tables, with 119 rows in the result grid.">
+  <meta name="twitter:card" content="summary_large_image">
   <!-- Defense-in-depth (ADR-0047): scripts are same-origin only (no inline
        script is allowed, so an injected one cannot run), network egress is
        pinned to the GitHub Releases API, and there is no base/form surface.
@@ -78,6 +84,15 @@
       border-radius: 8px; padding: .9rem 1rem; font-size: .92rem;
     }
     .meta { color: var(--muted); font-size: .9rem; }
+    figure { margin: 0 0 1.5rem; }
+    /* width/height are on the tags so the page does not reflow when the
+       screenshots finish loading, and the caption does not jump. */
+    .shot {
+      width: 100%; height: auto; display: block;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: var(--card);
+    }
+    figcaption { color: var(--muted); font-size: .88rem; margin-top: .5rem; }
     .status { color: var(--muted); padding: 1rem 0; }
     footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .88rem; }
     footer a { margin-right: 1rem; }
@@ -97,9 +112,47 @@
       Neon, Supabase, MySQL/MariaDB, and AWS&nbsp;Aurora&nbsp;DSQL.
     </p>
 
+    <!-- Before the download buttons, not after: these binaries are unsigned,
+         and asking someone to click through a SmartScreen warning for an app
+         they have never seen is asking a lot. -->
+    <figure>
+      <img class="shot" src="screenshots/query-light.png" width="1360" height="860"
+           alt="dbboard running a JOIN across two tables. The sidebar lists the connection and its three tables; the editor holds the query; below it 119 rows are shown in a grid, with empty cells rendered as an italic NULL, and buttons to copy the result as TSV or CSV or save it to a file.">
+      <figcaption>
+        Write a query, run it with Ctrl+Enter, and take the result out as TSV,
+        CSV or a file. Empty cells are shown as <code>NULL</code> rather than
+        as nothing, so a missing value never reads as an empty string.
+      </figcaption>
+    </figure>
+
     <h2>Download <span id="version" class="meta"></span></h2>
     <div id="status" class="status">Loading the latest release…</div>
     <div id="cards" class="cards" hidden></div>
+
+    <h2>A look around</h2>
+    <figure>
+      <img class="shot" src="screenshots/structure-light.png" width="1360" height="620"
+           alt="The structure view of a table: seven columns listed with their type, whether they accept NULL, which one is the primary key, and their default, plus a free-text note against each. Below the columns, a relationships section shows the foreign key from this table to another.">
+      <figcaption>
+        Every table's columns, types, nullability, keys and foreign keys —
+        plus a note field on each column and on the table itself, for the
+        things the schema does not say out loud.
+      </figcaption>
+    </figure>
+    <figure>
+      <img class="shot" src="screenshots/query-dark.png" width="1360" height="860"
+           alt="The same query and result grid in dark theme, with the interface language set to English.">
+      <figcaption>
+        Light, dark, or whatever the OS is set to. The interface is
+        translated into eleven languages.
+      </figcaption>
+    </figure>
+    <p class="meta">
+      These are real captures of the app against a fictional dataset, not
+      mockups. The corpus is in
+      <a href="https://github.com/meta-taro/dbboard/tree/main/scripts/demo-profile">scripts/demo-profile</a>
+      if you want the same three tables to click around in.
+    </p>
 
     <h2>Verify your download</h2>
     <p>
