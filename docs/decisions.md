@@ -9705,3 +9705,57 @@ a much larger surface to get wrong than the driver is to depend on.
   `tests/live_mongodb.rs`, ignored by default and pointed at a local container.
   Unit tests prove the crate sends what we think MongoDB accepts; that file
   proves MongoDB accepts it.
+
+## ADR-0100 — A document cell opens as a tree, because a document *is* one
+
+### Status
+
+Accepted.
+
+### Context
+
+Firestore and MongoDB store trees. dbboard renders a result as a grid, and a
+grid cell is one line, so a document arrives in the UI as
+`{"customer":{"name":"Sample Customer","address":{"city":"…"}}}` — truncated at
+the cell's width. Every value is present and none of them is findable. Opening
+the cell showed the same single line inside a `<pre>`.
+
+The grid is the right shape for a row-and-column result and the wrong shape for
+a nested value, and the tension is not resolvable in the cell: the cell is one
+line by definition.
+
+### Decision
+
+1. **The document cell keeps its one-line preview in the grid, and opens as an
+   indented tree.** The grid stays a grid; the tree lives in the read-only
+   value dialog that already existed for long text.
+2. **The flattening is a module, not a component** — `src/lib/grid/tree.ts`.
+   Ordering, empty containers, array indices and collapsed subtrees are where
+   the subtle cases are, and they are worth testing without a component around
+   them.
+3. **Nodes are identified by dotted path** (`lines.0.sku`). Collapse state is a
+   set of paths, so it survives a re-render and cannot drift from the tree.
+4. **A collapsed container stays visible**, showing its size (`{3}`, `[2]`).
+   Hiding the container along with its children would read as deleting it.
+5. **Container previews are language-neutral** — `{3}`, not "3 fields". This is
+   data, and it must read the same in every one of the 11 locales.
+6. **A document always opens**, however short its serialisation. The width test
+   that gates the dialog for text does not apply: the fault being fixed is the
+   shape, not the length.
+7. **Copy still copies JSON**, now pretty-printed. What the user pastes
+   elsewhere should be the document, not a rendering of it.
+
+### Consequences
+
+- A nested document is navigable without leaving dbboard, which is what
+  verification sheet 001 row No.8 asks for.
+- `flattenDocument` walks the whole document on every collapse toggle. For the
+  documents these stores hold that is far below the cost of a re-render; if a
+  pathological document ever proves otherwise, the fix is memoisation inside
+  the module, with no change to its callers.
+- The tree is read-only, as the dialog already was. Editing a document is a
+  separate decision: a free-text edit of a tree can leave it unparseable, which
+  is why document cells are excluded from inline editing in the first place.
+- Not addressed here: a raw-JSON view alongside the tree. The copy button
+  already yields the raw document, and a second view would have to earn its
+  place in the dialog.
