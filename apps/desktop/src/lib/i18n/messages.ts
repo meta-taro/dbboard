@@ -170,6 +170,20 @@ export const en = {
   "conn-field-database": "Database",
   "conn-mongodb-database-hint":
     "Leave blank if the URI's path already names the database.",
+  // Aurora DSQL (IAM) — ADR-0103
+  "conn-field-endpoint": "Cluster endpoint",
+  "conn-field-endpoint-hint":
+    "The hostname shown in the DSQL console, without a scheme — for example abc123.dsql.ap-northeast-1.on.aws.",
+  "conn-field-region": "AWS region",
+  "conn-field-username": "Database user",
+  "conn-field-username-hint":
+    "admin signs the token as the cluster's admin role; any other name signs it as that database role.",
+  "conn-field-access-key-id": "Access key ID",
+  "conn-field-access-key-id-hint":
+    "Not a secret — it is stored in connections.toml so you can see which key pair a connection uses.",
+  "conn-field-secret-access-key": "Secret access key",
+  "conn-field-secret-access-key-hint":
+    "Stored in the OS keychain, never in connections.toml. dbboard signs a fresh IAM token with it on every connect.",
   "conn-firestore-emulator": "Connect to the local emulator",
   "conn-firestore-emulator-hint":
     "The emulator accepts any request without a credential. Put its address in Base URL — usually http://127.0.0.1:8080.",
@@ -203,6 +217,7 @@ export const en = {
   "conn-kind-neon": "Neon",
   "conn-kind-supabase": "Supabase",
   "conn-kind-aurora_dsql": "Aurora DSQL",
+  "conn-kind-aurora_dsql_iam": "Aurora DSQL (IAM)",
   "conn-kind-firestore": "Cloud Firestore",
   "conn-kind-mongodb": "MongoDB",
   // SSH tunnel (ADR-0069)
@@ -507,6 +522,20 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-field-database": "データベース",
   "conn-mongodb-database-hint":
     "URI のパスでデータベース名を指定している場合は空欄のままで構いません。",
+  // Aurora DSQL (IAM) — ADR-0103
+  "conn-field-endpoint": "クラスターエンドポイント",
+  "conn-field-endpoint-hint":
+    "DSQL コンソールに表示されるホスト名をスキームなしで入力してください（例: abc123.dsql.ap-northeast-1.on.aws）。",
+  "conn-field-region": "AWS リージョン",
+  "conn-field-username": "データベースユーザー",
+  "conn-field-username-hint":
+    "admin を指定するとクラスターの admin ロールとして、それ以外の名前はそのデータベースロールとしてトークンに署名します。",
+  "conn-field-access-key-id": "アクセスキー ID",
+  "conn-field-access-key-id-hint":
+    "秘密情報ではありません。どのキーペアを使っているか確認できるよう connections.toml に保存されます。",
+  "conn-field-secret-access-key": "シークレットアクセスキー",
+  "conn-field-secret-access-key-hint":
+    "OS のキーチェーンに保存され、connections.toml には書き込まれません。接続のたびにこの鍵で IAM トークンを新しく署名します。",
   "conn-firestore-emulator": "ローカルエミュレーターに接続する",
   "conn-firestore-emulator-hint":
     "エミュレーターは認証情報なしで接続を受け付けます。アドレスはベース URL に入力してください（通常は http://127.0.0.1:8080）。",
@@ -540,6 +569,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-kind-neon": "Neon",
   "conn-kind-supabase": "Supabase",
   "conn-kind-aurora_dsql": "Aurora DSQL",
+  "conn-kind-aurora_dsql_iam": "Aurora DSQL (IAM)",
   "conn-kind-firestore": "Cloud Firestore",
   "conn-kind-mongodb": "MongoDB",
   // SSH トンネル (ADR-0069)

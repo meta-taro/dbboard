@@ -423,13 +423,11 @@ describe('keepStoredPassword', () => {
 });
 
 // The list shows the backend's display slug (hyphenated), which is a different
-// namespace from the form's `ConnectionKind` (underscored) — `aurora-dsql-iam`
-// has no form representation at all, which is exactly why it can't be edited.
+// namespace from the form's `ConnectionKind` (underscored). The gate stays even
+// though nothing is currently config-file-only (ADR-0103 gave the last such
+// kind a form): the next backend-only kind should be a one-line addition, not a
+// re-derivation of why the Edit button needs a disabled state.
 describe('isEditableInApp', () => {
-  it('rejects Aurora DSQL (IAM), which lives only in connections.toml', () => {
-    expect(isEditableInApp('aurora-dsql-iam')).toBe(false);
-  });
-
   it.each([
     'turso',
     'd1',
@@ -438,15 +436,12 @@ describe('isEditableInApp', () => {
     'neon',
     'supabase',
     'aurora-dsql',
+    // Editable in-app since ADR-0103; it used to be the one exception.
+    'aurora-dsql-iam',
+    'firestore',
+    'mongodb',
   ])('accepts %s', (slug) => {
     expect(isEditableInApp(slug)).toBe(true);
-  });
-
-  // Static-credential Aurora DSQL is editable; only the IAM variant is not, and
-  // one is a prefix of the other.
-  it('does not confuse aurora-dsql with aurora-dsql-iam', () => {
-    expect(isEditableInApp('aurora-dsql')).toBe(true);
-    expect(isEditableInApp('aurora-dsql-iam')).toBe(false);
   });
 
   it('treats an unknown slug as editable, so a new backend kind is not silently locked out', () => {
@@ -455,7 +450,7 @@ describe('isEditableInApp', () => {
 });
 
 describe('CONNECTION_KINDS', () => {
-  it('lists all nine kinds with turso first', () => {
+  it('lists all ten kinds with turso first', () => {
     expect(CONNECTION_KINDS).toEqual([
       'turso',
       'd1',
@@ -464,9 +459,130 @@ describe('CONNECTION_KINDS', () => {
       'neon',
       'supabase',
       'aurora_dsql',
+      'aurora_dsql_iam',
       'firestore',
       'mongodb',
     ]);
+  });
+});
+
+// Aurora DSQL with IAM auth (ADR-0036, ADR-0103). No DSN and no stored
+// password: a SigV4 token is minted from these five plain fields plus the
+// secret access key at connect time, so the form asks for them individually.
+describe('aurora_dsql_iam', () => {
+  const iam = {
+    kind: 'aurora_dsql_iam' as const,
+    id: 'dsql',
+    name: 'DSQL',
+    endpoint: 'abc.dsql.ap-northeast-1.on.aws',
+    region: 'ap-northeast-1',
+    database: 'postgres',
+    username: 'admin',
+    access_key_id: 'AKIAEXAMPLE',
+    secret_access_key: 'AWS_SECRET',
+  };
+
+  it('asks for the five plain fields plus the secret access key', () => {
+    expect(fieldsForKind('aurora_dsql_iam')).toEqual([
+      'endpoint',
+      'region',
+      'database',
+      'username',
+      'access_key_id',
+      'secret_access_key',
+    ]);
+  });
+
+  // The access key *id* is an identifier, not a credential: it is already in
+  // connections.toml in the clear, and the operator cannot rotate a key pair
+  // without seeing which id is stored.
+  it('treats only the secret access key as secret', () => {
+    expect(secretFields('aurora_dsql_iam')).toEqual(['secret_access_key']);
+  });
+
+  it('requires everything on add, and drops the secret on edit', () => {
+    expect(requiredFields('aurora_dsql_iam', 'add')).toEqual([
+      'id',
+      'name',
+      'endpoint',
+      'region',
+      'database',
+      'username',
+      'access_key_id',
+      'secret_access_key',
+    ]);
+    expect(requiredFields('aurora_dsql_iam', 'edit')).toEqual([
+      'name',
+      'endpoint',
+      'region',
+      'database',
+      'username',
+      'access_key_id',
+    ]);
+  });
+
+  // There is no DSN at all — five host/port/user/password/database boxes would
+  // be five wrong questions.
+  it('has no DSN parts to fill in', () => {
+    expect(validateDsnFields(form({ kind: 'aurora_dsql_iam', use_url: false }))).toEqual([]);
+  });
+
+  // The backend refuses a tunnel for this kind (`SshUnsupportedKind`), because
+  // the token is minted for the real endpoint's host.
+  it('cannot front an SSH tunnel', () => {
+    expect(supportsSshTunnel('aurora_dsql_iam')).toBe(false);
+  });
+
+  it('sends all six fields on add', () => {
+    expect(buildKindInput(form(iam))).toEqual({
+      kind: 'aurora_dsql_iam',
+      endpoint: 'abc.dsql.ap-northeast-1.on.aws',
+      region: 'ap-northeast-1',
+      database: 'postgres',
+      username: 'admin',
+      access_key_id: 'AKIAEXAMPLE',
+      secret_access_key: 'AWS_SECRET',
+    });
+  });
+
+  // The point of the whole change: rotating the access key id alone, without
+  // retyping the secret that is already in the keychain.
+  it('sends a blank secret as null on edit, so the stored one is kept', () => {
+    expect(buildKindEditInput(form({ ...iam, access_key_id: 'AKIAROTATED', secret_access_key: '' })))
+      .toEqual({
+        kind: 'aurora_dsql_iam',
+        endpoint: 'abc.dsql.ap-northeast-1.on.aws',
+        region: 'ap-northeast-1',
+        database: 'postgres',
+        username: 'admin',
+        access_key_id: 'AKIAROTATED',
+        secret_access_key: null,
+      });
+  });
+
+  it('sends a typed secret verbatim on edit, overwriting the stored one', () => {
+    const sent = buildKindEditInput(form({ ...iam, secret_access_key: 'AWS_ROTATED' }));
+    expect(sent.secret_access_key).toBe('AWS_ROTATED');
+  });
+
+  it('prefills the five plain fields on edit and leaves the secret blank', () => {
+    const f = formForEdit('dsql', 'DSQL', {
+      kind: 'aurora_dsql_iam',
+      endpoint: 'abc.dsql.ap-northeast-1.on.aws',
+      region: 'ap-northeast-1',
+      database: 'postgres',
+      username: 'admin',
+      access_key_id: 'AKIAEXAMPLE',
+    });
+    expect(f.kind).toBe('aurora_dsql_iam');
+    expect(f.endpoint).toBe('abc.dsql.ap-northeast-1.on.aws');
+    expect(f.region).toBe('ap-northeast-1');
+    expect(f.database).toBe('postgres');
+    expect(f.username).toBe('admin');
+    expect(f.access_key_id).toBe('AKIAEXAMPLE');
+    expect(f.secret_access_key).toBe('');
+    // No DSN, so the URL escape hatch must not be the mode it opens in.
+    expect(f.use_url).toBe(false);
   });
 });
 

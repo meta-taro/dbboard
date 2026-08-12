@@ -9884,3 +9884,72 @@ fetch on a browse to learn the primary key.
 - The parser accepts the shape MySQL emits, not arbitrary SQL. That is the only
   input it ever sees — the string comes from `information_schema`, not from a
   user.
+
+## ADR-0103 — Aurora DSQL (IAM) is edited in the app, not in connections.toml
+
+**Status**: accepted (2026-08-12)
+
+### Context
+
+`aurora-dsql-iam` was the one connection kind with no in-app form. It was
+added (ADR-0036) as a config-file kind: the operator wrote six values into
+`connections.toml` by hand, put the AWS secret access key into the OS keychain
+under a ref they also wrote by hand, and the app read it. The list panel showed
+the row with its Edit button disabled and a note naming the file.
+
+That held for as long as such a connection never changed. It does change: an
+AWS access key pair gets rotated, and when it does the connection stops working
+with an auth error. The path back to a working state was to find
+`connections.toml`, edit the right table by hand without breaking the TOML, and
+separately overwrite a keychain entry — with the app unable to help at any
+step, because it refused to open the entry at all.
+
+The person who hits this is not necessarily the maintainer. On the machine that
+prompted this, the Aurora DSQL connection is used unattended by someone who did
+not create it. "Edit the TOML file" is not an answer for them, and being told
+to do it by a program that could do it itself is worse than not being told.
+
+### Decision
+
+Aurora DSQL (IAM) gets the same add and edit forms every other kind has.
+
+1. **Six fields, one of them secret.** `endpoint`, `region`, `database`,
+   `username` and `access_key_id` are plain inputs stored in `connections.toml`;
+   only `secret_access_key` is masked and goes to the keychain. The access key
+   *id* is deliberately not treated as a credential: it is already in the file
+   in the clear, and an operator cannot tell which key pair they are rotating
+   away from if the form will not show it.
+2. **Two secret states, not three.** A blank secret box on edit keeps the
+   stored key (`SecretField::Keep`), a filled one overwrites it. There is no
+   third "no credential" state, unlike Firestore's emulator mode (ADR-0093):
+   an IAM connection always has a key pair. This is what makes the rotation
+   case work — the id can be changed on its own without retyping the secret.
+3. **The keyring ref is never re-minted on edit.** `dbboard.<id>.secret_key` is
+   derived once, at add time, and reused. A new ref on every save would orphan
+   the entry the connection still points at; the same rule already governs
+   `apply_url_edit`. The field name `secret_key` is also not free to change —
+   refs written by hand before this change point at it.
+4. **No DSN and no tunnel.** The kind joins `NON_DSN_KINDS`: there is no stored
+   URL to split into host/port/user/password/database, because a SigV4 token is
+   minted per connect from the fields above. It stays out of
+   `SSH_TUNNELABLE_KINDS` for the same reason the backend refuses it — the
+   token is signed for the real endpoint's host.
+5. **The config-file-only gate stays, empty.** `isEditableInApp` and the
+   disabled Edit button remain in place with nothing in their list. The next
+   backend-only kind should be one entry, not a rediscovery of why the button
+   needs a disabled state.
+
+### Consequences
+
+- Nothing about the stored representation changed, so existing
+  `connections.toml` entries and their keychain refs keep working untouched.
+  Delete, bundle export/import and orphan purging already handled the kind
+  (`keyring_refs_in`); only add and edit were missing.
+- A connection created in-app and one written by hand are indistinguishable
+  afterwards, which is the point: the file stays a supported way in, it is just
+  no longer the only one.
+- The form asks for an AWS secret access key in a text box. That is the same
+  trust boundary as every other secret here — it goes straight to the OS
+  keychain and is never read back into the form — but it is worth stating that
+  the app now handles long-lived AWS credentials directly, where before it only
+  read a ref to one.
