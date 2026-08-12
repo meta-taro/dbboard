@@ -7,6 +7,41 @@
 
 ## 最終更新
 
+- 日付: 2026-08-12 (**実利用で挙がった 3 つの摩擦をブランチ `feat/document-tree-view` に
+  3 コミット。未 push。**
+  ① **文書セルが 1 行の JSON だった** → 展開/折りたたみできる木で表示 (ADR-0100)。
+  `{"$json": null}` と「文書ではない」を区別するため、popup の `doc` を
+  `{ value: unknown } | null` でラップしてある (null 自体が正当な文書値なので)。
+  ② **フッターが空だった** → 24px のステータスバー (ADR-0101)。**行数は入れていない**
+  ‐ 結果ツールバーに既にあり、繰り返しは「無駄なもの」そのものだから。入れたのは
+  画面のどこにも無かった 2 つだけ: **直前のクエリの所要時間**と、**閉じた更新通知へ
+  戻る導線**。後者は実バグの修正でもある — `UpdateNotice` を閉じると
+  `+page.svelte` の state が `null` になり、そのセッション中は二度と出せなかった。
+  計測はフロント側で `invoke` の前後のみ (バックエンドでやると `QueryOutput` と
+  全アダプタに触ることになる)。ブラウズ後のスキーマ読みは含めない。
+  ③ **ENUM がテキスト入力だった** → プルダウン (ADR-0102)。選択肢の出所は
+  `information_schema.column_type` = `describeTable` **のみ**。結果セットのメタは
+  `ENUM` としか返さないので、主キーを読む同じ `try` で一緒に取り、`enums` prop で
+  グリッドへ渡す。解析は純関数 + 10 テスト (`src/lib/grid/enum.ts`) に隔離 —
+  カンマ・`''`・バックスラッシュを取り違えると**間違った選択肢**を出すことになり、
+  テキスト入力より悪いため。**解析できなければ選択肢を出さずテキストに戻す**。
+  `SET` は複数値なので対象外 (単一選択にすると 1 つを除いて黙って捨てる)。
+  宣言に無い既存値は先頭に選択済みで保持 = 開いただけで書き換わらない。
+  インライン編集と拡大ダイアログの**両方**を select 化 (片方残すとそこから自由入力
+  できる)。今のところ効くのは MySQL のみ — Postgres の名前付き enum は型名しか
+  返さないので別途カタログ読みが要る。
+  ④ 検証: svelte-check 281 files / 0 errors、vitest 21 files / **436 tests** 緑、
+  `pii-scan --staged` clean。**3 コミットとも pre-commit フックを全通過 (exit 0)**、
+  `--no-verify` 不使用。
+  **user 側ボール = ① `git push -u origin feat/document-tree-view` (その後こちらで
+  PR を立てる)、② `fix/trim-pasted-connection-fields` の push、③ 姉妹リポへ
+  `.claude/tools/dbboard.md` を貼る、④ dbboard-web へ `docs/api-contract.md` の
+  `$json` を中継、⑤ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の
+  唯一の原因)。**
+  未 push のブランチが他に 3 本: `docs/locale-rendering-test-spec` /
+  `docs/agent-onboarding` (force-with-lease) / `docs/llms-txt`。
+  検証シート 001 は No.2 から人手で再開待ち (行 1・10・11 は `未実施` のまま)。)
+
 - 日付: 2026-08-09 (**Zenn 記事を公開 + それを書く過程で見つかった文書の嘘を 3 件修正。
   未 push が 3 コミット (`f0cb0ca` / `28c15cc` / `913ee8b`)。**
   ① **記事** = `articles/dbboard-mcp.md` → <https://zenn.dev/dokokade/articles/46b8c608715963>。
