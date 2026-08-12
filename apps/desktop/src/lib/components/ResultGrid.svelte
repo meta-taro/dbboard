@@ -36,6 +36,11 @@
     // Present when the result is an editable table browse: enables inline cell
     // editing keyed on the table's primary key (ADR-0042). Null = read-only.
     edit?: EditContext | null;
+    // Members of every ENUM column of the browsed table, by column name. An
+    // enum edited as free text is a spelling test; with this the editor offers
+    // the declared members instead (ADR-0102). Empty for a non-enum table, and
+    // for any result that is not an editable browse.
+    enums?: Record<string, string[]>;
     // Called after a save commits, so the parent can re-run the browse and show
     // engine-normalised values.
     onSaved?: () => void;
@@ -47,6 +52,7 @@
     truncated,
     limit,
     edit = null,
+    enums = {},
     onSaved,
   }: Props = $props();
 
@@ -136,6 +142,20 @@
     const s = stagedAt(origIdx, ci);
     const current = s !== undefined ? s : cell;
     return current === null ? '' : displayCell(current as Cell);
+  }
+
+  // The declared members of column `ci`, or null when it is not an enum — in
+  // which case every editor falls back to free text.
+  function variantsFor(ci: number): string[] | null {
+    return enums[columns[ci].name] ?? null;
+  }
+
+  // What the dropdown offers. A draft outside the declared members — a value
+  // written before the type was narrowed, or the empty draft a NULL starts from
+  // — is kept at the head of the list, so merely opening the editor on a row
+  // cannot silently rewrite it to the first member.
+  function optionsFor(variants: string[], draft: string): string[] {
+    return variants.includes(draft) ? variants : [draft, ...variants];
   }
 
   function beginEdit(origIdx: number, ci: number, cell: Cell) {
@@ -478,29 +498,49 @@
                      shrinks the column it sits in is why this was unusable. -->
                 <span class="cell-value">{cellText(origIdx, ci, cell)}</span>
                 {#if isEditing && editing}
+                  {@const variants = variantsFor(ci)}
                   <div class="cell-editor" role="presentation" onclick={(e) => e.stopPropagation()}>
-                    <!-- svelte-ignore a11y_autofocus -->
-                    <input
-                      class="cell-input"
-                      bind:value={editing.draft}
-                      autofocus
-                      spellcheck="false"
-                      onkeydown={onEditorKeydown}
-                      onblur={commitEditor}
-                      title={i18n.t('edit-cell-editing')}
-                    />
-                    <button
-                      type="button"
-                      class="cell-btn"
-                      onmousedown={(e) => {
-                        // mousedown fires before the input's blur, so the draft
-                        // has to move to the dialog before the blur commits it.
-                        e.preventDefault();
-                        e.stopPropagation();
-                        expandEditor();
-                      }}
-                      title={i18n.t('edit-cell-expand')}>⤢</button
-                    >
+                    {#if variants}
+                      <!-- svelte-ignore a11y_autofocus -->
+                      <select
+                        class="cell-input"
+                        bind:value={editing.draft}
+                        autofocus
+                        onchange={commitEditor}
+                        onkeydown={onEditorKeydown}
+                        onblur={commitEditor}
+                        title={i18n.t('edit-enum-editing')}
+                      >
+                        {#each optionsFor(variants, editing.draft) as v (v)}
+                          <option value={v}>{v === '' ? i18n.t('edit-enum-blank') : v}</option>
+                        {/each}
+                      </select>
+                    {:else}
+                      <!-- svelte-ignore a11y_autofocus -->
+                      <input
+                        class="cell-input"
+                        bind:value={editing.draft}
+                        autofocus
+                        spellcheck="false"
+                        onkeydown={onEditorKeydown}
+                        onblur={commitEditor}
+                        title={i18n.t('edit-cell-editing')}
+                      />
+                      <!-- No wide editor for an enum: the choices are the whole
+                           value space, and none of them needs more room. -->
+                      <button
+                        type="button"
+                        class="cell-btn"
+                        onmousedown={(e) => {
+                          // mousedown fires before the input's blur, so the draft
+                          // has to move to the dialog before the blur commits it.
+                          e.preventDefault();
+                          e.stopPropagation();
+                          expandEditor();
+                        }}
+                        title={i18n.t('edit-cell-expand')}>⤢</button
+                      >
+                    {/if}
                     <button
                       type="button"
                       class="cell-btn"
@@ -524,6 +564,7 @@
 </div>
 
 {#if expanded && columns[expanded.col]}
+  {@const dialogVariants = variantsFor(expanded.col)}
   <div
     class="backdrop"
     onclick={(e) => {
@@ -541,23 +582,40 @@
     >
       <div class="popup-head">
         <span class="popup-col">{columns[expanded.col].name}</span>
-        <span class="popup-len">
-          {i18n.t('edit-cell-chars', { count: charCount(expanded.draft) })}
-        </span>
+        {#if !dialogVariants}
+          <span class="popup-len">
+            {i18n.t('edit-cell-chars', { count: charCount(expanded.draft) })}
+          </span>
+        {/if}
       </div>
-      <!-- svelte-ignore a11y_autofocus -->
-      <textarea
-        class="popup-edit"
-        bind:value={expanded.draft}
-        autofocus
-        spellcheck="false"
-        onkeydown={onExpandedKeydown}
-      ></textarea>
+      {#if dialogVariants}
+        <!-- Reachable when a declared member is long enough to route past the
+             inline box; it must still be a choice, not a text field. -->
+        <!-- svelte-ignore a11y_autofocus -->
+        <select class="popup-select" bind:value={expanded.draft} autofocus>
+          {#each optionsFor(dialogVariants, expanded.draft) as v (v)}
+            <option value={v}>{v === '' ? i18n.t('edit-enum-blank') : v}</option>
+          {/each}
+        </select>
+      {:else}
+        <!-- svelte-ignore a11y_autofocus -->
+        <textarea
+          class="popup-edit"
+          bind:value={expanded.draft}
+          autofocus
+          spellcheck="false"
+          onkeydown={onExpandedKeydown}
+        ></textarea>
+      {/if}
       <div class="popup-foot">
         <button type="button" class="ghost" onclick={nullExpanded} title={i18n.t('edit-null-title')}>
           ∅ NULL
         </button>
-        <span class="popup-hint">{i18n.t('edit-cell-dialog-hint')}</span>
+        {#if !dialogVariants}
+          <span class="popup-hint">{i18n.t('edit-cell-dialog-hint')}</span>
+        {:else}
+          <span class="popup-hint"></span>
+        {/if}
         <button type="button" onclick={cancelExpanded}>{i18n.t('edit-cell-cancel')}</button>
         <button type="button" class="primary" onclick={commitExpanded}>
           {i18n.t('edit-cell-apply')}
@@ -859,6 +917,9 @@
   .cell-input:focus-visible {
     outline: none;
   }
+  select.cell-input {
+    cursor: pointer;
+  }
   .cell-btn {
     flex: none;
     border: 1px solid var(--border);
@@ -955,6 +1016,18 @@
   }
   .popup-edit:focus-visible {
     outline: none;
+  }
+  /* An enum has a handful of choices, so the dialog does not need the 40vh
+     the free-text editor reserves. */
+  .popup-select {
+    margin: var(--space-3);
+    padding: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+    background: var(--bg-surface);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: var(--text-small);
   }
   .popup-foot {
     display: flex;

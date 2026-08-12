@@ -15,6 +15,7 @@
     saveRowLimit,
     clampLimit,
   } from '$lib/query/limits';
+  import { enumColumns } from '$lib/grid/enum';
   import { placePopover, type PopoverPlacement } from '$lib/layout/popover';
   import { runStatus } from '$lib/status/status.svelte';
   import ResultGrid from './ResultGrid.svelte';
@@ -85,6 +86,10 @@
   // manual Run or a history replay clears this — only a browse is editable.
   let editTable = $state<TableInfo | null>(null);
   let editPk = $state<string[]>([]);
+  // Members of the browsed table's ENUM columns, by column name — read from the
+  // same schema call as the primary key, because the member list exists only in
+  // the declared type and never in the result-set metadata (ADR-0102).
+  let editEnums = $state<Record<string, string[]>>({});
   // A browsed table that has NO declared primary key: editable-intent but not
   // safely keyable, so we show a read-only reason instead of edit affordances.
   const noPk = $derived(editTable !== null && editPk.length === 0);
@@ -130,6 +135,7 @@
     error = '';
     editTable = table;
     editPk = [];
+    editEnums = {};
     const limit = rowLimit;
     // Timed around the query alone: the schema read that follows a browse is
     // our own bookkeeping, and charging it to the statement would overstate
@@ -146,8 +152,10 @@
         try {
           const schema = await describeTable(connId, table.name, table.schema);
           editPk = schema.primary_key;
+          editEnums = enumColumns(schema.columns);
         } catch {
           editPk = [];
+          editEnums = {};
         }
       }
     } catch (e) {
@@ -155,6 +163,7 @@
       result = null;
       error = String(e);
       editTable = null;
+      editEnums = {};
     } finally {
       busy = false;
     }
@@ -297,6 +306,7 @@
         truncated={result.truncated}
         limit={resultLimit}
         edit={editContext}
+        enums={editEnums}
         onSaved={reloadAfterSave}
       />
     </div>
