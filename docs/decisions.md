@@ -9826,3 +9826,61 @@ the rest of the session with no way back to it.
 - Not addressed here: rows-per-second, a query timer that ticks while running,
   or a history of timings. The bar shows the last statement, and the run in
   flight is already announced by the Run button.
+
+## ADR-0102 — An ENUM column is edited by picking a member, not by typing one
+
+**Status**: Accepted (2026-08-12)
+
+**Context**: Inline editing (ADR-0042) hands every column the same single-line
+text box. For an ENUM that turns a closed set of, say, three values into a
+spelling test: the member has to be typed exactly, and getting it wrong is not
+caught until the UPDATE comes back rejected — or worse, on a lax server, until
+a truncated-to-empty value has already landed.
+
+The member list is available, but only in one place. MySQL reports the column
+as `enum('draft','sent','paid')` in `information_schema.columns.column_type`,
+which `DESCRIBE_COLUMNS_SQL` already reads into `ColumnInfo.declared_type`. The
+metadata attached to a result set says only `ENUM` — the members are gone by
+then. So the choices can only come from the table schema, which we already
+fetch on a browse to learn the primary key.
+
+### Decision
+
+1. **The dropdown is sourced from `describeTable`, not from the result set.**
+   `QueryPanel` computes the members in the same `try` that reads the primary
+   key, and passes them to `ResultGrid` as a separate `enums` prop, because
+   `EditContext` carries no column types. A failed schema read leaves it empty
+   and the column reverts to text, exactly as the primary key falls back to
+   read-only.
+2. **Parsing the declaration is a pure, tested module** —
+   `src/lib/grid/enum.ts`. The escaping is where this goes wrong: a comma
+   inside a member must not split it in two, `''` is a doubled quote and not
+   the end of the literal, and MySQL also accepts backslash escapes. A member
+   list read half-right would offer the *wrong* values, which is worse than the
+   text box it replaces.
+3. **A declaration we cannot parse yields nothing at all**, and the column
+   stays free text. There is no partial list: an editor that can only write a
+   wrong value is not a safer editor.
+4. **SET is deliberately excluded.** It holds several members at once, so a
+   single-select would silently drop all but one. It keeps the text box.
+5. **A stored value outside the declared members is kept**, at the head of the
+   list and selected. Opening the editor on a row written before the type was
+   narrowed must not rewrite it to the first member just by being opened.
+6. **Both editors are covered.** The inline editor becomes a `<select>`, and
+   the full-editor dialog (ADR-0082) does too when it is reached; the `⤢`
+   button is dropped for enum columns, because the choices are the whole value
+   space and none of them needs more room. No path leaves an enum edited as
+   free text.
+
+### Consequences
+
+- The `∅ NULL` button stays on both editors: a nullable enum still needs a way
+  to say NULL, and that is a different act from picking the empty-string
+  member, which MySQL allows and which the dropdown shows as `(empty)`.
+- Only MySQL benefits today, because it is the only adapter whose
+  `declared_type` carries the members. Postgres named enum types report the
+  type name, not its labels; wiring those would need a separate catalogue read
+  and is not attempted here.
+- The parser accepts the shape MySQL emits, not arbitrary SQL. That is the only
+  input it ever sees — the string comes from `information_schema`, not from a
+  user.
