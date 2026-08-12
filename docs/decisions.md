@@ -9705,3 +9705,62 @@ a much larger surface to get wrong than the driver is to depend on.
   `tests/live_mongodb.rs`, ignored by default and pointed at a local container.
   Unit tests prove the crate sends what we think MongoDB accepts; that file
   proves MongoDB accepts it.
+
+## ADR-0099 — Whitespace around a pasted value is not part of it, and a base URL is checked where it was typed
+
+### Status
+
+Accepted.
+
+### Context
+
+A Firestore connection to the local emulator failed with:
+
+```
+connection failed: could not reach Firestore: builder error
+```
+
+The values on screen were correct. The stored value was not: the base URL had
+been saved as `" http://127.0.0.1:8385/v1"` — one leading space, invisible in a
+text input, carried in from a paste. `reqwest` cannot parse that as a URL, so
+the request failed at construction, before any network I/O, and reported the
+only thing it knew: that the builder failed.
+
+Two separate faults produced one unusable message:
+
+1. The connection form sent every field verbatim. `blank()` trimmed a value to
+   decide whether it was empty, but the value itself was stored untouched — so
+   whitespace was significant enough to break a URL and invisible enough that
+   nobody could see it.
+2. The adapter accepted any string as a base URL and only found out it was
+   unusable one layer down, where the base URL is no longer in scope and the
+   error cannot name it.
+
+### Decision
+
+1. **The form trims non-secret text on the way out.** URLs, paths and
+   identifiers — DSN, `base_url`, `project_id`, `database_id`, `account_id`,
+   Mongo URI and database, Turso path — are trimmed in both `buildKindInput`
+   and `buildKindEditInput`. Trimming these corrects the value rather than
+   guessing at it: none of them can contain leading or trailing whitespace.
+2. **Secrets are still sent verbatim.** A password or a passphrase may
+   legitimately begin or end with a space, so trimming there would silently
+   change what the user meant. The service-account JSON is left alone for the
+   same reason — it is parsed, and a parser reports its own faults.
+3. **`FirestoreAdapter::connect` parses the base URL.** An unparseable one is
+   refused as `DbError::Connection` quoting the value, at the point where the
+   value is still recognisable as something the user typed. The adapter also
+   trims, so a connection already saved with stray whitespace heals itself
+   without the user editing anything.
+
+### Consequences
+
+- The same paste that used to produce `builder error` now either works or names
+  the field and the value.
+- Add and edit stay identical in this respect, as they must — a form that
+  cleans input on add but not on edit is a bug waiting for the second save.
+- The adapter's trim makes it tolerant of input the form now guarantees is
+  clean. That redundancy is deliberate: the adapter is a library and the form
+  is not its only caller.
+- Not addressed here: trimming as the user types, or showing whitespace in the
+  field. Both are display decisions with no failure mode left to justify them.
