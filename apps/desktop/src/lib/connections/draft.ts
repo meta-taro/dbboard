@@ -268,6 +268,13 @@ export function emptyForm(): ConnectionForm {
 
 const blank = (v: string): boolean => v.trim().length === 0;
 
+// Pasted text routinely carries a leading space or a trailing newline. A URL,
+// a path or an identifier can never contain those, so trimming corrects the
+// value rather than guessing at it — and a stray space in a base URL otherwise
+// surfaces as `builder error`, which names nothing the user can act on.
+// Passwords are deliberately excluded: there, a space may be part of the value.
+const clean = (v: string): string => v.trim();
+
 // Apply the tunnel prefill (if any) onto a base form. Secrets stay blank so an
 // untouched save keeps the stored passphrase/password.
 function applySshPrefill(base: ConnectionForm, ssh: SshPrefill | null | undefined): ConnectionForm {
@@ -605,7 +612,7 @@ export function buildSshEditInput(form: ConnectionForm): Record<string, unknown>
 // from the structured parts. Shared by add and edit — in fields mode an edit is
 // a full replacement of the stored secret, never a keep.
 function dsnFor(form: ConnectionForm): string {
-  return form.use_url ? form.url : composeDsn(form.kind, form);
+  return form.use_url ? clean(form.url) : composeDsn(form.kind, form);
 }
 
 // The `kind` object the `add_connection` command expects (a tagged KindInput).
@@ -614,21 +621,21 @@ function dsnFor(form: ConnectionForm): string {
 export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
   switch (form.kind) {
     case 'turso':
-      return { kind: 'turso', path: form.path };
+      return { kind: 'turso', path: clean(form.path) };
     case 'd1':
       return {
         kind: 'd1',
-        account_id: form.account_id,
-        database_id: form.database_id,
-        base_url: blank(form.base_url) ? null : form.base_url,
+        account_id: clean(form.account_id),
+        database_id: clean(form.database_id),
+        base_url: blank(form.base_url) ? null : clean(form.base_url),
         token: form.token,
       };
     case 'firestore':
       return {
         kind: 'firestore',
-        project_id: form.project_id,
-        database_id: blank(form.database_id) ? null : form.database_id,
-        base_url: blank(form.base_url) ? null : form.base_url,
+        project_id: clean(form.project_id),
+        database_id: blank(form.database_id) ? null : clean(form.database_id),
+        base_url: blank(form.base_url) ? null : clean(form.base_url),
         // `null` is the emulator, so the checkbox has to beat anything left in
         // the credential box rather than half-applying the user's choice.
         service_account: firestoreCredential(form),
@@ -636,9 +643,9 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
     case 'mongodb':
       return {
         kind: 'mongodb',
-        uri: form.uri,
+        uri: clean(form.uri),
         // Blank means "the URI's path names it" — not a database called "".
-        database: blank(form.database) ? null : form.database,
+        database: blank(form.database) ? null : clean(form.database),
       };
     case 'postgres':
     case 'mysql':
@@ -663,21 +670,21 @@ function firestoreCredential(form: ConnectionForm): string | null {
 export function buildKindEditInput(form: ConnectionForm): Record<string, unknown> {
   switch (form.kind) {
     case 'turso':
-      return { kind: 'turso', path: form.path };
+      return { kind: 'turso', path: clean(form.path) };
     case 'd1':
       return {
         kind: 'd1',
-        account_id: form.account_id,
-        database_id: form.database_id,
-        base_url: blank(form.base_url) ? null : form.base_url,
+        account_id: clean(form.account_id),
+        database_id: clean(form.database_id),
+        base_url: blank(form.base_url) ? null : clean(form.base_url),
         token: form.token,
       };
     case 'firestore':
       return {
         kind: 'firestore',
-        project_id: form.project_id,
-        database_id: blank(form.database_id) ? null : form.database_id,
-        base_url: blank(form.base_url) ? null : form.base_url,
+        project_id: clean(form.project_id),
+        database_id: blank(form.database_id) ? null : clean(form.database_id),
+        base_url: blank(form.base_url) ? null : clean(form.base_url),
         use_emulator: form.use_emulator,
         service_account: firestoreCredential(form),
       };
@@ -686,8 +693,8 @@ export function buildKindEditInput(form: ConnectionForm): Record<string, unknown
         kind: 'mongodb',
         // Blank is "keep the stored URI", as it is for the D1 token. There is
         // no emulator-style third state: a MongoDB connection always has one.
-        uri: blank(form.uri) ? null : form.uri,
-        database: blank(form.database) ? null : form.database,
+        uri: blank(form.uri) ? null : clean(form.uri),
+        database: blank(form.database) ? null : clean(form.database),
       };
     case 'postgres':
     case 'mysql':
