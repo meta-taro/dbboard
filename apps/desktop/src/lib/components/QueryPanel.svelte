@@ -16,6 +16,7 @@
     clampLimit,
   } from '$lib/query/limits';
   import { placePopover, type PopoverPlacement } from '$lib/layout/popover';
+  import { runStatus } from '$lib/status/status.svelte';
   import ResultGrid from './ResultGrid.svelte';
   import SqlEditor from './SqlEditor.svelte';
 
@@ -130,8 +131,13 @@
     editTable = table;
     editPk = [];
     const limit = rowLimit;
+    // Timed around the query alone: the schema read that follows a browse is
+    // our own bookkeeping, and charging it to the statement would overstate
+    // what the database actually took.
+    runStatus.begin();
     try {
       result = await runReadQuery(connId, sql, limit);
+      runStatus.end(false);
       resultLimit = limit;
       queryHistory.record(connId, sql);
       if (table) {
@@ -145,6 +151,7 @@
         }
       }
     } catch (e) {
+      runStatus.end(true);
       result = null;
       error = String(e);
       editTable = null;

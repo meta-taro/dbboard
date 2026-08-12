@@ -9759,3 +9759,70 @@ line by definition.
 - Not addressed here: a raw-JSON view alongside the tree. The copy button
   already yields the raw document, and a second view would have to earn its
   place in the dialog.
+
+## ADR-0101 — The window gets a status bar, carrying only what is not already on screen
+
+### Status
+
+Accepted.
+
+### Context
+
+The bottom edge of the window was empty: the shell was a title bar and a body,
+with nothing below it. The request was for something useful there, with the
+explicit condition that filler is not wanted.
+
+Most of what a status bar traditionally shows is already on screen in dbboard,
+and putting it there again would be exactly the filler that was ruled out: the
+row count and the "capped at N" note live in the result toolbar, the connection
+kind is in the sidebar list, and the connection name is in the top bar.
+
+Two things were genuinely absent. **How long the last statement took is
+measured nowhere in the app** — `QueryOutput` carries columns, rows, a count
+and a truncation flag, and no timing at all. And **an available update was
+reachable exactly once**: `UpdateNotice` was rendered from a `+page.svelte`
+state that dismissing set to null, so closing the card discarded the update for
+the rest of the session with no way back to it.
+
+### Decision
+
+1. **The status bar carries the last statement's elapsed time and the running
+   version, plus a chip when an update is waiting.** Nothing else. Anything
+   already visible elsewhere is excluded on the grounds that it is visible
+   elsewhere.
+2. **The row count stays out of it**, though every other client puts it there.
+   It is two centimetres away in the result toolbar, and a status bar repeating
+   the toolbar is the filler this was supposed to avoid.
+3. **Elapsed time is measured in the frontend, around the `invoke` alone**
+   (`src/lib/status/status.svelte.ts`). The schema read that follows a browse
+   is our own bookkeeping and is not charged to the statement. A backend-side
+   measurement would be more truthful about the database and would require a
+   change to `QueryOutput` and every adapter that builds one; this buys most of
+   the answer for none of that.
+4. **A failed statement is still timed.** A query that died after thirty
+   seconds is a different problem from one rejected instantly, and the error
+   text alone does not distinguish them.
+5. **The formatting is a module** — `src/lib/status/summary.ts`. The
+   interesting part is the boundaries: a sub-millisecond query renders as
+   `<1 ms` rather than `0 ms`, because "0 ms" reads as "not measured"; an
+   impossible duration renders as `0 ms` rather than breaking the layout.
+   Digits with unit suffixes, not words, so the bar reads the same in all 11
+   locales.
+6. **Update availability moves into a store** (`src/lib/update/state.svelte.ts`)
+   that separates "there is an update" from "the card is closed". Dismissing
+   hides the card; the chip in the status bar brings it back.
+
+### Consequences
+
+- The bar is 24px and always present, including before the first query, where
+  it says so. A bar that appears and disappears would move the layout under the
+  user.
+- Timing includes the IPC round trip and JSON deserialisation, so it reads
+  slightly high against the same query in a native client. It is honest about
+  what dbboard took to answer, which is the number the person watching cares
+  about.
+- Dismissing an update no longer buries it. The trade is one persistent chip in
+  a corner of the status bar, which is the quietest place in the window.
+- Not addressed here: rows-per-second, a query timer that ticks while running,
+  or a history of timings. The bar shows the last statement, and the run in
+  flight is already announced by the Run button.

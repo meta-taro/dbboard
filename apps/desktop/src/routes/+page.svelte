@@ -11,7 +11,7 @@
   import AiPanel from '$lib/components/AiPanel.svelte';
   import UpdateNotice from '$lib/components/UpdateNotice.svelte';
   import { updateOptOut, checkForUpdate } from '$lib/api';
-  import type { AvailableUpdate } from '$lib/update/notice';
+  import { updateState } from '$lib/update/state.svelte';
   import {
     SIDEBAR_DEFAULT_WIDTH,
     clampSidebarWidth,
@@ -28,7 +28,6 @@
   let backupOpen = $state(false);
   let restoreOpen = $state(false);
   let aiOpen = $state(false);
-  let update = $state<AvailableUpdate | null>(null);
 
   // The width the user asked for, kept unclamped: narrowing the window squeezes
   // the sidebar (see `sidebarWidth`) but must not forget the chosen width, so
@@ -103,9 +102,9 @@
   async function maybeCheckForUpdate() {
     try {
       if (await updateOptOut()) return;
-      update = await checkForUpdate();
+      updateState.set(await checkForUpdate());
     } catch {
-      update = null;
+      updateState.set(null);
     }
   }
 </script>
@@ -259,8 +258,11 @@
   />
 {/if}
 
-{#if update}
-  <UpdateNotice {update} onDismiss={() => (update = null)} />
+{#if updateState.showNotice && updateState.available}
+  <UpdateNotice
+    update={updateState.available}
+    onDismiss={() => updateState.dismiss()}
+  />
 {/if}
 
 <style>

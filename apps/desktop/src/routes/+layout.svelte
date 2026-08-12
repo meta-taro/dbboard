@@ -3,6 +3,7 @@
   import '$lib/styles/tokens.css';
   import { theme } from '$lib/theme/theme.svelte';
   import TopBar from '$lib/components/TopBar.svelte';
+  import StatusBar from '$lib/components/StatusBar.svelte';
 
   let { children } = $props();
 
@@ -12,12 +13,14 @@
   onMount(() => theme.init());
 </script>
 
-<!-- Frameless shell: custom title bar on top, routed page fills the rest. -->
+<!-- Frameless shell: custom title bar on top, routed page fills the middle,
+     status bar pinned to the bottom edge. -->
 <div class="shell">
   <TopBar />
   <div class="body">
     {@render children()}
   </div>
+  <StatusBar />
 </div>
 
 <style>
