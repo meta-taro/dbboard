@@ -443,6 +443,17 @@ enum KindInput {
     AuroraDsql {
         url: String,
     },
+    /// Aurora DSQL with IAM auth (ADR-0036, ADR-0103). No URL: the five plain
+    /// fields are what a SigV4 token is minted from at connect time, and only
+    /// the AWS secret access key is a secret.
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+        secret_access_key: String,
+    },
     /// Firestore (ADR-0093). A blank `service_account` means the local
     /// emulator, which has no credential — not an empty secret.
     Firestore {
@@ -492,6 +503,17 @@ enum KindEditInput {
     },
     AuroraDsql {
         url: Option<String>,
+    },
+    /// Aurora DSQL with IAM auth (ADR-0103). Two states for the secret access
+    /// key, as for D1's token: a blank box keeps the stored one, which is what
+    /// makes rotating the *access key id* alone possible.
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+        secret_access_key: Option<String>,
     },
     /// Firestore (ADR-0093). Three states, like the SSH passphrase:
     /// `use_emulator` drops the credential outright, otherwise a blank
@@ -705,6 +727,21 @@ fn to_add_draft(
         KindInput::Neon { url } => ConnectionKindDraft::Neon { url },
         KindInput::Supabase { url } => ConnectionKindDraft::Supabase { url },
         KindInput::AuroraDsql { url } => ConnectionKindDraft::AuroraDsql { url },
+        KindInput::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_access_key,
+        } => ConnectionKindDraft::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_access_key,
+        },
         KindInput::Firestore {
             project_id,
             database_id,
@@ -802,6 +839,21 @@ fn to_edit_draft(
         KindEditInput::AuroraDsql { url } => ConnectionKindEditDraft::AuroraDsql {
             url: secret_field(url),
         },
+        KindEditInput::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_access_key,
+        } => ConnectionKindEditDraft::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_access_key: secret_field(secret_access_key),
+        },
         KindEditInput::Firestore {
             project_id,
             database_id,
@@ -861,6 +913,17 @@ enum EditFieldsDto {
     Neon {},
     Supabase {},
     AuroraDsql {},
+    /// Aurora DSQL with IAM auth (ADR-0103). All five plain fields come back:
+    /// the AWS *access key id* is an identifier, not a credential — it is
+    /// already in `connections.toml` in the clear — and the form cannot let the
+    /// operator rotate it without showing which one is stored.
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+    },
     /// `use_emulator` is the read-back of "no stored credential" (ADR-0093).
     /// It is not a secret — it is which mode the connection is in — so unlike
     /// the service-account JSON it can be sent to the form, which needs it to
@@ -982,8 +1045,6 @@ fn ssh_edit_fields(ssh: &SshTunnelToml) -> SshEditFieldsDto {
 }
 
 /// Read the non-secret editable fields for `id` so the edit form can prefill.
-/// Aurora DSQL (IAM) is config-file-only and has no in-app editor (parity
-/// with egui), so it is rejected here rather than silently mis-rendered.
 #[tauri::command]
 fn connection_edit_fields(
     state: tauri::State<'_, AppState>,
@@ -1029,13 +1090,20 @@ fn connection_edit_fields(
         ConnectionKind::MongoDb { database, .. } => EditFieldsDto::MongoDb {
             database: database.clone(),
         },
-        ConnectionKind::AuroraDsqlIam { .. } => {
-            return Err(
-                "Aurora DSQL (IAM) connections are configured in connections.toml \
-                 and cannot be edited in-app"
-                    .to_string(),
-            )
-        }
+        ConnectionKind::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            ..
+        } => EditFieldsDto::AuroraDsqlIam {
+            endpoint: endpoint.clone(),
+            region: region.clone(),
+            database: database.clone(),
+            username: username.clone(),
+            access_key_id: access_key_id.clone(),
+        },
     };
     let dsn = admin
         .dsn_prefill(&id)
