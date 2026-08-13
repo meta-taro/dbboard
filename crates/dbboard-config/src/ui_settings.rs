@@ -11,7 +11,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigError;
@@ -104,8 +103,9 @@ impl UiSettingsFile {
 /// Returns [`ConfigError::NoConfigDir`] when the OS reports no usable
 /// per-user config directory (no `$HOME`, no `%APPDATA%`).
 pub fn default_ui_settings_path() -> Result<PathBuf, ConfigError> {
-    let dirs = ProjectDirs::from("dev", "dbboard", "dbboard").ok_or(ConfigError::NoConfigDir)?;
-    Ok(dirs.config_dir().join("ui-settings.toml"))
+    // Through `store::config_dir` rather than its own `ProjectDirs` lookup, so
+    // that `DBBOARD_CONFIG_DIR` moves this file with the rest of the profile.
+    Ok(crate::store::config_dir()?.join("ui-settings.toml"))
 }
 
 /// Load `ui-settings.toml`, falling back to defaults on **any** problem.
