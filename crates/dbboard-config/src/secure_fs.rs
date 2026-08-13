@@ -310,21 +310,46 @@ mod tests {
         assert_eq!(is_likely_cloud_synced_path(&path), None);
     }
 
+    /// Builds a path out of its segments instead of a `\`-separated literal.
+    ///
+    /// The classifier walks `Path::components()`, and only Windows treats `\`
+    /// as a separator — on Unix it is an ordinary character, so a literal like
+    /// `r"C:\Users\alice\OneDrive\..."` collapses into a single component and
+    /// matches nothing. That is a defect of the test, not of the classifier
+    /// (a Windows-shaped path never reaches the Unix build), so the fix is to
+    /// keep these Windows-layout cases covered on every CI platform rather
+    /// than gate them behind `cfg(windows)`.
+    fn path_of(segments: &[&str]) -> PathBuf {
+        segments.iter().collect()
+    }
+
     #[test]
     fn is_likely_cloud_synced_path_detects_onedrive_personal() {
-        let path = PathBuf::from(r"C:\Users\alice\OneDrive\AppData\Roaming\dbboard\config");
+        let path = path_of(&[
+            "C:", "Users", "alice", "OneDrive", "AppData", "Roaming", "dbboard", "config",
+        ]);
         assert_eq!(is_likely_cloud_synced_path(&path), Some("OneDrive"));
     }
 
     #[test]
     fn is_likely_cloud_synced_path_detects_onedrive_for_business_tenant() {
-        let path = PathBuf::from(r"C:\Users\alice\OneDrive - Contoso Ltd\AppData\Roaming\dbboard");
+        let path = path_of(&[
+            "C:",
+            "Users",
+            "alice",
+            "OneDrive - Contoso Ltd",
+            "AppData",
+            "Roaming",
+            "dbboard",
+        ]);
         assert_eq!(is_likely_cloud_synced_path(&path), Some("OneDrive"));
     }
 
     #[test]
     fn is_likely_cloud_synced_path_detects_onedrive_case_insensitively() {
-        let path = PathBuf::from(r"C:\Users\alice\onedrive\AppData\Roaming\dbboard");
+        let path = path_of(&[
+            "C:", "Users", "alice", "onedrive", "AppData", "Roaming", "dbboard",
+        ]);
         assert_eq!(is_likely_cloud_synced_path(&path), Some("OneDrive"));
     }
 
@@ -342,7 +367,7 @@ mod tests {
 
     #[test]
     fn is_likely_cloud_synced_path_detects_google_drive() {
-        let path = PathBuf::from(r"C:\Users\alice\Google Drive\dbboard\config");
+        let path = path_of(&["C:", "Users", "alice", "Google Drive", "dbboard", "config"]);
         assert_eq!(is_likely_cloud_synced_path(&path), Some("Google Drive"));
     }
 
@@ -371,7 +396,14 @@ mod tests {
     fn is_likely_cloud_synced_path_does_not_match_substring_inside_segment() {
         // "OneDriveBackup" is not OneDrive itself — refuse the
         // substring false positive.
-        let path = PathBuf::from(r"C:\Users\alice\OneDriveBackup\dbboard\config");
+        let path = path_of(&[
+            "C:",
+            "Users",
+            "alice",
+            "OneDriveBackup",
+            "dbboard",
+            "config",
+        ]);
         assert_eq!(is_likely_cloud_synced_path(&path), None);
     }
 }
