@@ -1,0 +1,35 @@
+# A Cloud Firestore emulator to work through
+# `docs/test-specs/001-firestore-connection.tsv` against, without a Google
+# Cloud project and without a service-account key.
+#
+#   docker compose -f docker/firestore-emulator/compose.yaml up -d
+#   node docker/firestore-emulator/seed.mjs
+#
+# See README.md in this directory for what to type into dbboard afterwards,
+# and for which rows of the sheet this cannot answer.
+services:
+  firestore:
+    # Google's own Cloud SDK image. The `emulators` tag is the variant that
+    # carries the emulator payloads and a JRE to run them; the plain tag does
+    # not, and `gcloud emulators firestore start` on it tries to download the
+    # component at run time.
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    container_name: dbboard-firestore-emulator
+    # 8080 is the emulator's default and is the port most likely to be taken by
+    # something a developer is actually working on. 8385 is what this
+    # repository uses everywhere else, including the live adapter tests.
+    #
+    # Bound to 127.0.0.1 on purpose: an emulator has no authentication at all,
+    # and `8385:8385` would offer it to the whole network.
+    ports:
+      - "127.0.0.1:8385:8385"
+    # `demo-` is the Firebase tooling's own marker for "this project does not
+    # exist". Tools refuse to reach production for one, which is what makes it
+    # safe to point a client at this with no credentials.
+    command: >
+      gcloud emulators firestore start
+      --host-port=0.0.0.0:8385
+      --project=demo-dbboard
+    # The emulator keeps everything in memory, so a restart is a clean
+    # database. Re-run seed.mjs after one.
+    restart: "no"

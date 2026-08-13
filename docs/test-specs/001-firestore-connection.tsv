@@ -5,9 +5,10 @@
 # 版: 0.1.0
 # ステータス: 未実施
 # 凡例: 結果は OK / NG / 保留 / 未実施 から選択。未入力セルは空のまま（—/N/A で埋めない）。担当は GitHub アカウント名で記入する（実名は書かない）。
-#@ note 対象ビルドは v0.6.0（リリース済）。<https://meta-taro.github.io/dbboard/> の Windows インストーラで検証できる。
+#@ note 対象ビルドは v0.7.0（リリース済）。<https://meta-taro.github.io/dbboard/> の Windows インストーラで検証できる。
 #@ note 実 Firestore を使う行は、サービスアカウント鍵のファイルパスをシートに書かないこと（PII / 資格情報はリポジトリへ入れない）。
-#@ note エミュレータを使う行は任意。使う場合のみ `firebase emulators:start --only firestore --project demo-dbboard`（ポート 8385）。
+#@ note No.2〜9 はエミュレータで実施できる。`docker compose -f docker/firestore-emulator/compose.yaml up -d` の後 `node docker/firestore-emulator/seed.mjs`。手順は docker/firestore-emulator/README.md。
+#@ note No.1・10・11 はエミュレータでは実施できない（認証が無いため鍵を渡せず、プロジェクト ID を間違えてもエラーにならない）。実 Firestore が用意できるまで未実施のまま残す。
 #@ note NG の行は関連Issue 列に起票した Issue の URL を入れる。検証結果は Issue へのリンクで追跡する。
 #@ style 結果 OK=#e7f6ec NG=#fcebec 保留=#fdf3e2
 No.:number!	区分	項目!	手順:multiline!	期待結果:multiline!	結果:enum(OK|NG|保留|未実施)!	実施日:date	担当	関連Issue:url	備考:multiline

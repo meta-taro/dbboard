@@ -9706,6 +9706,150 @@ a much larger surface to get wrong than the driver is to depend on.
   Unit tests prove the crate sends what we think MongoDB accepts; that file
   proves MongoDB accepts it.
 
+---
+
+## ADR-0097 — `DBBOARD_CONFIG_DIR` moves the whole profile, or nothing
+
+**Status**: Accepted · 2026-08-11
+
+### Context
+
+There was no supported way to start dbboard against a config directory
+other than the per-user one. That is fine until you need to show the app
+to somebody: a screenshot of dbboard as installed puts the connection
+list on screen, and the connection list renders a `user@host` label
+holding a real database host. The download page therefore says nothing
+about what the app looks like, which is the one thing a download page is
+for.
+
+The obvious workaround does not work on Windows. `directories`, which
+resolves the config dir, reads the known-folder API rather than
+`%APPDATA%`; launching a second instance with the environment variable
+redirected still opens the real profile. Verified empirically, not
+assumed.
+
+Five files are involved, and each one was doing its own `ProjectDirs`
+lookup: `connections.toml`, `history.jsonl`, `ai-providers.toml`,
+`annotations.toml`, `ui-settings.toml`.
+
+### Decision
+
+1. **One env var, `DBBOARD_CONFIG_DIR`, resolved in one place.**
+   `store::config_dir()` is the only `ProjectDirs` call site left; the
+   other four modules route through it.
+
+2. **All five files move together, or the override is worse than
+   nothing.** A half-honoured override would sit a demo profile's
+   connections next to the real profile's query history — a screenshot
+   taken in good faith would then leak the very thing the override was
+   added to hide. The integration test asserts togetherness rather than
+   the variable, because that is the property the safety rests on.
+
+3. **A blank value is not a config dir.** `""`, `"   "` and `"\t"` all
+   fall back to the per-user lookup. An exported-but-empty variable
+   would otherwise resolve to the process's working directory and write
+   credentials wherever the app happened to be started from — the
+   failure mode is silent and the file is a credential store, so it is
+   worth three lines to refuse.
+
+4. **The env-reading is separated from the decision-making.**
+   `config_dir_from(Option<&str>)` is pure and carries the unit tests;
+   `config_dir()` is the two-line wrapper that reads the environment.
+   `unsafe_code` is `forbid` workspace-wide and `std::env::set_var` is
+   unsafe as of Rust 2024, so a test that sets the variable cannot
+   compile — and `forbid` is not something to weaken for a test's
+   convenience. Splitting the function tests the same logic without
+   mutating global state, which is the better shape regardless.
+
+5. **The keychain is deliberately *not* redirected.** Secrets are keyed
+   by `(KEYRING_SERVICE, connection id + field)`. A demo profile has its
+   own ids and therefore no entries to find; nothing in it can reach the
+   real profile's secrets. Adding a keychain namespace would be a second
+   mechanism to get wrong for no gain.
+
+### Consequences
+
+- dbboard can be launched with an empty profile, which makes the
+  download-page screenshots possible without hand-editing files.
+- The override is an escape hatch, not a supported multi-profile
+  feature: nothing in the UI shows which config dir is live, so a user
+  who sets it permanently has no in-app reminder. If profiles ever
+  become a real feature, this variable is the seam to build on.
+- Anyone adding a sixth per-user file must route it through
+  `store::config_dir()`. The integration test does not know about files
+  it was not told about, so this stays a review obligation.
+
+## ADR-0098 — The screenshots are of a fictional database, and the check is a checklist
+
+Status: Accepted · 2026-08-11
+
+### Context
+
+The download page asked people to install an unsigned binary without
+showing them what it was. The obvious fix — take a screenshot — is the
+reason it had not been done: dbboard's main window shows a connection
+list, and this project is developed against real, business-identifying
+databases. A capture of the app as it is actually run is a capture of
+real hosts.
+
+`scripts/pii-scan.sh` (ADR-0055) is the control everywhere else in this
+repo, and it cannot read a PNG. Nothing downstream catches what a
+capture caught.
+
+### Decision
+
+1. **Screenshots come from a synthetic profile, never from the real
+   one.** `scripts/demo-profile` builds a SQLite file of fictional
+   weather-station data, and `DBBOARD_CONFIG_DIR` (ADR-0097) starts
+   dbboard against a config directory that has never held a credential.
+   The alternative — capture reality and redact — is a judgement call
+   made under time pressure every single time, and a reversible blur or
+   a black box over a surviving layer is worse than the original,
+   because it is then believed to be safe.
+
+2. **"Fictional" is machine-checked, not intended.**
+   `seed.test.mjs` asserts that no string in the corpus is shaped like an
+   email address, an IP address or a domain name. This does not prove the
+   data is harmless; it catches the shapes that leak by accident, which
+   are the ones that survive review.
+
+3. **The corpus is generated from a fixed seed.** Screenshots get
+   retaken every time the interface changes shape. With `Math.random`,
+   two releases' images differ for reasons that have nothing to do with
+   the app, and nobody can read the diff.
+
+4. **It is a plain SQLite file, not a container.** libSQL opens it
+   unchanged, so the Turso/libSQL adapter reads it with no server and no
+   Docker daemon. The emulator fixtures need one; a screenshot should not
+   be blocked on it.
+
+5. **The residual risk is carried by a written checklist, not by a
+   tool.** `docs/maintainer/screenshots.md` lists what has to be absent
+   from the image — no host, no username-bearing path, no query history,
+   no other application, no neighbouring window at the edges. Naming the
+   items is the only thing that makes them checkable, given that no
+   scanner will ever run on the artifact.
+
+6. **`site/page.test.mjs` checks the page, not the picture.** Every
+   referenced image exists, is same-origin (the page pins
+   `img-src 'self'`, so an off-origin image renders as nothing at all
+   rather than slowly), and carries a non-empty `alt`. A broken `<img>`
+   is invisible in a diff and invisible in review, and shows up only as a
+   blank rectangle to the visitor the page was written for.
+
+### Consequences
+
+- The screenshots can be regenerated by anyone with the repo, without
+  access to any database. That is what makes retaking them cheap enough
+  to actually happen when the interface changes.
+- The demo profile has to be kept boring. Once it is used for debugging,
+  its query history stops being safe to photograph, and it is no longer
+  a demo profile.
+- The checklist is a human control and will eventually be skipped. It is
+  written to be read in under a minute for that reason. If captures ever
+  become routine enough to automate, the seam is a scripted capture that
+  drives the app by process id rather than by "the window in front".
+
 ## ADR-0104 — Verification runs in CI, not only in a git hook
 
 - **Status**: accepted
