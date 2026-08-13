@@ -24,6 +24,7 @@ export type ConnectionKind =
   | 'neon'
   | 'supabase'
   | 'aurora_dsql'
+  | 'aurora_dsql_iam'
   | 'firestore'
   | 'mongodb';
 
@@ -37,6 +38,7 @@ export const CONNECTION_KINDS: readonly ConnectionKind[] = [
   'neon',
   'supabase',
   'aurora_dsql',
+  'aurora_dsql_iam',
   'firestore',
   'mongodb',
 ] as const;
@@ -57,7 +59,15 @@ export type FormField =
   | 'project_id'
   | 'service_account'
   | 'uri'
-  | 'database';
+  | 'database'
+  // Aurora DSQL (IAM). `database` above is shared with MongoDB; the rest are
+  // this kind's alone, because it is the only one that stores connection
+  // coordinates as fields instead of hiding them inside a URL.
+  | 'endpoint'
+  | 'region'
+  | 'username'
+  | 'access_key_id'
+  | 'secret_access_key';
 
 // Kinds that can front an SSH tunnel (ADR-0069): the TCP/URL-bearing engines.
 // Turso (embedded/libSQL HTTP) and D1 (HTTP) have no host:port to forward, so
@@ -79,7 +89,11 @@ export function supportsSshTunnel(kind: ConnectionKind): boolean {
 // entries are owned by `connections.toml` and have no in-app form. The list
 // panel takes these from `ConnectionView.kind`, a different namespace from the
 // underscored `ConnectionKind` above, which is why this is a plain string.
-const TOML_ONLY_KIND_SLUGS: readonly string[] = ['aurora-dsql-iam'];
+//
+// Empty since ADR-0103 gave `aurora-dsql-iam` a form. Kept rather than deleted
+// so the next backend-only kind is one entry here instead of a rediscovery of
+// why the Edit button needs a disabled state at all.
+const TOML_ONLY_KIND_SLUGS: readonly string[] = [];
 
 /** Whether the edit form can open this connection at all. The backend refuses
  *  the same set; checking here turns "click, then get a red error" into a
@@ -118,7 +132,15 @@ export interface ConnectionForm extends DsnParts {
   project_id: string; // firestore
   service_account: string; // firestore secret (service-account JSON)
   uri: string; // mongodb secret (the password rides in the URI's authority)
-  database: string; // mongodb (optional — the URI's path may name it instead)
+  database: string; // mongodb (optional) / aurora_dsql_iam (required)
+  // Aurora DSQL (IAM). Five plain fields plus one secret: the token is minted
+  // from all six at connect time, so unlike every other kind there is no URL to
+  // hide the non-secret ones inside.
+  endpoint: string;
+  region: string;
+  username: string;
+  access_key_id: string;
+  secret_access_key: string; // secret
   // Firestore only (ADR-0093): connect to the local emulator, which has no
   // credential at all. Distinct from a blank `service_account`, which on edit
   // means "keep the stored one" — so the choice needs its own flag, exactly as
@@ -207,6 +229,17 @@ export type EditFields = (
   // Only the explicit database name comes back; the URI is the secret
   // (ADR-0096). `null` means the URI's path names it.
   | { kind: 'mongodb'; database: string | null }
+  // All five come back, the access key id included: it is an identifier the
+  // operator has to see to know which key pair they are rotating away from.
+  // The secret access key never does (ADR-0016).
+  | {
+      kind: 'aurora_dsql_iam';
+      endpoint: string;
+      region: string;
+      database: string;
+      username: string;
+      access_key_id: string;
+    }
   | { kind: 'postgres' | 'mysql' | 'neon' | 'supabase' | 'aurora_dsql' }
 ) & {
   ssh?: SshPrefill | null;
@@ -244,6 +277,11 @@ export function emptyForm(): ConnectionForm {
     service_account: '',
     uri: '',
     database: '',
+    endpoint: '',
+    region: '',
+    username: '',
+    access_key_id: '',
+    secret_access_key: '',
     use_emulator: false,
     use_url: false,
     ...emptyDsnParts(),
@@ -267,6 +305,13 @@ export function emptyForm(): ConnectionForm {
 }
 
 const blank = (v: string): boolean => v.trim().length === 0;
+
+// Pasted text routinely carries a leading space or a trailing newline. A URL,
+// a path or an identifier can never contain those, so trimming corrects the
+// value rather than guessing at it — and a stray space in a base URL otherwise
+// surfaces as `builder error`, which names nothing the user can act on.
+// Passwords are deliberately excluded: there, a space may be part of the value.
+const clean = (v: string): string => v.trim();
 
 // Apply the tunnel prefill (if any) onto a base form. Secrets stay blank so an
 // untouched save keeps the stored passphrase/password.
@@ -362,6 +407,15 @@ export function formForEdit(id: string, name: string, fields: EditFields): Conne
       };
     case 'mongodb':
       return { ...base, database: fields.database ?? '' };
+    case 'aurora_dsql_iam':
+      return {
+        ...base,
+        endpoint: fields.endpoint,
+        region: fields.region,
+        database: fields.database,
+        username: fields.username,
+        access_key_id: fields.access_key_id,
+      };
     default:
       // Postgres-family: only name + the secret url are editable.
       return base;
@@ -397,6 +451,8 @@ export function fieldsForKind(kind: ConnectionKind): FormField[] {
       return ['project_id', 'database_id', 'base_url', 'service_account'];
     case 'mongodb':
       return ['uri', 'database'];
+    case 'aurora_dsql_iam':
+      return ['endpoint', 'region', 'database', 'username', 'access_key_id', 'secret_access_key'];
     case 'postgres':
     case 'mysql':
     case 'neon':
@@ -430,6 +486,11 @@ export function secretFields(kind: ConnectionKind): FormField[] {
       return ['service_account'];
     case 'mongodb':
       return ['uri'];
+    // Only the AWS secret access key. The access key id sits beside it in
+    // connections.toml in the clear, and masking an identifier the operator has
+    // to compare against the AWS console would help nobody.
+    case 'aurora_dsql_iam':
+      return ['secret_access_key'];
     case 'postgres':
     case 'mysql':
     case 'neon':
@@ -605,7 +666,7 @@ export function buildSshEditInput(form: ConnectionForm): Record<string, unknown>
 // from the structured parts. Shared by add and edit — in fields mode an edit is
 // a full replacement of the stored secret, never a keep.
 function dsnFor(form: ConnectionForm): string {
-  return form.use_url ? form.url : composeDsn(form.kind, form);
+  return form.use_url ? clean(form.url) : composeDsn(form.kind, form);
 }
 
 // The `kind` object the `add_connection` command expects (a tagged KindInput).
@@ -614,21 +675,21 @@ function dsnFor(form: ConnectionForm): string {
 export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
   switch (form.kind) {
     case 'turso':
-      return { kind: 'turso', path: form.path };
+      return { kind: 'turso', path: clean(form.path) };
     case 'd1':
       return {
         kind: 'd1',
-        account_id: form.account_id,
-        database_id: form.database_id,
-        base_url: blank(form.base_url) ? null : form.base_url,
+        account_id: clean(form.account_id),
+        database_id: clean(form.database_id),
+        base_url: blank(form.base_url) ? null : clean(form.base_url),
         token: form.token,
       };
     case 'firestore':
       return {
         kind: 'firestore',
-        project_id: form.project_id,
-        database_id: blank(form.database_id) ? null : form.database_id,
-        base_url: blank(form.base_url) ? null : form.base_url,
+        project_id: clean(form.project_id),
+        database_id: blank(form.database_id) ? null : clean(form.database_id),
+        base_url: blank(form.base_url) ? null : clean(form.base_url),
         // `null` is the emulator, so the checkbox has to beat anything left in
         // the credential box rather than half-applying the user's choice.
         service_account: firestoreCredential(form),
@@ -636,9 +697,19 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
     case 'mongodb':
       return {
         kind: 'mongodb',
-        uri: form.uri,
+        uri: clean(form.uri),
         // Blank means "the URI's path names it" — not a database called "".
-        database: blank(form.database) ? null : form.database,
+        database: blank(form.database) ? null : clean(form.database),
+      };
+    case 'aurora_dsql_iam':
+      return {
+        kind: 'aurora_dsql_iam',
+        endpoint: form.endpoint,
+        region: form.region,
+        database: form.database,
+        username: form.username,
+        access_key_id: form.access_key_id,
+        secret_access_key: form.secret_access_key,
       };
     case 'postgres':
     case 'mysql':
@@ -663,21 +734,21 @@ function firestoreCredential(form: ConnectionForm): string | null {
 export function buildKindEditInput(form: ConnectionForm): Record<string, unknown> {
   switch (form.kind) {
     case 'turso':
-      return { kind: 'turso', path: form.path };
+      return { kind: 'turso', path: clean(form.path) };
     case 'd1':
       return {
         kind: 'd1',
-        account_id: form.account_id,
-        database_id: form.database_id,
-        base_url: blank(form.base_url) ? null : form.base_url,
+        account_id: clean(form.account_id),
+        database_id: clean(form.database_id),
+        base_url: blank(form.base_url) ? null : clean(form.base_url),
         token: form.token,
       };
     case 'firestore':
       return {
         kind: 'firestore',
-        project_id: form.project_id,
-        database_id: blank(form.database_id) ? null : form.database_id,
-        base_url: blank(form.base_url) ? null : form.base_url,
+        project_id: clean(form.project_id),
+        database_id: blank(form.database_id) ? null : clean(form.database_id),
+        base_url: blank(form.base_url) ? null : clean(form.base_url),
         use_emulator: form.use_emulator,
         service_account: firestoreCredential(form),
       };
@@ -686,8 +757,20 @@ export function buildKindEditInput(form: ConnectionForm): Record<string, unknown
         kind: 'mongodb',
         // Blank is "keep the stored URI", as it is for the D1 token. There is
         // no emulator-style third state: a MongoDB connection always has one.
-        uri: blank(form.uri) ? null : form.uri,
-        database: blank(form.database) ? null : form.database,
+        uri: blank(form.uri) ? null : clean(form.uri),
+        database: blank(form.database) ? null : clean(form.database),
+      };
+    case 'aurora_dsql_iam':
+      return {
+        kind: 'aurora_dsql_iam',
+        endpoint: form.endpoint,
+        region: form.region,
+        database: form.database,
+        username: form.username,
+        // The whole point of the edit form: the id can be rotated on its own,
+        // because a blank secret box keeps the key already in the keychain.
+        access_key_id: form.access_key_id,
+        secret_access_key: blank(form.secret_access_key) ? null : form.secret_access_key,
       };
     case 'postgres':
     case 'mysql':

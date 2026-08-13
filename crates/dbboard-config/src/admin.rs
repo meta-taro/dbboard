@@ -26,7 +26,7 @@
 //! collapses the rollback story above. Users that want to change kind
 //! must delete + re-add.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -128,6 +128,18 @@ pub enum ConnectionKindDraft {
     },
     AuroraDsql {
         url: String,
+    },
+    /// Aurora DSQL with IAM auth (ADR-0036, ADR-0103). Only the AWS secret
+    /// access key is a secret; the other five fields are stored inline because
+    /// a `SigV4` token is minted from them at connect time, so there is no URL
+    /// to hide them in.
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+        secret_access_key: String,
     },
     /// Firestore (ADR-0093). `service_account` is `None` for the local
     /// emulator, which authenticates with a fixed `Bearer owner` and therefore
@@ -256,13 +268,17 @@ pub enum ConnectionKindEditDraft {
     AuroraDsql {
         url: SecretField,
     },
-    /// Aurora DSQL IAM (ADR-0036). Carries no editable field: this kind
-    /// is config-file-only in v1, so the UI never offers an editable form
-    /// for it. The variant exists only so the edit state machine is
-    /// total; any `update()` targeting it falls through
-    /// [`ConnectionAdmin::apply_update_kind`]'s catch-all as a
-    /// [`ConfigError::KindMismatch`].
-    AuroraDsqlIam,
+    /// Aurora DSQL with IAM auth (ADR-0036, ADR-0103). Two states are enough
+    /// for the secret access key, as for D1's token: an IAM connection always
+    /// has one, so there is no third "no credential" state to express.
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+        secret_access_key: SecretField,
+    },
     Firestore {
         project_id: String,
         database_id: Option<String>,
@@ -303,20 +319,42 @@ pub enum SecretField {
     Set(String),
 }
 
-/// Outcome of [`ConnectionAdmin::import_bundle`] (ADR-0038).
+/// How [`ConnectionAdmin::import_bundle`] resolves an incoming id that
+/// the live store already holds (ADR-0105).
 ///
-/// Import is **additive and non-destructive**: an incoming id that
-/// already exists in the live store is never overwritten. Instead it is
-/// recorded in [`ImportReport::skipped`] so the UI can tell the user
-/// exactly which connections were left untouched, while
-/// [`ImportReport::imported`] lists the ids that were newly added. Both
-/// preserve the order in which the bundle presented its entries.
+/// This is only about the *id* collision. The ref-collision guard from
+/// ADR-0038 is not a mode and does not relax: in either mode, an entry
+/// whose `keyring_*_ref` aims at a slot some **other** connection owns is
+/// refused.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ImportMode {
+    /// Keep what the store already has and report the collision. The
+    /// original ADR-0038 behaviour, and the default: it cannot lose a
+    /// credential the user has and the bundle does not.
+    #[default]
+    Skip,
+    /// Replace the existing entry and its secrets in place. The user
+    /// asked for this explicitly; the bundle is the source of truth.
+    Overwrite,
+}
+
+/// Outcome of [`ConnectionAdmin::import_bundle`] (ADR-0038, ADR-0105).
+///
+/// The three lists partition the bundle's entries, and each preserves the
+/// order in which the bundle presented them, so the UI can name exactly
+/// which connections were added, which were replaced, and which were left
+/// untouched.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportReport {
     /// Ids added to the store by this import.
     pub imported: Vec<String>,
-    /// Ids present in the bundle but skipped because an entry with the
-    /// same id already existed (or the bundle listed the id twice).
+    /// Ids that replaced an existing entry of the same id
+    /// ([`ImportMode::Overwrite`] only).
+    pub overwritten: Vec<String>,
+    /// Ids present in the bundle but skipped: an entry with the same id
+    /// already existed and the mode was [`ImportMode::Skip`], the bundle
+    /// listed the id twice, or the entry's ref aimed at another
+    /// connection's keychain slot.
     pub skipped: Vec<String>,
 }
 
@@ -678,13 +716,11 @@ impl ConnectionAdmin {
     /// (ADR-0038, slice b). The returned bytes are written verbatim to a
     /// user-chosen `.dbbx` file by the UI layer.
     ///
-    /// The v1 scope is **all connections at once**: the collector handoff
-    /// (#14) wants a whole machine's connection set in one artifact, and a
-    /// per-connection picker adds UI without a real use case yet.
-    ///
     /// Every `keyring_*_ref` on every entry is resolved through the
     /// [`SecretStore`] and packed alongside the metadata, because the TOML
     /// alone is useless on another machine (it stores only references).
+    ///
+    /// See [`ConnectionAdmin::export_bundle_of`] to export a subset.
     ///
     /// # Errors
     ///
@@ -694,19 +730,76 @@ impl ConnectionAdmin {
     ///   from the keychain. Export fails loudly here rather than shipping
     ///   a bundle that is silently missing a secret.
     pub fn export_bundle(&self, passphrase: &str) -> Result<Vec<u8>, ConfigError> {
+        let all: Vec<&ConnectionEntry> = self.file.connections.iter().collect();
+        self.encrypt_selection(&all, passphrase)
+    }
+
+    /// Encrypt only the connections named in `ids` (ADR-0105), otherwise
+    /// identical to [`ConnectionAdmin::export_bundle`].
+    ///
+    /// The bundle lists the selected entries in **store order**, not
+    /// argument order, so two exports of the same set are byte-comparable
+    /// in their plaintext and the import report reads the way the list
+    /// looks on screen.
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::EmptySelection`] if `ids` is empty. An empty
+    ///   bundle is indistinguishable from a wrong passphrase at import
+    ///   time, so it is refused where the mistake was actually made.
+    /// - [`ConfigError::NotFound`] if an id names no entry — the caller is
+    ///   working from a stale view of the store (ADR-0016).
+    /// - Everything [`ConnectionAdmin::export_bundle`] can return.
+    pub fn export_bundle_of(
+        &self,
+        ids: &[String],
+        passphrase: &str,
+    ) -> Result<Vec<u8>, ConfigError> {
+        if ids.is_empty() {
+            return Err(ConfigError::EmptySelection);
+        }
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        // Name every id back at the caller before doing any work, so a
+        // typo is not reported as "exported 2 of 3".
+        for id in ids {
+            if self.find_index(id).is_none() {
+                return Err(ConfigError::NotFound(id.clone()));
+            }
+        }
+        let selected: Vec<&ConnectionEntry> = self
+            .file
+            .connections
+            .iter()
+            .filter(|e| wanted.contains(e.id.as_str()))
+            .collect();
+        self.encrypt_selection(&selected, passphrase)
+    }
+
+    /// Resolve every ref on `entries` and seal them into a bundle blob.
+    /// Shared by both export entry points so the selective path cannot
+    /// drift from the whole-store one.
+    fn encrypt_selection(
+        &self,
+        entries: &[&ConnectionEntry],
+        passphrase: &str,
+    ) -> Result<Vec<u8>, ConfigError> {
         // Reject a weak passphrase before touching the keychain, so a
         // typo costs nothing.
         validate_passphrase(passphrase)?;
 
         let mut secrets = BTreeMap::new();
-        for entry in &self.file.connections {
+        for entry in entries {
             for key_ref in entry_keyring_refs(entry) {
                 let value = self.secrets.get(&key_ref)?;
                 secrets.insert(key_ref, value);
             }
         }
 
-        let payload = BundlePayload::new(self.file.clone(), secrets);
+        let mut file = ConnectionFile::empty();
+        file.version = self.file.version;
+        file.connections = entries.iter().map(|e| (*e).clone()).collect();
+
+        let payload = BundlePayload::new(file, secrets);
         let blob = encrypt_bundle(&payload, passphrase)?;
         Ok(blob)
     }
@@ -715,32 +808,43 @@ impl ConnectionAdmin {
     /// the live store (ADR-0038, slice b), returning an [`ImportReport`]
     /// of which ids were added and which were skipped.
     ///
-    /// Import is **additive and conflict-safe**: an incoming id that
-    /// already exists (or that the bundle lists twice) is skipped and
-    /// reported, never overwritten — the user's current secrets and
-    /// metadata are the source of truth. An incoming entry whose
-    /// `keyring_*_ref` points at a keychain slot **another** connection
-    /// already owns is also skipped: `keyring_*_ref` is free-form JSON in
-    /// the bundle, so a crafted bundle could otherwise carry a brand-new id
-    /// but a ref aimed at an existing connection's slot and silently
-    /// overwrite that connection's live secret (ADR-0038 threat model).
-    /// Newly-added entries seed their secrets into the keychain first, then
-    /// the TOML is persisted; on a TOML-write failure the just-seeded
-    /// secrets are rolled back so no orphan keyring entry survives, exactly
-    /// as [`ConnectionAdmin::add`] does.
+    /// `mode` decides what happens when an incoming id already exists:
+    /// [`ImportMode::Skip`] keeps what the store has and reports the
+    /// collision, [`ImportMode::Overwrite`] replaces the entry and its
+    /// secrets in place, keeping the slot it held in the list.
+    ///
+    /// **The id collision is the only thing `mode` governs.** An incoming
+    /// entry whose `keyring_*_ref` points at a keychain slot **another**
+    /// connection owns is skipped in either mode: `keyring_*_ref` is
+    /// free-form JSON in the bundle, so a crafted bundle could otherwise
+    /// carry a brand-new id but a ref aimed at an existing connection's
+    /// slot and silently overwrite that connection's live secret (ADR-0038
+    /// threat model). Overwriting an id means replacing the entry that owns
+    /// that id, and nothing else.
+    ///
+    /// Secrets are seeded into the keychain first, then the TOML is
+    /// persisted; on a TOML-write failure every touched slot is put back
+    /// the way it was — deleted if this call created it, **restored to its
+    /// previous value** if this call overwrote it. A rollback that only
+    /// deleted would turn a failed import into credential loss.
+    ///
+    /// After a successful overwrite, keychain slots the replacement no
+    /// longer references are purged, exactly as [`ConnectionAdmin::update`]
+    /// does.
     ///
     /// # Errors
     ///
     /// - [`ConfigError::Bundle`] if the passphrase is wrong or the blob is
     ///   corrupt / not a dbboard bundle / a newer bundle version.
     /// - [`ConfigError::Secret`] if seeding an imported secret fails; any
-    ///   secrets already seeded by this call are rolled back first.
+    ///   secrets already written by this call are rolled back first.
     /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML
-    ///   write; the seeded secrets are rolled back before returning.
+    ///   write; the written secrets are rolled back before returning.
     pub fn import_bundle(
         &mut self,
         blob: &[u8],
         passphrase: &str,
+        mode: ImportMode,
     ) -> Result<ImportReport, ConfigError> {
         let mut payload = decrypt_bundle(blob, passphrase)?;
         // Take the incoming entries out of the payload so we can iterate
@@ -750,33 +854,41 @@ impl ConnectionAdmin {
         // vec behind and the payload still scrubs its secrets on drop.
         let incoming = std::mem::take(&mut payload.connections.connections);
 
-        // Ids we must not clobber: everything already in the store, plus
-        // anything we accept earlier in this same bundle (so a bundle that
-        // lists an id twice skips the second occurrence rather than
-        // creating a duplicate entry).
-        let mut seen: HashSet<String> =
-            self.file.connections.iter().map(|e| e.id.clone()).collect();
-        // Keyring refs already owned by an existing entry (or claimed by an
-        // entry accepted earlier in this bundle). Guards the secret store
-        // against a bundle whose ref aims at someone else's slot.
-        let mut claimed_refs: HashSet<String> = self
-            .file
-            .connections
-            .iter()
-            .flat_map(entry_keyring_refs)
-            .collect();
+        // Ids accepted earlier in this same bundle, so a bundle that lists
+        // an id twice skips the second occurrence rather than creating a
+        // duplicate entry (or overwriting its own first copy).
+        let mut accepted: HashSet<String> = HashSet::new();
+        // Which connection owns each keyring ref. A ref the incoming entry
+        // already owns is not a collision — that is what overwriting its
+        // own secret means — so this has to map to an owner rather than
+        // just record that the ref is taken.
+        let mut ref_owners: HashMap<String, String> = HashMap::new();
+        for existing in &self.file.connections {
+            for key_ref in entry_keyring_refs(existing) {
+                ref_owners.insert(key_ref, existing.id.clone());
+            }
+        }
 
         let mut report = ImportReport::default();
-        let mut to_add: Vec<ConnectionEntry> = Vec::new();
+        // `None` slot = append, `Some(idx)` = replace the entry sitting there.
+        let mut to_apply: Vec<(Option<usize>, ConnectionEntry)> = Vec::new();
         let mut secret_writes: Vec<(String, String)> = Vec::new();
 
         for entry in incoming {
-            if seen.contains(&entry.id) {
+            if accepted.contains(&entry.id) {
+                report.skipped.push(entry.id);
+                continue;
+            }
+            let slot = self.find_index(&entry.id);
+            if slot.is_some() && mode == ImportMode::Skip {
                 report.skipped.push(entry.id);
                 continue;
             }
             let refs = entry_keyring_refs(&entry);
-            if refs.iter().any(|r| claimed_refs.contains(r)) {
+            if refs
+                .iter()
+                .any(|r| ref_owners.get(r).is_some_and(|owner| owner != &entry.id))
+            {
                 // Ref collides with a slot another connection owns; refuse
                 // rather than overwrite that connection's secret.
                 report.skipped.push(entry.id);
@@ -790,51 +902,94 @@ impl ConnectionAdmin {
                 if let Some(value) = payload.secrets.get(&key_ref) {
                     secret_writes.push((key_ref.clone(), value.clone()));
                 }
-                claimed_refs.insert(key_ref);
+                ref_owners.insert(key_ref, entry.id.clone());
             }
-            seen.insert(entry.id.clone());
-            report.imported.push(entry.id.clone());
-            to_add.push(entry);
+            accepted.insert(entry.id.clone());
+            if slot.is_some() {
+                report.overwritten.push(entry.id.clone());
+            } else {
+                report.imported.push(entry.id.clone());
+            }
+            to_apply.push((slot, entry));
         }
 
-        if to_add.is_empty() {
+        if to_apply.is_empty() {
             return Ok(report);
         }
 
-        // Seed secrets first (same order as `add`); track what we wrote so
-        // a later failure can undo it. Each cloned secret value is scrubbed
-        // as soon as it has been handed to the keychain (ADR-0038).
-        let mut written: Vec<String> = Vec::new();
+        // Write secrets first (same order as `add`); record what each slot
+        // held beforehand so a later failure can put it back. Each cloned
+        // secret value is scrubbed as soon as it has been handed to the
+        // keychain (ADR-0038).
+        let mut undo: Vec<(String, Option<String>)> = Vec::new();
         for i in 0..secret_writes.len() {
             let (key_ref, value) = &secret_writes[i];
+            let prior = self.secrets.get(key_ref).ok();
             if let Err(err) = self.secrets.set(key_ref, value) {
-                self.rollback_secret_writes(&written);
+                self.rollback_secret_writes(&mut undo);
                 zeroize_secret_writes(&mut secret_writes);
                 return Err(ConfigError::Secret(err));
             }
-            written.push(key_ref.clone());
+            undo.push((key_ref.clone(), prior));
         }
         zeroize_secret_writes(&mut secret_writes);
 
         let mut new_file = self.file.clone();
-        new_file.connections.extend(to_add);
+        // Replacements keep the slot they held, so importing over an
+        // existing connection does not reshuffle the list under the user.
+        let mut replaced: Vec<(usize, ConnectionEntry)> = Vec::new();
+        for (slot, entry) in to_apply {
+            match slot {
+                Some(idx) => {
+                    let old = std::mem::replace(&mut new_file.connections[idx], entry);
+                    replaced.push((idx, old));
+                }
+                None => new_file.connections.push(entry),
+            }
+        }
 
         if let Err(err) = save_atomic(&self.path, &new_file) {
-            self.rollback_secret_writes(&written);
+            self.rollback_secret_writes(&mut undo);
             return Err(err);
         }
 
         self.file = new_file;
+        // The rollback plan held plaintext copies of whatever the
+        // overwritten slots used to contain; the import succeeded, so
+        // scrub them rather than leave them in this frame (ADR-0038).
+        for (_key_ref, prior) in &mut undo {
+            if let Some(value) = prior {
+                value.zeroize();
+            }
+        }
+        // Only now that the TOML names the replacements: a slot the new
+        // entry does not reference is an orphan and must not linger.
+        for (idx, old) in &replaced {
+            self.purge_orphaned_secrets(old, &self.file.connections[*idx]);
+        }
         Ok(report)
     }
 
-    /// Best-effort delete of secrets seeded earlier in a failed
-    /// [`import_bundle`]. Imported ids are new to the store, so deleting
-    /// their refs cannot clobber a still-referenced secret; a delete
-    /// failure is ignored because the surviving orphan is harmless.
-    fn rollback_secret_writes(&self, written: &[String]) {
-        for key_ref in written {
-            let _ = self.secrets.delete(key_ref);
+    /// Best-effort undo of the secret writes a failed [`import_bundle`]
+    /// made: a slot this call created is deleted, a slot it overwrote is
+    /// restored to the value it held. Restoring matters — an overwrite
+    /// rollback that deleted would destroy a credential the user had before
+    /// the import and cannot get back from the bundle.
+    ///
+    /// A failure here is ignored: the alternative is aborting the rollback
+    /// partway, which leaves a worse mess than one stale slot.
+    /// The captured previous values are scrubbed on the way out.
+    fn rollback_secret_writes(&self, undo: &mut [(String, Option<String>)]) {
+        for (key_ref, prior) in undo.iter_mut() {
+            match prior {
+                Some(value) => {
+                    let _ = self.secrets.set(key_ref, value);
+                    value.zeroize();
+                }
+                None => {
+                    let _ = self.secrets.delete(key_ref);
+                }
+            }
         }
     }
 
@@ -938,6 +1093,15 @@ impl ConnectionAdmin {
                 ConnectionKind::AuroraDsql { keyring_url_ref }
             })?,
             (
+                ConnectionKind::AuroraDsqlIam {
+                    keyring_secret_key_ref,
+                    ..
+                },
+                draft @ ConnectionKindEditDraft::AuroraDsqlIam { .. },
+            ) => {
+                self.apply_aurora_dsql_iam_edit(id, keyring_secret_key_ref, draft, &mut applied)?
+            }
+            (
                 ConnectionKind::Firestore {
                     keyring_service_account_ref,
                     ..
@@ -966,6 +1130,44 @@ impl ConnectionAdmin {
         };
 
         Ok((new_kind, applied))
+    }
+
+    /// The Aurora DSQL (IAM) arm of [`Self::apply_update_kind`], lifted out for
+    /// length alone: six fields make it the longest arm, and inline it pushed
+    /// the match past clippy's function-length limit.
+    fn apply_aurora_dsql_iam_edit(
+        &self,
+        id: &str,
+        existing_ref: &str,
+        draft: ConnectionKindEditDraft,
+        applied: &mut Vec<AppliedSecretWrite>,
+    ) -> Result<ConnectionKind, ConfigError> {
+        let ConnectionKindEditDraft::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_access_key,
+        } = draft
+        else {
+            return Err(ConfigError::KindMismatch { id: id.to_string() });
+        };
+
+        if let SecretField::Set(new_value) = secret_access_key {
+            self.apply_secret_write(existing_ref, &new_value, applied)?;
+        }
+
+        // The ref is reused rather than re-minted: a new one would orphan the
+        // keychain entry this connection still points at.
+        Ok(ConnectionKind::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            keyring_secret_key_ref: existing_ref.to_string(),
+        })
     }
 
     /// The Firestore arm of [`Self::apply_update_kind`], lifted out because it
@@ -1193,6 +1395,12 @@ const SSH_PASSWORD_FIELD: &str = "ssh_password";
 /// the SSH consts above: `add` and `update` must derive the identical ref.
 const FIRESTORE_SERVICE_ACCOUNT_FIELD: &str = "service_account";
 
+/// Keyring field name for the AWS secret access key of an Aurora DSQL IAM
+/// connection. Same reason again — and this one also has to keep matching the
+/// refs written by hand into `connections.toml` before the kind was editable
+/// in-app (ADR-0103), so its value is not free to change.
+const AURORA_DSQL_IAM_SECRET_KEY_FIELD: &str = "secret_key";
+
 /// Split a host-key draft into the `(fingerprint, known_hosts)` pair
 /// [`SshTunnelToml`] stores — exactly one is `Some`.
 fn split_host_key(host_key: SshHostKeyDraft) -> (Option<String>, Option<String>) {
@@ -1369,6 +1577,29 @@ fn build_kind_for_add(
         ConnectionKindDraft::AuroraDsql { url } => url_backed_add(id, url, |keyring_url_ref| {
             ConnectionKind::AuroraDsql { keyring_url_ref }
         }),
+        ConnectionKindDraft::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_access_key,
+        } => {
+            let secret_ref = keyring_ref(id, AURORA_DSQL_IAM_SECRET_KEY_FIELD);
+            let kind = ConnectionKind::AuroraDsqlIam {
+                endpoint,
+                region,
+                database,
+                username,
+                access_key_id,
+                keyring_secret_key_ref: secret_ref.clone(),
+            };
+            let writes = vec![PendingSecretWrite {
+                key_ref: secret_ref,
+                value: secret_access_key,
+            }];
+            (kind, writes)
+        }
         ConnectionKindDraft::Firestore {
             project_id,
             database_id,
@@ -1510,6 +1741,77 @@ mod tests {
                 url: url.to_string(),
             },
         }
+    }
+
+    fn aurora_dsql_iam_draft(id: &str, secret_access_key: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("Aurora DSQL IAM {id}"),
+            kind: ConnectionKindDraft::AuroraDsqlIam {
+                endpoint: "abc.dsql.ap-northeast-1.on.aws".to_string(),
+                region: "ap-northeast-1".to_string(),
+                database: "postgres".to_string(),
+                username: "admin".to_string(),
+                access_key_id: "AKIAEXAMPLE".to_string(),
+                secret_access_key: secret_access_key.to_string(),
+            },
+        }
+    }
+
+    /// Every plain field differs from [`aurora_dsql_iam_draft`]'s, so a field
+    /// the update forgets to carry shows up as the old value rather than
+    /// passing by coincidence.
+    fn aurora_dsql_iam_edit(name: &str, secret_access_key: SecretField) -> ConnectionEditDraft {
+        ConnectionEditDraft {
+            mcp_alias: None,
+            mcp_write: None,
+            ssh: SshEditField::Keep,
+            name: name.to_string(),
+            kind: ConnectionKindEditDraft::AuroraDsqlIam {
+                endpoint: "moved.dsql.us-east-1.on.aws".to_string(),
+                region: "us-east-1".to_string(),
+                database: "analytics".to_string(),
+                username: "reader".to_string(),
+                access_key_id: "AKIAROTATED".to_string(),
+                secret_access_key,
+            },
+        }
+    }
+
+    /// An admin holding one already-stored IAM entry with its secret seeded.
+    fn iam_admin(
+        id: &str,
+        secret: &str,
+    ) -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin) {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let secret_ref = format!("dbboard.{id}.secret_key");
+        secrets.set(&secret_ref, secret).expect("seed secret");
+        let file = ConnectionFile {
+            version: crate::store::CONFIG_VERSION,
+            connections: vec![ConnectionEntry {
+                mcp_alias: None,
+                mcp_write: false,
+                ssh: None,
+                id: id.to_string(),
+                name: "Aurora DSQL (IAM)".to_string(),
+                kind: ConnectionKind::AuroraDsqlIam {
+                    endpoint: "abc.dsql.ap-northeast-1.on.aws".to_string(),
+                    region: "ap-northeast-1".to_string(),
+                    database: "postgres".to_string(),
+                    username: "admin".to_string(),
+                    access_key_id: "AKIAEXAMPLE".to_string(),
+                    keyring_secret_key_ref: secret_ref,
+                },
+            }],
+        };
+        let admin =
+            ConnectionAdmin::new_with_file(path, secrets.clone() as Arc<dyn SecretStore>, file);
+        (dir, secrets, admin)
     }
 
     /// `service_account: None` is the emulator: no credential exists to store.
@@ -2111,32 +2413,12 @@ mod tests {
     }
 
     #[test]
-    fn update_aurora_dsql_iam_kind_is_rejected_as_mismatch() {
-        // There is no IAM edit-draft, so any update targeting an IAM entry
-        // falls through `apply_update_kind`'s catch-all as a KindMismatch
-        // — v1 requires delete + re-add (hand-edit the TOML) to change it.
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("connections.toml");
-        let secrets = Arc::new(InMemorySecretStore::new());
-        let file = ConnectionFile {
-            version: crate::store::CONFIG_VERSION,
-            connections: vec![ConnectionEntry {
-                mcp_alias: None,
-                mcp_write: false,
-                ssh: None,
-                id: "dsql-iam".to_string(),
-                name: "Aurora DSQL (IAM)".to_string(),
-                kind: ConnectionKind::AuroraDsqlIam {
-                    endpoint: "abc.dsql.ap-northeast-1.on.aws".to_string(),
-                    region: "ap-northeast-1".to_string(),
-                    database: "postgres".to_string(),
-                    username: "admin".to_string(),
-                    access_key_id: "AKIAEXAMPLE".to_string(),
-                    keyring_secret_key_ref: "dbboard.dsql-iam.secret_key".to_string(),
-                },
-            }],
-        };
-        let mut admin = ConnectionAdmin::new_with_file(path, secrets as Arc<dyn SecretStore>, file);
+    fn update_aurora_dsql_iam_with_a_different_kind_is_rejected_as_mismatch() {
+        // The IAM kind is editable now (ADR-0103), but it is still its own
+        // kind: pointing a plain Aurora DSQL draft at an IAM entry must fall
+        // through `apply_update_kind`'s catch-all rather than silently
+        // rewriting a token-minting entry into a URL-backed one.
+        let (_dir, _secrets, mut admin) = iam_admin("dsql-iam", "AWS_SECRET");
 
         let err = admin
             .update(
@@ -2156,6 +2438,99 @@ mod tests {
             ConfigError::KindMismatch { id } => assert_eq!(id, "dsql-iam"),
             other => panic!("expected KindMismatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn add_aurora_dsql_iam_stores_plain_fields_and_mints_the_secret_key_ref() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+
+        admin
+            .add(aurora_dsql_iam_draft("dsql-iam", "AWS_SECRET"))
+            .expect("add");
+
+        // The ref must be derived from the id exactly as delete/export expect
+        // it (`dbboard.<id>.secret_key`), or the entry would leak its keychain
+        // row on delete.
+        assert_eq!(
+            secrets.get("dbboard.dsql-iam.secret_key").expect("seeded"),
+            "AWS_SECRET"
+        );
+        match &admin.entries()[0].kind {
+            ConnectionKind::AuroraDsqlIam {
+                endpoint,
+                region,
+                database,
+                username,
+                access_key_id,
+                keyring_secret_key_ref,
+            } => {
+                assert_eq!(endpoint, "abc.dsql.ap-northeast-1.on.aws");
+                assert_eq!(region, "ap-northeast-1");
+                assert_eq!(database, "postgres");
+                assert_eq!(username, "admin");
+                assert_eq!(access_key_id, "AKIAEXAMPLE");
+                assert_eq!(keyring_secret_key_ref, "dbboard.dsql-iam.secret_key");
+            }
+            other => panic!("expected AuroraDsqlIam, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_aurora_dsql_iam_rewrites_plain_fields_and_keeps_the_secret() {
+        // The trigger for in-app editing is key rotation, but rotating the
+        // *access key id* alone (a non-secret field) must not force the
+        // operator to retype the secret they cannot read back (ADR-0016).
+        let (_dir, secrets, mut admin) = iam_admin("dsql-iam", "AWS_SECRET");
+
+        admin
+            .update(
+                "dsql-iam",
+                aurora_dsql_iam_edit("renamed", SecretField::Keep),
+            )
+            .expect("update");
+
+        assert_eq!(admin.entries()[0].name, "renamed");
+        match &admin.entries()[0].kind {
+            ConnectionKind::AuroraDsqlIam {
+                endpoint,
+                region,
+                database,
+                username,
+                access_key_id,
+                keyring_secret_key_ref,
+            } => {
+                assert_eq!(endpoint, "moved.dsql.us-east-1.on.aws");
+                assert_eq!(region, "us-east-1");
+                assert_eq!(database, "analytics");
+                assert_eq!(username, "reader");
+                assert_eq!(access_key_id, "AKIAROTATED");
+                // Re-minting the ref would orphan the keychain row the entry
+                // still points at.
+                assert_eq!(keyring_secret_key_ref, "dbboard.dsql-iam.secret_key");
+            }
+            other => panic!("expected AuroraDsqlIam, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.dsql-iam.secret_key").expect("kept"),
+            "AWS_SECRET"
+        );
+    }
+
+    #[test]
+    fn update_aurora_dsql_iam_with_secret_set_overwrites_the_keyring_entry() {
+        let (_dir, secrets, mut admin) = iam_admin("dsql-iam", "AWS_SECRET");
+
+        admin
+            .update(
+                "dsql-iam",
+                aurora_dsql_iam_edit("rotated", SecretField::Set("AWS_ROTATED".to_string())),
+            )
+            .expect("update");
+
+        assert_eq!(
+            secrets.get("dbboard.dsql-iam.secret_key").expect("written"),
+            "AWS_ROTATED"
+        );
     }
 
     #[test]
@@ -3006,7 +3381,9 @@ mod tests {
         let blob = source_bundle();
 
         let (_dir, secrets, mut target) = fresh_admin();
-        let report = target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
 
         assert_eq!(report.imported, vec!["store-a", "store-c", "local"]);
         assert!(report.skipped.is_empty());
@@ -3049,7 +3426,9 @@ mod tests {
             })
             .expect("seed conflicting entry");
 
-        let report = target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
 
         // The conflict is reported, the two fresh ids are imported.
         assert_eq!(report.skipped, vec!["store-a"]);
@@ -3071,10 +3450,10 @@ mod tests {
         // three ids (import it once, then again).
         let (_dir, _secrets, mut target) = fresh_admin();
         target
-            .import_bundle(&blob, BUNDLE_PASS)
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
             .expect("first import");
         let report = target
-            .import_bundle(&blob, BUNDLE_PASS)
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
             .expect("second import");
 
         assert!(report.imported.is_empty());
@@ -3091,7 +3470,9 @@ mod tests {
         let secrets = Arc::new(InMemorySecretStore::new());
         let mut target = ConnectionAdmin::open(path.clone(), secrets as Arc<dyn SecretStore>)
             .expect("open target");
-        target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+        target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
 
         // Re-open from disk: the imported metadata survived the TOML save.
         let reopen_secrets = Arc::new(InMemorySecretStore::new());
@@ -3135,7 +3516,9 @@ mod tests {
         let payload = BundlePayload::new(file, malicious_secrets);
         let blob = encrypt_bundle(&payload, BUNDLE_PASS).expect("encrypt");
 
-        let report = target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
 
         // The crafted entry is refused, not imported.
         assert_eq!(report.skipped, vec!["attacker"]);
@@ -3160,7 +3543,7 @@ mod tests {
         let blob = source_bundle();
         let (_dir, _secrets, mut target) = fresh_admin();
         let err = target
-            .import_bundle(&blob, "the wrong passphrase")
+            .import_bundle(&blob, "the wrong passphrase", ImportMode::Skip)
             .expect_err("must fail");
         assert!(matches!(err, ConfigError::Bundle(_)), "got {err:?}");
         // A failed import leaves the store empty.
@@ -3171,7 +3554,7 @@ mod tests {
     fn import_of_garbage_bytes_is_a_bundle_error_not_a_panic() {
         let (_dir, _secrets, mut target) = fresh_admin();
         let err = target
-            .import_bundle(b"not an age file", BUNDLE_PASS)
+            .import_bundle(b"not an age file", BUNDLE_PASS, ImportMode::Skip)
             .expect_err("must fail");
         assert!(matches!(err, ConfigError::Bundle(_)), "got {err:?}");
     }
@@ -3188,6 +3571,273 @@ mod tests {
             .expect("clear secret");
         let err = admin.export_bundle(BUNDLE_PASS).expect_err("must fail");
         assert!(matches!(err, ConfigError::Secret(_)), "got {err:?}");
+    }
+
+    // --- Selective export / overwrite import (ADR-0105) ---------------
+
+    /// A store holding the same three connections `source_bundle` uses, so a
+    /// subset export can be compared against the whole.
+    fn three_connection_admin() -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin) {
+        let (dir, secrets, mut admin) = fresh_admin();
+        admin.add(d1_draft("store-a")).expect("add d1");
+        admin
+            .add(supabase_draft(
+                "store-c",
+                "postgres://postgres:pw@db.example.supabase.co/postgres",
+            ))
+            .expect("add supabase");
+        admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add turso");
+        (dir, secrets, admin)
+    }
+
+    #[test]
+    fn export_of_a_subset_carries_only_the_named_connections() {
+        let (_dir, _secrets, admin) = three_connection_admin();
+
+        let blob = admin
+            .export_bundle_of(&["store-c".to_string()], BUNDLE_PASS)
+            .expect("export subset");
+
+        let (_target_dir, target_secrets, mut target) = fresh_admin();
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
+
+        assert_eq!(report.imported, vec!["store-c"]);
+        assert_eq!(target.entries().len(), 1);
+        // Only the named connection's secret travelled — an unnamed one must
+        // not ride along in the payload's secret map.
+        assert_eq!(
+            target_secrets.get("dbboard.store-c.url").expect("url"),
+            "postgres://postgres:pw@db.example.supabase.co/postgres"
+        );
+        assert!(matches!(
+            target_secrets.get("dbboard.store-a.token"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn export_of_a_subset_keeps_the_stores_order_not_the_arguments() {
+        let (_dir, _secrets, admin) = three_connection_admin();
+
+        // Named back to front; the bundle must still list them store order.
+        let blob = admin
+            .export_bundle_of(&["local".to_string(), "store-a".to_string()], BUNDLE_PASS)
+            .expect("export subset");
+
+        let (_target_dir, _target_secrets, mut target) = fresh_admin();
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
+        assert_eq!(report.imported, vec!["store-a", "local"]);
+    }
+
+    #[test]
+    fn export_of_an_unknown_id_is_not_found() {
+        let (_dir, _secrets, admin) = three_connection_admin();
+        let err = admin
+            .export_bundle_of(&["nope".to_string()], BUNDLE_PASS)
+            .expect_err("must fail");
+        assert!(matches!(err, ConfigError::NotFound(id) if id == "nope"));
+    }
+
+    #[test]
+    fn export_of_an_empty_selection_is_refused() {
+        // An empty bundle is a footgun, not a feature: it decrypts fine and
+        // imports nothing, which reads as "the passphrase was wrong".
+        let (_dir, _secrets, admin) = three_connection_admin();
+        let err = admin
+            .export_bundle_of(&[], BUNDLE_PASS)
+            .expect_err("must fail");
+        assert!(matches!(err, ConfigError::EmptySelection), "got {err:?}");
+    }
+
+    #[test]
+    fn overwrite_import_replaces_the_entry_and_its_secret_in_place() {
+        let blob = source_bundle();
+
+        // Target already holds `store-a` with a different name and token.
+        let (_dir, secrets, mut target) = fresh_admin();
+        target
+            .add(ConnectionDraft {
+                mcp_alias: None,
+                mcp_write: false,
+                ssh: None,
+                id: "store-a".to_string(),
+                name: "pre-existing".to_string(),
+                kind: ConnectionKindDraft::D1 {
+                    account_id: "acct".to_string(),
+                    database_id: "db".to_string(),
+                    base_url: None,
+                    token: "local-token".to_string(),
+                },
+            })
+            .expect("seed conflicting entry");
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
+            .expect("import");
+
+        assert_eq!(report.overwritten, vec!["store-a"]);
+        assert_eq!(report.imported, vec!["store-c", "local"]);
+        assert!(report.skipped.is_empty());
+        assert_eq!(target.entries().len(), 3);
+        // The replacement keeps the slot the existing entry held, so the
+        // list does not reshuffle under the user on every import.
+        assert_eq!(target.entries()[0].id, "store-a");
+        assert_eq!(target.entries()[0].name, "D1 store-a");
+        // The bundle's secret won this time.
+        assert_eq!(
+            secrets.get("dbboard.store-a.token").expect("token"),
+            "t0k3n"
+        );
+    }
+
+    #[test]
+    fn overwrite_import_purges_a_secret_the_replacement_no_longer_references() {
+        // Bundle carries a *Turso* `x` (no secret at all); the target holds a
+        // Supabase `x` whose URL sits in the keychain. After the overwrite
+        // nothing points at that slot, so it must not survive.
+        let (_src_dir, _src_secrets, src) = {
+            let (dir, secrets, mut admin) = fresh_admin();
+            admin
+                .add(turso_draft("x", "Replacement", ":memory:"))
+                .expect("add turso");
+            (dir, secrets, admin)
+        };
+        let blob = src.export_bundle(BUNDLE_PASS).expect("export");
+
+        let (_dir, secrets, mut target) = fresh_admin();
+        target
+            .add(supabase_draft(
+                "x",
+                "postgres://real:secret@db.example.supabase.co/postgres",
+            ))
+            .expect("seed");
+        assert!(secrets.get("dbboard.x.url").is_ok());
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
+            .expect("import");
+
+        assert_eq!(report.overwritten, vec!["x"]);
+        assert!(matches!(
+            secrets.get("dbboard.x.url"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn overwrite_import_still_refuses_a_ref_aimed_at_another_connection() {
+        // The ADR-0038 threat model does not relax in overwrite mode: an
+        // incoming entry may replace the entry that owns its id, and nothing
+        // else. A brand-new id whose ref points at someone else's slot is
+        // still a hijack.
+        let (_dir, secrets, mut target) = fresh_admin();
+        target
+            .add(supabase_draft(
+                "victim",
+                "postgres://real:secret@db.victim.supabase.co/postgres",
+            ))
+            .expect("seed victim");
+
+        let mut file = ConnectionFile::empty();
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "attacker".to_string(),
+            name: "Attacker".to_string(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "dbboard.victim.url".to_string(),
+            },
+        });
+        let mut malicious_secrets = BTreeMap::new();
+        malicious_secrets.insert(
+            "dbboard.victim.url".to_string(),
+            "postgres://attacker@evil.example/db".to_string(),
+        );
+        let payload = BundlePayload::new(file, malicious_secrets);
+        let blob = encrypt_bundle(&payload, BUNDLE_PASS).expect("encrypt");
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
+            .expect("import");
+
+        assert_eq!(report.skipped, vec!["attacker"]);
+        assert!(report.imported.is_empty());
+        assert!(report.overwritten.is_empty());
+        assert_eq!(
+            secrets.get("dbboard.victim.url").expect("url"),
+            "postgres://real:secret@db.victim.supabase.co/postgres"
+        );
+    }
+
+    #[test]
+    fn overwrite_import_restores_the_old_secret_when_the_toml_save_fails() {
+        // The rollback for an overwritten secret cannot be a delete: the ref
+        // existed before this import and still has to hold the value it held.
+        let blob = source_bundle();
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let mut target =
+            ConnectionAdmin::open(path, secrets.clone() as Arc<dyn SecretStore>).expect("open");
+        target
+            .add(ConnectionDraft {
+                mcp_alias: None,
+                mcp_write: false,
+                ssh: None,
+                id: "store-a".to_string(),
+                name: "pre-existing".to_string(),
+                kind: ConnectionKindDraft::D1 {
+                    account_id: "acct".to_string(),
+                    database_id: "db".to_string(),
+                    base_url: None,
+                    token: "local-token".to_string(),
+                },
+            })
+            .expect("seed");
+
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"file-not-dir").expect("seed blocker");
+        target.path = blocker.join("connections.toml");
+
+        let err = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
+            .expect_err("save must fail");
+        assert!(matches!(err, ConfigError::Io(_)), "got {err:?}");
+
+        // Restored, not deleted.
+        assert_eq!(
+            secrets.get("dbboard.store-a.token").expect("token"),
+            "local-token"
+        );
+        // And the entry the failed import would have replaced is untouched.
+        assert_eq!(target.entries().len(), 1);
+        assert_eq!(target.entries()[0].name, "pre-existing");
+    }
+
+    #[test]
+    fn skip_mode_is_unchanged_by_the_addition_of_overwrite() {
+        // The pre-ADR-0105 behaviour is the default and must stay exactly as
+        // it was: nothing overwritten, conflicts reported.
+        let blob = source_bundle();
+        let (_dir, _secrets, mut target) = fresh_admin();
+        target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("first import");
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("second import");
+
+        assert!(report.imported.is_empty());
+        assert!(report.overwritten.is_empty());
+        assert_eq!(report.skipped, vec!["store-a", "store-c", "local"]);
     }
 
     // ---- SSH tunnel write path (ADR-0069) ----
@@ -3626,7 +4276,9 @@ mod tests {
         let blob = admin.export_bundle(BUNDLE_PASS).expect("export");
 
         let (_dir2, secrets2, mut target) = fresh_admin();
-        let report = target.import_bundle(&blob, BUNDLE_PASS).expect("import");
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
         assert_eq!(report.imported, vec!["work".to_string()]);
         let ssh = target.entries()[0].ssh.as_ref().expect("ssh imported");
         assert_eq!(ssh.host, "bastion.example");

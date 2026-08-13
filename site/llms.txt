@@ -1,0 +1,54 @@
+# dbboard
+
+> A desktop database client for serverless and distributed databases, and an
+> MCP server that lets an AI agent read those same databases. Nine adapters:
+> Turso/libSQL, Cloudflare D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL,
+> MySQL/MariaDB, Cloud Firestore and MongoDB. Rust core, Tauri 2 + SvelteKit
+> shell, MIT-licensed, self-hosted only — there is no service to sign up for.
+
+This file exists because the README is ~800 lines and the MCP section is
+two-thirds of the way down it. If you were asked to "connect dbboard", read
+the MCP crate README below and stop; you do not need the rest.
+
+Two facts worth having before you read anything else. **The MCP server is
+read-only unless a connection is explicitly opted in** with `mcp_write = true`
+in `connections.toml`, and even then grants, user and role DDL, `TRUNCATE`,
+and `DROP` of anything but an index are refused whatever that flag says. **The
+two document stores are read-only for every caller** — neither the Firestore
+nor the MongoDB adapter implements a write path, so the opt-in flag opens
+nothing on them.
+
+## Connect dbboard as an MCP server
+
+- [MCP server README](https://raw.githubusercontent.com/meta-taro/dbboard/develop/crates/dbboard-mcp/README.md): the whole contract in one file — the ready-to-paste `mcpServers` JSON block, the per-OS binary paths, every tool with its arguments, what each engine refuses and the literal error strings it produces, running several agents at once, and passing credentials as `DBBOARD_*` environment variables instead of writing a file.
+- [MCP server section of the README](https://github.com/meta-taro/dbboard#mcp-server): the same setup in shorter form, in the context of the desktop app.
+
+Tools: `list_connections`, `list_tables`, `describe_table`, `search_schema`,
+`list_relationships`, `run_read_query`, `get_annotations`, `dump_database` —
+all read-only. `run_write` exists and is gated as described above. Start with
+`list_connections`; the id it returns is the handle every other tool takes.
+
+`run_read_query` takes SQL for the seven SQL engines, a Firestore
+`StructuredQuery` as JSON for `firestore`, and a command document as JSON
+(`{"find": "orders", "limit": 100}`) for `mongodb`.
+
+## Get it
+
+- [Download page](https://meta-taro.github.io/dbboard/): Windows `.exe` and macOS `.dmg` for the latest release, with checksum instructions. The binaries are not code-signed yet, so SmartScreen and Gatekeeper warn on first launch.
+- [Releases](https://github.com/meta-taro/dbboard/releases): every version, its assets, and `SHA256SUMS.txt`. The MCP binary is published from v0.5.0 onward.
+- [Repository](https://github.com/meta-taro/dbboard)
+
+## Documentation
+
+- [README](https://raw.githubusercontent.com/meta-taro/dbboard/develop/README.md): what dbboard is, how to build it, and a connection-string example for each of the nine engines.
+- [Connections](https://raw.githubusercontent.com/meta-taro/dbboard/develop/docs/connections.md): the `connections.toml` schema, the order environment variables are resolved in, keychain storage, and which kinds accept an SSH tunnel.
+- [Compatibility](https://raw.githubusercontent.com/meta-taro/dbboard/develop/docs/compatibility.md): the per-version support matrix (Tier 1 / Tier 2 / best effort).
+- [Architecture](https://raw.githubusercontent.com/meta-taro/dbboard/develop/docs/architecture.md): the crate map, the adapter trait, and the dependency rules between layers.
+- [Decisions](https://raw.githubusercontent.com/meta-taro/dbboard/develop/docs/decisions.md): the ADR log. Every non-obvious behaviour above has an entry here explaining why.
+- [Changelog](https://raw.githubusercontent.com/meta-taro/dbboard/develop/CHANGELOG.md)
+
+## Optional
+
+- [Roadmap](https://raw.githubusercontent.com/meta-taro/dbboard/develop/docs/roadmap.md): which phases are closed and what is next.
+- [Design](https://raw.githubusercontent.com/meta-taro/dbboard/develop/DESIGN.md): palette, typography, spacing, component look.
+- [dbboard-web](https://github.com/meta-taro/dbboard-web): the browser counterpart (Nuxt + NestJS). Shares the adapter concepts and feature-parity goals; separate codebase, and not the thing you install for MCP.

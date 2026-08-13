@@ -16,7 +16,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -159,9 +158,10 @@ impl AiProviderFile {
 /// Returns [`AiSettingsError::NoConfigDir`] when the OS reports no
 /// usable per-user config directory (no `$HOME`, no `%APPDATA%`).
 pub fn default_ai_providers_path() -> Result<PathBuf, AiSettingsError> {
-    let dirs =
-        ProjectDirs::from("dev", "dbboard", "dbboard").ok_or(AiSettingsError::NoConfigDir)?;
-    Ok(dirs.config_dir().join("ai-providers.toml"))
+    // Through `store::config_dir` rather than its own `ProjectDirs` lookup, so
+    // that `DBBOARD_CONFIG_DIR` moves this file with the rest of the profile.
+    let dir = crate::store::config_dir().map_err(|_| AiSettingsError::NoConfigDir)?;
+    Ok(dir.join("ai-providers.toml"))
 }
 
 /// Read and parse `ai-providers.toml` at `path`.
