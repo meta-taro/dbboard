@@ -7,6 +7,55 @@
 
 ## 最終更新
 
+- 日付: 2026-08-13 (**未マージの green な PR が 8 本溜まっているのが最大のボトルネック。
+  実運用バグ #161 を調査中で、原因は報告者側の 3 点観察待ち。**
+  ① **前回更新 (08-09) 以降に v0.6.0 と v0.7.0 が出ている。** v0.6.0 = Cloud Firestore
+  アダプタ (PR #153)、v0.7.0 = MongoDB アダプタ (PR #156)。ドキュメント側 (CHANGELOG /
+  README / roadmap / compatibility) と検証シート (Firestore・MongoDB の接続) も同時に入った。
+  08-09 時点で「次のエージェント側タスク」としていた **issue 0020 スライス 3
+  (`BackendConfig::MongoDb`) は消化済み**。
+  ② **本セッションで CI を入れた** — `ci/cargo-and-frontend-checks` (ADR-0104) を push し
+  **PR #166** を作成。issue #131 で「PR は pii-scan しか回っておらず、hook を bypass しても
+  受け止める先が無い」と共有された穴を塞ぐもの。ubuntu-latest 3 ジョブ
+  (cargo fmt/clippy/check/test ・ svelte-check + vitest ・ site の node --test)。
+  **Windows ジョブは意図的に置いていない** — 既知の libSQL teardown segfault (#131) で
+  緑のコードのまま恒久的に赤くなるため。**初回 CI が ubuntu で赤くなり、そこで
+  `secure_fs` のテスト 4 本が Linux 限定で落ちていたことが判明した** (CI を入れた初日に
+  CI が仕事をした形)。分類器 `is_likely_cloud_synced_path` 自体はどちらのプラットフォームでも
+  正しく、テスト側が `r"C:\Users\alice\OneDrive\..."` と**バックスラッシュ区切りのリテラル**を
+  渡していたのが原因。Unix では `\` は区切り文字ではないので `Path::components()` が
+  1 セグメントに潰れて何にも一致しない。セグメントの配列から `PathBuf` を組む形に直し
+  (`cfg(windows)` で消すのではなく、Windows レイアウトのケースを全プラットフォームで
+  踏み続ける)、`d2bbfc2` として commit 済み — **これも未 push**。
+  ③ **`feat/selective-export-and-upsert-import` (ADR-0105) が未 push のまま。**
+  接続の選択エクスポートと、インポート時の上書き (`ImportMode`、既定は Skip)。
+  空の id リストは「全件」と読まずに拒否する。ADR-0038 のキーリング参照拒否は緩めていない。
+  ④ **#161 (実行ボタンがクリックで反応しない・Ctrl+Enter は通る) の調査**。
+  ソースを読み切って、クリックと Ctrl+Enter が**同一関数・同一ガード**であることを確認した
+  (`QueryPanel.svelte` の `run`)。よって Ctrl+Enter が通る＝その瞬間の内部状態は正常が確定し、
+  「ボタンだけ弾かれる」条件はコード上に存在しない。経路上の `stopPropagation` なし、
+  常時被さるオーバーレイなし、`QueryPanel.svelte` / `SqlEditor.svelte` は Tauri シェル投入以降
+  無変更なのでバージョン差でもない。**残るのは「クリックがボタンに届いていない」筋**で、
+  ここから先はコードだけでは切れない。バックグラウンド調査が出した「CodeMirror の補完
+  ポップアップが被っている」説は、報告手順が*貼り付け*である以上 `activateOnTyping`
+  (`input.type` のみ発火・貼り付けは `input.paste`) が動かないため**採用しなかった**。
+  #161 に 3 点の観察 (ボタンの色 / カーソルが指の形になるか / フォーカスを外してから押すと
+  動くか) を依頼済み。回答が来るまでは推測で直さない。
+  **user 側ボール = ① 未 push のブランチ 3 本を push する
+  — `ci/cargo-and-frontend-checks` (テスト修正 `d2bbfc2` を載せて #166 を緑にする)、
+  `feat/selective-export-and-upsert-import`、`chore/next-actions-sync` (この文書)。
+  push 後の PR 作成はエージェント側でやる旨、本セッションで合意済み、
+  ② **green で MERGEABLE のまま滞留している PR 8 本を入れる**
+  (#149 #159 #160 #162 #163 #164 #165 #166 — #166 以外は CI 緑・コンフリクト無し。
+  溜まるほど衝突リスクが上がるので、ここが今いちばん効く)、
+  ③ 姉妹リポへ `.claude/tools/dbboard.md` を貼る (08-09 から継続)、
+  ④ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因・08-09 から継続)、
+  ⑤ #161 の 3 点観察。**
+  次のエージェント側タスク = **#166 がマージされたら #131 に一行コメントを入れる**
+  (そこで約束した分)。#142 (llms.txt) は **PR #165 として出済み**なのでマージ待ち。
+  その後は #161 の観察結果を受けて修正 — **失敗するテストを先に書く**が、
+  原因が特定できていない段階で当て推量のテストは書かない。)
+
 - 日付: 2026-08-12 (**実利用で挙がった 3 つの摩擦をブランチ `feat/document-tree-view` に
   3 コミット。未 push。**
   ① **文書セルが 1 行の JSON だった** → 展開/折りたたみできる木で表示 (ADR-0100)。

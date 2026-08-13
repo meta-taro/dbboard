@@ -25,7 +25,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -146,9 +145,10 @@ impl AnnotationsFile {
 /// [`AnnotationsError::NoConfigDir`] when the OS reports no usable
 /// per-user config directory.
 pub fn default_annotations_path() -> Result<PathBuf, AnnotationsError> {
-    let dirs =
-        ProjectDirs::from("dev", "dbboard", "dbboard").ok_or(AnnotationsError::NoConfigDir)?;
-    Ok(dirs.config_dir().join("annotations.toml"))
+    // Through `store::config_dir` rather than its own `ProjectDirs` lookup, so
+    // that `DBBOARD_CONFIG_DIR` moves this file with the rest of the profile.
+    let dir = crate::store::config_dir().map_err(|_| AnnotationsError::NoConfigDir)?;
+    Ok(dir.join("annotations.toml"))
 }
 
 /// Read and parse `annotations.toml` at `path`. A missing file is **not**
