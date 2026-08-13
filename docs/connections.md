@@ -17,6 +17,28 @@ Resolved via the
 [`directories`](https://crates.io/crates/directories) crate. dbboard
 creates the file on first save with mode `0o600` on Unix.
 
+### Pointing dbboard at a different config dir
+
+`DBBOARD_CONFIG_DIR=<path>` replaces the per-user lookup above. Every
+file dbboard owns moves with it — `connections.toml`, `history.jsonl`,
+`ai-providers.toml`, `annotations.toml`, `ui-settings.toml` — so a
+throwaway profile can never end up holding one file from your real one.
+A blank or whitespace-only value is ignored and the per-user lookup
+applies, so an exported-but-empty variable does not silently write
+credentials into whatever directory the app was started from.
+
+This exists for demos, screenshots and walkthroughs: launch dbboard
+against an empty directory and it starts with no connections and no
+query history, which is the only way to show the app without showing
+your own hosts. On Windows there was previously no way to do this at
+all — the `directories` lookup reads the known-folder API, not
+`%APPDATA%`, so redirecting the environment variable opens the real
+profile anyway. See [ADR-0097](decisions.md).
+
+The OS keychain is **not** redirected. Secrets are keyed by connection
+id, so a demo profile with its own ids simply has no keychain entries
+to find; it does not read your real ones.
+
 ## Resolution order
 
 At startup the binary picks a backend in this order:

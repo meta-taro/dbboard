@@ -7,6 +7,90 @@
 
 ## 最終更新
 
+- 日付: 2026-08-13 (**未マージの green な PR が 8 本溜まっているのが最大のボトルネック。
+  実運用バグ #161 を調査中で、原因は報告者側の 3 点観察待ち。**
+  ① **前回更新 (08-09) 以降に v0.6.0 と v0.7.0 が出ている。** v0.6.0 = Cloud Firestore
+  アダプタ (PR #153)、v0.7.0 = MongoDB アダプタ (PR #156)。ドキュメント側 (CHANGELOG /
+  README / roadmap / compatibility) と検証シート (Firestore・MongoDB の接続) も同時に入った。
+  08-09 時点で「次のエージェント側タスク」としていた **issue 0020 スライス 3
+  (`BackendConfig::MongoDb`) は消化済み**。
+  ② **本セッションで CI を入れた** — `ci/cargo-and-frontend-checks` (ADR-0104) を push し
+  **PR #166** を作成。issue #131 で「PR は pii-scan しか回っておらず、hook を bypass しても
+  受け止める先が無い」と共有された穴を塞ぐもの。ubuntu-latest 3 ジョブ
+  (cargo fmt/clippy/check/test ・ svelte-check + vitest ・ site の node --test)。
+  **Windows ジョブは意図的に置いていない** — 既知の libSQL teardown segfault (#131) で
+  緑のコードのまま恒久的に赤くなるため。**初回 CI が ubuntu で赤くなり、そこで
+  `secure_fs` のテスト 4 本が Linux 限定で落ちていたことが判明した** (CI を入れた初日に
+  CI が仕事をした形)。分類器 `is_likely_cloud_synced_path` 自体はどちらのプラットフォームでも
+  正しく、テスト側が `r"C:\Users\alice\OneDrive\..."` と**バックスラッシュ区切りのリテラル**を
+  渡していたのが原因。Unix では `\` は区切り文字ではないので `Path::components()` が
+  1 セグメントに潰れて何にも一致しない。セグメントの配列から `PathBuf` を組む形に直し
+  (`cfg(windows)` で消すのではなく、Windows レイアウトのケースを全プラットフォームで
+  踏み続ける)、`d2bbfc2` として commit 済み — **これも未 push**。
+  ③ **`feat/selective-export-and-upsert-import` (ADR-0105) が未 push のまま。**
+  接続の選択エクスポートと、インポート時の上書き (`ImportMode`、既定は Skip)。
+  空の id リストは「全件」と読まずに拒否する。ADR-0038 のキーリング参照拒否は緩めていない。
+  ④ **#161 (実行ボタンがクリックで反応しない・Ctrl+Enter は通る) の調査**。
+  ソースを読み切って、クリックと Ctrl+Enter が**同一関数・同一ガード**であることを確認した
+  (`QueryPanel.svelte` の `run`)。よって Ctrl+Enter が通る＝その瞬間の内部状態は正常が確定し、
+  「ボタンだけ弾かれる」条件はコード上に存在しない。経路上の `stopPropagation` なし、
+  常時被さるオーバーレイなし、`QueryPanel.svelte` / `SqlEditor.svelte` は Tauri シェル投入以降
+  無変更なのでバージョン差でもない。**残るのは「クリックがボタンに届いていない」筋**で、
+  ここから先はコードだけでは切れない。バックグラウンド調査が出した「CodeMirror の補完
+  ポップアップが被っている」説は、報告手順が*貼り付け*である以上 `activateOnTyping`
+  (`input.type` のみ発火・貼り付けは `input.paste`) が動かないため**採用しなかった**。
+  #161 に 3 点の観察 (ボタンの色 / カーソルが指の形になるか / フォーカスを外してから押すと
+  動くか) を依頼済み。回答が来るまでは推測で直さない。
+  **user 側ボール = ① 未 push のブランチ 3 本を push する
+  — `ci/cargo-and-frontend-checks` (テスト修正 `d2bbfc2` を載せて #166 を緑にする)、
+  `feat/selective-export-and-upsert-import`、`chore/next-actions-sync` (この文書)。
+  push 後の PR 作成はエージェント側でやる旨、本セッションで合意済み、
+  ② **green で MERGEABLE のまま滞留している PR 8 本を入れる**
+  (#149 #159 #160 #162 #163 #164 #165 #166 — #166 以外は CI 緑・コンフリクト無し。
+  溜まるほど衝突リスクが上がるので、ここが今いちばん効く)、
+  ③ 姉妹リポへ `.claude/tools/dbboard.md` を貼る (08-09 から継続)、
+  ④ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因・08-09 から継続)、
+  ⑤ #161 の 3 点観察。**
+  次のエージェント側タスク = **#166 がマージされたら #131 に一行コメントを入れる**
+  (そこで約束した分)。#142 (llms.txt) は **PR #165 として出済み**なのでマージ待ち。
+  その後は #161 の観察結果を受けて修正 — **失敗するテストを先に書く**が、
+  原因が特定できていない段階で当て推量のテストは書かない。)
+
+- 日付: 2026-08-12 (**実利用で挙がった 3 つの摩擦をブランチ `feat/document-tree-view` に
+  3 コミット。未 push。**
+  ① **文書セルが 1 行の JSON だった** → 展開/折りたたみできる木で表示 (ADR-0100)。
+  `{"$json": null}` と「文書ではない」を区別するため、popup の `doc` を
+  `{ value: unknown } | null` でラップしてある (null 自体が正当な文書値なので)。
+  ② **フッターが空だった** → 24px のステータスバー (ADR-0101)。**行数は入れていない**
+  ‐ 結果ツールバーに既にあり、繰り返しは「無駄なもの」そのものだから。入れたのは
+  画面のどこにも無かった 2 つだけ: **直前のクエリの所要時間**と、**閉じた更新通知へ
+  戻る導線**。後者は実バグの修正でもある — `UpdateNotice` を閉じると
+  `+page.svelte` の state が `null` になり、そのセッション中は二度と出せなかった。
+  計測はフロント側で `invoke` の前後のみ (バックエンドでやると `QueryOutput` と
+  全アダプタに触ることになる)。ブラウズ後のスキーマ読みは含めない。
+  ③ **ENUM がテキスト入力だった** → プルダウン (ADR-0102)。選択肢の出所は
+  `information_schema.column_type` = `describeTable` **のみ**。結果セットのメタは
+  `ENUM` としか返さないので、主キーを読む同じ `try` で一緒に取り、`enums` prop で
+  グリッドへ渡す。解析は純関数 + 10 テスト (`src/lib/grid/enum.ts`) に隔離 —
+  カンマ・`''`・バックスラッシュを取り違えると**間違った選択肢**を出すことになり、
+  テキスト入力より悪いため。**解析できなければ選択肢を出さずテキストに戻す**。
+  `SET` は複数値なので対象外 (単一選択にすると 1 つを除いて黙って捨てる)。
+  宣言に無い既存値は先頭に選択済みで保持 = 開いただけで書き換わらない。
+  インライン編集と拡大ダイアログの**両方**を select 化 (片方残すとそこから自由入力
+  できる)。今のところ効くのは MySQL のみ — Postgres の名前付き enum は型名しか
+  返さないので別途カタログ読みが要る。
+  ④ 検証: svelte-check 281 files / 0 errors、vitest 21 files / **436 tests** 緑、
+  `pii-scan --staged` clean。**3 コミットとも pre-commit フックを全通過 (exit 0)**、
+  `--no-verify` 不使用。
+  **user 側ボール = ① `git push -u origin feat/document-tree-view` (その後こちらで
+  PR を立てる)、② `fix/trim-pasted-connection-fields` の push、③ 姉妹リポへ
+  `.claude/tools/dbboard.md` を貼る、④ dbboard-web へ `docs/api-contract.md` の
+  `$json` を中継、⑤ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の
+  唯一の原因)。**
+  未 push のブランチが他に 3 本: `docs/locale-rendering-test-spec` /
+  `docs/agent-onboarding` (force-with-lease) / `docs/llms-txt`。
+  検証シート 001 は No.2 から人手で再開待ち (行 1・10・11 は `未実施` のまま)。)
+
 - 日付: 2026-08-09 (**Zenn 記事を公開 + それを書く過程で見つかった文書の嘘を 3 件修正。
   未 push が 3 コミット (`f0cb0ca` / `28c15cc` / `913ee8b`)。**
   ① **記事** = `articles/dbboard-mcp.md` → <https://zenn.dev/dokokade/articles/46b8c608715963>。

@@ -417,39 +417,74 @@ impl ConnectionFile {
     }
 }
 
-/// The default per-user path for `connections.toml`, resolved via the
-/// `directories` crate so it matches each platform's convention:
+/// The environment variable that replaces the per-user config directory.
 ///
-/// - Windows: `%APPDATA%\dbboard\dbboard\config\connections.toml`
-/// - macOS:   `~/Library/Application Support/dev.dbboard.dbboard/connections.toml`
-/// - Linux:   `$XDG_CONFIG_HOME/dbboard/connections.toml`
-///   (default `~/.config/dbboard/connections.toml`)
+/// Set it to run dbboard against a different profile — an empty one for a
+/// screenshot or a walkthrough, a throwaway one for a bug report, a
+/// project-local one for a demo. Everything the app owns moves together.
+pub const CONFIG_DIR_ENV: &str = "DBBOARD_CONFIG_DIR";
+
+/// The directory every per-user file dbboard owns lives in.
+///
+/// [`CONFIG_DIR_ENV`], when set to a non-blank value, replaces the platform
+/// lookup outright. Otherwise the `directories` crate answers, matching each
+/// platform's convention:
+///
+/// - Windows: `%APPDATA%\dbboard\dbboard\config`
+/// - macOS:   `~/Library/Application Support/dev.dbboard.dbboard`
+/// - Linux:   `$XDG_CONFIG_HOME/dbboard` (default `~/.config/dbboard`)
+///
+/// The environment variable is needed rather than merely convenient: on
+/// Windows the `directories` lookup goes through the known-folder API, so
+/// redirecting `%APPDATA%` in the environment does *not* move the config and
+/// the app silently opens the real one.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoConfigDir`] when the variable is unset and the OS
+/// reports no usable per-user config directory (no `$HOME`, no `%APPDATA%`).
+pub fn config_dir() -> Result<PathBuf, ConfigError> {
+    config_dir_from(std::env::var(CONFIG_DIR_ENV).ok().as_deref())
+}
+
+/// [`config_dir`] with the environment read already done, so the decision it
+/// makes can be tested without mutating the process environment —
+/// `unsafe_code` is forbidden workspace-wide and `set_var` is unsafe.
+fn config_dir_from(configured: Option<&str>) -> Result<PathBuf, ConfigError> {
+    // Blank means "not set". An exported-but-empty variable is a shell
+    // accident, and taking it literally would resolve the config directory to
+    // the process's working directory — writing credentials wherever the app
+    // happened to be started from.
+    if let Some(raw) = configured {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    let dirs = ProjectDirs::from("dev", "dbboard", "dbboard").ok_or(ConfigError::NoConfigDir)?;
+    Ok(dirs.config_dir().to_path_buf())
+}
+
+/// The default per-user path for `connections.toml`, under [`config_dir`].
 ///
 /// # Errors
 ///
 /// Returns [`ConfigError::NoConfigDir`] when the OS reports no usable
 /// per-user config directory (no `$HOME`, no `%APPDATA%`).
 pub fn default_path() -> Result<PathBuf, ConfigError> {
-    let dirs = ProjectDirs::from("dev", "dbboard", "dbboard").ok_or(ConfigError::NoConfigDir)?;
-    Ok(dirs.config_dir().join("connections.toml"))
+    Ok(config_dir()?.join("connections.toml"))
 }
 
-/// The default per-user path for `history.jsonl` (ADR-0017), resolved
-/// via the same `directories` lookup as [`default_path`] so the two
-/// live side by side under one config dir:
-///
-/// - Windows: `%APPDATA%\dbboard\dbboard\config\history.jsonl`
-/// - macOS:   `~/Library/Application Support/dev.dbboard.dbboard/history.jsonl`
-/// - Linux:   `$XDG_CONFIG_HOME/dbboard/history.jsonl`
-///   (default `~/.config/dbboard/history.jsonl`)
+/// The default per-user path for `history.jsonl` (ADR-0017), under the same
+/// [`config_dir`] as [`default_path`] so the two live side by side.
 ///
 /// # Errors
 ///
 /// Returns [`ConfigError::NoConfigDir`] when the OS reports no usable
 /// per-user config directory (no `$HOME`, no `%APPDATA%`).
 pub fn default_history_path() -> Result<PathBuf, ConfigError> {
-    let dirs = ProjectDirs::from("dev", "dbboard", "dbboard").ok_or(ConfigError::NoConfigDir)?;
-    Ok(dirs.config_dir().join("history.jsonl"))
+    Ok(config_dir()?.join("history.jsonl"))
 }
 
 /// Read and parse `connections.toml` at `path`.
@@ -526,6 +561,52 @@ fn write_new_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_configured_config_dir_replaces_the_platform_lookup() {
+        assert_eq!(
+            config_dir_from(Some("/tmp/demo-profile")).expect("an explicit dir always resolves"),
+            PathBuf::from("/tmp/demo-profile")
+        );
+    }
+
+    #[test]
+    fn a_blank_config_dir_is_not_a_config_dir() {
+        // An exported-but-empty variable is a shell accident. Taking it
+        // literally would resolve to the working directory and write
+        // credentials wherever the app was started from, so it has to mean the
+        // same thing as "unset".
+        let platform = config_dir_from(None).expect("the platform lookup should resolve");
+        for blank in ["", "   ", "\t"] {
+            assert_eq!(
+                config_dir_from(Some(blank)).expect("a blank value falls back"),
+                platform,
+                "{blank:?} was treated as a directory"
+            );
+        }
+    }
+
+    #[test]
+    fn a_configured_config_dir_is_trimmed() {
+        // Copy-pasting a path into a `.env` file or a shell export picks up
+        // trailing whitespace readily, and a directory named "demo " is not
+        // what anyone means by it.
+        assert_eq!(
+            config_dir_from(Some("  /tmp/demo-profile  ")).expect("resolves"),
+            PathBuf::from("/tmp/demo-profile")
+        );
+    }
+
+    #[test]
+    fn a_relative_config_dir_is_taken_as_given() {
+        // Not rejected: a caller who says `demo-profile` means the directory
+        // of that name, and refusing it would only make them spell out an
+        // absolute path by hand.
+        assert_eq!(
+            config_dir_from(Some("demo-profile")).expect("resolves"),
+            PathBuf::from("demo-profile")
+        );
+    }
 
     #[test]
     fn adapter_label_names_each_kind() {
