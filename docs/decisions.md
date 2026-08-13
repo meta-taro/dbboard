@@ -9706,6 +9706,87 @@ a much larger surface to get wrong than the driver is to depend on.
   Unit tests prove the crate sends what we think MongoDB accepts; that file
   proves MongoDB accepts it.
 
+## ADR-0104 — Verification runs in CI, not only in a git hook
+
+- **Status**: accepted
+- **Date**: 2026-08-12
+- **Context**: issue #131, ADR-0055 (`pii-scan` in CI), baseline §5 / §23
+
+### Context
+
+CLAUDE.md lists four commands that must pass before every commit and two more
+before every push. All six ran in exactly one place: the `cargo-husky` hooks on
+a maintainer's machine. Nothing in the repository proved they had ever run.
+
+That is a weaker guarantee than it looks. Hooks are installed as a side effect
+of the first `cargo test` after cloning, so a fresh checkout has none until
+someone happens to run tests. `--no-verify` is sanctioned for two cases already
+(the Windows libSQL teardown segfault, and baseline §35's environment-caused
+hook failures), and once a bypass is legitimate for one reason nothing
+distinguishes it from a bypass for another. A contributor who is not the
+maintainer has no hooks at all.
+
+Meanwhile CI carried only `pii-scan` and the tag-triggered `release` build. A
+green checks list on a pull request said the diff leaked no PII — and nothing
+about whether it compiled.
+
+### Decision
+
+`.github/workflows/ci.yml` runs on pushes and pull requests to `develop` and
+`main`, in three jobs split by toolchain.
+
+1. **The Rust job runs all four mandatory commands, in order.** `fmt --check`,
+   `clippy -D warnings`, `check --all-targets --all-features`, then `test
+   --all-features`. `check` and `test` overlap in what they compile; they are
+   both here because both are in CLAUDE.md and CI's job is to be the same gate
+   the hook is, not a cheaper approximation of it.
+
+2. **On `ubuntu-latest`, though the app ships for Windows and macOS.** The
+   release workflow already builds the desktop bundle on both of those, so what
+   is missing is the verification pass, not another build. Running it on
+   Windows would inherit the libSQL teardown segfault (issue #131) and be
+   permanently red on green code — a check nobody can trust is worse than no
+   check, because it trains people to merge past red.
+
+3. **The whole workspace, including `apps/desktop/src-tauri`.** That crate is
+   where every Tauri command lives, which makes it the last one worth
+   excluding. The cost is the apt-installed webkit/gtk stack and a `pnpm build`
+   beforehand, because the crate's build script resolves `frontendDist:
+   ../build` and that path is an artefact, not a tracked directory.
+
+4. **No services.** Every environment-dependent test in the workspace is
+   `#[ignore]`d — the OS keychain, the Firestore emulator, MongoDB — so
+   `--all-features` needs nothing but a compiler. That was already true; this
+   workflow is what makes it load-bearing, and a future test that quietly
+   depends on a live service will now turn CI red rather than pass unnoticed
+   on the one machine that has it running.
+
+5. **The site tests are discovered, not listed.** `find`-then-`node --test`
+   rather than a file list, because those tests arrive one file at a time and a
+   hard-coded list stops covering them silently. Node 22 does not recurse into
+   a bare directory argument, so the discovery has to be explicit.
+
+6. **First-party actions only, `contents: read`, no secrets** — the same
+   posture as `pii-scan`. pnpm comes from corepack via the `packageManager`
+   field rather than a third-party setup action, and the cargo cache uses
+   `actions/cache` rather than the usual community Rust cache action.
+
+### Consequences
+
+- A pull request now carries evidence rather than an assertion. The test plan
+  checkboxes in a PR body stop being the only record that the four commands
+  ran.
+- CI does not cover Windows or macOS *verification*, only Linux. The platform
+  the maintainer actually develops on is therefore still the platform least
+  covered by automation. Closing that gap depends on issue #131; until the
+  segfault is fixed, adding a Windows job would only add noise.
+- The Rust job is the slow one — a cold cache compiles the workspace three
+  times over (clippy, check, test). The cache key is `Cargo.lock`, so a
+  dependency change pays full price and everything else does not.
+- `pnpm build` running inside the Rust job means a frontend build failure
+  surfaces there as well as in the frontend job. That is duplication, but the
+  alternative is a Rust job that cannot compile the desktop crate.
+
 ## ADR-0105 — Export names its connections; import overwrites only what the user asks it to
 
 - **Status**: accepted
