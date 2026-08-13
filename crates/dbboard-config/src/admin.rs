@@ -129,6 +129,18 @@ pub enum ConnectionKindDraft {
     AuroraDsql {
         url: String,
     },
+    /// Aurora DSQL with IAM auth (ADR-0036, ADR-0103). Only the AWS secret
+    /// access key is a secret; the other five fields are stored inline because
+    /// a `SigV4` token is minted from them at connect time, so there is no URL
+    /// to hide them in.
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+        secret_access_key: String,
+    },
     /// Firestore (ADR-0093). `service_account` is `None` for the local
     /// emulator, which authenticates with a fixed `Bearer owner` and therefore
     /// has no credential to seed into the keychain.
@@ -256,13 +268,17 @@ pub enum ConnectionKindEditDraft {
     AuroraDsql {
         url: SecretField,
     },
-    /// Aurora DSQL IAM (ADR-0036). Carries no editable field: this kind
-    /// is config-file-only in v1, so the UI never offers an editable form
-    /// for it. The variant exists only so the edit state machine is
-    /// total; any `update()` targeting it falls through
-    /// [`ConnectionAdmin::apply_update_kind`]'s catch-all as a
-    /// [`ConfigError::KindMismatch`].
-    AuroraDsqlIam,
+    /// Aurora DSQL with IAM auth (ADR-0036, ADR-0103). Two states are enough
+    /// for the secret access key, as for D1's token: an IAM connection always
+    /// has one, so there is no third "no credential" state to express.
+    AuroraDsqlIam {
+        endpoint: String,
+        region: String,
+        database: String,
+        username: String,
+        access_key_id: String,
+        secret_access_key: SecretField,
+    },
     Firestore {
         project_id: String,
         database_id: Option<String>,
@@ -1077,6 +1093,15 @@ impl ConnectionAdmin {
                 ConnectionKind::AuroraDsql { keyring_url_ref }
             })?,
             (
+                ConnectionKind::AuroraDsqlIam {
+                    keyring_secret_key_ref,
+                    ..
+                },
+                draft @ ConnectionKindEditDraft::AuroraDsqlIam { .. },
+            ) => {
+                self.apply_aurora_dsql_iam_edit(id, keyring_secret_key_ref, draft, &mut applied)?
+            }
+            (
                 ConnectionKind::Firestore {
                     keyring_service_account_ref,
                     ..
@@ -1105,6 +1130,44 @@ impl ConnectionAdmin {
         };
 
         Ok((new_kind, applied))
+    }
+
+    /// The Aurora DSQL (IAM) arm of [`Self::apply_update_kind`], lifted out for
+    /// length alone: six fields make it the longest arm, and inline it pushed
+    /// the match past clippy's function-length limit.
+    fn apply_aurora_dsql_iam_edit(
+        &self,
+        id: &str,
+        existing_ref: &str,
+        draft: ConnectionKindEditDraft,
+        applied: &mut Vec<AppliedSecretWrite>,
+    ) -> Result<ConnectionKind, ConfigError> {
+        let ConnectionKindEditDraft::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_access_key,
+        } = draft
+        else {
+            return Err(ConfigError::KindMismatch { id: id.to_string() });
+        };
+
+        if let SecretField::Set(new_value) = secret_access_key {
+            self.apply_secret_write(existing_ref, &new_value, applied)?;
+        }
+
+        // The ref is reused rather than re-minted: a new one would orphan the
+        // keychain entry this connection still points at.
+        Ok(ConnectionKind::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            keyring_secret_key_ref: existing_ref.to_string(),
+        })
     }
 
     /// The Firestore arm of [`Self::apply_update_kind`], lifted out because it
@@ -1332,6 +1395,12 @@ const SSH_PASSWORD_FIELD: &str = "ssh_password";
 /// the SSH consts above: `add` and `update` must derive the identical ref.
 const FIRESTORE_SERVICE_ACCOUNT_FIELD: &str = "service_account";
 
+/// Keyring field name for the AWS secret access key of an Aurora DSQL IAM
+/// connection. Same reason again — and this one also has to keep matching the
+/// refs written by hand into `connections.toml` before the kind was editable
+/// in-app (ADR-0103), so its value is not free to change.
+const AURORA_DSQL_IAM_SECRET_KEY_FIELD: &str = "secret_key";
+
 /// Split a host-key draft into the `(fingerprint, known_hosts)` pair
 /// [`SshTunnelToml`] stores — exactly one is `Some`.
 fn split_host_key(host_key: SshHostKeyDraft) -> (Option<String>, Option<String>) {
@@ -1508,6 +1577,29 @@ fn build_kind_for_add(
         ConnectionKindDraft::AuroraDsql { url } => url_backed_add(id, url, |keyring_url_ref| {
             ConnectionKind::AuroraDsql { keyring_url_ref }
         }),
+        ConnectionKindDraft::AuroraDsqlIam {
+            endpoint,
+            region,
+            database,
+            username,
+            access_key_id,
+            secret_access_key,
+        } => {
+            let secret_ref = keyring_ref(id, AURORA_DSQL_IAM_SECRET_KEY_FIELD);
+            let kind = ConnectionKind::AuroraDsqlIam {
+                endpoint,
+                region,
+                database,
+                username,
+                access_key_id,
+                keyring_secret_key_ref: secret_ref.clone(),
+            };
+            let writes = vec![PendingSecretWrite {
+                key_ref: secret_ref,
+                value: secret_access_key,
+            }];
+            (kind, writes)
+        }
         ConnectionKindDraft::Firestore {
             project_id,
             database_id,
@@ -1649,6 +1741,77 @@ mod tests {
                 url: url.to_string(),
             },
         }
+    }
+
+    fn aurora_dsql_iam_draft(id: &str, secret_access_key: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("Aurora DSQL IAM {id}"),
+            kind: ConnectionKindDraft::AuroraDsqlIam {
+                endpoint: "abc.dsql.ap-northeast-1.on.aws".to_string(),
+                region: "ap-northeast-1".to_string(),
+                database: "postgres".to_string(),
+                username: "admin".to_string(),
+                access_key_id: "AKIAEXAMPLE".to_string(),
+                secret_access_key: secret_access_key.to_string(),
+            },
+        }
+    }
+
+    /// Every plain field differs from [`aurora_dsql_iam_draft`]'s, so a field
+    /// the update forgets to carry shows up as the old value rather than
+    /// passing by coincidence.
+    fn aurora_dsql_iam_edit(name: &str, secret_access_key: SecretField) -> ConnectionEditDraft {
+        ConnectionEditDraft {
+            mcp_alias: None,
+            mcp_write: None,
+            ssh: SshEditField::Keep,
+            name: name.to_string(),
+            kind: ConnectionKindEditDraft::AuroraDsqlIam {
+                endpoint: "moved.dsql.us-east-1.on.aws".to_string(),
+                region: "us-east-1".to_string(),
+                database: "analytics".to_string(),
+                username: "reader".to_string(),
+                access_key_id: "AKIAROTATED".to_string(),
+                secret_access_key,
+            },
+        }
+    }
+
+    /// An admin holding one already-stored IAM entry with its secret seeded.
+    fn iam_admin(
+        id: &str,
+        secret: &str,
+    ) -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin) {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let secret_ref = format!("dbboard.{id}.secret_key");
+        secrets.set(&secret_ref, secret).expect("seed secret");
+        let file = ConnectionFile {
+            version: crate::store::CONFIG_VERSION,
+            connections: vec![ConnectionEntry {
+                mcp_alias: None,
+                mcp_write: false,
+                ssh: None,
+                id: id.to_string(),
+                name: "Aurora DSQL (IAM)".to_string(),
+                kind: ConnectionKind::AuroraDsqlIam {
+                    endpoint: "abc.dsql.ap-northeast-1.on.aws".to_string(),
+                    region: "ap-northeast-1".to_string(),
+                    database: "postgres".to_string(),
+                    username: "admin".to_string(),
+                    access_key_id: "AKIAEXAMPLE".to_string(),
+                    keyring_secret_key_ref: secret_ref,
+                },
+            }],
+        };
+        let admin =
+            ConnectionAdmin::new_with_file(path, secrets.clone() as Arc<dyn SecretStore>, file);
+        (dir, secrets, admin)
     }
 
     /// `service_account: None` is the emulator: no credential exists to store.
@@ -2250,32 +2413,12 @@ mod tests {
     }
 
     #[test]
-    fn update_aurora_dsql_iam_kind_is_rejected_as_mismatch() {
-        // There is no IAM edit-draft, so any update targeting an IAM entry
-        // falls through `apply_update_kind`'s catch-all as a KindMismatch
-        // — v1 requires delete + re-add (hand-edit the TOML) to change it.
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("connections.toml");
-        let secrets = Arc::new(InMemorySecretStore::new());
-        let file = ConnectionFile {
-            version: crate::store::CONFIG_VERSION,
-            connections: vec![ConnectionEntry {
-                mcp_alias: None,
-                mcp_write: false,
-                ssh: None,
-                id: "dsql-iam".to_string(),
-                name: "Aurora DSQL (IAM)".to_string(),
-                kind: ConnectionKind::AuroraDsqlIam {
-                    endpoint: "abc.dsql.ap-northeast-1.on.aws".to_string(),
-                    region: "ap-northeast-1".to_string(),
-                    database: "postgres".to_string(),
-                    username: "admin".to_string(),
-                    access_key_id: "AKIAEXAMPLE".to_string(),
-                    keyring_secret_key_ref: "dbboard.dsql-iam.secret_key".to_string(),
-                },
-            }],
-        };
-        let mut admin = ConnectionAdmin::new_with_file(path, secrets as Arc<dyn SecretStore>, file);
+    fn update_aurora_dsql_iam_with_a_different_kind_is_rejected_as_mismatch() {
+        // The IAM kind is editable now (ADR-0103), but it is still its own
+        // kind: pointing a plain Aurora DSQL draft at an IAM entry must fall
+        // through `apply_update_kind`'s catch-all rather than silently
+        // rewriting a token-minting entry into a URL-backed one.
+        let (_dir, _secrets, mut admin) = iam_admin("dsql-iam", "AWS_SECRET");
 
         let err = admin
             .update(
@@ -2295,6 +2438,99 @@ mod tests {
             ConfigError::KindMismatch { id } => assert_eq!(id, "dsql-iam"),
             other => panic!("expected KindMismatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn add_aurora_dsql_iam_stores_plain_fields_and_mints_the_secret_key_ref() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+
+        admin
+            .add(aurora_dsql_iam_draft("dsql-iam", "AWS_SECRET"))
+            .expect("add");
+
+        // The ref must be derived from the id exactly as delete/export expect
+        // it (`dbboard.<id>.secret_key`), or the entry would leak its keychain
+        // row on delete.
+        assert_eq!(
+            secrets.get("dbboard.dsql-iam.secret_key").expect("seeded"),
+            "AWS_SECRET"
+        );
+        match &admin.entries()[0].kind {
+            ConnectionKind::AuroraDsqlIam {
+                endpoint,
+                region,
+                database,
+                username,
+                access_key_id,
+                keyring_secret_key_ref,
+            } => {
+                assert_eq!(endpoint, "abc.dsql.ap-northeast-1.on.aws");
+                assert_eq!(region, "ap-northeast-1");
+                assert_eq!(database, "postgres");
+                assert_eq!(username, "admin");
+                assert_eq!(access_key_id, "AKIAEXAMPLE");
+                assert_eq!(keyring_secret_key_ref, "dbboard.dsql-iam.secret_key");
+            }
+            other => panic!("expected AuroraDsqlIam, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_aurora_dsql_iam_rewrites_plain_fields_and_keeps_the_secret() {
+        // The trigger for in-app editing is key rotation, but rotating the
+        // *access key id* alone (a non-secret field) must not force the
+        // operator to retype the secret they cannot read back (ADR-0016).
+        let (_dir, secrets, mut admin) = iam_admin("dsql-iam", "AWS_SECRET");
+
+        admin
+            .update(
+                "dsql-iam",
+                aurora_dsql_iam_edit("renamed", SecretField::Keep),
+            )
+            .expect("update");
+
+        assert_eq!(admin.entries()[0].name, "renamed");
+        match &admin.entries()[0].kind {
+            ConnectionKind::AuroraDsqlIam {
+                endpoint,
+                region,
+                database,
+                username,
+                access_key_id,
+                keyring_secret_key_ref,
+            } => {
+                assert_eq!(endpoint, "moved.dsql.us-east-1.on.aws");
+                assert_eq!(region, "us-east-1");
+                assert_eq!(database, "analytics");
+                assert_eq!(username, "reader");
+                assert_eq!(access_key_id, "AKIAROTATED");
+                // Re-minting the ref would orphan the keychain row the entry
+                // still points at.
+                assert_eq!(keyring_secret_key_ref, "dbboard.dsql-iam.secret_key");
+            }
+            other => panic!("expected AuroraDsqlIam, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.dsql-iam.secret_key").expect("kept"),
+            "AWS_SECRET"
+        );
+    }
+
+    #[test]
+    fn update_aurora_dsql_iam_with_secret_set_overwrites_the_keyring_entry() {
+        let (_dir, secrets, mut admin) = iam_admin("dsql-iam", "AWS_SECRET");
+
+        admin
+            .update(
+                "dsql-iam",
+                aurora_dsql_iam_edit("rotated", SecretField::Set("AWS_ROTATED".to_string())),
+            )
+            .expect("update");
+
+        assert_eq!(
+            secrets.get("dbboard.dsql-iam.secret_key").expect("written"),
+            "AWS_ROTATED"
+        );
     }
 
     #[test]

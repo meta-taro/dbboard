@@ -23,6 +23,7 @@
     type EditContext,
     type StagedValue,
   } from '$lib/grid/edit';
+  import { allContainerPaths, flattenDocument, toggled } from '$lib/grid/tree';
 
   interface Props {
     columns: Column[];
@@ -35,6 +36,11 @@
     // Present when the result is an editable table browse: enables inline cell
     // editing keyed on the table's primary key (ADR-0042). Null = read-only.
     edit?: EditContext | null;
+    // Members of every ENUM column of the browsed table, by column name. An
+    // enum edited as free text is a spelling test; with this the editor offers
+    // the declared members instead (ADR-0102). Empty for a non-enum table, and
+    // for any result that is not an editable browse.
+    enums?: Record<string, string[]>;
     // Called after a save commits, so the parent can re-run the browse and show
     // engine-normalised values.
     onSaved?: () => void;
@@ -46,6 +52,7 @@
     truncated,
     limit,
     edit = null,
+    enums = {},
     onSaved,
   }: Props = $props();
 
@@ -54,7 +61,17 @@
   let selected = $state<Set<number>>(new Set());
   let anchor = $state<number | null>(null); // last-clicked display position
   let copied = $state('');
-  let popup = $state<{ col: string; value: string } | null>(null);
+  // The read-only value dialog. `doc` is set only for a document cell, and is
+  // wrapped so that a document whose value is literally `null` stays
+  // distinguishable from "this is not a document" (ADR-0100).
+  let popup = $state<{ col: string; value: string; doc: { value: unknown } | null } | null>(
+    null,
+  );
+  // Which subtrees of the open document are closed, by dotted path. Documents
+  // open fully expanded: the point of the view is that the shape is visible
+  // without further clicking.
+  let treeClosed = $state<Set<string>>(new Set());
+  let treeNodes = $derived(popup?.doc ? flattenDocument(popup.doc.value, treeClosed) : []);
 
   // Inline editing (ADR-0042). Staged edits are keyed by cellKey(origRow, col)
   // — original row index, so they survive re-sorting — mapping to the new value
@@ -125,6 +142,20 @@
     const s = stagedAt(origIdx, ci);
     const current = s !== undefined ? s : cell;
     return current === null ? '' : displayCell(current as Cell);
+  }
+
+  // The declared members of column `ci`, or null when it is not an enum — in
+  // which case every editor falls back to free text.
+  function variantsFor(ci: number): string[] | null {
+    return enums[columns[ci].name] ?? null;
+  }
+
+  // What the dropdown offers. A draft outside the declared members — a value
+  // written before the type was narrowed, or the empty draft a NULL starts from
+  // — is kept at the head of the list, so merely opening the editor on a row
+  // cannot silently rewrite it to the first member.
+  function optionsFor(variants: string[], draft: string): string[] {
+    return variants.includes(draft) ? variants : [draft, ...variants];
   }
 
   function beginEdit(origIdx: number, ci: number, cell: Cell) {
@@ -350,12 +381,19 @@
   }
 
   function openCell(col: string, cell: Cell) {
-    // Only worth a popup for text the cell could not show in full — the same
-    // display-width test the editor uses, so a truncated Japanese value opens
-    // at the same point a truncated Latin one does.
+    // A document always opens, however short its serialisation: the row shows
+    // it as one line of JSON, and one line is exactly what a tree is not.
+    if (isDocument(cell)) {
+      treeClosed = new Set();
+      popup = { col, value: JSON.stringify(cell.$json, null, 2), doc: { value: cell.$json } };
+      return;
+    }
+    // Otherwise only worth a popup for text the cell could not show in full —
+    // the same display-width test the editor uses, so a truncated Japanese
+    // value opens at the same point a truncated Latin one does.
     const value = displayCell(cell);
     if (cell === null || !needsWideEditor(value)) return;
-    popup = { col, value };
+    popup = { col, value, doc: null };
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -460,29 +498,49 @@
                      shrinks the column it sits in is why this was unusable. -->
                 <span class="cell-value">{cellText(origIdx, ci, cell)}</span>
                 {#if isEditing && editing}
+                  {@const variants = variantsFor(ci)}
                   <div class="cell-editor" role="presentation" onclick={(e) => e.stopPropagation()}>
-                    <!-- svelte-ignore a11y_autofocus -->
-                    <input
-                      class="cell-input"
-                      bind:value={editing.draft}
-                      autofocus
-                      spellcheck="false"
-                      onkeydown={onEditorKeydown}
-                      onblur={commitEditor}
-                      title={i18n.t('edit-cell-editing')}
-                    />
-                    <button
-                      type="button"
-                      class="cell-btn"
-                      onmousedown={(e) => {
-                        // mousedown fires before the input's blur, so the draft
-                        // has to move to the dialog before the blur commits it.
-                        e.preventDefault();
-                        e.stopPropagation();
-                        expandEditor();
-                      }}
-                      title={i18n.t('edit-cell-expand')}>⤢</button
-                    >
+                    {#if variants}
+                      <!-- svelte-ignore a11y_autofocus -->
+                      <select
+                        class="cell-input"
+                        bind:value={editing.draft}
+                        autofocus
+                        onchange={commitEditor}
+                        onkeydown={onEditorKeydown}
+                        onblur={commitEditor}
+                        title={i18n.t('edit-enum-editing')}
+                      >
+                        {#each optionsFor(variants, editing.draft) as v (v)}
+                          <option value={v}>{v === '' ? i18n.t('edit-enum-blank') : v}</option>
+                        {/each}
+                      </select>
+                    {:else}
+                      <!-- svelte-ignore a11y_autofocus -->
+                      <input
+                        class="cell-input"
+                        bind:value={editing.draft}
+                        autofocus
+                        spellcheck="false"
+                        onkeydown={onEditorKeydown}
+                        onblur={commitEditor}
+                        title={i18n.t('edit-cell-editing')}
+                      />
+                      <!-- No wide editor for an enum: the choices are the whole
+                           value space, and none of them needs more room. -->
+                      <button
+                        type="button"
+                        class="cell-btn"
+                        onmousedown={(e) => {
+                          // mousedown fires before the input's blur, so the draft
+                          // has to move to the dialog before the blur commits it.
+                          e.preventDefault();
+                          e.stopPropagation();
+                          expandEditor();
+                        }}
+                        title={i18n.t('edit-cell-expand')}>⤢</button
+                      >
+                    {/if}
                     <button
                       type="button"
                       class="cell-btn"
@@ -506,6 +564,7 @@
 </div>
 
 {#if expanded && columns[expanded.col]}
+  {@const dialogVariants = variantsFor(expanded.col)}
   <div
     class="backdrop"
     onclick={(e) => {
@@ -523,23 +582,40 @@
     >
       <div class="popup-head">
         <span class="popup-col">{columns[expanded.col].name}</span>
-        <span class="popup-len">
-          {i18n.t('edit-cell-chars', { count: charCount(expanded.draft) })}
-        </span>
+        {#if !dialogVariants}
+          <span class="popup-len">
+            {i18n.t('edit-cell-chars', { count: charCount(expanded.draft) })}
+          </span>
+        {/if}
       </div>
-      <!-- svelte-ignore a11y_autofocus -->
-      <textarea
-        class="popup-edit"
-        bind:value={expanded.draft}
-        autofocus
-        spellcheck="false"
-        onkeydown={onExpandedKeydown}
-      ></textarea>
+      {#if dialogVariants}
+        <!-- Reachable when a declared member is long enough to route past the
+             inline box; it must still be a choice, not a text field. -->
+        <!-- svelte-ignore a11y_autofocus -->
+        <select class="popup-select" bind:value={expanded.draft} autofocus>
+          {#each optionsFor(dialogVariants, expanded.draft) as v (v)}
+            <option value={v}>{v === '' ? i18n.t('edit-enum-blank') : v}</option>
+          {/each}
+        </select>
+      {:else}
+        <!-- svelte-ignore a11y_autofocus -->
+        <textarea
+          class="popup-edit"
+          bind:value={expanded.draft}
+          autofocus
+          spellcheck="false"
+          onkeydown={onExpandedKeydown}
+        ></textarea>
+      {/if}
       <div class="popup-foot">
         <button type="button" class="ghost" onclick={nullExpanded} title={i18n.t('edit-null-title')}>
           ∅ NULL
         </button>
-        <span class="popup-hint">{i18n.t('edit-cell-dialog-hint')}</span>
+        {#if !dialogVariants}
+          <span class="popup-hint">{i18n.t('edit-cell-dialog-hint')}</span>
+        {:else}
+          <span class="popup-hint"></span>
+        {/if}
         <button type="button" onclick={cancelExpanded}>{i18n.t('edit-cell-cancel')}</button>
         <button type="button" class="primary" onclick={commitExpanded}>
           {i18n.t('edit-cell-apply')}
@@ -560,15 +636,62 @@
     <div class="popup" role="dialog" aria-modal="true" aria-label={i18n.t('result-cell-dialog')} tabindex="-1">
       <div class="popup-head">
         <span class="popup-col">{popup.col}</span>
-        <button
-          type="button"
-          class="ghost"
-          onclick={() => navigator.clipboard.writeText(popup?.value ?? '')}
-        >
-          {i18n.t('cell-copy')}
-        </button>
+        <span class="popup-actions">
+          {#if popup.doc}
+            <button
+              type="button"
+              class="ghost"
+              onclick={() =>
+                (treeClosed =
+                  treeClosed.size > 0 ? new Set() : allContainerPaths(popup?.doc?.value))}
+            >
+              {treeClosed.size > 0
+                ? i18n.t('cell-tree-expand-all')
+                : i18n.t('cell-tree-collapse-all')}
+            </button>
+          {/if}
+          <button
+            type="button"
+            class="ghost"
+            onclick={() => navigator.clipboard.writeText(popup?.value ?? '')}
+          >
+            {i18n.t('cell-copy')}
+          </button>
+        </span>
       </div>
-      <pre class="popup-body">{popup.value}</pre>
+      {#if popup.doc}
+        <div class="tree" role="tree" aria-label={i18n.t('cell-tree')}>
+          {#each treeNodes as node (node.path)}
+            <div
+              class="tree-row"
+              role="treeitem"
+              aria-level={node.depth + 1}
+              aria-expanded={node.hasChildren ? !node.collapsed : undefined}
+              aria-selected="false"
+              style="padding-left: {node.depth * 1.25}rem"
+            >
+              {#if node.hasChildren}
+                <button
+                  type="button"
+                  class="twist"
+                  aria-label={node.collapsed
+                    ? i18n.t('cell-tree-expand', { path: node.path })
+                    : i18n.t('cell-tree-collapse', { path: node.path })}
+                  onclick={() => (treeClosed = toggled(treeClosed, node.path))}
+                >
+                  {node.collapsed ? '▸' : '▾'}
+                </button>
+              {:else}
+                <span class="twist" aria-hidden="true"></span>
+              {/if}
+              {#if node.label !== ''}<span class="tree-label">{node.label}</span>{/if}
+              <span class="tree-value {node.kind}">{node.preview}</span>
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <pre class="popup-body">{popup.value}</pre>
+      {/if}
     </div>
   </div>
 {/if}
@@ -794,6 +917,9 @@
   .cell-input:focus-visible {
     outline: none;
   }
+  select.cell-input {
+    cursor: pointer;
+  }
   .cell-btn {
     flex: none;
     border: 1px solid var(--border);
@@ -891,6 +1017,18 @@
   .popup-edit:focus-visible {
     outline: none;
   }
+  /* An enum has a handful of choices, so the dialog does not need the 40vh
+     the free-text editor reserves. */
+  .popup-select {
+    margin: var(--space-3);
+    padding: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+    background: var(--bg-surface);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: var(--text-small);
+  }
   .popup-foot {
     display: flex;
     align-items: center;
@@ -931,5 +1069,63 @@
     white-space: pre-wrap;
     word-break: break-word;
     color: var(--text);
+  }
+
+  /* The document tree (ADR-0100). Monospace and one row per node, so it reads
+     as the same kind of surface as the grid behind it. */
+  .tree {
+    padding: var(--space-2) var(--space-3);
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-small);
+    line-height: 1.6;
+  }
+  .tree-row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .tree-row:hover {
+    background: var(--bg-surface-alt);
+  }
+  .twist {
+    flex: none;
+    width: 1.1em;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    color: var(--text-muted);
+    font-size: var(--text-hint);
+    line-height: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  button.twist:hover {
+    color: var(--text);
+  }
+  .tree-label {
+    flex: none;
+    color: var(--text-accent);
+  }
+  .tree-label::after {
+    content: ':';
+    color: var(--text-muted);
+  }
+  /* Values wrap rather than scroll the dialog sideways: a long string is
+     common in a document, and losing the tree to read it is a poor trade. */
+  .tree-value {
+    color: var(--text);
+    word-break: break-word;
+  }
+  /* A container's size and a null are structure, not content — muted so the
+     eye lands on the values that came from the data. */
+  .tree-value.object,
+  .tree-value.array,
+  .tree-value.null {
+    color: var(--text-muted);
+  }
+  .tree-value.number,
+  .tree-value.boolean {
+    color: var(--text-accent);
   }
 </style>

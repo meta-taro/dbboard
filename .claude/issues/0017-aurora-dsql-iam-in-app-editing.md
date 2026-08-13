@@ -1,10 +1,11 @@
 # 0017: aurora-dsql-iam connections are editable only by hand-editing TOML
 
-- **Status**: open
+- **Status**: done (2026-08-12) — all six scope points shipped; see ADR-0103
 - **Opened**: 2026-07-31
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0036 (Aurora DSQL IAM), ADR-0074 (TOML-only kinds
-  disabled in the list), ADR-0076 (`connections.toml` path shown on the row)
+  disabled in the list), ADR-0076 (`connections.toml` path shown on the row),
+  ADR-0103 (the fix)
 
 ## Problem
 
@@ -66,3 +67,31 @@ token).
 Deferred on 2026-07-31 in favour of the #42 MySQL-over-SSH-tunnel live check,
 which is what the queued internal use cases actually need. Revisit before the
 next AWS key rotation, whichever comes first.
+
+## Outcome (2026-08-12)
+
+Done, and narrower than the scope above implies. The *stored* representation
+already carried all six fields and `keyring_refs_in` already yielded the secret
+ref, so delete, bundle export/import and orphan purging needed no change — only
+add and edit were missing, across three layers:
+
+- `crates/dbboard-config/src/admin.rs` — `ConnectionKindDraft::AuroraDsqlIam`
+  (new), the six fields on `ConnectionKindEditDraft::AuroraDsqlIam`, a
+  `build_kind_for_add` arm and an `apply_update_kind` arm. The keyring field
+  name is pinned to `secret_key` by a shared const, because refs written by
+  hand before this change point at it.
+- `apps/desktop/src-tauri/src/lib.rs` — `KindInput` / `KindEditInput` /
+  `EditFieldsDto` variants, both draft mappers, and `connection_edit_fields`,
+  which used to hard-error for this kind.
+- `apps/desktop/src/lib/connections/{draft,dsn}.ts` plus
+  `ConnectionManager.svelte` and both locale blocks of `i18n/messages.ts`.
+
+Point 2's "replaced by tests" is the one deviation:
+`update_aurora_dsql_iam_kind_is_rejected_as_mismatch` was not deleted but
+narrowed to `update_aurora_dsql_iam_with_a_different_kind_is_rejected_as_mismatch`
+— pointing a non-IAM draft at an IAM entry must still be rejected — and joined
+by three tests covering add, a plain-field rewrite that keeps the secret, and a
+secret overwrite.
+
+Point 6 done as written: `TOML_ONLY_KIND_SLUGS` is now empty and
+`isEditableInApp` stays, tests included.
