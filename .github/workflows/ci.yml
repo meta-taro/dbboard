@@ -1,0 +1,171 @@
+# Verification (ADR-0104).
+#
+# Until now the only CI on this repo was `pii-scan` (leak defence) and
+# `release` (tag-triggered builds). Every command in CLAUDE.md's "Mandatory
+# Verification Commands" ran *only* in a local git hook, which means the repo
+# was one `--no-verify` — or one machine without the hooks installed — away
+# from an unverified merge. This workflow runs the same commands on the
+# integration branches so a PR carries its own evidence.
+#
+# The three jobs mirror the three toolchains in the tree:
+#   * rust     — fmt / clippy / check / test across the whole workspace.
+#   * frontend — svelte-check and vitest, from apps/desktop.
+#   * site     — node --test over the download page's tests.
+#
+# Why the rust job builds the frontend first: `apps/desktop/src-tauri` is a
+# workspace member, and its build script resolves `frontendDist: ../build`,
+# which is a build artefact and therefore not in the tree. `pnpm build` is
+# cheaper than excluding the crate and losing coverage of every Tauri command.
+#
+# Why the Linux runner even though the app ships for Windows and macOS: the
+# release workflow already builds the desktop bundle on both of those. What is
+# missing is the *verification* pass, and running it on Linux avoids the known
+# Windows libSQL teardown segfault (docs/maintainer/, issue #131) that would
+# otherwise make this job permanently red on green code. Every environment-
+# dependent test in the workspace is `#[ignore]`d, so no service is needed.
+#
+# Security posture (CLAUDE.md "Adding GitHub Actions workflows"): least
+# privilege — `contents: read` only, no secrets are read, and only first-party
+# actions (`actions/checkout`, `actions/setup-node`, `actions/cache`) pinned by
+# major tag. pnpm comes from corepack via the `packageManager` field rather
+# than a third-party setup action.
+name: ci
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail rather than hang if a dependency needs an interactive prompt.
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  rust:
+    name: rust (fmt / clippy / check / test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Tauri 2 links against the system webkit/gtk stack. Without these the
+      # desktop crate does not compile and the whole workspace check fails.
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm via corepack
+        run: corepack enable
+
+      # Only to produce ../build for the Tauri build script; the frontend's own
+      # checks live in the `frontend` job.
+      - name: Build frontend (required by the Tauri build script)
+        working-directory: apps/desktop
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo check
+        run: cargo check --all-targets --all-features
+
+      - name: cargo test
+        run: cargo test --all-features
+
+  frontend:
+    name: frontend (svelte-check / vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm via corepack
+        run: corepack enable
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: svelte-check
+        run: pnpm run check
+
+      - name: vitest
+        run: pnpm run test
+
+  site:
+    name: site (node --test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Discovered, not listed. These tests are added one file at a time and a
+      # hard-coded list silently stops covering the ones added after it was
+      # written. `apps/` is excluded because vitest owns that tree (the
+      # `frontend` job runs it); node's own runner would try to load Svelte.
+      # Node 22 does not recurse into a bare directory argument, so the file
+      # list has to be produced here rather than handed to `--test`.
+      - name: node --test
+        run: |
+          FILES=$(find . -name '*.test.mjs' \
+            -not -path './apps/*' \
+            -not -path './target/*' \
+            -not -path '*/node_modules/*' | sort)
+          if [ -z "$FILES" ]; then
+            echo "no *.test.mjs outside apps/ — nothing to run"
+            exit 0
+          fi
+          echo "$FILES"
+          # shellcheck disable=SC2086  # word splitting is the point
+          node --test $FILES
