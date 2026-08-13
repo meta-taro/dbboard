@@ -20,8 +20,8 @@ mod restore;
 use dbboard_config::secrets::{KeyringStore, SecretStore};
 use dbboard_config::{
     AnnotationsAdmin, ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKind,
-    ConnectionKindDraft, ConnectionKindEditDraft, FirestoreCredentialField, SecretField,
-    SshAuthDraft, SshAuthEditDraft, SshEditField, SshHostKeyDraft, SshPassphraseField,
+    ConnectionKindDraft, ConnectionKindEditDraft, FirestoreCredentialField, ImportMode,
+    SecretField, SshAuthDraft, SshAuthEditDraft, SshEditField, SshHostKeyDraft, SshPassphraseField,
     SshTunnelDraft, SshTunnelEditDraft, SshTunnelToml,
 };
 use dbboard_core::{CellValue, RowKey, TableInfo, TableSchema, UpdatePlan, Value};
@@ -1187,41 +1187,68 @@ async fn reconnect_connection(state: tauri::State<'_, AppState>, id: String) -> 
         .map_err(|e| e.to_string())
 }
 
-/// Export every connection (entries + secrets) to a passphrase-encrypted
-/// `.dbbx` bundle at `path` (ADR-0038). The frontend picks `path` with the
+/// Export connections (entries + secrets) to a passphrase-encrypted `.dbbx`
+/// bundle at `path` (ADR-0038, ADR-0105). The frontend picks `path` with the
 /// native save dialog; the encrypted blob and passphrase never cross back
 /// through the WebView — we write the file here. Refuses a passphrase weaker
 /// than the bundle minimum before touching the keychain.
+///
+/// `ids` names which connections to include. An empty list is refused by the
+/// config layer rather than treated as "all": the two readings of an empty
+/// selection are opposites, and guessing wrong ships either an empty bundle
+/// or every credential on the machine. `None` — the field absent from the
+/// IPC payload — is the explicit whole-store export.
 #[tauri::command]
 fn export_connections(
     state: tauri::State<'_, AppState>,
     path: String,
     passphrase: String,
+    ids: Option<Vec<String>>,
 ) -> Result<usize, String> {
     let admin = state.admin.lock().map_err(|_| lock_poisoned())?;
-    let blob = admin
-        .export_bundle(&passphrase)
-        .map_err(|e| e.to_string())?;
+    let (blob, count) = match &ids {
+        Some(ids) => (
+            admin
+                .export_bundle_of(ids, &passphrase)
+                .map_err(|e| e.to_string())?,
+            ids.len(),
+        ),
+        None => (
+            admin
+                .export_bundle(&passphrase)
+                .map_err(|e| e.to_string())?,
+            admin.entries().len(),
+        ),
+    };
     std::fs::write(&path, &blob).map_err(|e| e.to_string())?;
-    Ok(admin.entries().len())
+    Ok(count)
 }
 
-/// Import connections from a `.dbbx` bundle at `path` (ADR-0038). Additive
-/// and non-destructive: an incoming id that already exists is skipped, never
-/// overwritten. Returns the imported/skipped id lists for the UI to report.
+/// Import connections from a `.dbbx` bundle at `path` (ADR-0038, ADR-0105).
+/// `overwrite` decides what an incoming id that already exists does: replace
+/// the entry and its secrets, or be skipped and reported. It defaults to
+/// skipping, because that is the choice that cannot lose a credential.
+/// Returns the imported/overwritten/skipped id lists for the UI to report.
 #[tauri::command]
 fn import_connections(
     state: tauri::State<'_, AppState>,
     path: String,
     passphrase: String,
+    overwrite: Option<bool>,
 ) -> Result<ImportReportDto, String> {
+    let mode = if overwrite.unwrap_or(false) {
+        ImportMode::Overwrite
+    } else {
+        ImportMode::Skip
+    };
     let blob = std::fs::read(&path).map_err(|e| e.to_string())?;
     let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
     let report = admin
-        .import_bundle(&blob, &passphrase)
+        .import_bundle(&blob, &passphrase, mode)
         .map_err(|e| e.to_string())?;
     Ok(ImportReportDto {
         imported: report.imported,
+        overwritten: report.overwritten,
         skipped: report.skipped,
     })
 }
@@ -1243,6 +1270,7 @@ fn save_text_file(path: String, contents: String) -> Result<(), String> {
 #[derive(serde::Serialize)]
 struct ImportReportDto {
     imported: Vec<String>,
+    overwritten: Vec<String>,
     skipped: Vec<String>,
 }
 
@@ -1260,7 +1288,7 @@ mod tests {
     //! wrapper adds no logic to test.
     use std::sync::Arc;
 
-    use dbboard_config::InMemorySecretStore;
+    use dbboard_config::{ImportMode, InMemorySecretStore};
     use dbboard_mcp::McpService;
 
     /// A service over a temp `connections.toml` holding one in-memory
@@ -1935,8 +1963,11 @@ mod tests {
 
         let (_dst_dir, mut dst) = admin_over_temp();
         let disk = std::fs::read(&bundle_path).expect("read bundle");
-        let report = dst.import_bundle(&disk, passphrase).expect("import");
+        let report = dst
+            .import_bundle(&disk, passphrase, ImportMode::Skip)
+            .expect("import");
         assert_eq!(report.imported, vec!["t".to_string()]);
+        assert!(report.overwritten.is_empty());
         assert!(report.skipped.is_empty());
         assert_eq!(dst.entries().len(), 1);
     }
@@ -1973,23 +2004,17 @@ mod tests {
     fn import_report_dto_keeps_its_frontend_json_shape() {
         let dto = ImportReportDto {
             imported: vec!["a".to_string()],
+            overwritten: vec!["c".to_string()],
             skipped: vec!["b".to_string()],
         };
         let json = serde_json::to_value(&dto).expect("serialize");
-        assert_eq!(
-            json.get("imported")
-                .and_then(|v| v.as_array())
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            json.get("skipped")
-                .and_then(|v| v.as_array())
-                .unwrap()
-                .len(),
-            1
-        );
+        for key in ["imported", "overwritten", "skipped"] {
+            assert_eq!(
+                json.get(key).and_then(|v| v.as_array()).unwrap().len(),
+                1,
+                "{key} must reach the frontend as an array"
+            );
+        }
     }
 
     // ---- SSH tunnel DTO mapping (ADR-0069) ----
