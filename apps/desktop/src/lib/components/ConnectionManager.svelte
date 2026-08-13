@@ -94,6 +94,7 @@
     neon: 'conn-kind-neon',
     supabase: 'conn-kind-supabase',
     aurora_dsql: 'conn-kind-aurora_dsql',
+    aurora_dsql_iam: 'conn-kind-aurora_dsql_iam',
     firestore: 'conn-kind-firestore',
     mongodb: 'conn-kind-mongodb',
   };
@@ -111,6 +112,11 @@
     service_account: 'conn-field-service-account',
     uri: 'conn-field-uri',
     database: 'conn-field-database',
+    endpoint: 'conn-field-endpoint',
+    region: 'conn-field-region',
+    username: 'conn-field-username',
+    access_key_id: 'conn-field-access-key-id',
+    secret_access_key: 'conn-field-secret-access-key',
   };
 
   const DSN_LABEL: Record<DsnField, MessageKey> = {
@@ -632,14 +638,29 @@
               {#if f === 'database_id' && form.kind === 'firestore'}
                 <span class="hint">{i18n.t('conn-firestore-database-hint')}</span>
               {/if}
-              <!-- `uri` and `database` belong to MongoDB alone, so these need no
-                   kind guard. The URI is masked like any other secret; the hint
-                   says why the password is in it rather than in its own box. -->
+              <!-- `uri` belongs to MongoDB alone, so it needs no kind guard. It
+                   is masked like any other secret; the hint says why the
+                   password is in it rather than in its own box. -->
               {#if f === 'uri'}
                 <span class="hint">{i18n.t('conn-field-uri-hint')}</span>
               {/if}
-              {#if f === 'database'}
+              <!-- `database` is shared with Aurora DSQL (IAM), where it is
+                   required and means something else entirely — hence the guard. -->
+              {#if f === 'database' && form.kind === 'mongodb'}
                 <span class="hint">{i18n.t('conn-mongodb-database-hint')}</span>
+              {/if}
+              <!-- Aurora DSQL (IAM) fields belong to that kind alone. -->
+              {#if f === 'endpoint'}
+                <span class="hint">{i18n.t('conn-field-endpoint-hint')}</span>
+              {/if}
+              {#if f === 'username'}
+                <span class="hint">{i18n.t('conn-field-username-hint')}</span>
+              {/if}
+              {#if f === 'access_key_id'}
+                <span class="hint">{i18n.t('conn-field-access-key-id-hint')}</span>
+              {/if}
+              {#if f === 'secret_access_key'}
+                <span class="hint">{i18n.t('conn-field-secret-access-key-hint')}</span>
               {/if}
               {#if isSecret(f) && editorMode === 'edit'}
                 <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>

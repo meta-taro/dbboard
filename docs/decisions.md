@@ -9909,6 +9909,254 @@ Two separate faults produced one unusable message:
 - Not addressed here: trimming as the user types, or showing whitespace in the
   field. Both are display decisions with no failure mode left to justify them.
 
+## ADR-0100 — A document cell opens as a tree, because a document *is* one
+
+### Status
+
+Accepted.
+
+### Context
+
+Firestore and MongoDB store trees. dbboard renders a result as a grid, and a
+grid cell is one line, so a document arrives in the UI as
+`{"customer":{"name":"Sample Customer","address":{"city":"…"}}}` — truncated at
+the cell's width. Every value is present and none of them is findable. Opening
+the cell showed the same single line inside a `<pre>`.
+
+The grid is the right shape for a row-and-column result and the wrong shape for
+a nested value, and the tension is not resolvable in the cell: the cell is one
+line by definition.
+
+### Decision
+
+1. **The document cell keeps its one-line preview in the grid, and opens as an
+   indented tree.** The grid stays a grid; the tree lives in the read-only
+   value dialog that already existed for long text.
+2. **The flattening is a module, not a component** — `src/lib/grid/tree.ts`.
+   Ordering, empty containers, array indices and collapsed subtrees are where
+   the subtle cases are, and they are worth testing without a component around
+   them.
+3. **Nodes are identified by dotted path** (`lines.0.sku`). Collapse state is a
+   set of paths, so it survives a re-render and cannot drift from the tree.
+4. **A collapsed container stays visible**, showing its size (`{3}`, `[2]`).
+   Hiding the container along with its children would read as deleting it.
+5. **Container previews are language-neutral** — `{3}`, not "3 fields". This is
+   data, and it must read the same in every one of the 11 locales.
+6. **A document always opens**, however short its serialisation. The width test
+   that gates the dialog for text does not apply: the fault being fixed is the
+   shape, not the length.
+7. **Copy still copies JSON**, now pretty-printed. What the user pastes
+   elsewhere should be the document, not a rendering of it.
+
+### Consequences
+
+- A nested document is navigable without leaving dbboard, which is what
+  verification sheet 001 row No.8 asks for.
+- `flattenDocument` walks the whole document on every collapse toggle. For the
+  documents these stores hold that is far below the cost of a re-render; if a
+  pathological document ever proves otherwise, the fix is memoisation inside
+  the module, with no change to its callers.
+- The tree is read-only, as the dialog already was. Editing a document is a
+  separate decision: a free-text edit of a tree can leave it unparseable, which
+  is why document cells are excluded from inline editing in the first place.
+- Not addressed here: a raw-JSON view alongside the tree. The copy button
+  already yields the raw document, and a second view would have to earn its
+  place in the dialog.
+
+## ADR-0101 — The window gets a status bar, carrying only what is not already on screen
+
+### Status
+
+Accepted.
+
+### Context
+
+The bottom edge of the window was empty: the shell was a title bar and a body,
+with nothing below it. The request was for something useful there, with the
+explicit condition that filler is not wanted.
+
+Most of what a status bar traditionally shows is already on screen in dbboard,
+and putting it there again would be exactly the filler that was ruled out: the
+row count and the "capped at N" note live in the result toolbar, the connection
+kind is in the sidebar list, and the connection name is in the top bar.
+
+Two things were genuinely absent. **How long the last statement took is
+measured nowhere in the app** — `QueryOutput` carries columns, rows, a count
+and a truncation flag, and no timing at all. And **an available update was
+reachable exactly once**: `UpdateNotice` was rendered from a `+page.svelte`
+state that dismissing set to null, so closing the card discarded the update for
+the rest of the session with no way back to it.
+
+### Decision
+
+1. **The status bar carries the last statement's elapsed time and the running
+   version, plus a chip when an update is waiting.** Nothing else. Anything
+   already visible elsewhere is excluded on the grounds that it is visible
+   elsewhere.
+2. **The row count stays out of it**, though every other client puts it there.
+   It is two centimetres away in the result toolbar, and a status bar repeating
+   the toolbar is the filler this was supposed to avoid.
+3. **Elapsed time is measured in the frontend, around the `invoke` alone**
+   (`src/lib/status/status.svelte.ts`). The schema read that follows a browse
+   is our own bookkeeping and is not charged to the statement. A backend-side
+   measurement would be more truthful about the database and would require a
+   change to `QueryOutput` and every adapter that builds one; this buys most of
+   the answer for none of that.
+4. **A failed statement is still timed.** A query that died after thirty
+   seconds is a different problem from one rejected instantly, and the error
+   text alone does not distinguish them.
+5. **The formatting is a module** — `src/lib/status/summary.ts`. The
+   interesting part is the boundaries: a sub-millisecond query renders as
+   `<1 ms` rather than `0 ms`, because "0 ms" reads as "not measured"; an
+   impossible duration renders as `0 ms` rather than breaking the layout.
+   Digits with unit suffixes, not words, so the bar reads the same in all 11
+   locales.
+6. **Update availability moves into a store** (`src/lib/update/state.svelte.ts`)
+   that separates "there is an update" from "the card is closed". Dismissing
+   hides the card; the chip in the status bar brings it back.
+
+### Consequences
+
+- The bar is 24px and always present, including before the first query, where
+  it says so. A bar that appears and disappears would move the layout under the
+  user.
+- Timing includes the IPC round trip and JSON deserialisation, so it reads
+  slightly high against the same query in a native client. It is honest about
+  what dbboard took to answer, which is the number the person watching cares
+  about.
+- Dismissing an update no longer buries it. The trade is one persistent chip in
+  a corner of the status bar, which is the quietest place in the window.
+- Not addressed here: rows-per-second, a query timer that ticks while running,
+  or a history of timings. The bar shows the last statement, and the run in
+  flight is already announced by the Run button.
+
+## ADR-0102 — An ENUM column is edited by picking a member, not by typing one
+
+**Status**: Accepted (2026-08-12)
+
+**Context**: Inline editing (ADR-0042) hands every column the same single-line
+text box. For an ENUM that turns a closed set of, say, three values into a
+spelling test: the member has to be typed exactly, and getting it wrong is not
+caught until the UPDATE comes back rejected — or worse, on a lax server, until
+a truncated-to-empty value has already landed.
+
+The member list is available, but only in one place. MySQL reports the column
+as `enum('draft','sent','paid')` in `information_schema.columns.column_type`,
+which `DESCRIBE_COLUMNS_SQL` already reads into `ColumnInfo.declared_type`. The
+metadata attached to a result set says only `ENUM` — the members are gone by
+then. So the choices can only come from the table schema, which we already
+fetch on a browse to learn the primary key.
+
+### Decision
+
+1. **The dropdown is sourced from `describeTable`, not from the result set.**
+   `QueryPanel` computes the members in the same `try` that reads the primary
+   key, and passes them to `ResultGrid` as a separate `enums` prop, because
+   `EditContext` carries no column types. A failed schema read leaves it empty
+   and the column reverts to text, exactly as the primary key falls back to
+   read-only.
+2. **Parsing the declaration is a pure, tested module** —
+   `src/lib/grid/enum.ts`. The escaping is where this goes wrong: a comma
+   inside a member must not split it in two, `''` is a doubled quote and not
+   the end of the literal, and MySQL also accepts backslash escapes. A member
+   list read half-right would offer the *wrong* values, which is worse than the
+   text box it replaces.
+3. **A declaration we cannot parse yields nothing at all**, and the column
+   stays free text. There is no partial list: an editor that can only write a
+   wrong value is not a safer editor.
+4. **SET is deliberately excluded.** It holds several members at once, so a
+   single-select would silently drop all but one. It keeps the text box.
+5. **A stored value outside the declared members is kept**, at the head of the
+   list and selected. Opening the editor on a row written before the type was
+   narrowed must not rewrite it to the first member just by being opened.
+6. **Both editors are covered.** The inline editor becomes a `<select>`, and
+   the full-editor dialog (ADR-0082) does too when it is reached; the `⤢`
+   button is dropped for enum columns, because the choices are the whole value
+   space and none of them needs more room. No path leaves an enum edited as
+   free text.
+
+### Consequences
+
+- The `∅ NULL` button stays on both editors: a nullable enum still needs a way
+  to say NULL, and that is a different act from picking the empty-string
+  member, which MySQL allows and which the dropdown shows as `(empty)`.
+- Only MySQL benefits today, because it is the only adapter whose
+  `declared_type` carries the members. Postgres named enum types report the
+  type name, not its labels; wiring those would need a separate catalogue read
+  and is not attempted here.
+- The parser accepts the shape MySQL emits, not arbitrary SQL. That is the only
+  input it ever sees — the string comes from `information_schema`, not from a
+  user.
+
+## ADR-0103 — Aurora DSQL (IAM) is edited in the app, not in connections.toml
+
+**Status**: accepted (2026-08-12)
+
+### Context
+
+`aurora-dsql-iam` was the one connection kind with no in-app form. It was
+added (ADR-0036) as a config-file kind: the operator wrote six values into
+`connections.toml` by hand, put the AWS secret access key into the OS keychain
+under a ref they also wrote by hand, and the app read it. The list panel showed
+the row with its Edit button disabled and a note naming the file.
+
+That held for as long as such a connection never changed. It does change: an
+AWS access key pair gets rotated, and when it does the connection stops working
+with an auth error. The path back to a working state was to find
+`connections.toml`, edit the right table by hand without breaking the TOML, and
+separately overwrite a keychain entry — with the app unable to help at any
+step, because it refused to open the entry at all.
+
+The person who hits this is not necessarily the maintainer. On the machine that
+prompted this, the Aurora DSQL connection is used unattended by someone who did
+not create it. "Edit the TOML file" is not an answer for them, and being told
+to do it by a program that could do it itself is worse than not being told.
+
+### Decision
+
+Aurora DSQL (IAM) gets the same add and edit forms every other kind has.
+
+1. **Six fields, one of them secret.** `endpoint`, `region`, `database`,
+   `username` and `access_key_id` are plain inputs stored in `connections.toml`;
+   only `secret_access_key` is masked and goes to the keychain. The access key
+   *id* is deliberately not treated as a credential: it is already in the file
+   in the clear, and an operator cannot tell which key pair they are rotating
+   away from if the form will not show it.
+2. **Two secret states, not three.** A blank secret box on edit keeps the
+   stored key (`SecretField::Keep`), a filled one overwrites it. There is no
+   third "no credential" state, unlike Firestore's emulator mode (ADR-0093):
+   an IAM connection always has a key pair. This is what makes the rotation
+   case work — the id can be changed on its own without retyping the secret.
+3. **The keyring ref is never re-minted on edit.** `dbboard.<id>.secret_key` is
+   derived once, at add time, and reused. A new ref on every save would orphan
+   the entry the connection still points at; the same rule already governs
+   `apply_url_edit`. The field name `secret_key` is also not free to change —
+   refs written by hand before this change point at it.
+4. **No DSN and no tunnel.** The kind joins `NON_DSN_KINDS`: there is no stored
+   URL to split into host/port/user/password/database, because a SigV4 token is
+   minted per connect from the fields above. It stays out of
+   `SSH_TUNNELABLE_KINDS` for the same reason the backend refuses it — the
+   token is signed for the real endpoint's host.
+5. **The config-file-only gate stays, empty.** `isEditableInApp` and the
+   disabled Edit button remain in place with nothing in their list. The next
+   backend-only kind should be one entry, not a rediscovery of why the button
+   needs a disabled state.
+
+### Consequences
+
+- Nothing about the stored representation changed, so existing
+  `connections.toml` entries and their keychain refs keep working untouched.
+  Delete, bundle export/import and orphan purging already handled the kind
+  (`keyring_refs_in`); only add and edit were missing.
+- A connection created in-app and one written by hand are indistinguishable
+  afterwards, which is the point: the file stays a supported way in, it is just
+  no longer the only one.
+- The form asks for an AWS secret access key in a text box. That is the same
+  trust boundary as every other secret here — it goes straight to the OS
+  keychain and is never read back into the form — but it is worth stating that
+  the app now handles long-lived AWS credentials directly, where before it only
+  read a ref to one.
+
 ## ADR-0104 — Verification runs in CI, not only in a git hook
 
 - **Status**: accepted

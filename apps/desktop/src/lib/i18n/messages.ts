@@ -85,6 +85,11 @@ export const en = {
   "result-cell-dialog": "Cell value",
   "result-row-limit": "Rows",
   "cell-copy": "Copy",
+  "cell-tree": "Document structure",
+  "cell-tree-expand-all": "Expand all",
+  "cell-tree-collapse-all": "Collapse all",
+  "cell-tree-expand": "Expand { $path }",
+  "cell-tree-collapse": "Collapse { $path }",
   "edit-cell-hint": "Double-click to edit",
   "edit-cell-editing": "Enter to apply · Esc to cancel",
   "edit-cell-expand": "Open the full editor",
@@ -93,6 +98,8 @@ export const en = {
   "edit-cell-apply": "Apply",
   "edit-cell-cancel": "Cancel",
   "edit-cell-chars": "{ $count } characters",
+  "edit-enum-editing": "Pick a value · Esc to cancel",
+  "edit-enum-blank": "(empty)",
   "edit-null-title": "Set to NULL",
   "edit-bar-label": "Unsaved edits",
   "edit-pending": "{ $count } unsaved",
@@ -112,6 +119,12 @@ export const en = {
   "about-title": "About dbboard",
   "about-version": "Version",
   "about-close": "Close",
+  "status-query-idle": "No query run yet",
+  "status-query-running": "Running…",
+  "status-query-done": "Last query",
+  "status-query-failed": "Last query failed",
+  "status-update-available": "{ $version } available",
+  "status-update-reopen": "Show the update",
   "win-minimize": "Minimize",
   "win-maximize": "Maximize",
   "win-restore": "Restore",
@@ -157,6 +170,20 @@ export const en = {
   "conn-field-database": "Database",
   "conn-mongodb-database-hint":
     "Leave blank if the URI's path already names the database.",
+  // Aurora DSQL (IAM) — ADR-0103
+  "conn-field-endpoint": "Cluster endpoint",
+  "conn-field-endpoint-hint":
+    "The hostname shown in the DSQL console, without a scheme — for example abc123.dsql.ap-northeast-1.on.aws.",
+  "conn-field-region": "AWS region",
+  "conn-field-username": "Database user",
+  "conn-field-username-hint":
+    "admin signs the token as the cluster's admin role; any other name signs it as that database role.",
+  "conn-field-access-key-id": "Access key ID",
+  "conn-field-access-key-id-hint":
+    "Not a secret — it is stored in connections.toml so you can see which key pair a connection uses.",
+  "conn-field-secret-access-key": "Secret access key",
+  "conn-field-secret-access-key-hint":
+    "Stored in the OS keychain, never in connections.toml. dbboard signs a fresh IAM token with it on every connect.",
   "conn-firestore-emulator": "Connect to the local emulator",
   "conn-firestore-emulator-hint":
     "The emulator accepts any request without a credential. Put its address in Base URL — usually http://127.0.0.1:8080.",
@@ -190,6 +217,7 @@ export const en = {
   "conn-kind-neon": "Neon",
   "conn-kind-supabase": "Supabase",
   "conn-kind-aurora_dsql": "Aurora DSQL",
+  "conn-kind-aurora_dsql_iam": "Aurora DSQL (IAM)",
   "conn-kind-firestore": "Cloud Firestore",
   "conn-kind-mongodb": "MongoDB",
   // SSH tunnel (ADR-0069)
@@ -428,6 +456,11 @@ const ja: Partial<Record<MessageKey, string>> = {
   "result-cell-dialog": "セルの値",
   "result-row-limit": "行数",
   "cell-copy": "コピー",
+  "cell-tree": "ドキュメントの構造",
+  "cell-tree-expand-all": "すべて展開",
+  "cell-tree-collapse-all": "すべて折りたたむ",
+  "cell-tree-expand": "{ $path } を展開",
+  "cell-tree-collapse": "{ $path } を折りたたむ",
   "edit-cell-hint": "ダブルクリックで編集",
   "edit-cell-editing": "Enter で確定・Esc で取り消し",
   "edit-cell-expand": "大きい編集画面を開く",
@@ -436,6 +469,8 @@ const ja: Partial<Record<MessageKey, string>> = {
   "edit-cell-apply": "確定",
   "edit-cell-cancel": "取り消し",
   "edit-cell-chars": "{ $count } 文字",
+  "edit-enum-editing": "値を選択・Esc で取り消し",
+  "edit-enum-blank": "（空文字）",
   "edit-null-title": "NULL にする",
   "edit-bar-label": "未保存の編集",
   "edit-pending": "未保存 { $count } 件",
@@ -493,6 +528,20 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-field-database": "データベース",
   "conn-mongodb-database-hint":
     "URI のパスでデータベース名を指定している場合は空欄のままで構いません。",
+  // Aurora DSQL (IAM) — ADR-0103
+  "conn-field-endpoint": "クラスターエンドポイント",
+  "conn-field-endpoint-hint":
+    "DSQL コンソールに表示されるホスト名をスキームなしで入力してください（例: abc123.dsql.ap-northeast-1.on.aws）。",
+  "conn-field-region": "AWS リージョン",
+  "conn-field-username": "データベースユーザー",
+  "conn-field-username-hint":
+    "admin を指定するとクラスターの admin ロールとして、それ以外の名前はそのデータベースロールとしてトークンに署名します。",
+  "conn-field-access-key-id": "アクセスキー ID",
+  "conn-field-access-key-id-hint":
+    "秘密情報ではありません。どのキーペアを使っているか確認できるよう connections.toml に保存されます。",
+  "conn-field-secret-access-key": "シークレットアクセスキー",
+  "conn-field-secret-access-key-hint":
+    "OS のキーチェーンに保存され、connections.toml には書き込まれません。接続のたびにこの鍵で IAM トークンを新しく署名します。",
   "conn-firestore-emulator": "ローカルエミュレーターに接続する",
   "conn-firestore-emulator-hint":
     "エミュレーターは認証情報なしで接続を受け付けます。アドレスはベース URL に入力してください（通常は http://127.0.0.1:8080）。",
@@ -526,6 +575,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-kind-neon": "Neon",
   "conn-kind-supabase": "Supabase",
   "conn-kind-aurora_dsql": "Aurora DSQL",
+  "conn-kind-aurora_dsql_iam": "Aurora DSQL (IAM)",
   "conn-kind-firestore": "Cloud Firestore",
   "conn-kind-mongodb": "MongoDB",
   // SSH トンネル (ADR-0069)
@@ -687,6 +737,12 @@ const ja: Partial<Record<MessageKey, string>> = {
   "about-title": "dbboard について",
   "about-version": "バージョン",
   "about-close": "閉じる",
+  "status-query-idle": "クエリ未実行",
+  "status-query-running": "実行中…",
+  "status-query-done": "直前のクエリ",
+  "status-query-failed": "直前のクエリは失敗",
+  "status-update-available": "{ $version } が利用できます",
+  "status-update-reopen": "更新の案内を表示",
   "win-minimize": "最小化",
   "win-maximize": "最大化",
   "win-restore": "元に戻す",
