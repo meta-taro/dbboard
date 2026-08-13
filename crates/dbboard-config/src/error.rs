@@ -120,4 +120,11 @@ pub enum ConfigError {
     /// the plaintext the bundle carries.
     #[error("config bundle failed: {0}")]
     Bundle(#[from] BundleError),
+
+    /// A selective export named no connections (ADR-0105). Refused rather
+    /// than honoured: an empty bundle encrypts and decrypts perfectly well
+    /// and then imports nothing, which the user reads as a wrong
+    /// passphrase. Failing at export time says what actually happened.
+    #[error("select at least one connection to export")]
+    EmptySelection,
 }
