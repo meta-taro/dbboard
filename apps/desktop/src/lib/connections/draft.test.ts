@@ -805,6 +805,104 @@ describe('firestore', () => {
   });
 });
 
+// A base URL pasted with a leading space reached the adapter verbatim and came
+// back as `builder error`, which says nothing about what to fix. The form is
+// where the stray whitespace has to die.
+describe('pasted whitespace', () => {
+  it('trims a firestore base url, project and database on add', () => {
+    expect(
+      buildKindInput(
+        form({
+          kind: 'firestore',
+          project_id: ' demo-dbboard ',
+          database_id: ' shop\n',
+          base_url: ' http://127.0.0.1:8385/v1 ',
+          use_emulator: true,
+        }),
+      ),
+    ).toEqual({
+      kind: 'firestore',
+      project_id: 'demo-dbboard',
+      database_id: 'shop',
+      base_url: 'http://127.0.0.1:8385/v1',
+      service_account: null,
+    });
+  });
+
+  it('trims the same firestore fields on edit', () => {
+    expect(
+      buildKindEditInput(
+        form({
+          kind: 'firestore',
+          project_id: ' demo-dbboard ',
+          database_id: ' shop\n',
+          base_url: ' http://127.0.0.1:8385/v1 ',
+          use_emulator: true,
+        }),
+      ),
+    ).toEqual({
+      kind: 'firestore',
+      project_id: 'demo-dbboard',
+      database_id: 'shop',
+      base_url: 'http://127.0.0.1:8385/v1',
+      use_emulator: true,
+      service_account: null,
+    });
+  });
+
+  it('trims the d1 identifiers and base url, add and edit alike', () => {
+    const typed = form({
+      kind: 'd1',
+      account_id: ' acct ',
+      database_id: ' db ',
+      base_url: ' https://api.example/x \n',
+      token: 't',
+    });
+    const expected = {
+      account_id: 'acct',
+      database_id: 'db',
+      base_url: 'https://api.example/x',
+    };
+    expect(buildKindInput(typed)).toMatchObject(expected);
+    expect(buildKindEditInput(typed)).toMatchObject(expected);
+  });
+
+  it('trims a turso path and a mongodb uri and database', () => {
+    expect(buildKindInput(form({ kind: 'turso', path: ' ./demo.db\n' }))).toEqual({
+      kind: 'turso',
+      path: './demo.db',
+    });
+    expect(
+      buildKindInput(form({ kind: 'mongodb', uri: ' mongodb://h:27117 \n', database: ' shop ' })),
+    ).toEqual({
+      kind: 'mongodb',
+      uri: 'mongodb://h:27117',
+      database: 'shop',
+    });
+  });
+
+  it('trims a pasted DSN', () => {
+    expect(
+      buildKindInput(form({ kind: 'postgres', use_url: true, url: ' postgres://h/db\n' })),
+    ).toEqual({ kind: 'postgres', url: 'postgres://h/db' });
+  });
+
+  // A password may legitimately begin or end with a space, so it is the one
+  // free-text field where trimming would change the value the user meant.
+  it('leaves a secret alone', () => {
+    expect(
+      buildKindInput(
+        form({ kind: 'd1', account_id: 'a', database_id: 'b', token: ' tok ' }),
+      ),
+    ).toMatchObject({ token: ' tok ' });
+    expect(
+      buildKindInput(
+        form({ kind: 'firestore', project_id: 'p', service_account: ' {"a":1} ' }),
+      ),
+    ).toMatchObject({ service_account: ' {"a":1} ' });
+  });
+});
+
 describe('supportsSshTunnel', () => {
   it('is true only for the TCP/URL engines', () => {
     for (const k of ['postgres', 'mysql', 'neon', 'supabase', 'aurora_dsql'] as const) {

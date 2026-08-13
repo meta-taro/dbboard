@@ -385,25 +385,35 @@ export const deleteConnection = (id: string): Promise<void> =>
 export const reconnectConnection = (id: string): Promise<void> =>
   invoke('reconnect_connection', { id });
 
-// Additive, non-destructive import: ids already present are skipped, never
-// overwritten (ADR-0038). Mirrors the backend `ImportReportDto`.
+// The three lists partition the bundle's entries (ADR-0038, ADR-0105).
+// `overwritten` is only ever non-empty when the import asked for it.
+// Mirrors the backend `ImportReportDto`.
 export interface ImportReport {
   imported: string[];
+  overwritten: string[];
   skipped: string[];
 }
 
-// Encrypt all connections to a passphrase-protected `.dbbx` bundle at `path`
-// (chosen via the native save dialog). Returns the exported connection count.
+// Encrypt connections to a passphrase-protected `.dbbx` bundle at `path`
+// (chosen via the native save dialog). `ids` names which to include; omit it
+// to export the whole store. An empty array is rejected by the backend rather
+// than read as "all" — the two readings are opposites. Returns the exported
+// connection count.
 export const exportConnections = (
   path: string,
   passphrase: string,
-): Promise<number> => invoke('export_connections', { path, passphrase });
+  ids?: string[],
+): Promise<number> => invoke('export_connections', { path, passphrase, ids });
 
-// Decrypt and merge a `.dbbx` bundle at `path` into the local store.
+// Decrypt and merge a `.dbbx` bundle at `path` into the local store. With
+// `overwrite`, an incoming id that already exists replaces it; without, that
+// entry is skipped and reported.
 export const importConnections = (
   path: string,
   passphrase: string,
-): Promise<ImportReport> => invoke('import_connections', { path, passphrase });
+  overwrite = false,
+): Promise<ImportReport> =>
+  invoke('import_connections', { path, passphrase, overwrite });
 
 // --- AI assistant (ADR-0052) --------------------------------------------
 //

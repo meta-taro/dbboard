@@ -122,8 +122,17 @@ impl FirestoreAdapter {
         let base_url = config
             .base_url
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned())
+            .trim()
             .trim_end_matches('/')
             .to_owned();
+
+        // Checked here, where the base URL is still a thing the user typed. Left
+        // to the first request, the same mistake arrives as reqwest's "builder
+        // error", which names neither the field nor the value.
+        reqwest::Url::parse(&base_url).map_err(|e| {
+            DbError::Connection(format!("`{base_url}` is not a usable base URL: {e}"))
+        })?;
+
         let plain_http = base_url.starts_with("http://");
 
         // An access token is a bearer credential for the whole database, so it
@@ -462,6 +471,33 @@ mod tests {
         };
         let adapter = FirestoreAdapter::connect(config).unwrap();
         assert_eq!(adapter.base_url, DEFAULT_BASE_URL);
+    }
+
+    /// A base URL pasted with a leading space used to survive `connect` and
+    /// fail one request later as `builder error`, which names nothing the user
+    /// can act on. Whitespace around a URL is never part of it.
+    #[test]
+    fn surrounding_whitespace_is_not_part_of_the_base_url() {
+        let adapter = FirestoreAdapter::connect(emulator_config(" http://127.0.0.1:8385/v1 \n"))
+            .expect("a pasted base url should still connect");
+        assert_eq!(adapter.base_url, "http://127.0.0.1:8385/v1");
+    }
+
+    /// The remaining unparseable cases have to be refused where the base URL
+    /// is known, not deep inside a request the caller cannot see.
+    #[test]
+    fn an_unusable_base_url_is_refused_by_name() {
+        let err = FirestoreAdapter::connect(emulator_config("127.0.0.1:8385/v1")).unwrap_err();
+        assert!(matches!(err, DbError::Connection(_)));
+        let message = err.message();
+        assert!(
+            message.contains("127.0.0.1:8385/v1"),
+            "the message should quote what was typed: {message}"
+        );
+        assert!(
+            !message.contains("builder error"),
+            "reqwest's wording says nothing to the user: {message}"
+        );
     }
 
     #[test]
