@@ -16,6 +16,14 @@ exposes a unified, native UI for Neon, Supabase, Aurora DSQL, MySQL,
 Turso/libSQL, Cloud Firestore and MongoDB, with an adapter-based architecture that
 makes adding new databases straightforward.
 
+[![dbboard running a JOIN across two tables, with 119 rows in the result grid](site/screenshots/query-light.png)](https://meta-taro.github.io/dbboard/)
+
+More of the interface — the structure view, dark theme — is on the
+[download page](https://meta-taro.github.io/dbboard/). Every screenshot is
+taken against the fictional dataset in
+[`scripts/demo-profile`](scripts/demo-profile/README.md), never against a real
+connection ([ADR-0098](docs/decisions.md)).
+
 ## Status
 
 Pre-1.0. Phases 1, 3, 6, and the Phase 4 AI assistant
@@ -692,7 +700,11 @@ You can run these manually at any time.
 ### Security checks
 
 dbboard creates `connections.toml` and `history.jsonl` under your
-per-user config dir. On Unix both land as mode `0o600`; on Windows
+per-user config dir (`DBBOARD_CONFIG_DIR=<path>` replaces it — every
+file dbboard owns moves together, which is how you start it with an
+empty profile for a demo or a screenshot; see
+[`docs/connections.md`](docs/connections.md#pointing-dbboard-at-a-different-config-dir)).
+On Unix both land as mode `0o600`; on Windows
 they inherit the user-only DACL of `%APPDATA%\Roaming\<user>\`. If
 the resolved config dir lives under a cloud-sync vendor folder
 (OneDrive Known Folder Move, iCloud Drive, Dropbox, Google Drive),
