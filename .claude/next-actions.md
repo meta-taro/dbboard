@@ -7,6 +7,41 @@
 
 ## 最終更新
 
+- 日付: 2026-08-13 その2 (**滞留していた PR を全部入れた。open は #159 の 1 本だけ。
+  ADR 番号の穴も塞がった。**
+  ① **本日マージ = 9 本** (#166 CI / #167 選択エクスポート + 上書きインポート /
+  #168 next-actions 同期 / #160 デモ用フィクスチャとスクリーンショット /
+  #163 貼り付け空白の除去 / #162 文書ツリー + ステータスバー + ENUM プルダウン +
+  Aurora DSQL の画面編集 / #164 検証シート 003 / #149 姉妹リポ用の貼り付けブロック /
+  #165 llms.txt)。**open PR は #159 のみ**になった。
+  ② **`docs/decisions.md` の ADR 番号が 0096 → 0105 で連続した。** develop が 0096 の次に
+  いきなり 0105 だったのは、0097〜0104 が未マージの 4 ブランチに分散していたため。
+  4 本とも同じ位置に追記するので**互いにコンフリクトし、1 本ずつしか解けない**。
+  今回はそれを順に解いた。**単純な連結ではなく番号順になるよう差し込んでいる** —
+  特に #162 は git が ADR-0100 の見出しと ADR-0099 の `### Status` 定型文を共通行として
+  噛み合わせ、コンフリクトが 2 箇所に割れて本文が入れ替わる形になっていた。
+  ③ **#159 (文書ストアをガイドに書く) はコンフリクト解消済みだが未 push。**
+  `docs/document-store-guides` の `889a28a`。衝突は `site/index.html` の OGP 1 箇所で、
+  **説明文は #159 側 (Firestore / MongoDB 入りの新しい DB 一覧)、プレビュー画像は
+  develop 側 (ADR-0098 でロゴからスクリーンショットに変えた判断)** を採って組み合わせた。
+  `site` の `node --test` は 15/15 緑。**この commit だけ `--no-verify` を使った** —
+  例の Windows libSQL テアダウン segfault (`0xc0000005`) で pre-commit の `cargo test` が
+  落ちるため (CLAUDE.md が唯一認めている bypass)。変更は `site/index.html` のみで Rust に
+  触っていないこと、`pii-scan --staged` は手動で回して clean を確認済み。
+  **push は `target/release/dbboard-mcp.exe` を使用中で保留**になっている
+  (`cargo build --release` が上書きできず `os error 5`)。
+  ④ **#131 に約束していたコメントを入れた** (CI が入ったこと・Windows ジョブを置かない理由・
+  初日に `secure_fs` の Linux 限定バグを捕まえたこと)。
+  **user 側ボール = ① `git push origin docs/document-store-guides` → CI 緑を確認して
+  `gh pr merge 159 --merge --delete-branch` (mcp.exe を閉じてから。占有プロセスは
+  `Get-Process | ? { $_.Path -like 'C:\claude\dbboard\target\release\*' }` で見える)、
+  ② この文書と `project-status.md` の更新コミットを push (ブランチは
+  `chore/session-status-0813`)、③ 姉妹リポへ `.claude/tools/dbboard.md` を貼る
+  (08-09 から継続)、④ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の
+  唯一の原因・08-09 から継続)、⑤ **#161 の 3 点観察** — ここが今いちばん詰まっている。**
+  次のエージェント側タスク = #161 の観察結果を受けて修正。**失敗するテストを先に書く**が、
+  原因が特定できていない段階で当て推量のテストは書かない。)
+
 - 日付: 2026-08-13 (**未マージの green な PR が 8 本溜まっているのが最大のボトルネック。
   実運用バグ #161 を調査中で、原因は報告者側の 3 点観察待ち。**
   ① **前回更新 (08-09) 以降に v0.6.0 と v0.7.0 が出ている。** v0.6.0 = Cloud Firestore
