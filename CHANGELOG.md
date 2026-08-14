@@ -9,6 +9,94 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-14
+
+The first release cut from *using* the previous one. No new adapter: every
+change here is something that got in the way while running dbboard against
+real databases.
+
+### Added
+
+- **A document cell opens as a tree** ([ADR-0100](docs/decisions.md)). A
+  Firestore or MongoDB document arrived in the grid as one truncated line of
+  JSON — every value present, none of them findable. The cell keeps that
+  one-line preview and now opens as an indented, collapsible tree in the
+  read-only value dialog. A collapsed container stays visible showing its size
+  (`{3}`, `[2]`) rather than vanishing with its children, and those previews
+  are digits rather than words so they read the same in all 11 locales.
+  Copying still yields the document itself, now pretty-printed.
+- **A status bar**, carrying the two things that were not already on screen
+  ([ADR-0101](docs/decisions.md)): how long the last statement took, which the
+  app measured nowhere, and the running version. Connection health and the row
+  count are deliberately absent — both are already two centimetres away, and
+  repeating them is the filler this was asked not to be. An available update
+  now also survives dismissal: closing the notice used to discard it for the
+  rest of the session, and a chip in the bar brings it back.
+- **An ENUM column is edited by picking a member**
+  ([ADR-0102](docs/decisions.md)). Inline editing gave every column the same
+  text box, which turned a closed set of values into a spelling test whose
+  failure surfaced only when the `UPDATE` came back rejected — or, on a lax
+  server, after a truncated value had already landed. The members come from
+  the schema read the browse already performs. A value outside the declared
+  members is kept and selected rather than rewritten by the act of opening the
+  editor; a declaration that cannot be parsed yields no list at all and the
+  column stays free text, because an editor that can only write a wrong value
+  is not a safer editor. MySQL only today, and `SET` keeps its text box.
+- **`aurora-dsql-iam` connections are added and edited in the app**
+  ([ADR-0103](docs/decisions.md)). The kind was config-file-only: the manager
+  showed a disabled Edit button and the path to `connections.toml`. That is
+  not an answer for the deployment this matters for, where the person who has
+  to rotate an AWS key pair is not the maintainer. The keyring field name is
+  pinned, so refs written by hand before this change keep resolving. Only the
+  secret access key is masked — the access key id stays legible, because the
+  operator has to see which pair they are rotating away from.
+- **Export takes a selection; import can overwrite**
+  ([ADR-0105](docs/decisions.md)). The bundle was all-or-nothing in both
+  directions, which made the two ordinary jobs impossible: handing one
+  connection to one person, and refreshing a connection someone already has
+  after its credentials rotated. Export now takes an explicit list, and an
+  empty one is refused rather than read as "all" — the two readings are
+  opposites, and an empty bundle decrypts perfectly well and then imports
+  nothing, which the recipient reads as a wrong passphrase. Import takes a
+  mode, and skip stays the default: skip cannot lose a credential, overwrite
+  can. The ADR-0038 keyring-collision refusal does not relax; it now tracks
+  which connection owns each ref, so overwriting your own secret is allowed
+  while a ref aimed at another connection's slot is still refused in both
+  modes. Bundles stay readable by v0.7.0 — the file format did not change.
+- **`DBBOARD_CONFIG_DIR`**, an override for the per-user config directory
+  ([ADR-0097](docs/decisions.md)). Screenshotting the app meant screenshotting
+  a real database host, and on Windows there was no workaround: `directories`
+  reads the known-folder API rather than `%APPDATA%`, so redirecting that
+  variable still opens the real profile. All five per-user files move together
+  — a half-honoured override would put a demo profile's connections beside the
+  real profile's query history.
+
+### Fixed
+
+- **A pasted leading space no longer breaks a connection**
+  ([ADR-0099](docs/decisions.md)). One stray space in a base URL failed at
+  request construction, so the app reported "builder error" while the form on
+  screen showed correct values. Non-secret text is now trimmed on both add and
+  edit; secrets stay verbatim, where a leading space may be part of the value.
+  The Firestore adapter also trims and names an unusable base URL, so a
+  connection already saved with stray whitespace works again without being
+  re-entered.
+- **The export dialog's connection list is legible again.** Every checkbox was
+  being stretched to the full width of its field, which pushed each name to
+  the right and wrapped it, leaving no two rows starting at the same edge.
+
+### Changed
+
+- **CI runs the mandatory verification commands**, rather than trusting that a
+  git hook ran on the contributor's machine. Until now the only checks on a
+  pull request were the PII scan and the tag-triggered release build, so a
+  branch could prove it leaked no PII and nothing about whether it compiled.
+  Three jobs now gate every pull request: `cargo fmt --check` / `clippy -D
+  warnings` / `check` / `test` across the workspace, `svelte-check` and vitest
+  from `apps/desktop`, and the download site's tests. They run on Linux —
+  a Windows job would be permanently red on green code (#131), and a check
+  nobody can trust trains people to merge past red.
+
 ## [0.7.0] — 2026-08-11
 
 ### Added
@@ -568,7 +656,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/meta-taro/dbboard/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/meta-taro/dbboard/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/meta-taro/dbboard/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/meta-taro/dbboard/compare/v0.5.0...v0.5.1

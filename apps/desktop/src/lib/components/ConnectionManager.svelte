@@ -78,6 +78,13 @@
   let passphraseConfirm = $state('');
   let importPath = $state('');
   let importFileName = $state('');
+  // Which connections the next export includes (ADR-0105). Seeded to all of
+  // them on entry, so the panel opens on the behaviour it had before the
+  // picker existed and narrowing is the deliberate act.
+  let exportIds = $state<string[]>([]);
+  // Off by default: replacing an entry destroys a credential the bundle may
+  // not carry, so it is never the choice a stray click makes.
+  let overwriteExisting = $state(false);
 
   const KIND_LABEL: Record<ConnectionKind, MessageKey> = {
     turso: 'conn-kind-turso',
@@ -87,6 +94,7 @@
     neon: 'conn-kind-neon',
     supabase: 'conn-kind-supabase',
     aurora_dsql: 'conn-kind-aurora_dsql',
+    aurora_dsql_iam: 'conn-kind-aurora_dsql_iam',
     firestore: 'conn-kind-firestore',
     mongodb: 'conn-kind-mongodb',
   };
@@ -104,6 +112,11 @@
     service_account: 'conn-field-service-account',
     uri: 'conn-field-uri',
     database: 'conn-field-database',
+    endpoint: 'conn-field-endpoint',
+    region: 'conn-field-region',
+    username: 'conn-field-username',
+    access_key_id: 'conn-field-access-key-id',
+    secret_access_key: 'conn-field-secret-access-key',
   };
 
   const DSN_LABEL: Record<DsnField, MessageKey> = {
@@ -225,6 +238,8 @@
     passphraseConfirm = '';
     importPath = '';
     importFileName = '';
+    exportIds = [];
+    overwriteExisting = false;
   }
 
   function goList() {
@@ -324,7 +339,14 @@
 
   function startExport() {
     resetTransient();
+    exportIds = workspace.connections.map((c) => c.id);
     mode = 'export';
+  }
+
+  function toggleExportId(id: string) {
+    exportIds = exportIds.includes(id)
+      ? exportIds.filter((x) => x !== id)
+      : [...exportIds, id];
   }
 
   function startImport() {
@@ -342,6 +364,10 @@
       error = i18n.t('conn-required');
       return;
     }
+    if (exportIds.length === 0) {
+      error = i18n.t('conn-export-none-selected');
+      return;
+    }
     let path: string | null;
     try {
       path = await save({
@@ -356,7 +382,7 @@
     if (!path) return; // user cancelled the dialog
     busy = true;
     try {
-      const count = await exportConnections(path, passphrase);
+      const count = await exportConnections(path, passphrase, exportIds);
       passphrase = '';
       passphraseConfirm = '';
       info = i18n.t('conn-export-ok', { count });
@@ -394,16 +420,27 @@
     }
     busy = true;
     try {
-      const report = await importConnections(importPath, passphrase);
+      const report = await importConnections(importPath, passphrase, overwriteExisting);
       await workspace.refreshConnections();
       passphrase = '';
       let summary = i18n.t('conn-import-ok', {
         imported: report.imported.length,
+        overwritten: report.overwritten.length,
         skipped: report.skipped.length,
       });
       if (report.skipped.length > 0) {
         summary +=
           ' ' + i18n.t('conn-import-skipped-ids', { ids: report.skipped.join(', ') });
+        // Name the way out: a skipped id is otherwise a dead end the user
+        // has to guess their way past.
+        if (!overwriteExisting) {
+          summary += ' ' + i18n.t('conn-import-skipped-hint');
+        }
+      }
+      if (report.overwritten.length > 0) {
+        summary +=
+          ' ' +
+          i18n.t('conn-import-overwritten-ids', { ids: report.overwritten.join(', ') });
       }
       info = summary;
       mode = 'list';
@@ -601,14 +638,29 @@
               {#if f === 'database_id' && form.kind === 'firestore'}
                 <span class="hint">{i18n.t('conn-firestore-database-hint')}</span>
               {/if}
-              <!-- `uri` and `database` belong to MongoDB alone, so these need no
-                   kind guard. The URI is masked like any other secret; the hint
-                   says why the password is in it rather than in its own box. -->
+              <!-- `uri` belongs to MongoDB alone, so it needs no kind guard. It
+                   is masked like any other secret; the hint says why the
+                   password is in it rather than in its own box. -->
               {#if f === 'uri'}
                 <span class="hint">{i18n.t('conn-field-uri-hint')}</span>
               {/if}
-              {#if f === 'database'}
+              <!-- `database` is shared with Aurora DSQL (IAM), where it is
+                   required and means something else entirely — hence the guard. -->
+              {#if f === 'database' && form.kind === 'mongodb'}
                 <span class="hint">{i18n.t('conn-mongodb-database-hint')}</span>
+              {/if}
+              <!-- Aurora DSQL (IAM) fields belong to that kind alone. -->
+              {#if f === 'endpoint'}
+                <span class="hint">{i18n.t('conn-field-endpoint-hint')}</span>
+              {/if}
+              {#if f === 'username'}
+                <span class="hint">{i18n.t('conn-field-username-hint')}</span>
+              {/if}
+              {#if f === 'access_key_id'}
+                <span class="hint">{i18n.t('conn-field-access-key-id-hint')}</span>
+              {/if}
+              {#if f === 'secret_access_key'}
+                <span class="hint">{i18n.t('conn-field-secret-access-key-hint')}</span>
               {/if}
               {#if isSecret(f) && editorMode === 'edit'}
                 <span class="hint">{i18n.t('conn-secret-keep-hint')}</span>
@@ -911,6 +963,22 @@
       <div class="form">
         <h3 class="sub">{i18n.t('conn-export-heading')}</h3>
         <p class="note">{i18n.t('conn-bundle-note')}</p>
+        <div class="field">
+          <span class="label">{i18n.t('conn-export-select')}</span>
+          <div class="picker">
+            {#each workspace.connections as c (c.id)}
+              <label class="pick">
+                <input
+                  type="checkbox"
+                  checked={exportIds.includes(c.id)}
+                  onchange={() => toggleExportId(c.id)}
+                />
+                <span class="pick-name">{c.name}</span>
+                <span class="pick-meta">{c.kind} · {c.id}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
         <label class="field">
           <span class="label">{i18n.t('conn-passphrase')}</span>
           <input type="password" value={passphrase} oninput={(e) => (passphrase = e.currentTarget.value)} autocomplete="off" />
@@ -936,6 +1004,15 @@
         <label class="field">
           <span class="label">{i18n.t('conn-passphrase')}</span>
           <input type="password" value={passphrase} oninput={(e) => (passphrase = e.currentTarget.value)} autocomplete="off" />
+        </label>
+        <label class="pick">
+          <input
+            type="checkbox"
+            checked={overwriteExisting}
+            onchange={(e) => (overwriteExisting = e.currentTarget.checked)}
+          />
+          <span class="pick-name">{i18n.t('conn-import-overwrite')}</span>
+          <span class="pick-meta">{i18n.t('conn-import-overwrite-note')}</span>
         </label>
         <div class="actions">
           <button type="button" class="ghost" disabled={busy} onclick={goList}>{i18n.t('conn-cancel')}</button>
@@ -1172,6 +1249,60 @@
     font-size: var(--text-small);
     color: var(--text-accent);
     word-break: break-all;
+  }
+
+  /* Scrolls rather than pushing the passphrase fields off the panel: the
+     list is as long as the user has connections. Both axes scroll — a row
+     that wrapped would put the name underneath its own checkbox, and the
+     list is only scannable while every row starts at the same left edge. */
+  .picker {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+    max-height: 12rem;
+    overflow: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-2);
+    padding: var(--space-2);
+  }
+
+  .pick {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    cursor: pointer;
+  }
+
+  /* Only inside the picker, which is the one place with a scroll container
+     to absorb the overflow. The import dialog reuses `.pick` outside one,
+     where an unwrappable row would be clipped by the dialog instead. */
+  .picker .pick {
+    flex: none;
+    width: max-content;
+    min-width: 100%;
+    white-space: nowrap;
+  }
+
+  /* `.field input` stretches every control to the full width of the field.
+     A checkbox has to opt out of that, or it becomes a full-width box with
+     the tick floating in the middle of it, which is what pushes the name
+     off its own row. `.check input` opts out the same way. */
+  .picker input {
+    width: auto;
+    flex: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .pick-name {
+    color: var(--text-primary);
+  }
+
+  .pick-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-small);
+    color: var(--text-muted);
   }
 
   .ssh,

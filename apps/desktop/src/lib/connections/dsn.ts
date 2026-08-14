@@ -60,11 +60,15 @@ export function emptyDsnParts(): DsnParts {
  *  (project id + service account) are not. */
 // MongoDB is here despite having a host and port: one URI may list several of
 // them, plus a replica-set name and options the five boxes cannot express.
+// Aurora DSQL (IAM) is here despite being Postgres on the wire: it has no
+// stored URL at all — a SigV4 token is minted per connect from the endpoint,
+// region and key pair — so there is no password box for the five parts to fill.
 const NON_DSN_KINDS: readonly ConnectionKind[] = [
   'turso',
   'd1',
   'firestore',
   'mongodb',
+  'aurora_dsql_iam',
 ] as const;
 
 export function usesDsnFields(kind: ConnectionKind): boolean {

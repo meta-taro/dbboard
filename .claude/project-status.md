@@ -5,6 +5,68 @@
 
 ## 最終更新
 
+- 日付: 2026-08-14 (**open PR = 0。PR の滞留は解消しきった。**
+
+  **入れたもの (develop)**: #159 文書ストアをガイドに記載 / #169 08-13 のセッション記録。
+  develop の HEAD は `7569cd5`。**未マージの PR は残っていない。**
+
+  **#159 の push で 1 往復ロスした (エージェント側のミス・再発防止のため記録)**:
+  PR の head は `docs/document-stores-in-guides` だったが、
+  `git checkout -B docs/document-store-guides <start-point>` の**第 1 引数はローカル名**
+  であることを取り違え、作業が別名のローカルブランチに乗った。そのまま push すると
+  PR に紐づかない新規リモートブランチができ、#159 は `CONFLICTING` のまま残る。
+  復旧は **refspec 指定の push** (`git push origin <ローカル名>:<PR の head 名>`)。
+  ローカル名が PR の head と違う限り、`git push` 単体は `push.default=simple` に弾かれる。
+
+  **libSQL テアダウン segfault は pre-push (release プロファイル) でも出る**:
+  今回は `dbboard-server` の `tests/http.rs` が `0xc0000005 STATUS_ACCESS_VIOLATION`
+  で落ちた。同じテストバイナリを単独で回すと **12/12 緑**で、テスト後のプロセス終了時に
+  クラッシュしているだけ (`dbboard-connect` 経由で libsql をリンクしているため、
+  `dbboard-turso` 以外でも起きる)。CLAUDE.md が唯一認めている bypass に該当するので
+  `--no-verify` で push し、baseline §35 のとおり **CI 4 ジョブ緑を最終ゲート**として確認した。
+  pii-scan は pre-commit / commit-msg 側で実行済み・clean。
+
+  **残っているボール (すべて user 側)**: ① 姉妹リポへ `.claude/tools/dbboard.md` を貼る、
+  ② ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因)、
+  ③ **#161 の 3 点観察** — 実行ボタンの不具合はここで止まっている。)
+
+- 日付: 2026-08-13 (**滞留 PR の一掃と、CI の導入。マージ 9 本、open は #159 の 1 本のみ。**
+
+  **入れたもの (develop)**: #166 CI ワークフロー (ADR-0104) / #167 接続の選択エクスポートと
+  上書きインポート (ADR-0105) / #168 next-actions 同期 / #160 デモ用フィクスチャと
+  スクリーンショット (ADR-0097・0098) / #163 貼り付け値の空白除去 (ADR-0099) /
+  #162 文書セルのツリー表示・ステータスバー・ENUM プルダウン・Aurora DSQL の画面編集
+  (ADR-0100〜0103) / #164 検証シート 003 (UI ロケール) / #149 姉妹リポ用の貼り付けブロック /
+  #165 llms.txt。develop の HEAD は `694bcb3`。
+
+  **CI (ADR-0104)**: ubuntu-latest で 3 ジョブ (cargo fmt/clippy/check/test ・
+  svelte-check + vitest ・ site の node --test) + 既存の `scan` (pii-scan)。
+  `push`/`pull_request` とも `develop` と `main` が対象。**Windows ジョブは意図的に無し** —
+  既知の libSQL teardown segfault (#131) で緑のコードのまま恒久的に赤くなるため。
+  **導入初日に 1 件検出**: `dbboard-config` の `secure_fs` テスト 4 本が Linux 限定で失敗。
+  分類器 `is_likely_cloud_synced_path` は正しく、テスト側が
+  `r"C:\Users\alice\OneDrive\..."` とバックスラッシュ区切りのリテラルを渡していたのが原因
+  (Unix では `\` は区切りではないので `Path::components()` が 1 セグメントに潰れる)。
+  セグメントから `PathBuf` を組む形に修正。`cfg(windows)` で消す案は、その分岐が Linux で
+  一度も踏まれなくなるため採らなかった。`OneDriveBackup` の否定テストも
+  Linux では**空振りで緑**になっていたので同時に直っている。#131 に報告済み。
+
+  **ADR 番号の連続性**: develop は 0096 の次が 0105 だった。0097〜0104 が未マージの
+  4 ブランチに分散していたため。4 本とも `docs/decisions.md` の同じ位置に追記するので
+  互いにコンフリクトし、**1 本ずつしか解けない**。番号順になるよう差し込んで解消し、
+  現在は 0096 → 0105 が連続している。
+
+  **未了**: #159 (文書ストアをガイドに書く) はコンフリクト解消済み (`889a28a`) だが
+  **未 push** — `target/release/dbboard-mcp.exe` が使用中で `cargo build --release` が
+  上書きできず、pre-push が通らないため。衝突は `site/index.html` の OGP 1 箇所のみで、
+  説明文は #159 側・プレビュー画像は develop 側 (ADR-0098) を採った。
+  この commit だけ `--no-verify` を使用 (Windows libSQL segfault・CLAUDE.md が認める唯一の
+  bypass)。`pii-scan --staged` は手動で clean を確認済み。
+
+  **#161 (実行ボタンがクリックで反応しない) は調査停止中** — 報告者側の 3 点観察待ち。
+  クリックと Ctrl+Enter が同一関数・同一ガードであることまで確認済みで、コードだけでは
+  これ以上切れない。観察が来るまで推測でテストを書かない。)
+
 - 日付: 2026-08-09 (**Zenn 記事の公開と、それを書く過程で判明した文書 / コードの乖離の是正。
   コミット 3 本 (`f0cb0ca` / `28c15cc` / `913ee8b`)、ブランチ `feature/firestore-adapter`。**
 

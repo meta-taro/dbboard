@@ -9705,3 +9705,615 @@ a much larger surface to get wrong than the driver is to depend on.
   `tests/live_mongodb.rs`, ignored by default and pointed at a local container.
   Unit tests prove the crate sends what we think MongoDB accepts; that file
   proves MongoDB accepts it.
+
+---
+
+## ADR-0097 — `DBBOARD_CONFIG_DIR` moves the whole profile, or nothing
+
+**Status**: Accepted · 2026-08-11
+
+### Context
+
+There was no supported way to start dbboard against a config directory
+other than the per-user one. That is fine until you need to show the app
+to somebody: a screenshot of dbboard as installed puts the connection
+list on screen, and the connection list renders a `user@host` label
+holding a real database host. The download page therefore says nothing
+about what the app looks like, which is the one thing a download page is
+for.
+
+The obvious workaround does not work on Windows. `directories`, which
+resolves the config dir, reads the known-folder API rather than
+`%APPDATA%`; launching a second instance with the environment variable
+redirected still opens the real profile. Verified empirically, not
+assumed.
+
+Five files are involved, and each one was doing its own `ProjectDirs`
+lookup: `connections.toml`, `history.jsonl`, `ai-providers.toml`,
+`annotations.toml`, `ui-settings.toml`.
+
+### Decision
+
+1. **One env var, `DBBOARD_CONFIG_DIR`, resolved in one place.**
+   `store::config_dir()` is the only `ProjectDirs` call site left; the
+   other four modules route through it.
+
+2. **All five files move together, or the override is worse than
+   nothing.** A half-honoured override would sit a demo profile's
+   connections next to the real profile's query history — a screenshot
+   taken in good faith would then leak the very thing the override was
+   added to hide. The integration test asserts togetherness rather than
+   the variable, because that is the property the safety rests on.
+
+3. **A blank value is not a config dir.** `""`, `"   "` and `"\t"` all
+   fall back to the per-user lookup. An exported-but-empty variable
+   would otherwise resolve to the process's working directory and write
+   credentials wherever the app happened to be started from — the
+   failure mode is silent and the file is a credential store, so it is
+   worth three lines to refuse.
+
+4. **The env-reading is separated from the decision-making.**
+   `config_dir_from(Option<&str>)` is pure and carries the unit tests;
+   `config_dir()` is the two-line wrapper that reads the environment.
+   `unsafe_code` is `forbid` workspace-wide and `std::env::set_var` is
+   unsafe as of Rust 2024, so a test that sets the variable cannot
+   compile — and `forbid` is not something to weaken for a test's
+   convenience. Splitting the function tests the same logic without
+   mutating global state, which is the better shape regardless.
+
+5. **The keychain is deliberately *not* redirected.** Secrets are keyed
+   by `(KEYRING_SERVICE, connection id + field)`. A demo profile has its
+   own ids and therefore no entries to find; nothing in it can reach the
+   real profile's secrets. Adding a keychain namespace would be a second
+   mechanism to get wrong for no gain.
+
+### Consequences
+
+- dbboard can be launched with an empty profile, which makes the
+  download-page screenshots possible without hand-editing files.
+- The override is an escape hatch, not a supported multi-profile
+  feature: nothing in the UI shows which config dir is live, so a user
+  who sets it permanently has no in-app reminder. If profiles ever
+  become a real feature, this variable is the seam to build on.
+- Anyone adding a sixth per-user file must route it through
+  `store::config_dir()`. The integration test does not know about files
+  it was not told about, so this stays a review obligation.
+
+## ADR-0098 — The screenshots are of a fictional database, and the check is a checklist
+
+Status: Accepted · 2026-08-11
+
+### Context
+
+The download page asked people to install an unsigned binary without
+showing them what it was. The obvious fix — take a screenshot — is the
+reason it had not been done: dbboard's main window shows a connection
+list, and this project is developed against real, business-identifying
+databases. A capture of the app as it is actually run is a capture of
+real hosts.
+
+`scripts/pii-scan.sh` (ADR-0055) is the control everywhere else in this
+repo, and it cannot read a PNG. Nothing downstream catches what a
+capture caught.
+
+### Decision
+
+1. **Screenshots come from a synthetic profile, never from the real
+   one.** `scripts/demo-profile` builds a SQLite file of fictional
+   weather-station data, and `DBBOARD_CONFIG_DIR` (ADR-0097) starts
+   dbboard against a config directory that has never held a credential.
+   The alternative — capture reality and redact — is a judgement call
+   made under time pressure every single time, and a reversible blur or
+   a black box over a surviving layer is worse than the original,
+   because it is then believed to be safe.
+
+2. **"Fictional" is machine-checked, not intended.**
+   `seed.test.mjs` asserts that no string in the corpus is shaped like an
+   email address, an IP address or a domain name. This does not prove the
+   data is harmless; it catches the shapes that leak by accident, which
+   are the ones that survive review.
+
+3. **The corpus is generated from a fixed seed.** Screenshots get
+   retaken every time the interface changes shape. With `Math.random`,
+   two releases' images differ for reasons that have nothing to do with
+   the app, and nobody can read the diff.
+
+4. **It is a plain SQLite file, not a container.** libSQL opens it
+   unchanged, so the Turso/libSQL adapter reads it with no server and no
+   Docker daemon. The emulator fixtures need one; a screenshot should not
+   be blocked on it.
+
+5. **The residual risk is carried by a written checklist, not by a
+   tool.** `docs/maintainer/screenshots.md` lists what has to be absent
+   from the image — no host, no username-bearing path, no query history,
+   no other application, no neighbouring window at the edges. Naming the
+   items is the only thing that makes them checkable, given that no
+   scanner will ever run on the artifact.
+
+6. **`site/page.test.mjs` checks the page, not the picture.** Every
+   referenced image exists, is same-origin (the page pins
+   `img-src 'self'`, so an off-origin image renders as nothing at all
+   rather than slowly), and carries a non-empty `alt`. A broken `<img>`
+   is invisible in a diff and invisible in review, and shows up only as a
+   blank rectangle to the visitor the page was written for.
+
+### Consequences
+
+- The screenshots can be regenerated by anyone with the repo, without
+  access to any database. That is what makes retaking them cheap enough
+  to actually happen when the interface changes.
+- The demo profile has to be kept boring. Once it is used for debugging,
+  its query history stops being safe to photograph, and it is no longer
+  a demo profile.
+- The checklist is a human control and will eventually be skipped. It is
+  written to be read in under a minute for that reason. If captures ever
+  become routine enough to automate, the seam is a scripted capture that
+  drives the app by process id rather than by "the window in front".
+
+## ADR-0099 — Whitespace around a pasted value is not part of it, and a base URL is checked where it was typed
+
+### Status
+
+Accepted.
+
+### Context
+
+A Firestore connection to the local emulator failed with:
+
+```
+connection failed: could not reach Firestore: builder error
+```
+
+The values on screen were correct. The stored value was not: the base URL had
+been saved as `" http://127.0.0.1:8385/v1"` — one leading space, invisible in a
+text input, carried in from a paste. `reqwest` cannot parse that as a URL, so
+the request failed at construction, before any network I/O, and reported the
+only thing it knew: that the builder failed.
+
+Two separate faults produced one unusable message:
+
+1. The connection form sent every field verbatim. `blank()` trimmed a value to
+   decide whether it was empty, but the value itself was stored untouched — so
+   whitespace was significant enough to break a URL and invisible enough that
+   nobody could see it.
+2. The adapter accepted any string as a base URL and only found out it was
+   unusable one layer down, where the base URL is no longer in scope and the
+   error cannot name it.
+
+### Decision
+
+1. **The form trims non-secret text on the way out.** URLs, paths and
+   identifiers — DSN, `base_url`, `project_id`, `database_id`, `account_id`,
+   Mongo URI and database, Turso path — are trimmed in both `buildKindInput`
+   and `buildKindEditInput`. Trimming these corrects the value rather than
+   guessing at it: none of them can contain leading or trailing whitespace.
+2. **Secrets are still sent verbatim.** A password or a passphrase may
+   legitimately begin or end with a space, so trimming there would silently
+   change what the user meant. The service-account JSON is left alone for the
+   same reason — it is parsed, and a parser reports its own faults.
+3. **`FirestoreAdapter::connect` parses the base URL.** An unparseable one is
+   refused as `DbError::Connection` quoting the value, at the point where the
+   value is still recognisable as something the user typed. The adapter also
+   trims, so a connection already saved with stray whitespace heals itself
+   without the user editing anything.
+
+### Consequences
+
+- The same paste that used to produce `builder error` now either works or names
+  the field and the value.
+- Add and edit stay identical in this respect, as they must — a form that
+  cleans input on add but not on edit is a bug waiting for the second save.
+- The adapter's trim makes it tolerant of input the form now guarantees is
+  clean. That redundancy is deliberate: the adapter is a library and the form
+  is not its only caller.
+- Not addressed here: trimming as the user types, or showing whitespace in the
+  field. Both are display decisions with no failure mode left to justify them.
+
+## ADR-0100 — A document cell opens as a tree, because a document *is* one
+
+### Status
+
+Accepted.
+
+### Context
+
+Firestore and MongoDB store trees. dbboard renders a result as a grid, and a
+grid cell is one line, so a document arrives in the UI as
+`{"customer":{"name":"Sample Customer","address":{"city":"…"}}}` — truncated at
+the cell's width. Every value is present and none of them is findable. Opening
+the cell showed the same single line inside a `<pre>`.
+
+The grid is the right shape for a row-and-column result and the wrong shape for
+a nested value, and the tension is not resolvable in the cell: the cell is one
+line by definition.
+
+### Decision
+
+1. **The document cell keeps its one-line preview in the grid, and opens as an
+   indented tree.** The grid stays a grid; the tree lives in the read-only
+   value dialog that already existed for long text.
+2. **The flattening is a module, not a component** — `src/lib/grid/tree.ts`.
+   Ordering, empty containers, array indices and collapsed subtrees are where
+   the subtle cases are, and they are worth testing without a component around
+   them.
+3. **Nodes are identified by dotted path** (`lines.0.sku`). Collapse state is a
+   set of paths, so it survives a re-render and cannot drift from the tree.
+4. **A collapsed container stays visible**, showing its size (`{3}`, `[2]`).
+   Hiding the container along with its children would read as deleting it.
+5. **Container previews are language-neutral** — `{3}`, not "3 fields". This is
+   data, and it must read the same in every one of the 11 locales.
+6. **A document always opens**, however short its serialisation. The width test
+   that gates the dialog for text does not apply: the fault being fixed is the
+   shape, not the length.
+7. **Copy still copies JSON**, now pretty-printed. What the user pastes
+   elsewhere should be the document, not a rendering of it.
+
+### Consequences
+
+- A nested document is navigable without leaving dbboard, which is what
+  verification sheet 001 row No.8 asks for.
+- `flattenDocument` walks the whole document on every collapse toggle. For the
+  documents these stores hold that is far below the cost of a re-render; if a
+  pathological document ever proves otherwise, the fix is memoisation inside
+  the module, with no change to its callers.
+- The tree is read-only, as the dialog already was. Editing a document is a
+  separate decision: a free-text edit of a tree can leave it unparseable, which
+  is why document cells are excluded from inline editing in the first place.
+- Not addressed here: a raw-JSON view alongside the tree. The copy button
+  already yields the raw document, and a second view would have to earn its
+  place in the dialog.
+
+## ADR-0101 — The window gets a status bar, carrying only what is not already on screen
+
+### Status
+
+Accepted.
+
+### Context
+
+The bottom edge of the window was empty: the shell was a title bar and a body,
+with nothing below it. The request was for something useful there, with the
+explicit condition that filler is not wanted.
+
+Most of what a status bar traditionally shows is already on screen in dbboard,
+and putting it there again would be exactly the filler that was ruled out: the
+row count and the "capped at N" note live in the result toolbar, the connection
+kind is in the sidebar list, and the connection name is in the top bar.
+
+Two things were genuinely absent. **How long the last statement took is
+measured nowhere in the app** — `QueryOutput` carries columns, rows, a count
+and a truncation flag, and no timing at all. And **an available update was
+reachable exactly once**: `UpdateNotice` was rendered from a `+page.svelte`
+state that dismissing set to null, so closing the card discarded the update for
+the rest of the session with no way back to it.
+
+### Decision
+
+1. **The status bar carries the last statement's elapsed time and the running
+   version, plus a chip when an update is waiting.** Nothing else. Anything
+   already visible elsewhere is excluded on the grounds that it is visible
+   elsewhere.
+2. **The row count stays out of it**, though every other client puts it there.
+   It is two centimetres away in the result toolbar, and a status bar repeating
+   the toolbar is the filler this was supposed to avoid.
+3. **Elapsed time is measured in the frontend, around the `invoke` alone**
+   (`src/lib/status/status.svelte.ts`). The schema read that follows a browse
+   is our own bookkeeping and is not charged to the statement. A backend-side
+   measurement would be more truthful about the database and would require a
+   change to `QueryOutput` and every adapter that builds one; this buys most of
+   the answer for none of that.
+4. **A failed statement is still timed.** A query that died after thirty
+   seconds is a different problem from one rejected instantly, and the error
+   text alone does not distinguish them.
+5. **The formatting is a module** — `src/lib/status/summary.ts`. The
+   interesting part is the boundaries: a sub-millisecond query renders as
+   `<1 ms` rather than `0 ms`, because "0 ms" reads as "not measured"; an
+   impossible duration renders as `0 ms` rather than breaking the layout.
+   Digits with unit suffixes, not words, so the bar reads the same in all 11
+   locales.
+6. **Update availability moves into a store** (`src/lib/update/state.svelte.ts`)
+   that separates "there is an update" from "the card is closed". Dismissing
+   hides the card; the chip in the status bar brings it back.
+
+### Consequences
+
+- The bar is 24px and always present, including before the first query, where
+  it says so. A bar that appears and disappears would move the layout under the
+  user.
+- Timing includes the IPC round trip and JSON deserialisation, so it reads
+  slightly high against the same query in a native client. It is honest about
+  what dbboard took to answer, which is the number the person watching cares
+  about.
+- Dismissing an update no longer buries it. The trade is one persistent chip in
+  a corner of the status bar, which is the quietest place in the window.
+- Not addressed here: rows-per-second, a query timer that ticks while running,
+  or a history of timings. The bar shows the last statement, and the run in
+  flight is already announced by the Run button.
+
+## ADR-0102 — An ENUM column is edited by picking a member, not by typing one
+
+**Status**: Accepted (2026-08-12)
+
+**Context**: Inline editing (ADR-0042) hands every column the same single-line
+text box. For an ENUM that turns a closed set of, say, three values into a
+spelling test: the member has to be typed exactly, and getting it wrong is not
+caught until the UPDATE comes back rejected — or worse, on a lax server, until
+a truncated-to-empty value has already landed.
+
+The member list is available, but only in one place. MySQL reports the column
+as `enum('draft','sent','paid')` in `information_schema.columns.column_type`,
+which `DESCRIBE_COLUMNS_SQL` already reads into `ColumnInfo.declared_type`. The
+metadata attached to a result set says only `ENUM` — the members are gone by
+then. So the choices can only come from the table schema, which we already
+fetch on a browse to learn the primary key.
+
+### Decision
+
+1. **The dropdown is sourced from `describeTable`, not from the result set.**
+   `QueryPanel` computes the members in the same `try` that reads the primary
+   key, and passes them to `ResultGrid` as a separate `enums` prop, because
+   `EditContext` carries no column types. A failed schema read leaves it empty
+   and the column reverts to text, exactly as the primary key falls back to
+   read-only.
+2. **Parsing the declaration is a pure, tested module** —
+   `src/lib/grid/enum.ts`. The escaping is where this goes wrong: a comma
+   inside a member must not split it in two, `''` is a doubled quote and not
+   the end of the literal, and MySQL also accepts backslash escapes. A member
+   list read half-right would offer the *wrong* values, which is worse than the
+   text box it replaces.
+3. **A declaration we cannot parse yields nothing at all**, and the column
+   stays free text. There is no partial list: an editor that can only write a
+   wrong value is not a safer editor.
+4. **SET is deliberately excluded.** It holds several members at once, so a
+   single-select would silently drop all but one. It keeps the text box.
+5. **A stored value outside the declared members is kept**, at the head of the
+   list and selected. Opening the editor on a row written before the type was
+   narrowed must not rewrite it to the first member just by being opened.
+6. **Both editors are covered.** The inline editor becomes a `<select>`, and
+   the full-editor dialog (ADR-0082) does too when it is reached; the `⤢`
+   button is dropped for enum columns, because the choices are the whole value
+   space and none of them needs more room. No path leaves an enum edited as
+   free text.
+
+### Consequences
+
+- The `∅ NULL` button stays on both editors: a nullable enum still needs a way
+  to say NULL, and that is a different act from picking the empty-string
+  member, which MySQL allows and which the dropdown shows as `(empty)`.
+- Only MySQL benefits today, because it is the only adapter whose
+  `declared_type` carries the members. Postgres named enum types report the
+  type name, not its labels; wiring those would need a separate catalogue read
+  and is not attempted here.
+- The parser accepts the shape MySQL emits, not arbitrary SQL. That is the only
+  input it ever sees — the string comes from `information_schema`, not from a
+  user.
+
+## ADR-0103 — Aurora DSQL (IAM) is edited in the app, not in connections.toml
+
+**Status**: accepted (2026-08-12)
+
+### Context
+
+`aurora-dsql-iam` was the one connection kind with no in-app form. It was
+added (ADR-0036) as a config-file kind: the operator wrote six values into
+`connections.toml` by hand, put the AWS secret access key into the OS keychain
+under a ref they also wrote by hand, and the app read it. The list panel showed
+the row with its Edit button disabled and a note naming the file.
+
+That held for as long as such a connection never changed. It does change: an
+AWS access key pair gets rotated, and when it does the connection stops working
+with an auth error. The path back to a working state was to find
+`connections.toml`, edit the right table by hand without breaking the TOML, and
+separately overwrite a keychain entry — with the app unable to help at any
+step, because it refused to open the entry at all.
+
+The person who hits this is not necessarily the maintainer. On the machine that
+prompted this, the Aurora DSQL connection is used unattended by someone who did
+not create it. "Edit the TOML file" is not an answer for them, and being told
+to do it by a program that could do it itself is worse than not being told.
+
+### Decision
+
+Aurora DSQL (IAM) gets the same add and edit forms every other kind has.
+
+1. **Six fields, one of them secret.** `endpoint`, `region`, `database`,
+   `username` and `access_key_id` are plain inputs stored in `connections.toml`;
+   only `secret_access_key` is masked and goes to the keychain. The access key
+   *id* is deliberately not treated as a credential: it is already in the file
+   in the clear, and an operator cannot tell which key pair they are rotating
+   away from if the form will not show it.
+2. **Two secret states, not three.** A blank secret box on edit keeps the
+   stored key (`SecretField::Keep`), a filled one overwrites it. There is no
+   third "no credential" state, unlike Firestore's emulator mode (ADR-0093):
+   an IAM connection always has a key pair. This is what makes the rotation
+   case work — the id can be changed on its own without retyping the secret.
+3. **The keyring ref is never re-minted on edit.** `dbboard.<id>.secret_key` is
+   derived once, at add time, and reused. A new ref on every save would orphan
+   the entry the connection still points at; the same rule already governs
+   `apply_url_edit`. The field name `secret_key` is also not free to change —
+   refs written by hand before this change point at it.
+4. **No DSN and no tunnel.** The kind joins `NON_DSN_KINDS`: there is no stored
+   URL to split into host/port/user/password/database, because a SigV4 token is
+   minted per connect from the fields above. It stays out of
+   `SSH_TUNNELABLE_KINDS` for the same reason the backend refuses it — the
+   token is signed for the real endpoint's host.
+5. **The config-file-only gate stays, empty.** `isEditableInApp` and the
+   disabled Edit button remain in place with nothing in their list. The next
+   backend-only kind should be one entry, not a rediscovery of why the button
+   needs a disabled state.
+
+### Consequences
+
+- Nothing about the stored representation changed, so existing
+  `connections.toml` entries and their keychain refs keep working untouched.
+  Delete, bundle export/import and orphan purging already handled the kind
+  (`keyring_refs_in`); only add and edit were missing.
+- A connection created in-app and one written by hand are indistinguishable
+  afterwards, which is the point: the file stays a supported way in, it is just
+  no longer the only one.
+- The form asks for an AWS secret access key in a text box. That is the same
+  trust boundary as every other secret here — it goes straight to the OS
+  keychain and is never read back into the form — but it is worth stating that
+  the app now handles long-lived AWS credentials directly, where before it only
+  read a ref to one.
+
+## ADR-0104 — Verification runs in CI, not only in a git hook
+
+- **Status**: accepted
+- **Date**: 2026-08-12
+- **Context**: issue #131, ADR-0055 (`pii-scan` in CI), baseline §5 / §23
+
+### Context
+
+CLAUDE.md lists four commands that must pass before every commit and two more
+before every push. All six ran in exactly one place: the `cargo-husky` hooks on
+a maintainer's machine. Nothing in the repository proved they had ever run.
+
+That is a weaker guarantee than it looks. Hooks are installed as a side effect
+of the first `cargo test` after cloning, so a fresh checkout has none until
+someone happens to run tests. `--no-verify` is sanctioned for two cases already
+(the Windows libSQL teardown segfault, and baseline §35's environment-caused
+hook failures), and once a bypass is legitimate for one reason nothing
+distinguishes it from a bypass for another. A contributor who is not the
+maintainer has no hooks at all.
+
+Meanwhile CI carried only `pii-scan` and the tag-triggered `release` build. A
+green checks list on a pull request said the diff leaked no PII — and nothing
+about whether it compiled.
+
+### Decision
+
+`.github/workflows/ci.yml` runs on pushes and pull requests to `develop` and
+`main`, in three jobs split by toolchain.
+
+1. **The Rust job runs all four mandatory commands, in order.** `fmt --check`,
+   `clippy -D warnings`, `check --all-targets --all-features`, then `test
+   --all-features`. `check` and `test` overlap in what they compile; they are
+   both here because both are in CLAUDE.md and CI's job is to be the same gate
+   the hook is, not a cheaper approximation of it.
+
+2. **On `ubuntu-latest`, though the app ships for Windows and macOS.** The
+   release workflow already builds the desktop bundle on both of those, so what
+   is missing is the verification pass, not another build. Running it on
+   Windows would inherit the libSQL teardown segfault (issue #131) and be
+   permanently red on green code — a check nobody can trust is worse than no
+   check, because it trains people to merge past red.
+
+3. **The whole workspace, including `apps/desktop/src-tauri`.** That crate is
+   where every Tauri command lives, which makes it the last one worth
+   excluding. The cost is the apt-installed webkit/gtk stack and a `pnpm build`
+   beforehand, because the crate's build script resolves `frontendDist:
+   ../build` and that path is an artefact, not a tracked directory.
+
+4. **No services.** Every environment-dependent test in the workspace is
+   `#[ignore]`d — the OS keychain, the Firestore emulator, MongoDB — so
+   `--all-features` needs nothing but a compiler. That was already true; this
+   workflow is what makes it load-bearing, and a future test that quietly
+   depends on a live service will now turn CI red rather than pass unnoticed
+   on the one machine that has it running.
+
+5. **The site tests are discovered, not listed.** `find`-then-`node --test`
+   rather than a file list, because those tests arrive one file at a time and a
+   hard-coded list stops covering them silently. Node 22 does not recurse into
+   a bare directory argument, so the discovery has to be explicit.
+
+6. **First-party actions only, `contents: read`, no secrets** — the same
+   posture as `pii-scan`. pnpm comes from corepack via the `packageManager`
+   field rather than a third-party setup action, and the cargo cache uses
+   `actions/cache` rather than the usual community Rust cache action.
+
+### Consequences
+
+- A pull request now carries evidence rather than an assertion. The test plan
+  checkboxes in a PR body stop being the only record that the four commands
+  ran.
+- CI does not cover Windows or macOS *verification*, only Linux. The platform
+  the maintainer actually develops on is therefore still the platform least
+  covered by automation. Closing that gap depends on issue #131; until the
+  segfault is fixed, adding a Windows job would only add noise.
+- The Rust job is the slow one — a cold cache compiles the workspace three
+  times over (clippy, check, test). The cache key is `Cargo.lock`, so a
+  dependency change pays full price and everything else does not.
+- `pnpm build` running inside the Rust job means a frontend build failure
+  surfaces there as well as in the frontend job. That is duplication, but the
+  alternative is a Rust job that cannot compile the desktop crate.
+
+## ADR-0105 — Export names its connections; import overwrites only what the user asks it to
+
+- **Status**: accepted
+- **Date**: 2026-08-12
+- **Context**: user request (export one connection at a time; on import,
+  replace an existing entry rather than skip it), building on ADR-0038 (the
+  encrypted bundle and its threat model)
+
+### Context
+
+ADR-0038 shipped the bundle as an all-or-nothing pair: export wrote every
+connection in the store, and import added the ones whose ids were free and
+skipped the rest. That is the right default for moving a whole machine, and
+the wrong shape for the two things people actually do with it — hand one
+connection to one colleague, and refresh a connection they already have after
+its credentials rotated.
+
+The skip-only import made the second case unreachable. The workaround was to
+delete the entry first and import afterwards, which is two steps where the
+failure mode is losing the entry and then discovering the bundle's passphrase
+was wrong.
+
+### Decision
+
+1. **Export takes an explicit list of ids.** `export_bundle_of(&[id], pass)`
+   sits next to `export_bundle(pass)`; the whole-store call is now the
+   selective one applied to everything. An unknown id is `NotFound` rather
+   than silently dropped — a caller who names a connection that is not there
+   has a stale list, and a bundle short one connection is discovered at the
+   far end, by someone who cannot fix it.
+
+2. **The bundle lists connections in store order, not argument order.** The
+   file is a store, not a transcript of the request; two exports of the same
+   set should produce the same ordering regardless of how the UI happened to
+   collect the checkboxes.
+
+3. **An empty selection is refused (`EmptySelection`), not read as "all".**
+   The two plausible readings are opposites: one ships an empty bundle, the
+   other ships every credential on the machine. An empty bundle is the worse
+   silent failure of the two, because it encrypts and decrypts perfectly well
+   and then imports nothing, which the recipient reads as a wrong passphrase.
+
+4. **Import takes an `ImportMode`, and `Skip` stays the default.** Skip cannot
+   lose a credential; Overwrite can. The mode that destroys is the one the
+   user has to ask for by name.
+
+5. **The ADR-0038 ref-collision refusal is not a mode and does not relax.**
+   `keyring_*_ref` is free-form JSON inside the bundle, so a crafted bundle can
+   carry a new id whose ref points at an existing connection's keychain slot.
+   The guard now tracks *which connection owns each ref*: a ref the incoming
+   entry already owns is not a collision — overwriting your own secret is the
+   whole point — while a ref owned by a different connection is refused in
+   both modes. Overwriting an id means replacing the entry that holds that id,
+   and nothing else.
+
+6. **Rollback restores the previous secret; it does not delete it.** For an
+   add, deleting the ref is correct — nothing owned it before. For an
+   overwrite it is destructive: it would remove a credential the user had and
+   the bundle does not carry. The undo log is therefore a per-slot
+   `(ref, Option<prior>)`: `Some` restores, `None` deletes.
+
+7. **A replacement keeps its slot in the list, and refs the replacement no
+   longer names are purged after the save succeeds.** Reordering the list on
+   import would be a visible change the user did not ask for, and leaving the
+   old refs behind would strand secrets no entry can reach.
+
+### Consequences
+
+- `ImportReport` grew a third field. `imported` / `overwritten` / `skipped`
+  are reported separately because "12 connections imported" reads very
+  differently from "12 connections replaced", and the UI has to be able to
+  name which ones were replaced.
+- The desktop commands take `ids: Option<Vec<String>>` and
+  `overwrite: Option<bool>`; both absent reproduce the ADR-0038 behaviour
+  exactly, so no existing caller changes meaning.
+- Secret writes still happen before the TOML save, so a save failure has to
+  roll them back. That ordering is unchanged from ADR-0038 — the keychain has
+  no transaction to enlist in — but the rollback is now correct for both
+  modes rather than only for adds.
