@@ -1252,13 +1252,16 @@
   }
 
   /* Scrolls rather than pushing the passphrase fields off the panel: the
-     list is as long as the user has connections. */
+     list is as long as the user has connections. Both axes scroll — a row
+     that wrapped would put the name underneath its own checkbox, and the
+     list is only scannable while every row starts at the same left edge. */
   .picker {
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: var(--space-1);
     max-height: 12rem;
-    overflow-y: auto;
+    overflow: auto;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-2);
     padding: var(--space-2);
@@ -1269,6 +1272,27 @@
     align-items: baseline;
     gap: var(--space-2);
     cursor: pointer;
+  }
+
+  /* Only inside the picker, which is the one place with a scroll container
+     to absorb the overflow. The import dialog reuses `.pick` outside one,
+     where an unwrappable row would be clipped by the dialog instead. */
+  .picker .pick {
+    flex: none;
+    width: max-content;
+    min-width: 100%;
+    white-space: nowrap;
+  }
+
+  /* `.field input` stretches every control to the full width of the field.
+     A checkbox has to opt out of that, or it becomes a full-width box with
+     the tick floating in the middle of it, which is what pushes the name
+     off its own row. `.check input` opts out the same way. */
+  .picker input {
+    width: auto;
+    flex: none;
+    margin: 0;
+    padding: 0;
   }
 
   .pick-name {
