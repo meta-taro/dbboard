@@ -14,10 +14,11 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-08-06)**: `desktop` has shipped Phases 1 through 5 and
-  released **v0.5.1** — seven adapters (Turso, D1, CockroachDB, Neon,
-  Supabase, Aurora DSQL, and MySQL / MariaDB via `dbboard-mysql`, ADR-0068,
-  the first genuinely different SQL dialect), the optional AI assistant
+- **Right now (2026-08-11)**: `desktop` has shipped Phases 1 through 6 and
+  released **v0.7.0** — nine adapters (Turso, D1, CockroachDB, Neon,
+  Supabase, Aurora DSQL, MySQL / MariaDB via `dbboard-mysql`, ADR-0068,
+  the first genuinely different SQL dialect, and the two read-only document
+  stores Cloud Firestore and MongoDB, ADR-0091), the optional AI assistant
   (Phase 4), an MCP server (`dbboard-mcp`, ADR-0046) that can now write
   behind a per-connection gate (ADR-0087) and is **published as a release
   binary** rather than something you had to build (ADR-0090), SSH
