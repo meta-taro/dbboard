@@ -30,6 +30,10 @@ dbboard/
     │                       #   ADR-0018/0019/0021)
     ├── dbboard-mysql/      # adapter: MySQL / MariaDB (new SqlDialect —
     │                       #   ADR-0068)
+    ├── dbboard-firestore/  # adapter: Cloud Firestore (REST, read-only —
+    │                       #   ADR-0091/0093/0094)
+    ├── dbboard-mongodb/    # adapter: MongoDB (official driver, read-only —
+    │                       #   ADR-0091/0095/0096)
     ├── dbboard-tunnel/     # SSH local port-forward over russh (ADR-0069)
     ├── dbboard-connect/    # connection factory: connections.toml entry +
     │                       #   keyring secret -> connected adapter (ADR-0046);
@@ -52,6 +56,18 @@ apps/
 Everything above ships. `dbboard-postgres` covers CockroachDB plus the three
 pg-wire flavors (Neon / Supabase / Aurora DSQL, ADR-0018/0019/0021), and
 `dbboard-mysql` (ADR-0068) was the first genuinely new SQL dialect.
+
+`dbboard-firestore` and `dbboard-mongodb` are the first adapters whose query
+text is not SQL at all — a Firestore `StructuredQuery` and a MongoDB command
+document, both JSON. They join through the *same* trait rather than a parallel
+one (ADR-0091): the trait never promised SQL, only that a string of query text
+comes back as rows, and a second hierarchy would have forced every caller —
+the client, the MCP server, the history store — to branch on which world a
+connection lives in. What is genuinely per-store is the read-only decision, so
+each of the two carries its own classifier: Firestore has no write path to
+close (ADR-0093), while MongoDB allow-lists command names *and* the options
+each command may take, then walks the pipeline for a smuggled `$out` or
+`$merge` (ADR-0095).
 
 There are two entry points: the desktop client (`apps/desktop`) and the
 headless MCP stdio server (`dbboard-mcp`). Both reach a database the same
@@ -172,7 +188,8 @@ pub trait DatabaseAdapter: Send + Sync {
     /// List schemas / tables / views, suitable for the schema browser.
     async fn introspect(&self) -> Result<SchemaSnapshot, DbError>;
 
-    /// Execute a SQL query and return a typed result.
+    /// Execute a query and return a typed result. The text is SQL for the
+    /// SQL engines and JSON for the document stores — see below.
     async fn query(&self, sql: &str) -> Result<QueryResult, DbError>;
 
     // Optional capabilities — each defaults to `None`.
@@ -188,6 +205,14 @@ pub trait DatabaseAdapter: Send + Sync {
 `dbboard-core` so the UI never sees adapter-specific types. Adapters
 that do not implement a given capability simply leave the accessor at
 its `None` default — no code changes elsewhere.
+
+The parameter is named `sql` for the eight SQL engines, but the trait only
+ever required *query text*. The two document stores pass JSON through it — a
+Firestore `StructuredQuery`, a MongoDB command document — and a caller that
+needs to know which is which asks the adapter rather than the parameter, so
+the client can generate the right *Select top 100* for a table it is looking
+at. Nested documents come back in `Value::Json` cells, which is why the value
+type gained a `Json` variant before either adapter landed.
 
 ## AI Layer (optional)
 
