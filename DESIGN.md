@@ -131,6 +131,30 @@ Each component will get a small style spec in this file once it is built.
 - **Count badge** — table-count pill on the Tables heading. Table count only;
   per-table row counts are deferred (they need a heavy per-table `COUNT(*)`).
 
+### Built — grid values and dialogs
+
+- **Document tree** — a nested cell (Firestore, MongoDB) keeps its one-line
+  preview in the grid and opens as an indented tree in the read-only value
+  dialog. Monospace at the small size, one row per node, `1.25rem` of indent
+  per level, a `▸` / `▾` twisty on containers only. Keys take the accent; a
+  container's size (`{3}`, `[2]`) and `null` are muted, because they are
+  structure rather than data; numbers and booleans take the accent so they
+  separate from strings at a glance. Long values wrap rather than scrolling the
+  dialog sideways — a long string is common in a document, and losing the tree
+  to read one is a poor trade (ADR-0100).
+- **ENUM picker** — an ENUM column edits as a dropdown of its declared members
+  instead of a text box, in the inline editor and in the full-value dialog
+  alike. It reuses the cell editor's box, so the row does not change height
+  when the editor opens. The `⤢` wide-editor button is absent here: the choices
+  are the whole value space, and none of them needs more room — which is also
+  why the dialog variant drops the free-text editor's `40vh` floor (ADR-0102).
+- **Connection picker** (export dialog) — a bordered, scrolling list of
+  checkbox rows: tick, name, then `kind · id` muted and monospace. Rows keep
+  their natural width and every one starts at the same left edge; the box
+  scrolls on both axes rather than reflowing, because a wrapped row puts the
+  name underneath its own checkbox and the list stops being scannable. Capped
+  at `12rem` so the passphrase fields below it stay on the panel (ADR-0105).
+
 ## Layout
 
 - Default: three-pane (sidebar / editor / results) inspired by classic
