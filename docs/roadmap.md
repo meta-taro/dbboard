@@ -14,8 +14,8 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-08-11)**: `desktop` has shipped Phases 1 through 6 and
-  released **v0.7.0** — nine adapters (Turso, D1, CockroachDB, Neon,
+- **Right now (2026-08-14)**: `desktop` has shipped Phases 1 through 6 and
+  released **v0.8.0** — nine adapters (Turso, D1, CockroachDB, Neon,
   Supabase, Aurora DSQL, MySQL / MariaDB via `dbboard-mysql`, ADR-0068,
   the first genuinely different SQL dialect, and the two read-only document
   stores Cloud Firestore and MongoDB, ADR-0091), the optional AI assistant
@@ -29,6 +29,14 @@ focus:
   fixes an SSH-tunnelled connection that could die and stay dead until
   restart (ADR-0092) and MySQL 8 schema introspection, which failed on
   every table because `information_schema` serves its metadata as bytes.
+
+  **v0.8.0 adds no adapter.** It is the first release cut from using the
+  previous one: a document cell that opens as a tree (ADR-0100), a status bar
+  (ADR-0101), ENUM columns edited by picking rather than typing (ADR-0102),
+  `aurora-dsql-iam` editable in the app (ADR-0103), selective export with an
+  overwriting import (ADR-0105), and `DBBOARD_CONFIG_DIR` (ADR-0097). The
+  mandatory verification commands also moved into CI, where until then the
+  only automated check on a pull request was the PII scan.
 
   The Tauri 2 + SvelteKit client reached parity at v0.4.0 and is now the
   **only** client: the egui app and its supporting crates were deleted in
@@ -626,6 +634,33 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       ([ADR-0047](decisions.md), PR #104). The `.exe` is the primary (filled)
       button and the `.msi` the secondary (outline) — a deliberate two-tier
       layout, kept as-is.
+- [x] Document cells open as a tree — a Firestore/MongoDB document keeps its
+      one-line preview in the grid and expands in the read-only value dialog,
+      with collapsed containers showing their size rather than disappearing
+      ([ADR-0100](decisions.md), verification sheet 001 No.8).
+- [x] Status bar — the last statement's elapsed time (measured nowhere else in
+      the app) and the running version, plus a chip that brings back an update
+      notice the user dismissed. Connection health and the row count are
+      deliberately excluded as filler ([ADR-0101](decisions.md)).
+- [x] ENUM columns edit as a dropdown of their declared members, sourced from
+      the schema read the browse already performs; an unparseable declaration
+      falls back to the text box rather than offering a half-read list
+      ([ADR-0102](decisions.md)). MySQL only — Postgres reports the type name,
+      not its labels.
+- [x] `aurora-dsql-iam` is added and edited in the app, not by hand in
+      `connections.toml` — the deployment that needs it has someone other than
+      the maintainer rotating the AWS key pair ([ADR-0103](decisions.md)).
+- [x] Selective export and overwriting import — the bundle takes an explicit
+      list of connections, and import can replace an id it already holds
+      instead of only skipping it. Skip stays the default; the keyring-ref
+      collision refusal does not relax ([ADR-0105](decisions.md)).
+- [x] `DBBOARD_CONFIG_DIR` — an override for the per-user config directory, so
+      the app can be screenshotted and demoed without a real profile's hosts
+      on screen. All five files move together ([ADR-0097](decisions.md)).
+- [x] The mandatory verification commands run in CI, not only in a git hook —
+      three jobs (cargo, frontend, site) gate every pull request, on Linux
+      because the Windows libSQL teardown segfault (#131) would make a Windows
+      job permanently red on green code.
 - [ ] Code signing (Authenticode / Apple Developer ID + notarization) —
       removes the SmartScreen / Gatekeeper "unknown publisher" warnings on the
       unsigned artifacts. Needs paid certs + repo secrets; the release
