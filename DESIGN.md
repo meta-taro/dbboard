@@ -104,7 +104,11 @@ used for the schema browser.
 - **Schema browser** — tree view of tables / views / functions.
 - **SQL editor** — monospace, syntax-aware where feasible.
 - **Result table** — virtualised, sortable, copy-friendly.
-- **Status bar** — connection health, last query timing.
+- **Status bar** — the last statement's elapsed time and the running version,
+  plus a chip when an update is waiting. Connection health is deliberately
+  *not* here: it is already in the sidebar and the header pill, and a status
+  bar that repeats what is two centimetres away is the filler this was
+  supposed to avoid (ADR-0101).
 
 Each component will get a small style spec in this file once it is built.
 
