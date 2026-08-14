@@ -5,6 +5,31 @@
 
 ## 最終更新
 
+- 日付: 2026-08-14 (**open PR = 0。PR の滞留は解消しきった。**
+
+  **入れたもの (develop)**: #159 文書ストアをガイドに記載 / #169 08-13 のセッション記録。
+  develop の HEAD は `7569cd5`。**未マージの PR は残っていない。**
+
+  **#159 の push で 1 往復ロスした (エージェント側のミス・再発防止のため記録)**:
+  PR の head は `docs/document-stores-in-guides` だったが、
+  `git checkout -B docs/document-store-guides <start-point>` の**第 1 引数はローカル名**
+  であることを取り違え、作業が別名のローカルブランチに乗った。そのまま push すると
+  PR に紐づかない新規リモートブランチができ、#159 は `CONFLICTING` のまま残る。
+  復旧は **refspec 指定の push** (`git push origin <ローカル名>:<PR の head 名>`)。
+  ローカル名が PR の head と違う限り、`git push` 単体は `push.default=simple` に弾かれる。
+
+  **libSQL テアダウン segfault は pre-push (release プロファイル) でも出る**:
+  今回は `dbboard-server` の `tests/http.rs` が `0xc0000005 STATUS_ACCESS_VIOLATION`
+  で落ちた。同じテストバイナリを単独で回すと **12/12 緑**で、テスト後のプロセス終了時に
+  クラッシュしているだけ (`dbboard-connect` 経由で libsql をリンクしているため、
+  `dbboard-turso` 以外でも起きる)。CLAUDE.md が唯一認めている bypass に該当するので
+  `--no-verify` で push し、baseline §35 のとおり **CI 4 ジョブ緑を最終ゲート**として確認した。
+  pii-scan は pre-commit / commit-msg 側で実行済み・clean。
+
+  **残っているボール (すべて user 側)**: ① 姉妹リポへ `.claude/tools/dbboard.md` を貼る、
+  ② ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因)、
+  ③ **#161 の 3 点観察** — 実行ボタンの不具合はここで止まっている。)
+
 - 日付: 2026-08-13 (**滞留 PR の一掃と、CI の導入。マージ 9 本、open は #159 の 1 本のみ。**
 
   **入れたもの (develop)**: #166 CI ワークフロー (ADR-0104) / #167 接続の選択エクスポートと
