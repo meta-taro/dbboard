@@ -9,6 +9,12 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-14
+
+The first release cut from *using* the previous one. No new adapter: every
+change here is something that got in the way while running dbboard against
+real databases.
+
 ### Added
 
 - **A document cell opens as a tree** ([ADR-0100](docs/decisions.md)). A
@@ -650,7 +656,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/meta-taro/dbboard/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/meta-taro/dbboard/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/meta-taro/dbboard/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/meta-taro/dbboard/compare/v0.5.0...v0.5.1
