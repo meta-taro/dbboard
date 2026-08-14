@@ -1,8 +1,11 @@
-# アーカイブ — next-actions.md セッションログ (2026-08-03 〜 2026-08-05 その3)
+# アーカイブ — next-actions.md セッションログ (2026-08-03 〜 2026-08-06)
 
-baseline §31 に基づく退避。`.claude/next-actions.md` が 415 行になり
-400 行トリガを踏んだため、v0.5.0 リリース周辺までのエントリを全文退避した
-(要約していない)。退避日 2026-08-09。
+baseline §31 に基づく退避。いずれも全文で、要約していない。
+
+- **退避日 2026-08-09**: `.claude/next-actions.md` が 415 行になり 400 行トリガを
+  踏んだため、v0.5.0 リリース周辺 (2026-08-03 〜 2026-08-05 その3) までを退避。
+- **退避日 2026-08-14**: 同じく 435 行でトリガを踏んだため、2026-08-05 その4 〜
+  2026-08-06 (v0.5.1 リリース周辺) を追加で退避。ファイル末尾の `---` 以降がそれ。
 
 これより古いものは `.claude/archive/next-actions-2026-07.md`。
 
@@ -167,3 +170,121 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 415 行にな�
   貼り間違い・部分コピーでも CI は緑になる)、issue #130 (`dbboard-desktop` のフル再
   コンパイルで pre-push 約 4 分。原因確定は `CARGO_LOG` を先に取ってから)。)
 
+
+---
+
+- 日付: 2026-08-06 (**v0.5.1 リリース済み。タグは `main` の `b98f7a6`。**
+  ① **実運用で出た 2 バグを 1 本のブランチにまとめた。** `release/v0.5.1` に
+  `fix(mysql)` → `fix(connect)` → `release: v0.5.1` の 3 コミット。
+  もともと別ブランチ 2 本だったが、両方が `CHANGELOG.md` の `[Unreleased]` 直下を
+  触るので PR を分けると必ず衝突する。ローカルで解決して 1 本にした。
+  PR #150 (→ develop) → PR #151 (develop → main) → `main` 上で `v0.5.1` タグ。
+  ② **SSH バスティオン経由の接続が死んだまま復帰しない件 (ADR-0092)。** 原因は 3 層。
+  russh が keepalive を既定で送らない / 失敗したアダプタがキャッシュから追い出されない /
+  sqlx は死んだフォワードに再ダイヤルするだけ。keepalive (30s×3) + アイドル 30 秒後の
+  ping-on-borrow + 手動リコネクト (接続ピルのリロードアイコン + エラーバナーのボタン)。
+  ③ **MySQL 8 の `information_schema` が `VARBINARY`/`BLOB` を返す件。**
+  メタデータをバイト列で読んで UTF-8 検証する形に統一。`list_relationships` が
+  エラーを飲み込んで**空の結果を返していた**のもこれで直る。
+  ④ **タグを打つ順序を間違えて 1 度やり直した。** develop → main の PR を作る前に
+  `main` でタグを打ったので、`v0.5.0` の中身が `v0.5.1` として公開されかけた
+  (run 31069887884 をキャンセル、リリースオブジェクトは未作成だったので実害なし)。
+  **タグは develop → main のマージが `main` に入ってから**。手順を書くときは
+  マージを独立したステップとして明示すること。
+  ⑤ **リリースの develop → main は squash をやめて真のマージにした。** #134 と #146 が
+  squash だったせいで共通祖先が `v0.4.0` まで戻り、#151 が 9 ファイル全部
+  (`Cargo.lock` / `CHANGELOG.md` 含む) で衝突した。真マージにしたので develop が
+  main の祖先に戻り、**次のリリース PR は衝突しない**。
+  代償として、**`main` の `pii-scan` identity が赤になった** — squash が隠していた
+  noreply 切替前の古いコミットが main から到達可能になったため。アドレス自体は
+  元から develop 側で公開済みなので新規の漏洩ではないが、履歴書き換えをするまで
+  main の CI は赤のまま。
+  ⑥ **検証は全部緑** — fmt / clippy -D warnings / check / test (dev, release) /
+  `cargo build --release` / `pii-scan --tree` / `pii-scan --range develop..HEAD`。
+  `release: v0.5.1` のコミットだけ `--no-verify` を使ったが、これは
+  **Windows libSQL の teardown segfault** (13 テスト全部 ok の後にプロセスが落ちる)
+  という既知の唯一の例外。PII スキャンは hook の 1 番目で通過済み + 手動で再実行済み。
+  マージコミット `b98f7a6` は hook を全部通している。
+  ⑦ **release ビルド中に `target/release/dbboard-mcp.exe` がロックされていたので、
+  そこから起動された古い MCP プロセス 2 つを kill した** (`%LOCALAPPDATA%` の
+  インストール版ではなくビルド成果物)。クライアント側が再起動するので実害なし。
+  ⑧ `fix/mysql-metadata-decode` / `fix/connection-reconnect` / `release/v0.5.1` の
+  ローカルブランチは削除済み (中身は develop と同一であることを確認した)。
+  **user 側ボール = ① #148 / #149 を入れる (feat なので次は 0.6.0)、
+  ② 姉妹リポへ `.claude/tools/dbboard.md` を貼る、③ MCP を
+  `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe` に置き直して再登録、
+  ④ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因。
+  ⑤ により main でも赤くなったので、放置のコストが上がった)。**
+  次は issue 0019 (Firestore アダプタ、ADR は **0093** — 0092 は接続復旧で使った) →
+  issue 0020 (MongoDB)。)
+
+---
+
+- 日付: 2026-08-05 その5 (**issue 0018 = 入れ子 `Value` が着地。ブランチ
+  `feature/nested-value`。ADR-0091 の Phase 6 の 1 本目。**
+  `Value::Json(serde_json::Value)`、ワイヤタグは **`$json`**。`$blob` と同じく
+  1 キーのタグ付きオブジェクトで、`Value` は serde の外部タグ付けを使っていない
+  (ワイヤが普通の JSON に見えるようにするため) のでハンドライトのアームを足した。
+  **ペイロードは opaque** — 生の `serde_json::Value` として読み、`Value` として
+  再帰的には読まない。したがって `"$blob"` キーを含む文書はバイト列に化けずに
+  文書のまま。タグが付くのは最も外側のセルだけ。
+  `Json(null)` は **SQL `NULL` ではない** (「列に何も無かった」と「文書が null を
+  持っていた」の区別が消えるため)。
+  variant を足したことで exhaustive match が 3 つ壊れたが、`_` アームは使わず
+  1 つずつ答えを決めた (`_` にすると新 variant が 3 箇所で黙って間違う):
+  sort = 木に自然な順序は無いので描画形で比較・blob の次にランク、
+  dump/literal = コンパクト JSON をシングルクォート (どの方言も JSON をテキストと
+  して受け、`JSON`/`JSONB` 列が読み直すので `INSERT` が round-trip する)、
+  write_back = **identity 値としては拒否** (文書の等価性はエンジン依存 —
+  キー順・空白・json vs jsonb で答えが変わるので、そこから組んだ `WHERE` は
+  別の行に当たるか 1 行も当たらない)。
+  フロントは grid と CSV/TSV export でコンパクト JSON を出し、インライン編集は
+  blob と同様に開かない。既存アダプタの出力は一切変わらない (core の外の
+  `Value::Blob` を全て確認したが d1 / mysql / turso の構築側だけで消費側は無い = 純粋に加算的)。
+  検証: `cargo test --all-features` ワークスペース全体 0 failed、
+  `pnpm vitest run` 353 passed、`pnpm check` 0 errors、clippy / fmt 緑。
+  **→ dbboard-web に `$json` を伝えること (明示ハンドオフ)。**
+  `docs/api-contract.md` に `$json` 節を追加済み (タグの形、opaque であること、
+  `{"$json": null}` と SQL `NULL` の違い、Text セルと見分けが付かないのでタグが
+  唯一の判別子であること、`[object Object]` で出さないこと、**今日どの SQL
+  アダプタも `$json` を出さない**が variant はワイヤに乗っているので受理は必須、
+  を明記)。当リポからは姉妹リポを編集できない (baseline §27) ので、**契約文書を
+  先に出すことが web 側の着手条件**。以前これを黙っていて 3 週間ブロックした。
+  **user 側ボール = ① `git push -u origin feature/nested-value` と PR、
+  ② dbboard-web へ `docs/api-contract.md` の `$json` 節を中継。**
+  次: issue 0019 (Firestore) → issue 0020 (MongoDB) の順。
+  別件で **MCP 紹介文を `docs/` にトラック済みファイルとして置く** — 他リポの
+  エージェント向けの導入手順を毎回チャットで作り直しているため。0018 着地後の別コミット。)
+
+- 日付: 2026-08-05 その4 (**v0.5.0 リリース + 文書ストア (MongoDB / Firestore) を
+  Phase 6 として確定。ADR-0091。**
+  ① **v0.5.0 を切った。** PR #144 (release/v0.5.0 → develop) → #145 (ADR-0091) →
+  #146 (develop → main、v0.4.0 から 87 コミット) → `main` 上で `v0.5.0` タグ push。
+  **リリースオブジェクトの手動作成はもう不要** — publish ジョブに
+  `gh release view || gh release create --generate-notes` のブートストラップが
+  入っているので、タグ push だけで公開まで通る (v0.1.0〜v0.3.0 で必要だった手順は消えた)。
+  ② **`pii-scan` が #146 で赤になったが既知の未処理分。** identity チェックが
+  2026-07-22 の古いコミット群 (noreply 切替前) を指しており、**今回のセッションで
+  作った 4 コミット (`e6db331` / `b51fd25` / `eeddf91` / `622b186`) はすべて noreply**。
+  develop → main の PR は「main に無い全コミット」を対象にするので古い分がまとめて
+  出ただけ。main への push 後の `pii-scan` は緑。**~468 コミットの history 書き換え
+  判断待ち = user 側ボールのまま**で、今回のリリースが増やしたものではない。
+  ③ **MongoDB / Firestore を stretch から確定フェーズへ格上げ (ADR-0091)。**
+  `dbboard-core` を読み直した結果、障害は 4 つあり **trait は障害ではなかった** —
+  `query(&self, sql: &str)` は trait 側で一切パースしていないので、Mongo の
+  コマンドドキュメントも Firestore の `StructuredQuery` もそのまま JSON 文字列で
+  渡せる (中間クエリ IR 不要)。実際の障害は `Value` が平坦で木を持てないこと、
+  `read_only.rs` が `sqlparser` ベースで「パースできない入力は fail closed」ゆえ
+  Mongo のクエリを全拒否してしまうこと、`describe_table` が宣言済みカラム前提であること。
+  ここから順序が決まる: **入れ子 `Value` を単独で先に** (issue 0018、全アダプタの
+  行構築と dbboard-web との共有ワイヤ契約に触るので単独で出す) → **Firestore**
+  (issue 0019、REST が `:runQuery` / `:commit` をエンドポイントで分けているので
+  read-only は「どのエンドポイントを叩けるか」で決まり、分類器が要らない) →
+  **MongoDB** (issue 0020、`runCommand` が何でも受けるので fail-closed 許可リストが
+  必要。しかも `$out` / `$merge` は read であるはずの `aggregate` の中から書くので
+  パイプラインを歩く必要がある = 一番高くつく上に安全側の要)。
+  **PlanetScale は新規アダプタ不要** (MySQL 互換なので既存 `dbboard-mysql` で届く)。
+  **user 側ボール = ① 姉妹リポへ `.claude/tools/dbboard.md` を貼る (v0.5.0 が出たので
+  「v0.5.0 以降」の記述が本当になった)、② MCP を
+  `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe` に置き直して再登録 + エージェント再起動、
+  ③ ~468 コミットの history 書き換えをやるか否かの判断。**)
