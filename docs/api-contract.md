@@ -31,8 +31,8 @@ before either side ships against them (ADR-0004).
 - Each adapter caps a single query at **10,000 rows**. A statement that
   would return more is rejected with a `query` error (status `400`) so
   the UI never silently shows a truncated grid. The cap is uniform
-  across Turso, D1, and Postgres-wire backends. Phase 2 may relax it
-  with real streaming or pagination — see `docs/roadmap.md`.
+  across every backend. A later phase may relax it with real streaming
+  or pagination — see `docs/roadmap.md`.
 
 ## Endpoints
 
@@ -73,16 +73,38 @@ optional features to surface without probing each one individually.
     "has_functions": false,
     "has_auth": false,
     "has_storage": false,
-    "has_realtime": false
+    "has_realtime": false,
+    "has_describe_table": true,
+    "has_table_ddl": true,
+    "has_execute": true,
+    "has_atomic_restore": true,
+    "has_foreign_keys": true
   }
 }
 ```
 
 - `id` is a lowercase, adapter-stable identifier. Current values:
-  `"turso"`, `"d1"`, `"postgres"`.
-- `capabilities` is a [`Capabilities`](#capabilities) object. Phase 2
-  ships every adapter with all flags `false`; later phases set flags
-  alongside the endpoints that implement them.
+
+  | `id` | Backend |
+  |---|---|
+  | `"turso"` | Turso / libSQL |
+  | `"d1"` | Cloudflare D1 |
+  | `"postgres"` | Postgres |
+  | `"mysql"` | MySQL (ADR-0068) |
+  | `"neon"` | Neon (ADR-0018) |
+  | `"supabase"` | Supabase (ADR-0019) |
+  | `"aurora-dsql"` | AWS Aurora DSQL (ADR-0021, ADR-0036) |
+  | `"firestore"` | Cloud Firestore (ADR-0091, ADR-0093) |
+  | `"mongodb"` | MongoDB (ADR-0096) |
+
+  The three Postgres-wire flavours (`neon`, `supabase`, `aurora-dsql`)
+  speak the same protocol as `postgres` and differ only in this label,
+  so a client that only cares about dialect may treat them as
+  `postgres`. Both Aurora DSQL credential paths — pre-signed URL and
+  agent-minted IAM token — report `"aurora-dsql"`.
+- `capabilities` is a [`Capabilities`](#capabilities) object. Flags are
+  set per adapter; there is no version at which they are uniformly
+  `false`.
 - Forward-compatibility: a client must tolerate **additional** flags in
   the `capabilities` object (treat unknown flags as the safest default,
   typically `false`). Renaming or removing an existing flag is a
@@ -201,18 +223,24 @@ every consumer to guess whether a string is prose or a serialized document.
   "has_describe_table": false,  // ADR-0028
   "has_table_ddl": false,       // ADR-0049 (dump)
   "has_execute": false,         // ADR-0051 (restore)
-  "has_atomic_restore": false   // ADR-0051 (restore)
+  "has_atomic_restore": false,  // ADR-0051 (restore)
+  "has_foreign_keys": false     // ADR-0054 (relationship discovery)
 }
 ```
 
 - A flat object of `snake_case` boolean flags, one per optional
   capability defined in ADR-0012 and its successors. The set grows over
-  time (`has_describe_table`, `has_table_ddl`, and the restore flags were
-  each added by a later ADR); clients must tolerate unknown flags (see
-  `GET /capabilities`).
-- Each `true` flag promises a corresponding capability surface (e.g.
-  `has_views` → view introspection endpoints). Phase 2 ships every
-  flag as `false`; per-feature endpoints land in later phases.
+  time (`has_describe_table`, `has_table_ddl`, the restore flags, and
+  `has_foreign_keys` were each added by a later ADR); clients must
+  tolerate unknown flags (see `GET /capabilities`).
+- A `true` flag states that the **adapter** implements the capability.
+  It does not promise that this document already defines an HTTP
+  surface for it: several flags describe capabilities the desktop client
+  reaches over Tauri IPC (ADR-0089), and their endpoints are specified
+  here as they land. Adding an endpoint is additive and does not break
+  this contract. A client seeing a `true` flag with no endpoint defined
+  here must treat the capability as not yet reachable over HTTP, not as
+  a drift.
 
 ## Errors
 
