@@ -7,6 +7,34 @@
 
 ## 最終更新
 
+- 日付: 2026-08-14 その2 (**v0.8.0 を切った。タグ push まで完了、release CI 実行中。
+  ここから先は全部 user 側ボール。**
+  ① **リリース経路**: #171 (エクスポートダイアログの可読性) → develop、
+  #172 (リリース準備) → develop、#173 (`develop` → `main`) → `main` = `2a9b1e8`、
+  タグ `v0.8.0` push 済 → release CI run `31784033330` 実行中。
+  Windows exe + MSI / macOS dmg + `SHA256SUMS.txt` を publish する。
+  **タグ push だけで完結する** (v0.5.0 以降、publish ジョブが release オブジェクトを
+  自力で view-or-create するようになったため。旧 v0.3.0 の落とし穴は解消済み)。
+  ② **リリース前に埋めた穴**: `CHANGELOG.md` の `[Unreleased]` が空、`docs/roadmap.md` が
+  v0.7.0 を現行として説明したままだった。どちらも**タグ後には埋められない**場所なので
+  #172 で先に埋めた。
+  ③ **エージェント側のミス**: DESIGN.md の追記 (`128f18e`) を #171 の push 後に commit して
+  マージに乗せ損ねた。rebase + cherry-pick (`c316e9b`) で復旧済み。
+  ④ **release CI は 5 ジョブすべて緑**、`v0.8.0` は 08-14 08:44Z に publish 済
+  (`dbboard-desktop_0.8.0_x64-setup.exe` / `_universal.dmg` / `.app.tar.gz` /
+  MCP の win・mac / `latest.json` / `SHA256SUMS.txt`)。
+  **DL ページは `releases/latest` を指しているだけなので、サイト側の変更は不要** —
+  publish された時点で自動的に v0.8.0 になる。
+  **user 側ボール = ① 公開 `.exe` の PII 目視確認 (CI はやらない)、
+  ② baseline §24 の security-reviewer を回すかの判断 (推奨。ただし今回は既存経路の
+  UI 改善で新しい外向き通信は無い)、③ 検証シート 001/002/003 (全部 `未実施`。
+  Firestore エミュレータが動いている間は 001 の 2〜9 行目が実施可能。1・10・11 行目は
+  対象環境が無いので `未実施` のまま)、④ 姉妹リポへ `.claude/tools/dbboard.md` を貼る
+  (08-09 から継続)、⑤ ~468 コミットの history 書き換え判断 (08-09 から継続)、
+  ⑥ #161 の 3 点観察** — ⑥ が引き続きいちばん詰まっている。
+  なお Firestore エミュレータを止めるときは
+  `docker compose -f docker/firestore-emulator/compose.yaml down`。)
+
 - 日付: 2026-08-14 (**open PR = 0。滞留は完全に解消した。残っているのは全部 user 側ボール。**
   ① **#159 と #169 をマージし、open PR がゼロになった。** develop = `7569cd5`。
   #159 = 文書ストアをガイドに書く (`site/index.html` の OGP 衝突は説明文 #159 側 /
@@ -216,6 +244,18 @@ MSI アンインストールは `%APPDATA%\dbboard\dbboard\` の設定と Window
 マネージャーのエントリを残す (仕様)。ユーザに口頭で伝えた `cmdkey` +
 フォルダ削除のクリーンアップ手順を README か `docs/` に明文化する小 chore。
 
+### 候補 A-3: アップデート通知の「変更点」が定型文のまま (小・実利用で判明)
+
+v0.8.0 の配信で判明。0.7.0 側に出た通知の「変更点」が
+**`dbboard v0.8.0. See the release page for the full changelog.`** という定型文で、
+実際に何が変わったかが読めない。出どころは `.github/workflows/release.yml:287` —
+`latest.json` の `notes` をタグ名から組み立てているため、中身がタグごとに変わらない。
+
+ステータスバーのチップ (ADR-0101) は「何が待っているか」を伝えるためのものなので、
+定型文だと**チップの存在理由が半分死ぬ**。`CHANGELOG.md` から当該バージョンの節を
+抜いて `notes` に入れれば済む。CHANGELOG は今回から実際に埋まっているので材料はある。
+更新の判断材料になる場所なので、次のリリース前に直しておく価値がある。
+
 ### 候補 B: git 履歴の一括サニタイズ (human ボール・破壊的・未実行)
 
 **1 回の rewrite で 2 つが同時に片付く。** どちらも「ファイルなら次のコミットで
@@ -242,12 +282,12 @@ Step 3b = `--mailmap` で identity、Step 4 = force-push)。全ハッシュ変�
 open PR **#125** (`feature/cjk-font-and-ai-menu`) は rewrite で壊れるので、
 先に merge / close するか、書き換え後のブランチから立て直す。
 
-### 候補 C: release.yml の publish 自己作成化 (follow-up)
+### 候補 C: release.yml の publish 自己作成化 — **完了 (v0.5.0)**
 
-現状 `gh release upload` は既存リリースにしか添付できず、タグ push だけでは
-`release not found` で落ちる (毎回手動で `gh release create` が前提)。publish
-ステップを `gh release view <tag> || gh release create <tag> --generate-notes`
-にしてタグ push を自己完結させる。[[project-release-ci-needs-release-object]]。
+publish ステップが `gh release view <tag> || gh release create <tag>` になり、
+タグ push だけでリリースが完結するようになった。v0.8.0 のリリースはこの経路で
+実行済み。**残るのは公開 `.exe` の PII 目視確認だけで、これは CI がやらない
+人間の作業。**[[project-release-ci-needs-release-object]]。
 
 ### 候補 D: cargo-deny の既存ドリフト対応 (別 chore)
 
