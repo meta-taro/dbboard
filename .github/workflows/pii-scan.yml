@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (full history for commit-message range scan)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Need history so `origin/main..HEAD` resolves; the scan itself only
           # reads messages in that range, not the full tree history.
