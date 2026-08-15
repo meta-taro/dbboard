@@ -9,6 +9,30 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Fixed
+
+- **The HTTP contract described a payload that stopped being accurate.**
+  `docs/api-contract.md` is the public API for SemVer purposes
+  ([ADR-0011](docs/decisions.md)), and `dbboard-web` implements against it,
+  so being wrong there is worse than being silent. Three things had drifted:
+  the `id` list named three adapters when nine ship (`mysql`, `neon`,
+  `supabase`, `aurora-dsql`, `firestore`, `mongodb` were all missing),
+  `has_foreign_keys` ([ADR-0054](docs/decisions.md)) had been serialized for
+  months without appearing in the document, and the `GET /capabilities`
+  example disagreed with the `Capabilities` section in the same file.
+  Passages describing every flag as `false` "in Phase 2" were rewritten to
+  say what is true now. Two tests
+  (`crates/dbboard-connect/tests/api_contract_drift.rs`) read the document
+  and fail when either set drifts again; the capability check derives its
+  list from a serialized `Capabilities`, so a new flag is covered with no
+  test edit.
+- **The contract now says what a capability flag does and does not
+  promise.** It previously read as though every `true` flag came with an
+  HTTP endpoint defined in the same document. Several describe capabilities
+  the desktop client reaches over Tauri IPC ([ADR-0089](docs/decisions.md)),
+  and their endpoints are specified as they land — additively, so a client
+  seeing a flag with no endpoint is looking at unfinished surface, not drift.
+
 ## [0.8.0] — 2026-08-14
 
 The first release cut from *using* the previous one. No new adapter: every

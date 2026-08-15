@@ -145,7 +145,7 @@ string, `cargo run -p dbboard` browses `schema.table` listings and runs
 queries against a real CockroachDB database; with it unset the app still
 defaults to D1 (if configured) or local Turso.
 
-## Phase 2 — Extract the adapter trait *(current)*
+## Phase 2 — Extract the adapter trait ✅ done
 
 Goal: turn the Turso-shaped types into a real abstraction without
 breaking Phase 1. Designed jointly with the capability model (ADR-0012)
@@ -185,7 +185,11 @@ contract (ADR-0011).
   noted under ADR-0016 — a single desktop process can now drive
   many connections in one session.)
 
-Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
+Exit criteria: nothing in `dbboard-ui` knows the word "Turso". Settled by
+[ADR-0089](decisions.md) — `crates/dbboard-ui` was removed with the egui
+client, and the Tauri frontend that replaced it never named an adapter.
+The remaining reference to a concrete backend is the `id` string in
+`GET /capabilities`, which is deliberate discovery data, not coupling.
 
 ## Phase 2.5 — Multilingual UI (ADR-0015) ✅ done
 
@@ -424,7 +428,7 @@ v:2 schema bump), and D-1 (full-DDL schema snapshots via
 `describe_table` as the first callable tool) stays scoped to
 ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 
-## Phase 5 — Quality of life
+## Phase 5 — Quality of life *(current)*
 
 - [x] Result table virtualisation for large result sets — delivered by
       the `egui_extras::TableBuilder` grid rebuild (sticky header,
@@ -555,7 +559,11 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       diffing — and a live progress window can **Cancel** mid-run, with a
       completion summary of applied schema/data statements and failures
       ([ADR-0051](decisions.md), PR #112).
-- [ ] Export results (CSV / JSON)
+- [x] Export results — CSV / TSV, both to the clipboard and to a file via
+      the native save dialog ([ADR-0035](decisions.md)). JSON is not a
+      supported export format; it is tracked below rather than left
+      implied by this line.
+- [ ] Export results as JSON
 - [ ] Saved queries
 - [ ] Schema diff between two connections
 - [ ] Performance: cold-start under 1s on a modern laptop
