@@ -5,6 +5,43 @@
 
 ## 最終更新
 
+- 日付: 2026-08-16 (**v1.0 の条件を確定させ、凍結の前提としてコントラクトのずれを直した (#175)。**
+
+  **やったこと**: `.claude/issues/0021-v1-0-criteria.md` に v1.0 の条件を 4 つだけ書いた。
+  `docs/api-contract.md` の 4 件のずれを修正し、`crates/dbboard-connect/tests/api_contract_drift.rs` で
+  再発を止めた。`docs/roadmap.md` の帳簿 (Phase 2 の `*(current)*`、Export results の行) を直した。
+
+  **なぜ 4 つに絞れたか**: 本リポの SemVer 上の公開 API は HTTP 契約 (ADR-0011) であって
+  機能一覧ではない。**エンドポイントやフラグの追加は additive で何も壊さない**ので、
+  未実装の機能は 1.0 を妨げない。1.0 を妨げるのは「後から契約を変えざるを得なくなるもの」と
+  「約束が嘘になるもの」だけ。この基準でロードマップ上の未着手項目を通すと 4 つだけ残る
+  (#161 / 姉妹リポへのミラー / 検証シート未実施 / コード署名)。
+  Saved queries・JSON エクスポート・Linux パッケージ等はどれも契約に触れないので 1.x で足りる。
+  **これらをゲートにすると 1.0 は永久に来ない** — その失敗を避けるためのリストである、と
+  issue 側にも明記した。
+
+  **コントラクトは凍結できる状態になかった (4 件)**: `id` の一覧が 3 件のまま (実際は 9 件出荷済)、
+  `has_foreign_keys` (ADR-0054) がワイヤに乗っているのに未記載、`GET /capabilities` の例 (5 フラグ) と
+  `Capabilities` の節 (10 フラグ) が食い違い、「Phase 2 では全フラグ `false`」など事実でなくなった
+  記述が 3 箇所。あわせて **`true` のフラグが必ずしも HTTP エンドポイントを意味しない**
+  (Tauri IPC 経由の面がある・ADR-0089) 点を明文化した。姉妹リポはこの文書を実装根拠にするので、
+  ずれたまま凍結すると 2.0 まで直せなくなる。
+
+  **テストは先に RED を確認した**: 修正前に走らせて
+  `["mysql","neon","supabase","aurora-dsql","firestore","mongodb"]` と `["has_foreign_keys"]` が
+  欠落として出ることを見てから直した。置き場所を `dbboard-connect` にしたのは、
+  全アダプタと `dbboard-core` の両方に依存する唯一のクレートだから。
+
+  **エージェント側のミス 1 件 (記録)**: #175 の本文に、PR に含まれていない変更
+  (`actions/checkout` の v6 更新) を書いた。**`git log origin/develop..HEAD` を
+  ローカル HEAD で数えた**のが原因で、その commit は push 時点の先端に無かった。
+  **PR 本文は `origin/<branch>` を基準に数える。** マージ後に本文へ訂正を追記し、
+  中身は `ci/checkout-v6` に cherry-pick して patch 一致を確認した。
+
+  **CI**: #175 は ci / pii-scan とも緑。pre-push は 1 度目に例の Windows libSQL テアダウン
+  segfault で中断したが、`cargo test --all-features --release` を手元で通すと
+  **テストバイナリ 52 本すべて ok・失敗 0** で、再実行して通った。)
+
 - 日付: 2026-08-14 その2 (**v0.8.0 をリリースした。前のリリースを"使って"出てきた
   改善だけで組んだ初めてのリリースで、新規アダプタは無い。**
 
