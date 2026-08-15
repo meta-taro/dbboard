@@ -7,6 +7,48 @@
 
 ## 最終更新
 
+- 日付: 2026-08-16 (**v1.0 の条件を 4 つに確定して #175 をマージした。
+  ここから先は 4 つとも user 側ボール。**
+  ① **v1.0 = 機能が出揃うことではなく、`docs/api-contract.md` を壊さない約束** (ADR-0011)。
+  この定義に落とすと、エンドポイントやフラグの追加は additive なので 1.0 を妨げない。
+  ロードマップ上の未着手項目のうち実際にゲートになるのは **4 つだけ**で、
+  全部 `.claude/issues/0021-v1-0-criteria.md` に書いた。
+  ② **凍結の前にコントラクト自身が凍結できる状態になかった。** `id` の一覧が 3 件のまま
+  (実際は 9 件)、`has_foreign_keys` (ADR-0054) が未記載、`GET /capabilities` の例 (5 フラグ) と
+  `Capabilities` の節 (10 フラグ) が食い違い、「Phase 2 では全フラグ `false`」が 3 箇所。
+  全部直し、**先に RED を確認してから**
+  `crates/dbboard-connect/tests/api_contract_drift.rs` で再発を止めた
+  (フラグ側は `Capabilities` をシリアライズして名前を取るのでテスト編集不要、
+  id 側は `BackendConfig` の網羅 match なのでバックエンド追加でビルドが止まる)。
+  ③ **ロードマップの帳簿修正**: Phase 2 が全項目 `[x]` なのに `*(current)*` のまま
+  (exit criteria が参照する `crates/dbboard-ui` は ADR-0089 で削除済み)、
+  `Export results (CSV / JSON)` が未チェックだが CSV/TSV は ADR-0035 で出荷済み。
+  どちらも 1.0 までの距離を実際より遠く見せていただけ。
+  ④ **エージェント側のミス 1 件 (記録)**: #175 の本文に
+  「`actions/checkout` を v6 へ」と書いたが、**その commit (`ea59c4a`) は push 時点の
+  ブランチ先端に無く、PR に入っていなかった**。ローカル HEAD で
+  `git log origin/develop..HEAD` を数えたのが原因。**PR 本文は push 済みの範囲
+  (`origin/<branch>`) で数える。** マージ後に PR 本文へ訂正を追記し、
+  中身は `ci/checkout-v6` の `330cd59` として cherry-pick 済 (原 commit と patch 一致を確認、
+  author は user のまま)。
+  ⑤ **`actions/checkout` の最新は v7.0.1** で v6 は 1 世代前。今回は user の明示的な選択なので
+  v6 のまま出す。
+  **user 側ボール = ① `git push -u origin ci/checkout-v6` (→ PR は私が作る。
+  CI 自身の定義を変えるので CI 緑がそのまま動作確認になる)、
+  ② v1.0 ゲート 1 = #161 の 3 点観察 (ボタンの色 / カーソル形状 /
+  一度別の場所をクリックしてからだと効くか)、
+  ③ v1.0 ゲート 2 = コントラクトを姉妹リポ `dbboard-web` へミラー (リポをまたぐ)、
+  ④ v1.0 ゲート 3 = 検証シート 001/002/003 の実施 (baseline §22・人間のみ。
+  Firestore エミュレータが動いている間は 001 の 2〜9 行目が実施可能)、
+  ⑤ v1.0 ゲート 4 = コード署名を買うか、買わないなら「未署名」を README と
+  リリースノートに明記して出す (Norton / SmartScreen が騒ぐ件の恒久解はこれ)、
+  ⑥ Norton の除外設定 (GUI のみ・**除外リストは 2 つあり、両方に入れないとビルドは速くならない**)、
+  ⑦ 公開 `.exe` の PII 目視確認、⑧ 姉妹リポへ `.claude/tools/dbboard.md` を貼る (08-09 から継続)、
+  ⑨ ~468 コミットの history 書き換え判断 (08-09 から継続)** —
+  ②〜⑤ が v1.0 の全部。①は今すぐ終わる。
+  なお `cargo clean --profile dev` (`target` 48 GB の dev 側を落とす。release は残るので
+  pre-push は速いまま、次の dev ビルドだけフルになる) の可否は**未回答のまま**。)
+
 - 日付: 2026-08-14 その2 (**v0.8.0 を切った。タグ push まで完了、release CI 実行中。
   ここから先は全部 user 側ボール。**
   ① **リリース経路**: #171 (エクスポートダイアログの可読性) → develop、
