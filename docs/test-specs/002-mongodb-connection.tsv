@@ -9,7 +9,7 @@
 #@ note 結果 列を埋めてよいのは、実物を動かして目で見た人だけ。AI は書かない（ビルド通過・テスト green は実施ではない）。
 #@ note このシートはリリースの関門ではない。未実施の行が残ったままリリースしてよい。全行 OK を求めない。
 #@ note 外部からの貢献者に本シートの記入を求めない。PR の受け入れ条件は CI（テスト・個人情報検出）のみ。
-#@ note 対象ビルドは v0.7.0。リリース後に <https://meta-taro.github.io/dbboard/> のインストーラで検証する。
+#@ note 対象ビルドは v0.8.0（リリース済）。<https://meta-taro.github.io/dbboard/> の Windows インストーラで検証できる。
 #@ note 検証先はローカルの Docker で足りる: `docker run -d --rm -p 27117:27017 mongo:8`。接続 URI は `mongodb://127.0.0.1:27117`。
 #@ note 実サーバに繋ぐ場合、URI にはパスワードが含まれる。URI 本体をこのシートへ書かないこと。
 #@ note NG の行は関連Issue 列に起票した Issue の URL を入れる。検証結果は Issue へのリンクで追跡する。
