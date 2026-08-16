@@ -7,6 +7,35 @@
 
 ## 最終更新
 
+- 日付: 2026-08-16 その2 (**v1.0 ゲート 4 (コード署名) を「買わない」側で閉じた。
+  残りは 3 つ、全部 user 側ボール。PR #176 / #177 / #178 マージ済、open PR = 0。**
+  ① **user 判断: 証明書は買わない。** issue 0021 のゲート 4 には最初から代替経路が
+  書いてあった (「買わないなら未署名であることを README とリリースノートに明記して出す」)
+  ので、そちらを取った。**ADR-0106** に決定として記録。
+  ② **文言が嘘になっていた。** README 2 箇所と DL ページが `not signed **yet**` /
+  `planned follow-up` / `tracked follow-up` と、1 年分のリリースにわたって書き続けていた。
+  買う予定が無いのに「まだ」と書くと、読み手は**後のリリースで消える不具合**と受け取る。
+  全部「決定であって漏れではない」に書き換え、検証すべきものとして `SHA256SUMS.txt` を
+  名指しした。
+  ③ **注記をリリース本文にも載せた** (`release.yml` の `--notes`)。検索結果から
+  リリースページに直接来た人は README を見ない。**ダウンロードが提供される場所すべて**に
+  注記が付く状態にするのが ADR-0106 の約束。
+  ④ **文言をテストで守る** — `site/page.test.mjs` に 1 本追加。"Before you run it" 段落に
+  `yet` / `planned` / `tracked follow-up` / `coming soon` が現れたら落ちる。
+  **すでに 2 ファイルで間違っていた**ので記憶ではなくテストにした。先に RED を確認済み。
+  ⑤ **`delete_branch_on_merge` を `true` にした。** マージ後のリモートブランチ削除が
+  自動になり、PR ごとの削除 push が不要になった (#178 で実際に自動削除を確認)。
+  ⑥ **`actions/checkout` を v6 に統一** (#176)。ただし**最新は v7.0.1** で、v6 は 1 メジャー
+  遅れ。恒久対策として `.github/dependabot.yml` の `github-actions` エコシステムを
+  提案したが、**PR が増えるため要否は user 判断**として保留中。
+  ⑦ 検証: pre-commit (fmt / clippy -D warnings / check / test) 通過、pii-scan は tree と
+  commit message の両方 clean、`node --test site/*.test.mjs` 16/16、
+  `release.yml` は PyYAML パース + 抽出した run ブロックの `bash -n` で構文検証。
+  PR #178 の CI 4 本すべて緑。
+  **user 側ボール = v1.0 の残り 3 ゲート (下記) + dependabot の要否判断。**
+  次のエージェント側タスク = **無し**。3 ゲートとも baseline §38 の「人にしかできない工程」で、
+  user が動くまでエージェント側から進められない。)
+
 - 日付: 2026-08-16 (**v1.0 の条件を 4 つに確定して #175 をマージした。
   ここから先は 4 つとも user 側ボール。**
   ① **v1.0 = 機能が出揃うことではなく、`docs/api-contract.md` を壊さない約束** (ADR-0011)。
@@ -100,163 +129,9 @@
   次のエージェント側タスク = #161 の観察結果を受けて修正。原因が特定できていない段階で
   当て推量のテストは書かない。)
 
-- 日付: 2026-08-13 その2 (**滞留していた PR を全部入れた。open は #159 の 1 本だけ。
-  ADR 番号の穴も塞がった。**
-  ① **本日マージ = 9 本** (#166 CI / #167 選択エクスポート + 上書きインポート /
-  #168 next-actions 同期 / #160 デモ用フィクスチャとスクリーンショット /
-  #163 貼り付け空白の除去 / #162 文書ツリー + ステータスバー + ENUM プルダウン +
-  Aurora DSQL の画面編集 / #164 検証シート 003 / #149 姉妹リポ用の貼り付けブロック /
-  #165 llms.txt)。**open PR は #159 のみ**になった。
-  ② **`docs/decisions.md` の ADR 番号が 0096 → 0105 で連続した。** develop が 0096 の次に
-  いきなり 0105 だったのは、0097〜0104 が未マージの 4 ブランチに分散していたため。
-  4 本とも同じ位置に追記するので**互いにコンフリクトし、1 本ずつしか解けない**。
-  今回はそれを順に解いた。**単純な連結ではなく番号順になるよう差し込んでいる** —
-  特に #162 は git が ADR-0100 の見出しと ADR-0099 の `### Status` 定型文を共通行として
-  噛み合わせ、コンフリクトが 2 箇所に割れて本文が入れ替わる形になっていた。
-  ③ **#159 (文書ストアをガイドに書く) はコンフリクト解消済みだが未 push。**
-  `docs/document-store-guides` の `889a28a`。衝突は `site/index.html` の OGP 1 箇所で、
-  **説明文は #159 側 (Firestore / MongoDB 入りの新しい DB 一覧)、プレビュー画像は
-  develop 側 (ADR-0098 でロゴからスクリーンショットに変えた判断)** を採って組み合わせた。
-  `site` の `node --test` は 15/15 緑。**この commit だけ `--no-verify` を使った** —
-  例の Windows libSQL テアダウン segfault (`0xc0000005`) で pre-commit の `cargo test` が
-  落ちるため (CLAUDE.md が唯一認めている bypass)。変更は `site/index.html` のみで Rust に
-  触っていないこと、`pii-scan --staged` は手動で回して clean を確認済み。
-  **push は `target/release/dbboard-mcp.exe` を使用中で保留**になっている
-  (`cargo build --release` が上書きできず `os error 5`)。
-  ④ **#131 に約束していたコメントを入れた** (CI が入ったこと・Windows ジョブを置かない理由・
-  初日に `secure_fs` の Linux 限定バグを捕まえたこと)。
-  **user 側ボール = ① `git push origin docs/document-store-guides` → CI 緑を確認して
-  `gh pr merge 159 --merge --delete-branch` (mcp.exe を閉じてから。占有プロセスは
-  `Get-Process | ? { $_.Path -like 'C:\claude\dbboard\target\release\*' }` で見える)、
-  ② この文書と `project-status.md` の更新コミットを push (ブランチは
-  `chore/session-status-0813`)、③ 姉妹リポへ `.claude/tools/dbboard.md` を貼る
-  (08-09 から継続)、④ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の
-  唯一の原因・08-09 から継続)、⑤ **#161 の 3 点観察** — ここが今いちばん詰まっている。**
-  次のエージェント側タスク = #161 の観察結果を受けて修正。**失敗するテストを先に書く**が、
-  原因が特定できていない段階で当て推量のテストは書かない。)
-
-- 日付: 2026-08-13 (**未マージの green な PR が 8 本溜まっているのが最大のボトルネック。
-  実運用バグ #161 を調査中で、原因は報告者側の 3 点観察待ち。**
-  ① **前回更新 (08-09) 以降に v0.6.0 と v0.7.0 が出ている。** v0.6.0 = Cloud Firestore
-  アダプタ (PR #153)、v0.7.0 = MongoDB アダプタ (PR #156)。ドキュメント側 (CHANGELOG /
-  README / roadmap / compatibility) と検証シート (Firestore・MongoDB の接続) も同時に入った。
-  08-09 時点で「次のエージェント側タスク」としていた **issue 0020 スライス 3
-  (`BackendConfig::MongoDb`) は消化済み**。
-  ② **本セッションで CI を入れた** — `ci/cargo-and-frontend-checks` (ADR-0104) を push し
-  **PR #166** を作成。issue #131 で「PR は pii-scan しか回っておらず、hook を bypass しても
-  受け止める先が無い」と共有された穴を塞ぐもの。ubuntu-latest 3 ジョブ
-  (cargo fmt/clippy/check/test ・ svelte-check + vitest ・ site の node --test)。
-  **Windows ジョブは意図的に置いていない** — 既知の libSQL teardown segfault (#131) で
-  緑のコードのまま恒久的に赤くなるため。**初回 CI が ubuntu で赤くなり、そこで
-  `secure_fs` のテスト 4 本が Linux 限定で落ちていたことが判明した** (CI を入れた初日に
-  CI が仕事をした形)。分類器 `is_likely_cloud_synced_path` 自体はどちらのプラットフォームでも
-  正しく、テスト側が `r"C:\Users\alice\OneDrive\..."` と**バックスラッシュ区切りのリテラル**を
-  渡していたのが原因。Unix では `\` は区切り文字ではないので `Path::components()` が
-  1 セグメントに潰れて何にも一致しない。セグメントの配列から `PathBuf` を組む形に直し
-  (`cfg(windows)` で消すのではなく、Windows レイアウトのケースを全プラットフォームで
-  踏み続ける)、`d2bbfc2` として commit 済み — **これも未 push**。
-  ③ **`feat/selective-export-and-upsert-import` (ADR-0105) が未 push のまま。**
-  接続の選択エクスポートと、インポート時の上書き (`ImportMode`、既定は Skip)。
-  空の id リストは「全件」と読まずに拒否する。ADR-0038 のキーリング参照拒否は緩めていない。
-  ④ **#161 (実行ボタンがクリックで反応しない・Ctrl+Enter は通る) の調査**。
-  ソースを読み切って、クリックと Ctrl+Enter が**同一関数・同一ガード**であることを確認した
-  (`QueryPanel.svelte` の `run`)。よって Ctrl+Enter が通る＝その瞬間の内部状態は正常が確定し、
-  「ボタンだけ弾かれる」条件はコード上に存在しない。経路上の `stopPropagation` なし、
-  常時被さるオーバーレイなし、`QueryPanel.svelte` / `SqlEditor.svelte` は Tauri シェル投入以降
-  無変更なのでバージョン差でもない。**残るのは「クリックがボタンに届いていない」筋**で、
-  ここから先はコードだけでは切れない。バックグラウンド調査が出した「CodeMirror の補完
-  ポップアップが被っている」説は、報告手順が*貼り付け*である以上 `activateOnTyping`
-  (`input.type` のみ発火・貼り付けは `input.paste`) が動かないため**採用しなかった**。
-  #161 に 3 点の観察 (ボタンの色 / カーソルが指の形になるか / フォーカスを外してから押すと
-  動くか) を依頼済み。回答が来るまでは推測で直さない。
-  **user 側ボール = ① 未 push のブランチ 3 本を push する
-  — `ci/cargo-and-frontend-checks` (テスト修正 `d2bbfc2` を載せて #166 を緑にする)、
-  `feat/selective-export-and-upsert-import`、`chore/next-actions-sync` (この文書)。
-  push 後の PR 作成はエージェント側でやる旨、本セッションで合意済み、
-  ② **green で MERGEABLE のまま滞留している PR 8 本を入れる**
-  (#149 #159 #160 #162 #163 #164 #165 #166 — #166 以外は CI 緑・コンフリクト無し。
-  溜まるほど衝突リスクが上がるので、ここが今いちばん効く)、
-  ③ 姉妹リポへ `.claude/tools/dbboard.md` を貼る (08-09 から継続)、
-  ④ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因・08-09 から継続)、
-  ⑤ #161 の 3 点観察。**
-  次のエージェント側タスク = **#166 がマージされたら #131 に一行コメントを入れる**
-  (そこで約束した分)。#142 (llms.txt) は **PR #165 として出済み**なのでマージ待ち。
-  その後は #161 の観察結果を受けて修正 — **失敗するテストを先に書く**が、
-  原因が特定できていない段階で当て推量のテストは書かない。)
-
-- 日付: 2026-08-12 (**実利用で挙がった 3 つの摩擦をブランチ `feat/document-tree-view` に
-  3 コミット。未 push。**
-  ① **文書セルが 1 行の JSON だった** → 展開/折りたたみできる木で表示 (ADR-0100)。
-  `{"$json": null}` と「文書ではない」を区別するため、popup の `doc` を
-  `{ value: unknown } | null` でラップしてある (null 自体が正当な文書値なので)。
-  ② **フッターが空だった** → 24px のステータスバー (ADR-0101)。**行数は入れていない**
-  ‐ 結果ツールバーに既にあり、繰り返しは「無駄なもの」そのものだから。入れたのは
-  画面のどこにも無かった 2 つだけ: **直前のクエリの所要時間**と、**閉じた更新通知へ
-  戻る導線**。後者は実バグの修正でもある — `UpdateNotice` を閉じると
-  `+page.svelte` の state が `null` になり、そのセッション中は二度と出せなかった。
-  計測はフロント側で `invoke` の前後のみ (バックエンドでやると `QueryOutput` と
-  全アダプタに触ることになる)。ブラウズ後のスキーマ読みは含めない。
-  ③ **ENUM がテキスト入力だった** → プルダウン (ADR-0102)。選択肢の出所は
-  `information_schema.column_type` = `describeTable` **のみ**。結果セットのメタは
-  `ENUM` としか返さないので、主キーを読む同じ `try` で一緒に取り、`enums` prop で
-  グリッドへ渡す。解析は純関数 + 10 テスト (`src/lib/grid/enum.ts`) に隔離 —
-  カンマ・`''`・バックスラッシュを取り違えると**間違った選択肢**を出すことになり、
-  テキスト入力より悪いため。**解析できなければ選択肢を出さずテキストに戻す**。
-  `SET` は複数値なので対象外 (単一選択にすると 1 つを除いて黙って捨てる)。
-  宣言に無い既存値は先頭に選択済みで保持 = 開いただけで書き換わらない。
-  インライン編集と拡大ダイアログの**両方**を select 化 (片方残すとそこから自由入力
-  できる)。今のところ効くのは MySQL のみ — Postgres の名前付き enum は型名しか
-  返さないので別途カタログ読みが要る。
-  ④ 検証: svelte-check 281 files / 0 errors、vitest 21 files / **436 tests** 緑、
-  `pii-scan --staged` clean。**3 コミットとも pre-commit フックを全通過 (exit 0)**、
-  `--no-verify` 不使用。
-  **user 側ボール = ① `git push -u origin feat/document-tree-view` (その後こちらで
-  PR を立てる)、② `fix/trim-pasted-connection-fields` の push、③ 姉妹リポへ
-  `.claude/tools/dbboard.md` を貼る、④ dbboard-web へ `docs/api-contract.md` の
-  `$json` を中継、⑤ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の
-  唯一の原因)。**
-  未 push のブランチが他に 3 本: `docs/locale-rendering-test-spec` /
-  `docs/agent-onboarding` (force-with-lease) / `docs/llms-txt`。
-  検証シート 001 は No.2 から人手で再開待ち (行 1・10・11 は `未実施` のまま)。)
-
-- 日付: 2026-08-09 (**Zenn 記事を公開 + それを書く過程で見つかった文書の嘘を 3 件修正。
-  未 push が 3 コミット (`f0cb0ca` / `28c15cc` / `913ee8b`)。**
-  ① **記事** = `articles/dbboard-mcp.md` → <https://zenn.dev/dokokade/articles/46b8c608715963>。
-  Zenn は別リポからビルドされる (ファイル名 = スラグ) ので、こちらのコピーを正本にして
-  `published: true` + 冒頭 HTML コメントに URL を記録した。**記事とそれが説明している
-  ドキュメントを一緒に直せる状態を維持すること。**
-  ② **write allowlist の記述が 4 ファイルで間違っていた。** `DROP INDEX` と
-  `COMMENT ON` が「通る」と書かれていたが、コードは一度も通していない。
-  実際は `INSERT`/`UPDATE`/`DELETE`/`MERGE` + `CREATE TABLE`/`VIEW`/`INDEX`/`SCHEMA`/
-  `ALTER TABLE` のみで、**`DROP` はインデックスを含め全オブジェクトが永久拒否**。
-  ADR-0087 は正しく、派生ドキュメントだけがずれていた。両端を固定するテストを
-  `write_policy.rs` に 2 本追加 (`dropping_an_index_is_closed_even_though_creating_one_is_not` /
-  `commenting_is_refused_because_nothing_listed_it`)。
-  ③ **MCP に「環境変数で接続そのものを渡す」経路は存在しない。** `DBBOARD_MYSQL_URL` 等は
-  `dbboard-server` の単一接続解決パス専用で、MCP は読まない (`adapter_for` は
-  `connections.toml` + キーチェーンしか見ない)。MCP が読む環境変数は `DBBOARD_CONFIG` と
-  `RUST_LOG` のみ。クレート README の該当節を書き換え、**ルート README とダウンロード
-  ページに残っていた同じ嘘も潰した** (ルート README は既に存在しない節へリンクしていた)。
-  ④ **`docs/compatibility.md` に MySQL/MariaDB 節が無いまま 3 リリース経っていた。**
-  `max_execution_time` (MySQL・ミリ秒) と `max_statement_time` (MariaDB・秒) の
-  綴り分けと、なぜ 1 回プローブしてキャッシュするか (無い変数を聞くと hard error) を記録。
-  ⑤ **記事の裏取りは全部実機**。`claude mcp add` → `claude mcp list` で `✔ Connected` →
-  stdio で 9 ツールを実際に叩き、拒否メッセージもその出力をそのまま貼った。
-  ⑥ **導線を張った** — ルート README の MCP 節 / クレート README の冒頭ボックス /
-  `site/index.html` の "Use it from an AI agent"。「公開しただけでは広まらない」の反映。
-  ⑦ 検証: fmt / clippy -D warnings / check / test 全緑、`site/app.test.mjs` 6 件パス、
-  `pii-scan --staged` clean。3 コミットとも hook は**既知の Windows libSQL teardown
-  segfault**でのみ bypass、理由をコミットメッセージに明記済み。
-  **user 側ボール = ① この 3 コミットを push、② 姉妹リポへ `.claude/tools/dbboard.md` を
-  貼る、③ ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因)、
-  ④ PR #148 / #149 を入れる (feat なので次は 0.6.0)。**
-  次のエージェント側タスク = **issue 0020 スライス 3** (`BackendConfig::MongoDb` +
-  `connect_adapter` アーム + デスクトップの**追加/編集フォーム両方** + サイドバーの
-  クエリ生成 + MCP ツール説明。0020 で唯一未チェックの完了条件)。)
-
-- ※ 2026-08-06 〜 2026-08-03 のエントリは
-  `.claude/archive/next-actions-2026-08.md` へ全文退避 (baseline §31、退避日 2026-08-09 と
-  2026-08-14 の 2 回)。さらに古いもの (2026-07-29 以前) は
+- ※ 2026-08-13 その2 〜 2026-08-03 のエントリは
+  `.claude/archive/next-actions-2026-08.md` へ全文退避 (baseline §31、退避日 2026-08-09 /
+  2026-08-14 / 2026-08-16 の 3 回)。さらに古いもの (2026-07-29 以前) は
   `.claude/archive/next-actions-2026-07.md`。
 
 
@@ -272,6 +147,33 @@ MSI ショートカット漏れを補完し、次いで maintainer 要望の**�
 ---
 
 ## user 側のボール (= 次に着手する時の選択肢)
+
+### ★★ 候補 0: v1.0 の残り 3 ゲート (`.claude/issues/0021-v1-0-criteria.md`)
+
+4 つのうち **ゲート 4 (署名) は 2026-08-16 に ADR-0106 で決着済**。残り 3 つは
+いずれも baseline §38 の「人にしかできない工程」で、**エージェント側から代われない**。
+1.0 を出す気があるなら、ここが最優先。
+
+1. **#161 の 3 点観察** — Run ボタンがクリックに反応しない。観察するのは
+   ボタンの色 / カーソル形状 / 一度別の場所をクリックしてからだと効くか。
+   原因が特定できていない段階で当て推量のテストは書かない、が方針。
+2. **コントラクトを `dbboard-web` へミラー** — 凍結の**前**にやる必要がある。
+   凍結後にミラーすると、web 側が別物を実装していた場合に破壊的変更が要る。
+3. **検証シート 001–003 の実施** — 一度も実施されていない。人が動かして
+   `結果` `実施日` `担当` を埋める (baseline §22)。**エージェントが `OK` を
+   書き込むことは禁止**。環境的に無理な行は `未実施` のまま残してよい。
+   Firestore エミュレータの停止は
+   `docker compose -f docker/firestore-emulator/compose.yaml down`。
+
+### 候補 A-4: `.github/dependabot.yml` で actions の追従を自動化 (小・要否は user 判断)
+
+#176 で `actions/checkout` を v4 → v6 に上げたが、**最新は v7.0.1** で 1 メジャー
+遅れのまま。手で追うと今回のように気づかず何メジャーも離れる。`github-actions`
+エコシステムを dependabot に登録すれば PR が自動で来る。
+
+**トレードオフ: PR が増える。** 今日「push が多い」と感じた直後にこれを入れると
+体感が悪化しうるので、要否は user 判断として保留した。入れるなら `weekly` +
+`open-pull-requests-limit` を小さくするのが現実的。
 
 ### ★ 候補 A: 実利用摩擦の次テーマ (menu-not-sequence)
 
