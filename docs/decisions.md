@@ -10317,3 +10317,87 @@ was wrong.
   roll them back. That ordering is unchanged from ADR-0038 — the keychain has
   no transaction to enlist in — but the rollback is now correct for both
   modes rather than only for adds.
+
+## ADR-0106 — dbboard ships unsigned, and says so wherever it is offered
+
+- **Status**: accepted
+- **Date**: 2026-08-16
+- **Context**: maintainer decision (do not buy signing certificates),
+  closing the fourth v1.0 gate in `.claude/issues/0021-v1-0-criteria.md`;
+  supersedes the "deferred, paid follow-up" framing of ADR-0044 §Future
+
+### Context
+
+ADR-0044 shipped installers and checksums and deferred code signing as a
+paid follow-up. "Deferred" was accurate then. It has since been read, by the
+project's own README and download page, as *pending* — "not signed **yet**",
+"a planned follow-up", "a tracked follow-up" — for a year of releases in
+which nothing was ever going to be bought.
+
+That wording costs something real. A downloader who reads "not signed yet"
+waits, or clicks through the warning while assuming the warning is a defect
+that a later release will remove. Neither is true. Meanwhile the binary is
+already handed to someone outside the project (ADR-0038's bundle flow), so
+the SmartScreen prompt is not hypothetical: it is the first thing that
+happens to a person who was told this software is safe to run.
+
+An Authenticode certificate is a recurring cost, renewed annually, and an
+EV certificate — the only kind that clears SmartScreen immediately rather
+than after accumulating reputation — costs several times more and requires
+hardware token custody. For a project with no revenue, that is a standing
+expense bought to remove a one-time click.
+
+### Decision
+
+**Do not buy signing certificates. Ship unsigned, and disclose it as a
+decision rather than as a gap.**
+
+1. **The disclosure travels with the download, not with the docs.** It is on
+   the download page, in the README's *Download* and *Packaging &
+   distribution* sections, and prepended to every GitHub release body by
+   `release.yml`. Someone arriving from a search result at a release page
+   never sees the README; someone handed an installer directly sees neither.
+   Each place a download is offered carries the note.
+
+2. **The wording says it is a decision.** No "yet", no "planned", no
+   "follow-up". A reader deciding whether to click through the warning is
+   entitled to know that waiting for a signed build is not an option they
+   have. `site/page.test.mjs` fails if that language creeps back in — the
+   phrasing was already wrong twice, in two files, so it is guarded rather
+   than remembered.
+
+3. **`SHA256SUMS.txt` is named as the thing to verify instead.** The OS
+   warning answers "who published this"; the checksum answers "is this the
+   file that repo built". Only the second question has an answer here, so
+   only the second is offered.
+
+4. **The commented `codesign` / `notarytool` / `stapler` placeholders in
+   `release.yml` stay.** They cost nothing, and they are the diff someone
+   forking this project — or this project, if its circumstances change —
+   would otherwise have to reconstruct.
+
+5. **This does not touch updater signing.** The `tauri-plugin-updater` key
+   (ADR-0067) is in use and unaffected: it proves an auto-update came from
+   this project. Code signing proves an *identity* to the OS. Conflating
+   them would be the one genuinely misleading thing to say here.
+
+### Consequences
+
+- **v1.0 is not blocked on a purchase.** The fourth gate had a defined
+  alternative from the start — ship unsigned and say so — and this ADR takes
+  it. Shipping unsigned is defensible; shipping unsigned without saying so
+  is not.
+- **Every release warns, forever.** SmartScreen reputation accrues to a
+  publisher identity, and an unsigned binary has none, so the warning does
+  not fade with downloads. Recipients need telling once per person, not once
+  per release, which is why the note is placed where a first-time downloader
+  lands.
+- **Local development keeps tripping AV heuristics.** A freshly linked
+  binary has zero prevalence by construction, so no scanner setting fixes it;
+  the fix is a path exclusion on the developer's machine. Signing would have
+  addressed both that and the downloader's warning, and this ADR accepts
+  both costs together rather than pretending they are separate problems.
+- **Reversible at any time.** Buying a certificate later requires the
+  secrets (human-only, baseline §15), uncommenting the placeholders, and
+  deleting the disclosure plus the test that guards its wording. Nothing
+  here is structural.

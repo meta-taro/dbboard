@@ -52,9 +52,10 @@ latest release are on the **[download page](https://meta-taro.github.io/dbboard/
 (GitHub Pages), or directly on the
 [Releases](https://github.com/meta-taro/dbboard/releases) page. Every
 release ships a `SHA256SUMS.txt`; verify your download before running it.
-The binaries are not code-signed yet, so Windows SmartScreen / macOS
-Gatekeeper will warn on first launch (see [ADR-0047](docs/decisions.md)
-and [ADR-0044](docs/decisions.md)).
+The binaries are **not code-signed**, and will not be — a certificate is a
+recurring purchase this project does not make ([ADR-0106](docs/decisions.md)).
+Windows SmartScreen / macOS Gatekeeper therefore warn on first launch, on
+every release. The checksum is what you verify instead.
 
 ## Goals
 
@@ -739,10 +740,12 @@ dependency. New license expressions surfaced by the check go into
 Windows and macOS bundles are produced by the Tauri CLI from
 `apps/desktop`. Linux is not built today.
 
-> **Note on trust.** The artifacts are **not code-signed yet**, so Windows
-> SmartScreen and macOS Gatekeeper will warn about an unknown publisher.
-> Verify a download against the published `SHA256SUMS.txt` (see *Release
-> builds & checksums*). Signing is a planned follow-up ([ADR-0044](docs/decisions.md)).
+> **Note on trust.** The artifacts are **not code-signed**, and that is a
+> decision, not a gap waiting to be filled ([ADR-0106](docs/decisions.md)):
+> Windows SmartScreen and macOS Gatekeeper will warn about an unknown
+> publisher on every release. Verify a download against the published
+> `SHA256SUMS.txt` (see *Release builds & checksums*) — that, not the OS
+> warning, is what tells you the file is the one this repo built.
 > This is separate from the *updater* signing key, which is already in use and
 > is what proves an auto-update came from this project ([ADR-0067](docs/decisions.md)).
 
