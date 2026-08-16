@@ -308,6 +308,11 @@ jobs:
       # release page opens with a link to the download page (ADR-0047). A
       # release page lists raw asset filenames; someone arriving from a search
       # result should not have to work out which one is theirs.
+      #
+      # The unsigned note rides along for the same reason it is on the download
+      # page: the release page is the other place someone starts from, and
+      # ADR-0106 promises the warning is disclosed wherever the download is
+      # offered — not only where we happen to expect them to look.
       - name: Ensure the release object exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -315,7 +320,9 @@ jobs:
           gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
             || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
                  --title "${GITHUB_REF_NAME}" --generate-notes \
-                 --notes "**[Download dbboard](https://meta-taro.github.io/dbboard/)** picks the right installer for your OS. For the MCP server that hands your databases to an AI agent, grab \`dbboard-mcp-windows-x86_64.exe\` or \`dbboard-mcp-macos-universal\` from the assets below and follow [the setup](https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md). Verify what you get against SHA256SUMS.txt."
+                 --notes "**[Download dbboard](https://meta-taro.github.io/dbboard/)** picks the right installer for your OS. For the MCP server that hands your databases to an AI agent, grab \`dbboard-mcp-windows-x86_64.exe\` or \`dbboard-mcp-macos-universal\` from the assets below and follow [the setup](https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md).
+
+          > **These binaries are not code-signed**, by decision rather than by omission ([ADR-0106](https://github.com/meta-taro/dbboard/blob/main/docs/decisions.md)). Windows SmartScreen and macOS Gatekeeper warn about an unknown publisher on every release. Verify what you download against \`SHA256SUMS.txt\` — that is what tells you the file is the one this repo built."
 
       # Runner-bundled gh CLI + built-in token; no third-party release
       # action. `--clobber` makes re-runs idempotent.

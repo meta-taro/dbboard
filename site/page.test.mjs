@@ -1,4 +1,4 @@
-// The download page's images, checked against the page's own rules.
+// The download page, checked against the page's own rules.
 //
 //   node --test site/page.test.mjs
 //
@@ -72,4 +72,26 @@ test("the page shows the app before asking anyone to install it", () => {
     shots.length >= 2,
     `only ${shots.length} screenshot(s); the page goes back to asking for a download sight-unseen`,
   );
+});
+
+test("the page says the binaries are unsigned, and does not call it pending", () => {
+  // This paragraph is the whole of what ADR-0106 promises a downloader: the
+  // warning they are about to click through is expected, and it is a decision
+  // rather than an oversight. Both halves matter. Dropping the disclosure
+  // leaves them guessing whether the file is tampered with; calling signing
+  // "planned" or a "follow-up" tells them to wait for a build that is not
+  // coming, which is the dishonesty the ADR exists to avoid.
+  assert.match(
+    html,
+    /not code-signed/i,
+    "the page no longer tells a downloader the binaries are unsigned",
+  );
+  for (const claim of [/\byet\b/i, /planned/i, /tracked follow-up/i, /coming soon/i]) {
+    const paragraph = html.match(/<h2>Before you run it<\/h2>[\s\S]*?<\/p>/i)?.[0] ?? "";
+    assert.doesNotMatch(
+      paragraph,
+      claim,
+      `the "Before you run it" note still describes signing as pending (${claim}); ADR-0106 decided against it`,
+    );
+  }
 });

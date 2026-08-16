@@ -69,7 +69,17 @@ docker compose -f docker/firestore-emulator/compose.yaml down
 
 **Owner**: human only. The agent must not write `OK` into these files.
 
-### 4. Code signing — or an honest note that there is none
+### 4. Code signing — or an honest note that there is none — **CLOSED 2026-08-16**
+
+**Resolved via the alternative path.** The maintainer decided not to buy
+certificates; ADR-0106 records that as a decision rather than a deferral,
+and the disclosure now sits on the download page, in both README sections,
+and prepended to every release body by `release.yml`. `site/page.test.mjs`
+fails if the "not yet / planned / follow-up" phrasing returns. Three gates
+remain, all human-owned.
+
+The original statement of the gate follows.
+
 
 Unsigned artifacts trip SmartScreen on Windows and Gatekeeper on macOS.
 The binary is already handed to someone outside the project, so the
@@ -106,5 +116,5 @@ mode this list exists to avoid.
 - [ ] contract mirrored to `dbboard-web`
 - [ ] sheets 001–003 executed by a person, to the extent their
       environments allow, with the untestable rows left `未実施`
-- [ ] signed artifacts, **or** the unsigned state written into `README.md`
-      and the release notes
+- [x] signed artifacts, **or** the unsigned state written into `README.md`
+      and the release notes — *taken the second way, ADR-0106 (2026-08-16)*
