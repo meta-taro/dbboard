@@ -83,6 +83,12 @@ keychain.
 reach no database at all (ADR-0107). Use them only when asked: the effect
 lands on someone's screen.
 
+`capture_window` photographs the running dbboard window and returns it as
+a PNG (ADR-0108) — the way to check what the app actually renders rather
+than assert it. It reads nothing. What it returns is someone's real
+screen, real connection names and all, so describe what you see but do not
+paste the image anywhere public without asking.
+
 `run_write` exists but is **refused unless the connection is opted in**
 with `mcp_write = true`, and a permanently-closed list (grants, user and
 role DDL, `TRUNCATE`, `DROP` of anything but an index) is refused

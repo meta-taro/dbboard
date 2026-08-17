@@ -159,6 +159,15 @@ time = { version = "0.3", features = ["formatting", "macros"] }
 axum = "0.8"
 # JSON has no byte type, so Value::Blob is encoded as base64 on the wire.
 base64 = "0.22"
+# Screen capture of the app's own window for the MCP `capture_window` tool
+# (ADR-0108). Chosen over hand-rolling per-platform capture because the
+# WebView2 case — the one that decides whether a Tauri window comes out
+# black — already works, and it brings only six crates the workspace did
+# not already have. Deliberately left on default features: xcap already
+# depends on `image` with the `png` codec, which is all a screenshot needs,
+# whereas its `image` feature turns on `image/default` — dragging in the
+# AVIF and OpenEXR decoders to save a PNG.
+xcap = "0.9"
 # AFIT (async fn in trait) is not object-safe; the server holds adapters
 # as Arc<dyn DatabaseAdapter>. async-trait macros around that until
 # object-safe async fns stabilise (ADR-0012).

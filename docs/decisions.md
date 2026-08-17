@@ -10487,3 +10487,105 @@ orphan as the history `v:2` reader in ADR-0027: live code, no live caller.
 - **Not addressed here:** moving theme, history, or the sidebar width out of
   `localStorage`. Nothing outside the window needs them, and each would be a
   migration with a user-visible failure mode of its own.
+
+## ADR-0108 — The agent can see the window it is being asked about
+
+### Status
+
+Accepted.
+
+### Context
+
+ADR-0107 moved the *mechanical* half of locale verification to the agent
+side: the language can now be switched over MCP. The judging half stayed with
+the person, correctly — but so did something that is not judgement at all,
+namely *looking*. "Did the language change?", "is the grid full of tofu?",
+"is this error legible?" are questions with a right answer visible on screen,
+and every one of them cost the maintainer a screenshot and a paste.
+
+That toll is what stalled the CJK-font work twice (see the tofu regressions
+behind ADR-0084): the check is cheap to describe, expensive to perform, so it
+was performed rarely and the regression survived.
+
+The standing instruction is broader than this one case — when an operation
+feels like it needs a human hand, add the tool at that moment rather than
+asking. Screen capture is the first slice, and the one every later UI tool
+depends on: a tool that changes the window is unverifiable without a tool
+that can see it.
+
+### Decision
+
+1. **`capture_window` is an MCP tool that returns a PNG of dbboard's own
+   window**, as an image content block plus a text block carrying the title
+   and the size before and after scaling. It is the third tool that reaches
+   no database, beside `get_ui_locale` / `set_ui_locale`, and so lives in its
+   own module rather than in `McpService` — it holds no service state and
+   talks to the windowing system.
+2. **`xcap` 0.9 does the grab, rather than per-platform code here.** The
+   question that decided it was empirical, not architectural: a Tauri window
+   is WebView2 on Windows, and a naive capture of one comes back black. A
+   throwaway probe confirmed `xcap` returns the real content, and returns it
+   for an *unfocused* window — mandatory on the maintainer's machine, where
+   several agent sessions run at once and stealing focus would misdirect
+   another session's input. Apache-2.0; six crates the workspace did not
+   already have.
+3. **`xcap`'s `image` feature stays off.** Its `image` dependency is
+   non-optional and already carries the `png` codec, which is the whole of
+   what a screenshot needs; the feature would turn on `image/default` and
+   drag in the AVIF and OpenEXR encoders to save a PNG.
+4. **The window is chosen by application name, matched whole and
+   case-insensitively — never by title.** The probe found two windows titled
+   "dbboard": one was the app, the other a terminal tab showing this session.
+   A title-matching selector photographs the terminal and calls it a success,
+   which is worse than failing. `app_name` is `productName` from
+   `tauri.conf.json`, so it is stable across platforms. A test pins the
+   terminal case.
+5. **Minimised windows are skipped, not failed on.** Only when every
+   candidate is minimised does that become the error, so a stray minimised
+   instance cannot hide the one being looked at. Among visible windows the
+   largest wins — a Tauri app can hold helper windows a person never sees.
+6. **Not running and minimised are `invalid_params`; a platform failure is
+   `internal_error`.** Same reasoning as the write gate (ADR-0087): a refusal
+   an agent cannot fix by retrying must not look retryable, or it will retry.
+   Both messages name the human action that would fix them.
+7. **The image is scaled to a 1400px long edge by default, never enlarged**,
+   in integer arithmetic. Lanczos3 rather than a cheaper filter, because what
+   these captures are usually judged on is text — and a nearest-neighbour
+   downscale of CJK glyphs produces exactly the mush the capture is there to
+   detect.
+8. **The tool description states that the capture is the operator's real
+   screen** — real connection names, real data — and that it must not be
+   pasted into an issue, a pull request or a commit without asking. A test
+   asserts that sentence is present. This repo is public and developed
+   against business-identifying databases (ADR-0055); the constraint belongs
+   on the tool surface, where the agent meets it before acting, not in a
+   convention it may never read.
+
+### Consequences
+
+- **Visual claims become checkable.** "The locale switched" and "the glyphs
+  render" stop being assertions and become observations, at no cost to the
+  person. The judging that baseline §22 reserves for a human — whether the
+  Korean is *right* — is untouched: the agent reports what it sees; the
+  operator still enters the result.
+- **Screen capture is passive, and that is why it is allowed now.** Nothing
+  here moves a pointer or presses a key. On a machine running several agent
+  sessions, input automation would land in whichever window happens to be
+  focused, so it waits for a channel that addresses this app specifically.
+- **The privacy risk moves from the tool to the transcript.** A capture that
+  reaches the agent has already left the machine's screen; what the tool can
+  control is whether the agent then republishes it. Hence the description and
+  its test. The PII scanner (ADR-0055) guards the repo, not the conversation.
+- **`capture_window` will show whichever dbboard window is largest.** With
+  two instances open — which happens here — a capture may be of the other
+  session's window, and `set_ui_locale` already affects both through the
+  shared `ui-settings.toml`. Worth knowing before treating a capture as proof
+  about a particular build.
+- **Six new crates, and a platform dependency in a crate that had none.**
+  `dbboard-mcp` previously built from pure Rust with no windowing system in
+  sight. Headless use — the server on a machine with no desktop — now has one
+  tool that always fails there, rather than a build that breaks.
+- **Not addressed here:** driving the interface. Typing SQL, clicking a menu,
+  opening the AI panel all need a command channel into the running app, which
+  `ui-settings.toml`'s file-watch shape does not fit; that transport is its
+  own decision.

@@ -11,8 +11,9 @@
 //! The tool set: `list_connections`, `list_tables`, `describe_table`,
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
 //! `search_schema` (ADR-0053), `list_relationships` (ADR-0054),
-//! `run_write` + `dump_database` (ADR-0087), and the `get_ui_locale` /
-//! `set_ui_locale` pair — the only tools that reach no database at all.
+//! `run_write` + `dump_database` (ADR-0087), the `get_ui_locale` /
+//! `set_ui_locale` pair, and `capture_window` (ADR-0108) — the last three
+//! being the only tools that reach no database at all.
 //!
 //! Tool *descriptions* carry more of the write policy than a reader might
 //! expect. They are the only documentation the agent gets before it acts:
@@ -32,6 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use dbboard_core::DbError;
 
+use crate::capture::{self, CaptureError};
 use crate::service::{McpService, ServiceError};
 
 /// Parameters for [`DbboardMcp::list_tables`].
@@ -127,6 +129,16 @@ pub struct SetUiLocaleParams {
     /// spelled there (`ja`, `zh-CN`, `pt-BR`). Matching is case-sensitive and
     /// there is no fuzzy resolution: `ja-JP` and `JA` are refused.
     pub locale: String,
+}
+
+/// Parameters for [`DbboardMcp::capture_window`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CaptureWindowParams {
+    /// Longest edge of the returned image, in pixels. Defaults to 1400,
+    /// which is full size for an unmaximised window. A capture is never
+    /// enlarged, so asking for more than the window is does nothing.
+    #[serde(default)]
+    pub max_edge: Option<u32>,
 }
 
 /// Parameters for [`DbboardMcp::dump_database`].
@@ -370,6 +382,42 @@ impl DbboardMcp {
             .map_err(|e| to_mcp(&e))?;
         json_block(&self.service.ui_locale())
     }
+
+    // Reaches no database and not even dbboard's config — it photographs
+    // whatever the app is drawing. The counterpart to set_ui_locale: that
+    // one changes the interface, this one is how anything can be said about
+    // the result. Checking that a locale renders, that a grid is not full of
+    // tofu, that an error message is legible, are all questions about pixels.
+    //
+    // The privacy sentence in the description is not boilerplate. The window
+    // lists the operator's real connections by name, so a capture is closer
+    // to a screenshot of someone's desktop than to a tool result, and an
+    // agent that pastes one into an issue has published it.
+    #[tool(
+        description = "Photograph the running dbboard window and return it as a PNG image, plus the window title and the size before and after scaling. Use it to check what the app actually renders — that a language change took effect, that text is not showing as boxes, that a message on screen is readable. Nothing here reads a database. \
+        \n\nThe capture is of the real window, so it shows the operator's real connection names and whatever data is on screen. Treat it as their screen: describe what you see, but do not paste the image or its contents anywhere public — an issue, a pull request, a commit — without asking. \
+        \n\nIt fails when dbboard is not running or its window is minimised. Neither is something you can fix by retrying: say so and ask a human to open or restore the window."
+    )]
+    async fn capture_window(
+        &self,
+        Parameters(CaptureWindowParams { max_edge }): Parameters<CaptureWindowParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let max_edge = max_edge.unwrap_or(capture::DEFAULT_MAX_EDGE);
+        // Enumerating windows and copying pixels are blocking OS calls; on
+        // the shared stdio runtime they would stall every other tool.
+        let shot = tokio::task::spawn_blocking(move || capture::capture_window(max_edge))
+            .await
+            .map_err(|e| McpError::internal_error(format!("capture task failed: {e}"), None))?
+            .map_err(|e| capture_to_mcp(&e))?;
+
+        let text = serde_json::to_string_pretty(&shot).map_err(|e| {
+            McpError::internal_error(format!("failed to serialize result: {e}"), None)
+        })?;
+        Ok(CallToolResult::success(vec![
+            ContentBlock::image(shot.png_base64, "image/png"),
+            ContentBlock::text(text),
+        ]))
+    }
 }
 
 // `router = self.tool_router` points the generated `call_tool`/`list_tools`
@@ -396,9 +444,13 @@ impl ServerHandler for DbboardMcp {
                  has set mcp_write = true on — it is off by default. Privilege and \
                  role changes, TRUNCATE and DROP are refused on every connection and \
                  no setting enables them. \
-                 \n\nget_ui_locale / set_ui_locale are the exception to all of the \
-                 above: they change the app's display language and reach no \
-                 database. Use them only when the user asks.",
+                 \n\nget_ui_locale / set_ui_locale and capture_window are the \
+                 exception to all of the above: they reach no database. The \
+                 first two change the app's display language — use them only \
+                 when the user asks. capture_window photographs the app's own \
+                 window, which is how you check what it actually renders; the \
+                 image shows the operator's real connection names, so treat it \
+                 as their screen and keep it out of anywhere public.",
             )
     }
 }
@@ -459,9 +511,27 @@ fn to_mcp(err: &ServiceError) -> McpError {
     }
 }
 
+/// Map a capture failure onto the MCP error envelope.
+///
+/// "Not running" and "minimised" are `invalid_params` for the same reason
+/// `WriteNotEnabled` is: the agent cannot fix either by rewriting its call,
+/// but neither is it worth retrying — a closed window stays closed until a
+/// human opens it, and `internal_error` is the code that reads as "try
+/// again". Only a genuine platform failure is retryable.
+fn capture_to_mcp(err: &CaptureError) -> McpError {
+    let message = err.to_string();
+    match err {
+        CaptureError::NotRunning | CaptureError::Minimized => {
+            McpError::invalid_params(message, None)
+        }
+        CaptureError::Backend(_) => McpError::internal_error(message, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::to_mcp;
+    use super::{capture_to_mcp, to_mcp};
+    use crate::capture::CaptureError;
     use crate::service::ServiceError;
     use dbboard_core::DbError;
     use rmcp::model::ErrorCode;
@@ -600,5 +670,52 @@ mod tests {
             "host unreachable".into(),
         )));
         assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+    }
+
+    // A closed window does not open by itself, so the one thing the agent
+    // must not do is retry until it does.
+    #[test]
+    fn a_closed_window_is_not_something_to_retry() {
+        assert_eq!(
+            capture_to_mcp(&CaptureError::NotRunning).code,
+            ErrorCode::INVALID_PARAMS
+        );
+        assert_eq!(
+            capture_to_mcp(&CaptureError::Minimized).code,
+            ErrorCode::INVALID_PARAMS
+        );
+    }
+
+    #[test]
+    fn a_platform_capture_failure_is_worth_retrying() {
+        let err = capture_to_mcp(&CaptureError::Backend("GDI is busy".into()));
+
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+    }
+
+    // The window shows the operator's real connections, so a capture is a
+    // photograph of someone's screen. An agent that only learns that after
+    // pasting one into an issue has learned it too late.
+    #[test]
+    fn capture_window_warns_that_the_image_is_someones_screen() {
+        let source = include_str!("server.rs");
+        let chunk = source
+            .split("async fn capture_window")
+            .next()
+            .expect("capture_window has moved");
+        let description = chunk
+            .rsplit("description = \"")
+            .next()
+            .and_then(|rest| rest.split('"').next())
+            .expect("the capture_window description has moved");
+
+        assert!(
+            description.contains("connection names"),
+            "capture_window does not warn that the image carries real connection names"
+        );
+        assert!(
+            description.contains("public"),
+            "capture_window does not tell the agent to keep the image out of public places"
+        );
     }
 }
