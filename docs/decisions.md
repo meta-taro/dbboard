@@ -10401,3 +10401,89 @@ decision rather than as a gap.**
   secrets (human-only, baseline §15), uncommenting the placeholders, and
   deleting the disclosure plus the test that guards its wording. Nothing
   here is structural.
+
+## ADR-0107 — The UI language is a file, so an agent can change it
+
+### Status
+
+Accepted.
+
+### Context
+
+Verifying the eleven shipped locales (ADR-0015) means switching the language
+eleven times and looking at the window each time. Switching was a mouse-only
+action, so the whole cost of the check fell on the one person who can also
+judge whether the Korean is right. The judging cannot be delegated. The
+switching had no reason not to be.
+
+Meanwhile the chosen language lived only in this webview's `localStorage`,
+under `dbboard.locale`. Nothing outside the window could read it or set it.
+
+`ui-settings.toml` (ADR-0041) already existed for exactly this kind of value —
+and was orphaned. It was written by the egui client, which was deleted
+(ADR-0089); the Tauri frontend keeps theme, locale, the backup-row threshold,
+history, sidebar width and row limit in `localStorage` instead. The file was
+still read and written by `dbboard-config`, by nothing else. Same shape of
+orphan as the history `v:2` reader in ADR-0027: live code, no live caller.
+
+### Decision
+
+1. **`locale` joins `ui-settings.toml`.** An `Option<String>` holding one of
+   the eleven codes. `None` is a state, not a missing value: it means nobody
+   has chosen, so the OS language applies. A drift test
+   (`crates/dbboard-config/tests/locale_drift.rs`) reads
+   `apps/desktop/src/lib/i18n/locales.ts` and fails when the Rust list and the
+   frontend list stop agreeing, in content or in order.
+2. **Two MCP tools, `get_ui_locale` and `set_ui_locale`.** They are the only
+   tools that reach no database — they take no `connection_id`, touch no
+   adapter, and are unaffected by the write policy (ADR-0087), which governs
+   database writes. `get_ui_locale` returns the supported codes alongside the
+   current one, because an agent has no other way to learn them and a guess
+   like `ja-JP` would otherwise be refused with nothing to correct against.
+   Matching is exact: `ja-JP` and `JA` are refused where `ja` is accepted.
+3. **The tool description tells the agent to wait to be asked.** Every other
+   tool here reads or writes data; this one changes what a person sees on
+   their screen. An agent that "helpfully" switches the language mid-session
+   is a worse failure than one that refuses to.
+4. **The desktop shell polls the file, about once a second.** A change is
+   announced to the frontend as a `ui:locale` event carrying the new value.
+   The comparison is on the *value*, never the file's mtime — a theme write
+   touches the same file and would otherwise announce a locale change that
+   never happened. Polling instead of a filesystem-notify dependency: the
+   file is written a few times a day by hand, and sub-second latency buys
+   nothing here.
+5. **The file outranks `localStorage`, which is kept in sync anyway.** At
+   startup the frontend paints in the locale it can resolve synchronously
+   (`localStorage`, else the OS language), then adopts the file's value when
+   the IPC read lands. When the file names none, the resolved locale is
+   written into it, so `get_ui_locale` answers with the language actually on
+   screen rather than "unset". A change from either side updates both stores.
+6. **Only `locale` is bridged.** Theme and the backup threshold stay in
+   `localStorage`; `ui-settings.toml` keeps its fields for them, and the
+   locale write is load-modify-save so a language change cannot reset a value
+   this app does not otherwise touch.
+
+### Consequences
+
+- **The verification sheet can be driven from the agent side.** The switching
+  is mechanical and now automatable; the judging stays with the person, as
+  baseline §22 requires. This ADR exists to move the mechanical half, not to
+  blur the line.
+- **`ui-settings.toml` is live again.** The file is now a channel between
+  processes rather than a second source of truth: exactly one field crosses
+  it, and both sides agree which one.
+- **A hand-edited file with an unshippable code is ignored, not obeyed.** The
+  MCP tool refuses such a code outright; the frontend, seeing one in the file,
+  keeps the current language rather than falling back to the OS language over
+  a typo.
+- **A corrupt `ui-settings.toml` is silently replaced.** `load_or_default` is
+  infallible by design — UI chrome must not be able to break startup — so a
+  file that fails to parse is treated as absent and overwritten by the next
+  write. A test pins this so it stays a decision rather than a discovery.
+- **The MCP server's `--config` override now moves the UI settings too.** It
+  already moved `annotations.toml`; leaving `ui-settings.toml` behind would
+  have let a server pointed at a throwaway config directory retarget the real
+  window's language (ADR-0097).
+- **Not addressed here:** moving theme, history, or the sidebar width out of
+  `localStorage`. Nothing outside the window needs them, and each would be a
+  migration with a user-visible failure mode of its own.

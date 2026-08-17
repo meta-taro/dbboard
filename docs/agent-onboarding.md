@@ -79,6 +79,10 @@ keychain.
 `list_relationships` · `run_read_query` · `get_annotations` ·
 `dump_database` — all read-only.
 
+`get_ui_locale` · `set_ui_locale` change dbboard's display language and
+reach no database at all (ADR-0107). Use them only when asked: the effect
+lands on someone's screen.
+
 `run_write` exists but is **refused unless the connection is opted in**
 with `mcp_write = true`, and a permanently-closed list (grants, user and
 role DDL, `TRUNCATE`, `DROP` of anything but an index) is refused
