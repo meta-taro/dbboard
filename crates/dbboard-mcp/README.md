@@ -34,11 +34,13 @@ desktop GUI: the `connections.toml` entry store plus the OS keychain
 adds no new place to keep credentials — it reads the ones dbboard already
 holds.
 
-Nine tools (ADR-0046 Decision 5, extended by
+Eleven tools (ADR-0046 Decision 5, extended by
 [ADR-0053](../../docs/decisions.md),
-[ADR-0054](../../docs/decisions.md) and
-[ADR-0087](../../docs/decisions.md)). Seven read, one writes behind a
-per-connection flag, one takes a backup:
+[ADR-0054](../../docs/decisions.md),
+[ADR-0087](../../docs/decisions.md) and
+[ADR-0107](../../docs/decisions.md)). Seven read a database, one writes
+behind a per-connection flag, one takes a backup, and two reach no database
+at all:
 
 | Tool | What it returns |
 |---|---|
@@ -51,6 +53,8 @@ per-connection flag, one takes a backup:
 | `get_annotations` | dbboard's local table/column notes ([ADR-0045](../../docs/decisions.md)) for a connection, optionally filtered to one table and/or column. |
 | `run_write` | Runs one write statement and returns the rows affected. Requires `mcp_write = true` on the connection; see the write policy below. |
 | `dump_database` | Writes a logical SQL dump of a whole connection to a file and reports the path, counts, byte size, and a `complete` flag. Reads only, so it needs **no** flag — it is what an agent should call before a `run_write` it might need to undo. |
+| `get_ui_locale` | dbboard's UI language as `{ locale, supported }`. `locale` is `null` when nothing has been chosen — the app then follows the OS language, so `null` is a state, not a missing value. `supported` is the codes this build ships; there is no other way to learn them. |
+| `set_ui_locale` | Sets the UI language to one of those codes. Exact match: `ja-JP` and `JA` are refused where `ja` is accepted. A running window picks the change up within about a second, with no restart. **Only when asked** — this changes what someone sees on their screen. |
 
 `run_read_query` has no write path at all. Any statement that is not a
 single read-only query is rejected **by the database engine**, not by
@@ -426,6 +430,9 @@ receives Ctrl-C.
   the `run_write` / `dump_database` tools that take the surface to nine.
 - [ADR-0045](../../docs/decisions.md) — local table/column annotations,
   surfaced by `get_annotations`.
+- [ADR-0107](../../docs/decisions.md) — the UI language in
+  `ui-settings.toml` and the `get_ui_locale` / `set_ui_locale` pair that
+  takes the surface to eleven.
 - [`docs/connections.md`](../../docs/connections.md) — `connections.toml`
   schema and the keyring-reference layout.
 - [`docs/architecture.md`](../../docs/architecture.md) — where this crate

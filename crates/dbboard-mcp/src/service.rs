@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 
 use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
 use dbboard_config::store::{self, ConnectionKind};
-use dbboard_config::{ConfigError, SecretStore};
+use dbboard_config::{ui_settings, ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
     build_update_sql, classify_write, dialect_for_adapter_id, plan_dump as core_plan_dump,
@@ -88,6 +88,17 @@ pub struct ConnectionView {
     pub id: String,
     pub name: String,
     pub kind: String,
+}
+
+/// Result of [`McpService::ui_locale`]: what the UI language is set to, and
+/// what it could be set to.
+///
+/// `locale` is `None` when nothing has been chosen — the client falls back
+/// to the OS language, so `None` is a real state and not a missing value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UiLocaleView {
+    pub locale: Option<String>,
+    pub supported: Vec<String>,
 }
 
 /// Result of [`McpService::run_read_query`]. `truncated` tells the agent
@@ -427,6 +438,10 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
 pub struct McpService {
     config_path: PathBuf,
     annotations_path: PathBuf,
+    /// `ui-settings.toml`. Unlike the two above it holds no connection and
+    /// no secret — it is the channel the locale tools write and the desktop
+    /// shell watches (ADR-0041).
+    ui_settings_path: PathBuf,
     secrets: Arc<dyn SecretStore>,
     // Adapters are connected lazily on first use and reused thereafter —
     // reconnecting per request would be wasteful and, for Turso
@@ -474,26 +489,28 @@ impl CachedAdapter {
 const HEALTH_CHECK_AFTER_IDLE: Duration = Duration::from_secs(30);
 
 impl McpService {
-    /// Build a service reading connections from `config_path` and
-    /// annotations from `annotations_path`, resolving secrets through
-    /// `secrets`.
+    /// Build a service reading connections from `config_path`, annotations
+    /// from `annotations_path`, and UI preferences from
+    /// `ui_settings_path`, resolving secrets through `secrets`.
     #[must_use]
     pub fn new(
         config_path: PathBuf,
         annotations_path: PathBuf,
+        ui_settings_path: PathBuf,
         secrets: Arc<dyn SecretStore>,
     ) -> Self {
         Self {
             config_path,
             annotations_path,
+            ui_settings_path,
             secrets,
             cache: Mutex::new(HashMap::new()),
         }
     }
 
     /// Build a service using the platform's default per-user config paths
-    /// (the same `connections.toml` / `annotations.toml` the desktop GUI
-    /// reads).
+    /// (the same `connections.toml` / `annotations.toml` /
+    /// `ui-settings.toml` the desktop GUI reads).
     ///
     /// # Errors
     ///
@@ -502,7 +519,73 @@ impl McpService {
     pub fn with_default_paths(secrets: Arc<dyn SecretStore>) -> Result<Self, ServiceError> {
         let config_path = store::default_path()?;
         let annotations_path = annotations::default_annotations_path()?;
-        Ok(Self::new(config_path, annotations_path, secrets))
+        let ui_settings_path = ui_settings::default_ui_settings_path()?;
+        Ok(Self::new(
+            config_path,
+            annotations_path,
+            ui_settings_path,
+            secrets,
+        ))
+    }
+
+    /// The `ui-settings.toml` this service reads and writes.
+    ///
+    /// Exposed for the desktop shell, which watches the same file for changes
+    /// made by an MCP client. Taking it from here rather than resolving the
+    /// default path again keeps the watcher and the writer on one file even
+    /// under a `--config` override.
+    #[must_use]
+    pub fn ui_settings_path(&self) -> &Path {
+        &self.ui_settings_path
+    }
+
+    /// The UI language currently persisted in `ui-settings.toml`, plus every
+    /// code [`set_ui_locale`](Self::set_ui_locale) would accept.
+    ///
+    /// `locale: None` is not an error and not English — it means the user has
+    /// made no explicit choice and the client resolves the OS language, which
+    /// is what a fresh install does.
+    ///
+    /// The supported list travels with the value because the agent has no
+    /// other way to learn it: the translations live in the frontend, and an
+    /// agent that guesses a plausible tag (`ja-JP`) gets a refusal it cannot
+    /// diagnose.
+    #[must_use]
+    pub fn ui_locale(&self) -> UiLocaleView {
+        UiLocaleView {
+            locale: ui_settings::load_or_default(&self.ui_settings_path).locale,
+            supported: ui_settings::SUPPORTED_LOCALES
+                .iter()
+                .map(|&code| code.to_owned())
+                .collect(),
+        }
+    }
+
+    /// Persist `code` as the UI language.
+    ///
+    /// Load-modify-save rather than a bare write: the theme and the backup
+    /// threshold live in the same file and belong to the shell, so replacing
+    /// the file would reset a user's theme as a side effect of a language
+    /// change.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::InvalidRequest`] if `code` is not one of
+    ///   [`ui_settings::SUPPORTED_LOCALES`]. Matching is exact and
+    ///   case-sensitive — the frontend looks the code up the same way, so a
+    ///   near-miss like `ja-JP` would persist a value that displays nothing.
+    /// - [`ServiceError::Config`] if the file cannot be written.
+    pub fn set_ui_locale(&self, code: &str) -> Result<(), ServiceError> {
+        if !ui_settings::is_supported_locale(code) {
+            return Err(ServiceError::InvalidRequest(format!(
+                "{code:?} is not a language dbboard ships; expected one of: {}",
+                ui_settings::SUPPORTED_LOCALES.join(", ")
+            )));
+        }
+        let mut settings = ui_settings::load_or_default(&self.ui_settings_path);
+        settings.locale = Some(code.to_owned());
+        ui_settings::save_atomic(&self.ui_settings_path, &settings)?;
+        Ok(())
     }
 
     /// List every configured connection, projected to the non-secret
@@ -1210,7 +1293,7 @@ fn filter_columns(table: &TableAnnotations, column: Option<&str>) -> TableAnnota
 mod tests {
     use super::*;
     use dbboard_config::annotations::AnnotationsAdmin;
-    use dbboard_config::InMemorySecretStore;
+    use dbboard_config::{InMemorySecretStore, ThemePreference, UiSettingsFile, SUPPORTED_LOCALES};
     use dbboard_core::{
         Capabilities, DbResult, ForeignKey as CoreForeignKey, QueryResult as CoreQueryResult,
     };
@@ -1227,19 +1310,27 @@ mod tests {
         service: McpService,
         config_path: PathBuf,
         annotations_path: PathBuf,
+        ui_settings_path: PathBuf,
     }
 
     fn fixture() -> Fixture {
         let dir = TempDir::new().expect("tempdir");
         let config_path = dir.path().join("connections.toml");
         let annotations_path = dir.path().join("annotations.toml");
+        let ui_settings_path = dir.path().join("ui-settings.toml");
         let secrets = Arc::new(InMemorySecretStore::default());
-        let service = McpService::new(config_path.clone(), annotations_path.clone(), secrets);
+        let service = McpService::new(
+            config_path.clone(),
+            annotations_path.clone(),
+            ui_settings_path.clone(),
+            secrets,
+        );
         Fixture {
             dir,
             service,
             config_path,
             annotations_path,
+            ui_settings_path,
         }
     }
 
@@ -2705,5 +2796,93 @@ path = ":memory:"
             view.truncated,
             "more edges than the cap must flag truncated"
         );
+    }
+
+    // --- UI locale -------------------------------------------------------
+    //
+    // The only tools that touch neither a database nor a connection: they
+    // read and write `ui-settings.toml`, which the desktop shell watches.
+
+    #[test]
+    fn ui_locale_is_unset_until_something_writes_one() {
+        let fx = fixture();
+        let view = fx.service.ui_locale();
+        assert_eq!(
+            view.locale, None,
+            "a missing settings file means no explicit choice, not a default"
+        );
+        assert_eq!(
+            view.supported,
+            SUPPORTED_LOCALES.to_vec(),
+            "the view must name every code set_ui_locale would accept, \
+             so an agent does not have to guess one and be refused"
+        );
+    }
+
+    #[test]
+    fn set_ui_locale_persists_and_reads_back() {
+        let fx = fixture();
+        fx.service.set_ui_locale("ja").expect("set ja");
+        assert_eq!(fx.service.ui_locale().locale.as_deref(), Some("ja"));
+        // Through the file, not just this service's memory — the shell reads
+        // the file, so an in-memory-only write would change nothing on screen.
+        let on_disk = dbboard_config::load_ui_settings(&fx.ui_settings_path);
+        assert_eq!(on_disk.locale.as_deref(), Some("ja"));
+    }
+
+    #[test]
+    fn set_ui_locale_refuses_a_code_no_build_can_display() {
+        let fx = fixture();
+        let err = fx.service.set_ui_locale("nl").expect_err("unsupported");
+        assert!(matches!(err, ServiceError::InvalidRequest(_)), "{err:?}");
+        assert!(
+            !fx.ui_settings_path.exists(),
+            "a refused code must not leave a settings file behind"
+        );
+    }
+
+    #[test]
+    fn set_ui_locale_is_exact_about_the_code() {
+        // `ja-JP` and `JA` are what a caller reaches for. Accepting them would
+        // write a value the frontend's exact lookup cannot match, leaving the
+        // UI in English with a settings file that claims otherwise.
+        let fx = fixture();
+        for wrong in ["ja-JP", "JA", "en-US", ""] {
+            let err = fx.service.set_ui_locale(wrong).expect_err(wrong);
+            assert!(
+                matches!(err, ServiceError::InvalidRequest(_)),
+                "{wrong:?} should be InvalidRequest, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_ui_locale_preserves_the_other_ui_settings() {
+        let fx = fixture();
+        // The shell owns the theme and the backup threshold in the same file.
+        // A locale write that dropped them would reset the user's theme.
+        let mut settings = UiSettingsFile::with_theme(ThemePreference::Dark);
+        settings.backup_warn_rows = Some(12_345);
+        dbboard_config::save_ui_settings(&fx.ui_settings_path, &settings).expect("seed settings");
+
+        fx.service.set_ui_locale("ko").expect("set ko");
+
+        let after = dbboard_config::load_ui_settings(&fx.ui_settings_path);
+        assert_eq!(after.locale.as_deref(), Some("ko"));
+        assert_eq!(after.theme, ThemePreference::Dark);
+        assert_eq!(after.backup_warn_rows, Some(12_345));
+    }
+
+    #[test]
+    fn set_ui_locale_replaces_an_unreadable_settings_file() {
+        // `load_or_default` is deliberately infallible so UI chrome cannot
+        // break startup; the consequence is that a corrupt file is silently
+        // replaced here rather than reported. Pinned so the trade-off is a
+        // decision and not a surprise.
+        let fx = fixture();
+        write(&fx.ui_settings_path, "this is not toml {{{");
+        fx.service.set_ui_locale("de").expect("set de");
+        let after = dbboard_config::load_ui_settings(&fx.ui_settings_path);
+        assert_eq!(after.locale.as_deref(), Some("de"));
     }
 }
