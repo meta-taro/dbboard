@@ -11,6 +11,17 @@ public API is the HTTP contract in
 
 ### Fixed
 
+- **The query editor's toolbar stopped responding to anything once a
+  connection was selected.** The history count stayed at `(0)` however many
+  queries had run, the Run button kept whichever enabled state it had at
+  startup, and a language change left that one strip of the window in the
+  previous language while the rest of the app switched. One cause: reading
+  the per-connection history cached its first disk read into reactive
+  state, and Svelte forbids writing reactive state while a `$derived` is
+  being evaluated — the resulting error killed the effect that renders the
+  toolbar, freezing every binding in it at its last good value. Reading
+  history is now a read.
+
 - **The HTTP contract described a payload that stopped being accurate.**
   `docs/api-contract.md` is the public API for SemVer purposes
   ([ADR-0011](docs/decisions.md)), and `dbboard-web` implements against it,

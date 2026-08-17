@@ -30,12 +30,16 @@ class QueryHistory {
   // whole per-connection array on each change so runes see the update.
   private byConnection = $state<Record<string, HistoryEntry[]>>({});
 
-  /** History for one connection, most-recent-first. Lazily loaded from disk. */
+  /**
+   * History for one connection, most-recent-first. Falls back to what is on
+   * disk until this session records something for that connection.
+   *
+   * Deliberately does not cache the disk read into `byConnection`: callers read
+   * this from a `$derived`, and writing reactive state during a derivation
+   * throws `state_unsafe_mutation`, which kills the effect that was rendering.
+   */
   for(connectionId: string): HistoryEntry[] {
-    if (!(connectionId in this.byConnection)) {
-      this.byConnection[connectionId] = read(connectionId);
-    }
-    return this.byConnection[connectionId];
+    return this.byConnection[connectionId] ?? read(connectionId);
   }
 
   /** Record a successfully-run query. `at` defaults to now. */
