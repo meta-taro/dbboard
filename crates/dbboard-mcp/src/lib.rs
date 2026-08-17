@@ -30,5 +30,5 @@ pub mod service;
 pub use server::DbboardMcp;
 pub use service::{
     AnnotationsView, ConnectionView, DumpFileOutcome, McpService, QueryOutput, ServiceError,
-    WriteOutput, DEFAULT_MAX_ROWS, MAX_MAX_ROWS,
+    UiLocaleView, WriteOutput, DEFAULT_MAX_ROWS, MAX_MAX_ROWS,
 };

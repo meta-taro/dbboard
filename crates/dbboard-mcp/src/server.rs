@@ -10,8 +10,9 @@
 //!
 //! The tool set: `list_connections`, `list_tables`, `describe_table`,
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
-//! `search_schema` (ADR-0053), `list_relationships` (ADR-0054), and
-//! `run_write` + `dump_database` (ADR-0087).
+//! `search_schema` (ADR-0053), `list_relationships` (ADR-0054),
+//! `run_write` + `dump_database` (ADR-0087), and the `get_ui_locale` /
+//! `set_ui_locale` pair — the only tools that reach no database at all.
 //!
 //! Tool *descriptions* carry more of the write policy than a reader might
 //! expect. They are the only documentation the agent gets before it acts:
@@ -117,6 +118,15 @@ pub struct RunWriteParams {
     /// A single write statement: `INSERT` / `UPDATE` / `DELETE` / `MERGE`,
     /// or `CREATE TABLE` / `VIEW` / `INDEX` / `SCHEMA` / `ALTER TABLE`.
     pub sql: String,
+}
+
+/// Parameters for [`DbboardMcp::set_ui_locale`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetUiLocaleParams {
+    /// One of the codes `get_ui_locale` returns in `supported`, exactly as
+    /// spelled there (`ja`, `zh-CN`, `pt-BR`). Matching is case-sensitive and
+    /// there is no fuzzy resolution: `ja-JP` and `JA` are refused.
+    pub locale: String,
 }
 
 /// Parameters for [`DbboardMcp::dump_database`].
@@ -333,6 +343,33 @@ impl DbboardMcp {
             .map_err(|e| to_mcp(&e))?;
         json_block(&out)
     }
+
+    // The only pair that touches no database. They exist because switching
+    // the language by hand — eleven times, restarting between — is the whole
+    // cost of verifying the translations; an agent that can set it can walk
+    // the sheet instead. The description says "when asked" because the effect
+    // lands on someone's screen, and a language that changes on its own reads
+    // as a fault, not a feature.
+    #[tool(
+        description = "Get dbboard's UI language setting. Returns `locale` (the persisted code, or null when the user has made no explicit choice and the app follows the OS language) and `supported` (every code set_ui_locale accepts). Nothing here touches a database."
+    )]
+    async fn get_ui_locale(&self) -> Result<CallToolResult, McpError> {
+        json_block(&self.service.ui_locale())
+    }
+
+    #[tool(
+        description = "Set dbboard's UI language. Takes one code from get_ui_locale's `supported` list, spelled exactly as it appears there — matching is case-sensitive and there is no fuzzy resolution, so `ja-JP` and `JA` are refused where `ja` is accepted. A running dbboard window picks the change up within about a second, with no restart. \
+        \n\nDo this only when the user asks for it: it changes what they see on screen, and a language that changes on its own looks like a bug. It writes ui-settings.toml and touches no database."
+    )]
+    async fn set_ui_locale(
+        &self,
+        Parameters(SetUiLocaleParams { locale }): Parameters<SetUiLocaleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.service
+            .set_ui_locale(&locale)
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&self.service.ui_locale())
+    }
 }
 
 // `router = self.tool_router` points the generated `call_tool`/`list_tools`
@@ -358,7 +395,10 @@ impl ServerHandler for DbboardMcp {
                  \n\nWriting goes through run_write, and only on a connection a human \
                  has set mcp_write = true on — it is off by default. Privilege and \
                  role changes, TRUNCATE and DROP are refused on every connection and \
-                 no setting enables them.",
+                 no setting enables them. \
+                 \n\nget_ui_locale / set_ui_locale are the exception to all of the \
+                 above: they change the app's display language and reach no \
+                 database. Use them only when the user asks.",
             )
     }
 }
