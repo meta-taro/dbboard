@@ -17,10 +17,20 @@ public API is the HTTP contract in
   `localStorage`, and a running window picks up a change within about a
   second without restarting. `get_ui_locale` returns the codes this build
   ships alongside the current one, so an agent has something to pick from;
-  matching is exact, and `ja-JP` is refused where `ja` is accepted. These
-  are the only two tools that reach no database. They exist because
-  verifying eleven locales means switching the language eleven times, and
-  the switching — unlike the judging — is mechanical.
+  matching is exact, and `ja-JP` is refused where `ja` is accepted. They
+  exist because verifying eleven locales means switching the language
+  eleven times, and the switching — unlike the judging — is mechanical.
+
+- **An agent can see the window it is being asked about** — `capture_window`
+  ([ADR-0108](docs/decisions.md)) returns a PNG of the running dbboard
+  window, so "did the language change?", "is the grid full of boxes?" and
+  "is this error legible?" stop being assertions and become observations.
+  It reads no database. The window is found by application name rather than
+  title, because a terminal tab called "dbboard" enumerates with exactly
+  that title and capturing it would look like a success. Being minimised or
+  closed is reported as something only a human can fix, not as a retryable
+  failure. The image is the operator's real screen, so the tool says on its
+  own surface that it must not be pasted anywhere public without asking.
 
 ### Fixed
 

@@ -34,13 +34,14 @@ desktop GUI: the `connections.toml` entry store plus the OS keychain
 adds no new place to keep credentials — it reads the ones dbboard already
 holds.
 
-Eleven tools (ADR-0046 Decision 5, extended by
+Twelve tools (ADR-0046 Decision 5, extended by
 [ADR-0053](../../docs/decisions.md),
 [ADR-0054](../../docs/decisions.md),
-[ADR-0087](../../docs/decisions.md) and
-[ADR-0107](../../docs/decisions.md)). Seven read a database, one writes
-behind a per-connection flag, one takes a backup, and two reach no database
-at all:
+[ADR-0087](../../docs/decisions.md),
+[ADR-0107](../../docs/decisions.md) and
+[ADR-0108](../../docs/decisions.md)). Seven read a database, one writes
+behind a per-connection flag, one takes a backup, and three reach no
+database at all:
 
 | Tool | What it returns |
 |---|---|
@@ -55,6 +56,7 @@ at all:
 | `dump_database` | Writes a logical SQL dump of a whole connection to a file and reports the path, counts, byte size, and a `complete` flag. Reads only, so it needs **no** flag — it is what an agent should call before a `run_write` it might need to undo. |
 | `get_ui_locale` | dbboard's UI language as `{ locale, supported }`. `locale` is `null` when nothing has been chosen — the app then follows the OS language, so `null` is a state, not a missing value. `supported` is the codes this build ships; there is no other way to learn them. |
 | `set_ui_locale` | Sets the UI language to one of those codes. Exact match: `ja-JP` and `JA` are refused where `ja` is accepted. A running window picks the change up within about a second, with no restart. **Only when asked** — this changes what someone sees on their screen. |
+| `capture_window` | A PNG of the running dbboard window, as an MCP image block, plus the title and the size before and after scaling (`max_edge` defaults to 1400; a capture is never enlarged). The window is found by application name, not by title — a terminal tab called "dbboard" is not it. Fails when the app is not running or is minimised; neither is fixable by retrying. **The image is the operator's real screen**, real connection names and all: describe it, but do not paste it into an issue, a PR, or a commit without asking. |
 
 `run_read_query` has no write path at all. Any statement that is not a
 single read-only query is rejected **by the database engine**, not by
@@ -433,6 +435,9 @@ receives Ctrl-C.
 - [ADR-0107](../../docs/decisions.md) — the UI language in
   `ui-settings.toml` and the `get_ui_locale` / `set_ui_locale` pair that
   takes the surface to eleven.
+- [ADR-0108](../../docs/decisions.md) — `capture_window`, which takes it to
+  twelve: the agent can see the window it is being asked about, so a claim
+  about what the interface renders can be checked rather than asserted.
 - [`docs/connections.md`](../../docs/connections.md) — `connections.toml`
   schema and the keyring-reference layout.
 - [`docs/architecture.md`](../../docs/architecture.md) — where this crate
