@@ -34,14 +34,15 @@ desktop GUI: the `connections.toml` entry store plus the OS keychain
 adds no new place to keep credentials — it reads the ones dbboard already
 holds.
 
-Twelve tools (ADR-0046 Decision 5, extended by
+Sixteen tools (ADR-0046 Decision 5, extended by
 [ADR-0053](../../docs/decisions.md),
 [ADR-0054](../../docs/decisions.md),
 [ADR-0087](../../docs/decisions.md),
-[ADR-0107](../../docs/decisions.md) and
-[ADR-0108](../../docs/decisions.md)). Seven read a database, one writes
-behind a per-connection flag, one takes a backup, and three reach no
-database at all:
+[ADR-0107](../../docs/decisions.md),
+[ADR-0108](../../docs/decisions.md) and
+[ADR-0109](../../docs/decisions.md)). Seven read a database, one writes
+behind a per-connection flag, one takes a backup, and seven reach no
+database at all — those seven read or work the running window:
 
 | Tool | What it returns |
 |---|---|
@@ -57,6 +58,10 @@ database at all:
 | `get_ui_locale` | dbboard's UI language as `{ locale, supported }`. `locale` is `null` when nothing has been chosen — the app then follows the OS language, so `null` is a state, not a missing value. `supported` is the codes this build ships; there is no other way to learn them. |
 | `set_ui_locale` | Sets the UI language to one of those codes. Exact match: `ja-JP` and `JA` are refused where `ja` is accepted. A running window picks the change up within about a second, with no restart. **Only when asked** — this changes what someone sees on their screen. |
 | `capture_window` | A PNG of the running dbboard window, as an MCP image block, plus the title and the size before and after scaling (`max_edge` defaults to 1400; a capture is never enlarged). The window is found by application name, not by title — a terminal tab called "dbboard" is not it. Fails when the app is not running or is minimised; neither is fixable by retrying. **The image is the operator's real screen**, real connection names and all: describe it, but do not paste it into an issue, a PR, or a commit without asking. |
+| `set_editor_sql` | Replaces the text in the running window's query editor and brings the Query tab forward. Does not run it. Returns once the window has taken the text — a success here means it is on screen, not that the request was filed. |
+| `run_query` | Presses Run in that window: executes whatever its editor holds, against the connection **the window** has selected, and returns the row count once the rows are displayed. Not a cheaper `run_read_query` — it uses the window's connection and row limit and leaves the result on someone's screen, so reach for it when what the app *displays* is the point. Fails when no connection is selected there, or when a query is already running. |
+| `open_ai_panel` | Opens the AI panel, which is where the AI provider settings live. Says so when it was already open. |
+| `open_ai_settings` | Opens the AI provider settings, which live *inside* that panel — so it is refused while the panel is shut, and `open_ai_panel` comes first. The refusal is the point as much as the opening: there is no top-level route to these settings, and being told the verb has no owner is how an agent learns that. Says so when they were already open. |
 
 `run_read_query` has no write path at all. Any statement that is not a
 single read-only query is rejected **by the database engine**, not by
@@ -438,6 +443,10 @@ receives Ctrl-C.
 - [ADR-0108](../../docs/decisions.md) — `capture_window`, which takes it to
   twelve: the agent can see the window it is being asked about, so a claim
   about what the interface renders can be checked rather than asserted.
+- [ADR-0109](../../docs/decisions.md) — the UI command channel and the
+  `set_editor_sql` / `run_query` / `open_ai_panel` / `open_ai_settings`
+  verbs that take the surface to sixteen: having seen the window, the
+  agent can now work it.
 - [`docs/connections.md`](../../docs/connections.md) — `connections.toml`
   schema and the keyring-reference layout.
 - [`docs/architecture.md`](../../docs/architecture.md) — where this crate
