@@ -266,6 +266,109 @@ fn watch_ui_locale(app: tauri::AppHandle, path: std::path::PathBuf, initial: Opt
     }
 }
 
+/// Event carrying an instruction for this window from an MCP client
+/// (ADR-0109). The frontend must answer every one it receives through
+/// [`report_ui_command_result`], including the ones it cannot carry out —
+/// the caller is blocked until it does.
+const UI_COMMAND_EVENT: &str = "ui:command";
+
+/// How long the watcher sleeps between reads of `ui-command.toml`.
+///
+/// Ten times faster than the locale poll, because the two files are not the
+/// same kind of thing: a locale write is a preference nobody waits for, while
+/// a command has a caller blocked on the answer, and every wait here is
+/// charged twice — once before the window sees the instruction, once before
+/// the client sees the answer.
+const UI_COMMAND_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// What the watcher must treat as already handled the moment the window opens.
+///
+/// A command file survives the process that wrote it. Obeying whatever is in
+/// it at startup would mean launching dbboard replays the last instruction of
+/// a session that ended hours ago — at a window whose caller is long gone, so
+/// nothing would report it. Adopting the number instead leaves the file
+/// intact for anyone reading it, and answers nothing.
+fn already_handled_at_startup(file: &dbboard_config::UiCommandFile) -> u64 {
+    file.seq
+}
+
+/// The shape the frontend receives: `{ seq, command: { kind, ... } }`.
+///
+/// `seq` travels with the command because the frontend hands it straight
+/// back — the answer is matched to its question by number, and a window that
+/// invented its own would answer a question nobody asked.
+#[derive(Clone, serde::Serialize)]
+struct UiCommandEvent {
+    seq: u64,
+    command: dbboard_config::UiCommand,
+}
+
+/// Watch `ui-command.toml` and hand each new instruction to the frontend.
+///
+/// Own thread for the same reason as [`watch_ui_locale`]: the body is a sleep
+/// and a blocking read. The number is advanced *before* the emit, so a
+/// command that somehow fails to reach the frontend is still not retried on
+/// the next tick — a duplicate `run_query` is a second query against a real
+/// database, and a failure that repeats forever is worse than one that is
+/// reported once.
+fn watch_ui_command(
+    app: tauri::AppHandle,
+    command_path: std::path::PathBuf,
+    result_path: std::path::PathBuf,
+) {
+    use tauri::Emitter;
+
+    let mut last_acted =
+        already_handled_at_startup(&dbboard_config::load_command_or_default(&command_path));
+    loop {
+        std::thread::sleep(UI_COMMAND_POLL_INTERVAL);
+        let file = dbboard_config::load_command_or_default(&command_path);
+        let Some(command) = dbboard_config::pending_command(&file, last_acted) else {
+            continue;
+        };
+        last_acted = file.seq;
+        let event = UiCommandEvent {
+            seq: file.seq,
+            command: command.clone(),
+        };
+        if app.emit(UI_COMMAND_EVENT, event).is_err() {
+            // Nothing will answer, so say so here rather than leave the
+            // caller to work it out from a thirty-second silence.
+            let _ = dbboard_config::save_result_atomic(
+                &result_path,
+                &dbboard_config::UiResultFile::failed(
+                    file.seq,
+                    "the dbboard window could not be reached",
+                ),
+            );
+        }
+    }
+}
+
+/// Answer the instruction the window has just carried out (ADR-0109).
+///
+/// Called by the frontend when the work is *finished*, not when it starts:
+/// an agent that asked for a query to run and got an answer before the rows
+/// arrived would read the previous result as this one's.
+#[tauri::command]
+async fn report_ui_command_result(
+    state: tauri::State<'_, AppState>,
+    seq: u64,
+    ok: bool,
+    error: Option<String>,
+    detail: Option<String>,
+) -> Result<(), String> {
+    let answer = dbboard_config::UiResultFile {
+        version: dbboard_config::UI_COMMAND_VERSION,
+        seq,
+        ok,
+        error,
+        detail,
+    };
+    dbboard_config::save_result_atomic(&state.service.ui_result_path(), &answer)
+        .map_err(|e| e.to_string())
+}
+
 /// Build the service against the platform default `connections.toml` /
 /// `annotations.toml` (the same files the egui app and MCP server read)
 /// and run the Tauri app.
@@ -343,11 +446,12 @@ pub fn run() {
             ai::set_active_ai_provider,
             get_ui_locale,
             set_ui_locale,
+            report_ui_command_result,
             update_opt_out
         ])
-        // Start watching `ui-settings.toml` once state is managed: the path
-        // and the starting value both come from the service, so the watcher
-        // and the writer can never end up on two different files.
+        // Start watching `ui-settings.toml` and `ui-command.toml` once state
+        // is managed: every path comes from the service, so a watcher and the
+        // writer it listens to can never end up on two different files.
         .setup(|app| {
             use tauri::Manager;
 
@@ -356,6 +460,11 @@ pub fn run() {
             let initial = state.service.ui_locale().locale;
             let handle = app.handle().clone();
             std::thread::spawn(move || watch_ui_locale(handle, path, initial));
+
+            let command_path = state.service.ui_command_path();
+            let result_path = state.service.ui_result_path();
+            let handle = app.handle().clone();
+            std::thread::spawn(move || watch_ui_command(handle, command_path, result_path));
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -1506,6 +1615,26 @@ mod tests {
             super::locale_change(&Some("ja".to_owned()), &None),
             Some(None)
         );
+    }
+
+    #[test]
+    fn a_command_left_over_from_a_previous_session_is_not_replayed() {
+        // The file outlives the process that wrote it. If opening the window
+        // obeyed whatever was in it, launching dbboard would re-run the last
+        // instruction of a session that ended hours ago — against a live
+        // database, with nobody waiting for the answer.
+        let stale = dbboard_config::UiCommandFile {
+            version: dbboard_config::UI_COMMAND_VERSION,
+            seq: 7,
+            command: Some(dbboard_config::UiCommand::RunQuery),
+        };
+        let acted = super::already_handled_at_startup(&stale);
+        assert_eq!(acted, 7);
+        assert!(dbboard_config::pending_command(&stale, acted).is_none());
+
+        // The next command still arrives, because the number keeps climbing.
+        let fresh = dbboard_config::UiCommandFile { seq: 8, ..stale };
+        assert!(dbboard_config::pending_command(&fresh, acted).is_some());
     }
 
     #[tokio::test]

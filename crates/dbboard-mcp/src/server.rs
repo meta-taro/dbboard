@@ -12,8 +12,9 @@
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
 //! `search_schema` (ADR-0053), `list_relationships` (ADR-0054),
 //! `run_write` + `dump_database` (ADR-0087), the `get_ui_locale` /
-//! `set_ui_locale` pair, and `capture_window` (ADR-0108) — the last three
-//! being the only tools that reach no database at all.
+//! `set_ui_locale` pair, `capture_window` (ADR-0108), and the three that
+//! work the window — `set_editor_sql`, `run_query`, `open_ai_panel`
+//! (ADR-0109). Those last six reach no database at all.
 //!
 //! Tool *descriptions* carry more of the write policy than a reader might
 //! expect. They are the only documentation the agent gets before it acts:
@@ -31,6 +32,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use dbboard_config::UiCommand;
 use dbboard_core::DbError;
 
 use crate::capture::{self, CaptureError};
@@ -139,6 +141,14 @@ pub struct CaptureWindowParams {
     /// enlarged, so asking for more than the window is does nothing.
     #[serde(default)]
     pub max_edge: Option<u32>,
+}
+
+/// Parameters for [`DbboardMcp::set_editor_sql`].
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetEditorSqlParams {
+    /// The text to put in the editor. Replaces what is there — there is no
+    /// append, and no way to read back what it displaced.
+    pub sql: String,
 }
 
 /// Parameters for [`DbboardMcp::dump_database`].
@@ -418,6 +428,69 @@ impl DbboardMcp {
             ContentBlock::text(text),
         ]))
     }
+
+    // The three below work the window rather than read a database (ADR-0109).
+    // `capture_window` made the app's screen legible to an agent; without
+    // these, everything it might want to look at still had to be typed and
+    // clicked by the person sitting there. They go through ui-command.toml
+    // and block until the window says what happened, so a success here means
+    // the app really did it — not that the request was filed.
+    #[tool(
+        description = "Type SQL into the running dbboard window's query editor, replacing whatever is there, and bring the Query tab to the front. Does not run it — call run_query for that. Returns once the window has taken the text. \
+        \n\nUse it to put a statement in front of the user, or to set up a check you are about to make with run_query and capture_window. It touches no database, and it does not save anything: the text lives in that window until someone changes it. \
+        \n\nIt fails when dbboard is not running, and you cannot fix that by retrying — ask a human to open it."
+    )]
+    async fn set_editor_sql(
+        &self,
+        Parameters(SetEditorSqlParams { sql }): Parameters<SetEditorSqlParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.ui_command(UiCommand::SetEditorSql { sql }).await
+    }
+
+    #[tool(
+        description = "Press Run in the dbboard window: execute the SQL currently in its query editor against the connection the window has selected, and return once the rows are on screen. The answer says how many rows came back; use capture_window to see them. \
+        \n\nThis is the window's own connection and the window's own row limit, not run_read_query's — reach for it when the point is what the app displays. When the point is the data, run_read_query is cheaper and does not disturb anyone's screen. \
+        \n\nThe editor is not read-only: whatever is in it runs. Set it with set_editor_sql first unless you know what is there. \
+        \n\nIt fails when dbboard is not running, when no connection is selected in the window, or when a query is already running there. None of those change by retrying."
+    )]
+    async fn run_query(&self) -> Result<CallToolResult, McpError> {
+        self.ui_command(UiCommand::RunQuery).await
+    }
+
+    #[tool(
+        description = "Open the AI panel in the dbboard window. Returns once it is open, and says so if it already was. \
+        \n\nIt is how you reach the AI provider settings, which live inside that panel. Reaches no database and changes no configuration — it opens a panel on someone's screen, so do it when the user asks or when you are checking that screen for them. \
+        \n\nIt fails when dbboard is not running, which retrying will not change."
+    )]
+    async fn open_ai_panel(&self) -> Result<CallToolResult, McpError> {
+        self.ui_command(UiCommand::OpenAiPanel).await
+    }
+
+    /// Send one instruction to the window and report what it said back.
+    ///
+    /// The three tools above differ only in the verb, and the answer shape is
+    /// the same for all of them: `{ "ok": true, "detail": ... }`, where
+    /// `detail` is the window's own words for what happened. A failure is an
+    /// error, never an `ok: false` body — an agent that has to read the body
+    /// to notice a refusal will eventually not read it.
+    async fn ui_command(&self, command: UiCommand) -> Result<CallToolResult, McpError> {
+        let detail = self
+            .service
+            .send_ui_command(command)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&UiCommandOutcome { ok: true, detail })
+    }
+}
+
+/// What a UI command tool returns when the window carried it out.
+#[derive(Debug, Serialize)]
+struct UiCommandOutcome {
+    ok: bool,
+    /// The window's account of what it did — a row count, "editor set to N
+    /// characters". `None` when it had nothing to add.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 // `router = self.tool_router` points the generated `call_tool`/`list_tools`
@@ -444,13 +517,23 @@ impl ServerHandler for DbboardMcp {
                  has set mcp_write = true on — it is off by default. Privilege and \
                  role changes, TRUNCATE and DROP are refused on every connection and \
                  no setting enables them. \
-                 \n\nget_ui_locale / set_ui_locale and capture_window are the \
-                 exception to all of the above: they reach no database. The \
-                 first two change the app's display language — use them only \
-                 when the user asks. capture_window photographs the app's own \
-                 window, which is how you check what it actually renders; the \
-                 image shows the operator's real connection names, so treat it \
-                 as their screen and keep it out of anywhere public.",
+                 \n\nSix tools are the exception to all of the above: they reach \
+                 no database and instead work the dbboard window itself. \
+                 get_ui_locale / set_ui_locale change the app's display language \
+                 — use them only when the user asks. capture_window photographs \
+                 the app's own window, which is how you check what it actually \
+                 renders. set_editor_sql, run_query and open_ai_panel drive it: \
+                 together with capture_window they let you check what the app \
+                 shows rather than only what the database holds. \
+                 \n\nThose six act on a screen someone is sitting in front of. A \
+                 capture shows the operator's real connection names — treat it as \
+                 their screen and keep it out of anywhere public — and the other \
+                 five change what they are looking at. All five fail outright when \
+                 dbboard is not running, and no amount of retrying opens it. \
+                 \n\nrun_query is not a substitute for run_read_query: it runs \
+                 whatever is in that window's editor, against the connection that \
+                 window has selected, and leaves the rows on the operator's screen. \
+                 Reach for it when what the app displays is the point.",
             )
     }
 }
@@ -507,7 +590,14 @@ fn to_mcp(err: &ServiceError) -> McpError {
         | ServiceError::NotDumpable(_)
         | ServiceError::NotRestorable(_)
         | ServiceError::WriteNotEnabled(_)
-        | ServiceError::WriteRefused(_) => McpError::invalid_params(message, None),
+        | ServiceError::WriteRefused(_)
+        // Same reasoning as `capture_window`'s "not running" (ADR-0108): a
+        // closed app stays closed until a human opens it, and `internal_error`
+        // is the code that reads as "try again". A refusal from the window is
+        // its own answer — the tab the command needed was not there — and
+        // retrying the identical call cannot change that either.
+        | ServiceError::UiNoResponse(_)
+        | ServiceError::UiRefused(_) => McpError::invalid_params(message, None),
     }
 }
 
@@ -716,6 +806,56 @@ mod tests {
         assert!(
             description.contains("public"),
             "capture_window does not tell the agent to keep the image out of public places"
+        );
+    }
+
+    /// The `description = "..."` immediately above `async fn <name>`.
+    fn description_above(name: &str) -> &'static str {
+        let source = include_str!("server.rs");
+        let chunk = source
+            .split(&format!("async fn {name}"))
+            .next()
+            .unwrap_or_else(|| panic!("{name} has moved"));
+        chunk
+            .rsplit("description = \"")
+            .next()
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_else(|| panic!("the {name} description has moved"))
+    }
+
+    // A window that is not open does not open by itself. An agent told only
+    // that the tool "failed" will retry — three times, then give up and
+    // report the app as broken, when the fix was to ask someone to start it.
+    #[test]
+    fn every_ui_command_says_a_closed_window_is_not_worth_retrying() {
+        for name in ["set_editor_sql", "run_query", "open_ai_panel"] {
+            let description = description_above(name);
+            assert!(
+                description.contains("not running"),
+                "{name} does not tell the agent that dbboard may not be running"
+            );
+            assert!(
+                description.contains("retry"),
+                "{name} does not tell the agent that retrying will not help"
+            );
+        }
+    }
+
+    // run_read_query and run_query read the same databases by different
+    // routes, and the cheap one disturbs nobody. An agent that reaches for
+    // the window by default is putting rows on someone's screen to answer a
+    // question that never needed a screen.
+    #[test]
+    fn run_query_points_at_run_read_query_for_plain_reads() {
+        let description = description_above("run_query");
+
+        assert!(
+            description.contains("run_read_query"),
+            "run_query does not tell the agent when to prefer run_read_query"
+        );
+        assert!(
+            description.contains("connection the window has selected"),
+            "run_query does not say whose connection it runs against"
         );
     }
 }

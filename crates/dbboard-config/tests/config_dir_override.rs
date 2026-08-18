@@ -18,6 +18,7 @@
 use dbboard_config::ai_store::default_ai_providers_path;
 use dbboard_config::annotations::default_annotations_path;
 use dbboard_config::store::{config_dir, default_history_path, default_path};
+use dbboard_config::ui_command::{default_ui_command_path, default_ui_result_path};
 use dbboard_config::ui_settings::default_ui_settings_path;
 
 #[test]
@@ -38,6 +39,18 @@ fn every_config_file_resolves_inside_the_one_config_dir() {
         (
             default_ui_settings_path().expect("ui settings"),
             "ui-settings.toml",
+        ),
+        // The command channel (ADR-0109) is two processes agreeing on a
+        // path. Split them across profiles and neither errors: the MCP side
+        // writes into one directory, the window watches another, and every
+        // command times out reporting that dbboard is not running.
+        (
+            default_ui_command_path().expect("ui command"),
+            "ui-command.toml",
+        ),
+        (
+            default_ui_result_path().expect("ui command result"),
+            "ui-command-result.toml",
         ),
     ] {
         assert_eq!(

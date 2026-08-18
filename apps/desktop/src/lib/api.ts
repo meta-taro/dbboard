@@ -526,6 +526,41 @@ export const onUiLocale = (
 ): Promise<UnlistenFn> =>
   listen<string | null>('ui:locale', (event) => handler(event.payload));
 
+// --- UI commands (ADR-0109) ---------------------------------------------
+//
+// The language channel above lets an agent *change a setting*. This one lets
+// it work the window: type into the editor, run what is there, open the AI
+// panel. The shell watches `ui-command.toml` and emits `ui:command`; whoever
+// carried the instruction out answers with `reportUiCommandResult`, and the
+// caller is blocked until that answer arrives.
+
+/** An instruction from an MCP client. The verbs the shell can send. */
+export type UiCommand =
+  | { kind: 'set_editor_sql'; sql: string }
+  | { kind: 'run_query' }
+  | { kind: 'open_ai_panel' };
+
+/** A command and the number its answer must carry back. */
+export interface UiCommandEvent {
+  seq: number;
+  command: UiCommand;
+}
+
+export const onUiCommand = (
+  handler: (event: UiCommandEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<UiCommandEvent>('ui:command', (event) => handler(event.payload));
+
+// Answer one command. Called when the work has *finished* — reporting on
+// start would let an agent read the previous result as this one's.
+export const reportUiCommandResult = (
+  seq: number,
+  ok: boolean,
+  error: string | null,
+  detail: string | null,
+): Promise<void> =>
+  invoke('report_ui_command_result', { seq, ok, error, detail });
+
 // --- Auto-update (ADR-0067) ---------------------------------------------
 //
 // The updater plugin fetches the signed `latest.json` from the GitHub release,
