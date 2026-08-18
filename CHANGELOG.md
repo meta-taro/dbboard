@@ -32,6 +32,24 @@ public API is the HTTP contract in
   failure. The image is the operator's real screen, so the tool says on its
   own surface that it must not be pasted anywhere public without asking.
 
+- **An agent can now work that window, not only watch it** —
+  `set_editor_sql`, `run_query` and `open_ai_panel`
+  ([ADR-0109](docs/decisions.md)) put SQL in the query editor, press Run,
+  and open the AI panel. With `capture_window` they close the loop: the
+  mechanical half of a UI check — set it up, perform it, photograph the
+  result — no longer needs the person's hands, which is what had made the
+  remaining CJK rendering checks expensive enough to skip. The instruction
+  crosses through two files in the config directory, one written by each
+  side, numbered so that "run it again" is a second run rather than a
+  no-op, and answered when the window has *finished* rather than when it
+  started — a tool that returned early would report the previous run's
+  outcome as this one's. A command left behind by a session that ended is
+  adopted at startup instead of obeyed. `run_query` is not a cheaper
+  `run_read_query`: it runs whatever the editor holds, against the
+  connection that window has selected, and leaves the rows on someone's
+  screen. All three fail outright when dbboard is not running, and say so
+  in those words, because an agent told "timed out" retries.
+
 ### Fixed
 
 - **The query editor's toolbar stopped responding to anything once a
