@@ -538,7 +538,8 @@ export const onUiLocale = (
 export type UiCommand =
   | { kind: 'set_editor_sql'; sql: string }
   | { kind: 'run_query' }
-  | { kind: 'open_ai_panel' };
+  | { kind: 'open_ai_panel' }
+  | { kind: 'open_ai_settings' };
 
 /** A command and the number its answer must carry back. */
 export interface UiCommandEvent {
