@@ -53,6 +53,12 @@ pub enum UiCommand {
     RunQuery,
     /// Open the AI panel.
     OpenAiPanel,
+    /// Open the AI provider settings, which live *inside* the AI panel.
+    ///
+    /// Refused when the panel is closed, because the part of the window that
+    /// owns this verb is not mounted then. That refusal is the honest answer:
+    /// there is no top-level route to these settings to fall back on.
+    OpenAiSettings,
 }
 
 impl UiCommand {
@@ -66,6 +72,7 @@ impl UiCommand {
             Self::SetEditorSql { .. } => "set_editor_sql",
             Self::RunQuery => "run_query",
             Self::OpenAiPanel => "open_ai_panel",
+            Self::OpenAiSettings => "open_ai_settings",
         }
     }
 }
@@ -429,6 +436,7 @@ mod tests {
         );
         assert_eq!(UiCommand::RunQuery.kind(), "run_query");
         assert_eq!(UiCommand::OpenAiPanel.kind(), "open_ai_panel");
+        assert_eq!(UiCommand::OpenAiSettings.kind(), "open_ai_settings");
     }
 
     #[test]

@@ -10665,7 +10665,8 @@ usually not this one.
    must read the body to notice a failure will eventually not read it.
 9. **Three tools, no more:** `set_editor_sql`, `run_query`,
    `open_ai_panel`. Each one is a verb the window already has a button for,
-   which is what keeps this a channel rather than a second UI.
+   which is what keeps this a channel rather than a second UI. (Amended
+   below: four, with `open_ai_settings`.)
 
 ### Consequences
 
@@ -10696,3 +10697,35 @@ usually not this one.
 - **Not addressed here:** clicking arbitrary controls, addressing a specific
   window, or reading back what the editor contained. Each is a real gap; none
   is needed by the sheets this unblocks.
+
+### Amendment (2026-08-18) — a fourth verb: `open_ai_settings`
+
+Decision 9 said three tools and no more. Sheet 003 row 10 is what tested
+that limit, and the limit lost: the row asks whether the AI provider
+settings are reached *through* the AI panel rather than sitting beside it
+at the top level, and step 2 of it — "open the provider settings" — is a
+click inside the panel that none of the three verbs reaches.
+
+The standing rule from the Context above applies without needing a
+judgement call: when an operation turns out to need a human hand, the tool
+is added at that moment. So `open_ai_settings` is added, and decision 9
+now reads **four** verbs.
+
+What makes this one worth writing down rather than just adding is that its
+*refusal* carries the answer. Decision 7 gives verbs to whoever owns them
+and refuses an unclaimed verb by name. `AiProvidersDialog` is rendered from
+`AiPanel.svelte` and nowhere else, and `AiPanel` is mounted only while the
+panel is open — so with the panel shut, `open_ai_settings` is refused with
+"the part that handles it is not open". That refusal *is* the evidence row
+10 asks for: had the settings been a top-level route, some always-mounted
+part of the window would have claimed the verb and it would have opened.
+The tool description says this outright, so an agent reads the refusal as a
+finding rather than as an obstacle to route around.
+
+The alternative was to make the shell claim the verb and have it open the
+panel first as a side effect. That would have answered "did it open?" —
+which nobody asked — while destroying the answer to "where does it live?",
+which is the question on the sheet.
+
+The count of tools with no database behind them goes from six to seven;
+the surface goes from fifteen to sixteen.

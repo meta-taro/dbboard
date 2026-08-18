@@ -571,18 +571,18 @@ the GUI, so it adds no new place to keep credentials. See
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
 full spec.
 
-Fifteen fixed tools. Seven read a database — `list_connections`,
+Sixteen fixed tools. Seven read a database — `list_connections`,
 `list_tables`, `describe_table`, `search_schema` (ADR-0053),
 `list_relationships` (ADR-0054), `run_read_query`, and `get_annotations`
 (dbboard's local notes, ADR-0045) — plus `run_write` and `dump_database`
-(ADR-0087). Six reach no database at all, and work the window instead:
+(ADR-0087). Seven reach no database at all, and work the window instead:
 `get_ui_locale` / `set_ui_locale` change the app's display language
 (ADR-0107), `capture_window` returns a PNG of the running window
-(ADR-0108), and `set_editor_sql` / `run_query` / `open_ai_panel` drive it
-(ADR-0109) — so a claim about what the interface renders can be set up,
-performed and checked instead of asserted. Those six act on a screen
-someone is sitting in front of; all but the two getters fail outright when
-dbboard is not running.
+(ADR-0108), and `set_editor_sql` / `run_query` / `open_ai_panel` /
+`open_ai_settings` drive it (ADR-0109) — so a claim about what the
+interface renders can be set up, performed and checked instead of
+asserted. Those seven act on a screen someone is sitting in front of; all
+but the two getters fail outright when dbboard is not running.
 The security posture is the reason it is safe to point an agent at:
 
 - **Secrets never cross the wire.** The only connection metadata

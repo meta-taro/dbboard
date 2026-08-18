@@ -12,9 +12,10 @@
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
 //! `search_schema` (ADR-0053), `list_relationships` (ADR-0054),
 //! `run_write` + `dump_database` (ADR-0087), the `get_ui_locale` /
-//! `set_ui_locale` pair, `capture_window` (ADR-0108), and the three that
-//! work the window — `set_editor_sql`, `run_query`, `open_ai_panel`
-//! (ADR-0109). Those last six reach no database at all.
+//! `set_ui_locale` pair, `capture_window` (ADR-0108), and the four that
+//! work the window — `set_editor_sql`, `run_query`, `open_ai_panel`,
+//! `open_ai_settings` (ADR-0109). Those last seven reach no database at
+//! all.
 //!
 //! Tool *descriptions* carry more of the write policy than a reader might
 //! expect. They are the only documentation the agent gets before it acts:
@@ -466,9 +467,19 @@ impl DbboardMcp {
         self.ui_command(UiCommand::OpenAiPanel).await
     }
 
+    #[tool(
+        description = "Open the AI provider settings in the dbboard window. Returns once the dialog is up, and says so if it already was. \
+        \n\nThese settings live *inside* the AI panel, so this is refused while that panel is closed — call open_ai_panel first. That refusal is not a bug to work around: there is no top-level route to provider settings, and the refusal is how you can tell. \
+        \n\nReaches no database and writes no configuration by itself — it opens a dialog on someone's screen. \
+        \n\nIt fails when dbboard is not running and when the AI panel is closed. Neither changes by retrying."
+    )]
+    async fn open_ai_settings(&self) -> Result<CallToolResult, McpError> {
+        self.ui_command(UiCommand::OpenAiSettings).await
+    }
+
     /// Send one instruction to the window and report what it said back.
     ///
-    /// The three tools above differ only in the verb, and the answer shape is
+    /// The four tools above differ only in the verb, and the answer shape is
     /// the same for all of them: `{ "ok": true, "detail": ... }`, where
     /// `detail` is the window's own words for what happened. A failure is an
     /// error, never an `ok: false` body — an agent that has to read the body
@@ -517,18 +528,19 @@ impl ServerHandler for DbboardMcp {
                  has set mcp_write = true on — it is off by default. Privilege and \
                  role changes, TRUNCATE and DROP are refused on every connection and \
                  no setting enables them. \
-                 \n\nSix tools are the exception to all of the above: they reach \
+                 \n\nSeven tools are the exception to all of the above: they reach \
                  no database and instead work the dbboard window itself. \
                  get_ui_locale / set_ui_locale change the app's display language \
                  — use them only when the user asks. capture_window photographs \
                  the app's own window, which is how you check what it actually \
-                 renders. set_editor_sql, run_query and open_ai_panel drive it: \
-                 together with capture_window they let you check what the app \
-                 shows rather than only what the database holds. \
-                 \n\nThose six act on a screen someone is sitting in front of. A \
+                 renders. set_editor_sql, run_query, open_ai_panel and \
+                 open_ai_settings drive it: together with capture_window they let \
+                 you check what the app shows rather than only what the database \
+                 holds. \
+                 \n\nThose seven act on a screen someone is sitting in front of. A \
                  capture shows the operator's real connection names — treat it as \
                  their screen and keep it out of anywhere public — and the other \
-                 five change what they are looking at. All five fail outright when \
+                 six change what they are looking at. All six fail outright when \
                  dbboard is not running, and no amount of retrying opens it. \
                  \n\nrun_query is not a substitute for run_read_query: it runs \
                  whatever is in that window's editor, against the connection that \
@@ -828,7 +840,12 @@ mod tests {
     // report the app as broken, when the fix was to ask someone to start it.
     #[test]
     fn every_ui_command_says_a_closed_window_is_not_worth_retrying() {
-        for name in ["set_editor_sql", "run_query", "open_ai_panel"] {
+        for name in [
+            "set_editor_sql",
+            "run_query",
+            "open_ai_panel",
+            "open_ai_settings",
+        ] {
             let description = description_above(name);
             assert!(
                 description.contains("not running"),

@@ -33,9 +33,9 @@ public API is the HTTP contract in
   own surface that it must not be pasted anywhere public without asking.
 
 - **An agent can now work that window, not only watch it** —
-  `set_editor_sql`, `run_query` and `open_ai_panel`
+  `set_editor_sql`, `run_query`, `open_ai_panel` and `open_ai_settings`
   ([ADR-0109](docs/decisions.md)) put SQL in the query editor, press Run,
-  and open the AI panel. With `capture_window` they close the loop: the
+  open the AI panel, and open the provider settings inside it. With `capture_window` they close the loop: the
   mechanical half of a UI check — set it up, perform it, photograph the
   result — no longer needs the person's hands, which is what had made the
   remaining CJK rendering checks expensive enough to skip. The instruction
@@ -47,8 +47,12 @@ public API is the HTTP contract in
   adopted at startup instead of obeyed. `run_query` is not a cheaper
   `run_read_query`: it runs whatever the editor holds, against the
   connection that window has selected, and leaves the rows on someone's
-  screen. All three fail outright when dbboard is not running, and say so
+  screen. All four fail outright when dbboard is not running, and say so
   in those words, because an agent told "timed out" retries.
+  `open_ai_settings` is refused for a second reason — the AI panel being
+  shut — and that refusal is the useful half of it: there is no top-level
+  route to the provider settings, so being told the verb has no owner is
+  how the arrangement can be checked rather than taken on trust.
 
 ### Fixed
 
