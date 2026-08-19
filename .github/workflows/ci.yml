@@ -62,11 +62,14 @@ jobs:
       # Tauri 2 links against the system webkit/gtk stack. Without these the
       # desktop crate does not compile and the whole workspace check fails.
       #
-      # The pipewire pair is for `xcap` (dbboard-mcp's capture_window, ADR-0108).
+      # The last three are for `xcap` (dbboard-mcp's capture_window, ADR-0108).
       # xcap declares `pipewire` for every non-OHOS Linux target with no feature
       # gate, so `default-features = false` cannot avoid it — the only way to
       # keep the workspace checking on Linux is to have the .pc files present.
-      # libspa-sys runs bindgen, which needs libclang at build time.
+      # libspa-sys runs bindgen, which needs libclang at build time; libspa's
+      # pkg-config then asks the linker for -lgbm, which no other dependency
+      # here brings in. Both were found by CI failing, one per round: there is
+      # no Linux machine in this project's loop to resolve the chain locally.
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
@@ -79,6 +82,7 @@ jobs:
             librsvg2-dev \
             libpipewire-0.3-dev \
             libclang-dev \
+            libgbm-dev \
             patchelf
 
       - uses: actions/setup-node@v4
