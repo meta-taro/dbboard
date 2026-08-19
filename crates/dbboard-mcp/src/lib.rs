@@ -9,6 +9,10 @@
 //! then for privilege changes, `TRUNCATE` or `DROP`, which no setting
 //! opens (ADR-0087).
 //!
+//! It can also see the app: `capture_window` (ADR-0108) returns a PNG of
+//! the running dbboard window, so a claim about what the interface renders
+//! can be checked rather than asserted.
+//!
 //! Two layers:
 //!
 //! - [`service`] — [`McpService`], the transport-independent tool logic.
@@ -18,17 +22,22 @@
 //! - [`server`] — [`DbboardMcp`], the `rmcp` `ServerHandler` that wraps
 //!   each service method as a `#[tool]` and translates errors onto the
 //!   MCP envelope.
+//! - [`capture`] — the window screenshot, which belongs to neither: it
+//!   holds no service state and talks to the windowing system, not a
+//!   database.
 //!
 //! The binary ([`main`](../main.rs)) resolves the config paths, builds a
 //! [`McpService`] over the OS keychain, and serves a [`DbboardMcp`] on
 //! stdio. stdout carries the JSON-RPC frames, so all logging goes to
 //! stderr.
 
+pub mod capture;
 pub mod server;
 pub mod service;
 
+pub use capture::{CaptureError, CaptureShot};
 pub use server::DbboardMcp;
 pub use service::{
     AnnotationsView, ConnectionView, DumpFileOutcome, McpService, QueryOutput, ServiceError,
-    WriteOutput, DEFAULT_MAX_ROWS, MAX_MAX_ROWS,
+    UiLocaleView, WriteOutput, DEFAULT_MAX_ROWS, MAX_MAX_ROWS,
 };

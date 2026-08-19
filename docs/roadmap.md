@@ -7,6 +7,25 @@ roadmap; the two are coordinated at the concept level only.
 Mark phases `✅ done` as they ship. Add concrete dates only after the
 fact; estimates belong in the issue tracker, not here.
 
+## Releases are not planned here
+
+**Nothing on this page is assigned to a version number, and that is
+deliberate** ([ADR-0110](decisions.md)). Tying an initiative to a release
+means the release waits for its slowest initiative, and everyone keeps using
+the previous build meanwhile.
+
+What triggers a release is unreleased content:
+
+```sh
+awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && /^- /' ../CHANGELOG.md | wc -l
+```
+
+`>= 1` and `develop` green — a release may be cut. `>= 3` — one is due.
+The number is derived from what is in it (additions → minor, fixes only →
+patch); a non-additive change to `docs/api-contract.md` is the major bump,
+and is the only thing v1.0 waits on. Whatever is finished when the trigger
+fires is what ships; an initiative spanning three releases is normal.
+
 ## Pacing Note
 
 Two repos are maintained in parallel by a small team. To avoid splitting
@@ -37,6 +56,14 @@ focus:
   overwriting import (ADR-0105), and `DBBOARD_CONFIG_DIR` (ADR-0097). The
   mandatory verification commands also moved into CI, where until then the
   only automated check on a pull request was the PII scan.
+
+  **v0.9.0 (2026-08-19)** adds no adapter either. It is seven MCP verbs —
+  the UI language readable and settable ([ADR-0107](decisions.md)), the
+  window capturable ([ADR-0108](decisions.md)), and the editor, Run button
+  and AI panel drivable ([ADR-0109](decisions.md)) — which together move the
+  mechanical half of a UI check off the maintainer's hands and leave the
+  judging where it belongs. Plus the fix those verbs turned up: the query
+  toolbar had been frozen and unreported.
 
   The Tauri 2 + SvelteKit client reached parity at v0.4.0 and is now the
   **only** client: the egui app and its supporting crates were deleted in
@@ -145,7 +172,7 @@ string, `cargo run -p dbboard` browses `schema.table` listings and runs
 queries against a real CockroachDB database; with it unset the app still
 defaults to D1 (if configured) or local Turso.
 
-## Phase 2 — Extract the adapter trait *(current)*
+## Phase 2 — Extract the adapter trait ✅ done
 
 Goal: turn the Turso-shaped types into a real abstraction without
 breaking Phase 1. Designed jointly with the capability model (ADR-0012)
@@ -185,7 +212,11 @@ contract (ADR-0011).
   noted under ADR-0016 — a single desktop process can now drive
   many connections in one session.)
 
-Exit criteria: nothing in `dbboard-ui` knows the word "Turso".
+Exit criteria: nothing in `dbboard-ui` knows the word "Turso". Settled by
+[ADR-0089](decisions.md) — `crates/dbboard-ui` was removed with the egui
+client, and the Tauri frontend that replaced it never named an adapter.
+The remaining reference to a concrete backend is the `id` string in
+`GET /capabilities`, which is deliberate discovery data, not coupling.
 
 ## Phase 2.5 — Multilingual UI (ADR-0015) ✅ done
 
@@ -424,7 +455,7 @@ v:2 schema bump), and D-1 (full-DDL schema snapshots via
 `describe_table` as the first callable tool) stays scoped to
 ADR-0023 §9 and is queued for its own ADR (ADR-0029).
 
-## Phase 5 — Quality of life
+## Phase 5 — Quality of life *(current)*
 
 - [x] Result table virtualisation for large result sets — delivered by
       the `egui_extras::TableBuilder` grid rebuild (sticky header,
@@ -555,7 +586,11 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       diffing — and a live progress window can **Cancel** mid-run, with a
       completion summary of applied schema/data statements and failures
       ([ADR-0051](decisions.md), PR #112).
-- [ ] Export results (CSV / JSON)
+- [x] Export results — CSV / TSV, both to the clipboard and to a file via
+      the native save dialog ([ADR-0035](decisions.md)). JSON is not a
+      supported export format; it is tracked below rather than left
+      implied by this line.
+- [ ] Export results as JSON
 - [ ] Saved queries
 - [ ] Schema diff between two connections
 - [ ] Performance: cold-start under 1s on a modern laptop
@@ -699,6 +734,42 @@ attributable to one change:
 
 PlanetScale, the other half of the old stretch bullet, needs no new adapter —
 it is MySQL-compatible and already reachable through `dbboard-mysql`.
+
+## Performance — startup time and everyday responsiveness
+
+Requested 2026-08-19. Not assigned to a version (see *Releases are not
+planned here*); it ships in pieces, each one released when it lands.
+
+This is about **dbboard's own speed**, not about analysing the user's
+queries — the latter is "Query performance analysis tools" under Phase 7+
+and is a separate thing.
+
+**Nothing here is measured yet, and no work starts before it is.** Every
+item below is a suspicion, and acting on a suspicion is how you spend a week
+optimising something that was never the cost.
+
+- [ ] **Establish the numbers first.** Cold start and warm start to a usable
+      window; time to first paint; time from picking a connection to the
+      schema tree being populated; time from Run to first row on screen. On
+      the maintainer's machine, against a real connection, not a synthetic
+      one — the collector's three store databases are the workload that
+      matters.
+- [ ] **Startup.** Where the time actually goes between process start and an
+      interactive window: Tauri shell, webview creation, the SvelteKit
+      bundle, config and connection-list reads, and whether anything is
+      dialled before the user asks for it.
+- [ ] **Connecting and browsing.** Whether schema introspection is doing more
+      round trips than it needs to, and whether the sidebar waits on all of
+      them before showing any of them.
+- [ ] **Large result sets.** The grid is virtualised
+      ([ADR-0030](decisions.md)), so the suspicion is in what happens before
+      it: decoding, allocation, and how much of a result is held at once.
+- [ ] **Release-build profile.** Whether the shipped binary's profile is the
+      one we would choose if asked, rather than the one we inherited.
+
+Each finding lands as its own change with a `CHANGELOG` entry, so an
+improvement reaches the maintainer's installed build as soon as it exists
+rather than at the end of the initiative.
 
 ## Phase 7+ — Stretch
 

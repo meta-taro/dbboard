@@ -497,6 +497,71 @@ export const deleteAiProvider = (id: string): Promise<void> =>
 export const setActiveAiProvider = (id: string | null): Promise<void> =>
   invoke('set_active_ai_provider', { id });
 
+// --- UI language (ADR-0041) ---------------------------------------------
+//
+// The chosen language lives in `ui-settings.toml`, not only in localStorage,
+// so an MCP client can read it and switch it while the window is open. The
+// shell watches that file and emits `ui:locale` when it changes.
+
+// The persisted UI language and the codes the build ships. `locale` is null
+// when nothing has been chosen — the caller then falls back to the OS
+// language, so null is a state, not a missing value.
+export interface UiLocale {
+  locale: string | null;
+  supported: string[];
+}
+
+export const getUiLocale = (): Promise<UiLocale> => invoke('get_ui_locale');
+
+// Persist the UI language. Rejects on a code this build cannot display, so a
+// typo surfaces instead of leaving the window in a language nobody asked for.
+export const setUiLocale = (locale: string): Promise<void> =>
+  invoke('set_ui_locale', { locale });
+
+// Subscribe to language changes made outside this window (an MCP client, or a
+// hand edit of `ui-settings.toml`). A null payload means the choice was
+// cleared and the OS language applies again.
+export const onUiLocale = (
+  handler: (locale: string | null) => void,
+): Promise<UnlistenFn> =>
+  listen<string | null>('ui:locale', (event) => handler(event.payload));
+
+// --- UI commands (ADR-0109) ---------------------------------------------
+//
+// The language channel above lets an agent *change a setting*. This one lets
+// it work the window: type into the editor, run what is there, open the AI
+// panel. The shell watches `ui-command.toml` and emits `ui:command`; whoever
+// carried the instruction out answers with `reportUiCommandResult`, and the
+// caller is blocked until that answer arrives.
+
+/** An instruction from an MCP client. The verbs the shell can send. */
+export type UiCommand =
+  | { kind: 'set_editor_sql'; sql: string }
+  | { kind: 'run_query' }
+  | { kind: 'open_ai_panel' }
+  | { kind: 'open_ai_settings' };
+
+/** A command and the number its answer must carry back. */
+export interface UiCommandEvent {
+  seq: number;
+  command: UiCommand;
+}
+
+export const onUiCommand = (
+  handler: (event: UiCommandEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<UiCommandEvent>('ui:command', (event) => handler(event.payload));
+
+// Answer one command. Called when the work has *finished* — reporting on
+// start would let an agent read the previous result as this one's.
+export const reportUiCommandResult = (
+  seq: number,
+  ok: boolean,
+  error: string | null,
+  detail: string | null,
+): Promise<void> =>
+  invoke('report_ui_command_result', { seq, ok, error, detail });
+
 // --- Auto-update (ADR-0067) ---------------------------------------------
 //
 // The updater plugin fetches the signed `latest.json` from the GitHub release,

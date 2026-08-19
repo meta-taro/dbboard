@@ -52,9 +52,10 @@ latest release are on the **[download page](https://meta-taro.github.io/dbboard/
 (GitHub Pages), or directly on the
 [Releases](https://github.com/meta-taro/dbboard/releases) page. Every
 release ships a `SHA256SUMS.txt`; verify your download before running it.
-The binaries are not code-signed yet, so Windows SmartScreen / macOS
-Gatekeeper will warn on first launch (see [ADR-0047](docs/decisions.md)
-and [ADR-0044](docs/decisions.md)).
+The binaries are **not code-signed**, and will not be — a certificate is a
+recurring purchase this project does not make ([ADR-0106](docs/decisions.md)).
+Windows SmartScreen / macOS Gatekeeper therefore warn on first launch, on
+every release. The checksum is what you verify instead.
 
 ## Goals
 
@@ -570,10 +571,18 @@ the GUI, so it adds no new place to keep credentials. See
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
 full spec.
 
-Nine fixed tools. Seven read — `list_connections`, `list_tables`,
-`describe_table`, `search_schema` (ADR-0053), `list_relationships`
-(ADR-0054), `run_read_query`, and `get_annotations` (dbboard's local
-notes, ADR-0045) — plus `run_write` and `dump_database` (ADR-0087).
+Sixteen fixed tools. Seven read a database — `list_connections`,
+`list_tables`, `describe_table`, `search_schema` (ADR-0053),
+`list_relationships` (ADR-0054), `run_read_query`, and `get_annotations`
+(dbboard's local notes, ADR-0045) — plus `run_write` and `dump_database`
+(ADR-0087). Seven reach no database at all, and work the window instead:
+`get_ui_locale` / `set_ui_locale` change the app's display language
+(ADR-0107), `capture_window` returns a PNG of the running window
+(ADR-0108), and `set_editor_sql` / `run_query` / `open_ai_panel` /
+`open_ai_settings` drive it (ADR-0109) — so a claim about what the
+interface renders can be set up, performed and checked instead of
+asserted. Those seven act on a screen someone is sitting in front of; all
+but the two getters fail outright when dbboard is not running.
 The security posture is the reason it is safe to point an agent at:
 
 - **Secrets never cross the wire.** The only connection metadata
@@ -739,10 +748,12 @@ dependency. New license expressions surfaced by the check go into
 Windows and macOS bundles are produced by the Tauri CLI from
 `apps/desktop`. Linux is not built today.
 
-> **Note on trust.** The artifacts are **not code-signed yet**, so Windows
-> SmartScreen and macOS Gatekeeper will warn about an unknown publisher.
-> Verify a download against the published `SHA256SUMS.txt` (see *Release
-> builds & checksums*). Signing is a planned follow-up ([ADR-0044](docs/decisions.md)).
+> **Note on trust.** The artifacts are **not code-signed**, and that is a
+> decision, not a gap waiting to be filled ([ADR-0106](docs/decisions.md)):
+> Windows SmartScreen and macOS Gatekeeper will warn about an unknown
+> publisher on every release. Verify a download against the published
+> `SHA256SUMS.txt` (see *Release builds & checksums*) — that, not the OS
+> warning, is what tells you the file is the one this repo built.
 > This is separate from the *updater* signing key, which is already in use and
 > is what proves an auto-update came from this project ([ADR-0067](docs/decisions.md)).
 

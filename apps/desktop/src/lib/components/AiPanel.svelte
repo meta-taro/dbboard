@@ -15,6 +15,8 @@
     type StreamState,
   } from '$lib/ai/panel';
   import AiProvidersDialog from './AiProvidersDialog.svelte';
+  import { uiCommands } from '$lib/ui-command/bus';
+  import type { Detach } from '$lib/ui-command/channel';
 
   interface Props {
     // Null when no connection is selected — Explain still works; Suggest is
@@ -38,6 +40,15 @@
   let providersOpen = $state(false);
 
   let unlisten: UnlistenFn | null = null;
+  /**
+   * Gives up this component's claim on `open_ai_settings` (ADR-0109).
+   *
+   * The provider dialog is rendered from here and nowhere else, so this panel
+   * is the only part of the window that can open it. While the panel is shut
+   * nobody holds the verb and the agent is told so by name — which is the
+   * honest answer, because there is no top-level route to these settings.
+   */
+  let releaseAiSettings: Detach | null = null;
 
   const hasConnection = $derived(connectionId !== null);
   const sendable = $derived(
@@ -50,10 +61,19 @@
   const meterOut = $derived(phase === 'running' ? stream.tokensOut : (outcome?.tokens_out ?? 0));
   const showMeter = $derived(hasTokens(meterIn, meterOut));
 
-  onMount(refreshStatus);
+  onMount(() => {
+    void refreshStatus();
+    releaseAiSettings = uiCommands.on('open_ai_settings', async () => {
+      if (providersOpen) return 'the AI provider settings were already open';
+      providersOpen = true;
+      return 'AI provider settings opened';
+    });
+  });
 
   onDestroy(() => {
     unlisten?.();
+    releaseAiSettings?.();
+    releaseAiSettings = null;
   });
 
   async function refreshStatus(): Promise<void> {

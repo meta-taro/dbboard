@@ -41,7 +41,8 @@ use std::time::{Duration, Instant};
 
 use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
 use dbboard_config::store::{self, ConnectionKind};
-use dbboard_config::{ConfigError, SecretStore};
+pub use dbboard_config::UiCommand;
+use dbboard_config::{ui_command, ui_settings, ConfigError, SecretStore};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
     build_update_sql, classify_write, dialect_for_adapter_id, plan_dump as core_plan_dump,
@@ -88,6 +89,17 @@ pub struct ConnectionView {
     pub id: String,
     pub name: String,
     pub kind: String,
+}
+
+/// Result of [`McpService::ui_locale`]: what the UI language is set to, and
+/// what it could be set to.
+///
+/// `locale` is `None` when nothing has been chosen — the client falls back
+/// to the OS language, so `None` is a real state and not a missing value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UiLocaleView {
+    pub locale: Option<String>,
+    pub supported: Vec<String>,
 }
 
 /// Result of [`McpService::run_read_query`]. `truncated` tells the agent
@@ -375,6 +387,22 @@ pub enum ServiceError {
     /// A `spawn_blocking` task panicked or was cancelled.
     #[error("background task failed: {0}")]
     Task(String),
+
+    /// A UI command was written and nothing answered it in time.
+    ///
+    /// This is what "dbboard is not running" looks like from the writing
+    /// side: the command file is an ordinary file, so a write succeeds
+    /// whether or not a window is watching. Says so in the message, because
+    /// the caller's next move is to check the app rather than to retry.
+    #[error(
+        "dbboard did not act on the command within {0:?}; \
+         the app is probably not running, or its window has not finished starting"
+    )]
+    UiNoResponse(Duration),
+
+    /// The window received the command and answered that it could not do it.
+    #[error("dbboard could not do it: {0}")]
+    UiRefused(String),
 }
 
 /// Flatten one [`ForeignKey`] on `from_table` into a directed edge.
@@ -427,6 +455,10 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
 pub struct McpService {
     config_path: PathBuf,
     annotations_path: PathBuf,
+    /// `ui-settings.toml`. Unlike the two above it holds no connection and
+    /// no secret — it is the channel the locale tools write and the desktop
+    /// shell watches (ADR-0041).
+    ui_settings_path: PathBuf,
     secrets: Arc<dyn SecretStore>,
     // Adapters are connected lazily on first use and reused thereafter —
     // reconnecting per request would be wasteful and, for Turso
@@ -473,27 +505,40 @@ impl CachedAdapter {
 /// laptop suspend to kill it.
 const HEALTH_CHECK_AFTER_IDLE: Duration = Duration::from_secs(30);
 
+/// How long a UI command waits for the window to answer.
+///
+/// Generous, because the window answers when the work is *finished* rather
+/// than when it starts: a `run_query` answer waits on a real database. The
+/// ceiling exists so that "the app is not running" fails in half a minute
+/// instead of hanging the agent forever.
+const UI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often the answer file is re-read while waiting.
+const UI_RESULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 impl McpService {
-    /// Build a service reading connections from `config_path` and
-    /// annotations from `annotations_path`, resolving secrets through
-    /// `secrets`.
+    /// Build a service reading connections from `config_path`, annotations
+    /// from `annotations_path`, and UI preferences from
+    /// `ui_settings_path`, resolving secrets through `secrets`.
     #[must_use]
     pub fn new(
         config_path: PathBuf,
         annotations_path: PathBuf,
+        ui_settings_path: PathBuf,
         secrets: Arc<dyn SecretStore>,
     ) -> Self {
         Self {
             config_path,
             annotations_path,
+            ui_settings_path,
             secrets,
             cache: Mutex::new(HashMap::new()),
         }
     }
 
     /// Build a service using the platform's default per-user config paths
-    /// (the same `connections.toml` / `annotations.toml` the desktop GUI
-    /// reads).
+    /// (the same `connections.toml` / `annotations.toml` /
+    /// `ui-settings.toml` the desktop GUI reads).
     ///
     /// # Errors
     ///
@@ -502,7 +547,171 @@ impl McpService {
     pub fn with_default_paths(secrets: Arc<dyn SecretStore>) -> Result<Self, ServiceError> {
         let config_path = store::default_path()?;
         let annotations_path = annotations::default_annotations_path()?;
-        Ok(Self::new(config_path, annotations_path, secrets))
+        let ui_settings_path = ui_settings::default_ui_settings_path()?;
+        Ok(Self::new(
+            config_path,
+            annotations_path,
+            ui_settings_path,
+            secrets,
+        ))
+    }
+
+    /// The `ui-settings.toml` this service reads and writes.
+    ///
+    /// Exposed for the desktop shell, which watches the same file for changes
+    /// made by an MCP client. Taking it from here rather than resolving the
+    /// default path again keeps the watcher and the writer on one file even
+    /// under a `--config` override.
+    #[must_use]
+    pub fn ui_settings_path(&self) -> &Path {
+        &self.ui_settings_path
+    }
+
+    /// The UI language currently persisted in `ui-settings.toml`, plus every
+    /// code [`set_ui_locale`](Self::set_ui_locale) would accept.
+    ///
+    /// `locale: None` is not an error and not English — it means the user has
+    /// made no explicit choice and the client resolves the OS language, which
+    /// is what a fresh install does.
+    ///
+    /// The supported list travels with the value because the agent has no
+    /// other way to learn it: the translations live in the frontend, and an
+    /// agent that guesses a plausible tag (`ja-JP`) gets a refusal it cannot
+    /// diagnose.
+    #[must_use]
+    pub fn ui_locale(&self) -> UiLocaleView {
+        UiLocaleView {
+            locale: ui_settings::load_or_default(&self.ui_settings_path).locale,
+            supported: ui_settings::SUPPORTED_LOCALES
+                .iter()
+                .map(|&code| code.to_owned())
+                .collect(),
+        }
+    }
+
+    /// Persist `code` as the UI language.
+    ///
+    /// Load-modify-save rather than a bare write: the theme and the backup
+    /// threshold live in the same file and belong to the shell, so replacing
+    /// the file would reset a user's theme as a side effect of a language
+    /// change.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::InvalidRequest`] if `code` is not one of
+    ///   [`ui_settings::SUPPORTED_LOCALES`]. Matching is exact and
+    ///   case-sensitive — the frontend looks the code up the same way, so a
+    ///   near-miss like `ja-JP` would persist a value that displays nothing.
+    /// - [`ServiceError::Config`] if the file cannot be written.
+    pub fn set_ui_locale(&self, code: &str) -> Result<(), ServiceError> {
+        if !ui_settings::is_supported_locale(code) {
+            return Err(ServiceError::InvalidRequest(format!(
+                "{code:?} is not a language dbboard ships; expected one of: {}",
+                ui_settings::SUPPORTED_LOCALES.join(", ")
+            )));
+        }
+        let mut settings = ui_settings::load_or_default(&self.ui_settings_path);
+        settings.locale = Some(code.to_owned());
+        ui_settings::save_atomic(&self.ui_settings_path, &settings)?;
+        Ok(())
+    }
+
+    /// `ui-command.toml`, alongside `ui-settings.toml`.
+    ///
+    /// Derived from the settings path rather than resolved independently, so
+    /// that a `--config` override or `DBBOARD_CONFIG_DIR` moves the whole
+    /// side channel together. Splitting them would let a server write
+    /// commands into one profile while the window watched another, and the
+    /// only symptom would be a timeout.
+    #[must_use]
+    pub fn ui_command_path(&self) -> PathBuf {
+        self.ui_sibling("ui-command.toml")
+    }
+
+    /// `ui-command-result.toml`, alongside `ui-settings.toml`.
+    #[must_use]
+    pub fn ui_result_path(&self) -> PathBuf {
+        self.ui_sibling("ui-command-result.toml")
+    }
+
+    fn ui_sibling(&self, name: &str) -> PathBuf {
+        self.ui_settings_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(name)
+    }
+
+    /// Ask the running window to do something, and wait for it to say it did.
+    ///
+    /// Returns the window's `detail`, when it had anything to say beyond
+    /// "done".
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::UiNoResponse`] if nothing answers in time — which is
+    ///   what "dbboard is not running" looks like from here, since a file
+    ///   nobody is watching absorbs a write without complaint.
+    /// - [`ServiceError::UiRefused`] if the window answered that it could not
+    ///   do it.
+    /// - [`ServiceError::Config`] if the command file cannot be written.
+    pub async fn send_ui_command(
+        &self,
+        command: UiCommand,
+    ) -> Result<Option<String>, ServiceError> {
+        self.send_ui_command_within(command, UI_COMMAND_TIMEOUT)
+            .await
+    }
+
+    /// [`send_ui_command`](Self::send_ui_command) with the deadline supplied,
+    /// so the timeout path is testable without a test that sleeps for the
+    /// real one.
+    ///
+    /// # Errors
+    ///
+    /// As [`send_ui_command`](Self::send_ui_command).
+    pub async fn send_ui_command_within(
+        &self,
+        command: UiCommand,
+        timeout: Duration,
+    ) -> Result<Option<String>, ServiceError> {
+        let command_path = self.ui_command_path();
+        let result_path = self.ui_result_path();
+
+        let seq = ui_command::next_seq(
+            ui_command::load_command_or_default(&command_path).seq,
+            ui_command::load_result_or_default(&result_path).seq,
+        );
+        ui_command::save_command_atomic(
+            &command_path,
+            &ui_command::UiCommandFile {
+                version: ui_command::UI_COMMAND_VERSION,
+                seq,
+                command: Some(command),
+            },
+        )?;
+
+        // Poll rather than watch: the wait is bounded and short, and a
+        // filesystem-notify dependency here would have to be right on three
+        // platforms to save a few hundred milliseconds.
+        let deadline = Instant::now() + timeout;
+        loop {
+            let answer = ui_command::load_result_or_default(&result_path);
+            if answer.answers(seq) {
+                return if answer.ok {
+                    Ok(answer.detail)
+                } else {
+                    Err(ServiceError::UiRefused(
+                        answer
+                            .error
+                            .unwrap_or_else(|| "the window gave no reason".to_string()),
+                    ))
+                };
+            }
+            if Instant::now() >= deadline {
+                return Err(ServiceError::UiNoResponse(timeout));
+            }
+            tokio::time::sleep(UI_RESULT_POLL_INTERVAL).await;
+        }
     }
 
     /// List every configured connection, projected to the non-secret
@@ -1210,7 +1419,7 @@ fn filter_columns(table: &TableAnnotations, column: Option<&str>) -> TableAnnota
 mod tests {
     use super::*;
     use dbboard_config::annotations::AnnotationsAdmin;
-    use dbboard_config::InMemorySecretStore;
+    use dbboard_config::{InMemorySecretStore, ThemePreference, UiSettingsFile, SUPPORTED_LOCALES};
     use dbboard_core::{
         Capabilities, DbResult, ForeignKey as CoreForeignKey, QueryResult as CoreQueryResult,
     };
@@ -1227,19 +1436,27 @@ mod tests {
         service: McpService,
         config_path: PathBuf,
         annotations_path: PathBuf,
+        ui_settings_path: PathBuf,
     }
 
     fn fixture() -> Fixture {
         let dir = TempDir::new().expect("tempdir");
         let config_path = dir.path().join("connections.toml");
         let annotations_path = dir.path().join("annotations.toml");
+        let ui_settings_path = dir.path().join("ui-settings.toml");
         let secrets = Arc::new(InMemorySecretStore::default());
-        let service = McpService::new(config_path.clone(), annotations_path.clone(), secrets);
+        let service = McpService::new(
+            config_path.clone(),
+            annotations_path.clone(),
+            ui_settings_path.clone(),
+            secrets,
+        );
         Fixture {
             dir,
             service,
             config_path,
             annotations_path,
+            ui_settings_path,
         }
     }
 
@@ -2705,5 +2922,244 @@ path = ":memory:"
             view.truncated,
             "more edges than the cap must flag truncated"
         );
+    }
+
+    // --- UI locale -------------------------------------------------------
+    //
+    // The only tools that touch neither a database nor a connection: they
+    // read and write `ui-settings.toml`, which the desktop shell watches.
+
+    #[test]
+    fn ui_locale_is_unset_until_something_writes_one() {
+        let fx = fixture();
+        let view = fx.service.ui_locale();
+        assert_eq!(
+            view.locale, None,
+            "a missing settings file means no explicit choice, not a default"
+        );
+        assert_eq!(
+            view.supported,
+            SUPPORTED_LOCALES.to_vec(),
+            "the view must name every code set_ui_locale would accept, \
+             so an agent does not have to guess one and be refused"
+        );
+    }
+
+    #[test]
+    fn set_ui_locale_persists_and_reads_back() {
+        let fx = fixture();
+        fx.service.set_ui_locale("ja").expect("set ja");
+        assert_eq!(fx.service.ui_locale().locale.as_deref(), Some("ja"));
+        // Through the file, not just this service's memory — the shell reads
+        // the file, so an in-memory-only write would change nothing on screen.
+        let on_disk = dbboard_config::load_ui_settings(&fx.ui_settings_path);
+        assert_eq!(on_disk.locale.as_deref(), Some("ja"));
+    }
+
+    #[test]
+    fn set_ui_locale_refuses_a_code_no_build_can_display() {
+        let fx = fixture();
+        let err = fx.service.set_ui_locale("nl").expect_err("unsupported");
+        assert!(matches!(err, ServiceError::InvalidRequest(_)), "{err:?}");
+        assert!(
+            !fx.ui_settings_path.exists(),
+            "a refused code must not leave a settings file behind"
+        );
+    }
+
+    #[test]
+    fn set_ui_locale_is_exact_about_the_code() {
+        // `ja-JP` and `JA` are what a caller reaches for. Accepting them would
+        // write a value the frontend's exact lookup cannot match, leaving the
+        // UI in English with a settings file that claims otherwise.
+        let fx = fixture();
+        for wrong in ["ja-JP", "JA", "en-US", ""] {
+            let err = fx.service.set_ui_locale(wrong).expect_err(wrong);
+            assert!(
+                matches!(err, ServiceError::InvalidRequest(_)),
+                "{wrong:?} should be InvalidRequest, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_ui_locale_preserves_the_other_ui_settings() {
+        let fx = fixture();
+        // The shell owns the theme and the backup threshold in the same file.
+        // A locale write that dropped them would reset the user's theme.
+        let mut settings = UiSettingsFile::with_theme(ThemePreference::Dark);
+        settings.backup_warn_rows = Some(12_345);
+        dbboard_config::save_ui_settings(&fx.ui_settings_path, &settings).expect("seed settings");
+
+        fx.service.set_ui_locale("ko").expect("set ko");
+
+        let after = dbboard_config::load_ui_settings(&fx.ui_settings_path);
+        assert_eq!(after.locale.as_deref(), Some("ko"));
+        assert_eq!(after.theme, ThemePreference::Dark);
+        assert_eq!(after.backup_warn_rows, Some(12_345));
+    }
+
+    #[test]
+    fn set_ui_locale_replaces_an_unreadable_settings_file() {
+        // `load_or_default` is deliberately infallible so UI chrome cannot
+        // break startup; the consequence is that a corrupt file is silently
+        // replaced here rather than reported. Pinned so the trade-off is a
+        // decision and not a surprise.
+        let fx = fixture();
+        write(&fx.ui_settings_path, "this is not toml {{{");
+        fx.service.set_ui_locale("de").expect("set de");
+        let after = dbboard_config::load_ui_settings(&fx.ui_settings_path);
+        assert_eq!(after.locale.as_deref(), Some("de"));
+    }
+
+    // ---- the UI command channel (ADR-0109) ----------------------------
+
+    /// Stand in for the window: wait for a command to appear, then answer it.
+    ///
+    /// Spawned before the command is sent, exactly as the real watcher is
+    /// already running before an agent calls. `answer` decides what it says,
+    /// so one helper covers both the obeyed and the refused case.
+    fn spawn_fake_window(
+        service: &McpService,
+        answer: impl Fn(&UiCommand, u64) -> dbboard_config::UiResultFile + Send + 'static,
+    ) -> std::thread::JoinHandle<()> {
+        let command_path = service.ui_command_path();
+        let result_path = service.ui_result_path();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                let file = dbboard_config::load_command_or_default(&command_path);
+                if let Some(command) = dbboard_config::pending_command(&file, 0) {
+                    let reply = answer(command, file.seq);
+                    dbboard_config::save_result_atomic(&result_path, &reply).expect("answer");
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })
+    }
+
+    #[test]
+    fn the_command_files_sit_beside_ui_settings() {
+        // The three files are one channel. If a `--config` override moved the
+        // settings but not the commands, the server would write into one
+        // profile while the window watched another, and the only symptom
+        // would be a timeout with nothing wrong in either file.
+        let fx = fixture();
+        let parent = fx.ui_settings_path.parent().expect("parent");
+        assert_eq!(fx.service.ui_command_path(), parent.join("ui-command.toml"));
+        assert_eq!(
+            fx.service.ui_result_path(),
+            parent.join("ui-command-result.toml")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_nobody_is_watching_times_out_rather_than_claiming_success() {
+        // The failure that matters: the app is not running. Writing to a file
+        // nobody reads succeeds, so without the wait this would report that
+        // the window obeyed.
+        let fx = fixture();
+        let err = fx
+            .service
+            .send_ui_command_within(UiCommand::RunQuery, Duration::from_millis(150))
+            .await
+            .expect_err("nothing is watching");
+        assert!(matches!(err, ServiceError::UiNoResponse(_)), "got {err:?}");
+        // And it says where to look, because retrying cannot help.
+        let message = err.to_string();
+        assert!(message.contains("not running"), "got: {message}");
+    }
+
+    #[tokio::test]
+    async fn the_command_still_lands_on_disk_when_it_times_out() {
+        // A window that starts a moment later must find the instruction
+        // waiting, so the timeout is about the *answer*, never a rollback.
+        let fx = fixture();
+        let _ = fx
+            .service
+            .send_ui_command_within(UiCommand::OpenAiPanel, Duration::from_millis(50))
+            .await;
+        let on_disk = dbboard_config::load_command_or_default(&fx.service.ui_command_path());
+        assert_eq!(on_disk.seq, 1);
+        assert_eq!(on_disk.command, Some(UiCommand::OpenAiPanel));
+    }
+
+    #[tokio::test]
+    async fn a_command_the_window_obeys_returns_its_detail() {
+        let fx = fixture();
+        let window = spawn_fake_window(&fx.service, |command, seq| {
+            assert_eq!(command.kind(), "set_editor_sql");
+            dbboard_config::UiResultFile::ok(seq, Some("editor set".to_string()))
+        });
+        let detail = fx
+            .service
+            .send_ui_command_within(
+                UiCommand::SetEditorSql {
+                    sql: "SELECT '日本語';".to_string(),
+                },
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("obeyed");
+        assert_eq!(detail.as_deref(), Some("editor set"));
+        window.join().expect("window thread");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_from_the_window_carries_its_reason() {
+        let fx = fixture();
+        let window = spawn_fake_window(&fx.service, |_, seq| {
+            dbboard_config::UiResultFile::failed(seq, "no connection is selected")
+        });
+        let err = fx
+            .service
+            .send_ui_command_within(UiCommand::RunQuery, Duration::from_secs(5))
+            .await
+            .expect_err("refused");
+        match err {
+            ServiceError::UiRefused(reason) => assert_eq!(reason, "no connection is selected"),
+            other => panic!("got {other:?}"),
+        }
+        window.join().expect("window thread");
+    }
+
+    #[tokio::test]
+    async fn an_answer_to_an_earlier_command_is_not_mistaken_for_this_one() {
+        // The stale-answer trap: a result file left over from a previous
+        // session sits on disk claiming success. Matching on "a result
+        // exists" rather than on the sequence number would report that a
+        // command ran the instant it was written.
+        let fx = fixture();
+        dbboard_config::save_result_atomic(
+            &fx.service.ui_result_path(),
+            &dbboard_config::UiResultFile::ok(1, Some("from a previous session".to_string())),
+        )
+        .expect("seed a stale answer");
+
+        let err = fx
+            .service
+            .send_ui_command_within(UiCommand::RunQuery, Duration::from_millis(150))
+            .await
+            .expect_err("the stale answer must not count");
+        assert!(matches!(err, ServiceError::UiNoResponse(_)), "got {err:?}");
+        // And the command it wrote skipped past the answered number.
+        let on_disk = dbboard_config::load_command_or_default(&fx.service.ui_command_path());
+        assert_eq!(on_disk.seq, 2);
+    }
+
+    #[tokio::test]
+    async fn each_command_gets_a_fresh_sequence_number() {
+        let fx = fixture();
+        for expected in 1..=3 {
+            let _ = fx
+                .service
+                .send_ui_command_within(UiCommand::RunQuery, Duration::from_millis(20))
+                .await;
+            assert_eq!(
+                dbboard_config::load_command_or_default(&fx.service.ui_command_path()).seq,
+                expected
+            );
+        }
     }
 }

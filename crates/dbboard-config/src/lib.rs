@@ -40,6 +40,7 @@ pub mod error;
 pub mod secrets;
 pub mod secure_fs;
 pub mod store;
+pub mod ui_command;
 pub mod ui_settings;
 
 pub use admin::{
@@ -71,7 +72,13 @@ pub use store::{
     default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind,
     SshTunnelToml, CONFIG_VERSION,
 };
+pub use ui_command::{
+    default_ui_command_path, default_ui_result_path, load_command_or_default,
+    load_result_or_default, next_seq, pending_command, save_command_atomic, save_result_atomic,
+    UiCommand, UiCommandFile, UiResultFile, UI_COMMAND_VERSION,
+};
 pub use ui_settings::{
-    default_ui_settings_path, load_or_default as load_ui_settings, save_atomic as save_ui_settings,
-    ThemePreference, UiSettingsFile, UI_SETTINGS_VERSION,
+    default_ui_settings_path, is_supported_locale, load_or_default as load_ui_settings,
+    save_atomic as save_ui_settings, ThemePreference, UiSettingsFile, SUPPORTED_LOCALES,
+    UI_SETTINGS_VERSION,
 };

@@ -9,6 +9,96 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-19
+
+Seven MCP verbs, and what they are for. Checking a change by hand means
+switching the language, typing the SQL, pressing Run, and then looking —
+and only the last of those is a judgement. This release moves the other
+three off the person's hands and leaves the looking where it belongs. The
+one fix that is not documentation came out of exactly that: the query
+toolbar had been frozen since some earlier release, and nobody had reported
+it.
+
+### Added
+
+- **The UI language can be read and set over MCP** — `get_ui_locale` and
+  `set_ui_locale` ([ADR-0107](docs/decisions.md)). The chosen language now
+  lives in `ui-settings.toml` instead of only in the webview's
+  `localStorage`, and a running window picks up a change within about a
+  second without restarting. `get_ui_locale` returns the codes this build
+  ships alongside the current one, so an agent has something to pick from;
+  matching is exact, and `ja-JP` is refused where `ja` is accepted. They
+  exist because verifying eleven locales means switching the language
+  eleven times, and the switching — unlike the judging — is mechanical.
+
+- **An agent can see the window it is being asked about** — `capture_window`
+  ([ADR-0108](docs/decisions.md)) returns a PNG of the running dbboard
+  window, so "did the language change?", "is the grid full of boxes?" and
+  "is this error legible?" stop being assertions and become observations.
+  It reads no database. The window is found by application name rather than
+  title, because a terminal tab called "dbboard" enumerates with exactly
+  that title and capturing it would look like a success. Being minimised or
+  closed is reported as something only a human can fix, not as a retryable
+  failure. The image is the operator's real screen, so the tool says on its
+  own surface that it must not be pasted anywhere public without asking.
+
+- **An agent can now work that window, not only watch it** —
+  `set_editor_sql`, `run_query`, `open_ai_panel` and `open_ai_settings`
+  ([ADR-0109](docs/decisions.md)) put SQL in the query editor, press Run,
+  open the AI panel, and open the provider settings inside it. With `capture_window` they close the loop: the
+  mechanical half of a UI check — set it up, perform it, photograph the
+  result — no longer needs the person's hands, which is what had made the
+  remaining CJK rendering checks expensive enough to skip. The instruction
+  crosses through two files in the config directory, one written by each
+  side, numbered so that "run it again" is a second run rather than a
+  no-op, and answered when the window has *finished* rather than when it
+  started — a tool that returned early would report the previous run's
+  outcome as this one's. A command left behind by a session that ended is
+  adopted at startup instead of obeyed. `run_query` is not a cheaper
+  `run_read_query`: it runs whatever the editor holds, against the
+  connection that window has selected, and leaves the rows on someone's
+  screen. All four fail outright when dbboard is not running, and say so
+  in those words, because an agent told "timed out" retries.
+  `open_ai_settings` is refused for a second reason — the AI panel being
+  shut — and that refusal is the useful half of it: there is no top-level
+  route to the provider settings, so being told the verb has no owner is
+  how the arrangement can be checked rather than taken on trust.
+
+### Fixed
+
+- **The query editor's toolbar stopped responding to anything once a
+  connection was selected.** The history count stayed at `(0)` however many
+  queries had run, the Run button kept whichever enabled state it had at
+  startup, and a language change left that one strip of the window in the
+  previous language while the rest of the app switched. One cause: reading
+  the per-connection history cached its first disk read into reactive
+  state, and Svelte forbids writing reactive state while a `$derived` is
+  being evaluated — the resulting error killed the effect that renders the
+  toolbar, freezing every binding in it at its last good value. Reading
+  history is now a read.
+
+- **The HTTP contract described a payload that stopped being accurate.**
+  `docs/api-contract.md` is the public API for SemVer purposes
+  ([ADR-0011](docs/decisions.md)), and `dbboard-web` implements against it,
+  so being wrong there is worse than being silent. Three things had drifted:
+  the `id` list named three adapters when nine ship (`mysql`, `neon`,
+  `supabase`, `aurora-dsql`, `firestore`, `mongodb` were all missing),
+  `has_foreign_keys` ([ADR-0054](docs/decisions.md)) had been serialized for
+  months without appearing in the document, and the `GET /capabilities`
+  example disagreed with the `Capabilities` section in the same file.
+  Passages describing every flag as `false` "in Phase 2" were rewritten to
+  say what is true now. Two tests
+  (`crates/dbboard-connect/tests/api_contract_drift.rs`) read the document
+  and fail when either set drifts again; the capability check derives its
+  list from a serialized `Capabilities`, so a new flag is covered with no
+  test edit.
+- **The contract now says what a capability flag does and does not
+  promise.** It previously read as though every `true` flag came with an
+  HTTP endpoint defined in the same document. Several describe capabilities
+  the desktop client reaches over Tauri IPC ([ADR-0089](docs/decisions.md)),
+  and their endpoints are specified as they land — additively, so a client
+  seeing a flag with no endpoint is looking at unfinished surface, not drift.
+
 ## [0.8.0] — 2026-08-14
 
 The first release cut from *using* the previous one. No new adapter: every
@@ -656,7 +746,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/meta-taro/dbboard/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/meta-taro/dbboard/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/meta-taro/dbboard/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/meta-taro/dbboard/compare/v0.5.1...v0.6.0

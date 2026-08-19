@@ -5,6 +5,127 @@
 
 ## 最終更新
 
+- 日付: 2026-08-16 その2 (**v1.0 ゲート 4 (コード署名) を「買わない」側で閉じた (#178)。
+  残り 3 ゲート、全部 user 側。open PR = 0。develop = `d4c0c7f`。**
+
+  **やったこと**: ADR-0106 を追加し、README 2 箇所 / `site/index.html` /
+  `release.yml` の `--notes` を「未署名は決定であって漏れではない」に統一。
+  `site/page.test.mjs` に文言の回帰テストを 1 本追加。
+  `.claude/issues/0021-v1-0-criteria.md` のゲート 4 を CLOSED にした。
+
+  **なぜ文言の書き換えが本体だったか**: 買う予定が無いのに `not signed **yet**` /
+  `planned follow-up` / `tracked follow-up` と書き続けると、読み手は
+  **後のリリースで消える不具合**だと受け取る。待つか、誤った前提で警告を通すかの
+  どちらかになる。未署名で出すこと自体は擁護できるが、そう言わずに出すのは擁護できない。
+  ADR-0044 の「有料の後回し」という位置づけは当時は正確だったが、1 年分のリリースを
+  経て**事実上の誤情報**になっていた。
+
+  **注記の置き場所**: ダウンロードが提供される場所すべて (DL ページ / README 2 箇所 /
+  リリース本文)。検索結果からリリースページに直接来た人は README を見ないし、
+  インストーラを手渡しされた人はどちらも見ない。docs ではなくダウンロードに随伴させる。
+
+  **テストで守る判断**: この文言はすでに 2 ファイルで同時に間違っていた。
+  記憶で守れていない実績があるので、`site/page.test.mjs` が
+  `yet` / `planned` / `tracked follow-up` / `coming soon` の再出現で落ちるようにした。
+  先に RED を確認 (`doesNotMatch` が `tracked follow-up` を検出して失敗) してから直した。
+
+  **リポ設定**: `delete_branch_on_merge` を `true` に変更。マージ後のリモートブランチ
+  削除が自動化され、PR ごとの削除 push が消えた (#178 で自動削除を実際に確認)。
+
+  **検証**: pre-commit (fmt / clippy -D warnings / check / test) 通過。
+  pii-scan は tree・commit message とも clean。`node --test site/*.test.mjs` 16/16。
+  `release.yml` は PyYAML パース + 抽出した run ブロックの `bash -n` で構文検証。
+  PR #178 の CI 4 本すべて緑。**動作確認 (アプリやリリースを実際に走らせての確認) は
+  していない** — リリース本文の変更が効くのは次のタグを打ったときで、そこは未検証。
+
+  **本日マージ**: #176 (`actions/checkout` v6)、#177 (セッション記録)、
+  #178 (本件)。**残り**: v1.0 の 3 ゲート = #161 の 3 点観察 / `dbboard-web` への
+  コントラクトのミラー / 検証シート 001–003 の実施。3 つとも baseline §38 の
+  「人にしかできない工程」で、エージェント側から代われない。)
+
+- 日付: 2026-08-16 (**v1.0 の条件を確定させ、凍結の前提としてコントラクトのずれを直した (#175)。**
+
+  **やったこと**: `.claude/issues/0021-v1-0-criteria.md` に v1.0 の条件を 4 つだけ書いた。
+  `docs/api-contract.md` の 4 件のずれを修正し、`crates/dbboard-connect/tests/api_contract_drift.rs` で
+  再発を止めた。`docs/roadmap.md` の帳簿 (Phase 2 の `*(current)*`、Export results の行) を直した。
+
+  **なぜ 4 つに絞れたか**: 本リポの SemVer 上の公開 API は HTTP 契約 (ADR-0011) であって
+  機能一覧ではない。**エンドポイントやフラグの追加は additive で何も壊さない**ので、
+  未実装の機能は 1.0 を妨げない。1.0 を妨げるのは「後から契約を変えざるを得なくなるもの」と
+  「約束が嘘になるもの」だけ。この基準でロードマップ上の未着手項目を通すと 4 つだけ残る
+  (#161 / 姉妹リポへのミラー / 検証シート未実施 / コード署名)。
+  Saved queries・JSON エクスポート・Linux パッケージ等はどれも契約に触れないので 1.x で足りる。
+  **これらをゲートにすると 1.0 は永久に来ない** — その失敗を避けるためのリストである、と
+  issue 側にも明記した。
+
+  **コントラクトは凍結できる状態になかった (4 件)**: `id` の一覧が 3 件のまま (実際は 9 件出荷済)、
+  `has_foreign_keys` (ADR-0054) がワイヤに乗っているのに未記載、`GET /capabilities` の例 (5 フラグ) と
+  `Capabilities` の節 (10 フラグ) が食い違い、「Phase 2 では全フラグ `false`」など事実でなくなった
+  記述が 3 箇所。あわせて **`true` のフラグが必ずしも HTTP エンドポイントを意味しない**
+  (Tauri IPC 経由の面がある・ADR-0089) 点を明文化した。姉妹リポはこの文書を実装根拠にするので、
+  ずれたまま凍結すると 2.0 まで直せなくなる。
+
+  **テストは先に RED を確認した**: 修正前に走らせて
+  `["mysql","neon","supabase","aurora-dsql","firestore","mongodb"]` と `["has_foreign_keys"]` が
+  欠落として出ることを見てから直した。置き場所を `dbboard-connect` にしたのは、
+  全アダプタと `dbboard-core` の両方に依存する唯一のクレートだから。
+
+  **エージェント側のミス 1 件 (記録)**: #175 の本文に、PR に含まれていない変更
+  (`actions/checkout` の v6 更新) を書いた。**`git log origin/develop..HEAD` を
+  ローカル HEAD で数えた**のが原因で、その commit は push 時点の先端に無かった。
+  **PR 本文は `origin/<branch>` を基準に数える。** マージ後に本文へ訂正を追記し、
+  中身は `ci/checkout-v6` に cherry-pick して patch 一致を確認した。
+
+  **CI**: #175 は ci / pii-scan とも緑。pre-push は 1 度目に例の Windows libSQL テアダウン
+  segfault で中断したが、`cargo test --all-features --release` を手元で通すと
+  **テストバイナリ 52 本すべて ok・失敗 0** で、再実行して通った。)
+
+- 日付: 2026-08-14 その2 (**v0.8.0 をリリースした。前のリリースを"使って"出てきた
+  改善だけで組んだ初めてのリリースで、新規アダプタは無い。**
+
+  **入れたもの**: #171 エクスポートダイアログの接続リストの可読性修正 → develop、
+  #172 リリース準備 (CHANGELOG / roadmap / DESIGN.md / バージョンスタンプ) → develop、
+  #173 `develop` → `main` のリリース PR。`main` = `2a9b1e8`、タグ `v0.8.0` を push 済。
+
+  **リリース内容** (ADR 単位): 0100 文書セルのツリー表示 / 0101 ステータスバー /
+  0102 ENUM プルダウン (MySQL) / 0103 `aurora-dsql-iam` の画面編集 /
+  0105 選択エクスポートと上書きインポート / 0097 `DBBOARD_CONFIG_DIR` /
+  0099 貼り付け値の先頭空白除去 / (ADR 無し) エクスポートダイアログの可読性・
+  CI で必須検証コマンドを回すようにしたこと。
+
+  **なぜ 0.8.0 (minor) か**: 本リポの SemVer 上の公開 API は `docs/api-contract.md` の
+  HTTP 契約 (ADR-0011) で、今回はそこに触れていない。`BUNDLE_VERSION` も据え置きなので
+  0.8.0 が書いたバンドルは 0.7.0 でも開ける — 動いたのはエクスポート/インポートの**挙動**だけ。
+
+  **リリース前に塞いだ穴**: `CHANGELOG.md` の `[Unreleased]` が**空のまま**だった
+  (v0.7.0 以降に機能 6 + 修正 2 が入っているのに)。`docs/roadmap.md` の現況ブロックも
+  v0.7.0 を現行として説明していた。どちらも「更新するか」を判断する人が読む場所で、
+  **タグを打った後では埋められない**。両方この PR で埋めてから切った。
+
+  **エージェント側のミス 1 件 (記録)**: DESIGN.md の 3 コンポーネント仕様 (`128f18e`) を
+  #171 のブランチを push した**後**に commit したため、#171 のマージに乗らなかった。
+  リリースブランチを `origin/develop` に rebase してから `git cherry-pick` で拾って
+  `c316e9b` として復旧。**push 済みブランチに追加 commit を積んだら、その PR が
+  マージ済みでないか必ず確認する。**
+
+  **CI**: #172 (ci 4m41s / pii-scan 9s)、#173 (ci 4m59s / pii-scan 17s)、
+  `main` への push 後 (ci 3m36s / pii-scan 12s) すべて緑。タグ push で release CI
+  (run `31784033330`) が起動 — Windows exe + MSI / macOS dmg を作って
+  `SHA256SUMS.txt` 付きで publish する。v0.5.0 以降 publish ジョブが
+  release オブジェクトを自力で view-or-create するので、**タグ push だけで完結する**。
+
+  **release CI は 5 ジョブすべて緑**で、`v0.8.0` は 08-14 08:44Z に publish 済
+  (`dbboard-desktop_0.8.0_x64-setup.exe` / `_universal.dmg` / `.app.tar.gz` /
+  MCP の win・mac / `latest.json` / `SHA256SUMS.txt`)。DL ページは
+  `releases/latest` を指しているだけなので**サイト側の変更は不要**。
+
+  **残っているボール (すべて user 側)**: ① **公開された `.exe` の PII 目視確認**
+  (CI はやらない・人間の作業)、② baseline §24 の security-reviewer をこのリリースで
+  回すかの判断 (推奨はする。今回の変更は既存経路の UI 改善で新しい外向き通信は無い。
+  v0.7.0 時点の実施記録はこのファイルに無い)、③ 検証シート 001/002/003 が全部 `未実施`、
+  ④ 姉妹リポへ `.claude/tools/dbboard.md` を貼る、⑤ ~468 コミットの history 書き換え判断、
+  ⑥ **#161 の 3 点観察** — 実行ボタンの不具合はここで止まったまま。)
+
 - 日付: 2026-08-14 (**open PR = 0。PR の滞留は解消しきった。**
 
   **入れたもの (develop)**: #159 文書ストアをガイドに記載 / #169 08-13 のセッション記録。
