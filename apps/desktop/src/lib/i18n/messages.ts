@@ -281,6 +281,9 @@ export const en = {
   "conn-import-ok": "Imported { $imported }, overwrote { $overwritten }, skipped { $skipped }.",
   "conn-import-skipped-ids": "Skipped (already present): { $ids }",
   "conn-import-skipped-hint": "Import again with “Overwrite existing connections” to replace them.",
+  "conn-import-duplicate-ids": "Listed more than once in the file; the first copy of each was used: { $ids }",
+  "conn-import-refused-lead": "Refused { $count }: each names a saved-secret slot that belongs to another connection, and importing it would have overwritten that connection's secret. “Overwrite existing connections” does not change this — the reference has to be corrected where the file was exported.",
+  "conn-import-refused-entry": "“{ $id }” wanted the slot “{ $ref }”, which belongs to “{ $owner }”.",
   "conn-import-overwritten-ids": "Overwrote: { $ids }",
   "conn-bundle-note": "The bundle is passphrase-encrypted and contains the selected connections' secrets. Keep it safe.",
   // Logical backup / dump (write-to-file path, ADR-0049/0050)
@@ -640,6 +643,9 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-import-ok": "{ $imported } 件をインポート、{ $overwritten } 件を上書き、{ $skipped } 件をスキップしました。",
   "conn-import-skipped-ids": "スキップ（既に存在）: { $ids }",
   "conn-import-skipped-hint": "「既存の接続を上書きする」を有効にして再度インポートすると置き換えられます。",
+  "conn-import-duplicate-ids": "ファイル内に重複していたため最初の 1 件だけを取り込みました: { $ids }",
+  "conn-import-refused-lead": "{ $count } 件を拒否しました。いずれも他の接続が使用中の認証情報スロットを指しており、取り込むとその接続のシークレットを上書きしてしまいます。「既存の接続を上書きする」を有効にしても結果は変わりません。エクスポート元で参照先を修正してください。",
+  "conn-import-refused-entry": "「{ $id }」が要求したスロット「{ $ref }」は「{ $owner }」が使用しています。",
   "conn-import-overwritten-ids": "上書き: { $ids }",
   "conn-bundle-note": "バンドルはパスフレーズで暗号化され、選択した接続のシークレットを含みます。取り扱いに注意してください。",
   // 論理バックアップ / ダンプ（ファイル書き出しパス, ADR-0049/0050）

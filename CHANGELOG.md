@@ -31,6 +31,22 @@ public API is the HTTP contract in
   state. The stamp is local time and sorts chronologically, so a
   directory of exports reads as a history.
 
+### Fixed
+
+- **A refused import is no longer reported as "already present"**
+  ([ADR-0112](docs/decisions.md)). The import report had one list for
+  everything it did not take, and three different conditions went into
+  it: the id was listed twice in the file, the id already existed and
+  overwrite was off, or the entry named a saved-secret slot belonging to
+  a different connection. Only the middle one means "already present",
+  and only the middle one is resolved by re-importing with overwrite on
+  — so the last one, which is a deliberate refusal to overwrite a live
+  credential, was described as a routine skip and followed by a hint
+  that could not change the outcome. The three are now reported apart,
+  and a refusal names both sides of the collision: which slot the entry
+  wanted and which connection holds it. The check itself is unchanged;
+  nothing is imported that was not imported before.
+
 ## [0.9.0] — 2026-08-19
 
 Seven MCP verbs, and what they are for. Checking a change by hand means
