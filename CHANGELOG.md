@@ -30,7 +30,6 @@ public API is the HTTP contract in
   previous export — which, for a backup, is the only copy of the older
   state. The stamp is local time and sorts chronologically, so a
   directory of exports reads as a history.
-
 - **An export says so when a connection carries someone else's saved-secret
   slot** ([ADR-0113](docs/decisions.md)), closing
   [#194](https://github.com/meta-taro/dbboard/issues/194). Importing such
