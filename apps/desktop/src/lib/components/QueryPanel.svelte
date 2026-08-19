@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { workspace } from '$lib/state/workspace.svelte';
+  import { uiCommands } from '$lib/ui-command/bus';
   import {
     runReadQuery,
     describeTable,
@@ -190,6 +192,38 @@
     if (!confirm(i18n.t('history-clear-confirm'))) return;
     queryHistory.clear(workspace.connectionId);
   }
+
+  // Claim the two verbs an MCP client can aim at the editor (ADR-0109). This
+  // panel stays mounted for the life of the window, so the claim lasts as
+  // long as the channel does. Both answer only once the work has finished —
+  // an agent that was told "ran" before the rows arrived would read the
+  // previous result as this one's.
+  onMount(() => {
+    const releaseSetSql = uiCommands.on('set_editor_sql', async (command) => {
+      setSql(command.sql);
+      workspace.setTab('query');
+      return `editor set to ${command.sql.length} characters`;
+    });
+    const releaseRun = uiCommands.on('run_query', async () => {
+      if (!workspace.connectionId) {
+        throw new Error('no connection is selected');
+      }
+      if (busy) {
+        throw new Error('a query is already running in this window');
+      }
+      workspace.setTab('query');
+      await execute(null);
+      // `execute` reports failure by filling `error` rather than throwing, so
+      // returning here regardless would call a failed query a success.
+      if (error) throw new Error(error);
+      const count = result?.row_count ?? 0;
+      return `${count} row${count === 1 ? '' : 's'}`;
+    });
+    return () => {
+      releaseSetSql();
+      releaseRun();
+    };
+  });
 
   // Consume a query the sidebar context menu pushed in ("Select top 100"):
   // load it into the editor and run it, exactly once per request. A request

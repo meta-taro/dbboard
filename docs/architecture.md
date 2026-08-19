@@ -41,7 +41,9 @@ dbboard/
     │                       #   entry carries an ssh block (ADR-0069)
     ├── dbboard-server/     # local axum HTTP backend (ADR-0006)
     ├── dbboard-mcp/        # headless MCP server over stdio (ADR-0046),
-    │                       #   read-only unless a connection opts in (ADR-0087)
+    │                       #   read-only unless a connection opts in (ADR-0087);
+    │                       #   also screenshots the app's window (ADR-0108)
+    │                       #   and drives it over a file channel (ADR-0109)
     ├── dbboard-ai/         # AI provider trait + value types (ADR-0023)
     ├── dbboard-anthropic/  # AI provider: Anthropic Messages API (ADR-0023)
     └── dbboard-openai/     # AI provider: OpenAI Chat Completions (ADR-0052)
@@ -146,7 +148,15 @@ constructs `Option<Arc<dyn AiProvider>>` at startup and calls it directly
   read-only tool surface to an external AI agent, and a **library** whose
   `McpService` the desktop shell reuses for its own read path — one
   implementation of the read-only guarantee, two transports
-  ([ADR-0046](decisions.md)).
+  ([ADR-0046](decisions.md)). Its `capture` module is the one part that
+  belongs to neither layer: it holds no service state and talks to the
+  windowing system rather than a database, so that `capture_window` can
+  photograph the desktop app's own window ([ADR-0108](decisions.md)). It
+  also *drives* that window, through two files in the config directory —
+  one written by each side, sequence-numbered so an instruction fires once
+  and is answered on completion ([ADR-0109](decisions.md)). That channel
+  crosses a process boundary the dependency graph does not show: the shell
+  is not a dependency of this crate and never becomes one.
 - `dbboard-ai` (trait crate) depends on `dbboard-core` only — for
   `TableInfo`, which is re-exported so concrete providers do not need
   a direct `dbboard-core` dep. No I/O, no async runtime at runtime
