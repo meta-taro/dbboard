@@ -108,6 +108,13 @@ pub enum ConnectionKindDraft {
     Turso {
         path: String,
     },
+    /// Turso Cloud, or any other libSQL endpoint reached over the network
+    /// (ADR-0111). The URL is not a secret and is stored inline; only the auth
+    /// token reaches the keychain, the same split D1 makes.
+    TursoRemote {
+        url: String,
+        token: String,
+    },
     D1 {
         account_id: String,
         database_id: String,
@@ -246,6 +253,13 @@ pub enum SshPassphraseField {
 pub enum ConnectionKindEditDraft {
     Turso {
         path: String,
+    },
+    /// Remote Turso (ADR-0111). Two states are enough for the token, as for
+    /// D1's: a remote connection always has one, so there is no third "no
+    /// credential" state to express.
+    TursoRemote {
+        url: String,
+        token: SecretField,
     },
     D1 {
         account_id: String,
@@ -1014,21 +1028,25 @@ impl ConnectionAdmin {
         Ok(())
     }
 
-    /// The URL-backed kinds again (see `url_backed_add`): commit the secret only
-    /// when it was retyped, then rebuild the variant around the ref it already
-    /// had. The ref is never re-minted on edit — a new one would orphan the
-    /// keychain entry the connection is still pointing at.
-    fn apply_url_edit(
+    /// The single-secret kinds again (see `secret_backed_add`): commit the
+    /// secret only when it was retyped, then rebuild the variant around the ref
+    /// it already had.
+    ///
+    /// The ref is never re-minted on edit — a new one would orphan the keychain
+    /// entry the connection is still pointing at. Which field the ref names
+    /// (`url`, `token`, …) makes no difference here; blank-means-keep is the
+    /// same rule either way (ADR-0016).
+    fn apply_secret_edit(
         &self,
-        keyring_url_ref: &str,
-        url: SecretField,
+        keyring_ref: &str,
+        secret: SecretField,
         applied: &mut Vec<AppliedSecretWrite>,
         build: impl FnOnce(String) -> ConnectionKind,
     ) -> Result<ConnectionKind, ConfigError> {
-        if let SecretField::Set(new_value) = url {
-            self.apply_secret_write(keyring_url_ref, &new_value, applied)?;
+        if let SecretField::Set(new_value) = secret {
+            self.apply_secret_write(keyring_ref, &new_value, applied)?;
         }
-        Ok(build(keyring_url_ref.to_string()))
+        Ok(build(keyring_ref.to_string()))
     }
 
     fn apply_update_kind(
@@ -1044,52 +1062,51 @@ impl ConnectionAdmin {
                 ConnectionKind::Turso { path }
             }
             (
+                ConnectionKind::TursoRemote {
+                    keyring_token_ref, ..
+                },
+                ConnectionKindEditDraft::TursoRemote { url, token },
+            ) => self.apply_secret_edit(
+                keyring_token_ref,
+                token,
+                &mut applied,
+                |keyring_token_ref| ConnectionKind::TursoRemote {
+                    url,
+                    keyring_token_ref,
+                },
+            )?,
+            (
                 ConnectionKind::D1 {
                     keyring_token_ref, ..
                 },
-                ConnectionKindEditDraft::D1 {
-                    account_id,
-                    database_id,
-                    base_url,
-                    token,
-                },
-            ) => {
-                if let SecretField::Set(new_value) = token {
-                    self.apply_secret_write(keyring_token_ref, &new_value, &mut applied)?;
-                }
-                ConnectionKind::D1 {
-                    account_id,
-                    database_id,
-                    base_url,
-                    keyring_token_ref: keyring_token_ref.clone(),
-                }
-            }
+                draft @ ConnectionKindEditDraft::D1 { .. },
+            ) => self.apply_d1_edit(id, keyring_token_ref, draft, &mut applied)?,
             (
                 ConnectionKind::Postgres { keyring_url_ref },
                 ConnectionKindEditDraft::Postgres { url },
-            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+            ) => self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                 ConnectionKind::Postgres { keyring_url_ref }
             })?,
             (ConnectionKind::MySql { keyring_url_ref }, ConnectionKindEditDraft::MySql { url }) => {
-                self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                     ConnectionKind::MySql { keyring_url_ref }
                 })?
             }
             (ConnectionKind::Neon { keyring_url_ref }, ConnectionKindEditDraft::Neon { url }) => {
-                self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                     ConnectionKind::Neon { keyring_url_ref }
                 })?
             }
             (
                 ConnectionKind::Supabase { keyring_url_ref },
                 ConnectionKindEditDraft::Supabase { url },
-            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+            ) => self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                 ConnectionKind::Supabase { keyring_url_ref }
             })?,
             (
                 ConnectionKind::AuroraDsql { keyring_url_ref },
                 ConnectionKindEditDraft::AuroraDsql { url },
-            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+            ) => self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                 ConnectionKind::AuroraDsql { keyring_url_ref }
             })?,
             (
@@ -1118,7 +1135,7 @@ impl ConnectionAdmin {
                     keyring_url_ref, ..
                 },
                 ConnectionKindEditDraft::MongoDb { uri, database },
-            ) => self.apply_url_edit(keyring_url_ref, uri, &mut applied, |keyring_url_ref| {
+            ) => self.apply_secret_edit(keyring_url_ref, uri, &mut applied, |keyring_url_ref| {
                 ConnectionKind::MongoDb {
                     keyring_url_ref,
                     database,
@@ -1130,6 +1147,36 @@ impl ConnectionAdmin {
         };
 
         Ok((new_kind, applied))
+    }
+
+    /// The D1 arm of [`Self::apply_update_kind`], lifted out for length alone:
+    /// three plain fields alongside the token make it too long to sit inline
+    /// without pushing the match past clippy's function-length limit.
+    fn apply_d1_edit(
+        &self,
+        id: &str,
+        existing_ref: &str,
+        draft: ConnectionKindEditDraft,
+        applied: &mut Vec<AppliedSecretWrite>,
+    ) -> Result<ConnectionKind, ConfigError> {
+        let ConnectionKindEditDraft::D1 {
+            account_id,
+            database_id,
+            base_url,
+            token,
+        } = draft
+        else {
+            return Err(ConfigError::KindMismatch { id: id.to_string() });
+        };
+
+        self.apply_secret_edit(existing_ref, token, applied, |keyring_token_ref| {
+            ConnectionKind::D1 {
+                account_id,
+                database_id,
+                base_url,
+                keyring_token_ref,
+            }
+        })
     }
 
     /// The Aurora DSQL (IAM) arm of [`Self::apply_update_kind`], lifted out for
@@ -1473,7 +1520,7 @@ fn zeroize_secret_writes(writes: &mut [(String, String)]) {
 }
 
 /// Enumerate every keyring ref that a given [`ConnectionKind`] points
-/// at. `Turso` has none; `D1`, `Postgres`, `MySql`, `Neon`, `Supabase`,
+/// at. `Turso` has none; `TursoRemote`, `D1`, `Postgres`, `MySql`, `Neon`, `Supabase`,
 /// and `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its
 /// AWS secret-key ref (its other fields are non-secret and live inline);
 /// `Firestore` carries one only when it is not pointed at the emulator;
@@ -1482,7 +1529,10 @@ fn zeroize_secret_writes(writes: &mut [(String, String)]) {
 fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
     match kind {
         ConnectionKind::Turso { .. } => Vec::new(),
-        ConnectionKind::D1 {
+        ConnectionKind::TursoRemote {
+            keyring_token_ref, ..
+        }
+        | ConnectionKind::D1 {
             keyring_token_ref, ..
         } => vec![keyring_token_ref.clone()],
         ConnectionKind::Postgres { keyring_url_ref }
@@ -1520,21 +1570,30 @@ struct AppliedSecretWrite {
     old_value: Option<String>,
 }
 
-/// The URL-backed kinds differ only in which variant they build: the secret is
-/// one string under the `url` ref, and the stored kind holds nothing but that
-/// ref. Sharing the body keeps them from drifting apart one paste at a time.
+/// Most kinds carry exactly one secret: mint a ref for it, build the variant
+/// around that ref, and queue the single write. Only the field name and the
+/// variant differ, so sharing the body keeps them from drifting apart one paste
+/// at a time.
+fn secret_backed_add(
+    id: &str,
+    field: &str,
+    value: String,
+    build: impl FnOnce(String) -> ConnectionKind,
+) -> (ConnectionKind, Vec<PendingSecretWrite>) {
+    let key_ref = keyring_ref(id, field);
+    let kind = build(key_ref.clone());
+    let writes = vec![PendingSecretWrite { key_ref, value }];
+    (kind, writes)
+}
+
+/// [`secret_backed_add`] for the kinds whose whole configuration *is* the URL:
+/// the stored variant holds nothing but the ref.
 fn url_backed_add(
     id: &str,
     url: String,
     build: impl FnOnce(String) -> ConnectionKind,
 ) -> (ConnectionKind, Vec<PendingSecretWrite>) {
-    let url_ref = keyring_ref(id, "url");
-    let kind = build(url_ref.clone());
-    let writes = vec![PendingSecretWrite {
-        key_ref: url_ref,
-        value: url,
-    }];
-    (kind, writes)
+    secret_backed_add(id, "url", url, build)
 }
 
 fn build_kind_for_add(
@@ -1543,25 +1602,25 @@ fn build_kind_for_add(
 ) -> (ConnectionKind, Vec<PendingSecretWrite>) {
     match draft {
         ConnectionKindDraft::Turso { path } => (ConnectionKind::Turso { path }, Vec::new()),
+        ConnectionKindDraft::TursoRemote { url, token } => {
+            secret_backed_add(id, "token", token, |keyring_token_ref| {
+                ConnectionKind::TursoRemote {
+                    url,
+                    keyring_token_ref,
+                }
+            })
+        }
         ConnectionKindDraft::D1 {
             account_id,
             database_id,
             base_url,
             token,
-        } => {
-            let token_ref = keyring_ref(id, "token");
-            let kind = ConnectionKind::D1 {
-                account_id,
-                database_id,
-                base_url,
-                keyring_token_ref: token_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: token_ref,
-                value: token,
-            }];
-            (kind, writes)
-        }
+        } => secret_backed_add(id, "token", token, |keyring_token_ref| ConnectionKind::D1 {
+            account_id,
+            database_id,
+            base_url,
+            keyring_token_ref,
+        }),
         ConnectionKindDraft::Postgres { url } => url_backed_add(id, url, |keyring_url_ref| {
             ConnectionKind::Postgres { keyring_url_ref }
         }),
@@ -1584,22 +1643,19 @@ fn build_kind_for_add(
             username,
             access_key_id,
             secret_access_key,
-        } => {
-            let secret_ref = keyring_ref(id, AURORA_DSQL_IAM_SECRET_KEY_FIELD);
-            let kind = ConnectionKind::AuroraDsqlIam {
+        } => secret_backed_add(
+            id,
+            AURORA_DSQL_IAM_SECRET_KEY_FIELD,
+            secret_access_key,
+            |keyring_secret_key_ref| ConnectionKind::AuroraDsqlIam {
                 endpoint,
                 region,
                 database,
                 username,
                 access_key_id,
-                keyring_secret_key_ref: secret_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: secret_ref,
-                value: secret_access_key,
-            }];
-            (kind, writes)
-        }
+                keyring_secret_key_ref,
+            },
+        ),
         ConnectionKindDraft::Firestore {
             project_id,
             database_id,
@@ -1658,6 +1714,20 @@ mod tests {
             name: name.to_string(),
             kind: ConnectionKindDraft::Turso {
                 path: path.to_string(),
+            },
+        }
+    }
+
+    fn remote_turso_draft(id: &str, url: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("Turso Cloud {id}"),
+            kind: ConnectionKindDraft::TursoRemote {
+                url: url.to_string(),
+                token: "t0k3n".to_string(),
             },
         }
     }
@@ -2148,6 +2218,70 @@ mod tests {
         // Turso has no secret fields, so the keyring stays empty.
         assert!(matches!(
             secrets.get("dbboard.local.token"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn add_remote_turso_keeps_the_url_inline_and_the_token_in_the_keychain() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(remote_turso_draft("cloud", "libsql://demo-acme.turso.io"))
+            .expect("add remote turso");
+        match &admin.entries()[0].kind {
+            ConnectionKind::TursoRemote {
+                url,
+                keyring_token_ref,
+            } => {
+                assert_eq!(url, "libsql://demo-acme.turso.io");
+                assert_eq!(keyring_token_ref, "dbboard.cloud.token");
+            }
+            other => panic!("expected TursoRemote, got {other:?}"),
+        }
+        assert_eq!(secrets.get("dbboard.cloud.token").expect("token"), "t0k3n");
+    }
+
+    #[test]
+    fn update_remote_turso_can_change_the_url_without_retyping_the_token() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(remote_turso_draft("cloud", "libsql://old.turso.io"))
+            .expect("add remote turso");
+        admin
+            .update(
+                "cloud",
+                ConnectionEditDraft {
+                    mcp_alias: None,
+                    mcp_write: None,
+                    ssh: SshEditField::Keep,
+                    name: "Turso Cloud".to_string(),
+                    kind: ConnectionKindEditDraft::TursoRemote {
+                        url: "libsql://new.turso.io".to_string(),
+                        token: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update remote turso");
+        match &admin.entries()[0].kind {
+            ConnectionKind::TursoRemote { url, .. } => {
+                assert_eq!(url, "libsql://new.turso.io");
+            }
+            other => panic!("expected TursoRemote, got {other:?}"),
+        }
+        // `Keep` means the keychain is not touched at all — the point of the
+        // two-state field is that a URL rotation does not cost a credential.
+        assert_eq!(secrets.get("dbboard.cloud.token").expect("token"), "t0k3n");
+    }
+
+    #[test]
+    fn delete_remote_turso_purges_its_token() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(remote_turso_draft("cloud", "libsql://demo-acme.turso.io"))
+            .expect("add remote turso");
+        admin.delete("cloud").expect("delete");
+        assert!(matches!(
+            secrets.get("dbboard.cloud.token"),
             Err(SecretError::NotFound(_))
         ));
     }
