@@ -31,6 +31,19 @@ public API is the HTTP contract in
   state. The stamp is local time and sorts chronologically, so a
   directory of exports reads as a history.
 
+- **An export says so when a connection carries someone else's saved-secret
+  slot** ([ADR-0113](docs/decisions.md)), closing
+  [#194](https://github.com/meta-taro/dbboard/issues/194). Importing such
+  a bundle elsewhere refuses those entries — that check has existed since
+  ADR-0038 — but it only fires on a machine that happens to hold the
+  connection being pointed at, and by then the file is already written and
+  handed over. The same fault is visible at export from the entry alone,
+  because a slot name is always built from its own connection's id and an
+  id never changes. The export still writes the bundle: whoever is in this
+  state is exactly who needs a backup of it. It now names the entry, the
+  slot, and the connection the slot belongs to, on the machine where the
+  problem can actually be fixed.
+
 ### Fixed
 
 - **A refused import is no longer reported as "already present"**

@@ -55,6 +55,7 @@
     pickerTitle,
     type PathField,
   } from '$lib/connections/file-picker';
+  import { exportSummary } from '$lib/connections/export-report';
   import { importSummary } from '$lib/connections/import-report';
 
   interface Props {
@@ -384,10 +385,15 @@
     if (!path) return; // user cancelled the dialog
     busy = true;
     try {
-      const count = await exportConnections(path, passphrase, exportIds);
+      const report = await exportConnections(path, passphrase, exportIds);
       passphrase = '';
       passphraseConfirm = '';
-      info = i18n.t('conn-export-ok', { count });
+      // Wording rules live in `export-report.ts` so they are testable. The
+      // warning about a foreign keychain slot must not read as a failure —
+      // the bundle is on disk either way (issue #194).
+      info = exportSummary(report, (key, params) =>
+        i18n.t(key as Parameters<typeof i18n.t>[0], params),
+      ).join(' ');
       mode = 'list';
     } catch (e) {
       error = String(e);
