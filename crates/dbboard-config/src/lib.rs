@@ -45,8 +45,8 @@ pub mod ui_settings;
 
 pub use admin::{
     ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,
-    ConnectionKindEditDraft, FirestoreCredentialField, ImportMode, ImportReport, SecretField,
-    SshAuthDraft, SshAuthEditDraft, SshEditField, SshHostKeyDraft, SshPassphraseField,
+    ConnectionKindEditDraft, FirestoreCredentialField, ImportMode, ImportReport, RefusedEntry,
+    SecretField, SshAuthDraft, SshAuthEditDraft, SshEditField, SshHostKeyDraft, SshPassphraseField,
     SshTunnelDraft, SshTunnelEditDraft,
 };
 pub use ai_settings::{
