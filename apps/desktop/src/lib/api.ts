@@ -497,6 +497,35 @@ export const deleteAiProvider = (id: string): Promise<void> =>
 export const setActiveAiProvider = (id: string | null): Promise<void> =>
   invoke('set_active_ai_provider', { id });
 
+// --- UI language (ADR-0041) ---------------------------------------------
+//
+// The chosen language lives in `ui-settings.toml`, not only in localStorage,
+// so an MCP client can read it and switch it while the window is open. The
+// shell watches that file and emits `ui:locale` when it changes.
+
+// The persisted UI language and the codes the build ships. `locale` is null
+// when nothing has been chosen — the caller then falls back to the OS
+// language, so null is a state, not a missing value.
+export interface UiLocale {
+  locale: string | null;
+  supported: string[];
+}
+
+export const getUiLocale = (): Promise<UiLocale> => invoke('get_ui_locale');
+
+// Persist the UI language. Rejects on a code this build cannot display, so a
+// typo surfaces instead of leaving the window in a language nobody asked for.
+export const setUiLocale = (locale: string): Promise<void> =>
+  invoke('set_ui_locale', { locale });
+
+// Subscribe to language changes made outside this window (an MCP client, or a
+// hand edit of `ui-settings.toml`). A null payload means the choice was
+// cleared and the OS language applies again.
+export const onUiLocale = (
+  handler: (locale: string | null) => void,
+): Promise<UnlistenFn> =>
+  listen<string | null>('ui:locale', (event) => handler(event.payload));
+
 // --- Auto-update (ADR-0067) ---------------------------------------------
 //
 // The updater plugin fetches the signed `latest.json` from the GitHub release,

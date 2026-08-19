@@ -9,6 +9,19 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Added
+
+- **The UI language can be read and set over MCP** — `get_ui_locale` and
+  `set_ui_locale` ([ADR-0107](docs/decisions.md)). The chosen language now
+  lives in `ui-settings.toml` instead of only in the webview's
+  `localStorage`, and a running window picks up a change within about a
+  second without restarting. `get_ui_locale` returns the codes this build
+  ships alongside the current one, so an agent has something to pick from;
+  matching is exact, and `ja-JP` is refused where `ja` is accepted. These
+  are the only two tools that reach no database. They exist because
+  verifying eleven locales means switching the language eleven times, and
+  the switching — unlike the judging — is mechanical.
+
 ### Fixed
 
 - **The query editor's toolbar stopped responding to anything once a
