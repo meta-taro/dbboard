@@ -3,6 +3,8 @@
 // Tauri so it is unit-testable in isolation; the command wrappers live in
 // `$lib/api` and the wiring in the backup component.
 
+import { timestampedFileName } from '$lib/export/filename';
+
 // Wire shapes mirroring the backend DTOs (src-tauri/src/dump.rs). snake_case
 // because the Rust structs derive `Serialize` with default field names.
 export interface DumpTable {
@@ -99,13 +101,18 @@ export function progressPercent(p: DumpProgress): number {
 }
 
 /**
- * Default save-dialog file name: `<slug>-dump.sql` from the connection name, or
- * `dbboard-dump.sql` when there is no usable name.
+ * Default save-dialog file name: `<slug>-dump-<YYYYMMDD-HHMMSS>.sql` from the
+ * connection name, or `dbboard-dump-<stamp>.sql` when there is no usable name.
+ *
+ * The connection name alone does not distinguish two dumps of the *same*
+ * database, so the dialog used to propose the name of the existing backup and
+ * offer to overwrite it — losing the only copy of the older state on a stray
+ * "yes". The stamp also makes a directory of dumps read as a history.
  */
-export function defaultDumpFileName(connectionName?: string): string {
+export function defaultDumpFileName(connectionName?: string, now?: Date): string {
   const slug = (connectionName ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  return slug ? `${slug}-dump.sql` : 'dbboard-dump.sql';
+  return timestampedFileName(slug ? `${slug}-dump` : 'dbboard-dump', 'sql', now);
 }
