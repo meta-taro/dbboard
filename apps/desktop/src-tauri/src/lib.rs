@@ -1485,30 +1485,40 @@ async fn reconnect_connection(state: tauri::State<'_, AppState>, id: String) -> 
 /// selection are opposites, and guessing wrong ships either an empty bundle
 /// or every credential on the machine. `None` — the field absent from the
 /// IPC payload — is the explicit whole-store export.
+///
+/// Also reports any entry in the exported selection whose keychain slot
+/// belongs to a different connection (issue #194). That is a warning, not a
+/// refusal: the bundle is written either way, because an operator whose store
+/// is already malformed is the one who most needs a backup of it.
 #[tauri::command]
 fn export_connections(
     state: tauri::State<'_, AppState>,
     path: String,
     passphrase: String,
     ids: Option<Vec<String>>,
-) -> Result<usize, String> {
+) -> Result<ExportReportDto, String> {
     let admin = state.admin.lock().map_err(|_| lock_poisoned())?;
-    let (blob, count) = match &ids {
+    let (blob, exported, foreign) = match &ids {
         Some(ids) => (
             admin
                 .export_bundle_of(ids, &passphrase)
                 .map_err(|e| e.to_string())?,
             ids.len(),
+            admin.foreign_refs_of(ids).map_err(|e| e.to_string())?,
         ),
         None => (
             admin
                 .export_bundle(&passphrase)
                 .map_err(|e| e.to_string())?,
             admin.entries().len(),
+            admin.foreign_refs(),
         ),
     };
     std::fs::write(&path, &blob).map_err(|e| e.to_string())?;
-    Ok(count)
+    Ok(ExportReportDto {
+        exported,
+        foreign_refs: foreign.into_iter().map(ForeignRefDto::from).collect(),
+    })
 }
 
 /// Import connections from a `.dbbx` bundle at `path` (ADR-0038, ADR-0105).
@@ -1557,6 +1567,35 @@ fn import_connections(
 #[tauri::command]
 fn save_text_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Outcome of `export_connections`. The count alone used to be the whole
+/// return value; the warning list rides alongside it so a successful export
+/// can still say something is wrong with what it just wrote (issue #194).
+#[derive(serde::Serialize)]
+struct ExportReportDto {
+    exported: usize,
+    foreign_refs: Vec<ForeignRefDto>,
+}
+
+/// Serialize-only mirror of `dbboard_config::ForeignRef`. Like
+/// `RefusedEntryDto`, every field is an id or a keychain slot name, never a
+/// secret value, so it is safe to show verbatim.
+#[derive(serde::Serialize)]
+struct ForeignRefDto {
+    id: String,
+    key_ref: String,
+    owner: String,
+}
+
+impl From<dbboard_config::ForeignRef> for ForeignRefDto {
+    fn from(r: dbboard_config::ForeignRef) -> Self {
+        Self {
+            id: r.id,
+            key_ref: r.key_ref,
+            owner: r.owner,
+        }
+    }
 }
 
 /// Serialize-only mirror of `dbboard_config::ImportReport` (which is
