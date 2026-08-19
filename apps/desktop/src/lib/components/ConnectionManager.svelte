@@ -55,6 +55,7 @@
     pickerTitle,
     type PathField,
   } from '$lib/connections/file-picker';
+  import { importSummary } from '$lib/connections/import-report';
 
   interface Props {
     onClose: () => void;
@@ -424,26 +425,11 @@
       const report = await importConnections(importPath, passphrase, overwriteExisting);
       await workspace.refreshConnections();
       passphrase = '';
-      let summary = i18n.t('conn-import-ok', {
-        imported: report.imported.length,
-        overwritten: report.overwritten.length,
-        skipped: report.skipped.length,
-      });
-      if (report.skipped.length > 0) {
-        summary +=
-          ' ' + i18n.t('conn-import-skipped-ids', { ids: report.skipped.join(', ') });
-        // Name the way out: a skipped id is otherwise a dead end the user
-        // has to guess their way past.
-        if (!overwriteExisting) {
-          summary += ' ' + i18n.t('conn-import-skipped-hint');
-        }
-      }
-      if (report.overwritten.length > 0) {
-        summary +=
-          ' ' +
-          i18n.t('conn-import-overwritten-ids', { ids: report.overwritten.join(', ') });
-      }
-      info = summary;
+      // Wording rules live in `import-report.ts` so they are testable; which
+      // reason gets which sentence is the whole substance of ADR-0112.
+      info = importSummary(report, (key, params) =>
+        i18n.t(key as Parameters<typeof i18n.t>[0], params),
+      ).join(' ');
       mode = 'list';
     } catch (e) {
       error = String(e);

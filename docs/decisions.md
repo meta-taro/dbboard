@@ -10943,3 +10943,114 @@ local one is: `connect_remote`'s guards are unit-tested, but reaching a
 real endpoint needs a real endpoint. It is verified by hand against Turso
 Cloud and recorded in a verification sheet, on the same footing as the D1,
 Firestore and MongoDB adapters.
+
+## ADR-0112 — The three reasons an entry is not imported are reported apart
+
+### Status
+
+Accepted.
+
+### Context
+
+`ImportReport` had one list for everything the import did not take:
+`skipped: Vec<String>`. Three different conditions pushed into it.
+
+1. The id appears more than once in the same bundle. The first copy is
+   taken; the later ones are not.
+2. The id already exists locally and the mode is `ImportMode::Skip`.
+3. A `keyring_*_ref` the entry carries belongs to a *different* connection
+   in the target store, so importing it would have overwritten that
+   connection's secret. This is the ADR-0038 refusal.
+
+Only (2) means "already present", and only (2) is resolved by re-importing
+with `ImportMode::Overwrite`. The single list forced one sentence onto all
+three, and the sentence was the one that fits (2): the ids were named as
+already present, followed by a hint to turn overwrite on.
+
+For (3) both halves are wrong. The id is *not* present — the entry was
+refused, so the store does not hold it, and an operator who goes looking
+for it finds nothing wherever they look. And the ref-ownership check runs
+before the mode is consulted, so re-importing with overwrite on produces
+byte-identical output. The report described a security refusal as a
+routine skip and then sent the operator through a loop that could not
+behave differently the second time.
+
+This surfaced from a real import of a hand-authored bundle. The refusal
+was correct — the bundle genuinely named another connection's keychain
+slot, and taking it would have destroyed a live credential. The refusal
+was reported in a way that read as a bug in the import path.
+
+### Decision
+
+**Each reason gets its own list, and each list gets its own sentence.**
+
+```rust
+pub struct ImportReport {
+    pub imported: Vec<String>,
+    pub overwritten: Vec<String>,
+    pub skipped_existing: Vec<String>,
+    pub duplicate_in_bundle: Vec<String>,
+    pub refused: Vec<RefusedEntry>,
+}
+```
+
+Three things follow, and each is the substance of the entry:
+
+**A refusal carries both sides of the collision.** `RefusedEntry` is
+`{ id, key_ref, owner }`, not a bare id, because neither half alone is
+actionable. The id is absent from the store afterwards, so naming only the
+id describes a hole; naming only the ref does not say who is standing in
+the way. Together they read as what happened: *"beta" wanted the slot
+"dbboard.alpha.token", which belongs to "alpha"*. None of the three fields
+is a secret value — `key_ref` is the slot's name, not its contents — so
+all three are safe to put in front of the operator verbatim.
+
+**The overwrite hint is offered for `skipped_existing` and nowhere else.**
+That list is empty by construction whenever overwrite was asked for, so
+the hint can never suggest a setting that is already on, and it can never
+attach to an outcome overwrite does not change.
+
+**The refusal count stays out of the headline tally.** The summary line
+counts `skipped_existing + duplicate_in_bundle`; refusals carry their own
+count in their own sentence. Folding them back into one number would
+re-merge exactly what this entry separates, one layer higher up. An import
+with no refusals — the ordinary case — therefore shows the message it
+already showed.
+
+The wording rules live in a pure `importSummary(report, t)` in
+`$lib/connections/import-report.ts` rather than inline in the component,
+because *which reason gets which sentence* is the whole substance of this
+decision and it should be under test. Its tests assert against a
+key-echoing translation stub, so they pin which message is chosen and what
+data it is given, not the English phrasing.
+
+**The check itself is unchanged.** No entry is imported that was not
+imported before. The bundle format has no way to prove that a ref-sharing
+entry is benign, and silently replacing a live secret is far worse than a
+refused import. Only the report changed.
+
+### Consequences
+
+`ImportReport.skipped` is gone rather than deprecated. It is an internal
+type — `dbboard-config` is not published, and the only consumers are the
+Tauri command and its DTO — so the compiler finds every reader, which is
+worth more than a compatibility shim nobody outside this workspace needs.
+
+Three message keys were added in both locales, and the JSON shape crossing
+the Tauri boundary grew from three arrays to four arrays and one array of
+objects. That shape is pinned by
+`import_report_dto_keeps_its_frontend_json_shape`, which now asserts the
+three fields of a refusal individually: a refusal with a missing `owner`
+would still deserialize, and would still be unactionable.
+
+**The same collision is detectable at export time, and is not yet checked
+there.** Refs are minted in exactly one place, as `dbboard.<id>.<field>`,
+and `ConnectionAdmin::update` cannot change an id — so an entry whose ref
+does not derive from its own id did not come from this application, and is
+malformed wherever it goes. That makes the export-time check *stronger*
+than the import-time one: it needs no store lookup and no owner to be
+present, only the entry itself. A bundle carrying such an entry is
+guaranteed to be partially unusable on any machine that holds the owner,
+and that is knowable before the file is written. It is deliberately left
+to its own change rather than folded in here, because it alters what
+export does, while everything above alters only what the operator is told.
