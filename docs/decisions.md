@@ -10743,3 +10743,88 @@ which is the question on the sheet.
 
 The count of tools with no database behind them goes from six to seven;
 the surface goes from fifteen to sixteen.
+
+## ADR-0110 — A release goes out when there is something in it, not when a plan says so
+
+### Status
+
+Accepted.
+
+### Context
+
+Between v0.8.0 (2026-08-14) and this decision, `CHANGELOG.md`'s
+`[Unreleased]` accumulated three additions and three fixes over five days,
+and none of it reached the maintainer's machine — the installed build stayed
+at v0.8.0 while the work that fixed a *frozen query toolbar* sat on
+`develop`. The maintainer named the cost precisely: without a version plan
+the sense that anything will be released cannot be sustained, and while
+initiatives are bundled together you spend the whole time using an old
+dbboard.
+
+The mechanism is worth stating exactly, because the obvious diagnosis is
+wrong. Nothing blocked the release. The v1.0 gates
+(`.claude/issues/0021-v1-0-criteria.md`) block **1.0**, and by ADR-0011's
+reasoning they cannot block 0.x: the SemVer public API here is the HTTP
+contract, so a 0.x release promises nothing about features. There was no
+rule saying to wait. There was no rule saying to go, either — and this repo
+mechanises every other recurring judgement it has (baseline §31's 400-line
+count, §33's index-health check) precisely because "decide each time" decays
+into "not today".
+
+Releasing is also not free: four version fields, a `CHANGELOG` heading, a
+PR into `develop`, a second PR into `main`, and a tag. Nothing about that is
+hard, and all of it is enough friction to lose to whatever else is open.
+
+The tempting fix is a version-numbered plan — 0.9 gets these features, 1.0
+gets those. That reproduces the failure. Assigning initiatives to versions
+means a version cannot ship until its slowest initiative lands, which is the
+bundling the maintainer is objecting to.
+
+### Decision
+
+**A release is triggered by unreleased content, not by a plan, a date, or a
+feature set.**
+
+Check at the start of a session:
+
+```sh
+awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && /^- /' CHANGELOG.md | wc -l
+```
+
+- **1 or more, and `develop` is green** — a release *may* be cut, by anyone,
+  with no approval beyond the existing human-only push/tag gate.
+- **3 or more** — a release *is due*. Three is a ceiling, not a target: past
+  it, the maintainer is by definition using a build older than the fixes
+  they reported.
+- **0** — nothing to do. Most sessions land here, and that is the point.
+
+Two rules follow from it:
+
+- **Initiatives are never assigned to a version.** The roadmap says what is
+  planned; it does not say which release contains it. Whatever is finished
+  when the trigger fires is what ships. An initiative that spans three
+  releases is normal.
+- **The version number is derived, not chosen.** Additions present → minor;
+  fixes only → patch. A change to `docs/api-contract.md` that is not
+  additive → major, per ADR-0011, and that is the only thing 1.0 waits for.
+
+### Consequences
+
+Releases become small and frequent, which is the intended cost: more tags,
+more `main` merges, more release notes. Each is cheaper to write than a
+bundled one, because the `CHANGELOG` entry is composed when the change lands
+rather than reconstructed at release time.
+
+The v1.0 gates lose their gravitational pull on the 0.x line. They still
+gate 1.0 and are unchanged; they no longer imply that anything is waiting on
+them.
+
+`[Unreleased]` becomes load-bearing. A change merged without a `CHANGELOG`
+entry is invisible to the trigger and will ship silently — which is already
+against this repo's habits, and is now also the mechanism by which shipping
+stops.
+
+The friction is not removed, only regularised. If cutting a release by hand
+turns out to be what suppresses the cadence, the answer is a script that
+performs the four bumps, not a longer interval; that is deliberately left
+until the frequency is real enough to measure.
