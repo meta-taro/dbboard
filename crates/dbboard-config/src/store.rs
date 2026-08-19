@@ -103,6 +103,26 @@ pub enum ConnectionKind {
     Turso {
         path: String,
     },
+    /// A libSQL database reached over the network — Turso Cloud, or a
+    /// self-hosted `sqld` (ADR-0111). Kept apart from
+    /// [`ConnectionKind::Turso`] rather than folded into it as an optional
+    /// URL: the two forms share an engine but nothing else. One is a file
+    /// with no credential, the other is an endpoint with a mandatory one, and
+    /// a single variant carrying both would make "URL with no token" and
+    /// "path with a token" representable states that every reader would then
+    /// have to rule out. The precedent is the Aurora DSQL pair, split for the
+    /// same reason.
+    ///
+    /// `url` is the `libsql://…` endpoint, non-secret and inline; the auth
+    /// token is a secret and lives only in the keychain, like every other
+    /// `keyring_*_ref` here. The TOML discriminator is pinned to
+    /// `kind = "turso-remote"` because `rename_all = "snake_case"` would emit
+    /// `turso_remote` — the same reason `aurora-dsql` is pinned.
+    #[serde(rename = "turso-remote")]
+    TursoRemote {
+        url: String,
+        keyring_token_ref: String,
+    },
     D1 {
         account_id: String,
         database_id: String,
@@ -227,6 +247,7 @@ impl ConnectionKind {
     pub fn adapter_label(&self) -> &'static str {
         match self {
             ConnectionKind::Turso { .. } => "Turso",
+            ConnectionKind::TursoRemote { .. } => "Turso Cloud",
             ConnectionKind::D1 { .. } => "Cloudflare D1",
             ConnectionKind::Postgres { .. } => "Postgres",
             ConnectionKind::MySql { .. } => "MySQL",
@@ -246,6 +267,13 @@ impl ConnectionKind {
     /// APIs, and the Aurora DSQL IAM kind mints its own endpoint at connect; none
     /// of them route through a forwarded TCP port, so a tunnel on them is a
     /// configuration error rather than silently ignored.
+    ///
+    /// Remote Turso is refused for the HTTPS reason rather than the local-file
+    /// one (ADR-0111). It *is* a `host:port` we could forward, but the client
+    /// signs nothing and simply asks for the host in the URL, so a forward
+    /// would present a certificate for the wrong name; and the same URL is
+    /// what the token is scoped to. Fronting it properly means teaching the
+    /// tunnel to preserve SNI, which is a larger change than this exclusion.
     ///
     /// `MongoDB` is excluded for a different reason: it *is* TCP, but a
     /// `mongodb://` URI may list several hosts and `mongodb+srv://` discovers a
@@ -675,6 +703,65 @@ path = ":memory:"
                 path: ":memory:".to_string()
             }
         );
+    }
+
+    #[test]
+    fn parses_a_remote_turso_entry() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id                = "cloud-turso"
+name              = "Turso Cloud"
+kind              = "turso-remote"
+url               = "libsql://demo-acme.turso.io"
+keyring_token_ref = "dbboard.cloud-turso.token"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("remote turso entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::TursoRemote {
+                url: "libsql://demo-acme.turso.io".to_string(),
+                keyring_token_ref: "dbboard.cloud-turso.token".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_remote_turso_entry_carries_no_inline_token() {
+        // The discriminator is not enough on its own: a file that spelled the
+        // token inline would parse as long as the reference were also there.
+        // Serialising back is what proves the token has nowhere to live.
+        let entry = ConnectionEntry {
+            id: "cloud-turso".to_string(),
+            name: "Turso Cloud".to_string(),
+            kind: ConnectionKind::TursoRemote {
+                url: "libsql://demo-acme.turso.io".to_string(),
+                keyring_token_ref: "dbboard.cloud-turso.token".to_string(),
+            },
+            mcp_write: false,
+            mcp_alias: None,
+            ssh: None,
+        };
+        let file = ConnectionFile {
+            version: CONFIG_VERSION,
+            connections: vec![entry],
+        };
+        let rendered = toml::to_string(&file).expect("serialises");
+        assert!(rendered.contains(r#"kind = "turso-remote""#), "{rendered}");
+        assert!(
+            !rendered.contains("auth_token"),
+            "no inline token field exists: {rendered}"
+        );
+    }
+
+    #[test]
+    fn remote_turso_refuses_an_ssh_tunnel() {
+        assert!(!ConnectionKind::TursoRemote {
+            url: "libsql://demo-acme.turso.io".to_string(),
+            keyring_token_ref: "r".to_string(),
+        }
+        .supports_ssh_tunnel());
     }
 
     #[test]

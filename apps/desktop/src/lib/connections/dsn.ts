@@ -65,6 +65,10 @@ export function emptyDsnParts(): DsnParts {
 // region and key pair — so there is no password box for the five parts to fill.
 const NON_DSN_KINDS: readonly ConnectionKind[] = [
   'turso',
+  // Remote libSQL is here despite carrying a URL: it is a whole endpoint the
+  // Turso dashboard hands over, not a DSN with a password segment to compose,
+  // and the credential is a separate bearer token (ADR-0111).
+  'turso_remote',
   'd1',
   'firestore',
   'mongodb',

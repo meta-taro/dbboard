@@ -210,7 +210,11 @@ export const en = {
     "The stored connection URL is kept as it is. To change TLS, retype the URL or switch to separate fields.",
   "conn-secret-keep-hint": "Leave blank to keep the stored secret.",
   "conn-required": "Required",
-  "conn-kind-turso": "Turso / libSQL",
+  // The two libSQL kinds are named for *where the database is*, because that
+  // is the only thing distinguishing them and the old bare "Turso / libSQL"
+  // read as if it covered the hosted case too (ADR-0111).
+  "conn-kind-turso": "Turso / libSQL (local file)",
+  "conn-kind-turso_remote": "Turso Cloud (remote)",
   "conn-kind-d1": "Cloudflare D1",
   "conn-kind-postgres": "Postgres",
   "conn-kind-mysql": "MySQL",
@@ -568,7 +572,8 @@ const ja: Partial<Record<MessageKey, string>> = {
     "保存済みの接続 URL をそのまま使います。TLS を変更するには URL を入力し直すか、個別入力に切り替えてください。",
   "conn-secret-keep-hint": "空欄のままにすると保存済みのシークレットを保持します。",
   "conn-required": "必須",
-  "conn-kind-turso": "Turso / libSQL",
+  "conn-kind-turso": "Turso / libSQL (ローカルファイル)",
+  "conn-kind-turso_remote": "Turso Cloud (リモート)",
   "conn-kind-d1": "Cloudflare D1",
   "conn-kind-postgres": "Postgres",
   "conn-kind-mysql": "MySQL",

@@ -88,6 +88,7 @@
 
   const KIND_LABEL: Record<ConnectionKind, MessageKey> = {
     turso: 'conn-kind-turso',
+    turso_remote: 'conn-kind-turso_remote',
     d1: 'conn-kind-d1',
     postgres: 'conn-kind-postgres',
     mysql: 'conn-kind-mysql',

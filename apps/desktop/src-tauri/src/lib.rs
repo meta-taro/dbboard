@@ -612,6 +612,14 @@ enum KindInput {
     Turso {
         path: String,
     },
+    /// Turso Cloud / any networked libSQL endpoint (ADR-0111). The tag is
+    /// `turso_remote`, not the TOML's `turso-remote`: this DTO's contract is
+    /// with the frontend, which is snake_case throughout (`aurora_dsql_iam`
+    /// here vs `aurora-dsql-iam` on disk).
+    TursoRemote {
+        url: String,
+        token: String,
+    },
     D1 {
         account_id: String,
         database_id: String,
@@ -674,6 +682,12 @@ enum KindInput {
 enum KindEditInput {
     Turso {
         path: String,
+    },
+    TursoRemote {
+        url: String,
+        /// Blank keeps the stored token, so the endpoint can be changed
+        /// without retyping the credential.
+        token: Option<String>,
     },
     D1 {
         account_id: String,
@@ -904,6 +918,7 @@ fn to_add_draft(
 ) -> ConnectionDraft {
     let kind = match kind {
         KindInput::Turso { path } => ConnectionKindDraft::Turso { path },
+        KindInput::TursoRemote { url, token } => ConnectionKindDraft::TursoRemote { url, token },
         KindInput::D1 {
             account_id,
             database_id,
@@ -1006,6 +1021,10 @@ fn to_edit_draft(
 ) -> ConnectionEditDraft {
     let kind = match kind {
         KindEditInput::Turso { path } => ConnectionKindEditDraft::Turso { path },
+        KindEditInput::TursoRemote { url, token } => ConnectionKindEditDraft::TursoRemote {
+            url,
+            token: secret_field(token),
+        },
         KindEditInput::D1 {
             account_id,
             database_id,
@@ -1094,6 +1113,12 @@ fn to_edit_draft(
 enum EditFieldsDto {
     Turso {
         path: String,
+    },
+    /// The URL comes back, the auth token does not (ADR-0111) — the same split
+    /// D1 makes, so the endpoint can be corrected without retyping the
+    /// credential.
+    TursoRemote {
+        url: String,
     },
     D1 {
         account_id: String,
@@ -1254,6 +1279,7 @@ fn connection_edit_fields(
     let mcp_alias = entry.mcp_alias.clone();
     let dto = match &entry.kind {
         ConnectionKind::Turso { path } => EditFieldsDto::Turso { path: path.clone() },
+        ConnectionKind::TursoRemote { url, .. } => EditFieldsDto::TursoRemote { url: url.clone() },
         ConnectionKind::D1 {
             account_id,
             database_id,
