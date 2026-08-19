@@ -11054,3 +11054,90 @@ guaranteed to be partially unusable on any machine that holds the owner,
 and that is knowable before the file is written. It is deliberately left
 to its own change rather than folded in here, because it alters what
 export does, while everything above alters only what the operator is told.
+
+## ADR-0113 — Export names an entry that carries another connection's keychain slot
+
+### Status
+
+Accepted.
+
+### Context
+
+ADR-0112 closed by naming what it deliberately left undone: the collision
+it reports at import time is detectable at export time, and is stronger
+there.
+
+Keyring refs are minted in exactly one place — `keyring_ref(id, field)`,
+which returns `dbboard.{id}.{field}` — and `ConnectionAdmin::update`
+writes the entry's id straight back, so an id never changes and there is
+no rename path. An entry whose ref does not derive from its own id
+therefore did not come out of this application's own CRUD. It was
+hand-edited into `connections.toml`, or imported before ADR-0038 existed.
+
+That makes the condition decidable **from the entry alone**. The ref
+carries its owner in its own text, so no store lookup is needed and the
+owner does not have to be present. The import-side ADR-0038 check is
+weaker on both counts: it can only fire when the receiving machine
+happens to hold the owner. A bundle carrying such an entry is guaranteed
+to be partially unusable on any machine that does hold it — and that is
+knowable before the file is written, on the machine where the malformation
+actually lives and can be fixed.
+
+### Decision
+
+**Export warns. It does not refuse.**
+
+The operator whose store is in this state is precisely the operator who
+most needs a backup of it. Blocking the export is the one outcome that
+leaves them worse off than before: the malformation stays, and now there
+is no copy of anything. So the bundle is written, and the summary says
+what is wrong with what was just written.
+
+Because of that, the success line comes first and the warning follows it.
+A warning in the first position reads as a failure, and sends the operator
+looking for a file that is already on disk. `exportSummary(report, t)` in
+`$lib/connections/export-report.ts` pins that ordering under test, as the
+sibling `importSummary` pins ADR-0112's wording rules.
+
+**The warning names both sides**, the same way the ADR-0112 refusal does:
+*"beta" carries the slot "dbboard.alpha.token", which belongs to "alpha"*.
+Told only the id there is nothing to look at; told only the slot there is
+nothing to act on. None of the three fields is a secret value — `key_ref`
+is the slot's name, not its contents.
+
+**Only a ref of the shape `dbboard.{owner}.{field}` is reported.** A ref
+of any other shape is a different malformation with no owner to name, and
+saying it "belongs to" someone would be an invention. `ref_owner` splits
+the field off from the right, because an id may contain dots while a field
+name never does — splitting from the left would read `dbboard.my.db.url`
+as belonging to `my`.
+
+`foreign_refs` and `foreign_refs_of` delegate to one private helper over a
+slice of entries, exactly as `export_bundle` and `export_bundle_of`
+delegate to `encrypt_selection`, so the selective path cannot drift from
+the whole-store one. `foreign_refs_of` returns `NotFound` for an unknown
+id for the same reason `export_bundle_of` does: a caller working from a
+stale view must not be told "nothing wrong here" about a connection that
+is not there.
+
+### Consequences
+
+`export_connections` no longer returns a bare `usize`. It returns
+`ExportReportDto { exported, foreign_refs }`, because a successful export
+now has something to say beyond a count. This is the Tauri IPC surface,
+not the HTTP contract of ADR-0011, so `docs/api-contract.md` is unaffected
+and `dbboard-web` has nothing to mirror.
+
+Two message keys were added in both locales.
+
+**The MCP export verb of issue #196 does not exist yet.** When it does, it
+inherits this: it should carry the same warning list rather than a count,
+since an agent driving an export is even less able than a human to notice
+a malformed store on its own.
+
+**Whether the same inspection belongs in the connection list is left
+open.** Naming it at export answers "is the file I just wrote sound?".
+Naming it in the list would answer "is my store sound?", which is a
+different question with a different place to put the answer, and it is not
+established that an operator wants that permanently on screen.
+

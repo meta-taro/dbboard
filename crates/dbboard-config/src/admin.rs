@@ -370,6 +370,29 @@ pub struct RefusedEntry {
     pub owner: String,
 }
 
+/// One entry in **this** store that carries a `keyring_*_ref` derived from a
+/// different connection's id (issue #194).
+///
+/// A ref is minted in exactly one place — `keyring_ref(id, field)` — and
+/// [`ConnectionAdmin::update`] writes the id straight back, so a connection's
+/// id never changes and there is no rename path. An entry whose ref does not
+/// derive from its own id therefore did not come from this program's own CRUD:
+/// it was hand-edited into `connections.toml`, or imported before ADR-0038.
+///
+/// Because the ref carries its owner by construction, this is decidable from
+/// the entry alone, with no lookup against the store. That is strictly
+/// stronger than the import-side ADR-0038 check, which can only fire when the
+/// receiving machine happens to hold the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignRef {
+    /// The offending entry's id.
+    pub id: String,
+    /// The `keyring_*_ref` it carries.
+    pub key_ref: String,
+    /// The id the ref was minted for, read out of `key_ref` itself.
+    pub owner: String,
+}
+
 /// Outcome of [`ConnectionAdmin::import_bundle`] (ADR-0038, ADR-0105,
 /// ADR-0112).
 ///
@@ -818,6 +841,67 @@ impl ConnectionAdmin {
             .filter(|e| wanted.contains(e.id.as_str()))
             .collect();
         self.encrypt_selection(&selected, passphrase)
+    }
+
+    /// List every entry in the store carrying a keyring slot that belongs to a
+    /// different connection (issue #194). Empty for a healthy store.
+    ///
+    /// Intended as a warning alongside an export, not a gate on it: an
+    /// operator whose store is already in this state still needs a backup.
+    #[must_use]
+    pub fn foreign_refs(&self) -> Vec<ForeignRef> {
+        let all: Vec<&ConnectionEntry> = self.file.connections.iter().collect();
+        Self::foreign_refs_in(&all)
+    }
+
+    /// [`ConnectionAdmin::foreign_refs`] restricted to the connections named
+    /// in `ids`, so an export warns about exactly what it is about to write.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::NotFound`] if an id names no entry. Same contract as
+    /// [`ConnectionAdmin::export_bundle_of`]: a caller working from a stale
+    /// view must not be told "nothing wrong here" about a connection that is
+    /// not there.
+    pub fn foreign_refs_of(&self, ids: &[String]) -> Result<Vec<ForeignRef>, ConfigError> {
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        for id in ids {
+            if self.find_index(id).is_none() {
+                return Err(ConfigError::NotFound(id.clone()));
+            }
+        }
+        let selected: Vec<&ConnectionEntry> = self
+            .file
+            .connections
+            .iter()
+            .filter(|e| wanted.contains(e.id.as_str()))
+            .collect();
+        Ok(Self::foreign_refs_in(&selected))
+    }
+
+    /// Shared by both inspection entry points so the selective path cannot
+    /// drift from the whole-store one, exactly as `encrypt_selection` is
+    /// shared by the two export paths.
+    fn foreign_refs_in(entries: &[&ConnectionEntry]) -> Vec<ForeignRef> {
+        let mut found = Vec::new();
+        for entry in entries {
+            for key_ref in entry_keyring_refs(entry) {
+                let Some(owner) = ref_owner(&key_ref) else {
+                    // A ref of some other shape carries no owner to name. It
+                    // is a different malformation, deliberately out of scope:
+                    // saying it "belongs to" someone would be an invention.
+                    continue;
+                };
+                if owner != entry.id {
+                    found.push(ForeignRef {
+                        id: entry.id.clone(),
+                        owner: owner.to_string(),
+                        key_ref,
+                    });
+                }
+            }
+        }
+        found
     }
 
     /// Resolve every ref on `entries` and seal them into a bundle blob.
@@ -1471,6 +1555,19 @@ fn normalize_alias(raw: Option<String>) -> Option<String> {
 /// Compute the keyring ref for a given connection id and field.
 fn keyring_ref(id: &str, field: &str) -> String {
     format!("dbboard.{id}.{field}")
+}
+
+/// Read back the id a ref was minted for — the inverse of [`keyring_ref`].
+/// `None` if `key_ref` is not of that shape at all.
+///
+/// Splits the field off from the **right**, because an id may contain dots
+/// while a field name never does (they are the `*_FIELD` consts below, plus
+/// the fixed `url` / `token`). Splitting from the left would read
+/// `dbboard.my.db.url` as owner `my`.
+fn ref_owner(key_ref: &str) -> Option<&str> {
+    let rest = key_ref.strip_prefix("dbboard.")?;
+    let (owner, _field) = rest.rsplit_once('.')?;
+    (!owner.is_empty()).then_some(owner)
 }
 
 /// Keyring field names for the two SSH secrets. Kept as consts so the add and
@@ -3836,6 +3933,163 @@ mod tests {
             .export_bundle_of(&[], BUNDLE_PASS)
             .expect_err("must fail");
         assert!(matches!(err, ConfigError::EmptySelection), "got {err:?}");
+    }
+
+    /// A store in the state `add` cannot produce: `beta` carries a slot
+    /// derived from `alpha`'s id. Only a hand-edited `connections.toml` or an
+    /// import predating ADR-0038 gets here, which is the whole reason export
+    /// has to look for it (issue #194).
+    fn store_with_a_foreign_ref() -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin)
+    {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        secrets
+            .set("dbboard.alpha.url", "postgres://a@example.test/db")
+            .expect("seed alpha url");
+
+        let mut file = ConnectionFile::empty();
+        for id in ["alpha", "beta"] {
+            file.connections.push(ConnectionEntry {
+                mcp_alias: None,
+                mcp_write: false,
+                ssh: None,
+                id: id.to_string(),
+                name: id.to_string(),
+                // Both name alpha's slot. For alpha that is correct; for beta
+                // it is the malformation.
+                kind: ConnectionKind::Supabase {
+                    keyring_url_ref: "dbboard.alpha.url".to_string(),
+                },
+            });
+        }
+        let admin =
+            ConnectionAdmin::new_with_file(path, secrets.clone() as Arc<dyn SecretStore>, file);
+        (dir, secrets, admin)
+    }
+
+    #[test]
+    fn a_foreign_ref_is_reported_with_the_entry_the_slot_and_its_owner() {
+        let (_dir, _secrets, admin) = store_with_a_foreign_ref();
+
+        assert_eq!(
+            admin.foreign_refs(),
+            vec![ForeignRef {
+                id: "beta".to_string(),
+                key_ref: "dbboard.alpha.url".to_string(),
+                owner: "alpha".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_store_whose_refs_are_all_its_own_reports_nothing() {
+        let (_dir, _secrets, admin) = three_connection_admin();
+        assert_eq!(admin.foreign_refs(), Vec::new());
+    }
+
+    #[test]
+    fn a_foreign_ref_is_reported_even_when_the_owner_is_not_in_the_store() {
+        // This is what makes the export-side check stronger than the
+        // import-side one: the owner is read out of the ref, which carries it
+        // by construction, so no store lookup is involved. The import check
+        // can only fire when the target machine happens to hold the owner.
+        let dir = tempdir().expect("tempdir");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let mut file = ConnectionFile::empty();
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "beta".to_string(),
+            name: "Beta".to_string(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "dbboard.alpha.url".to_string(),
+            },
+        });
+        let admin = ConnectionAdmin::new_with_file(
+            dir.path().join("connections.toml"),
+            secrets as Arc<dyn SecretStore>,
+            file,
+        );
+
+        assert_eq!(
+            admin.foreign_refs(),
+            vec![ForeignRef {
+                id: "beta".to_string(),
+                key_ref: "dbboard.alpha.url".to_string(),
+                owner: "alpha".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_ref_that_names_no_owner_is_left_alone() {
+        // `dbboard.{owner}.{field}` is the only shape that carries an owner.
+        // Anything else is a different malformation, and claiming it "belongs
+        // to" someone would be an invention.
+        let dir = tempdir().expect("tempdir");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let mut file = ConnectionFile::empty();
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "beta".to_string(),
+            name: "Beta".to_string(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "legacy-url".to_string(),
+            },
+        });
+        let admin = ConnectionAdmin::new_with_file(
+            dir.path().join("connections.toml"),
+            secrets as Arc<dyn SecretStore>,
+            file,
+        );
+
+        assert_eq!(admin.foreign_refs(), Vec::new());
+    }
+
+    #[test]
+    fn foreign_refs_of_looks_only_at_the_named_connections() {
+        let (_dir, _secrets, admin) = store_with_a_foreign_ref();
+
+        // Exporting alpha alone is a clean export; nothing to warn about.
+        assert_eq!(
+            admin
+                .foreign_refs_of(&["alpha".to_string()])
+                .expect("alpha exists"),
+            Vec::new()
+        );
+        assert_eq!(
+            admin
+                .foreign_refs_of(&["beta".to_string()])
+                .expect("beta exists")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn foreign_refs_of_an_unknown_id_is_not_found() {
+        // Same contract as `export_bundle_of`, so the caller cannot be told
+        // "nothing wrong here" about a connection that is not there.
+        let (_dir, _secrets, admin) = store_with_a_foreign_ref();
+        let err = admin
+            .foreign_refs_of(&["nope".to_string()])
+            .expect_err("must fail");
+        assert!(matches!(err, ConfigError::NotFound(id) if id == "nope"));
+    }
+
+    #[test]
+    fn export_still_produces_a_bundle_when_a_ref_is_foreign() {
+        // Warn, do not refuse. An operator whose store is already in this
+        // state still needs a backup, and blocking the export is the one
+        // outcome that leaves them worse off than before.
+        let (_dir, _secrets, admin) = store_with_a_foreign_ref();
+
+        let blob = admin.export_bundle(BUNDLE_PASS).expect("export");
+        assert!(!blob.is_empty());
     }
 
     #[test]
