@@ -10591,8 +10591,10 @@ that can see it.
   `libspa-sys`'s build script fails with `Package 'libpipewire-0.3' … not
   found` on a runner that has no PipeWire headers, and `default-features =
   false` changes nothing. The workspace stopped checking on Linux for every
-  branch, not just the one that introduced it. The fix is `libpipewire-0.3-dev`
-  and `libclang-dev` (bindgen) in the CI apt list. The general lesson is the
+  branch, not just the one that introduced it. The fix is `libpipewire-0.3-dev`,
+  `libclang-dev` (bindgen) and `libgbm-dev` (libspa's pkg-config asks the linker
+  for `-lgbm`) in the CI apt list — found one per CI round, because there is no
+  Linux machine here on which to resolve the chain. The general lesson is the
   cheaper one: point 3 examined which of the crate's *features* to enable and
   concluded correctly, but a dependency that is not optional is invisible to
   that question, and this workspace has no Linux machine on which the omission
