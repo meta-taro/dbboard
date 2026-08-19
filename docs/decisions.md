@@ -10585,6 +10585,20 @@ that can see it.
   `dbboard-mcp` previously built from pure Rust with no windowing system in
   sight. Headless use — the server on a machine with no desktop — now has one
   tool that always fails there, rather than a build that breaks.
+- **Observed after merging (2026-08-19): the Linux CI job broke, and point 3
+  above cannot fix it.** `xcap` declares `pipewire` for every non-OHOS Linux
+  target unconditionally — it is not behind any of the crate's features — so
+  `libspa-sys`'s build script fails with `Package 'libpipewire-0.3' … not
+  found` on a runner that has no PipeWire headers, and `default-features =
+  false` changes nothing. The workspace stopped checking on Linux for every
+  branch, not just the one that introduced it. The fix is `libpipewire-0.3-dev`,
+  `libclang-dev` (bindgen) and `libgbm-dev` (libspa's pkg-config asks the linker
+  for `-lgbm`) in the CI apt list — found one per CI round, because there is no
+  Linux machine here on which to resolve the chain. The general lesson is the
+  cheaper one: point 3 examined which of the crate's *features* to enable and
+  concluded correctly, but a dependency that is not optional is invisible to
+  that question, and this workspace has no Linux machine on which the omission
+  would have shown up locally.
 - **Not addressed here:** driving the interface. Typing SQL, clicking a menu,
   opening the AI panel all need a command channel into the running app, which
   `ui-settings.toml`'s file-watch shape does not fit; that transport is its
