@@ -411,16 +411,35 @@ export interface ImportReport {
   refused: RefusedEntry[];
 }
 
+// An entry in the local store whose keychain slot was minted for a different
+// connection (issue #194). A ref only ever comes from `dbboard.{id}.{field}`
+// and an id cannot be renamed, so this state is not reachable through the app
+// — it means a hand-edited `connections.toml` or an import predating ADR-0038.
+// Mirrors the backend `ForeignRefDto`; no field is a secret value.
+export interface ForeignRef {
+  id: string;
+  key_ref: string;
+  owner: string;
+}
+
+// Mirrors the backend `ExportReportDto`. `foreign_refs` is a warning about the
+// bundle that was just written, not a reason it was not written: the export
+// succeeds either way.
+export interface ExportReport {
+  exported: number;
+  foreign_refs: ForeignRef[];
+}
+
 // Encrypt connections to a passphrase-protected `.dbbx` bundle at `path`
 // (chosen via the native save dialog). `ids` names which to include; omit it
 // to export the whole store. An empty array is rejected by the backend rather
-// than read as "all" — the two readings are opposites. Returns the exported
-// connection count.
+// than read as "all" — the two readings are opposites.
 export const exportConnections = (
   path: string,
   passphrase: string,
   ids?: string[],
-): Promise<number> => invoke('export_connections', { path, passphrase, ids });
+): Promise<ExportReport> =>
+  invoke('export_connections', { path, passphrase, ids });
 
 // Decrypt and merge a `.dbbx` bundle at `path` into the local store. With
 // `overwrite`, an incoming id that already exists replaces it; without, that
