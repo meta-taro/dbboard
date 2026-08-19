@@ -10828,3 +10828,118 @@ The friction is not removed, only regularised. If cutting a release by hand
 turns out to be what suppresses the cadence, the answer is a script that
 performs the four bumps, not a longer interval; that is deliberately left
 until the frequency is real enough to measure.
+
+---
+
+## ADR-0111 — Remote Turso is a second kind, not a second meaning for the first
+
+### Status
+
+Accepted.
+
+### Context
+
+`kind = "turso"` has meant one thing since ADR-0003: a libSQL database file
+on disk. The adapter was built with `default-features = false`, which among
+other things switches off libSQL's remote transport, so a `libsql://` URL
+was not merely undocumented — it could not be reached at all. The
+compatibility matrix said as much (_"Turso remote — planned"_), and
+`docs/connections.md` stated flatly that `turso` is a local file.
+
+That leaves the product in an odd position. dbboard is named for the
+serverless databases it targets and lists Turso first among them, while the
+hosted half of Turso is the one thing it cannot open. Issue #191 is exactly
+that report.
+
+Two shapes were available.
+
+**Widen the existing kind.** Keep one `turso`, let its single field hold
+either a path or a URL, and add an optional token. This is the smaller
+diff and the worse form. The field's meaning would depend on what was typed
+into it, so the label, the validation, the error text, and the file-picker
+button would all have to be conditional on the *content* of another input.
+A form that means different things depending on what you have already
+entered is a form that gets filled in wrong, and the failure is silent:
+a mistyped path becomes a hostname, and the operator is told something
+about DNS.
+
+**Add a second kind.** `turso` stays the file, `turso-remote` carries a URL
+and an auth token. The cost is one more entry in every kind-shaped list
+(the draft union, the label map, the MCP description, the config match
+arms) — which is real, and is what the exhaustive matches and the
+description test exist to catch.
+
+The credential settles it. Local Turso is the only kind in dbboard with no
+secret at all; every other kind has one and is handled by the keyring path.
+Widening `turso` would have made it the one kind whose secret is sometimes
+present, which no existing code path is shaped for.
+
+### Decision
+
+**Remote Turso is its own connection kind.**
+
+- `turso` — a local libSQL file. Unchanged, still secret-free.
+- `turso-remote` — `url` plus `token`. Covers Turso Cloud (`libsql://`)
+  and a self-hosted `sqld` (`https://`, `http://`, `wss://`, `ws://`).
+
+Four things follow, and each of them is the point of the entry:
+
+**The token is a secret and takes the ordinary secret path.** It is minted
+into the OS credential store under its own keyring ref, never written to
+`connections.toml`, and never sent back to the edit form — blank means keep
+(ADR-0016). The URL is *not* a secret and is stored inline, which is what
+keeps `connections.toml` legible and lets the connection list show where a
+connection points.
+
+**The scheme is checked at the boundary, in both directions.**
+`connect_remote` refuses anything `is_remote_url` does not recognise, and
+`connect_local` keeps the path. A filesystem path reaching the remote
+builder would hand a local file name to a network client; the guard exists
+so that cannot happen by construction, not so the error message is nicer.
+
+**On the wire the pair reports a single `turso`.** This follows the
+precedent Aurora DSQL set with its two auth variants (ADR-0103): the HTTP
+contract in `docs/api-contract.md` describes what dialect a connection
+speaks, not how its credentials were obtained. `WIRE_IDS` stays at nine and
+`dbboard-web` needs no change — the widening is invisible to it, which is
+the reason for choosing the wire id that way in the first place.
+
+**Read-only enforcement is probed, not assumed.** A local file honours
+`PRAGMA query_only`; a hosted endpoint may not, and which it is cannot be
+inferred from the kind — a self-hosted `sqld` and Turso Cloud arrive
+through the same variant. `TursoAdapter` therefore asks the engine once, at
+connect, and records the answer as `ReadOnlyEnforcement::{Engine,
+Classifier}`. Where the pragma is not honoured, the AST classifier *is* the
+enforcement, which is the position the D1 adapter has been in since
+ADR-0046 §8 and Aurora DSQL since ADR-0061 — recorded here rather than
+papered over.
+
+Of libSQL's default features, only the remote transport is turned on.
+`replication` and `encryption` stay off: nothing the UI exposes can reach
+either, and both enlarge the build and the audit surface.
+
+### Consequences
+
+The kind count goes from ten to eleven, and every exhaustive match, label
+map, and enumeration in the MCP tool descriptions grows by one. This is
+mechanically enforced — `list_connections_names_every_kind_it_can_return`
+fails when a kind is added without naming it — and that test caught this
+exact omission while the change was being made.
+
+Enabling the remote transport pulls libSQL's network stack into the
+dependency tree. That is a real increase in build time and in what a
+release has to be audited for, and it is charged to every user including
+those who only ever open a local file. It is not separable: a build flag
+that made remote support optional would produce binaries whose connection
+list differs by build, and there is one published binary.
+
+An operator with a `libsql://` URL now has to pick `turso-remote` rather
+than `turso`, and nothing migrates automatically, because nothing can — no
+existing `turso` connection holds a URL, since one could never have been
+opened. The choice is only ever forward-looking.
+
+The remote path cannot be covered by the offline test suite the way the
+local one is: `connect_remote`'s guards are unit-tested, but reaching a
+real endpoint needs a real endpoint. It is verified by hand against Turso
+Cloud and recorded in a verification sheet, on the same footing as the D1,
+Firestore and MongoDB adapters.
