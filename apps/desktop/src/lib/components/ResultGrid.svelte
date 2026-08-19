@@ -1,5 +1,6 @@
 <script lang="ts">
   import { save } from '@tauri-apps/plugin-dialog';
+  import { timestampedFileName } from '$lib/export/filename';
   import {
     displayCell,
     isDocument,
@@ -351,7 +352,7 @@
   // the dialog is a silent no-op.
   async function saveFile() {
     const path = await save({
-      defaultPath: 'dbboard-result.csv',
+      defaultPath: timestampedFileName('dbboard-result', 'csv'),
       filters: [
         { name: 'CSV', extensions: ['csv'] },
         { name: 'TSV', extensions: ['tsv'] },

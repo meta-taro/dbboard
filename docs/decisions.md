@@ -10829,8 +10829,6 @@ turns out to be what suppresses the cadence, the answer is a script that
 performs the four bumps, not a longer interval; that is deliberately left
 until the frequency is real enough to measure.
 
----
-
 ## ADR-0111 — Remote Turso is a second kind, not a second meaning for the first
 
 ### Status
@@ -11141,3 +11139,76 @@ Naming it in the list would answer "is my store sound?", which is a
 different question with a different place to put the answer, and it is not
 established that an operator wants that permanently on screen.
 
+## ADR-0114 — CI was never slow because of Rust
+
+### Status
+
+Accepted.
+
+### Context
+
+The `rust (fmt / clippy / check / test)` job of ADR-0104 was taking 16 to
+30 minutes, and the reading of that was "Rust is slow". Measurement on run
+32224336075 says otherwise. Of 16m46s:
+
+| step | time |
+|---|---|
+| install Tauri system dependencies | 572s |
+| restore + save the cargo cache | 255s |
+| fmt + clippy + check + test | **158s** |
+
+The verification the job exists to perform is under three minutes. The rest
+is two pieces of overhead that had never been looked at.
+
+The first is bandwidth, not package count: `Fetched 89.3 MB in 9min 9s
+(163 kB/s)`. The Azure Ubuntu mirror the hosted runners use serves this set
+an order of magnitude below a normal rate, and the rate varies per run —
+which is the whole explanation for the job's total varying between 16 and
+30-odd minutes. Nothing about the workspace changed between those runs.
+
+The second is the cache itself: `Cache Size: ~7347 MB`, 8.92 GiB stored.
+GitHub's per-repository cache quota is 10 GiB, so this one entry left room
+for nothing else; every save evicted every other entry, and the API confirms
+the repository held exactly one cache. Later runs then restored a partial
+key match and rebuilt anyway, having spent three and a half minutes moving
+the archive both ways.
+
+### Decision
+
+**Cache the `.deb` files, keyed on this workflow file.** The package set is
+written in the workflow and changes only when the workflow does, so the key
+is exact and a hit skips the network. apt downloads as `_apt` while
+`actions/cache` reads as `runner`, so the archive directory's ownership is
+handed over before the install and handed back after it; without the
+handback the post-job save stores nothing and the download is paid again
+every run, silently.
+
+**Build CI without debug info** (`CARGO_PROFILE_DEV_DEBUG=false`,
+`CARGO_PROFILE_TEST_DEBUG=false`). Nearly all of the 8.92 GiB is debug
+info, and nothing in CI reads it: no debugger is attached and no test
+asserts on a symbolicated backtrace. This is the same pair of variables the
+maintainer already sets locally, for the same reason — the machine that
+runs the git hooks is chronically short of disk.
+
+`cargo check` is kept even though `cargo clippy --all-targets
+--all-features` already subsumes it. It costs 11 seconds, and the job's
+stated purpose is to run the commands CLAUDE.md calls mandatory; dropping
+one to save 11 seconds would make the workflow and that list disagree.
+
+### Consequences
+
+A cold run still pays the download once, and the first run after this pays
+a full rebuild because the profile change invalidates every fingerprint.
+Steady state should be roughly five minutes rather than sixteen to thirty.
+
+**A CI backtrace will no longer carry symbols.** If a test ever fails only
+on Linux and only in CI, and the panic location is not enough to place it,
+the way back is to set the two variables to `true` on a branch rather than
+to guess.
+
+The cache dropping under the quota means other caches can coexist again, so
+a future job may cache without evicting this one.
+
+**This cannot be verified locally.** A workflow change is only exercised by
+running it, so the evidence for this ADR is the step timings of the first
+run on the branch, not a test.

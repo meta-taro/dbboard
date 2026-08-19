@@ -7,6 +7,88 @@
 
 ## 最終更新
 
+- 日付: 2026-08-19 その2 (**v0.9.0 を出した。タグ push まで完了、release CI 実行中。
+  あわせて CI が遅い件を計測して潰し、#194 を実装した。未 push は 5 本に増えた。**
+  ① **リリース経路**: #197 (`develop` → `main`) マージ済 → `main` = `49634f3`、
+  タグ `v0.9.0` (annotated・`49634f3` を指す) push 済 → release run `32265722883`。
+  タグ push だけで完結する (v0.5.0 以降)。**残るのは公開 `.exe` の PII 目視確認だけ。**
+  ② **タグ push に `--no-verify` を使った (baseline §35 の記録)。** pre-push の
+  `cargo build --release` が `LNK1104: dbboard_mcp.exe を開くことができません` で落ちた。
+  原因は `target/release/dbboard-mcp.exe` が **3 プロセス動いていた**こと (PID 12340 /
+  17524 / 31856、いずれも親が生きている `claude` = **別セッションの MCP サーバー**)。
+  他セッションを落とす判断はしていない。タグが指す `49634f3` は**すでに origin/main に
+  あるコミット**で、その SHA に対する CI は当日 14:26Z に `ci` / `pii-scan` とも緑。
+  つまり pre-push が確かめようとしたことはリモート側で既に済んでおり、タグ push は
+  新しい内容を 1 バイトも送っていない。環境要因 + CI 緑確認済 = §35 の条件どおり。
+  ③ **CI が遅い件は Rust のせいではなかった (ADR-0114、`ci/faster-verification` =
+  `6609e97`)。** 16m46s のジョブの内訳を実測すると、apt install **572s** /
+  cargo キャッシュ復元 **255s** に対し、**fmt + clippy + check + test は 158s** しかない。
+  真因は 2 つ。(a) `-dev` パッケージ 89.3 MB を Azure の Ubuntu ミラーが **~163 kB/s**
+  でしか流さない (レートが run ごとに変わるので、総時間が 16 分〜30 分超と暴れていた
+  のもこれで説明がつく)。(b) キャッシュした `target` が **8.92 GiB** に育ち、GitHub の
+  **リポジトリあたり 10 GiB** 上限に当たって、保存のたびに他のエントリを全部追い出して
+  いた → 次の run は部分一致で復元してどのみち再ビルド。対策は `.deb` を
+  **ワークフローファイルの hash をキーに**キャッシュ (apt は `_apt`、`actions/cache` は
+  `runner` で読むので**所有権の受け渡しが要る**。これを戻さないと保存が黙って空になる) と、
+  `CARGO_PROFILE_DEV_DEBUG` / `_TEST_DEBUG` を `false` (CI はデバッガを開かないし、
+  シンボル付きバックトレースを検証するテストも無い)。`cargo check` は clippy に
+  包含されるが 11s なので**残した** — ワークフロー冒頭が CLAUDE.md の必須コマンドを
+  回すと約束しているため。**ローカルでは検証できない**ので、証拠は最初の run の
+  ステップ時間になる。
+  ④ **#194 を実装した (`fix/export-ref-ownership` = `c373778`、ADR-0113)。**
+  他接続の keychain スロットを名乗る entry を**エクスポート時**に検出する。ref は
+  `admin.rs` の `keyring_ref()` 1 箇所でしか作られず、`update` は `id` を書き戻すので
+  **rename 経路が存在しない** = 「自分の id から導出されない ref を持つ entry は不正」が
+  **ストアを引かずに entry 単体で**判定できる。インポート側 (ADR-0038) より強い。
+  **拒否はしない・警告する**のが ADR-0113 の決定 — バックアップを最も必要とする
+  操作者にとって、成功行を警告で押しのけたら「失敗した」と読めてしまう。
+  ⑤ **未 push = 5 本。** `ci/faster-verification` (`6609e97`) と
+  `fix/export-file-names` (`943c26e`) は独立、残り 3 本は stack
+  (`feat/turso-remote` `8a9bf2a` → `fix/import-report-reasons` `601ff61` →
+  `fix/export-ref-ownership` `c373778`)。**`ci/faster-verification` を先に入れると、
+  以降の全 run が 9 分の apt ダウンロードを払わなくなる**ので優先度が高い。
+  **user 側ボール = ① 公開 `.exe` の PII 目視確認、② 5 本の push (→ PR は私が作る)、
+  ③ #180 / #189 のマージ、④ v1.0 の残り 3 ゲート (下記 候補 0)、⑤ 従来からの継続分。**
+  次のエージェント側タスク = push 後の PR 作成のみ。)
+
+- 日付: 2026-08-19 (**未 push のブランチが 3 本たまった。3 本とも中身は完成・検証済で、
+  詰まっているのは push だけ。** develop = `9403077` (v0.9.0)、open PR = #180 / #189。
+  ① **`fix/export-file-names` = `943c26e`** — エクスポートの既定ファイル名に日時を入れた。
+  user 要望「ファイル名固定なのやめてほしい。日時いれるだけでだいぶ変わる」そのまま。
+  ② **`feat/turso-remote` = `4bbdf63` + `8a9bf2a`** — issue #191。リモート Turso を
+  2 つ目の kind として実装 (**ADR-0111**)。kind は 11 種になったが**ワイヤ id は 9 のまま**
+  (`turso-remote` は `turso` として名乗る) = コントラクト非破壊。docs は別コミット。
+  ③ **`fix/import-report-reasons` = `601ff61`** (②の上に stack) — user の指摘どおり、
+  **インポートの「入らなかった理由」3 つを分けて報告する**ようにした (**ADR-0112**)。
+  もとは `skipped: Vec<String>` 1 本に (1) 束内 id 重複 / (2) 既存 + Skip モード /
+  (3) 他接続が持つ keyring ref との衝突 (ADR-0038) が全部入っていた。
+  「既に存在します」が真なのは (2) だけ、overwrite で直るのも (2) だけ。
+  (3) は**両方とも嘘**で、しかも overwrite 再実行はバイト同一の結果になるため、
+  ヒントが操作者を行き止まりに送っていた。`skipped_existing` / `duplicate_in_bundle` /
+  `refused: Vec<RefusedEntry>` の 3 本に分割し、refusal は**衝突の両側** (ref 名と
+  その持ち主) を名指しする。文言規則は `import-report.ts` に純関数として出して
+  9 本のテストで固定。**チェック自体は一切変えていない** (user の
+  「Not a request to relax the check」どおり)。②③とも stack しているのは、
+  同じ 5 ファイルを触るため。②が develop に入れば③の差分は自分の変更だけになる。
+  ④ **ディスクが 0 GB になり commit が落ちた。** pre-commit フックは私の
+  `CARGO_PROFILE_DEV_DEBUG=false` を継承しないので、debuginfo 付きで debug ツリーを
+  丸ごと再ビルドしにいく。`cargo clean --profile dev` で **16.6 GiB 回収** (現在 16.3 GB 空き)、
+  `target/release` は pre-push のために残した。**これで 08-16 から未回答だった
+  「`cargo clean --profile dev` の可否」は事実上決着**。再発防止は
+  `export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false` を
+  **commit と同じシェル行に置く** (フック側の cargo に継承させるため)。
+  ⑤ **新規 issue 3 本** — **#194** = 同じ ref 衝突を**エクスポート時**に検出する
+  (ref は `admin.rs` の 1 箇所でしか作られず rename 経路が無いので、
+  「自分の id から導出されない ref を持つ entry は不正」が**ストア参照なしで判定できる** =
+  インポート側の検査より強い)。**#195** = `dbboard-mcp.exe` に更新経路が無い。
+  **#196** = パスフレーズをワイヤに乗せない MCP エクスポート verb (user の
+  「パスワード設定も AI エージェントに託した方がセキュア」に対する回答。
+  生成はエージェント側が正しいが、**MCP の戻り値は Claude Code の `.jsonl` に
+  平文で残る**ので、値ではなく資格情報ストアの **ref 名**だけを返す設計にした)。
+  **user 側ボール = ① 3 本の push (→ PR は私が作る)、② #180 / #189 のマージ、
+  ③ v1.0 の残り 3 ゲート (下記 候補 0)、④ 従来からの継続分。**
+  次のエージェント側タスク = push 後の PR 作成のみ。)
+
 - 日付: 2026-08-16 その2 (**v1.0 ゲート 4 (コード署名) を「買わない」側で閉じた。
   残りは 3 つ、全部 user 側ボール。PR #176 / #177 / #178 マージ済、open PR = 0。**
   ① **user 判断: 証明書は買わない。** issue 0021 のゲート 4 には最初から代替経路が
@@ -229,8 +311,8 @@ open PR **#125** (`feature/cjk-font-and-ai-menu`) は rewrite で壊れるので
 ### 候補 C: release.yml の publish 自己作成化 — **完了 (v0.5.0)**
 
 publish ステップが `gh release view <tag> || gh release create <tag>` になり、
-タグ push だけでリリースが完結するようになった。v0.8.0 のリリースはこの経路で
-実行済み。**残るのは公開 `.exe` の PII 目視確認だけで、これは CI がやらない
+タグ push だけでリリースが完結するようになった。v0.8.0 / v0.9.0 のリリースは
+この経路で実行済み。**残るのは公開 `.exe` の PII 目視確認だけで、これは CI がやらない
 人間の作業。**[[project-release-ci-needs-release-object]]。
 
 ### 候補 D: cargo-deny の既存ドリフト対応 (別 chore)

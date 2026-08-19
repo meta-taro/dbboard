@@ -1,5 +1,6 @@
 <script lang="ts">
   import { save, open } from '@tauri-apps/plugin-dialog';
+  import { timestampedFileName } from '$lib/export/filename';
   import { workspace } from '$lib/state/workspace.svelte';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import type { MessageKey } from '$lib/i18n/messages';
@@ -375,7 +376,7 @@
     try {
       path = await save({
         title: i18n.t('conn-export-heading'),
-        defaultPath: 'dbboard-connections.dbbx',
+        defaultPath: timestampedFileName('dbboard-connections', 'dbbx'),
         filters: [{ name: i18n.t('conn-manager-title'), extensions: ['dbbx'] }],
       });
     } catch (e) {
