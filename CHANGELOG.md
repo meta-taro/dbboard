@@ -9,6 +9,28 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Added
+
+- **Turso Cloud is reachable** — a new `turso-remote` connection kind
+  ([ADR-0111](docs/decisions.md)), closing
+  [#191](https://github.com/meta-taro/dbboard/issues/191). `turso` has
+  always meant a libSQL file on disk, and the adapter was built with
+  libSQL's remote transport switched off, so a `libsql://` URL could not
+  be opened at all. `turso-remote` takes the endpoint the Turso dashboard
+  shows plus an auth token, and also reaches a self-hosted `sqld` over
+  `https://`, `http://`, `wss://` or `ws://`. The token is stored in the
+  OS credential store like every other secret, never written to
+  `connections.toml`, and never sent back to the edit form — blank means
+  keep. `turso` is untouched, and nothing migrates: no existing `turso`
+  connection can hold a URL, because one could never have been opened.
+- **Exports no longer propose the same file name twice** — the save
+  dialog now offers `dbboard-connections-20260819-163045.dbbx`,
+  `dbboard-result-<stamp>.csv` and `<connection>-dump-<stamp>.sql`.
+  Exporting twice used to land on an "overwrite?" prompt over the
+  previous export — which, for a backup, is the only copy of the older
+  state. The stamp is local time and sorts chronologically, so a
+  directory of exports reads as a history.
+
 ## [0.9.0] — 2026-08-19
 
 Seven MCP verbs, and what they are for. Checking a change by hand means
