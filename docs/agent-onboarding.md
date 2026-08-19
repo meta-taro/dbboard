@@ -83,6 +83,27 @@ keychain.
 reach no database at all (ADR-0107). Use them only when asked: the effect
 lands on someone's screen.
 
+`capture_window` photographs the running dbboard window and returns it as
+a PNG (ADR-0108) — the way to check what the app actually renders rather
+than assert it. It reads nothing. What it returns is someone's real
+screen, real connection names and all, so describe what you see but do not
+paste the image anywhere public without asking.
+
+`set_editor_sql` · `run_query` · `open_ai_panel` · `open_ai_settings`
+work that same window (ADR-0109): put SQL in the editor, press Run, open
+the AI panel, open the provider settings inside it. With `capture_window`
+they are how you set up and check what the app *shows*. `run_query` is not
+a cheaper `run_read_query` — it runs whatever the editor holds, against
+the connection that window has selected, and leaves the rows on the
+operator's screen. All four fail outright when dbboard is not running, and
+retrying does not open it.
+
+`open_ai_settings` is also refused while the AI panel is shut, because the
+part of the window that owns that verb is not mounted then. Read that
+refusal as an answer rather than an obstacle: it is what tells you the
+provider settings are reached *through* the panel and not from the top
+level.
+
 `run_write` exists but is **refused unless the connection is opted in**
 with `mcp_write = true`, and a permanently-closed list (grants, user and
 role DDL, `TRUNCATE`, `DROP` of anything but an index) is refused

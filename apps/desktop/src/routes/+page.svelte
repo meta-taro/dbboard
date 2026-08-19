@@ -11,7 +11,14 @@
   import RestoreDialog from '$lib/components/RestoreDialog.svelte';
   import AiPanel from '$lib/components/AiPanel.svelte';
   import UpdateNotice from '$lib/components/UpdateNotice.svelte';
-  import { updateOptOut, checkForUpdate } from '$lib/api';
+  import {
+    updateOptOut,
+    checkForUpdate,
+    onUiCommand,
+    reportUiCommandResult,
+  } from '$lib/api';
+  import { uiCommands } from '$lib/ui-command/bus';
+  import { attachUiCommands, type Detach } from '$lib/ui-command/channel';
   import { updateState } from '$lib/update/state.svelte';
   import {
     SIDEBAR_DEFAULT_WIDTH,
@@ -28,6 +35,10 @@
 
   /** Detaches the `ui:locale` subscription when the shell goes away. */
   let unlistenLocale: UnlistenFn | null = null;
+  /** The same, for `ui:command` (ADR-0109). */
+  let unlistenCommand: Detach | null = null;
+  /** Gives up this component's claim on `open_ai_panel`. */
+  let releaseAiPanel: Detach | null = null;
 
   let backupOpen = $state(false);
   let restoreOpen = $state(false);
@@ -54,6 +65,20 @@
     void i18n.sync().then((un) => {
       unlistenLocale = un;
     });
+    // The shell owns the AI panel, so it is the shell that can open it on
+    // request (ADR-0109). The query verbs are claimed by the query panel.
+    releaseAiPanel = uiCommands.on('open_ai_panel', async () => {
+      if (aiOpen) return 'the AI panel was already open';
+      aiOpen = true;
+      return 'AI panel opened';
+    });
+    void attachUiCommands({
+      subscribe: onUiCommand,
+      dispatch: (command) => uiCommands.dispatch(command),
+      report: reportUiCommandResult,
+    }).then((un) => {
+      unlistenCommand = un;
+    });
     workspace.init();
     chosenWidth = loadSidebarWidth();
     viewportWidth = window.innerWidth;
@@ -63,6 +88,10 @@
   onDestroy(() => {
     unlistenLocale?.();
     unlistenLocale = null;
+    unlistenCommand?.();
+    unlistenCommand = null;
+    releaseAiPanel?.();
+    releaseAiPanel = null;
   });
 
   function widthAt(clientX: number): number {

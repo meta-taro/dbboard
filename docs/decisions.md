@@ -10487,3 +10487,245 @@ orphan as the history `v:2` reader in ADR-0027: live code, no live caller.
 - **Not addressed here:** moving theme, history, or the sidebar width out of
   `localStorage`. Nothing outside the window needs them, and each would be a
   migration with a user-visible failure mode of its own.
+
+## ADR-0108 — The agent can see the window it is being asked about
+
+### Status
+
+Accepted.
+
+### Context
+
+ADR-0107 moved the *mechanical* half of locale verification to the agent
+side: the language can now be switched over MCP. The judging half stayed with
+the person, correctly — but so did something that is not judgement at all,
+namely *looking*. "Did the language change?", "is the grid full of tofu?",
+"is this error legible?" are questions with a right answer visible on screen,
+and every one of them cost the maintainer a screenshot and a paste.
+
+That toll is what stalled the CJK-font work twice (see the tofu regressions
+behind ADR-0084): the check is cheap to describe, expensive to perform, so it
+was performed rarely and the regression survived.
+
+The standing instruction is broader than this one case — when an operation
+feels like it needs a human hand, add the tool at that moment rather than
+asking. Screen capture is the first slice, and the one every later UI tool
+depends on: a tool that changes the window is unverifiable without a tool
+that can see it.
+
+### Decision
+
+1. **`capture_window` is an MCP tool that returns a PNG of dbboard's own
+   window**, as an image content block plus a text block carrying the title
+   and the size before and after scaling. It is the third tool that reaches
+   no database, beside `get_ui_locale` / `set_ui_locale`, and so lives in its
+   own module rather than in `McpService` — it holds no service state and
+   talks to the windowing system.
+2. **`xcap` 0.9 does the grab, rather than per-platform code here.** The
+   question that decided it was empirical, not architectural: a Tauri window
+   is WebView2 on Windows, and a naive capture of one comes back black. A
+   throwaway probe confirmed `xcap` returns the real content, and returns it
+   for an *unfocused* window — mandatory on the maintainer's machine, where
+   several agent sessions run at once and stealing focus would misdirect
+   another session's input. Apache-2.0; six crates the workspace did not
+   already have.
+3. **`xcap`'s `image` feature stays off.** Its `image` dependency is
+   non-optional and already carries the `png` codec, which is the whole of
+   what a screenshot needs; the feature would turn on `image/default` and
+   drag in the AVIF and OpenEXR encoders to save a PNG.
+4. **The window is chosen by application name, matched whole and
+   case-insensitively — never by title.** The probe found two windows titled
+   "dbboard": one was the app, the other a terminal tab showing this session.
+   A title-matching selector photographs the terminal and calls it a success,
+   which is worse than failing. `app_name` is `productName` from
+   `tauri.conf.json`, so it is stable across platforms. A test pins the
+   terminal case.
+5. **Minimised windows are skipped, not failed on.** Only when every
+   candidate is minimised does that become the error, so a stray minimised
+   instance cannot hide the one being looked at. Among visible windows the
+   largest wins — a Tauri app can hold helper windows a person never sees.
+6. **Not running and minimised are `invalid_params`; a platform failure is
+   `internal_error`.** Same reasoning as the write gate (ADR-0087): a refusal
+   an agent cannot fix by retrying must not look retryable, or it will retry.
+   Both messages name the human action that would fix them.
+7. **The image is scaled to a 1400px long edge by default, never enlarged**,
+   in integer arithmetic. Lanczos3 rather than a cheaper filter, because what
+   these captures are usually judged on is text — and a nearest-neighbour
+   downscale of CJK glyphs produces exactly the mush the capture is there to
+   detect.
+8. **The tool description states that the capture is the operator's real
+   screen** — real connection names, real data — and that it must not be
+   pasted into an issue, a pull request or a commit without asking. A test
+   asserts that sentence is present. This repo is public and developed
+   against business-identifying databases (ADR-0055); the constraint belongs
+   on the tool surface, where the agent meets it before acting, not in a
+   convention it may never read.
+
+### Consequences
+
+- **Visual claims become checkable.** "The locale switched" and "the glyphs
+  render" stop being assertions and become observations, at no cost to the
+  person. The judging that baseline §22 reserves for a human — whether the
+  Korean is *right* — is untouched: the agent reports what it sees; the
+  operator still enters the result.
+- **Screen capture is passive, and that is why it is allowed now.** Nothing
+  here moves a pointer or presses a key. On a machine running several agent
+  sessions, input automation would land in whichever window happens to be
+  focused, so it waits for a channel that addresses this app specifically.
+- **The privacy risk moves from the tool to the transcript.** A capture that
+  reaches the agent has already left the machine's screen; what the tool can
+  control is whether the agent then republishes it. Hence the description and
+  its test. The PII scanner (ADR-0055) guards the repo, not the conversation.
+- **`capture_window` will show whichever dbboard window is largest.** With
+  two instances open — which happens here — a capture may be of the other
+  session's window, and `set_ui_locale` already affects both through the
+  shared `ui-settings.toml`. Worth knowing before treating a capture as proof
+  about a particular build.
+- **Six new crates, and a platform dependency in a crate that had none.**
+  `dbboard-mcp` previously built from pure Rust with no windowing system in
+  sight. Headless use — the server on a machine with no desktop — now has one
+  tool that always fails there, rather than a build that breaks.
+- **Not addressed here:** driving the interface. Typing SQL, clicking a menu,
+  opening the AI panel all need a command channel into the running app, which
+  `ui-settings.toml`'s file-watch shape does not fit; that transport is its
+  own decision.
+
+## ADR-0109 — Driving the window: one instruction at a time, answered on completion
+
+### Status
+
+Accepted.
+
+### Context
+
+ADR-0108 gave the agent eyes and closed with the thing it could not do:
+drive the interface. Typing SQL, pressing Run, opening the AI panel are all
+still the person's hands, and verification sheet 003 rows 7-10 — CJK in the
+editor, CJK in the grid, CJK in an error, the AI provider settings — cannot
+be reached without them. Seeing the window without being able to work it
+means the maintainer still performs every step and the agent only reports.
+
+The standing instruction is the same one behind ADR-0108: when an operation
+feels like it needs a human hand, add the tool at that moment. This is the
+other half of it.
+
+`ui-settings.toml` (ADR-0041, ADR-0107) already crosses the process
+boundary, so the obvious move is to add fields to it. That does not work.
+`ui-settings.toml` carries **state**: last write wins, a repeated write is a
+no-op, and nobody is waiting for an answer. An instruction is an **event** —
+it must fire exactly once, "run it again" is a second event with identical
+contents, and the caller very much wants to know what happened. A state file
+cannot express either property.
+
+Input automation would have avoided a transport entirely, and is refused for
+the reason ADR-0108 records: several agent sessions run on this machine at
+once, so a synthetic keystroke lands in whichever window has focus, which is
+usually not this one.
+
+### Decision
+
+1. **Two files beside `ui-settings.toml`, each with exactly one writer.**
+   `ui-command.toml` is written by `dbboard-mcp` and read by the app;
+   `ui-command-result.toml` is written by the app and read by
+   `dbboard-mcp`. One file would mean two OS processes read-modify-writing
+   the same path, where the loser's write disappears without an error.
+2. **A monotonic sequence number is the trigger, never the command's
+   value.** The app acts when `seq` exceeds the last one it acted on, so
+   writing `run_query` twice runs the query twice. Comparing contents would
+   silently collapse the second request, which is the case an agent is most
+   likely to want.
+3. **The answer is written on completion, not on receipt**, and carries the
+   `seq` it answers. A result that names an earlier command is not this
+   command's result — `answers(seq)` enforces that. Without it a caller
+   reads the previous run's success and reports it as this one's, which is
+   the failure that would be hardest to notice and most expensive to trust.
+4. **The window adopts the existing `seq` at startup instead of obeying
+   it.** A command file outlives the session that wrote it, so a shell that
+   obeyed what it found would replay an instruction from hours ago against
+   whatever is on screen now. `already_handled_at_startup` is a named
+   function with a test, because it looks like a line worth deleting.
+5. **The app polls at 100ms; locale still polls at 1s.** A locale change is
+   a preference nobody waits on. A command is waited on twice — once before
+   the window sees it, once before the caller sees the answer — so the poll
+   interval is charged twice per call.
+6. **The caller gives up after 30 seconds and says the app is not running.**
+   Silence has exactly one common cause, and an agent told "timed out" will
+   retry; one told "dbboard is not running" asks a human to open it. Same
+   reasoning as ADR-0087's write gate and ADR-0108's closed window: a
+   refusal retrying cannot fix must not look retryable. The command still
+   sits on disk afterwards — the timeout is about the *answer*, and rolling
+   the file back would race the window that may be acting on it.
+7. **Inside the window, verbs are claimed by whoever owns them.** A bus
+   maps `set_editor_sql` and `run_query` to the query panel and
+   `open_ai_panel` to the shell. A single listener reaching into both would
+   have to know their internals, and an unclaimed verb refuses by name
+   ("the part that handles it is not open") rather than timing out —
+   different causes deserve different messages.
+8. **A tool returns an error on refusal, never `ok: false`.** An agent that
+   must read the body to notice a failure will eventually not read it.
+9. **Three tools, no more:** `set_editor_sql`, `run_query`,
+   `open_ai_panel`. Each one is a verb the window already has a button for,
+   which is what keeps this a channel rather than a second UI. (Amended
+   below: four, with `open_ai_settings`.)
+
+### Consequences
+
+- **The remaining rows of sheet 003 become reachable.** Set CJK SQL, run it,
+  capture the result: the mechanical half is the agent's, and the judgement
+  — whether the Korean is *right* — stays with the operator, as baseline §22
+  requires. The agent must still never write `OK` into the sheet.
+- **`run_query` runs against the window's connection, with the window's row
+  limit, and leaves the rows on someone's screen.** It is not a cheaper
+  `run_read_query` and the tool description says so; an agent that reaches
+  for it by default is disturbing a person to answer a question that never
+  needed a screen.
+- **The editor is not read-only, so `run_query` runs whatever is in it.**
+  The window's own write rules apply — not `run_write`'s `mcp_write` gate,
+  which governs a different path. An agent that did not call `set_editor_sql`
+  first does not know what it is running.
+- **Every open window obeys.** Both instances read the same file, exactly as
+  `set_ui_locale` already affects both (ADR-0108). Addressing one window
+  needs an identity the app does not have yet.
+- **No port, no token, no firewall prompt.** A loopback listener would have
+  been less code and would have asked this machine's owner to approve an
+  app listening on a socket, on a shared PC, for a channel between two
+  processes owned by the same user.
+- **The channel is only as fast as the poll.** A command costs up to 200ms
+  before anything visible happens. For driving a UI that is invisible; for
+  anything in a loop it would not be, and that is the point at which this
+  transport should be replaced rather than tuned.
+- **Not addressed here:** clicking arbitrary controls, addressing a specific
+  window, or reading back what the editor contained. Each is a real gap; none
+  is needed by the sheets this unblocks.
+
+### Amendment (2026-08-18) — a fourth verb: `open_ai_settings`
+
+Decision 9 said three tools and no more. Sheet 003 row 10 is what tested
+that limit, and the limit lost: the row asks whether the AI provider
+settings are reached *through* the AI panel rather than sitting beside it
+at the top level, and step 2 of it — "open the provider settings" — is a
+click inside the panel that none of the three verbs reaches.
+
+The standing rule from the Context above applies without needing a
+judgement call: when an operation turns out to need a human hand, the tool
+is added at that moment. So `open_ai_settings` is added, and decision 9
+now reads **four** verbs.
+
+What makes this one worth writing down rather than just adding is that its
+*refusal* carries the answer. Decision 7 gives verbs to whoever owns them
+and refuses an unclaimed verb by name. `AiProvidersDialog` is rendered from
+`AiPanel.svelte` and nowhere else, and `AiPanel` is mounted only while the
+panel is open — so with the panel shut, `open_ai_settings` is refused with
+"the part that handles it is not open". That refusal *is* the evidence row
+10 asks for: had the settings been a top-level route, some always-mounted
+part of the window would have claimed the verb and it would have opened.
+The tool description says this outright, so an agent reads the refusal as a
+finding rather than as an obstacle to route around.
+
+The alternative was to make the shell claim the verb and have it open the
+panel first as a side effect. That would have answered "did it open?" —
+which nobody asked — while destroying the answer to "where does it live?",
+which is the question on the sheet.
+
+The count of tools with no database behind them goes from six to seven;
+the surface goes from fifteen to sixteen.

@@ -17,10 +17,42 @@ public API is the HTTP contract in
   `localStorage`, and a running window picks up a change within about a
   second without restarting. `get_ui_locale` returns the codes this build
   ships alongside the current one, so an agent has something to pick from;
-  matching is exact, and `ja-JP` is refused where `ja` is accepted. These
-  are the only two tools that reach no database. They exist because
-  verifying eleven locales means switching the language eleven times, and
-  the switching — unlike the judging — is mechanical.
+  matching is exact, and `ja-JP` is refused where `ja` is accepted. They
+  exist because verifying eleven locales means switching the language
+  eleven times, and the switching — unlike the judging — is mechanical.
+
+- **An agent can see the window it is being asked about** — `capture_window`
+  ([ADR-0108](docs/decisions.md)) returns a PNG of the running dbboard
+  window, so "did the language change?", "is the grid full of boxes?" and
+  "is this error legible?" stop being assertions and become observations.
+  It reads no database. The window is found by application name rather than
+  title, because a terminal tab called "dbboard" enumerates with exactly
+  that title and capturing it would look like a success. Being minimised or
+  closed is reported as something only a human can fix, not as a retryable
+  failure. The image is the operator's real screen, so the tool says on its
+  own surface that it must not be pasted anywhere public without asking.
+
+- **An agent can now work that window, not only watch it** —
+  `set_editor_sql`, `run_query`, `open_ai_panel` and `open_ai_settings`
+  ([ADR-0109](docs/decisions.md)) put SQL in the query editor, press Run,
+  open the AI panel, and open the provider settings inside it. With `capture_window` they close the loop: the
+  mechanical half of a UI check — set it up, perform it, photograph the
+  result — no longer needs the person's hands, which is what had made the
+  remaining CJK rendering checks expensive enough to skip. The instruction
+  crosses through two files in the config directory, one written by each
+  side, numbered so that "run it again" is a second run rather than a
+  no-op, and answered when the window has *finished* rather than when it
+  started — a tool that returned early would report the previous run's
+  outcome as this one's. A command left behind by a session that ended is
+  adopted at startup instead of obeyed. `run_query` is not a cheaper
+  `run_read_query`: it runs whatever the editor holds, against the
+  connection that window has selected, and leaves the rows on someone's
+  screen. All four fail outright when dbboard is not running, and say so
+  in those words, because an agent told "timed out" retries.
+  `open_ai_settings` is refused for a second reason — the AI panel being
+  shut — and that refusal is the useful half of it: there is no top-level
+  route to the provider settings, so being told the verb has no owner is
+  how the arrangement can be checked rather than taken on trust.
 
 ### Fixed
 

@@ -20,6 +20,10 @@ dbboard-config = { workspace = true }
 # MCP server reuses the exact same, security-sensitive construction the
 # desktop GUI uses.
 dbboard-connect = { workspace = true }
+# `capture_window` (ADR-0108): grab the app's own window, and hand the PNG
+# to the agent as base64 in an MCP image block.
+xcap = { workspace = true }
+base64 = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
