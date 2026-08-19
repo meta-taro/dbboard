@@ -49,20 +49,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 /// Build the service, honouring a `--config` / `DBBOARD_CONFIG` override.
 ///
-/// When an override is given, `annotations.toml` is taken from the same
-/// directory; otherwise both files come from the platform default dir.
+/// When an override is given, `annotations.toml` and `ui-settings.toml` are
+/// taken from the same directory; otherwise every file comes from the
+/// platform default dir. The override moves the whole profile, not just the
+/// connections: a second config dir whose UI settings still came from the
+/// first would let this server retarget the running app's language.
 fn build_service(
     config_override: Option<PathBuf>,
     secrets: Arc<KeyringStore>,
 ) -> Result<McpService, Box<dyn Error>> {
     match config_override {
         Some(config_path) => {
-            let annotations_path = config_path.parent().map_or_else(
-                || PathBuf::from("annotations.toml"),
-                |dir| dir.join("annotations.toml"),
-            );
+            let sibling = |name: &str| {
+                config_path
+                    .parent()
+                    .map_or_else(|| PathBuf::from(name), |dir| dir.join(name))
+            };
+            let annotations_path = sibling("annotations.toml");
+            let ui_settings_path = sibling("ui-settings.toml");
             tracing::info!(config = %config_path.display(), "using config override");
-            Ok(McpService::new(config_path, annotations_path, secrets))
+            Ok(McpService::new(
+                config_path,
+                annotations_path,
+                ui_settings_path,
+                secrets,
+            ))
         }
         None => Ok(McpService::with_default_paths(secrets)?),
     }
