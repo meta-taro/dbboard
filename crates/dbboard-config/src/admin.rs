@@ -352,12 +352,37 @@ pub enum ImportMode {
     Overwrite,
 }
 
-/// Outcome of [`ConnectionAdmin::import_bundle`] (ADR-0038, ADR-0105).
+/// One bundle entry the import refused because a `keyring_*_ref` it carries
+/// belongs to a **different** connection already in the store (ADR-0038).
 ///
-/// The three lists partition the bundle's entries, and each preserves the
+/// Carries both sides of the collision because neither alone is actionable:
+/// the refused id is absent from the store afterwards, so an operator who is
+/// told only the id finds nothing wherever they look and reads the import as
+/// broken. Naming the slot and its owner is what turns the message into a
+/// description of a deliberate refusal (ADR-0112).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedEntry {
+    /// The bundle entry's id. It was not added to the store.
+    pub id: String,
+    /// The `keyring_*_ref` the entry carried.
+    pub key_ref: String,
+    /// The id of the connection in this store that owns `key_ref`.
+    pub owner: String,
+}
+
+/// Outcome of [`ConnectionAdmin::import_bundle`] (ADR-0038, ADR-0105,
+/// ADR-0112).
+///
+/// The five lists partition the bundle's entries, and each preserves the
 /// order in which the bundle presented them, so the UI can name exactly
-/// which connections were added, which were replaced, and which were left
-/// untouched.
+/// which connections were added, which were replaced, and — separately for
+/// each reason — which were not.
+///
+/// The three not-imported reasons are kept apart rather than merged into one
+/// `skipped` list because only one of them ("already present") is true of the
+/// others, and only one of them ("already present") is fixed by re-importing
+/// with [`ImportMode::Overwrite`]. A single list forces one message onto all
+/// three, which makes it false for two of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportReport {
     /// Ids added to the store by this import.
@@ -365,11 +390,17 @@ pub struct ImportReport {
     /// Ids that replaced an existing entry of the same id
     /// ([`ImportMode::Overwrite`] only).
     pub overwritten: Vec<String>,
-    /// Ids present in the bundle but skipped: an entry with the same id
-    /// already existed and the mode was [`ImportMode::Skip`], the bundle
-    /// listed the id twice, or the entry's ref aimed at another
-    /// connection's keychain slot.
-    pub skipped: Vec<String>,
+    /// Ids left alone because the store already held a connection of that id
+    /// and the mode was [`ImportMode::Skip`]. Re-importing with
+    /// [`ImportMode::Overwrite`] replaces these.
+    pub skipped_existing: Vec<String>,
+    /// Ids the bundle listed more than once. The first occurrence was taken;
+    /// each later one is reported here. The mode makes no difference.
+    pub duplicate_in_bundle: Vec<String>,
+    /// Entries refused by the ADR-0038 ref-ownership check. The mode makes no
+    /// difference: overwrite may replace the entry that owns an id, never a
+    /// third connection's secret.
+    pub refused: Vec<RefusedEntry>,
 }
 
 /// Owns the on-disk TOML file plus an [`Arc<dyn SecretStore>`] handle
@@ -890,22 +921,31 @@ impl ConnectionAdmin {
 
         for entry in incoming {
             if accepted.contains(&entry.id) {
-                report.skipped.push(entry.id);
+                report.duplicate_in_bundle.push(entry.id);
                 continue;
             }
             let slot = self.find_index(&entry.id);
             if slot.is_some() && mode == ImportMode::Skip {
-                report.skipped.push(entry.id);
+                report.skipped_existing.push(entry.id);
                 continue;
             }
             let refs = entry_keyring_refs(&entry);
-            if refs
-                .iter()
-                .any(|r| ref_owners.get(r).is_some_and(|owner| owner != &entry.id))
-            {
-                // Ref collides with a slot another connection owns; refuse
-                // rather than overwrite that connection's secret.
-                report.skipped.push(entry.id);
+            // Ref collides with a slot another connection owns; refuse rather
+            // than overwrite that connection's secret. Report the owner along
+            // with the ref: without it the entry is simply missing afterwards,
+            // with no way to tell a refusal from a failed import (ADR-0112).
+            let collision = refs.iter().find_map(|r| {
+                ref_owners
+                    .get(r)
+                    .filter(|owner| *owner != &entry.id)
+                    .map(|owner| (r.clone(), owner.clone()))
+            });
+            if let Some((key_ref, owner)) = collision {
+                report.refused.push(RefusedEntry {
+                    id: entry.id,
+                    key_ref,
+                    owner,
+                });
                 continue;
             }
             for key_ref in refs {
@@ -3520,7 +3560,7 @@ mod tests {
             .expect("import");
 
         assert_eq!(report.imported, vec!["store-a", "store-c", "local"]);
-        assert!(report.skipped.is_empty());
+        assert!(report.skipped_existing.is_empty());
         assert_eq!(target.entries().len(), 3);
         // Secret-bearing entries are seeded into the target keychain.
         assert_eq!(
@@ -3565,7 +3605,7 @@ mod tests {
             .expect("import");
 
         // The conflict is reported, the two fresh ids are imported.
-        assert_eq!(report.skipped, vec!["store-a"]);
+        assert_eq!(report.skipped_existing, vec!["store-a"]);
         assert_eq!(report.imported, vec!["store-c", "local"]);
         assert_eq!(target.entries().len(), 3);
         // The pre-existing secret was NOT overwritten by the bundle's.
@@ -3591,7 +3631,7 @@ mod tests {
             .expect("second import");
 
         assert!(report.imported.is_empty());
-        assert_eq!(report.skipped, vec!["store-a", "store-c", "local"]);
+        assert_eq!(report.skipped_existing, vec!["store-a", "store-c", "local"]);
         assert_eq!(target.entries().len(), 3);
     }
 
@@ -3654,8 +3694,17 @@ mod tests {
             .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
             .expect("import");
 
-        // The crafted entry is refused, not imported.
-        assert_eq!(report.skipped, vec!["attacker"]);
+        // The crafted entry is refused, not imported, and the report says
+        // which slot it aimed at and who owns it.
+        assert_eq!(
+            report.refused,
+            vec![RefusedEntry {
+                id: "attacker".to_string(),
+                key_ref: "dbboard.victim.url".to_string(),
+                owner: "victim".to_string(),
+            }]
+        );
+        assert!(report.skipped_existing.is_empty());
         assert!(report.imported.is_empty());
         assert_eq!(target.entries().len(), 1);
         // The victim's secret is intact — never overwritten by the bundle.
@@ -3817,7 +3866,7 @@ mod tests {
 
         assert_eq!(report.overwritten, vec!["store-a"]);
         assert_eq!(report.imported, vec!["store-c", "local"]);
-        assert!(report.skipped.is_empty());
+        assert!(report.skipped_existing.is_empty());
         assert_eq!(target.entries().len(), 3);
         // The replacement keeps the slot the existing entry held, so the
         // list does not reshuffle under the user on every import.
@@ -3901,7 +3950,10 @@ mod tests {
             .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
             .expect("import");
 
-        assert_eq!(report.skipped, vec!["attacker"]);
+        assert_eq!(
+            report.refused.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            vec!["attacker"]
+        );
         assert!(report.imported.is_empty());
         assert!(report.overwritten.is_empty());
         assert_eq!(
@@ -3971,7 +4023,135 @@ mod tests {
 
         assert!(report.imported.is_empty());
         assert!(report.overwritten.is_empty());
-        assert_eq!(report.skipped, vec!["store-a", "store-c", "local"]);
+        assert_eq!(report.skipped_existing, vec!["store-a", "store-c", "local"]);
+    }
+
+    // --- The three not-imported reasons are reported apart (ADR-0112) ---
+
+    /// A bundle that trips every not-imported condition at once, so the
+    /// report has to keep them apart rather than pour them into one list.
+    fn mixed_outcome_bundle() -> Vec<u8> {
+        let mut file = ConnectionFile::empty();
+        // (a) An id the target already holds. Deliberately a different kind
+        //     from the target's, to show the check is on the id alone.
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "store-a".to_string(),
+            name: "Bundle store-a".to_string(),
+            kind: ConnectionKind::Turso {
+                path: ":memory:".to_string(),
+            },
+        });
+        // (b) A brand-new id whose ref aims at another connection's slot.
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "attacker".to_string(),
+            name: "Attacker".to_string(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "dbboard.victim.url".to_string(),
+            },
+        });
+        // (c) An id the bundle itself lists twice.
+        for name in ["Fresh", "Fresh again"] {
+            file.connections.push(ConnectionEntry {
+                mcp_alias: None,
+                mcp_write: false,
+                ssh: None,
+                id: "fresh".to_string(),
+                name: name.to_string(),
+                kind: ConnectionKind::Turso {
+                    path: ":memory:".to_string(),
+                },
+            });
+        }
+        let mut secrets = BTreeMap::new();
+        secrets.insert(
+            "dbboard.victim.url".to_string(),
+            "postgres://attacker@evil.example/db".to_string(),
+        );
+        let payload = BundlePayload::new(file, secrets);
+        encrypt_bundle(&payload, BUNDLE_PASS).expect("encrypt")
+    }
+
+    /// Seeds `store-a` (id collision) and `victim` (ref owner) so
+    /// `mixed_outcome_bundle` trips both against it.
+    fn mixed_outcome_target() -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin) {
+        let (dir, secrets, mut target) = fresh_admin();
+        target.add(d1_draft("store-a")).expect("seed store-a");
+        target
+            .add(supabase_draft(
+                "victim",
+                "postgres://real:secret@db.victim.supabase.co/postgres",
+            ))
+            .expect("seed victim");
+        (dir, secrets, target)
+    }
+
+    #[test]
+    fn the_three_not_imported_reasons_land_in_three_separate_lists() {
+        let blob = mixed_outcome_bundle();
+        let (_dir, _secrets, mut target) = mixed_outcome_target();
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
+
+        assert_eq!(report.imported, vec!["fresh"]);
+        // Only this one is genuinely "already present" — the string the UI
+        // shows for it is the only one that may say so.
+        assert_eq!(report.skipped_existing, vec!["store-a"]);
+        assert_eq!(report.duplicate_in_bundle, vec!["fresh"]);
+        assert_eq!(
+            report.refused.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            vec!["attacker"]
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_the_offending_ref_and_the_connection_that_owns_it() {
+        // The operator cannot act on "skipped": the id is nowhere to be
+        // found afterwards, so the message has to carry both sides of the
+        // collision or it reads as a corrupted import.
+        let blob = mixed_outcome_bundle();
+        let (_dir, _secrets, mut target) = mixed_outcome_target();
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
+
+        assert_eq!(
+            report.refused,
+            vec![RefusedEntry {
+                id: "attacker".to_string(),
+                key_ref: "dbboard.victim.url".to_string(),
+                owner: "victim".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_still_a_refusal_in_overwrite_mode_not_a_skip() {
+        // The ref-ownership check ignores the mode, so re-importing with
+        // overwrite on produces the same outcome. The report must not put
+        // the entry anywhere that invites that retry.
+        let blob = mixed_outcome_bundle();
+        let (_dir, _secrets, mut target) = mixed_outcome_target();
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
+            .expect("import");
+
+        assert_eq!(
+            report.refused.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            vec!["attacker"]
+        );
+        // Overwrite took the id collision, so nothing is left to "skip".
+        assert!(report.skipped_existing.is_empty());
+        assert_eq!(report.overwritten, vec!["store-a"]);
     }
 
     // ---- SSH tunnel write path (ADR-0069) ----

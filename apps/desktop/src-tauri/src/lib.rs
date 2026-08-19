@@ -1515,7 +1515,8 @@ fn export_connections(
 /// `overwrite` decides what an incoming id that already exists does: replace
 /// the entry and its secrets, or be skipped and reported. It defaults to
 /// skipping, because that is the choice that cannot lose a credential.
-/// Returns the imported/overwritten/skipped id lists for the UI to report.
+/// Returns the per-outcome id lists for the UI to report; the three
+/// not-imported reasons stay apart all the way to the message (ADR-0112).
 #[tauri::command]
 fn import_connections(
     state: tauri::State<'_, AppState>,
@@ -1536,7 +1537,13 @@ fn import_connections(
     Ok(ImportReportDto {
         imported: report.imported,
         overwritten: report.overwritten,
-        skipped: report.skipped,
+        skipped_existing: report.skipped_existing,
+        duplicate_in_bundle: report.duplicate_in_bundle,
+        refused: report
+            .refused
+            .into_iter()
+            .map(RefusedEntryDto::from)
+            .collect(),
     })
 }
 
@@ -1558,7 +1565,29 @@ fn save_text_file(path: String, contents: String) -> Result<(), String> {
 struct ImportReportDto {
     imported: Vec<String>,
     overwritten: Vec<String>,
-    skipped: Vec<String>,
+    skipped_existing: Vec<String>,
+    duplicate_in_bundle: Vec<String>,
+    refused: Vec<RefusedEntryDto>,
+}
+
+/// Serialize-only mirror of `dbboard_config::RefusedEntry` (ADR-0112). All
+/// three fields are connection ids or keychain slot names, never a secret
+/// value, so this is safe to put in front of the user verbatim.
+#[derive(serde::Serialize)]
+struct RefusedEntryDto {
+    id: String,
+    key_ref: String,
+    owner: String,
+}
+
+impl From<dbboard_config::RefusedEntry> for RefusedEntryDto {
+    fn from(r: dbboard_config::RefusedEntry) -> Self {
+        Self {
+            id: r.id,
+            key_ref: r.key_ref,
+            owner: r.owner,
+        }
+    }
 }
 
 fn lock_poisoned() -> String {
@@ -1809,7 +1838,8 @@ mod tests {
     use super::{
         graft_url, none_if_blank, secret_field, ssh_edit_fields, to_add_draft, to_edit_draft,
         to_ssh_draft, to_ssh_edit_field, EditFieldsDto, ImportReportDto, KindEditInput, KindInput,
-        SshAuthEditInput, SshAuthFieldsDto, SshAuthInput, SshEditInput, SshHostKeyInput, SshInput,
+        RefusedEntryDto, SshAuthEditInput, SshAuthFieldsDto, SshAuthInput, SshEditInput,
+        SshHostKeyInput, SshInput,
     };
     use dbboard_config::{
         ConnectionAdmin, ConnectionKindDraft, ConnectionKindEditDraft, FirestoreCredentialField,
@@ -2315,7 +2345,7 @@ mod tests {
             .expect("import");
         assert_eq!(report.imported, vec!["t".to_string()]);
         assert!(report.overwritten.is_empty());
-        assert!(report.skipped.is_empty());
+        assert!(report.skipped_existing.is_empty());
         assert_eq!(dst.entries().len(), 1);
     }
 
@@ -2352,16 +2382,34 @@ mod tests {
         let dto = ImportReportDto {
             imported: vec!["a".to_string()],
             overwritten: vec!["c".to_string()],
-            skipped: vec!["b".to_string()],
+            skipped_existing: vec!["b".to_string()],
+            duplicate_in_bundle: vec!["d".to_string()],
+            refused: vec![RefusedEntryDto {
+                id: "e".to_string(),
+                key_ref: "dbboard.owner.token".to_string(),
+                owner: "owner".to_string(),
+            }],
         };
         let json = serde_json::to_value(&dto).expect("serialize");
-        for key in ["imported", "overwritten", "skipped"] {
+        for key in [
+            "imported",
+            "overwritten",
+            "skipped_existing",
+            "duplicate_in_bundle",
+            "refused",
+        ] {
             assert_eq!(
                 json.get(key).and_then(|v| v.as_array()).unwrap().len(),
                 1,
                 "{key} must reach the frontend as an array"
             );
         }
+        // A refusal is only actionable with both sides of the collision, so
+        // the three fields are part of the contract, not decoration.
+        let refused = &json.get("refused").unwrap().as_array().unwrap()[0];
+        assert_eq!(refused.get("id").unwrap(), "e");
+        assert_eq!(refused.get("key_ref").unwrap(), "dbboard.owner.token");
+        assert_eq!(refused.get("owner").unwrap(), "owner");
     }
 
     // ---- SSH tunnel DTO mapping (ADR-0069) ----

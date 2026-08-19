@@ -385,13 +385,30 @@ export const deleteConnection = (id: string): Promise<void> =>
 export const reconnectConnection = (id: string): Promise<void> =>
   invoke('reconnect_connection', { id });
 
-// The three lists partition the bundle's entries (ADR-0038, ADR-0105).
-// `overwritten` is only ever non-empty when the import asked for it.
+// An entry refused because a keychain slot it names belongs to a different
+// connection (ADR-0038). Both sides of the collision travel because neither
+// alone is actionable: the refused id is absent from the store afterwards, so
+// an operator told only the id sees a broken import rather than a deliberate
+// refusal (ADR-0112). No field here is a secret value — `key_ref` is the slot
+// name, not its contents.
+export interface RefusedEntry {
+  id: string;
+  key_ref: string;
+  owner: string;
+}
+
+// The five lists partition the bundle's entries (ADR-0038, ADR-0105,
+// ADR-0112). `overwritten` is only ever non-empty when the import asked for
+// it. The three not-imported reasons stay apart because only
+// `skipped_existing` means "already present", and only `skipped_existing` is
+// resolved by re-importing with overwrite on.
 // Mirrors the backend `ImportReportDto`.
 export interface ImportReport {
   imported: string[];
   overwritten: string[];
-  skipped: string[];
+  skipped_existing: string[];
+  duplicate_in_bundle: string[];
+  refused: RefusedEntry[];
 }
 
 // Encrypt connections to a passphrase-protected `.dbbx` bundle at `path`
