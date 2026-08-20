@@ -195,10 +195,18 @@ Run a lightweight security review when:
 - Adding network-facing code or AI provider integration.
 - Adding GitHub Actions workflows.
 
-Suggested tooling:
+Tooling:
 
-- `cargo deny check` for license and advisory checks.
-- `cargo audit` for known vulnerabilities.
+- `cargo deny check` covers licenses and RustSec advisories. It is **not a
+  suggestion** — the `deps` job in `ci.yml` runs it on every push and pull
+  request to `develop` and `main` (ADR-0117). It was a suggestion until
+  v0.10.0, and in that time it went red without anyone noticing.
+- Anything `deny.toml` ignores carries a per-advisory `reason`. Add entries
+  the same way: one line per advisory, saying why this one cannot be fixed
+  today and what would clear it. A blanket suppression is not acceptable
+  here, because it hides the next one too.
+- `cargo audit` is not installed or run; `cargo deny check advisories` reads
+  the same RustSec database.
 
 ### PII / secret leak scanning (ADR-0055)
 
