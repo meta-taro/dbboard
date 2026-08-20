@@ -33,8 +33,8 @@ focus:
 
 - **Default**: alternate sprints between desktop and web, not concurrent
   work on the same layer in both.
-- **Right now (2026-08-14)**: `desktop` has shipped Phases 1 through 6 and
-  released **v0.8.0** — nine adapters (Turso, D1, CockroachDB, Neon,
+- **Right now (2026-08-20)**: `desktop` has shipped Phases 1 through 6 and
+  released **v0.10.0** — nine adapters (Turso, D1, CockroachDB, Neon,
   Supabase, Aurora DSQL, MySQL / MariaDB via `dbboard-mysql`, ADR-0068,
   the first genuinely different SQL dialect, and the two read-only document
   stores Cloud Firestore and MongoDB, ADR-0091), the optional AI assistant
@@ -64,6 +64,22 @@ focus:
   mechanical half of a UI check off the maintainer's hands and leave the
   judging where it belongs. Plus the fix those verbs turned up: the query
   toolbar had been frozen and unreported.
+
+  **v0.10.0 (2026-08-20)** adds no adapter, but it does add a second kind of
+  one. `turso` had always meant a file on disk — the adapter was built with
+  libSQL's remote transport switched off, so a hosted database was not
+  awkward to open, it could not be opened at all, and one production database
+  stayed invisible while its siblings were reachable. `turso-remote`
+  ([ADR-0111](decisions.md)) closes that as a second kind rather than a
+  second meaning for the first, so nothing migrates. The rest of the release
+  is one fault in four places, each of them the program knowing something and
+  not saying it: an import that refused to overwrite a live credential and
+  called it "already present" ([ADR-0112](decisions.md)), an export that
+  wrote a bundle it knew would be refused elsewhere
+  ([ADR-0113](decisions.md)), an MCP server several releases behind
+  answering exactly like a current one ([ADR-0116](decisions.md)), and an
+  update offering itself without saying what it changed
+  ([ADR-0115](decisions.md)).
 
   The Tauri 2 + SvelteKit client reached parity at v0.4.0 and is now the
   **only** client: the egui app and its supporting crates were deleted in

@@ -437,6 +437,11 @@ fn table_matches(table: &TableInfo, want: &str) -> bool {
 fn kind_label(kind: &ConnectionKind) -> &'static str {
     match kind {
         ConnectionKind::Turso { .. } => "turso",
+        // Distinguished from the local form, the way the two Aurora DSQL
+        // variants are: the agent is choosing between the operator's
+        // connections, and "the hosted one" is exactly the distinction the
+        // label has to carry. It matches the `kind =` in `connections.toml`.
+        ConnectionKind::TursoRemote { .. } => "turso-remote",
         ConnectionKind::D1 { .. } => "d1",
         ConnectionKind::Postgres { .. } => "postgres",
         ConnectionKind::MySql { .. } => "mysql",

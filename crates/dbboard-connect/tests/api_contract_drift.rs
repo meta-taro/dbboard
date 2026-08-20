@@ -62,7 +62,11 @@ fn contract_documents_every_capability_flag() {
 /// `id` list in `docs/api-contract.md`.
 fn wire_id(config: &BackendConfig) -> &'static str {
     match config {
-        BackendConfig::Turso { .. } => "turso",
+        // Local and remote libSQL are one adapter on the wire: same dialect,
+        // same capabilities, only the endpoint differs. The precedent is the
+        // Aurora DSQL pair below, which likewise reports one id for two
+        // credential paths (ADR-0111).
+        BackendConfig::Turso { .. } | BackendConfig::TursoRemote { .. } => "turso",
         BackendConfig::D1(_) => "d1",
         BackendConfig::Postgres { .. } => "postgres",
         BackendConfig::MySql { .. } => "mysql",
@@ -94,6 +98,15 @@ fn wire_id_covers_the_documented_list() {
     // Keeps the exhaustive match live, so a new variant is a build failure
     // rather than a silently uncovered id.
     assert_eq!(wire_id(&BackendConfig::turso(":memory:")), "turso");
+    assert_eq!(
+        wire_id(&BackendConfig::TursoRemote {
+            url: "libsql://demo-acme.turso.io".to_string(),
+            auth_token: "t0k3n".to_string(),
+        }),
+        "turso",
+        "a hosted libSQL database is the same adapter on the wire; a new id \
+         here would be a contract change"
+    );
 
     let doc = contract();
     let missing: Vec<_> = WIRE_IDS

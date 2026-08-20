@@ -49,6 +49,14 @@ env:
   CARGO_TERM_COLOR: always
   # Fail rather than hang if a dependency needs an interactive prompt.
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  # The cached `target` reached 8.92 GiB, against GitHub's 10 GiB per-repo
+  # cache quota — so every save evicted every other entry, and the next run
+  # restored a partial match and rebuilt anyway. Nearly all of that bulk is
+  # debug info nothing here reads: CI opens no debugger and no test asserts on
+  # a symbolicated backtrace. Dropping it keeps the cache inside the quota and
+  # takes about three minutes of tar off each run.
+  CARGO_PROFILE_DEV_DEBUG: "false"
+  CARGO_PROFILE_TEST_DEBUG: "false"
 
 jobs:
   rust:
@@ -58,6 +66,18 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      # The packages below are 89.3 MB, which the Azure Ubuntu mirror has been
+      # serving at ~163 kB/s: 9m09s of a 16m46s job before a single crate is
+      # compiled (measured on run 32224336075, and the dominant term in every
+      # run since — the rate varies run to run, which is why the job's total
+      # does). The set only changes when this file does, so the .debs are
+      # cached and a hit skips the network entirely.
+      - name: Cache apt archives
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
 
       # Tauri 2 links against the system webkit/gtk stack. Without these the
       # desktop crate does not compile and the whole workspace check fails.
@@ -71,9 +91,16 @@ jobs:
       # here brings in. Both were found by CI failing, one per round: there is
       # no Linux machine in this project's loop to resolve the chain locally.
       - name: Install Tauri system dependencies
+        # apt downloads as `_apt` but actions/cache reads as `runner`, so the
+        # archive directory's ownership is handed over and back around the
+        # install. Without the handback the post-job save silently caches
+        # nothing and every run pays the download again.
         run: |
+          sudo mkdir -p ~/apt-archives/partial
+          sudo chown -R _apt:root ~/apt-archives
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
+            -o Dir::Cache::archives="$HOME/apt-archives" \
             libwebkit2gtk-4.1-dev \
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev \
@@ -84,6 +111,7 @@ jobs:
             libclang-dev \
             libgbm-dev \
             patchelf
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
 
       - uses: actions/setup-node@v4
         with:
@@ -122,6 +150,43 @@ jobs:
 
       - name: cargo test
         run: cargo test --all-features
+
+  # `cargo deny check` existed in this repo, and CLAUDE.md named it as part of
+  # the security posture, but nothing ran it. It was red for months without
+  # anyone finding out: 21 advisories and 4 license failures, discovered only
+  # because a pre-release review happened to run it by hand. A check that lives
+  # only in a person's memory is not a check.
+  #
+  # It gets its own job rather than a step in `rust` because it needs neither
+  # the GTK stack nor a frontend build — `cargo metadata` resolves the graph
+  # without compiling anything — so it finishes in a fraction of that job's
+  # time and reports separately when it is the thing that broke.
+  deps:
+    name: deps (cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Pinned, and cached on that pin: an unpinned install would change the
+      # advisory database's client from under a passing branch, and building
+      # cargo-deny from source costs more than the check it performs.
+      - name: Cache cargo-deny
+        id: cache-deny
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-0.19.7
+
+      - name: Install cargo-deny
+        if: steps.cache-deny.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny@0.19.7
+
+      # All four checks. `advisories` and `licenses` are the ones that were
+      # failing; `bans` and `sources` are cheap and were already green.
+      - name: cargo deny check
+        run: cargo deny check
 
   frontend:
     name: frontend (svelte-check / vitest)

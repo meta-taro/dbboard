@@ -450,9 +450,10 @@ describe('isEditableInApp', () => {
 });
 
 describe('CONNECTION_KINDS', () => {
-  it('lists all ten kinds with turso first', () => {
+  it('lists all eleven kinds with turso first', () => {
     expect(CONNECTION_KINDS).toEqual([
       'turso',
+      'turso_remote',
       'd1',
       'postgres',
       'mysql',
@@ -463,6 +464,87 @@ describe('CONNECTION_KINDS', () => {
       'firestore',
       'mongodb',
     ]);
+  });
+});
+
+// Turso Cloud / any networked libSQL endpoint (ADR-0111). The split that
+// matters is which of the two fields is a credential: the URL names a public
+// endpoint and is stored in `connections.toml` in the clear, the auth token is
+// a bearer credential and goes to the keychain — the same split D1 makes.
+describe('turso_remote', () => {
+  const remote = {
+    kind: 'turso_remote' as const,
+    id: 'cloud',
+    name: 'Turso Cloud',
+    url: 'libsql://demo-acme.turso.io',
+    token: 'eyJhbGciOi',
+  };
+
+  it('asks for the endpoint URL and the auth token', () => {
+    expect(fieldsForKind('turso_remote')).toEqual(['url', 'token']);
+  });
+
+  // `url` is the *secret* for the Postgres family — there the password rides
+  // inside it. Here it does not, so masking it would hide the one field the
+  // operator needs to read back to check they typed the right database.
+  it('treats only the token as secret, not the URL', () => {
+    expect(secretFields('turso_remote')).toEqual(['token']);
+  });
+
+  it('requires both on add, and drops the token on edit', () => {
+    expect(requiredFields('turso_remote', 'add')).toEqual(['id', 'name', 'url', 'token']);
+    expect(requiredFields('turso_remote', 'edit')).toEqual(['name', 'url']);
+  });
+
+  // libSQL over HTTP has no host/port/user/password/database to ask for, and
+  // `url` here is a whole endpoint rather than a DSN to compose.
+  it('has no DSN parts to fill in', () => {
+    expect(validateDsnFields(form({ kind: 'turso_remote', use_url: false }))).toEqual([]);
+  });
+
+  // The backend refuses a tunnel for this kind: a forward would present a
+  // certificate for the wrong name, and the URL is what the token is scoped to.
+  it('cannot front an SSH tunnel', () => {
+    expect(supportsSshTunnel('turso_remote')).toBe(false);
+  });
+
+  it('sends both fields on add', () => {
+    expect(buildKindInput(form(remote))).toEqual({
+      kind: 'turso_remote',
+      url: 'libsql://demo-acme.turso.io',
+      token: 'eyJhbGciOi',
+    });
+  });
+
+  // The point of the edit form: correcting the endpoint without retyping a
+  // token that is already in the keychain.
+  it('sends a blank token on edit, which the backend reads as keep', () => {
+    expect(buildKindEditInput(form({ ...remote, url: 'libsql://moved.turso.io', token: '' })))
+      .toEqual({
+        kind: 'turso_remote',
+        url: 'libsql://moved.turso.io',
+        token: '',
+      });
+  });
+
+  it('prefills the URL on edit and leaves the token blank', () => {
+    const f = formForEdit('cloud', 'Turso Cloud', {
+      kind: 'turso_remote',
+      url: 'libsql://demo-acme.turso.io',
+    });
+    expect(f.kind).toBe('turso_remote');
+    expect(f.url).toBe('libsql://demo-acme.turso.io');
+    expect(f.token).toBe('');
+    // URL mode is the Postgres-family fallback for "the secret was not sent
+    // back"; here the URL *is* sent back, so the DSN machinery stays out of it.
+    expect(f.use_url).toBe(false);
+  });
+
+  // A local file and a hosted endpoint are different enough that picking the
+  // wrong one is a real mistake; the form must not carry a path over.
+  it('does not share the local kind fields', () => {
+    expect(fieldsForKind('turso')).toEqual(['path']);
+    expect(secretFields('turso')).toEqual([]);
   });
 });
 

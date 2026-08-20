@@ -50,15 +50,21 @@ Run before every commit:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo check --all-targets --all-features
-cargo test --all-features
+cargo test --all-features --workspace --exclude dbboard-turso
+cargo test --all-features -p dbboard-turso -- --test-threads=1
 ```
 
 Run before every push (in addition to the above):
 
 ```sh
 cargo build --release
-cargo test --all-features --release
+cargo test --all-features --release --workspace --exclude dbboard-turso
+cargo test --all-features --release -p dbboard-turso -- --test-threads=1
 ```
+
+`dbboard-turso` is tested one thread at a time because a parallel run tears
+down two in-memory libSQL databases at once, which crashes the test binary on
+Windows after every assertion has passed. The hooks carry the measurement.
 
 These commands are wired into `cargo-husky` git hooks (see "Git Hooks" below).
 
@@ -189,10 +195,18 @@ Run a lightweight security review when:
 - Adding network-facing code or AI provider integration.
 - Adding GitHub Actions workflows.
 
-Suggested tooling:
+Tooling:
 
-- `cargo deny check` for license and advisory checks.
-- `cargo audit` for known vulnerabilities.
+- `cargo deny check` covers licenses and RustSec advisories. It is **not a
+  suggestion** — the `deps` job in `ci.yml` runs it on every push and pull
+  request to `develop` and `main` (ADR-0117). It was a suggestion until
+  v0.10.0, and in that time it went red without anyone noticing.
+- Anything `deny.toml` ignores carries a per-advisory `reason`. Add entries
+  the same way: one line per advisory, saying why this one cannot be fixed
+  today and what would clear it. A blanket suppression is not acceptable
+  here, because it hides the next one too.
+- `cargo audit` is not installed or run; `cargo deny check advisories` reads
+  the same RustSec database.
 
 ### PII / secret leak scanning (ADR-0055)
 
@@ -207,7 +221,9 @@ every commit message (commit-msg hook), and daily in CI (`pii-scan.yml`).
   `.pii-denylist.example`.
 - A blocked commit means a real leak (remove it) or a false positive (add a
   narrow regex to `scripts/pii-scan.allow`). Never `--no-verify` past a PII
-  finding — the only sanctioned bypass is the Windows libSQL teardown segfault.
+  finding. The Windows libSQL teardown segfault used to be a sanctioned
+  bypass; it is not one any more, because the hooks no longer trigger it (see
+  "Mandatory Verification Commands"). A crash there is now a real finding.
 - Operator guide: `docs/maintainer/pii-scanning.md`.
 
 ## Progress Tracking

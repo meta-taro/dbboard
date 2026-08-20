@@ -207,7 +207,9 @@ fn resolve_initial_provider(
 /// passes to `AiPanel::prepare_send`. `None` for kinds that map to no dialect.
 fn dialect_label_for_kind(kind: &ConnectionKind) -> Option<String> {
     let adapter_id = match kind {
-        ConnectionKind::Turso { .. } => "turso",
+        // Both libSQL forms speak the same dialect; where the database lives
+        // is not something the prompt needs to know.
+        ConnectionKind::Turso { .. } | ConnectionKind::TursoRemote { .. } => "turso",
         ConnectionKind::D1 { .. } => "d1",
         ConnectionKind::Postgres { .. } => "postgres",
         ConnectionKind::MySql { .. } => "mysql",

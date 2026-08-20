@@ -15,7 +15,9 @@
 //! `set_ui_locale` pair, `capture_window` (ADR-0108), and the four that
 //! work the window — `set_editor_sql`, `run_query`, `open_ai_panel`,
 //! `open_ai_settings` (ADR-0109). Those last seven reach no database at
-//! all.
+//! all, and `get_server_info` (#195) reaches nothing whatever: it names
+//! the build, because this binary is installed by hand and a stale one
+//! is otherwise indistinguishable from a broken one.
 //!
 //! Tool *descriptions* carry more of the write policy than a reader might
 //! expect. They are the only documentation the agent gets before it acts:
@@ -166,6 +168,33 @@ pub struct DumpDatabaseParams {
 /// tool router. Cloned per request by `rmcp`, so both fields are cheap
 /// to clone (`Arc` and a router of function pointers).
 #[derive(Clone)]
+/// Which build is answering (#195).
+///
+/// `dbboard-mcp` is copied into place by hand and never replaces itself, so
+/// nothing about a running instance says how old it is. This is the answer.
+///
+/// It is deliberately only the build. The obvious companion field — which
+/// `connections.toml` this instance reads — is the one field that must not
+/// be here: on Windows that path is `C:\Users\<operator>\…`, and a tool
+/// result lands in the calling agent's transcript as plaintext on disk. A
+/// version number diagnoses a stale binary without naming anybody.
+#[derive(Debug, Serialize)]
+pub struct BuildInfo {
+    /// The crate name, so a result pasted into a bug report says what it is.
+    pub name: &'static str,
+    /// The version this binary was built at.
+    pub version: &'static str,
+}
+
+/// The build answering this session.
+#[must_use]
+pub fn build_info() -> BuildInfo {
+    BuildInfo {
+        name: env!("CARGO_PKG_NAME"),
+        version: env!("CARGO_PKG_VERSION"),
+    }
+}
+
 pub struct DbboardMcp {
     service: Arc<McpService>,
     tool_router: ToolRouter<DbboardMcp>,
@@ -198,7 +227,7 @@ impl DbboardMcp {
     }
 
     #[tool(
-        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb). Check the kind before you write a query: every kind above except firestore and mongodb takes SQL, firestore takes a Firestore StructuredQuery as JSON, and mongodb takes a MongoDB command document as JSON. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
+        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, turso-remote, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb). `turso` is a local SQLite/libSQL file and `turso-remote` is a Turso Cloud database reached over the network; both take the same SQL, so the distinction matters for latency and for where the data lives, not for what you send. Check the kind before you write a query: every kind above except firestore and mongodb takes SQL, firestore takes a Firestore StructuredQuery as JSON, and mongodb takes a MongoDB command document as JSON. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
     )]
     async fn list_connections(&self) -> Result<CallToolResult, McpError> {
         let views = self
@@ -367,6 +396,18 @@ impl DbboardMcp {
         json_block(&out)
     }
 
+    // Reaches nothing at all — no database, no configuration, not even the
+    // window. It exists because the operator's copy of this binary is a file
+    // someone put somewhere once: it can sit several releases behind the
+    // behaviour anyone expects of it, and an agent does not notice that a
+    // result looks like a version-old bug (#195).
+    #[tool(
+        description = "Report which dbboard-mcp build is answering: `name` and `version`. This binary is installed by hand and never updates itself, so it can be stale — older than the fix for whatever you are looking at. Call it before reporting anything that behaves oddly, and quote the version in the report. It touches no database, reads no configuration, and returns nothing about the machine it runs on."
+    )]
+    async fn get_server_info(&self) -> Result<CallToolResult, McpError> {
+        json_block(&build_info())
+    }
+
     // The only pair that touches no database. They exist because switching
     // the language by hand — eleven times, restarting between — is the whole
     // cost of verifying the translations; an agent that can set it can walk
@@ -516,8 +557,31 @@ impl ServerHandler for DbboardMcp {
         // struct is `#[non_exhaustive]`, so a literal is not an option.
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_instructions(
-                "Read-only access to the databases dbboard is configured with. \
+            .with_instructions(instructions())
+    }
+}
+
+/// The handshake text the client hands to the model.
+///
+/// A function rather than a literal so the running version can open it
+/// (#195). The version is on two channels because neither alone is
+/// dependable: this text reaches the model without anyone asking for it but
+/// some clients drop it, and `get_server_info` always arrives but only if
+/// something thinks to call it.
+fn instructions() -> String {
+    format!(
+        "You are talking to dbboard-mcp {version}. This binary is installed by \
+         hand and never updates itself, so it can be older than the behaviour \
+         expected of it — if anything below looks like a bug, put that version \
+         number in the report first, and call get_server_info if you need it \
+         again later. \
+         \n\n{GUIDE}",
+        version = env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// How to use the tool set, minus the version preamble above.
+const GUIDE: &str = "Read-only access to the databases dbboard is configured with. \
                  Start with list_connections to discover connection ids, then \
                  list_tables / describe_table to explore a schema (or search_schema \
                  to jump straight to the tables/columns whose name matches a term, \
@@ -545,10 +609,7 @@ impl ServerHandler for DbboardMcp {
                  \n\nrun_query is not a substitute for run_read_query: it runs \
                  whatever is in that window's editor, against the connection that \
                  window has selected, and leaves the rows on the operator's screen. \
-                 Reach for it when what the app displays is the point.",
-            )
-    }
-}
+                 Reach for it when what the app displays is the point.";
 
 /// Serialize a tool result to a pretty-printed JSON text block.
 fn json_block<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
@@ -632,11 +693,87 @@ fn capture_to_mcp(err: &CaptureError) -> McpError {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_to_mcp, to_mcp};
+    use super::{build_info, capture_to_mcp, instructions, to_mcp};
     use crate::capture::CaptureError;
     use crate::service::ServiceError;
     use dbboard_core::DbError;
     use rmcp::model::ErrorCode;
+
+    // Why any of the next four tests exist (#195): this binary is copied
+    // into place by hand and never updates itself. A bug was once reported
+    // against the MySQL path that had been fixed a release earlier — the
+    // installed binary predated the fix, and nothing about it said so. The
+    // agent could not tell, and neither could the operator.
+    //
+    // The version is therefore put on two channels, because neither alone
+    // is reliable: `instructions` reaches the model without anyone asking
+    // but some clients drop it, and a tool result always arrives but only
+    // if something thinks to call it.
+
+    #[test]
+    fn the_handshake_names_the_running_build() {
+        let text = instructions();
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "the handshake does not say which build is answering"
+        );
+    }
+
+    // Knowing the version is no use if the agent does not think to pass it
+    // on. The report arrives as prose written by the agent, so the version
+    // is in it only if the agent was told to put it there.
+    #[test]
+    fn the_handshake_asks_for_the_version_in_any_bug_report() {
+        let text = instructions();
+        assert!(
+            text.contains("never updates itself"),
+            "the handshake does not say the binary can be stale"
+        );
+        assert!(
+            text.contains("get_server_info"),
+            "the handshake does not name the tool that repeats the version"
+        );
+    }
+
+    #[test]
+    fn get_server_info_reports_the_running_build() {
+        let info = build_info();
+        assert_eq!(info.name, env!("CARGO_PKG_NAME"));
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    // The obvious next field to add here is "which connections.toml am I
+    // reading", and it is the one field that must never be added: on
+    // Windows that path is `C:\Users\<operator>\...`, and a tool result
+    // lands in the calling agent's transcript as plaintext on disk. The
+    // version diagnoses a stale binary without naming anybody.
+    #[test]
+    fn the_build_report_carries_no_filesystem_path() {
+        let json = serde_json::to_string(&build_info()).expect("BuildInfo serializes");
+        for needle in ['\\', '/'] {
+            assert!(
+                !json.contains(needle),
+                "a path separator reached the build report: {json}"
+            );
+        }
+    }
+
+    // A tool an agent has no reason to call is a tool that answers nothing.
+    // Its description has to supply the reason, because the moment it is
+    // useful — something behaved oddly — is not a moment anyone is reading
+    // documentation.
+    #[test]
+    fn get_server_info_says_when_an_agent_would_want_it() {
+        let description = description_above("get_server_info");
+        assert!(
+            description.contains("stale"),
+            "get_server_info does not say the binary can be out of date"
+        );
+        assert!(
+            description.contains("touches no database"),
+            "get_server_info does not say it reaches no database"
+        );
+    }
 
     #[test]
     fn unknown_connection_is_a_bad_request() {

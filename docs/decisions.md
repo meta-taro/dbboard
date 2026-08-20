@@ -10828,3 +10828,628 @@ The friction is not removed, only regularised. If cutting a release by hand
 turns out to be what suppresses the cadence, the answer is a script that
 performs the four bumps, not a longer interval; that is deliberately left
 until the frequency is real enough to measure.
+
+## ADR-0111 — Remote Turso is a second kind, not a second meaning for the first
+
+### Status
+
+Accepted.
+
+### Context
+
+`kind = "turso"` has meant one thing since ADR-0003: a libSQL database file
+on disk. The adapter was built with `default-features = false`, which among
+other things switches off libSQL's remote transport, so a `libsql://` URL
+was not merely undocumented — it could not be reached at all. The
+compatibility matrix said as much (_"Turso remote — planned"_), and
+`docs/connections.md` stated flatly that `turso` is a local file.
+
+That leaves the product in an odd position. dbboard is named for the
+serverless databases it targets and lists Turso first among them, while the
+hosted half of Turso is the one thing it cannot open. Issue #191 is exactly
+that report.
+
+Two shapes were available.
+
+**Widen the existing kind.** Keep one `turso`, let its single field hold
+either a path or a URL, and add an optional token. This is the smaller
+diff and the worse form. The field's meaning would depend on what was typed
+into it, so the label, the validation, the error text, and the file-picker
+button would all have to be conditional on the *content* of another input.
+A form that means different things depending on what you have already
+entered is a form that gets filled in wrong, and the failure is silent:
+a mistyped path becomes a hostname, and the operator is told something
+about DNS.
+
+**Add a second kind.** `turso` stays the file, `turso-remote` carries a URL
+and an auth token. The cost is one more entry in every kind-shaped list
+(the draft union, the label map, the MCP description, the config match
+arms) — which is real, and is what the exhaustive matches and the
+description test exist to catch.
+
+The credential settles it. Local Turso is the only kind in dbboard with no
+secret at all; every other kind has one and is handled by the keyring path.
+Widening `turso` would have made it the one kind whose secret is sometimes
+present, which no existing code path is shaped for.
+
+### Decision
+
+**Remote Turso is its own connection kind.**
+
+- `turso` — a local libSQL file. Unchanged, still secret-free.
+- `turso-remote` — `url` plus `token`. Covers Turso Cloud (`libsql://`)
+  and a self-hosted `sqld` (`https://`, `http://`, `wss://`, `ws://`).
+
+Four things follow, and each of them is the point of the entry:
+
+**The token is a secret and takes the ordinary secret path.** It is minted
+into the OS credential store under its own keyring ref, never written to
+`connections.toml`, and never sent back to the edit form — blank means keep
+(ADR-0016). The URL is *not* a secret and is stored inline, which is what
+keeps `connections.toml` legible and lets the connection list show where a
+connection points.
+
+**The scheme is checked at the boundary, in both directions.**
+`connect_remote` refuses anything `is_remote_url` does not recognise, and
+`connect_local` keeps the path. A filesystem path reaching the remote
+builder would hand a local file name to a network client; the guard exists
+so that cannot happen by construction, not so the error message is nicer.
+
+**On the wire the pair reports a single `turso`.** This follows the
+precedent Aurora DSQL set with its two auth variants (ADR-0103): the HTTP
+contract in `docs/api-contract.md` describes what dialect a connection
+speaks, not how its credentials were obtained. `WIRE_IDS` stays at nine and
+`dbboard-web` needs no change — the widening is invisible to it, which is
+the reason for choosing the wire id that way in the first place.
+
+**Read-only enforcement is probed, not assumed.** A local file honours
+`PRAGMA query_only`; a hosted endpoint may not, and which it is cannot be
+inferred from the kind — a self-hosted `sqld` and Turso Cloud arrive
+through the same variant. `TursoAdapter` therefore asks the engine once, at
+connect, and records the answer as `ReadOnlyEnforcement::{Engine,
+Classifier}`. Where the pragma is not honoured, the AST classifier *is* the
+enforcement, which is the position the D1 adapter has been in since
+ADR-0046 §8 and Aurora DSQL since ADR-0061 — recorded here rather than
+papered over.
+
+Of libSQL's default features, only the remote transport is turned on.
+`replication` and `encryption` stay off: nothing the UI exposes can reach
+either, and both enlarge the build and the audit surface.
+
+### Consequences
+
+The kind count goes from ten to eleven, and every exhaustive match, label
+map, and enumeration in the MCP tool descriptions grows by one. This is
+mechanically enforced — `list_connections_names_every_kind_it_can_return`
+fails when a kind is added without naming it — and that test caught this
+exact omission while the change was being made.
+
+Enabling the remote transport pulls libSQL's network stack into the
+dependency tree. That is a real increase in build time and in what a
+release has to be audited for, and it is charged to every user including
+those who only ever open a local file. It is not separable: a build flag
+that made remote support optional would produce binaries whose connection
+list differs by build, and there is one published binary.
+
+An operator with a `libsql://` URL now has to pick `turso-remote` rather
+than `turso`, and nothing migrates automatically, because nothing can — no
+existing `turso` connection holds a URL, since one could never have been
+opened. The choice is only ever forward-looking.
+
+The remote path cannot be covered by the offline test suite the way the
+local one is: `connect_remote`'s guards are unit-tested, but reaching a
+real endpoint needs a real endpoint. It is verified by hand against Turso
+Cloud and recorded in a verification sheet, on the same footing as the D1,
+Firestore and MongoDB adapters.
+
+## ADR-0112 — The three reasons an entry is not imported are reported apart
+
+### Status
+
+Accepted.
+
+### Context
+
+`ImportReport` had one list for everything the import did not take:
+`skipped: Vec<String>`. Three different conditions pushed into it.
+
+1. The id appears more than once in the same bundle. The first copy is
+   taken; the later ones are not.
+2. The id already exists locally and the mode is `ImportMode::Skip`.
+3. A `keyring_*_ref` the entry carries belongs to a *different* connection
+   in the target store, so importing it would have overwritten that
+   connection's secret. This is the ADR-0038 refusal.
+
+Only (2) means "already present", and only (2) is resolved by re-importing
+with `ImportMode::Overwrite`. The single list forced one sentence onto all
+three, and the sentence was the one that fits (2): the ids were named as
+already present, followed by a hint to turn overwrite on.
+
+For (3) both halves are wrong. The id is *not* present — the entry was
+refused, so the store does not hold it, and an operator who goes looking
+for it finds nothing wherever they look. And the ref-ownership check runs
+before the mode is consulted, so re-importing with overwrite on produces
+byte-identical output. The report described a security refusal as a
+routine skip and then sent the operator through a loop that could not
+behave differently the second time.
+
+This surfaced from a real import of a hand-authored bundle. The refusal
+was correct — the bundle genuinely named another connection's keychain
+slot, and taking it would have destroyed a live credential. The refusal
+was reported in a way that read as a bug in the import path.
+
+### Decision
+
+**Each reason gets its own list, and each list gets its own sentence.**
+
+```rust
+pub struct ImportReport {
+    pub imported: Vec<String>,
+    pub overwritten: Vec<String>,
+    pub skipped_existing: Vec<String>,
+    pub duplicate_in_bundle: Vec<String>,
+    pub refused: Vec<RefusedEntry>,
+}
+```
+
+Three things follow, and each is the substance of the entry:
+
+**A refusal carries both sides of the collision.** `RefusedEntry` is
+`{ id, key_ref, owner }`, not a bare id, because neither half alone is
+actionable. The id is absent from the store afterwards, so naming only the
+id describes a hole; naming only the ref does not say who is standing in
+the way. Together they read as what happened: *"beta" wanted the slot
+"dbboard.alpha.token", which belongs to "alpha"*. None of the three fields
+is a secret value — `key_ref` is the slot's name, not its contents — so
+all three are safe to put in front of the operator verbatim.
+
+**The overwrite hint is offered for `skipped_existing` and nowhere else.**
+That list is empty by construction whenever overwrite was asked for, so
+the hint can never suggest a setting that is already on, and it can never
+attach to an outcome overwrite does not change.
+
+**The refusal count stays out of the headline tally.** The summary line
+counts `skipped_existing + duplicate_in_bundle`; refusals carry their own
+count in their own sentence. Folding them back into one number would
+re-merge exactly what this entry separates, one layer higher up. An import
+with no refusals — the ordinary case — therefore shows the message it
+already showed.
+
+The wording rules live in a pure `importSummary(report, t)` in
+`$lib/connections/import-report.ts` rather than inline in the component,
+because *which reason gets which sentence* is the whole substance of this
+decision and it should be under test. Its tests assert against a
+key-echoing translation stub, so they pin which message is chosen and what
+data it is given, not the English phrasing.
+
+**The check itself is unchanged.** No entry is imported that was not
+imported before. The bundle format has no way to prove that a ref-sharing
+entry is benign, and silently replacing a live secret is far worse than a
+refused import. Only the report changed.
+
+### Consequences
+
+`ImportReport.skipped` is gone rather than deprecated. It is an internal
+type — `dbboard-config` is not published, and the only consumers are the
+Tauri command and its DTO — so the compiler finds every reader, which is
+worth more than a compatibility shim nobody outside this workspace needs.
+
+Three message keys were added in both locales, and the JSON shape crossing
+the Tauri boundary grew from three arrays to four arrays and one array of
+objects. That shape is pinned by
+`import_report_dto_keeps_its_frontend_json_shape`, which now asserts the
+three fields of a refusal individually: a refusal with a missing `owner`
+would still deserialize, and would still be unactionable.
+
+**The same collision is detectable at export time, and is not yet checked
+there.** Refs are minted in exactly one place, as `dbboard.<id>.<field>`,
+and `ConnectionAdmin::update` cannot change an id — so an entry whose ref
+does not derive from its own id did not come from this application, and is
+malformed wherever it goes. That makes the export-time check *stronger*
+than the import-time one: it needs no store lookup and no owner to be
+present, only the entry itself. A bundle carrying such an entry is
+guaranteed to be partially unusable on any machine that holds the owner,
+and that is knowable before the file is written. It is deliberately left
+to its own change rather than folded in here, because it alters what
+export does, while everything above alters only what the operator is told.
+
+## ADR-0113 — Export names an entry that carries another connection's keychain slot
+
+### Status
+
+Accepted.
+
+### Context
+
+ADR-0112 closed by naming what it deliberately left undone: the collision
+it reports at import time is detectable at export time, and is stronger
+there.
+
+Keyring refs are minted in exactly one place — `keyring_ref(id, field)`,
+which returns `dbboard.{id}.{field}` — and `ConnectionAdmin::update`
+writes the entry's id straight back, so an id never changes and there is
+no rename path. An entry whose ref does not derive from its own id
+therefore did not come out of this application's own CRUD. It was
+hand-edited into `connections.toml`, or imported before ADR-0038 existed.
+
+That makes the condition decidable **from the entry alone**. The ref
+carries its owner in its own text, so no store lookup is needed and the
+owner does not have to be present. The import-side ADR-0038 check is
+weaker on both counts: it can only fire when the receiving machine
+happens to hold the owner. A bundle carrying such an entry is guaranteed
+to be partially unusable on any machine that does hold it — and that is
+knowable before the file is written, on the machine where the malformation
+actually lives and can be fixed.
+
+### Decision
+
+**Export warns. It does not refuse.**
+
+The operator whose store is in this state is precisely the operator who
+most needs a backup of it. Blocking the export is the one outcome that
+leaves them worse off than before: the malformation stays, and now there
+is no copy of anything. So the bundle is written, and the summary says
+what is wrong with what was just written.
+
+Because of that, the success line comes first and the warning follows it.
+A warning in the first position reads as a failure, and sends the operator
+looking for a file that is already on disk. `exportSummary(report, t)` in
+`$lib/connections/export-report.ts` pins that ordering under test, as the
+sibling `importSummary` pins ADR-0112's wording rules.
+
+**The warning names both sides**, the same way the ADR-0112 refusal does:
+*"beta" carries the slot "dbboard.alpha.token", which belongs to "alpha"*.
+Told only the id there is nothing to look at; told only the slot there is
+nothing to act on. None of the three fields is a secret value — `key_ref`
+is the slot's name, not its contents.
+
+**Only a ref of the shape `dbboard.{owner}.{field}` is reported.** A ref
+of any other shape is a different malformation with no owner to name, and
+saying it "belongs to" someone would be an invention. `ref_owner` splits
+the field off from the right, because an id may contain dots while a field
+name never does — splitting from the left would read `dbboard.my.db.url`
+as belonging to `my`.
+
+`foreign_refs` and `foreign_refs_of` delegate to one private helper over a
+slice of entries, exactly as `export_bundle` and `export_bundle_of`
+delegate to `encrypt_selection`, so the selective path cannot drift from
+the whole-store one. `foreign_refs_of` returns `NotFound` for an unknown
+id for the same reason `export_bundle_of` does: a caller working from a
+stale view must not be told "nothing wrong here" about a connection that
+is not there.
+
+### Consequences
+
+`export_connections` no longer returns a bare `usize`. It returns
+`ExportReportDto { exported, foreign_refs }`, because a successful export
+now has something to say beyond a count. This is the Tauri IPC surface,
+not the HTTP contract of ADR-0011, so `docs/api-contract.md` is unaffected
+and `dbboard-web` has nothing to mirror.
+
+Two message keys were added in both locales.
+
+**The MCP export verb of issue #196 does not exist yet.** When it does, it
+inherits this: it should carry the same warning list rather than a count,
+since an agent driving an export is even less able than a human to notice
+a malformed store on its own.
+
+**Whether the same inspection belongs in the connection list is left
+open.** Naming it at export answers "is the file I just wrote sound?".
+Naming it in the list would answer "is my store sound?", which is a
+different question with a different place to put the answer, and it is not
+established that an operator wants that permanently on screen.
+
+## ADR-0114 — CI was never slow because of Rust
+
+### Status
+
+Accepted.
+
+### Context
+
+The `rust (fmt / clippy / check / test)` job of ADR-0104 was taking 16 to
+30 minutes, and the reading of that was "Rust is slow". Measurement on run
+32224336075 says otherwise. Of 16m46s:
+
+| step | time |
+|---|---|
+| install Tauri system dependencies | 572s |
+| restore + save the cargo cache | 255s |
+| fmt + clippy + check + test | **158s** |
+
+The verification the job exists to perform is under three minutes. The rest
+is two pieces of overhead that had never been looked at.
+
+The first is bandwidth, not package count: `Fetched 89.3 MB in 9min 9s
+(163 kB/s)`. The Azure Ubuntu mirror the hosted runners use serves this set
+an order of magnitude below a normal rate, and the rate varies per run —
+which is the whole explanation for the job's total varying between 16 and
+30-odd minutes. Nothing about the workspace changed between those runs.
+
+The second is the cache itself: `Cache Size: ~7347 MB`, 8.92 GiB stored.
+GitHub's per-repository cache quota is 10 GiB, so this one entry left room
+for nothing else; every save evicted every other entry, and the API confirms
+the repository held exactly one cache. Later runs then restored a partial
+key match and rebuilt anyway, having spent three and a half minutes moving
+the archive both ways.
+
+### Decision
+
+**Cache the `.deb` files, keyed on this workflow file.** The package set is
+written in the workflow and changes only when the workflow does, so the key
+is exact and a hit skips the network. apt downloads as `_apt` while
+`actions/cache` reads as `runner`, so the archive directory's ownership is
+handed over before the install and handed back after it; without the
+handback the post-job save stores nothing and the download is paid again
+every run, silently.
+
+**Build CI without debug info** (`CARGO_PROFILE_DEV_DEBUG=false`,
+`CARGO_PROFILE_TEST_DEBUG=false`). Nearly all of the 8.92 GiB is debug
+info, and nothing in CI reads it: no debugger is attached and no test
+asserts on a symbolicated backtrace. This is the same pair of variables the
+maintainer already sets locally, for the same reason — the machine that
+runs the git hooks is chronically short of disk.
+
+`cargo check` is kept even though `cargo clippy --all-targets
+--all-features` already subsumes it. It costs 11 seconds, and the job's
+stated purpose is to run the commands CLAUDE.md calls mandatory; dropping
+one to save 11 seconds would make the workflow and that list disagree.
+
+### Consequences
+
+A cold run still pays the download once, and the first run after this pays
+a full rebuild because the profile change invalidates every fingerprint.
+Steady state should be roughly five minutes rather than sixteen to thirty.
+
+**A CI backtrace will no longer carry symbols.** If a test ever fails only
+on Linux and only in CI, and the panic location is not enough to place it,
+the way back is to set the two variables to `true` on a branch rather than
+to guess.
+
+The cache dropping under the quota means other caches can coexist again, so
+a future job may cache without evicting this one.
+
+**This cannot be verified locally.** A workflow change is only exercised by
+running it, so the evidence for this ADR is the step timings of the first
+run on the branch, not a test.
+
+## ADR-0115 — The update dialog says what changed, from the CHANGELOG
+
+### Status
+
+Accepted.
+
+### Context
+
+`latest.json` — the manifest `tauri-plugin-updater` fetches — has carried the
+same `notes` since the updater shipped: `dbboard <tag>. See the release page
+for the full changelog.` It is true and it is useless. That string is what
+`UpdateNotice.svelte` renders, and that dialog is the one moment a person is
+asked to decide something: restart now, or later. It answered the question
+"is there an update?" and left "should I take it?" to a link that the dialog
+cannot open into anything they can read without leaving what they were doing.
+
+The answer already exists. `CHANGELOG.md` is written for people, edited, and
+reviewed on the way in. The only real question was *which part of it*, because
+a version's section runs to several thousand characters of prose and would
+overflow a dialog that reserves 160px for notes.
+
+### Decision
+
+Take the version's **lead paragraph** — the prose between the version heading
+and the first `###`. This project writes one under most version headings, it is
+already a summary, and it measures 163–442 characters across the last four
+releases: the size of the space that exists.
+
+Where a version has no lead paragraph, fall back to the **bolded bullet
+titles** grouped under their headings. Every entry here is written as
+`- **Short title** — long prose`, so the titles alone read as a list of what
+changed. v0.7.0 has no lead paragraph and would otherwise have shipped an
+empty dialog.
+
+Where a version has neither, emit nothing and let the workflow keep its
+boilerplate.
+
+The text is flattened to plain text at release time, not at display time,
+because `UpdateNotice.svelte` renders `{update.notes}` — Svelte escapes it, so
+`**bold**` and `[text](url)` would appear literally. Doing it in the workflow
+keeps the client free of Markdown knowledge it would need for one string, and
+makes the manifest carry exactly what will be shown.
+
+### Consequences
+
+`CHANGELOG.md` becomes load-bearing a second way. ADR-0110 already made
+`[Unreleased]` the trigger for cutting a release; the lead paragraph is now the
+text every user reads before deciding to restart. Writing one badly is now
+visible to more people than the release page.
+
+The extraction lives in `scripts/release-notes.mjs` with its own tests rather
+than inline in the workflow, because inline YAML is the one kind of code in
+this repo that nothing can run before it matters. The `site` job's `node --test`
+discovery picks the tests up with no list to maintain.
+
+A failure of the script warns and falls back rather than failing the job. A
+release that is otherwise complete should not be held back by its own
+description — but the fallback is annotated, so it does not look normal.
+
+The publish job now checks out the repository, which it did not before. It is
+a sparse checkout of two paths, and it runs before `download-artifact` because
+`checkout` cleans the workspace. The published assets are still built from the
+tag by the other jobs; nothing is built from this checkout.
+
+## ADR-0116 — The MCP server says which build is answering
+
+### Status
+
+Accepted.
+
+### Context
+
+`dbboard-mcp` is not installed by a package manager. It is an executable
+someone copied somewhere once and pointed a client's config at, and it
+never replaces itself. The desktop app checks for updates at startup
+(ADR-0067); the MCP binary has no equivalent and no obvious moment to
+acquire one — nothing launches it interactively, and a background
+self-update on a stdio server would restart the transport underneath a
+live session.
+
+So an installed copy drifts. A bug was reported against the MySQL path
+that had been fixed a release earlier: the binary in place predated the
+fix, and nothing about it said so. The agent could not tell — it had no
+version to compare — and neither could the operator, because the only
+visible symptom was the old behaviour, which is exactly what a live bug
+looks like.
+
+The cost lands on whoever investigates: reading code that already contains
+the fix while the running binary does not.
+
+### Decision
+
+**Put the version on two channels, because neither alone is dependable.**
+
+The handshake `instructions` open with it. That text reaches the model
+without anyone asking for it, which is the only way to inform an agent
+that has not yet decided something is wrong — but some clients drop
+instructions entirely, so it cannot be the only channel.
+
+`get_server_info` returns `{ name, version }`. A tool result always
+arrives intact, but only if something thinks to call it — so the tool
+description carries the reason to call it, stated at the moment it
+matters: *this binary can be stale; call it before reporting anything
+odd.* A tool an agent has no reason to reach for answers nothing.
+
+The instructions also ask for the version to be quoted in any report,
+because the report arrives as prose the agent writes. Knowing the version
+and passing it on are separate things.
+
+**`BuildInfo` carries no filesystem path.** The obvious companion field —
+which `connections.toml` this instance reads — is the one field that must
+not be there. On Windows that path is `C:\Users\<operator>\…`, and a tool
+result lands in the calling agent's transcript as plaintext on disk,
+outside this project's control. A version number diagnoses a stale binary
+without naming anybody, so the name is not worth the diagnosis. A test
+asserts the serialized form contains no path separator, so the field
+cannot be added back without the test saying why it was left out.
+
+### Consequences
+
+The version is `CARGO_PKG_VERSION`, so it identifies the release the
+binary was built from and not the commit. A binary built from a dirty
+working tree reports the release it branched off. That is the right
+granularity for the question being asked — "is this older than the fix?"
+is answered by a release number — and a git hash would require build
+plumbing that only helps when the answer is already known.
+
+This tells nobody how to update. There is still no distribution path for
+the MCP binary beyond copying a file, and this ADR does not create one; it
+makes the absence visible instead of silent. If a self-update ever lands,
+the version reported here is what it would compare against.
+
+The description text is pinned by a test (`description_above`), so
+rewording it to something that no longer says the binary can be stale
+fails the build rather than quietly removing the reason to call the tool.
+
+## ADR-0117 — The advisory check runs in CI, and what it cannot fix is written down
+
+### Status
+
+Accepted.
+
+### Context
+
+`deny.toml` has been in this repo since early on, and CLAUDE.md names
+`cargo deny check` under "Security" as one of the two suggested tools. No
+workflow ran it. It was a check that existed on paper and in whoever's
+memory happened to hold it that week.
+
+It was red. A pre-release review before v0.10.0 ran it by hand and found
+21 advisories and four license failures — not one of which had been seen,
+because nothing looks. The license half was pure drift: `tiny-keccak`
+(CC0-1.0) and the Mozilla root bundle (CDLA-Permissive-2.0) had entered
+the tree and the allow list had not followed. Both are permissive and
+neither was ever a compliance question; the gate was simply telling the
+truth to an empty room.
+
+The advisory half is more awkward, and it is partly this release's doing.
+v0.10.0 turns on libsql's `remote` and `tls` features so a hosted Turso
+database can be opened at all (ADR-0111). `tls` is `dep:hyper-rustls`, and
+the version libsql pins is 0.25, which sits on the rustls 0.22 line, which
+pins `rustls-webpki` 0.102 and `hyper` 0.14 and therefore `h2` 0.3. Four
+advisories against the first and one against the second, all with fixes
+that landed on major lines those crates cannot reach. The workspace
+already resolves current copies of both — `rustls-webpki` 0.103 and `h2`
+0.4 — through reqwest, mongodb and sqlx; the flagged ones are libsql's
+alone. The Cargo.toml comment on the libsql dependency already called this
+duplicate out as something to collapse when libsql moves up. It is now
+also a security item, not just a tidiness one.
+
+### Decision
+
+**The check runs in CI, as its own job.** A `deps` job on every push and
+pull request to the integration branches, running all four checks. It
+needs neither the GTK stack nor a frontend build, because `cargo metadata`
+resolves the graph without compiling, so it does not belong inside the
+`rust` job: it finishes far sooner and it reports separately when it is
+the thing that broke. `cargo-deny` is pinned to a version and cached on
+that pin, because an unpinned install would let the advisory database's
+client change under a branch that was passing.
+
+**What can be fixed is fixed.** `h2` moved 0.4.14 → 0.4.17, past the
+0.4.16 that carries the patch. The two licenses are allowed.
+
+**What cannot be fixed is written down, one entry per advisory, each with
+its own reason.** Not a blanket suppression and not a lowered severity —
+`cargo deny` has no severity dial, and inventing one here would mean
+choosing between a permanently red gate that everyone learns to skip and a
+silent one. An ignore list with a reason per line is the honest third
+option: the check stays green, and the price of keeping it green is that
+somebody has to write down why each line is there.
+
+The reasons distinguish three cases, because they are not the same kind of
+risk:
+
+*Not reached.* The two CRL advisories against `rustls-webpki` 0.102.
+Nothing in this workspace supplies a certificate revocation list, and
+rustls performs no revocation checking unless one is configured.
+
+*Reached, and narrow.* The two name-constraint bypasses in the same crate.
+These weaken a layer that sits above chain validation; signature, validity
+and hostname checks are untouched. Exploiting either needs a trusted CA
+issuing a name-constrained intermediate to an attacker, plus a position on
+the path to a hosted endpoint. That is a real reduction in defence in
+depth and it is recorded as one.
+
+*Not this program's operation.* The RSA Marvin Attack, via sqlx-mysql. The
+attack times RSA decryption — a private-key operation. MySQL's
+`sha256_password` and `caching_sha2_password` have the client encrypt with
+the server's public key, so the private-key half runs on the server.
+
+The remainder are unmaintained-crate notices with no vulnerability
+attached: the `unic-*` tables under Tauri's URL-pattern parser, the ten
+GTK3 binding crates under Tauri's Linux backend, `rustls-pemfile`, and the
+two `proc-macro-error` crates that only run at compile time.
+
+### Consequences
+
+**v0.10.0 ships with a known, unfixable dependency exposure, stated rather
+than discovered.** Holding the release for it would trade a narrow risk
+with no available fix against shipping nothing: the only route off
+`hyper-rustls` 0.25 today is libsql 0.10, which is a pre-release, and
+putting a pre-release database engine into a signed desktop binary is the
+larger risk. The judgement is that this is acceptable *because it is
+written down and gated*, not because it is nil.
+
+**Every libsql bump is now a security review.** Four of the six ignored
+vulnerabilities clear the moment libsql moves off `hyper-rustls` 0.25, and
+their reasons say so. The instruction to revisit lives next to the thing
+to revisit, rather than in an issue that ages out.
+
+**The ignore list will rot, and that is visible.** `cargo deny` warns on
+an ignore entry that no longer matches anything, so an entry kept past its
+usefulness announces itself on the next run instead of silently widening
+what the gate permits.
+
+**A red `deps` job is now a real finding**, in the same sense the Windows
+libSQL teardown crash became one when the hooks stopped triggering it. The
+failure mode this replaces was not a check that failed; it was a check
+nobody ran.

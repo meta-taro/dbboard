@@ -9,7 +9,7 @@
 #@ note 結果 列を埋めてよいのは、実物を動かして目で見た人だけ。AI は書かない（ビルド通過・テスト green は実施ではない）。
 #@ note このシートはリリースの関門ではない。未実施の行が残ったままリリースしてよい。全行 OK を求めない。
 #@ note 外部からの貢献者に本シートの記入を求めない。PR の受け入れ条件は CI（テスト・個人情報検出）のみ。
-#@ note 対象ビルドは v0.7.0（リリース済）。<https://meta-taro.github.io/dbboard/> の Windows インストーラで検証できる。
+#@ note 対象ビルドは v0.8.0（リリース済）。<https://meta-taro.github.io/dbboard/> の Windows インストーラで検証できる。
 #@ note 実 Firestore を使う行は、サービスアカウント鍵のファイルパスをシートに書かないこと（PII / 資格情報はリポジトリへ入れない）。
 #@ note No.2〜9 はエミュレータで実施できる。`docker compose -f docker/firestore-emulator/compose.yaml up -d` の後 `node docker/firestore-emulator/seed.mjs`。手順は docker/firestore-emulator/README.md。
 #@ note No.1・10・11 はエミュレータでは実施できない（認証が無いため鍵を渡せず、プロジェクト ID を間違えてもエラーにならない）。実 Firestore が用意できるまで未実施のまま残す。

@@ -385,25 +385,61 @@ export const deleteConnection = (id: string): Promise<void> =>
 export const reconnectConnection = (id: string): Promise<void> =>
   invoke('reconnect_connection', { id });
 
-// The three lists partition the bundle's entries (ADR-0038, ADR-0105).
-// `overwritten` is only ever non-empty when the import asked for it.
+// An entry refused because a keychain slot it names belongs to a different
+// connection (ADR-0038). Both sides of the collision travel because neither
+// alone is actionable: the refused id is absent from the store afterwards, so
+// an operator told only the id sees a broken import rather than a deliberate
+// refusal (ADR-0112). No field here is a secret value — `key_ref` is the slot
+// name, not its contents.
+export interface RefusedEntry {
+  id: string;
+  key_ref: string;
+  owner: string;
+}
+
+// The five lists partition the bundle's entries (ADR-0038, ADR-0105,
+// ADR-0112). `overwritten` is only ever non-empty when the import asked for
+// it. The three not-imported reasons stay apart because only
+// `skipped_existing` means "already present", and only `skipped_existing` is
+// resolved by re-importing with overwrite on.
 // Mirrors the backend `ImportReportDto`.
 export interface ImportReport {
   imported: string[];
   overwritten: string[];
-  skipped: string[];
+  skipped_existing: string[];
+  duplicate_in_bundle: string[];
+  refused: RefusedEntry[];
+}
+
+// An entry in the local store whose keychain slot was minted for a different
+// connection (issue #194). A ref only ever comes from `dbboard.{id}.{field}`
+// and an id cannot be renamed, so this state is not reachable through the app
+// — it means a hand-edited `connections.toml` or an import predating ADR-0038.
+// Mirrors the backend `ForeignRefDto`; no field is a secret value.
+export interface ForeignRef {
+  id: string;
+  key_ref: string;
+  owner: string;
+}
+
+// Mirrors the backend `ExportReportDto`. `foreign_refs` is a warning about the
+// bundle that was just written, not a reason it was not written: the export
+// succeeds either way.
+export interface ExportReport {
+  exported: number;
+  foreign_refs: ForeignRef[];
 }
 
 // Encrypt connections to a passphrase-protected `.dbbx` bundle at `path`
 // (chosen via the native save dialog). `ids` names which to include; omit it
 // to export the whole store. An empty array is rejected by the backend rather
-// than read as "all" — the two readings are opposites. Returns the exported
-// connection count.
+// than read as "all" — the two readings are opposites.
 export const exportConnections = (
   path: string,
   passphrase: string,
   ids?: string[],
-): Promise<number> => invoke('export_connections', { path, passphrase, ids });
+): Promise<ExportReport> =>
+  invoke('export_connections', { path, passphrase, ids });
 
 // Decrypt and merge a `.dbbx` bundle at `path` into the local store. With
 // `overwrite`, an incoming id that already exists replaces it; without, that

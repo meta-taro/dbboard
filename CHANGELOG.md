@@ -9,6 +9,135 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-20
+
+One database that could not be reached, and four things the program knew
+but did not say.
+
+`turso` had always meant a file on disk. The adapter was built with
+libSQL's remote transport switched off, so a hosted database was not
+awkward to open — it could not be opened at all, and one production
+database stayed invisible while its siblings were all reachable.
+`turso-remote` closes that hole, and closes it as a second kind rather
+than a second meaning for the first, so nothing migrates and no existing
+connection changes.
+
+The rest is the same fault in four places. An import refused an entry to
+avoid overwriting a live credential and then described the refusal as
+"already present", followed by a hint — re-import with overwrite on —
+that could not possibly change the outcome. An export wrote a bundle that
+would be refused on the next machine and said nothing about it, on the
+one machine where the problem could still be fixed. An MCP server several
+releases behind answered exactly like a current one, so a bug that had
+already been fixed was reported again. An update offered itself without
+any account of what it changed. And an export proposed the same file name
+twice, quietly asking to overwrite what, for a backup, is the only copy
+of the older state.
+
+None of those was wrong behaviour. Each of them left the person in front
+of it guessing, and this release stops that.
+
+In the same spirit: reaching a hosted database means a TLS stack, and the
+one libSQL pins carries two advisories with no fixed version available.
+They are narrow, and each one is listed in `deny.toml` with the reason it
+cannot be fixed today and what would clear it, rather than left to be
+found later.
+
+### Added
+
+- **Turso Cloud is reachable** — a new `turso-remote` connection kind
+  ([ADR-0111](docs/decisions.md)), closing
+  [#191](https://github.com/meta-taro/dbboard/issues/191). `turso` has
+  always meant a libSQL file on disk, and the adapter was built with
+  libSQL's remote transport switched off, so a `libsql://` URL could not
+  be opened at all. `turso-remote` takes the endpoint the Turso dashboard
+  shows plus an auth token, and also reaches a self-hosted `sqld` over
+  `https://`, `http://`, `wss://` or `ws://`. The token is stored in the
+  OS credential store like every other secret, never written to
+  `connections.toml`, and never sent back to the edit form — blank means
+  keep. `turso` is untouched, and nothing migrates: no existing `turso`
+  connection can hold a URL, because one could never have been opened.
+- **Exports no longer propose the same file name twice** — the save
+  dialog now offers `dbboard-connections-20260819-163045.dbbx`,
+  `dbboard-result-<stamp>.csv` and `<connection>-dump-<stamp>.sql`.
+  Exporting twice used to land on an "overwrite?" prompt over the
+  previous export — which, for a backup, is the only copy of the older
+  state. The stamp is local time and sorts chronologically, so a
+  directory of exports reads as a history.
+- **An export says so when a connection carries someone else's saved-secret
+  slot** ([ADR-0113](docs/decisions.md)), closing
+  [#194](https://github.com/meta-taro/dbboard/issues/194). Importing such
+  a bundle elsewhere refuses those entries — that check has existed since
+  ADR-0038 — but it only fires on a machine that happens to hold the
+  connection being pointed at, and by then the file is already written and
+  handed over. The same fault is visible at export from the entry alone,
+  because a slot name is always built from its own connection's id and an
+  id never changes. The export still writes the bundle: whoever is in this
+  state is exactly who needs a backup of it. It now names the entry, the
+  slot, and the connection the slot belongs to, on the machine where the
+  problem can actually be fixed.
+- **The MCP server says which build is answering** — `get_server_info`
+  ([ADR-0116](docs/decisions.md)), and the same version now opens the
+  handshake instructions. `dbboard-mcp` is a file someone copied into
+  place and it never updates itself, so an installed copy can sit several
+  releases behind the behaviour expected of it — a bug reported against
+  the MySQL path had already been fixed a release earlier, and neither the
+  agent nor the operator could tell. The version goes on two channels
+  because neither alone is dependable: the instructions arrive without
+  anyone asking but some clients drop them, and a tool result always
+  arrives but only if something thinks to call it. It reports the build
+  and nothing else — no config path, because on Windows that path holds
+  the operator's OS username and a tool result is written to the calling
+  agent's transcript in plain text.
+
+### Changed
+
+- **The update dialog says what changed** ([ADR-0115](docs/decisions.md)).
+  It used to read "dbboard v0.9.0. See the release page for the full
+  changelog." — true, and no help to someone deciding whether to restart
+  now. It now shows this file's summary of the version being offered: the
+  paragraph under the version heading, or the entry titles where a version
+  has none. The dialog is the only moment anyone is asked to decide
+  something about a release, and until now it was the one place in the
+  project where "what changed?" was answered with a pointer.
+
+### Fixed
+
+- **A refused import is no longer reported as "already present"**
+  ([ADR-0112](docs/decisions.md)). The import report had one list for
+  everything it did not take, and three different conditions went into
+  it: the id was listed twice in the file, the id already existed and
+  overwrite was off, or the entry named a saved-secret slot belonging to
+  a different connection. Only the middle one means "already present",
+  and only the middle one is resolved by re-importing with overwrite on
+  — so the last one, which is a deliberate refusal to overwrite a live
+  credential, was described as a routine skip and followed by a hint
+  that could not change the outcome. The three are now reported apart,
+  and a refusal names both sides of the collision: which slot the entry
+  wanted and which connection holds it. The check itself is unchanged;
+  nothing is imported that was not imported before.
+
+### Security
+
+- **The dependency advisory check runs in CI**
+  ([ADR-0117](docs/decisions.md)). `cargo deny check` has been configured
+  in this repo for a long time and named in `CLAUDE.md` as part of the
+  security posture, but no workflow ran it, so nobody found out it was
+  red: 21 advisories and four license failures, surfaced only because a
+  pre-release review ran it by hand. It is now a `deps` job on every push
+  and pull request to `develop` and `main`.
+- **`h2` moved to 0.4.17**, past the 0.4.16 that patches
+  [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258).
+- **Known exposure, stated rather than suppressed.** Turning on libSQL's
+  remote transport (above) brings `hyper-rustls` 0.25 with it, and that
+  pins `rustls-webpki` 0.102 and `h2` 0.3 — versions whose fixes landed
+  on major lines they cannot reach. The rest of this project already
+  resolves current copies of both. Every advisory that cannot be fixed
+  today is listed individually in `deny.toml` with its own reason, and
+  the reasons say which are unreachable here, which are reachable and
+  narrow, and which clear as soon as libSQL moves up. Four of the six
+  clear on that single bump.
+
 ## [0.9.0] — 2026-08-19
 
 Seven MCP verbs, and what they are for. Checking a change by hand means
@@ -746,7 +875,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/meta-taro/dbboard/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/meta-taro/dbboard/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/meta-taro/dbboard/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/meta-taro/dbboard/compare/v0.6.0...v0.7.0
