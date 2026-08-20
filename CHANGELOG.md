@@ -9,6 +9,34 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-20
+
+One database that could not be reached, and four things the program knew
+but did not say.
+
+`turso` had always meant a file on disk. The adapter was built with
+libSQL's remote transport switched off, so a hosted database was not
+awkward to open — it could not be opened at all, and one production
+database stayed invisible while its siblings were all reachable.
+`turso-remote` closes that hole, and closes it as a second kind rather
+than a second meaning for the first, so nothing migrates and no existing
+connection changes.
+
+The rest is the same fault in four places. An import refused an entry to
+avoid overwriting a live credential and then described the refusal as
+"already present", followed by a hint — re-import with overwrite on —
+that could not possibly change the outcome. An export wrote a bundle that
+would be refused on the next machine and said nothing about it, on the
+one machine where the problem could still be fixed. An MCP server several
+releases behind answered exactly like a current one, so a bug that had
+already been fixed was reported again. An update offered itself without
+any account of what it changed. And an export proposed the same file name
+twice, quietly asking to overwrite what, for a backup, is the only copy
+of the older state.
+
+None of those was wrong behaviour. Each of them left the person in front
+of it guessing, and this release stops that.
+
 ### Added
 
 - **Turso Cloud is reachable** — a new `turso-remote` connection kind
@@ -820,7 +848,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/meta-taro/dbboard/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/meta-taro/dbboard/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/meta-taro/dbboard/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/meta-taro/dbboard/compare/v0.6.0...v0.7.0
