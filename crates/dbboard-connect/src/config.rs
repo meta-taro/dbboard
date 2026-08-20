@@ -56,6 +56,15 @@ pub enum BackendConfig {
     Turso {
         path: String,
     },
+    /// A libSQL database reached over the network — Turso Cloud or a
+    /// self-hosted `sqld` (ADR-0111). Separate from [`BackendConfig::Turso`]
+    /// for the same reason the stored kinds are: one is a file with no
+    /// credential, the other an endpoint with a mandatory one. `auth_token`
+    /// is a bearer credential and is redacted in `Debug`.
+    TursoRemote {
+        url: String,
+        auth_token: String,
+    },
     D1(D1Config),
     Postgres {
         url: String,
@@ -149,6 +158,9 @@ impl fmt::Debug for BackendConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Turso { path } => f.debug_struct("Turso").field("path", path).finish(),
+            // The URL is not a secret, but the token beside it is; redact the
+            // whole variant so a field added later cannot leak by default.
+            Self::TursoRemote { .. } => f.write_str("TursoRemote(<redacted>)"),
             Self::D1(_) => f.write_str("D1(<redacted>)"),
             Self::Postgres { .. } => f.write_str("Postgres(<redacted>)"),
             Self::MySql { .. } => f.write_str("MySql(<redacted>)"),
@@ -348,6 +360,13 @@ fn attach_env_ssh(backend: BackendConfig, env: &EnvSnapshot) -> Result<BackendCo
         BackendConfig::Turso { .. } => Err(ConfigError::SshUnsupportedKind {
             id: "env".to_string(),
             kind: "Turso",
+        }),
+        // Remote Turso is refused for the HTTPS reason rather than the
+        // local-file one: forwarding the endpoint would present a certificate
+        // for the wrong name, and the URL is what the token is scoped to.
+        BackendConfig::TursoRemote { .. } => Err(ConfigError::SshUnsupportedKind {
+            id: "env".to_string(),
+            kind: "Turso Cloud",
         }),
         BackendConfig::D1(_) => Err(ConfigError::SshUnsupportedKind {
             id: "env".to_string(),
@@ -610,6 +629,16 @@ fn entry_to_backend(
 ) -> Result<BackendConfig, ConfigError> {
     match &entry.kind {
         ConnectionKind::Turso { path } => Ok(BackendConfig::Turso { path: path.clone() }),
+        ConnectionKind::TursoRemote {
+            url,
+            keyring_token_ref,
+        } => {
+            let auth_token = secrets.get(keyring_token_ref)?;
+            Ok(BackendConfig::TursoRemote {
+                url: url.clone(),
+                auth_token,
+            })
+        }
         ConnectionKind::D1 {
             account_id,
             database_id,
@@ -624,41 +653,26 @@ fn entry_to_backend(
                 base_url: base_url.clone(),
             }))
         }
-        ConnectionKind::Postgres { keyring_url_ref } => {
-            let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::Postgres {
-                url,
-                ssh: entry_ssh(entry, secrets)?,
-            })
-        }
-        ConnectionKind::MySql { keyring_url_ref } => {
-            let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::MySql {
-                url,
-                ssh: entry_ssh(entry, secrets)?,
-            })
-        }
-        ConnectionKind::Neon { keyring_url_ref } => {
-            let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::Neon {
-                url,
-                ssh: entry_ssh(entry, secrets)?,
-            })
-        }
-        ConnectionKind::Supabase { keyring_url_ref } => {
-            let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::Supabase {
-                url,
-                ssh: entry_ssh(entry, secrets)?,
-            })
-        }
-        ConnectionKind::AuroraDsql { keyring_url_ref } => {
-            let url = secrets.get(keyring_url_ref)?;
-            Ok(BackendConfig::AuroraDsql {
-                url,
-                ssh: entry_ssh(entry, secrets)?,
-            })
-        }
+        ConnectionKind::Postgres { keyring_url_ref } => Ok(BackendConfig::Postgres {
+            url: secrets.get(keyring_url_ref)?,
+            ssh: entry_ssh(entry, secrets)?,
+        }),
+        ConnectionKind::MySql { keyring_url_ref } => Ok(BackendConfig::MySql {
+            url: secrets.get(keyring_url_ref)?,
+            ssh: entry_ssh(entry, secrets)?,
+        }),
+        ConnectionKind::Neon { keyring_url_ref } => Ok(BackendConfig::Neon {
+            url: secrets.get(keyring_url_ref)?,
+            ssh: entry_ssh(entry, secrets)?,
+        }),
+        ConnectionKind::Supabase { keyring_url_ref } => Ok(BackendConfig::Supabase {
+            url: secrets.get(keyring_url_ref)?,
+            ssh: entry_ssh(entry, secrets)?,
+        }),
+        ConnectionKind::AuroraDsql { keyring_url_ref } => Ok(BackendConfig::AuroraDsql {
+            url: secrets.get(keyring_url_ref)?,
+            ssh: entry_ssh(entry, secrets)?,
+        }),
         ConnectionKind::AuroraDsqlIam {
             endpoint,
             region,
@@ -741,6 +755,20 @@ mod tests {
             name: format!("turso {id}"),
             kind: ConnectionKind::Turso {
                 path: path.to_string(),
+            },
+        }
+    }
+
+    fn remote_turso_entry(id: &str, token_ref: &str) -> ConnectionEntry {
+        ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("turso cloud {id}"),
+            kind: ConnectionKind::TursoRemote {
+                url: "libsql://demo-acme.turso.io".to_string(),
+                keyring_token_ref: token_ref.to_string(),
             },
         }
     }
@@ -1311,6 +1339,35 @@ mod tests {
             matches!(cfg, BackendConfig::Turso { path } if path == ":memory:"),
             "ambiguous file with no selector must not silently pick one"
         );
+    }
+
+    #[test]
+    fn remote_turso_entry_resolves_its_token_and_keeps_the_url_inline() {
+        let file = file_with(vec![remote_turso_entry("cloud", "dbboard.cloud.token")]);
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set("dbboard.cloud.token", "live-token")
+            .expect("seed");
+        let cfg = resolve_backend(&empty_env(), &file, &secrets).expect("resolve");
+        match cfg {
+            BackendConfig::TursoRemote { url, auth_token } => {
+                assert_eq!(url, "libsql://demo-acme.turso.io");
+                assert_eq!(auth_token, "live-token");
+            }
+            other => panic!("expected TursoRemote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remote_turso_debug_never_prints_the_token() {
+        let rendered = format!(
+            "{:?}",
+            BackendConfig::TursoRemote {
+                url: "libsql://demo-acme.turso.io".to_string(),
+                auth_token: "live-token".to_string(),
+            }
+        );
+        assert!(!rendered.contains("live-token"), "{rendered}");
     }
 
     #[test]

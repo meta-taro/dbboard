@@ -11,6 +11,37 @@ public API is the HTTP contract in
 
 ### Added
 
+- **Turso Cloud is reachable** — a new `turso-remote` connection kind
+  ([ADR-0111](docs/decisions.md)), closing
+  [#191](https://github.com/meta-taro/dbboard/issues/191). `turso` has
+  always meant a libSQL file on disk, and the adapter was built with
+  libSQL's remote transport switched off, so a `libsql://` URL could not
+  be opened at all. `turso-remote` takes the endpoint the Turso dashboard
+  shows plus an auth token, and also reaches a self-hosted `sqld` over
+  `https://`, `http://`, `wss://` or `ws://`. The token is stored in the
+  OS credential store like every other secret, never written to
+  `connections.toml`, and never sent back to the edit form — blank means
+  keep. `turso` is untouched, and nothing migrates: no existing `turso`
+  connection can hold a URL, because one could never have been opened.
+- **Exports no longer propose the same file name twice** — the save
+  dialog now offers `dbboard-connections-20260819-163045.dbbx`,
+  `dbboard-result-<stamp>.csv` and `<connection>-dump-<stamp>.sql`.
+  Exporting twice used to land on an "overwrite?" prompt over the
+  previous export — which, for a backup, is the only copy of the older
+  state. The stamp is local time and sorts chronologically, so a
+  directory of exports reads as a history.
+- **An export says so when a connection carries someone else's saved-secret
+  slot** ([ADR-0113](docs/decisions.md)), closing
+  [#194](https://github.com/meta-taro/dbboard/issues/194). Importing such
+  a bundle elsewhere refuses those entries — that check has existed since
+  ADR-0038 — but it only fires on a machine that happens to hold the
+  connection being pointed at, and by then the file is already written and
+  handed over. The same fault is visible at export from the entry alone,
+  because a slot name is always built from its own connection's id and an
+  id never changes. The export still writes the bundle: whoever is in this
+  state is exactly who needs a backup of it. It now names the entry, the
+  slot, and the connection the slot belongs to, on the machine where the
+  problem can actually be fixed.
 - **The MCP server says which build is answering** — `get_server_info`
   ([ADR-0116](docs/decisions.md)), and the same version now opens the
   handshake instructions. `dbboard-mcp` is a file someone copied into
@@ -24,6 +55,22 @@ public API is the HTTP contract in
   and nothing else — no config path, because on Windows that path holds
   the operator's OS username and a tool result is written to the calling
   agent's transcript in plain text.
+
+### Fixed
+
+- **A refused import is no longer reported as "already present"**
+  ([ADR-0112](docs/decisions.md)). The import report had one list for
+  everything it did not take, and three different conditions went into
+  it: the id was listed twice in the file, the id already existed and
+  overwrite was off, or the entry named a saved-secret slot belonging to
+  a different connection. Only the middle one means "already present",
+  and only the middle one is resolved by re-importing with overwrite on
+  — so the last one, which is a deliberate refusal to overwrite a live
+  credential, was described as a routine skip and followed by a hint
+  that could not change the outcome. The three are now reported apart,
+  and a refusal names both sides of the collision: which slot the entry
+  wanted and which connection holds it. The check itself is unchanged;
+  nothing is imported that was not imported before.
 
 ## [0.9.0] — 2026-08-19
 
