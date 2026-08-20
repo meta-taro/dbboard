@@ -222,6 +222,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only for the updater manifest's notes (see below). `checkout` cleans
+      # the workspace, so it has to run before the artifacts are downloaded
+      # into it. Sparse: nothing else in the tree is needed here, and the
+      # published assets are built from the tag by the other jobs, not from
+      # this checkout.
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            CHANGELOG.md
+            scripts/release-notes.mjs
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v4
         with:
           path: staged
@@ -251,13 +264,27 @@ jobs:
       # manifest can be built before the release object exists). One universal
       # macOS artifact serves both darwin arches. `one()` fails loudly if a
       # bundle is missing so a half-built release never ships a broken manifest.
+      #
+      # `notes` is what the update dialog shows before someone decides to
+      # restart, and it used to be a pointer to the release page rather than an
+      # answer. It now carries the version's own CHANGELOG summary; the script
+      # prints nothing when there is no usable section, and the boilerplate is
+      # kept as the fallback so a release is never blocked by its description.
       - name: Assemble the updater manifest (latest.json)
         env:
           GH_REF_NAME: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # Warn rather than exit: `set -e` would otherwise let a fault in the
+          # notes script fail an otherwise complete release. The annotation is
+          # so the fallback is visible in the run instead of looking normal.
+          if ! RELEASE_NOTES="$(node scripts/release-notes.mjs CHANGELOG.md "${GH_REF_NAME#v}")"; then
+            echo "::warning::release-notes.mjs failed; using the boilerplate notes"
+            RELEASE_NOTES=""
+          fi
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          RELEASE_NOTES="${RELEASE_NOTES}" \
           GH_REF_NAME="${GH_REF_NAME}" GH_REPO="${GH_REPO}" python3 - <<'PY'
           import glob, json, os, sys
 
@@ -281,10 +308,14 @@ jobs:
           mac = one("out/*.app.tar.gz")
           mac_sig = one("out/*.app.tar.gz.sig")
 
+          notes = os.environ.get("RELEASE_NOTES", "").strip()
+          if not notes:
+              notes = f"dbboard {tag}. See the release page for the full changelog."
+
           mac_entry = {"signature": sig(mac_sig), "url": f"{base}/{os.path.basename(mac)}"}
           doc = {
               "version": version,
-              "notes": f"dbboard {tag}. See the release page for the full changelog.",
+              "notes": notes,
               "pub_date": os.environ["PUB_DATE"],
               "platforms": {
                   "windows-x86_64": {

@@ -10903,6 +10903,70 @@ a future job may cache without evicting this one.
 running it, so the evidence for this ADR is the step timings of the first
 run on the branch, not a test.
 
+## ADR-0115 — The update dialog says what changed, from the CHANGELOG
+
+### Status
+
+Accepted.
+
+### Context
+
+`latest.json` — the manifest `tauri-plugin-updater` fetches — has carried the
+same `notes` since the updater shipped: `dbboard <tag>. See the release page
+for the full changelog.` It is true and it is useless. That string is what
+`UpdateNotice.svelte` renders, and that dialog is the one moment a person is
+asked to decide something: restart now, or later. It answered the question
+"is there an update?" and left "should I take it?" to a link that the dialog
+cannot open into anything they can read without leaving what they were doing.
+
+The answer already exists. `CHANGELOG.md` is written for people, edited, and
+reviewed on the way in. The only real question was *which part of it*, because
+a version's section runs to several thousand characters of prose and would
+overflow a dialog that reserves 160px for notes.
+
+### Decision
+
+Take the version's **lead paragraph** — the prose between the version heading
+and the first `###`. This project writes one under most version headings, it is
+already a summary, and it measures 163–442 characters across the last four
+releases: the size of the space that exists.
+
+Where a version has no lead paragraph, fall back to the **bolded bullet
+titles** grouped under their headings. Every entry here is written as
+`- **Short title** — long prose`, so the titles alone read as a list of what
+changed. v0.7.0 has no lead paragraph and would otherwise have shipped an
+empty dialog.
+
+Where a version has neither, emit nothing and let the workflow keep its
+boilerplate.
+
+The text is flattened to plain text at release time, not at display time,
+because `UpdateNotice.svelte` renders `{update.notes}` — Svelte escapes it, so
+`**bold**` and `[text](url)` would appear literally. Doing it in the workflow
+keeps the client free of Markdown knowledge it would need for one string, and
+makes the manifest carry exactly what will be shown.
+
+### Consequences
+
+`CHANGELOG.md` becomes load-bearing a second way. ADR-0110 already made
+`[Unreleased]` the trigger for cutting a release; the lead paragraph is now the
+text every user reads before deciding to restart. Writing one badly is now
+visible to more people than the release page.
+
+The extraction lives in `scripts/release-notes.mjs` with its own tests rather
+than inline in the workflow, because inline YAML is the one kind of code in
+this repo that nothing can run before it matters. The `site` job's `node --test`
+discovery picks the tests up with no list to maintain.
+
+A failure of the script warns and falls back rather than failing the job. A
+release that is otherwise complete should not be held back by its own
+description — but the fallback is annotated, so it does not look normal.
+
+The publish job now checks out the repository, which it did not before. It is
+a sparse checkout of two paths, and it runs before `download-artifact` because
+`checkout` cleans the workspace. The published assets are still built from the
+tag by the other jobs; nothing is built from this checkout.
+
 ## ADR-0116 — The MCP server says which build is answering
 
 ### Status
