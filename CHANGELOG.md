@@ -11,6 +11,32 @@ public API is the HTTP contract in
 
 ### Added
 
+- **The MCP server says which build is answering** — `get_server_info`
+  ([ADR-0116](docs/decisions.md)), and the same version now opens the
+  handshake instructions. `dbboard-mcp` is a file someone copied into
+  place and it never updates itself, so an installed copy can sit several
+  releases behind the behaviour expected of it — a bug reported against
+  the MySQL path had already been fixed a release earlier, and neither the
+  agent nor the operator could tell. The version goes on two channels
+  because neither alone is dependable: the instructions arrive without
+  anyone asking but some clients drop them, and a tool result always
+  arrives but only if something thinks to call it. It reports the build
+  and nothing else — no config path, because on Windows that path holds
+  the operator's OS username and a tool result is written to the calling
+  agent's transcript in plain text.
+
+## [0.9.0] — 2026-08-19
+
+Seven MCP verbs, and what they are for. Checking a change by hand means
+switching the language, typing the SQL, pressing Run, and then looking —
+and only the last of those is a judgement. This release moves the other
+three off the person's hands and leaves the looking where it belongs. The
+one fix that is not documentation came out of exactly that: the query
+toolbar had been frozen since some earlier release, and nobody had reported
+it.
+
+### Added
+
 - **The UI language can be read and set over MCP** — `get_ui_locale` and
   `set_ui_locale` ([ADR-0107](docs/decisions.md)). The chosen language now
   lives in `ui-settings.toml` instead of only in the webview's
@@ -736,7 +762,8 @@ follow-on Phase 1.5 / 1.6 / 1.7 work; see
   `docs/compatibility.md`, and `docs/roadmap.md` reflect the shipped
   scope.
 
-[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/meta-taro/dbboard/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/meta-taro/dbboard/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/meta-taro/dbboard/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/meta-taro/dbboard/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/meta-taro/dbboard/compare/v0.5.1...v0.6.0
