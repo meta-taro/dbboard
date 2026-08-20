@@ -26,11 +26,39 @@ contract to change afterwards, or make the promise dishonest.
 Ctrl+Enter runs the query; the button does not. The primary action of
 the primary screen. Nothing that ships as 1.0 should have this.
 
-Blocked on the reporter for three observations: the button's colour, the
-cursor shape over it, and whether clicking elsewhere first makes it work.
-Those three separate a focus/hit-area bug from a disabled-state bug.
+**Where it stands on 2026-08-16.** Two of the three candidate causes are
+now closed by reading the code, and one observation was withdrawn as a
+result:
 
-**Owner**: reporter, then whoever fixes it.
+- The button's `disabled={!connectionId || busy}` and the guard inside
+  `execute` (`if (!connId || busy) return;`) are the **same expression**.
+  So Ctrl+Enter succeeding proves the button was not disabled at that
+  moment. The "is it greyed out?" question was unanswerable-by-observation
+  in the first place, and was retracted.
+- The CodeMirror autocomplete popup is `position: fixed` by default and
+  does escape `.editor-host { overflow: hidden }`, so it *can* cover the
+  Run button sitting directly below the editor — but it only exists while
+  open, and `activateOnTyping` does not fire on paste or on a click that
+  merely places the cursor. It does not match the reported steps.
+- Its tooltip container is `view.dom` (no `parent` configured), so there
+  is no always-present fixed overlay from the editor either.
+
+Not reproducible by the maintainer on v0.8.0 — but that attempt used a
+**MySQL** connection, and the report is against **Aurora DSQL (IAM)**, so
+an adapter- or environment-specific cause is not excluded.
+
+**Defined alternative, so this gate cannot stall v1.0 indefinitely.**
+Like gate 4, this one has a second way out: **if the reporter's two
+remaining observations do not arrive, ship 1.0 with the behaviour written
+into `README.md` and the 1.0 release notes as a known issue, naming
+Ctrl+Enter as the workaround and stating that its results are correct.**
+The bug is in the desktop UI, not the HTTP contract, so it cannot force a
+2.0 — which is the only thing v1.0 actually promises (ADR-0011). Shipping
+a known UI defect that is documented and has a working alternative is
+defensible; shipping it silently is not.
+
+**Owner**: reporter, then whoever fixes it. Falls to the maintainer to
+document if the reply does not come.
 
 ### 2. Freeze the contract, then mirror it to `dbboard-web`
 
@@ -112,7 +140,8 @@ mode this list exists to avoid.
 
 ## Done when
 
-- [ ] #161 closed
+- [ ] #161 closed, **or** the behaviour and its Ctrl+Enter workaround
+      written into `README.md` and the 1.0 release notes
 - [ ] contract mirrored to `dbboard-web`
 - [ ] sheets 001–003 executed by a person, to the extent their
       environments allow, with the untestable rows left `未実施`
