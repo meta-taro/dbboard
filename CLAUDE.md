@@ -50,15 +50,21 @@ Run before every commit:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo check --all-targets --all-features
-cargo test --all-features
+cargo test --all-features --workspace --exclude dbboard-turso
+cargo test --all-features -p dbboard-turso -- --test-threads=1
 ```
 
 Run before every push (in addition to the above):
 
 ```sh
 cargo build --release
-cargo test --all-features --release
+cargo test --all-features --release --workspace --exclude dbboard-turso
+cargo test --all-features --release -p dbboard-turso -- --test-threads=1
 ```
+
+`dbboard-turso` is tested one thread at a time because a parallel run tears
+down two in-memory libSQL databases at once, which crashes the test binary on
+Windows after every assertion has passed. The hooks carry the measurement.
 
 These commands are wired into `cargo-husky` git hooks (see "Git Hooks" below).
 
@@ -207,7 +213,9 @@ every commit message (commit-msg hook), and daily in CI (`pii-scan.yml`).
   `.pii-denylist.example`.
 - A blocked commit means a real leak (remove it) or a false positive (add a
   narrow regex to `scripts/pii-scan.allow`). Never `--no-verify` past a PII
-  finding — the only sanctioned bypass is the Windows libSQL teardown segfault.
+  finding. The Windows libSQL teardown segfault used to be a sanctioned
+  bypass; it is not one any more, because the hooks no longer trigger it (see
+  "Mandatory Verification Commands"). A crash there is now a real finding.
 - Operator guide: `docs/maintainer/pii-scanning.md`.
 
 ## Progress Tracking
