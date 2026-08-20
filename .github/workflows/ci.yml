@@ -151,6 +151,43 @@ jobs:
       - name: cargo test
         run: cargo test --all-features
 
+  # `cargo deny check` existed in this repo, and CLAUDE.md named it as part of
+  # the security posture, but nothing ran it. It was red for months without
+  # anyone finding out: 21 advisories and 4 license failures, discovered only
+  # because a pre-release review happened to run it by hand. A check that lives
+  # only in a person's memory is not a check.
+  #
+  # It gets its own job rather than a step in `rust` because it needs neither
+  # the GTK stack nor a frontend build — `cargo metadata` resolves the graph
+  # without compiling anything — so it finishes in a fraction of that job's
+  # time and reports separately when it is the thing that broke.
+  deps:
+    name: deps (cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Pinned, and cached on that pin: an unpinned install would change the
+      # advisory database's client from under a passing branch, and building
+      # cargo-deny from source costs more than the check it performs.
+      - name: Cache cargo-deny
+        id: cache-deny
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-0.19.7
+
+      - name: Install cargo-deny
+        if: steps.cache-deny.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny@0.19.7
+
+      # All four checks. `advisories` and `licenses` are the ones that were
+      # failing; `bans` and `sources` are cheap and were already green.
+      - name: cargo deny check
+        run: cargo deny check
+
   frontend:
     name: frontend (svelte-check / vitest)
     runs-on: ubuntu-latest
