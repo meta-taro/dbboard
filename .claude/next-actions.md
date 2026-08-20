@@ -7,259 +7,71 @@
 
 ## 最終更新
 
-- 日付: 2026-08-19 その2 (**v0.9.0 を出した。タグ push まで完了、release CI 実行中。
-  あわせて CI が遅い件を計測して潰し、#194 を実装した。未 push は 5 本に増えた。**
-  ① **リリース経路**: #197 (`develop` → `main`) マージ済 → `main` = `49634f3`、
-  タグ `v0.9.0` (annotated・`49634f3` を指す) push 済 → release run `32265722883`。
-  タグ push だけで完結する (v0.5.0 以降)。**残るのは公開 `.exe` の PII 目視確認だけ。**
-  ② **タグ push に `--no-verify` を使った (baseline §35 の記録)。** pre-push の
-  `cargo build --release` が `LNK1104: dbboard_mcp.exe を開くことができません` で落ちた。
-  原因は `target/release/dbboard-mcp.exe` が **3 プロセス動いていた**こと (PID 12340 /
-  17524 / 31856、いずれも親が生きている `claude` = **別セッションの MCP サーバー**)。
-  他セッションを落とす判断はしていない。タグが指す `49634f3` は**すでに origin/main に
-  あるコミット**で、その SHA に対する CI は当日 14:26Z に `ci` / `pii-scan` とも緑。
-  つまり pre-push が確かめようとしたことはリモート側で既に済んでおり、タグ push は
-  新しい内容を 1 バイトも送っていない。環境要因 + CI 緑確認済 = §35 の条件どおり。
-  ③ **CI が遅い件は Rust のせいではなかった (ADR-0114、`ci/faster-verification` =
-  `6609e97`)。** 16m46s のジョブの内訳を実測すると、apt install **572s** /
-  cargo キャッシュ復元 **255s** に対し、**fmt + clippy + check + test は 158s** しかない。
-  真因は 2 つ。(a) `-dev` パッケージ 89.3 MB を Azure の Ubuntu ミラーが **~163 kB/s**
-  でしか流さない (レートが run ごとに変わるので、総時間が 16 分〜30 分超と暴れていた
-  のもこれで説明がつく)。(b) キャッシュした `target` が **8.92 GiB** に育ち、GitHub の
-  **リポジトリあたり 10 GiB** 上限に当たって、保存のたびに他のエントリを全部追い出して
-  いた → 次の run は部分一致で復元してどのみち再ビルド。対策は `.deb` を
-  **ワークフローファイルの hash をキーに**キャッシュ (apt は `_apt`、`actions/cache` は
-  `runner` で読むので**所有権の受け渡しが要る**。これを戻さないと保存が黙って空になる) と、
-  `CARGO_PROFILE_DEV_DEBUG` / `_TEST_DEBUG` を `false` (CI はデバッガを開かないし、
-  シンボル付きバックトレースを検証するテストも無い)。`cargo check` は clippy に
-  包含されるが 11s なので**残した** — ワークフロー冒頭が CLAUDE.md の必須コマンドを
-  回すと約束しているため。**ローカルでは検証できない**ので、証拠は最初の run の
-  ステップ時間になる。
-  ④ **#194 を実装した (`fix/export-ref-ownership` = `c373778`、ADR-0113)。**
-  他接続の keychain スロットを名乗る entry を**エクスポート時**に検出する。ref は
-  `admin.rs` の `keyring_ref()` 1 箇所でしか作られず、`update` は `id` を書き戻すので
-  **rename 経路が存在しない** = 「自分の id から導出されない ref を持つ entry は不正」が
-  **ストアを引かずに entry 単体で**判定できる。インポート側 (ADR-0038) より強い。
-  **拒否はしない・警告する**のが ADR-0113 の決定 — バックアップを最も必要とする
-  操作者にとって、成功行を警告で押しのけたら「失敗した」と読めてしまう。
-  ⑤ **未 push = 5 本。** `ci/faster-verification` (`6609e97`) と
-  `fix/export-file-names` (`943c26e`) は独立、残り 3 本は stack
-  (`feat/turso-remote` `8a9bf2a` → `fix/import-report-reasons` `601ff61` →
-  `fix/export-ref-ownership` `c373778`)。**`ci/faster-verification` を先に入れると、
-  以降の全 run が 9 分の apt ダウンロードを払わなくなる**ので優先度が高い。
-  **user 側ボール = ① 公開 `.exe` の PII 目視確認、② 5 本の push (→ PR は私が作る)、
-  ③ #180 / #189 のマージ、④ v1.0 の残り 3 ゲート (下記 候補 0)、⑤ 従来からの継続分。**
-  次のエージェント側タスク = push 後の PR 作成のみ。)
-
-- 日付: 2026-08-19 (**未 push のブランチが 3 本たまった。3 本とも中身は完成・検証済で、
-  詰まっているのは push だけ。** develop = `9403077` (v0.9.0)、open PR = #180 / #189。
-  ① **`fix/export-file-names` = `943c26e`** — エクスポートの既定ファイル名に日時を入れた。
-  user 要望「ファイル名固定なのやめてほしい。日時いれるだけでだいぶ変わる」そのまま。
-  ② **`feat/turso-remote` = `4bbdf63` + `8a9bf2a`** — issue #191。リモート Turso を
-  2 つ目の kind として実装 (**ADR-0111**)。kind は 11 種になったが**ワイヤ id は 9 のまま**
-  (`turso-remote` は `turso` として名乗る) = コントラクト非破壊。docs は別コミット。
-  ③ **`fix/import-report-reasons` = `601ff61`** (②の上に stack) — user の指摘どおり、
-  **インポートの「入らなかった理由」3 つを分けて報告する**ようにした (**ADR-0112**)。
-  もとは `skipped: Vec<String>` 1 本に (1) 束内 id 重複 / (2) 既存 + Skip モード /
-  (3) 他接続が持つ keyring ref との衝突 (ADR-0038) が全部入っていた。
-  「既に存在します」が真なのは (2) だけ、overwrite で直るのも (2) だけ。
-  (3) は**両方とも嘘**で、しかも overwrite 再実行はバイト同一の結果になるため、
-  ヒントが操作者を行き止まりに送っていた。`skipped_existing` / `duplicate_in_bundle` /
-  `refused: Vec<RefusedEntry>` の 3 本に分割し、refusal は**衝突の両側** (ref 名と
-  その持ち主) を名指しする。文言規則は `import-report.ts` に純関数として出して
-  9 本のテストで固定。**チェック自体は一切変えていない** (user の
-  「Not a request to relax the check」どおり)。②③とも stack しているのは、
-  同じ 5 ファイルを触るため。②が develop に入れば③の差分は自分の変更だけになる。
-  ④ **ディスクが 0 GB になり commit が落ちた。** pre-commit フックは私の
-  `CARGO_PROFILE_DEV_DEBUG=false` を継承しないので、debuginfo 付きで debug ツリーを
-  丸ごと再ビルドしにいく。`cargo clean --profile dev` で **16.6 GiB 回収** (現在 16.3 GB 空き)、
-  `target/release` は pre-push のために残した。**これで 08-16 から未回答だった
-  「`cargo clean --profile dev` の可否」は事実上決着**。再発防止は
-  `export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false` を
-  **commit と同じシェル行に置く** (フック側の cargo に継承させるため)。
-  ⑤ **新規 issue 3 本** — **#194** = 同じ ref 衝突を**エクスポート時**に検出する
-  (ref は `admin.rs` の 1 箇所でしか作られず rename 経路が無いので、
-  「自分の id から導出されない ref を持つ entry は不正」が**ストア参照なしで判定できる** =
-  インポート側の検査より強い)。**#195** = `dbboard-mcp.exe` に更新経路が無い。
-  **#196** = パスフレーズをワイヤに乗せない MCP エクスポート verb (user の
-  「パスワード設定も AI エージェントに託した方がセキュア」に対する回答。
-  生成はエージェント側が正しいが、**MCP の戻り値は Claude Code の `.jsonl` に
-  平文で残る**ので、値ではなく資格情報ストアの **ref 名**だけを返す設計にした)。
-  **user 側ボール = ① 3 本の push (→ PR は私が作る)、② #180 / #189 のマージ、
-  ③ v1.0 の残り 3 ゲート (下記 候補 0)、④ 従来からの継続分。**
-  次のエージェント側タスク = push 後の PR 作成のみ。)
-
-- 日付: 2026-08-19 (**検証シートを人手で回すつもりが、MCP の口を 7 つ足す話になった。
-  PR 6 本マージ、シート 003 が 10 行すべて OK で埋まった。open は #180 の 1 本のみ。**
-  ① **発端は「シート 003 を user が実施する」だった。** 言語メニューを開く・切り替える・
-  画面を見る、を 1 手ずつ頼むはずが、頼む前に**その手をエージェント側から打てるようにした** —
-  エディタ・実行・AI パネルの操作 4 動詞 (#185)、表示言語の読み書き 2 動詞 (#182)、
-  ウィンドウの撮影 1 動詞 (#184)。
-  「人の操作が要る」と気づいた時点で MCP に足す、という取り決めをそのまま実行した形。
-  ② **判定はエージェント、記入は user。** 撮った画像を見て豆腐 (□) の有無を判断したのは
-  エージェント側だが、`結果` 列に OK を入れたのは user (#186)。baseline §22 の
-  「実物を動かして目で見た人だけが書く」は崩していない。
-  ③ **10 行すべて OK。豆腐は 1 つも出なかった。** egui 版で 2 回再発した不具合が、
-  Tauri + WebView2 に移った後は再発していないことを、現行シェルで初めて人の目で確認した。
-  ④ **代わりに別の穴が見えた → Issue #181。** 11 ロケール中 9 つが **334 キー中 30 キー
-  (9%) しか訳されていない**。切替は動くが中身が英語のまま。
-  シートが通ったことより、通す過程で見えたこちらの方が大きい。
-  ⑤ **シートから `実施日` / `担当` を落とした (#187)。** baseline §22 に公開リポ条項が
-  付いた。commit の author と日時が同じことを持っているのに、シート側にも個人の作業記録を
-  重ねると公開範囲だけが広がる。003 が両列を埋めた直後だったので具体的に効いた。
-  ⑥ **ディスクが尽きた (2 回)。** `target/debug` が 14.2 GB まで育ち、空きが 5 GB を切って
-  リンカが `os error 112` で落ちた。`cargo clean --profile dev` で回収 (pre-push が要るのは
-  release 側だけなので debug を捨てて困らない)。空き 18.1 GB。
-  **が、その後の debug フルリビルドでまた 5.7 GB まで落ちて `serde` の `.rmeta` が
-  途中で切れ、コンパイラが `E0786 invalid metadata files` で落ちた。**
-  リンカエラーに見えたり crate 破損に見えたりするが、**症状が変わるだけで原因は同じ**。
-  → **user 側ボール: C: を repo の外で空ける。** `target/debug` (14.2 GB) と
-  `target/release` (22 GB) が同居できる余地が無く、いまの空き 14 GB では
-  **debug のフルビルドが完走しない = pre-commit が原理的に走らない**。
-  候補は pnpm ストア 8.1 GB / 他リポの `node_modules` 約 4.5 GB / Temp 1.7 GB。
-  どれもこのリポの持ち物ではないので、消す判断は user 側。
-  ⑦ **#180 は rebase 済み。** develop が動いたことで 3 シートのヘッダが衝突した。
-  rebase で解消し、003 は develop 側が同じ内容を持っているので**差分から消えた** (正しい形)。
-  現在 MERGEABLE。
-  **user 側ボール = #180 のマージ + v1.0 の残りゲート (下記)。**
+- 日付: 2026-08-20 (**v0.10.0 を出した。タグ push まで完了、release CI 実行中。
+  リリース前セキュリティレビューを回したら、設定してあるのに誰も走らせていない
+  check が 1 つ見つかった。open PR = 0。**
+  ① **リリース経路**: #207 (リリース準備) → develop、#208 (ロードマップ帳簿) →
+  develop、#209 (セキュリティ) → develop、#211 (`develop` → `main`) マージ済 →
+  `main` = `3d8434b`、`main..develop` = 0。`main` の CI は 4 ジョブ + pii-scan すべて緑。
+  タグ `v0.10.0` (annotated) push 済 → release run `32366885046`。
+  **今回は `--no-verify` を使っていない。** タグ push の直前に `target/release` を
+  掴むプロセスを確認して 0 だったため、pre-push の `cargo build --release` が
+  v0.9.0 のときのように `LNK1104` で落ちなかった。**ロック確認を push 前の手順に
+  入れたことが効いた**ので、次回も同じ順序で行う。
+  ② **`cargo deny` は設定してあったのに、どのワークフローも走らせていなかった
+  (ADR-0117)。** `CLAUDE.md` にセキュリティ体制の一部として名前が書いてあるのに、
+  赤いまま何か月も経っていた (advisory 21 件・ライセンス 4 件)。見つかったのは
+  リリース前レビューがたまたま手で叩いたから。**失敗する check よりも、
+  誰も走らせない check の方が問題だった。** `develop` / `main` への push と PR で
+  走る `deps` ジョブを足した。GTK もフロントエンドビルドも要らない
+  (`cargo metadata` はコンパイルせずグラフを解決する) ので `rust` から独立させ、
+  cargo-deny をピン留めしてキャッシュ = **同一ブランチで 15 秒**。
+  ③ **`deps` ジョブは初回実行でいきなり 1 件見つけた。** `deny.toml` の
+  `OFL-1.1` / `Ubuntu-font-1.0` が、egui クライアントを畳んだ `a2d92fa` 以降
+  **死んだ許可のまま残っていた**。ADR-0117 が「ignore リストは見える形で腐る」と
+  主張する PR の中で、その主張が最初の機会に自分で発火した形。
+  ④ **直せないものは advisory 1 件につき 1 エントリで理由を書いた。**
+  v0.10.0 が remote transport を入れたことで `hyper-rustls` 0.25 が入り、
+  `rustls-webpki` 0.102 と `h2` 0.3 が固定される。修正は全部それらが到達できない
+  メジャー系列に載っている。理由は「ここでは到達しない」「到達するが狭い」
+  「この製品の操作ではない」を区別して書いた。**6 件中 4 件は libsql が上がった
+  瞬間に消える。** 一括抑制はしない (次の 1 件も隠れるため)。
+  **リリースは止めない**判断。上流に修正版が無く、唯一の逃げ道である libsql 0.10 は
+  pre-release で、pre-release の DB エンジンを署名済みバイナリに入れる方がリスクが大きい。
+  ⑤ **CSP は分離した (#210)。** レビューは `"csp": null` も MEDIUM で挙げたが、
+  検証したら**フロントエンドに HTML 注入口が 0 件** (`{@html}` / `innerHTML` 無し) で
+  急ぎではなく、しかも**直接 `fetch` も 0 件** (通信は全部 Rust 側) なので
+  `connect-src` は軽い。一方 `app.html` のテーマ適用インラインスクリプトと
+  SvelteKit のハイドレーションスクリプトがあるため `script-src` は
+  `svelte.config.js` の `kit.csp` 設定が要る。**タグを打つ日に混ぜる変更ではない。**
+  ⑥ **エージェント側の訂正 1 件 (記録)**: `deps` は 15 秒と伝えたが #211 では 1m52s
+  かかった。**GitHub Actions のキャッシュはブランチスコープ**で、feature ブランチで
+  作ったキャッシュは `main` を base にした PR から復元できない。`develop` に
+  キャッシュができた今は定常 15 秒。
+  **user 側ボール = ① 公開 `.exe` の PII 目視確認 (CI はやらない。このマシンに
+  `.pii-denylist` が無いのでスキャナは本名を見ていない)、② v1.0 の残り 3 ゲート
+  (下記 候補 0)、③ §36 の改善要望 3 件の記入 (下記)、④ 従来からの継続分。**
   次のエージェント側タスク = **無し**。)
 
-- 日付: 2026-08-16 その2 (**v1.0 ゲート 4 (コード署名) を「買わない」側で閉じた。
-  残りは 3 つ、全部 user 側ボール。PR #176 / #177 / #178 マージ済、open PR = 0。**
-  ① **user 判断: 証明書は買わない。** issue 0021 のゲート 4 には最初から代替経路が
-  書いてあった (「買わないなら未署名であることを README とリリースノートに明記して出す」)
-  ので、そちらを取った。**ADR-0106** に決定として記録。
-  ② **文言が嘘になっていた。** README 2 箇所と DL ページが `not signed **yet**` /
-  `planned follow-up` / `tracked follow-up` と、1 年分のリリースにわたって書き続けていた。
-  買う予定が無いのに「まだ」と書くと、読み手は**後のリリースで消える不具合**と受け取る。
-  全部「決定であって漏れではない」に書き換え、検証すべきものとして `SHA256SUMS.txt` を
-  名指しした。
-  ③ **注記をリリース本文にも載せた** (`release.yml` の `--notes`)。検索結果から
-  リリースページに直接来た人は README を見ない。**ダウンロードが提供される場所すべて**に
-  注記が付く状態にするのが ADR-0106 の約束。
-  ④ **文言をテストで守る** — `site/page.test.mjs` に 1 本追加。"Before you run it" 段落に
-  `yet` / `planned` / `tracked follow-up` / `coming soon` が現れたら落ちる。
-  **すでに 2 ファイルで間違っていた**ので記憶ではなくテストにした。先に RED を確認済み。
-  ⑤ **`delete_branch_on_merge` を `true` にした。** マージ後のリモートブランチ削除が
-  自動になり、PR ごとの削除 push が不要になった (#178 で実際に自動削除を確認)。
-  ⑥ **`actions/checkout` を v6 に統一** (#176)。ただし**最新は v7.0.1** で、v6 は 1 メジャー
-  遅れ。恒久対策として `.github/dependabot.yml` の `github-actions` エコシステムを
-  提案したが、**PR が増えるため要否は user 判断**として保留中。
-  ⑦ 検証: pre-commit (fmt / clippy -D warnings / check / test) 通過、pii-scan は tree と
-  commit message の両方 clean、`node --test site/*.test.mjs` 16/16、
-  `release.yml` は PyYAML パース + 抽出した run ブロックの `bash -n` で構文検証。
-  PR #178 の CI 4 本すべて緑。
-  **user 側ボール = v1.0 の残り 3 ゲート (下記) + dependabot の要否判断。**
-  次のエージェント側タスク = **無し**。3 ゲートとも baseline §38 の「人にしかできない工程」で、
-  user が動くまでエージェント側から進められない。)
-
-- 日付: 2026-08-16 (**v1.0 の条件を 4 つに確定して #175 をマージした。
-  ここから先は 4 つとも user 側ボール。**
-  ① **v1.0 = 機能が出揃うことではなく、`docs/api-contract.md` を壊さない約束** (ADR-0011)。
-  この定義に落とすと、エンドポイントやフラグの追加は additive なので 1.0 を妨げない。
-  ロードマップ上の未着手項目のうち実際にゲートになるのは **4 つだけ**で、
-  全部 `.claude/issues/0021-v1-0-criteria.md` に書いた。
-  ② **凍結の前にコントラクト自身が凍結できる状態になかった。** `id` の一覧が 3 件のまま
-  (実際は 9 件)、`has_foreign_keys` (ADR-0054) が未記載、`GET /capabilities` の例 (5 フラグ) と
-  `Capabilities` の節 (10 フラグ) が食い違い、「Phase 2 では全フラグ `false`」が 3 箇所。
-  全部直し、**先に RED を確認してから**
-  `crates/dbboard-connect/tests/api_contract_drift.rs` で再発を止めた
-  (フラグ側は `Capabilities` をシリアライズして名前を取るのでテスト編集不要、
-  id 側は `BackendConfig` の網羅 match なのでバックエンド追加でビルドが止まる)。
-  ③ **ロードマップの帳簿修正**: Phase 2 が全項目 `[x]` なのに `*(current)*` のまま
-  (exit criteria が参照する `crates/dbboard-ui` は ADR-0089 で削除済み)、
-  `Export results (CSV / JSON)` が未チェックだが CSV/TSV は ADR-0035 で出荷済み。
-  どちらも 1.0 までの距離を実際より遠く見せていただけ。
-  ④ **エージェント側のミス 1 件 (記録)**: #175 の本文に
-  「`actions/checkout` を v6 へ」と書いたが、**その commit (`ea59c4a`) は push 時点の
-  ブランチ先端に無く、PR に入っていなかった**。ローカル HEAD で
-  `git log origin/develop..HEAD` を数えたのが原因。**PR 本文は push 済みの範囲
-  (`origin/<branch>`) で数える。** マージ後に PR 本文へ訂正を追記し、
-  中身は `ci/checkout-v6` の `330cd59` として cherry-pick 済 (原 commit と patch 一致を確認、
-  author は user のまま)。
-  ⑤ **`actions/checkout` の最新は v7.0.1** で v6 は 1 世代前。今回は user の明示的な選択なので
-  v6 のまま出す。
-  **user 側ボール = ① `git push -u origin ci/checkout-v6` (→ PR は私が作る。
-  CI 自身の定義を変えるので CI 緑がそのまま動作確認になる)、
-  ② v1.0 ゲート 1 = #161 の 3 点観察 (ボタンの色 / カーソル形状 /
-  一度別の場所をクリックしてからだと効くか)、
-  ③ v1.0 ゲート 2 = コントラクトを姉妹リポ `dbboard-web` へミラー (リポをまたぐ)、
-  ④ v1.0 ゲート 3 = 検証シート 001/002/003 の実施 (baseline §22・人間のみ。
-  Firestore エミュレータが動いている間は 001 の 2〜9 行目が実施可能)、
-  ⑤ v1.0 ゲート 4 = コード署名を買うか、買わないなら「未署名」を README と
-  リリースノートに明記して出す (Norton / SmartScreen が騒ぐ件の恒久解はこれ)、
-  ⑥ Norton の除外設定 (GUI のみ・**除外リストは 2 つあり、両方に入れないとビルドは速くならない**)、
-  ⑦ 公開 `.exe` の PII 目視確認、⑧ 姉妹リポへ `.claude/tools/dbboard.md` を貼る (08-09 から継続)、
-  ⑨ ~468 コミットの history 書き換え判断 (08-09 から継続)** —
-  ②〜⑤ が v1.0 の全部。①は今すぐ終わる。
-  なお `cargo clean --profile dev` (`target` 48 GB の dev 側を落とす。release は残るので
-  pre-push は速いまま、次の dev ビルドだけフルになる) の可否は**未回答のまま**。)
-
-- 日付: 2026-08-14 その2 (**v0.8.0 を切った。タグ push まで完了、release CI 実行中。
-  ここから先は全部 user 側ボール。**
-  ① **リリース経路**: #171 (エクスポートダイアログの可読性) → develop、
-  #172 (リリース準備) → develop、#173 (`develop` → `main`) → `main` = `2a9b1e8`、
-  タグ `v0.8.0` push 済 → release CI run `31784033330` 実行中。
-  Windows exe + MSI / macOS dmg + `SHA256SUMS.txt` を publish する。
-  **タグ push だけで完結する** (v0.5.0 以降、publish ジョブが release オブジェクトを
-  自力で view-or-create するようになったため。旧 v0.3.0 の落とし穴は解消済み)。
-  ② **リリース前に埋めた穴**: `CHANGELOG.md` の `[Unreleased]` が空、`docs/roadmap.md` が
-  v0.7.0 を現行として説明したままだった。どちらも**タグ後には埋められない**場所なので
-  #172 で先に埋めた。
-  ③ **エージェント側のミス**: DESIGN.md の追記 (`128f18e`) を #171 の push 後に commit して
-  マージに乗せ損ねた。rebase + cherry-pick (`c316e9b`) で復旧済み。
-  ④ **release CI は 5 ジョブすべて緑**、`v0.8.0` は 08-14 08:44Z に publish 済
-  (`dbboard-desktop_0.8.0_x64-setup.exe` / `_universal.dmg` / `.app.tar.gz` /
-  MCP の win・mac / `latest.json` / `SHA256SUMS.txt`)。
-  **DL ページは `releases/latest` を指しているだけなので、サイト側の変更は不要** —
-  publish された時点で自動的に v0.8.0 になる。
-  **user 側ボール = ① 公開 `.exe` の PII 目視確認 (CI はやらない)、
-  ② baseline §24 の security-reviewer を回すかの判断 (推奨。ただし今回は既存経路の
-  UI 改善で新しい外向き通信は無い)、③ 検証シート 001/002/003 (全部 `未実施`。
-  Firestore エミュレータが動いている間は 001 の 2〜9 行目が実施可能。1・10・11 行目は
-  対象環境が無いので `未実施` のまま)、④ 姉妹リポへ `.claude/tools/dbboard.md` を貼る
-  (08-09 から継続)、⑤ ~468 コミットの history 書き換え判断 (08-09 から継続)、
-  ⑥ #161 の 3 点観察** — ⑥ が引き続きいちばん詰まっている。
-  なお Firestore エミュレータを止めるときは
-  `docker compose -f docker/firestore-emulator/compose.yaml down`。)
-
-- 日付: 2026-08-14 (**open PR = 0。滞留は完全に解消した。残っているのは全部 user 側ボール。**
-  ① **#159 と #169 をマージし、open PR がゼロになった。** develop = `7569cd5`。
-  #159 = 文書ストアをガイドに書く (`site/index.html` の OGP 衝突は説明文 #159 側 /
-  プレビュー画像 develop 側で組み合わせ済み)、#169 = 08-13 のセッション記録 2 ファイル。
-  ② **#159 の push で 1 往復ロスした。私 (エージェント) のブランチ名取り違え。**
-  PR の head は `docs/document-stores-in-guides` (**stores**) だったが、
-  `git checkout -B docs/document-store-guides ...` の**第 1 引数はローカル名**なので、
-  作業が別名ブランチに乗った。そのまま push すると PR に紐づかない新規ブランチができ、
-  #159 は `CONFLICTING` のまま残る。**復旧は refspec 指定の push**
-  (`git push origin <ローカル名>:<PR の head 名>`) — ローカル名が違う限り
-  `git push` 単体は `push.default=simple` に弾かれる。
-  ③ **libSQL テアダウン segfault は pre-push (release) でも出る。** 今回は
-  `dbboard-server` の `tests/http.rs` が `0xc0000005` で落ちた。単独で回すと
-  **12/12 緑**で、プロセス終了時のクラッシュにすぎない (`dbboard-connect` 経由で
-  libsql をリンクしているため)。CLAUDE.md 唯一の bypass 該当・baseline §35 どおり
-  `--no-verify` で push し、CI 4 ジョブ緑を最終ゲートとして確認した。
-  **user 側ボール = ① 姉妹リポへ `.claude/tools/dbboard.md` を貼る (08-09 から継続)、
-  ② ~468 コミットの history 書き換え判断 (`pii-scan` identity 赤の唯一の原因・
-  08-09 から継続)、③ #161 の 3 点観察** (ボタンの色 / カーソル形状 /
-  一度別の場所をクリックしてからだと効くか) — **ここが今いちばん詰まっている。**
-  次のエージェント側タスク = #161 の観察結果を受けて修正。原因が特定できていない段階で
-  当て推量のテストは書かない。)
-
-- ※ 2026-08-13 その2 〜 2026-08-03 のエントリは
+- ※ 2026-08-19 その2 〜 2026-08-03 のエントリは
   `.claude/archive/next-actions-2026-08.md` へ全文退避 (baseline §31、退避日 2026-08-09 /
-  2026-08-14 / 2026-08-16 の 3 回)。さらに古いもの (2026-07-29 以前) は
+  2026-08-14 / 2026-08-16 / 2026-08-20 の 4 回)。さらに古いもの (2026-07-29 以前) は
   `.claude/archive/next-actions-2026-07.md`。
 
 
 ## モード
 
 **in-use / continuous-improvement (menu-not-sequence)** — 2026-06-24 以降。
-配布 (#14) は 2026-07-16 に完了済、v0.3.0 公開済、DL ページも live。今は
-「配布済 exe を担当が実際に使うか」を update-check で観測しつつ、次の実利用改善
-(下記の user 側ボール) を摩擦順に進めるフェーズ。直近は結果グリッドのソート漏れと
-MSI ショートカット漏れを補完し、次いで maintainer 要望の**論理バックアップ
-(ダンプ)** を ADR-0049 として実装・着地 (PR #108)。
+配布 (#14) は 2026-07-16 に完了済、DL ページも live。今は「配布済 exe を担当が
+実際に使うか」を update-check で観測しつつ、次の実利用改善 (下記の user 側ボール) を
+**ロードマップ順ではなく摩擦順**に進めるフェーズ。**ロードマップは順序ではなく献立**で、
+実際に使って出た困りごとが常に優先する。
+
+**最新リリース = v0.10.0 (2026-08-20)。** アダプタは 11 kind
+(ワイヤ id は 9 — `turso-remote` は `turso` として名乗るのでコントラクト非破壊)。
+v1.0 の定義は「機能が出揃うこと」ではなく **`docs/api-contract.md` を壊さない約束**
+(ADR-0011) なので、エンドポイントやフラグの追加は additive = 1.0 を妨げない。
+実際にゲートになるのは候補 0 の 3 つだけ。
 
 ---
 
@@ -274,17 +86,23 @@ MSI ショートカット漏れを補完し、次いで maintainer 要望の**�
 1. **#161 の 3 点観察** — Run ボタンがクリックに反応しない。観察するのは
    ボタンの色 / カーソル形状 / 一度別の場所をクリックしてからだと効くか。
    原因が特定できていない段階で当て推量のテストは書かない、が方針。
-2. **コントラクトを `dbboard-web` へミラー** — 凍結の**前**にやる必要がある。
-   凍結後にミラーすると、web 側が別物を実装していた場合に破壊的変更が要る。
+2. **コントラクトを `dbboard-web` へミラー** — **user 判断で保留中**。
+   凍結の**前**にやる必要がある (凍結後にミラーすると、web 側が別物を
+   実装していた場合に破壊的変更が要る)。ミラー不要なら
+   [[feedback-explicit-no-op-brief]] のとおり**その旨を明示的に言う**。
+   黙って保留すると web 側が待ち続ける (過去に 3 週間止めた)。
 3. **検証シート 001 / 002 の実施** — **003 は 2026-08-19 に完了** (10 行すべて OK、#186)。
-   残るのは 001 (Firestore) と 002 (MongoDB) で、どちらも Docker が要る。
-   ディスクを空けた (18.1 GB) ので実行できる状態にはある。
+   残るのは 002 (MongoDB) → 001 (Firestore) の順。どちらも Docker が要る。
    人が動かして `結果` を埋める (baseline §22)。**エージェントが `OK` を
    書き込むことは禁止**。`実施日` / `担当` の列は #187 で落としたので記入不要。
    環境的に無理な行は `未実施` のまま残してよい。
    002 は `docker run -d --rm -p 27117:27017 mongo:8` で足りる。
    001 のエミュレータ停止は
    `docker compose -f docker/firestore-emulator/compose.yaml down`。
+   **シートに資格情報を書かない** (サービスアカウント鍵のパス / MongoDB URI は
+   シートに入れない)。**接続名も入れない** (実接続名はリポにもシートにも入れない)。
+   **⚠ ディスクが 9.5 GB しか無い。** `target/release` が 23 GB を占めており、
+   Docker イメージを引くと足りなくなる可能性がある。実施前に空きを確認する。
 
 ### 候補 A-4: `.github/dependabot.yml` で actions の追従を自動化 (小・要否は user 判断)
 
@@ -303,23 +121,47 @@ MSI ショートカット漏れを補完し、次いで maintainer 要望の**�
 Saved queries / Schema diff (下記 候補 E。Export results は CSV/JSON 済)。新しい
 write 経路を伴うものは着手前に ADR。
 
+**いま open で、着手できるもの:**
+
+- **#196** — パスフレーズをワイヤに乗せない MCP エクスポート verb。
+  **#201 が develop に入ってブロックが外れた** (`ExportReportDto { exported,
+  foreign_refs }` が揃った)。
+- **#192** — 接続リストの UX / 並べ替え。
+- **#181** — **11 ロケール中 9 つが 334 キー中 30 キー (9%) しか訳されていない。**
+  切替は動くが中身が英語のまま。003 のシートを通す過程で見えたもので、
+  シートが通ったことより大きい。
+- **#195** — `dbboard-mcp.exe` に更新経路が無い。
+
+### 候補 A-5: §36 改善要望シートの記入 (**user のみ・エージェント代筆禁止**)
+
+`docs/feedback/improvement-request.tsv` に未記入の気づきが 3 件ある。
+**baseline §36 により、行を起こすのは実際に使った人**で、エージェントは
+代筆も要約もしない (`状態` と `関連Issue` の 2 列だけ触ってよい)。
+「何をしていたか」「どうなったか」の 2 つが埋まっていれば受け付けるので、
+原因や直し方は書かなくてよい。「どうなってほしいか」は分からなければ空欄で構わない。
+
+覚えとしての 3 件 (**これは私の控えであって、シートの行ではない**):
+① ダブルクリックで開くダイアログが読み取り専用になる、
+② MCP 経由で AI パネルを閉じる手段が無い、
+③ md-business で連続更新が畳まれる + フリーズする。
+
 ### 候補 A-2: README に MSI アンインストール残留の明文化 (小・任意)
 
 MSI アンインストールは `%APPDATA%\dbboard\dbboard\` の設定と Windows 資格情報
 マネージャーのエントリを残す (仕様)。ユーザに口頭で伝えた `cmdkey` +
 フォルダ削除のクリーンアップ手順を README か `docs/` に明文化する小 chore。
 
-### 候補 A-3: アップデート通知の「変更点」が定型文のまま (小・実利用で判明)
+### 候補 A-3: アップデート通知の「変更点」が定型文 — **完了 (v0.10.0 / ADR-0115)**
 
-v0.8.0 の配信で判明。0.7.0 側に出た通知の「変更点」が
-**`dbboard v0.8.0. See the release page for the full changelog.`** という定型文で、
-実際に何が変わったかが読めない。出どころは `.github/workflows/release.yml:287` —
-`latest.json` の `notes` をタグ名から組み立てているため、中身がタグごとに変わらない。
+`latest.json` の `notes` をタグ名から組み立てていたため、通知の「変更点」が
+`dbboard v0.8.0. See the release page for the full changelog.` のような定型文になり、
+何が変わったかが読めなかった。`scripts/release-notes.mjs <changelog> <bare-version>` で
+`CHANGELOG.md` の当該バージョン節から**最初の `###` までのリード段落**を抜いて入れる。
 
-ステータスバーのチップ (ADR-0101) は「何が待っているか」を伝えるためのものなので、
-定型文だと**チップの存在理由が半分死ぬ**。`CHANGELOG.md` から当該バージョンの節を
-抜いて `notes` に入れれば済む。CHANGELOG は今回から実際に埋まっているので材料はある。
-更新の判断材料になる場所なので、次のリリース前に直しておく価値がある。
+**次のリリースで気をつける点**: 通知に出るのは**リード段落だけ**なので、
+`CHANGELOG.md` を書くときに**その段落だけで意味が通る**ようにする
+(`### Added` 以降を読まないと分からない書き方をすると、通知が中途半端になる)。
+v0.9.0 → v0.10.0 の配信が、この経路の初めての実地確認になる。
 
 ### 候補 B: git 履歴の一括サニタイズ (human ボール・破壊的・未実行)
 
@@ -329,10 +171,12 @@ v0.8.0 の配信で判明。0.7.0 側に出た通知の「変更点」が
 1. **実店舗名** — 過去コミットに残る (実名は**非公開メモリと `.pii-denylist`
    のみ**。ここには書かない。対応表からローカルで `replacements.txt` を作る)。
    バイナリは CI ビルドで名前を含まないためリリースは塞がない。
-2. **コミット identity** — 公開済 468 コミットの author/committer が個人 Gmail
+2. **コミット identity** — 公開済コミットの一部の author/committer が個人 Gmail
    (ADR-0084)。**未公開のローカル 28 コミットは書き換え済** (2026-07-31、
    force-push 不要だったので実行した)。以後の新規コミットも noreply で clean。
-   残るのは origin 上の分だけ。
+   残るのは origin 上の分だけ。**「468 コミット」と書いていたのは 2026-08-09 時点の
+   `main` の総数**で、現在は 585 (v0.10.0 時点)。汚染されているのはその一部なので、
+   着手時に `git log --format='%ae %ce' origin/main | sort -u` で実数を数え直す。
 
 手順は `docs/maintainer/history-sanitize-runbook.md` (Step 1-3 = 文字列置換、
 Step 3b = `--mailmap` で identity、Step 4 = force-push)。全ハッシュ変更・既存
@@ -344,8 +188,8 @@ Step 3b = `--mailmap` で identity、Step 4 = force-push)。全ハッシュ変�
 先に rewrite すると、残った未書き換えのローカルコミットを次の `git push` が
 そのまま remote に戻して再汚染する (git から見れば単なる新規コミットなので
 警告も出ない)。`git pull --rebase` では直らない。runbook の「Ordering」節参照。
-open PR **#125** (`feature/cjk-font-and-ai-menu`) は rewrite で壊れるので、
-先に merge / close するか、書き換え後のブランチから立て直す。
+**2026-08-20 時点で open PR は 0 本**なので、壊れる PR は無い (以前ここに書いてあった
+#125 は CLOSED)。着手前に `gh pr list --state open` で 0 を確認すること。
 
 ### 候補 C: release.yml の publish 自己作成化 — **完了 (v0.5.0)**
 
@@ -354,13 +198,33 @@ publish ステップが `gh release view <tag> || gh release create <tag>` に�
 この経路で実行済み。**残るのは公開 `.exe` の PII 目視確認だけで、これは CI がやらない
 人間の作業。**[[project-release-ci-needs-release-object]]。
 
-### 候補 D: cargo-deny の既存ドリフト対応 (別 chore)
+### 候補 D: cargo-deny の既存ドリフト対応 — **完了 (v0.10.0 / ADR-0117)**
 
-`cargo deny` が advisories/licenses で FAILED の可能性 (既存依存への 2026
-アドバイザリ): `proc-macro-error2` (unmaintained ← age) / `option-ext`
-(MPL-2.0 ← directories) / `quick-xml` (DoS ← wayland-scanner ← eframe, Linux)。
-commit フックではないので緊急ではないが `deny.toml` の期限付き exception か
-依存 bump で解消。着手時に現状を再確認。
+**「commit フックではないので緊急ではない」と書いたまま何か月も放置し、
+その間ずっと赤かった。** リリース前セキュリティレビューが手で叩いて初めて
+現状 (advisory 21 件・ライセンス 4 件) が分かった。#209 で `deps` ジョブを
+CI に足し、直せたもの (`h2` → 0.4.17、死んだライセンス許可 2 件の削除) は直し、
+直せないもの (libsql が `hyper-rustls` 0.25 経由で固定する `rustls-webpki` 0.102 /
+`h2` 0.3 系) は **advisory 1 件につき 1 エントリで理由を書いて** `deny.toml` に記録した。
+
+**残っているのは「libsql を上げる」1 点だけ。** 6 件中 4 件がそれで消える。
+libsql 0.10 は pre-release なので、**stable が出たら `deny.toml` の
+`rustls-webpki 0.102` 節と `h2` 節を再検査する** (`ignore` エントリのコメントにも
+「Revisit at every libsql bump」と書いてある)。
+
+### 候補 D-2: Tauri の CSP を有効にする (#210・小〜中)
+
+`tauri.conf.json` の `"csp": null` = ポリシーを一切注入していない。
+**急ぎではない** — 検証したところフロントエンドに HTML 注入口は 0 件
+(`{@html}` / `innerHTML` 無し)。**着手時は前提を再検証すること**、
+その後の変更で注入口が増えている可能性がある。
+
+難所は `script-src`。`app.html` にテーマ適用のインラインスクリプトがあり
+(初回描画前に `data-theme` を当てて色のちらつきを消す意図的なもの)、
+SvelteKit のハイドレーションスクリプトもインラインなので、
+素の `script-src 'self'` では両方止まる。`apps/desktop/svelte.config.js` の
+`kit.csp` (hash / nonce モード) を設定する必要がある。現在は未設定。
+`connect-src` は軽い (直接 `fetch` が 0 件で通信は全部 Rust 側)。
 
 ### 候補 E: 既存ロードマップ機能バックログ
 
@@ -373,17 +237,21 @@ planning ball)。実利用の摩擦順に着手。新 write 経路は着手前�
 - **使用確認**: `gh release view v0.3.0 --json assets --jq
   '.assets[].downloadCount'` (匿名 update-check の GET 自体は観測不可、
   資産 DL 数のみ)。
-- **新版を配布したくなったら**: develop から `cargo build --release` →
-  次バージョンを bump → main にマージ → タグ push で Release CI が Win+Mac
-  資産を自動公開。**⚠ ただしリリースオブジェクトを先に `gh release create`
-  しておくこと** (publish は添付のみ)。配布済 exe が起動時に検知する。ビルド前に
-  dbboard ウィンドウを閉じる (exe ロックで os error 5)。公開前に exe を実接続名で
-  スキャン (0 一致)。
-- **MSI / .dmg で渡す場合 (PR #88)**: ローカル MSI = WiX v3 + `cargo install
-  cargo-wix` → `cd apps/dbboard && cargo wix`。Mac は `cd apps/dbboard`
-  → version inline → `cargo bundle --release` → `hdiutil` で `.dmg`
-  (cargo-bundle 0.6.0 は `--package` 非対応 + workspace version 不読なので
-  README の macOS 手順に従う)。exe 単体で十分なら不要。
+- **新版を配布したくなったら**: 次バージョンを bump → develop → main にマージ →
+  **タグ push だけ**。Release CI が Win (NSIS setup.exe + `.sig`) / macOS
+  (universal `.dmg` + `.app.tar.gz` + `.sig`) / MCP バイナリ / `latest.json` /
+  `SHA256SUMS.txt` を publish する。配布済 exe が起動時に検知する。
+  **⚠ 以前ここに「リリースオブジェクトを先に `gh release create` しておくこと」と
+  書いてあったが、これは v0.3.0 時点の話で今は誤り。** v0.5.0 以降、publish ジョブが
+  `gh release view || gh release create` で自力で用意する (候補 C 参照)。
+  **タグ push の前に `target/release` を掴むプロセスを確認する** — 他セッションの
+  `dbboard-mcp.exe` が生きていると pre-push の release ビルドが `LNK1104` で落ちる
+  (v0.9.0 で実際に落ちて `--no-verify` になった。v0.10.0 では事前確認して回避した)。
+  公開後に exe を実接続名で目視スキャン。
+- **バンドルは CI が作る**。ローカルで MSI / `.dmg` を手作りする手順は
+  **もう要らない** (`apps/dbboard` は `apps/desktop` になり、cargo-wix /
+  cargo-bundle 経路は Tauri のバンドラに置き換わった)。手順が要る場合は
+  README の該当節を正本とする。
 - secret 移送 = **推奨 (ADR-0038)**: 手元で 3 接続を Export → `.dbbx` を渡し
   パスフレーズは別経路。担当機は Import 1 回。旧 cmdkey 手順は
   `docs/collector-setup/README.md`。**secret は一切ファイルに書かない。**
