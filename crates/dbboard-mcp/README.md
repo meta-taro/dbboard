@@ -34,15 +34,17 @@ desktop GUI: the `connections.toml` entry store plus the OS keychain
 adds no new place to keep credentials — it reads the ones dbboard already
 holds.
 
-Sixteen tools (ADR-0046 Decision 5, extended by
+Seventeen tools (ADR-0046 Decision 5, extended by
 [ADR-0053](../../docs/decisions.md),
 [ADR-0054](../../docs/decisions.md),
 [ADR-0087](../../docs/decisions.md),
 [ADR-0107](../../docs/decisions.md),
-[ADR-0108](../../docs/decisions.md) and
-[ADR-0109](../../docs/decisions.md)). Seven read a database, one writes
-behind a per-connection flag, one takes a backup, and seven reach no
-database at all — those seven read or work the running window:
+[ADR-0108](../../docs/decisions.md),
+[ADR-0109](../../docs/decisions.md) and
+[ADR-0116](../../docs/decisions.md)). Seven read a database, one writes
+behind a per-connection flag, one takes a backup, seven reach no
+database at all — those seven read or work the running window — and one
+reaches nothing whatever: it names the build that is answering.
 
 | Tool | What it returns |
 |---|---|
@@ -61,6 +63,7 @@ database at all — those seven read or work the running window:
 | `set_editor_sql` | Replaces the text in the running window's query editor and brings the Query tab forward. Does not run it. Returns once the window has taken the text — a success here means it is on screen, not that the request was filed. |
 | `run_query` | Presses Run in that window: executes whatever its editor holds, against the connection **the window** has selected, and returns the row count once the rows are displayed. Not a cheaper `run_read_query` — it uses the window's connection and row limit and leaves the result on someone's screen, so reach for it when what the app *displays* is the point. Fails when no connection is selected there, or when a query is already running. |
 | `open_ai_panel` | Opens the AI panel, which is where the AI provider settings live. Says so when it was already open. |
+| `get_server_info` | Which build is answering, as `{ name, version }`. This binary is installed by hand and never updates itself, so it can be older than the fix for whatever you are looking at — quote the version in any bug report. Deliberately carries **no** filesystem path: on Windows the config path holds the operator's OS username, and a tool result lands in the calling agent's transcript as plaintext on disk. The same version also opens the handshake `instructions`, because some clients drop those and some agents never call a tool they were not asked about. |
 | `open_ai_settings` | Opens the AI provider settings, which live *inside* that panel — so it is refused while the panel is shut, and `open_ai_panel` comes first. The refusal is the point as much as the opening: there is no top-level route to these settings, and being told the verb has no owner is how an agent learns that. Says so when they were already open. |
 
 `run_read_query` has no write path at all. Any statement that is not a
