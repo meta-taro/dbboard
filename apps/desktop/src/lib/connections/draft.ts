@@ -18,6 +18,7 @@ import {
 
 export type ConnectionKind =
   | 'turso'
+  | 'turso_remote'
   | 'd1'
   | 'postgres'
   | 'mysql'
@@ -29,9 +30,12 @@ export type ConnectionKind =
   | 'mongodb';
 
 // Order shown in the kind picker. `turso` first: it's the zero-credential
-// local/libSQL case and the friendliest default.
+// local/libSQL case and the friendliest default. `turso_remote` sits next to it
+// because the two are one adapter reached two ways (ADR-0111), and the pair is
+// the choice the user is actually making.
 export const CONNECTION_KINDS: readonly ConnectionKind[] = [
   'turso',
+  'turso_remote',
   'd1',
   'postgres',
   'mysql',
@@ -127,8 +131,10 @@ export interface ConnectionForm extends DsnParts {
   account_id: string; // d1
   database_id: string; // d1
   base_url: string; // d1 (optional)
-  token: string; // d1 secret
-  url: string; // postgres / neon / supabase / aurora_dsql secret
+  token: string; // d1 / turso_remote secret
+  // postgres / neon / supabase / aurora_dsql secret — but for `turso_remote` a
+  // plain endpoint, with the credential in `token` instead (ADR-0111).
+  url: string;
   project_id: string; // firestore
   service_account: string; // firestore secret (service-account JSON)
   uri: string; // mongodb secret (the password rides in the URI's authority)
@@ -215,6 +221,9 @@ export type EditorMode = 'add' | 'edit';
 // these kind fields (matching `EditFieldsResponse` in src-tauri/lib.rs).
 export type EditFields = (
   | { kind: 'turso'; path: string }
+  // The URL comes back but the auth token does not (ADR-0111) — the endpoint is
+  // in `connections.toml` in the clear, the token is in the keychain.
+  | { kind: 'turso_remote'; url: string }
   | { kind: 'd1'; account_id: string; database_id: string; base_url: string | null }
   // `use_emulator` is the read-back of "no stored credential" (ADR-0093). It is
   // a mode, not a secret, so unlike the service-account JSON the backend does
@@ -390,6 +399,8 @@ export function formForEdit(id: string, name: string, fields: EditFields): Conne
   switch (fields.kind) {
     case 'turso':
       return { ...base, path: fields.path };
+    case 'turso_remote':
+      return { ...base, url: fields.url };
     case 'd1':
       return {
         ...base,
@@ -445,6 +456,10 @@ export function fieldsForKind(kind: ConnectionKind): FormField[] {
   switch (kind) {
     case 'turso':
       return ['path'];
+    // URL then token, in the order they are obtained: the Turso dashboard shows
+    // the database URL first and mints the token from that database's page.
+    case 'turso_remote':
+      return ['url', 'token'];
     case 'd1':
       return ['account_id', 'database_id', 'base_url', 'token'];
     case 'firestore':
@@ -481,6 +496,11 @@ function optionalFields(kind: ConnectionKind): readonly FormField[] {
 export function secretFields(kind: ConnectionKind): FormField[] {
   switch (kind) {
     case 'd1':
+      return ['token'];
+    // Only the token. Unlike the Postgres family, this kind's `url` carries no
+    // credential — masking it would hide the one field the operator has to read
+    // back to confirm they pointed at the right database.
+    case 'turso_remote':
       return ['token'];
     case 'firestore':
       return ['service_account'];
@@ -676,6 +696,8 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
   switch (form.kind) {
     case 'turso':
       return { kind: 'turso', path: clean(form.path) };
+    case 'turso_remote':
+      return { kind: 'turso_remote', url: clean(form.url), token: form.token };
     case 'd1':
       return {
         kind: 'd1',
@@ -735,6 +757,11 @@ export function buildKindEditInput(form: ConnectionForm): Record<string, unknown
   switch (form.kind) {
     case 'turso':
       return { kind: 'turso', path: clean(form.path) };
+    // Blank is "keep the stored token", as it is for the D1 token above. The
+    // URL is not a secret, so it is always sent — that is what makes moving a
+    // connection to a new endpoint possible without retyping the credential.
+    case 'turso_remote':
+      return { kind: 'turso_remote', url: clean(form.url), token: form.token };
     case 'd1':
       return {
         kind: 'd1',

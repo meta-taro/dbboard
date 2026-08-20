@@ -88,6 +88,17 @@ kind = "turso"
 path = ":memory:"
 
 [[connections]]
+id                = "turso-cloud-prod"
+name              = "Turso Cloud (prod)"
+kind              = "turso-remote"
+# The endpoint the Turso dashboard shows. Not a secret, so it stays inline
+# and the connection list can show where this points.
+url               = "libsql://my-db-myorg.turso.io"
+# The auth token lives in your OS keychain under (service="dbboard",
+# account=keyring_token_ref).
+keyring_token_ref = "dbboard.turso-cloud-prod.token"
+
+[[connections]]
 id                 = "cf-d1-prod"
 name               = "Cloudflare D1 (prod)"
 kind               = "d1"
@@ -200,9 +211,14 @@ database        = "orders"
 - `id` — primary key referenced by `DBBOARD_CONNECTION`. Duplicate ids
   are a hard error at load time.
 - `name` — display label for the (future) connection picker.
-- `kind` — `"turso"`, `"d1"`, `"postgres"`, `"neon"`, `"supabase"`,
-  `"aurora-dsql"`, `"aurora-dsql-iam"`, `"mysql"`, `"firestore"`, or
-  `"mongodb"`. `"neon"`,
+- `kind` — `"turso"`, `"turso-remote"`, `"d1"`, `"postgres"`, `"neon"`,
+  `"supabase"`, `"aurora-dsql"`, `"aurora-dsql-iam"`, `"mysql"`,
+  `"firestore"`, or `"mongodb"`. `"turso"` is a libSQL database **file**
+  and takes a `path`; `"turso-remote"` is a **networked** libSQL endpoint
+  — Turso Cloud or a self-hosted `sqld` — and takes a `url` plus an auth
+  token in the keychain. They are separate kinds rather than one field
+  that means a path or a URL depending on what you typed (ADR-0111).
+  `"neon"`,
   `"supabase"`, `"aurora-dsql"`, and `"postgres"` share the same wire
   shape (the keyring carries a `postgres://…` URL either way); the only
   difference is the runtime adapter label, which the connection picker and
@@ -335,10 +351,15 @@ forward over SSH, then rewrites the connection URL's host/port to the
 local end of that forward before the adapter dials. The tunnel is a
 cross-cutting `ssh` sub-table on any connection whose `kind` supports it
 (`postgres`, `neon`, `supabase`, `aurora-dsql`, `mysql`). The rest refuse
-it rather than ignoring it, for two different reasons: `turso` is a local
-file and `d1`, `firestore` and `aurora-dsql-iam` are HTTPS APIs or mint
-their own endpoint, so none of them dial a `host:port` a forward could
-stand in for. `mongodb` is refused despite being TCP — one URI may list
+it rather than ignoring it, for three different reasons: `turso` is a
+local file and `d1`, `firestore` and `aurora-dsql-iam` are HTTPS APIs or
+mint their own endpoint, so none of them dial a `host:port` a forward
+could stand in for. `turso-remote` *is* a `host:port` we could forward,
+but the client asks for the host named in the URL, so a forward would
+present a certificate for the wrong name — and that same URL is what the
+token is scoped to; fronting it means teaching the tunnel to preserve
+SNI, which is a larger change than this exclusion (ADR-0111).
+`mongodb` is refused despite being TCP — one URI may list
 several hosts and `mongodb+srv://` discovers a whole replica set from
 DNS, so rewriting a single host would leave the driver failing over to
 members the tunnel never covered: working at first, then silently not
