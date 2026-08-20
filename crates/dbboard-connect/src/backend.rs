@@ -88,6 +88,13 @@ pub async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn Database
             let adapter = TursoAdapter::connect_local(&path).await?;
             Ok(Arc::new(adapter))
         }
+        BackendConfig::TursoRemote { url, auth_token } => {
+            // `connect_remote` already round-trips to the endpoint — it probes
+            // whether `PRAGMA query_only` is honoured there — so there is no
+            // separate reachability check to add here.
+            let adapter = TursoAdapter::connect_remote(&url, &auth_token).await?;
+            Ok(Arc::new(adapter))
+        }
         BackendConfig::D1(cfg) => {
             let adapter = D1Adapter::connect(cfg)?;
             // D1Adapter::connect builds the HTTP client without touching
