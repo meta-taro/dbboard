@@ -98,6 +98,13 @@ the connection that window has selected, and leaves the rows on the
 operator's screen. All four fail outright when dbboard is not running, and
 retrying does not open it.
 
+`get_server_info` names the build answering you (ADR-0116). This binary is
+installed by hand and never updates itself, so it can be older than the
+fix for whatever you are looking at — a bug you are about to report may
+already have been closed. Call it before reporting anything odd, and put
+the version in the report. It reaches no database, reads no configuration,
+and returns nothing about the machine it runs on.
+
 `open_ai_settings` is also refused while the AI panel is shut, because the
 part of the window that owns that verb is not mounted then. Read that
 refusal as an answer rather than an obstacle: it is what tells you the
