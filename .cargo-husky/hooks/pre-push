@@ -32,7 +32,17 @@ fi
 echo "[pre-push] cargo build --release"
 cargo build --release
 
+# The libSQL adapter's tests run one at a time. Each opens its own in-memory
+# database, and on Windows a parallel run crashes the test binary with
+# STATUS_ACCESS_VIOLATION (0xc0000005) after every assertion has already
+# passed: the fault is in tearing two databases down at once, not in anything
+# under test. Measured on the maintainer's machine, release build: 5 crashes
+# in 150 parallel runs, 0 in 150 serialised ones. A coin flip per push is
+# worse than a slow test, because it fails a branch that is green and teaches
+# whoever hits it to reach for --no-verify. Only this crate is serialised;
+# the rest of the workspace keeps its parallelism.
 echo "[pre-push] cargo test --all-features --release"
-cargo test --all-features --release
+cargo test --all-features --release --workspace --exclude dbboard-turso
+cargo test --all-features --release -p dbboard-turso -- --test-threads=1
 
 echo "[pre-push] ok"
