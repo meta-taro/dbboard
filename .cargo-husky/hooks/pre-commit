@@ -34,7 +34,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 echo "[pre-commit] cargo check --all-targets --all-features"
 cargo check --all-targets --all-features
 
+# Serialised for the same reason as in the pre-push hook — see the comment
+# there for the measurement.
 echo "[pre-commit] cargo test --all-features"
-cargo test --all-features
+cargo test --all-features --workspace --exclude dbboard-turso
+cargo test --all-features -p dbboard-turso -- --test-threads=1
 
 echo "[pre-commit] ok"
