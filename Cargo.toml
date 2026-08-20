@@ -99,9 +99,25 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # default features, kept. russh-keys was folded into `russh::keys` at 0.50, so
 # this single line is the whole dependency.
 russh = { version = "0.62", default-features = false, features = ["ring", "flate2", "rsa"] }
-# libsql core only — no remote/sync/replication/tls. Phase 1.5 will
-# widen this when the local HTTP backend introduces remote Turso.
-libsql = { version = "0.9", default-features = false, features = ["core"] }
+# libsql: the local engine (`core`) plus what a hosted Turso Cloud database
+# needs — `remote` for the hrana-over-HTTP client and `tls` for the https it
+# runs on (ADR-0111). The two remaining default features stay off: `replication`
+# and `sync` are for an embedded replica that keeps a local copy in step with
+# the hosted one, which is a different product decision than reading a remote
+# database and would put a writable file on disk for a connection the operator
+# added as remote.
+#
+# `tls` pulls `hyper-rustls 0.25`, which is on the rustls 0.22 line whose
+# default provider is `ring` — the pure-Rust stack ADR-0034 requires. Verified
+# by resolution, not by reading the manifest: `cargo tree -i aws-lc-sys` and
+# `-i aws-lc-rs` both match nothing with these features on. The cost is that
+# rustls 0.22 and 0.23 now co-exist in the tree; both are ring-backed, so the
+# constraint holds, but it is a duplicate to collapse when libsql moves up.
+libsql = { version = "0.9", default-features = false, features = [
+    "core",
+    "remote",
+    "tls",
+] }
 # The official MongoDB driver (issue 0020, ADR-0096). Its default TLS backend
 # is `rustls-tls` = rustls/ring, which is the pure-Rust stack ADR-0034 asks
 # for; `rustls-tls-aws-lc` is the sibling that would pull `aws-lc-sys` and is

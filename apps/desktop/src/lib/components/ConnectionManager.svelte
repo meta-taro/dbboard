@@ -56,6 +56,8 @@
     pickerTitle,
     type PathField,
   } from '$lib/connections/file-picker';
+  import { exportSummary } from '$lib/connections/export-report';
+  import { importSummary } from '$lib/connections/import-report';
 
   interface Props {
     onClose: () => void;
@@ -89,6 +91,7 @@
 
   const KIND_LABEL: Record<ConnectionKind, MessageKey> = {
     turso: 'conn-kind-turso',
+    turso_remote: 'conn-kind-turso_remote',
     d1: 'conn-kind-d1',
     postgres: 'conn-kind-postgres',
     mysql: 'conn-kind-mysql',
@@ -383,10 +386,15 @@
     if (!path) return; // user cancelled the dialog
     busy = true;
     try {
-      const count = await exportConnections(path, passphrase, exportIds);
+      const report = await exportConnections(path, passphrase, exportIds);
       passphrase = '';
       passphraseConfirm = '';
-      info = i18n.t('conn-export-ok', { count });
+      // Wording rules live in `export-report.ts` so they are testable. The
+      // warning about a foreign keychain slot must not read as a failure —
+      // the bundle is on disk either way (issue #194).
+      info = exportSummary(report, (key, params) =>
+        i18n.t(key as Parameters<typeof i18n.t>[0], params),
+      ).join(' ');
       mode = 'list';
     } catch (e) {
       error = String(e);
@@ -424,26 +432,11 @@
       const report = await importConnections(importPath, passphrase, overwriteExisting);
       await workspace.refreshConnections();
       passphrase = '';
-      let summary = i18n.t('conn-import-ok', {
-        imported: report.imported.length,
-        overwritten: report.overwritten.length,
-        skipped: report.skipped.length,
-      });
-      if (report.skipped.length > 0) {
-        summary +=
-          ' ' + i18n.t('conn-import-skipped-ids', { ids: report.skipped.join(', ') });
-        // Name the way out: a skipped id is otherwise a dead end the user
-        // has to guess their way past.
-        if (!overwriteExisting) {
-          summary += ' ' + i18n.t('conn-import-skipped-hint');
-        }
-      }
-      if (report.overwritten.length > 0) {
-        summary +=
-          ' ' +
-          i18n.t('conn-import-overwritten-ids', { ids: report.overwritten.join(', ') });
-      }
-      info = summary;
+      // Wording rules live in `import-report.ts` so they are testable; which
+      // reason gets which sentence is the whole substance of ADR-0112.
+      info = importSummary(report, (key, params) =>
+        i18n.t(key as Parameters<typeof i18n.t>[0], params),
+      ).join(' ');
       mode = 'list';
     } catch (e) {
       error = String(e);

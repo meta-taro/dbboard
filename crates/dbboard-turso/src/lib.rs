@@ -12,6 +12,24 @@ use dbboard_core::{
     TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 
+/// Where the read-only guarantee of [`TursoAdapter::query_read_only`] is
+/// actually enforced (ADR-0111).
+///
+/// The AST classifier runs either way. What varies is whether the engine
+/// backs it up: a local libSQL file honours `PRAGMA query_only`, and a
+/// hosted endpoint is only assumed to until it has been asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnlyEnforcement {
+    /// `PRAGMA query_only` is honoured and persists between statements, so
+    /// the engine refuses writes for the duration of the query. The
+    /// classifier is defence in depth.
+    Engine,
+    /// The engine does not honour the pragma, so the classifier **is** the
+    /// enforcement — the same position the D1 adapter is in, and documented
+    /// as such rather than papered over.
+    Classifier,
+}
+
 pub struct TursoAdapter {
     // Field drop order matters: `conn` is dropped before `_db` so the
     // libSQL handle outlives anything that depends on it. The
@@ -21,6 +39,11 @@ pub struct TursoAdapter {
     // connection here and reuse it.
     conn: libsql::Connection,
     _db: libsql::Database,
+    // Settled once, at connect, by asking the engine — see
+    // `probe_read_only_enforcement`. Deciding this per query would mean a
+    // round trip on every read, and deciding it from the connection kind
+    // would be the assumption this field exists to avoid.
+    read_only: ReadOnlyEnforcement,
 }
 
 impl TursoAdapter {
@@ -45,7 +68,81 @@ impl TursoAdapter {
         let conn = db
             .connect()
             .map_err(|e| DbError::Connection(redact_path(e.to_string(), path)))?;
-        Ok(Self { conn, _db: db })
+        let read_only = probe_read_only_enforcement(&conn).await?;
+        Ok(Self {
+            conn,
+            _db: db,
+            read_only,
+        })
+    }
+
+    /// Open a database hosted on Turso Cloud, or any libSQL server speaking
+    /// hrana over HTTP (ADR-0111). `url` is the endpoint the dashboard shows
+    /// — `libsql://…turso.io` — and `auth_token` is the database token it
+    /// issues alongside it.
+    ///
+    /// The token is never included in an error message, even indirectly:
+    /// libsql echoes its own inputs back in some failures, so anything it
+    /// returns is scrubbed of the token before it leaves this function.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Connection`] when `url` is not a remote endpoint,
+    /// when `auth_token` is blank, when the client cannot be built, or when
+    /// the connection is left in an unusable state by the read-only probe.
+    pub async fn connect_remote(url: &str, auth_token: &str) -> DbResult<Self> {
+        // Checked here rather than at the config layer because the adapter is
+        // the last place that can tell a local path from a remote endpoint,
+        // and a path arriving here would otherwise be handed to a remote
+        // client that reports a confusing DNS failure instead.
+        if !is_remote_url(url) {
+            return Err(DbError::Connection(
+                "a remote Turso connection needs a libsql:// URL (https://, \
+                 http://, ws:// and wss:// are also accepted); this looks like \
+                 a local path, which belongs to a local Turso connection"
+                    .to_string(),
+            ));
+        }
+        // Turso Cloud always issues a token with the database. A blank one is
+        // an unfilled form rather than an unauthenticated server, and letting
+        // it through would store an empty string in the keychain that reads
+        // like a real secret.
+        if auth_token.trim().is_empty() {
+            return Err(DbError::Connection(
+                "a remote Turso connection needs an auth token".to_string(),
+            ));
+        }
+
+        let db = libsql::Builder::new_remote(url.to_string(), auth_token.to_string())
+            .build()
+            .await
+            .map_err(|e| DbError::Connection(redact_token(e.to_string(), auth_token)))?;
+        let conn = db
+            .connect()
+            .map_err(|e| DbError::Connection(redact_token(e.to_string(), auth_token)))?;
+        let read_only = probe_read_only_enforcement(&conn)
+            .await
+            .map_err(|e| DbError::Connection(redact_token(e.to_string(), auth_token)))?;
+        Ok(Self {
+            conn,
+            _db: db,
+            read_only,
+        })
+    }
+
+    /// How this connection's read-only guarantee is enforced, as established
+    /// at connect time.
+    #[must_use]
+    pub fn read_only_enforcement(&self) -> ReadOnlyEnforcement {
+        self.read_only
+    }
+
+    /// Force the enforcement mode, so the classifier-only path can be tested
+    /// against a real engine without standing up a remote server.
+    #[cfg(test)]
+    fn with_read_only(mut self, mode: ReadOnlyEnforcement) -> Self {
+        self.read_only = mode;
+        self
     }
 
     /// Group raw `PRAGMA foreign_key_list` rows into composite
@@ -174,6 +271,18 @@ impl DatabaseAdapter for TursoAdapter {
         // grammar (also rejects the `SELECT 1; DELETE …` multi-statement
         // batch the bare `query` router would mis-handle).
         check_read_only(sql, SqlDialect::Sqlite)?;
+
+        // On an engine that does not honour `query_only`, the belt above is
+        // the whole guarantee — the position the D1 adapter is already in and
+        // documents. Setting the pragma anyway would be worse than skipping
+        // it: an engine that accepts the statement and ignores the flag gives
+        // no protection while still risking a failed reset that strands the
+        // handle read-only.
+        if self.read_only == ReadOnlyEnforcement::Classifier {
+            let mut result = run_select_capped(&self.conn, sql, max_rows).await?;
+            result.truncate_rows(max_rows);
+            return Ok(result);
+        }
 
         // Braces: SQLite's own `query_only` makes the *engine* reject any
         // write for the duration, covering anything the parser's grammar
@@ -418,6 +527,80 @@ async fn run_select(conn: &libsql::Connection, sql: &str) -> DbResult<QueryResul
     })
 }
 
+/// Whether `url` names a remote libSQL endpoint rather than a local file.
+///
+/// `libsql://` is what Turso Cloud hands out; the other three are what a
+/// self-hosted `sqld` may be reached on. Anything else — a bare path, a
+/// `file:` URL, `:memory:` — is a local database and belongs to
+/// [`TursoAdapter::connect_local`].
+fn is_remote_url(url: &str) -> bool {
+    const REMOTE_SCHEMES: [&str; 5] = ["libsql://", "https://", "http://", "wss://", "ws://"];
+    REMOTE_SCHEMES.iter().any(|scheme| url.starts_with(scheme))
+}
+
+/// Scrub an auth token out of a message before it is surfaced.
+///
+/// The same shape as [`redact_path`] and for the same reason: libsql echoes
+/// what it was given, and here what it was given is a credential.
+fn redact_token(message: String, token: &str) -> String {
+    if token.is_empty() {
+        return message;
+    }
+    message.replace(token, "<token>")
+}
+
+/// Ask the engine whether it honours `PRAGMA query_only`, and whether the
+/// answer persists from one statement to the next.
+///
+/// Both halves matter. A hosted engine may accept the statement and discard
+/// the flag — each request served by a fresh session — in which case the
+/// pragma reads as working while protecting nothing. So this sets it, reads
+/// it back in a *separate* statement, and clears it again.
+///
+/// The probe is deliberately read-only: it never creates or writes anything
+/// to find out, because it runs against the operator's production database.
+///
+/// # Errors
+///
+/// Returns [`DbError::Connection`] only when the flag was set and could not
+/// be cleared again. That handle would refuse every later write with no
+/// obvious cause, so failing at connect is the honest outcome.
+async fn probe_read_only_enforcement(conn: &libsql::Connection) -> DbResult<ReadOnlyEnforcement> {
+    if set_query_only(conn, true).await.is_err() {
+        return Ok(ReadOnlyEnforcement::Classifier);
+    }
+    let held = read_query_only(conn).await.unwrap_or(false);
+    set_query_only(conn, false).await.map_err(|e| {
+        DbError::Connection(format!(
+            "the connection was left read-only by the read-only probe and \
+             cannot be used: {e}"
+        ))
+    })?;
+    if held {
+        Ok(ReadOnlyEnforcement::Engine)
+    } else {
+        Ok(ReadOnlyEnforcement::Classifier)
+    }
+}
+
+/// Read back SQLite's `query_only` flag. A getter PRAGMA returns one row of
+/// one integer column.
+async fn read_query_only(conn: &libsql::Connection) -> DbResult<bool> {
+    let mut rows = conn
+        .query("PRAGMA query_only", ())
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
+    let row = rows
+        .next()
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?
+        .ok_or_else(|| DbError::Query("PRAGMA query_only returned no rows".to_string()))?;
+    let value = row
+        .get_value(0)
+        .map_err(|e| DbError::Query(e.to_string()))?;
+    Ok(matches!(convert_value(value), Value::Integer(n) if n != 0))
+}
+
 /// Toggle SQLite's `query_only` PRAGMA on the connection. While ON, the
 /// engine rejects every write with `SQLITE_READONLY` — the engine-level
 /// half of [`TursoAdapter::query_read_only`]'s read-only guarantee.
@@ -565,7 +748,9 @@ fn format_column_type(t: libsql::ValueType) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_value, is_row_returning, redact_path, TursoAdapter, Value};
+    use super::{
+        convert_value, is_row_returning, redact_path, ReadOnlyEnforcement, TursoAdapter, Value,
+    };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo};
 
     /// Open an in-memory adapter seeded with a `t(id INTEGER, label TEXT)`
@@ -654,6 +839,111 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row_count(&adapter).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_local_connection_enforces_read_only_at_the_engine() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        // Not an assumption: `connect_local` probes the pragma and reads it
+        // back, so this asserts the probe agrees with SQLite rather than
+        // asserting what the code hard-codes.
+        assert_eq!(
+            adapter.read_only_enforcement(),
+            ReadOnlyEnforcement::Engine,
+            "a local libSQL file honours PRAGMA query_only"
+        );
+    }
+
+    #[tokio::test]
+    async fn classifier_only_read_only_still_rejects_a_write() {
+        // Stands in for a remote engine that does not honour `query_only`.
+        // The classifier is then the whole guarantee, so it has to hold on
+        // its own — that is the case worth a test, not the belt-and-braces one.
+        let adapter = seeded(3)
+            .await
+            .with_read_only(ReadOnlyEnforcement::Classifier);
+        let err = adapter
+            .query_read_only("DELETE FROM t", 100)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+        assert_eq!(row_count(&adapter).await, 3, "the DELETE must not have run");
+    }
+
+    #[tokio::test]
+    async fn classifier_only_read_only_rejects_a_write_hidden_behind_a_select() {
+        let adapter = seeded(2)
+            .await
+            .with_read_only(ReadOnlyEnforcement::Classifier);
+        let err = adapter
+            .query_read_only("SELECT 1; DELETE FROM t", 100)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Query(_)));
+        assert_eq!(row_count(&adapter).await, 2);
+    }
+
+    #[tokio::test]
+    async fn classifier_only_read_only_returns_rows_and_truncates() {
+        let adapter = seeded(5)
+            .await
+            .with_read_only(ReadOnlyEnforcement::Classifier);
+        let result = adapter
+            .query_read_only("SELECT id, label FROM t ORDER BY id", 3)
+            .await
+            .unwrap();
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(result.rows[0].get(0), Some(&Value::Integer(0)));
+    }
+
+    #[tokio::test]
+    async fn classifier_only_read_only_never_touches_the_pragma() {
+        // The fallback path must not set `query_only` at all: on an engine
+        // that accepts the write but ignores the flag, a failed reset would
+        // leave the handle read-only for every later write with no error to
+        // point at.
+        let adapter = seeded(1)
+            .await
+            .with_read_only(ReadOnlyEnforcement::Classifier);
+        adapter
+            .query_read_only("SELECT * FROM t", 100)
+            .await
+            .unwrap();
+        adapter
+            .query("INSERT INTO t (id, label) VALUES (7, 'after')")
+            .await
+            .unwrap();
+        assert_eq!(row_count(&adapter).await, 2);
+    }
+
+    #[tokio::test]
+    async fn connect_remote_refuses_a_url_that_is_not_a_remote_endpoint() {
+        // A filesystem path here is a mis-filed connection, and letting it
+        // through would send the operator's local data at a remote client.
+        // `TursoAdapter` is not `Debug` (it holds a libSQL handle), so the
+        // result is taken apart by hand rather than with `unwrap_err`.
+        let Err(DbError::Connection(message)) =
+            TursoAdapter::connect_remote("./local.db", "secret-token").await
+        else {
+            panic!("a filesystem path must not be accepted as a remote URL");
+        };
+        assert!(
+            !message.contains("secret-token"),
+            "the auth token leaked into an error message: {message}"
+        );
+        assert!(
+            message.contains("libsql://"),
+            "the message should say what a remote URL looks like: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_remote_refuses_a_blank_auth_token() {
+        let result = TursoAdapter::connect_remote("libsql://db.turso.io", "   ").await;
+        assert!(
+            matches!(result, Err(DbError::Connection(_))),
+            "a blank token is an unfilled form, not an unauthenticated server"
+        );
     }
 
     #[test]

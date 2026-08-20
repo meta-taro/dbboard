@@ -108,6 +108,13 @@ pub enum ConnectionKindDraft {
     Turso {
         path: String,
     },
+    /// Turso Cloud, or any other libSQL endpoint reached over the network
+    /// (ADR-0111). The URL is not a secret and is stored inline; only the auth
+    /// token reaches the keychain, the same split D1 makes.
+    TursoRemote {
+        url: String,
+        token: String,
+    },
     D1 {
         account_id: String,
         database_id: String,
@@ -247,6 +254,13 @@ pub enum ConnectionKindEditDraft {
     Turso {
         path: String,
     },
+    /// Remote Turso (ADR-0111). Two states are enough for the token, as for
+    /// D1's: a remote connection always has one, so there is no third "no
+    /// credential" state to express.
+    TursoRemote {
+        url: String,
+        token: SecretField,
+    },
     D1 {
         account_id: String,
         database_id: String,
@@ -338,12 +352,60 @@ pub enum ImportMode {
     Overwrite,
 }
 
-/// Outcome of [`ConnectionAdmin::import_bundle`] (ADR-0038, ADR-0105).
+/// One bundle entry the import refused because a `keyring_*_ref` it carries
+/// belongs to a **different** connection already in the store (ADR-0038).
 ///
-/// The three lists partition the bundle's entries, and each preserves the
+/// Carries both sides of the collision because neither alone is actionable:
+/// the refused id is absent from the store afterwards, so an operator who is
+/// told only the id finds nothing wherever they look and reads the import as
+/// broken. Naming the slot and its owner is what turns the message into a
+/// description of a deliberate refusal (ADR-0112).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedEntry {
+    /// The bundle entry's id. It was not added to the store.
+    pub id: String,
+    /// The `keyring_*_ref` the entry carried.
+    pub key_ref: String,
+    /// The id of the connection in this store that owns `key_ref`.
+    pub owner: String,
+}
+
+/// One entry in **this** store that carries a `keyring_*_ref` derived from a
+/// different connection's id (issue #194).
+///
+/// A ref is minted in exactly one place — `keyring_ref(id, field)` — and
+/// [`ConnectionAdmin::update`] writes the id straight back, so a connection's
+/// id never changes and there is no rename path. An entry whose ref does not
+/// derive from its own id therefore did not come from this program's own CRUD:
+/// it was hand-edited into `connections.toml`, or imported before ADR-0038.
+///
+/// Because the ref carries its owner by construction, this is decidable from
+/// the entry alone, with no lookup against the store. That is strictly
+/// stronger than the import-side ADR-0038 check, which can only fire when the
+/// receiving machine happens to hold the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignRef {
+    /// The offending entry's id.
+    pub id: String,
+    /// The `keyring_*_ref` it carries.
+    pub key_ref: String,
+    /// The id the ref was minted for, read out of `key_ref` itself.
+    pub owner: String,
+}
+
+/// Outcome of [`ConnectionAdmin::import_bundle`] (ADR-0038, ADR-0105,
+/// ADR-0112).
+///
+/// The five lists partition the bundle's entries, and each preserves the
 /// order in which the bundle presented them, so the UI can name exactly
-/// which connections were added, which were replaced, and which were left
-/// untouched.
+/// which connections were added, which were replaced, and — separately for
+/// each reason — which were not.
+///
+/// The three not-imported reasons are kept apart rather than merged into one
+/// `skipped` list because only one of them ("already present") is true of the
+/// others, and only one of them ("already present") is fixed by re-importing
+/// with [`ImportMode::Overwrite`]. A single list forces one message onto all
+/// three, which makes it false for two of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportReport {
     /// Ids added to the store by this import.
@@ -351,11 +413,17 @@ pub struct ImportReport {
     /// Ids that replaced an existing entry of the same id
     /// ([`ImportMode::Overwrite`] only).
     pub overwritten: Vec<String>,
-    /// Ids present in the bundle but skipped: an entry with the same id
-    /// already existed and the mode was [`ImportMode::Skip`], the bundle
-    /// listed the id twice, or the entry's ref aimed at another
-    /// connection's keychain slot.
-    pub skipped: Vec<String>,
+    /// Ids left alone because the store already held a connection of that id
+    /// and the mode was [`ImportMode::Skip`]. Re-importing with
+    /// [`ImportMode::Overwrite`] replaces these.
+    pub skipped_existing: Vec<String>,
+    /// Ids the bundle listed more than once. The first occurrence was taken;
+    /// each later one is reported here. The mode makes no difference.
+    pub duplicate_in_bundle: Vec<String>,
+    /// Entries refused by the ADR-0038 ref-ownership check. The mode makes no
+    /// difference: overwrite may replace the entry that owns an id, never a
+    /// third connection's secret.
+    pub refused: Vec<RefusedEntry>,
 }
 
 /// Owns the on-disk TOML file plus an [`Arc<dyn SecretStore>`] handle
@@ -775,6 +843,67 @@ impl ConnectionAdmin {
         self.encrypt_selection(&selected, passphrase)
     }
 
+    /// List every entry in the store carrying a keyring slot that belongs to a
+    /// different connection (issue #194). Empty for a healthy store.
+    ///
+    /// Intended as a warning alongside an export, not a gate on it: an
+    /// operator whose store is already in this state still needs a backup.
+    #[must_use]
+    pub fn foreign_refs(&self) -> Vec<ForeignRef> {
+        let all: Vec<&ConnectionEntry> = self.file.connections.iter().collect();
+        Self::foreign_refs_in(&all)
+    }
+
+    /// [`ConnectionAdmin::foreign_refs`] restricted to the connections named
+    /// in `ids`, so an export warns about exactly what it is about to write.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::NotFound`] if an id names no entry. Same contract as
+    /// [`ConnectionAdmin::export_bundle_of`]: a caller working from a stale
+    /// view must not be told "nothing wrong here" about a connection that is
+    /// not there.
+    pub fn foreign_refs_of(&self, ids: &[String]) -> Result<Vec<ForeignRef>, ConfigError> {
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        for id in ids {
+            if self.find_index(id).is_none() {
+                return Err(ConfigError::NotFound(id.clone()));
+            }
+        }
+        let selected: Vec<&ConnectionEntry> = self
+            .file
+            .connections
+            .iter()
+            .filter(|e| wanted.contains(e.id.as_str()))
+            .collect();
+        Ok(Self::foreign_refs_in(&selected))
+    }
+
+    /// Shared by both inspection entry points so the selective path cannot
+    /// drift from the whole-store one, exactly as `encrypt_selection` is
+    /// shared by the two export paths.
+    fn foreign_refs_in(entries: &[&ConnectionEntry]) -> Vec<ForeignRef> {
+        let mut found = Vec::new();
+        for entry in entries {
+            for key_ref in entry_keyring_refs(entry) {
+                let Some(owner) = ref_owner(&key_ref) else {
+                    // A ref of some other shape carries no owner to name. It
+                    // is a different malformation, deliberately out of scope:
+                    // saying it "belongs to" someone would be an invention.
+                    continue;
+                };
+                if owner != entry.id {
+                    found.push(ForeignRef {
+                        id: entry.id.clone(),
+                        owner: owner.to_string(),
+                        key_ref,
+                    });
+                }
+            }
+        }
+        found
+    }
+
     /// Resolve every ref on `entries` and seal them into a bundle blob.
     /// Shared by both export entry points so the selective path cannot
     /// drift from the whole-store one.
@@ -876,22 +1005,31 @@ impl ConnectionAdmin {
 
         for entry in incoming {
             if accepted.contains(&entry.id) {
-                report.skipped.push(entry.id);
+                report.duplicate_in_bundle.push(entry.id);
                 continue;
             }
             let slot = self.find_index(&entry.id);
             if slot.is_some() && mode == ImportMode::Skip {
-                report.skipped.push(entry.id);
+                report.skipped_existing.push(entry.id);
                 continue;
             }
             let refs = entry_keyring_refs(&entry);
-            if refs
-                .iter()
-                .any(|r| ref_owners.get(r).is_some_and(|owner| owner != &entry.id))
-            {
-                // Ref collides with a slot another connection owns; refuse
-                // rather than overwrite that connection's secret.
-                report.skipped.push(entry.id);
+            // Ref collides with a slot another connection owns; refuse rather
+            // than overwrite that connection's secret. Report the owner along
+            // with the ref: without it the entry is simply missing afterwards,
+            // with no way to tell a refusal from a failed import (ADR-0112).
+            let collision = refs.iter().find_map(|r| {
+                ref_owners
+                    .get(r)
+                    .filter(|owner| *owner != &entry.id)
+                    .map(|owner| (r.clone(), owner.clone()))
+            });
+            if let Some((key_ref, owner)) = collision {
+                report.refused.push(RefusedEntry {
+                    id: entry.id,
+                    key_ref,
+                    owner,
+                });
                 continue;
             }
             for key_ref in refs {
@@ -1014,21 +1152,25 @@ impl ConnectionAdmin {
         Ok(())
     }
 
-    /// The URL-backed kinds again (see `url_backed_add`): commit the secret only
-    /// when it was retyped, then rebuild the variant around the ref it already
-    /// had. The ref is never re-minted on edit — a new one would orphan the
-    /// keychain entry the connection is still pointing at.
-    fn apply_url_edit(
+    /// The single-secret kinds again (see `secret_backed_add`): commit the
+    /// secret only when it was retyped, then rebuild the variant around the ref
+    /// it already had.
+    ///
+    /// The ref is never re-minted on edit — a new one would orphan the keychain
+    /// entry the connection is still pointing at. Which field the ref names
+    /// (`url`, `token`, …) makes no difference here; blank-means-keep is the
+    /// same rule either way (ADR-0016).
+    fn apply_secret_edit(
         &self,
-        keyring_url_ref: &str,
-        url: SecretField,
+        keyring_ref: &str,
+        secret: SecretField,
         applied: &mut Vec<AppliedSecretWrite>,
         build: impl FnOnce(String) -> ConnectionKind,
     ) -> Result<ConnectionKind, ConfigError> {
-        if let SecretField::Set(new_value) = url {
-            self.apply_secret_write(keyring_url_ref, &new_value, applied)?;
+        if let SecretField::Set(new_value) = secret {
+            self.apply_secret_write(keyring_ref, &new_value, applied)?;
         }
-        Ok(build(keyring_url_ref.to_string()))
+        Ok(build(keyring_ref.to_string()))
     }
 
     fn apply_update_kind(
@@ -1044,52 +1186,51 @@ impl ConnectionAdmin {
                 ConnectionKind::Turso { path }
             }
             (
+                ConnectionKind::TursoRemote {
+                    keyring_token_ref, ..
+                },
+                ConnectionKindEditDraft::TursoRemote { url, token },
+            ) => self.apply_secret_edit(
+                keyring_token_ref,
+                token,
+                &mut applied,
+                |keyring_token_ref| ConnectionKind::TursoRemote {
+                    url,
+                    keyring_token_ref,
+                },
+            )?,
+            (
                 ConnectionKind::D1 {
                     keyring_token_ref, ..
                 },
-                ConnectionKindEditDraft::D1 {
-                    account_id,
-                    database_id,
-                    base_url,
-                    token,
-                },
-            ) => {
-                if let SecretField::Set(new_value) = token {
-                    self.apply_secret_write(keyring_token_ref, &new_value, &mut applied)?;
-                }
-                ConnectionKind::D1 {
-                    account_id,
-                    database_id,
-                    base_url,
-                    keyring_token_ref: keyring_token_ref.clone(),
-                }
-            }
+                draft @ ConnectionKindEditDraft::D1 { .. },
+            ) => self.apply_d1_edit(id, keyring_token_ref, draft, &mut applied)?,
             (
                 ConnectionKind::Postgres { keyring_url_ref },
                 ConnectionKindEditDraft::Postgres { url },
-            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+            ) => self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                 ConnectionKind::Postgres { keyring_url_ref }
             })?,
             (ConnectionKind::MySql { keyring_url_ref }, ConnectionKindEditDraft::MySql { url }) => {
-                self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                     ConnectionKind::MySql { keyring_url_ref }
                 })?
             }
             (ConnectionKind::Neon { keyring_url_ref }, ConnectionKindEditDraft::Neon { url }) => {
-                self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+                self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                     ConnectionKind::Neon { keyring_url_ref }
                 })?
             }
             (
                 ConnectionKind::Supabase { keyring_url_ref },
                 ConnectionKindEditDraft::Supabase { url },
-            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+            ) => self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                 ConnectionKind::Supabase { keyring_url_ref }
             })?,
             (
                 ConnectionKind::AuroraDsql { keyring_url_ref },
                 ConnectionKindEditDraft::AuroraDsql { url },
-            ) => self.apply_url_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
+            ) => self.apply_secret_edit(keyring_url_ref, url, &mut applied, |keyring_url_ref| {
                 ConnectionKind::AuroraDsql { keyring_url_ref }
             })?,
             (
@@ -1118,7 +1259,7 @@ impl ConnectionAdmin {
                     keyring_url_ref, ..
                 },
                 ConnectionKindEditDraft::MongoDb { uri, database },
-            ) => self.apply_url_edit(keyring_url_ref, uri, &mut applied, |keyring_url_ref| {
+            ) => self.apply_secret_edit(keyring_url_ref, uri, &mut applied, |keyring_url_ref| {
                 ConnectionKind::MongoDb {
                     keyring_url_ref,
                     database,
@@ -1130,6 +1271,36 @@ impl ConnectionAdmin {
         };
 
         Ok((new_kind, applied))
+    }
+
+    /// The D1 arm of [`Self::apply_update_kind`], lifted out for length alone:
+    /// three plain fields alongside the token make it too long to sit inline
+    /// without pushing the match past clippy's function-length limit.
+    fn apply_d1_edit(
+        &self,
+        id: &str,
+        existing_ref: &str,
+        draft: ConnectionKindEditDraft,
+        applied: &mut Vec<AppliedSecretWrite>,
+    ) -> Result<ConnectionKind, ConfigError> {
+        let ConnectionKindEditDraft::D1 {
+            account_id,
+            database_id,
+            base_url,
+            token,
+        } = draft
+        else {
+            return Err(ConfigError::KindMismatch { id: id.to_string() });
+        };
+
+        self.apply_secret_edit(existing_ref, token, applied, |keyring_token_ref| {
+            ConnectionKind::D1 {
+                account_id,
+                database_id,
+                base_url,
+                keyring_token_ref,
+            }
+        })
     }
 
     /// The Aurora DSQL (IAM) arm of [`Self::apply_update_kind`], lifted out for
@@ -1386,6 +1557,19 @@ fn keyring_ref(id: &str, field: &str) -> String {
     format!("dbboard.{id}.{field}")
 }
 
+/// Read back the id a ref was minted for — the inverse of [`keyring_ref`].
+/// `None` if `key_ref` is not of that shape at all.
+///
+/// Splits the field off from the **right**, because an id may contain dots
+/// while a field name never does (they are the `*_FIELD` consts below, plus
+/// the fixed `url` / `token`). Splitting from the left would read
+/// `dbboard.my.db.url` as owner `my`.
+fn ref_owner(key_ref: &str) -> Option<&str> {
+    let rest = key_ref.strip_prefix("dbboard.")?;
+    let (owner, _field) = rest.rsplit_once('.')?;
+    (!owner.is_empty()).then_some(owner)
+}
+
 /// Keyring field names for the two SSH secrets. Kept as consts so the add and
 /// update paths derive the exact same ref for a given id.
 const SSH_PASSPHRASE_FIELD: &str = "ssh_passphrase";
@@ -1473,7 +1657,7 @@ fn zeroize_secret_writes(writes: &mut [(String, String)]) {
 }
 
 /// Enumerate every keyring ref that a given [`ConnectionKind`] points
-/// at. `Turso` has none; `D1`, `Postgres`, `MySql`, `Neon`, `Supabase`,
+/// at. `Turso` has none; `TursoRemote`, `D1`, `Postgres`, `MySql`, `Neon`, `Supabase`,
 /// and `AuroraDsql` each carry exactly one; `AuroraDsqlIam` carries its
 /// AWS secret-key ref (its other fields are non-secret and live inline);
 /// `Firestore` carries one only when it is not pointed at the emulator;
@@ -1482,7 +1666,10 @@ fn zeroize_secret_writes(writes: &mut [(String, String)]) {
 fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
     match kind {
         ConnectionKind::Turso { .. } => Vec::new(),
-        ConnectionKind::D1 {
+        ConnectionKind::TursoRemote {
+            keyring_token_ref, ..
+        }
+        | ConnectionKind::D1 {
             keyring_token_ref, ..
         } => vec![keyring_token_ref.clone()],
         ConnectionKind::Postgres { keyring_url_ref }
@@ -1520,21 +1707,30 @@ struct AppliedSecretWrite {
     old_value: Option<String>,
 }
 
-/// The URL-backed kinds differ only in which variant they build: the secret is
-/// one string under the `url` ref, and the stored kind holds nothing but that
-/// ref. Sharing the body keeps them from drifting apart one paste at a time.
+/// Most kinds carry exactly one secret: mint a ref for it, build the variant
+/// around that ref, and queue the single write. Only the field name and the
+/// variant differ, so sharing the body keeps them from drifting apart one paste
+/// at a time.
+fn secret_backed_add(
+    id: &str,
+    field: &str,
+    value: String,
+    build: impl FnOnce(String) -> ConnectionKind,
+) -> (ConnectionKind, Vec<PendingSecretWrite>) {
+    let key_ref = keyring_ref(id, field);
+    let kind = build(key_ref.clone());
+    let writes = vec![PendingSecretWrite { key_ref, value }];
+    (kind, writes)
+}
+
+/// [`secret_backed_add`] for the kinds whose whole configuration *is* the URL:
+/// the stored variant holds nothing but the ref.
 fn url_backed_add(
     id: &str,
     url: String,
     build: impl FnOnce(String) -> ConnectionKind,
 ) -> (ConnectionKind, Vec<PendingSecretWrite>) {
-    let url_ref = keyring_ref(id, "url");
-    let kind = build(url_ref.clone());
-    let writes = vec![PendingSecretWrite {
-        key_ref: url_ref,
-        value: url,
-    }];
-    (kind, writes)
+    secret_backed_add(id, "url", url, build)
 }
 
 fn build_kind_for_add(
@@ -1543,25 +1739,25 @@ fn build_kind_for_add(
 ) -> (ConnectionKind, Vec<PendingSecretWrite>) {
     match draft {
         ConnectionKindDraft::Turso { path } => (ConnectionKind::Turso { path }, Vec::new()),
+        ConnectionKindDraft::TursoRemote { url, token } => {
+            secret_backed_add(id, "token", token, |keyring_token_ref| {
+                ConnectionKind::TursoRemote {
+                    url,
+                    keyring_token_ref,
+                }
+            })
+        }
         ConnectionKindDraft::D1 {
             account_id,
             database_id,
             base_url,
             token,
-        } => {
-            let token_ref = keyring_ref(id, "token");
-            let kind = ConnectionKind::D1 {
-                account_id,
-                database_id,
-                base_url,
-                keyring_token_ref: token_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: token_ref,
-                value: token,
-            }];
-            (kind, writes)
-        }
+        } => secret_backed_add(id, "token", token, |keyring_token_ref| ConnectionKind::D1 {
+            account_id,
+            database_id,
+            base_url,
+            keyring_token_ref,
+        }),
         ConnectionKindDraft::Postgres { url } => url_backed_add(id, url, |keyring_url_ref| {
             ConnectionKind::Postgres { keyring_url_ref }
         }),
@@ -1584,22 +1780,19 @@ fn build_kind_for_add(
             username,
             access_key_id,
             secret_access_key,
-        } => {
-            let secret_ref = keyring_ref(id, AURORA_DSQL_IAM_SECRET_KEY_FIELD);
-            let kind = ConnectionKind::AuroraDsqlIam {
+        } => secret_backed_add(
+            id,
+            AURORA_DSQL_IAM_SECRET_KEY_FIELD,
+            secret_access_key,
+            |keyring_secret_key_ref| ConnectionKind::AuroraDsqlIam {
                 endpoint,
                 region,
                 database,
                 username,
                 access_key_id,
-                keyring_secret_key_ref: secret_ref.clone(),
-            };
-            let writes = vec![PendingSecretWrite {
-                key_ref: secret_ref,
-                value: secret_access_key,
-            }];
-            (kind, writes)
-        }
+                keyring_secret_key_ref,
+            },
+        ),
         ConnectionKindDraft::Firestore {
             project_id,
             database_id,
@@ -1658,6 +1851,20 @@ mod tests {
             name: name.to_string(),
             kind: ConnectionKindDraft::Turso {
                 path: path.to_string(),
+            },
+        }
+    }
+
+    fn remote_turso_draft(id: &str, url: &str) -> ConnectionDraft {
+        ConnectionDraft {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("Turso Cloud {id}"),
+            kind: ConnectionKindDraft::TursoRemote {
+                url: url.to_string(),
+                token: "t0k3n".to_string(),
             },
         }
     }
@@ -2148,6 +2355,70 @@ mod tests {
         // Turso has no secret fields, so the keyring stays empty.
         assert!(matches!(
             secrets.get("dbboard.local.token"),
+            Err(SecretError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn add_remote_turso_keeps_the_url_inline_and_the_token_in_the_keychain() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(remote_turso_draft("cloud", "libsql://demo-acme.turso.io"))
+            .expect("add remote turso");
+        match &admin.entries()[0].kind {
+            ConnectionKind::TursoRemote {
+                url,
+                keyring_token_ref,
+            } => {
+                assert_eq!(url, "libsql://demo-acme.turso.io");
+                assert_eq!(keyring_token_ref, "dbboard.cloud.token");
+            }
+            other => panic!("expected TursoRemote, got {other:?}"),
+        }
+        assert_eq!(secrets.get("dbboard.cloud.token").expect("token"), "t0k3n");
+    }
+
+    #[test]
+    fn update_remote_turso_can_change_the_url_without_retyping_the_token() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(remote_turso_draft("cloud", "libsql://old.turso.io"))
+            .expect("add remote turso");
+        admin
+            .update(
+                "cloud",
+                ConnectionEditDraft {
+                    mcp_alias: None,
+                    mcp_write: None,
+                    ssh: SshEditField::Keep,
+                    name: "Turso Cloud".to_string(),
+                    kind: ConnectionKindEditDraft::TursoRemote {
+                        url: "libsql://new.turso.io".to_string(),
+                        token: SecretField::Keep,
+                    },
+                },
+            )
+            .expect("update remote turso");
+        match &admin.entries()[0].kind {
+            ConnectionKind::TursoRemote { url, .. } => {
+                assert_eq!(url, "libsql://new.turso.io");
+            }
+            other => panic!("expected TursoRemote, got {other:?}"),
+        }
+        // `Keep` means the keychain is not touched at all — the point of the
+        // two-state field is that a URL rotation does not cost a credential.
+        assert_eq!(secrets.get("dbboard.cloud.token").expect("token"), "t0k3n");
+    }
+
+    #[test]
+    fn delete_remote_turso_purges_its_token() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(remote_turso_draft("cloud", "libsql://demo-acme.turso.io"))
+            .expect("add remote turso");
+        admin.delete("cloud").expect("delete");
+        assert!(matches!(
+            secrets.get("dbboard.cloud.token"),
             Err(SecretError::NotFound(_))
         ));
     }
@@ -3386,7 +3657,7 @@ mod tests {
             .expect("import");
 
         assert_eq!(report.imported, vec!["store-a", "store-c", "local"]);
-        assert!(report.skipped.is_empty());
+        assert!(report.skipped_existing.is_empty());
         assert_eq!(target.entries().len(), 3);
         // Secret-bearing entries are seeded into the target keychain.
         assert_eq!(
@@ -3431,7 +3702,7 @@ mod tests {
             .expect("import");
 
         // The conflict is reported, the two fresh ids are imported.
-        assert_eq!(report.skipped, vec!["store-a"]);
+        assert_eq!(report.skipped_existing, vec!["store-a"]);
         assert_eq!(report.imported, vec!["store-c", "local"]);
         assert_eq!(target.entries().len(), 3);
         // The pre-existing secret was NOT overwritten by the bundle's.
@@ -3457,7 +3728,7 @@ mod tests {
             .expect("second import");
 
         assert!(report.imported.is_empty());
-        assert_eq!(report.skipped, vec!["store-a", "store-c", "local"]);
+        assert_eq!(report.skipped_existing, vec!["store-a", "store-c", "local"]);
         assert_eq!(target.entries().len(), 3);
     }
 
@@ -3520,8 +3791,17 @@ mod tests {
             .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
             .expect("import");
 
-        // The crafted entry is refused, not imported.
-        assert_eq!(report.skipped, vec!["attacker"]);
+        // The crafted entry is refused, not imported, and the report says
+        // which slot it aimed at and who owns it.
+        assert_eq!(
+            report.refused,
+            vec![RefusedEntry {
+                id: "attacker".to_string(),
+                key_ref: "dbboard.victim.url".to_string(),
+                owner: "victim".to_string(),
+            }]
+        );
+        assert!(report.skipped_existing.is_empty());
         assert!(report.imported.is_empty());
         assert_eq!(target.entries().len(), 1);
         // The victim's secret is intact — never overwritten by the bundle.
@@ -3655,6 +3935,163 @@ mod tests {
         assert!(matches!(err, ConfigError::EmptySelection), "got {err:?}");
     }
 
+    /// A store in the state `add` cannot produce: `beta` carries a slot
+    /// derived from `alpha`'s id. Only a hand-edited `connections.toml` or an
+    /// import predating ADR-0038 gets here, which is the whole reason export
+    /// has to look for it (issue #194).
+    fn store_with_a_foreign_ref() -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin)
+    {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        secrets
+            .set("dbboard.alpha.url", "postgres://a@example.test/db")
+            .expect("seed alpha url");
+
+        let mut file = ConnectionFile::empty();
+        for id in ["alpha", "beta"] {
+            file.connections.push(ConnectionEntry {
+                mcp_alias: None,
+                mcp_write: false,
+                ssh: None,
+                id: id.to_string(),
+                name: id.to_string(),
+                // Both name alpha's slot. For alpha that is correct; for beta
+                // it is the malformation.
+                kind: ConnectionKind::Supabase {
+                    keyring_url_ref: "dbboard.alpha.url".to_string(),
+                },
+            });
+        }
+        let admin =
+            ConnectionAdmin::new_with_file(path, secrets.clone() as Arc<dyn SecretStore>, file);
+        (dir, secrets, admin)
+    }
+
+    #[test]
+    fn a_foreign_ref_is_reported_with_the_entry_the_slot_and_its_owner() {
+        let (_dir, _secrets, admin) = store_with_a_foreign_ref();
+
+        assert_eq!(
+            admin.foreign_refs(),
+            vec![ForeignRef {
+                id: "beta".to_string(),
+                key_ref: "dbboard.alpha.url".to_string(),
+                owner: "alpha".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_store_whose_refs_are_all_its_own_reports_nothing() {
+        let (_dir, _secrets, admin) = three_connection_admin();
+        assert_eq!(admin.foreign_refs(), Vec::new());
+    }
+
+    #[test]
+    fn a_foreign_ref_is_reported_even_when_the_owner_is_not_in_the_store() {
+        // This is what makes the export-side check stronger than the
+        // import-side one: the owner is read out of the ref, which carries it
+        // by construction, so no store lookup is involved. The import check
+        // can only fire when the target machine happens to hold the owner.
+        let dir = tempdir().expect("tempdir");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let mut file = ConnectionFile::empty();
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "beta".to_string(),
+            name: "Beta".to_string(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "dbboard.alpha.url".to_string(),
+            },
+        });
+        let admin = ConnectionAdmin::new_with_file(
+            dir.path().join("connections.toml"),
+            secrets as Arc<dyn SecretStore>,
+            file,
+        );
+
+        assert_eq!(
+            admin.foreign_refs(),
+            vec![ForeignRef {
+                id: "beta".to_string(),
+                key_ref: "dbboard.alpha.url".to_string(),
+                owner: "alpha".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_ref_that_names_no_owner_is_left_alone() {
+        // `dbboard.{owner}.{field}` is the only shape that carries an owner.
+        // Anything else is a different malformation, and claiming it "belongs
+        // to" someone would be an invention.
+        let dir = tempdir().expect("tempdir");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let mut file = ConnectionFile::empty();
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "beta".to_string(),
+            name: "Beta".to_string(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "legacy-url".to_string(),
+            },
+        });
+        let admin = ConnectionAdmin::new_with_file(
+            dir.path().join("connections.toml"),
+            secrets as Arc<dyn SecretStore>,
+            file,
+        );
+
+        assert_eq!(admin.foreign_refs(), Vec::new());
+    }
+
+    #[test]
+    fn foreign_refs_of_looks_only_at_the_named_connections() {
+        let (_dir, _secrets, admin) = store_with_a_foreign_ref();
+
+        // Exporting alpha alone is a clean export; nothing to warn about.
+        assert_eq!(
+            admin
+                .foreign_refs_of(&["alpha".to_string()])
+                .expect("alpha exists"),
+            Vec::new()
+        );
+        assert_eq!(
+            admin
+                .foreign_refs_of(&["beta".to_string()])
+                .expect("beta exists")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn foreign_refs_of_an_unknown_id_is_not_found() {
+        // Same contract as `export_bundle_of`, so the caller cannot be told
+        // "nothing wrong here" about a connection that is not there.
+        let (_dir, _secrets, admin) = store_with_a_foreign_ref();
+        let err = admin
+            .foreign_refs_of(&["nope".to_string()])
+            .expect_err("must fail");
+        assert!(matches!(err, ConfigError::NotFound(id) if id == "nope"));
+    }
+
+    #[test]
+    fn export_still_produces_a_bundle_when_a_ref_is_foreign() {
+        // Warn, do not refuse. An operator whose store is already in this
+        // state still needs a backup, and blocking the export is the one
+        // outcome that leaves them worse off than before.
+        let (_dir, _secrets, admin) = store_with_a_foreign_ref();
+
+        let blob = admin.export_bundle(BUNDLE_PASS).expect("export");
+        assert!(!blob.is_empty());
+    }
+
     #[test]
     fn overwrite_import_replaces_the_entry_and_its_secret_in_place() {
         let blob = source_bundle();
@@ -3683,7 +4120,7 @@ mod tests {
 
         assert_eq!(report.overwritten, vec!["store-a"]);
         assert_eq!(report.imported, vec!["store-c", "local"]);
-        assert!(report.skipped.is_empty());
+        assert!(report.skipped_existing.is_empty());
         assert_eq!(target.entries().len(), 3);
         // The replacement keeps the slot the existing entry held, so the
         // list does not reshuffle under the user on every import.
@@ -3767,7 +4204,10 @@ mod tests {
             .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
             .expect("import");
 
-        assert_eq!(report.skipped, vec!["attacker"]);
+        assert_eq!(
+            report.refused.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            vec!["attacker"]
+        );
         assert!(report.imported.is_empty());
         assert!(report.overwritten.is_empty());
         assert_eq!(
@@ -3837,7 +4277,135 @@ mod tests {
 
         assert!(report.imported.is_empty());
         assert!(report.overwritten.is_empty());
-        assert_eq!(report.skipped, vec!["store-a", "store-c", "local"]);
+        assert_eq!(report.skipped_existing, vec!["store-a", "store-c", "local"]);
+    }
+
+    // --- The three not-imported reasons are reported apart (ADR-0112) ---
+
+    /// A bundle that trips every not-imported condition at once, so the
+    /// report has to keep them apart rather than pour them into one list.
+    fn mixed_outcome_bundle() -> Vec<u8> {
+        let mut file = ConnectionFile::empty();
+        // (a) An id the target already holds. Deliberately a different kind
+        //     from the target's, to show the check is on the id alone.
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "store-a".to_string(),
+            name: "Bundle store-a".to_string(),
+            kind: ConnectionKind::Turso {
+                path: ":memory:".to_string(),
+            },
+        });
+        // (b) A brand-new id whose ref aims at another connection's slot.
+        file.connections.push(ConnectionEntry {
+            mcp_alias: None,
+            mcp_write: false,
+            ssh: None,
+            id: "attacker".to_string(),
+            name: "Attacker".to_string(),
+            kind: ConnectionKind::Supabase {
+                keyring_url_ref: "dbboard.victim.url".to_string(),
+            },
+        });
+        // (c) An id the bundle itself lists twice.
+        for name in ["Fresh", "Fresh again"] {
+            file.connections.push(ConnectionEntry {
+                mcp_alias: None,
+                mcp_write: false,
+                ssh: None,
+                id: "fresh".to_string(),
+                name: name.to_string(),
+                kind: ConnectionKind::Turso {
+                    path: ":memory:".to_string(),
+                },
+            });
+        }
+        let mut secrets = BTreeMap::new();
+        secrets.insert(
+            "dbboard.victim.url".to_string(),
+            "postgres://attacker@evil.example/db".to_string(),
+        );
+        let payload = BundlePayload::new(file, secrets);
+        encrypt_bundle(&payload, BUNDLE_PASS).expect("encrypt")
+    }
+
+    /// Seeds `store-a` (id collision) and `victim` (ref owner) so
+    /// `mixed_outcome_bundle` trips both against it.
+    fn mixed_outcome_target() -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin) {
+        let (dir, secrets, mut target) = fresh_admin();
+        target.add(d1_draft("store-a")).expect("seed store-a");
+        target
+            .add(supabase_draft(
+                "victim",
+                "postgres://real:secret@db.victim.supabase.co/postgres",
+            ))
+            .expect("seed victim");
+        (dir, secrets, target)
+    }
+
+    #[test]
+    fn the_three_not_imported_reasons_land_in_three_separate_lists() {
+        let blob = mixed_outcome_bundle();
+        let (_dir, _secrets, mut target) = mixed_outcome_target();
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
+
+        assert_eq!(report.imported, vec!["fresh"]);
+        // Only this one is genuinely "already present" — the string the UI
+        // shows for it is the only one that may say so.
+        assert_eq!(report.skipped_existing, vec!["store-a"]);
+        assert_eq!(report.duplicate_in_bundle, vec!["fresh"]);
+        assert_eq!(
+            report.refused.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            vec!["attacker"]
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_the_offending_ref_and_the_connection_that_owns_it() {
+        // The operator cannot act on "skipped": the id is nowhere to be
+        // found afterwards, so the message has to carry both sides of the
+        // collision or it reads as a corrupted import.
+        let blob = mixed_outcome_bundle();
+        let (_dir, _secrets, mut target) = mixed_outcome_target();
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Skip)
+            .expect("import");
+
+        assert_eq!(
+            report.refused,
+            vec![RefusedEntry {
+                id: "attacker".to_string(),
+                key_ref: "dbboard.victim.url".to_string(),
+                owner: "victim".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_still_a_refusal_in_overwrite_mode_not_a_skip() {
+        // The ref-ownership check ignores the mode, so re-importing with
+        // overwrite on produces the same outcome. The report must not put
+        // the entry anywhere that invites that retry.
+        let blob = mixed_outcome_bundle();
+        let (_dir, _secrets, mut target) = mixed_outcome_target();
+
+        let report = target
+            .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
+            .expect("import");
+
+        assert_eq!(
+            report.refused.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            vec!["attacker"]
+        );
+        // Overwrite took the id collision, so nothing is left to "skip".
+        assert!(report.skipped_existing.is_empty());
+        assert_eq!(report.overwritten, vec!["store-a"]);
     }
 
     // ---- SSH tunnel write path (ADR-0069) ----

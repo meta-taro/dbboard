@@ -35,8 +35,8 @@ client crate.
 | Layer | Tier 1 | Tier 2 | Notes |
 |---|---|---|---|
 | `libsql` client crate | `0.9.x` | — | Pinned in `Cargo.toml` (`workspace.dependencies.libsql`). |
-| Local libSQL file | covered | — | Default backend (`:memory:` and on-disk). |
-| Turso remote | _planned for Phase 1.5 widening_ | — | Currently disabled by `default-features = false`. |
+| Local libSQL file | covered | — | Kind `turso` (`:memory:` and on-disk). |
+| Turso Cloud / remote `sqld` | covered | — | Kind `turso-remote`, hrana over HTTP (ADR-0111). Verified by hand against Turso Cloud; `libsql://`, `https://`, `http://`, `wss://` and `ws://` are accepted. |
 
 ### Cloudflare D1
 

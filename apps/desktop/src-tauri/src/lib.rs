@@ -612,6 +612,14 @@ enum KindInput {
     Turso {
         path: String,
     },
+    /// Turso Cloud / any networked libSQL endpoint (ADR-0111). The tag is
+    /// `turso_remote`, not the TOML's `turso-remote`: this DTO's contract is
+    /// with the frontend, which is snake_case throughout (`aurora_dsql_iam`
+    /// here vs `aurora-dsql-iam` on disk).
+    TursoRemote {
+        url: String,
+        token: String,
+    },
     D1 {
         account_id: String,
         database_id: String,
@@ -674,6 +682,12 @@ enum KindInput {
 enum KindEditInput {
     Turso {
         path: String,
+    },
+    TursoRemote {
+        url: String,
+        /// Blank keeps the stored token, so the endpoint can be changed
+        /// without retyping the credential.
+        token: Option<String>,
     },
     D1 {
         account_id: String,
@@ -904,6 +918,7 @@ fn to_add_draft(
 ) -> ConnectionDraft {
     let kind = match kind {
         KindInput::Turso { path } => ConnectionKindDraft::Turso { path },
+        KindInput::TursoRemote { url, token } => ConnectionKindDraft::TursoRemote { url, token },
         KindInput::D1 {
             account_id,
             database_id,
@@ -1006,6 +1021,10 @@ fn to_edit_draft(
 ) -> ConnectionEditDraft {
     let kind = match kind {
         KindEditInput::Turso { path } => ConnectionKindEditDraft::Turso { path },
+        KindEditInput::TursoRemote { url, token } => ConnectionKindEditDraft::TursoRemote {
+            url,
+            token: secret_field(token),
+        },
         KindEditInput::D1 {
             account_id,
             database_id,
@@ -1094,6 +1113,12 @@ fn to_edit_draft(
 enum EditFieldsDto {
     Turso {
         path: String,
+    },
+    /// The URL comes back, the auth token does not (ADR-0111) — the same split
+    /// D1 makes, so the endpoint can be corrected without retyping the
+    /// credential.
+    TursoRemote {
+        url: String,
     },
     D1 {
         account_id: String,
@@ -1254,6 +1279,7 @@ fn connection_edit_fields(
     let mcp_alias = entry.mcp_alias.clone();
     let dto = match &entry.kind {
         ConnectionKind::Turso { path } => EditFieldsDto::Turso { path: path.clone() },
+        ConnectionKind::TursoRemote { url, .. } => EditFieldsDto::TursoRemote { url: url.clone() },
         ConnectionKind::D1 {
             account_id,
             database_id,
@@ -1459,37 +1485,48 @@ async fn reconnect_connection(state: tauri::State<'_, AppState>, id: String) -> 
 /// selection are opposites, and guessing wrong ships either an empty bundle
 /// or every credential on the machine. `None` — the field absent from the
 /// IPC payload — is the explicit whole-store export.
+///
+/// Also reports any entry in the exported selection whose keychain slot
+/// belongs to a different connection (issue #194). That is a warning, not a
+/// refusal: the bundle is written either way, because an operator whose store
+/// is already malformed is the one who most needs a backup of it.
 #[tauri::command]
 fn export_connections(
     state: tauri::State<'_, AppState>,
     path: String,
     passphrase: String,
     ids: Option<Vec<String>>,
-) -> Result<usize, String> {
+) -> Result<ExportReportDto, String> {
     let admin = state.admin.lock().map_err(|_| lock_poisoned())?;
-    let (blob, count) = match &ids {
+    let (blob, exported, foreign) = match &ids {
         Some(ids) => (
             admin
                 .export_bundle_of(ids, &passphrase)
                 .map_err(|e| e.to_string())?,
             ids.len(),
+            admin.foreign_refs_of(ids).map_err(|e| e.to_string())?,
         ),
         None => (
             admin
                 .export_bundle(&passphrase)
                 .map_err(|e| e.to_string())?,
             admin.entries().len(),
+            admin.foreign_refs(),
         ),
     };
     std::fs::write(&path, &blob).map_err(|e| e.to_string())?;
-    Ok(count)
+    Ok(ExportReportDto {
+        exported,
+        foreign_refs: foreign.into_iter().map(ForeignRefDto::from).collect(),
+    })
 }
 
 /// Import connections from a `.dbbx` bundle at `path` (ADR-0038, ADR-0105).
 /// `overwrite` decides what an incoming id that already exists does: replace
 /// the entry and its secrets, or be skipped and reported. It defaults to
 /// skipping, because that is the choice that cannot lose a credential.
-/// Returns the imported/overwritten/skipped id lists for the UI to report.
+/// Returns the per-outcome id lists for the UI to report; the three
+/// not-imported reasons stay apart all the way to the message (ADR-0112).
 #[tauri::command]
 fn import_connections(
     state: tauri::State<'_, AppState>,
@@ -1510,7 +1547,13 @@ fn import_connections(
     Ok(ImportReportDto {
         imported: report.imported,
         overwritten: report.overwritten,
-        skipped: report.skipped,
+        skipped_existing: report.skipped_existing,
+        duplicate_in_bundle: report.duplicate_in_bundle,
+        refused: report
+            .refused
+            .into_iter()
+            .map(RefusedEntryDto::from)
+            .collect(),
     })
 }
 
@@ -1526,13 +1569,64 @@ fn save_text_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Outcome of `export_connections`. The count alone used to be the whole
+/// return value; the warning list rides alongside it so a successful export
+/// can still say something is wrong with what it just wrote (issue #194).
+#[derive(serde::Serialize)]
+struct ExportReportDto {
+    exported: usize,
+    foreign_refs: Vec<ForeignRefDto>,
+}
+
+/// Serialize-only mirror of `dbboard_config::ForeignRef`. Like
+/// `RefusedEntryDto`, every field is an id or a keychain slot name, never a
+/// secret value, so it is safe to show verbatim.
+#[derive(serde::Serialize)]
+struct ForeignRefDto {
+    id: String,
+    key_ref: String,
+    owner: String,
+}
+
+impl From<dbboard_config::ForeignRef> for ForeignRefDto {
+    fn from(r: dbboard_config::ForeignRef) -> Self {
+        Self {
+            id: r.id,
+            key_ref: r.key_ref,
+            owner: r.owner,
+        }
+    }
+}
+
 /// Serialize-only mirror of `dbboard_config::ImportReport` (which is
 /// Deserialize-oriented internally) so the frontend gets a stable JSON shape.
 #[derive(serde::Serialize)]
 struct ImportReportDto {
     imported: Vec<String>,
     overwritten: Vec<String>,
-    skipped: Vec<String>,
+    skipped_existing: Vec<String>,
+    duplicate_in_bundle: Vec<String>,
+    refused: Vec<RefusedEntryDto>,
+}
+
+/// Serialize-only mirror of `dbboard_config::RefusedEntry` (ADR-0112). All
+/// three fields are connection ids or keychain slot names, never a secret
+/// value, so this is safe to put in front of the user verbatim.
+#[derive(serde::Serialize)]
+struct RefusedEntryDto {
+    id: String,
+    key_ref: String,
+    owner: String,
+}
+
+impl From<dbboard_config::RefusedEntry> for RefusedEntryDto {
+    fn from(r: dbboard_config::RefusedEntry) -> Self {
+        Self {
+            id: r.id,
+            key_ref: r.key_ref,
+            owner: r.owner,
+        }
+    }
 }
 
 fn lock_poisoned() -> String {
@@ -1783,7 +1877,8 @@ mod tests {
     use super::{
         graft_url, none_if_blank, secret_field, ssh_edit_fields, to_add_draft, to_edit_draft,
         to_ssh_draft, to_ssh_edit_field, EditFieldsDto, ImportReportDto, KindEditInput, KindInput,
-        SshAuthEditInput, SshAuthFieldsDto, SshAuthInput, SshEditInput, SshHostKeyInput, SshInput,
+        RefusedEntryDto, SshAuthEditInput, SshAuthFieldsDto, SshAuthInput, SshEditInput,
+        SshHostKeyInput, SshInput,
     };
     use dbboard_config::{
         ConnectionAdmin, ConnectionKindDraft, ConnectionKindEditDraft, FirestoreCredentialField,
@@ -2289,7 +2384,7 @@ mod tests {
             .expect("import");
         assert_eq!(report.imported, vec!["t".to_string()]);
         assert!(report.overwritten.is_empty());
-        assert!(report.skipped.is_empty());
+        assert!(report.skipped_existing.is_empty());
         assert_eq!(dst.entries().len(), 1);
     }
 
@@ -2326,16 +2421,34 @@ mod tests {
         let dto = ImportReportDto {
             imported: vec!["a".to_string()],
             overwritten: vec!["c".to_string()],
-            skipped: vec!["b".to_string()],
+            skipped_existing: vec!["b".to_string()],
+            duplicate_in_bundle: vec!["d".to_string()],
+            refused: vec![RefusedEntryDto {
+                id: "e".to_string(),
+                key_ref: "dbboard.owner.token".to_string(),
+                owner: "owner".to_string(),
+            }],
         };
         let json = serde_json::to_value(&dto).expect("serialize");
-        for key in ["imported", "overwritten", "skipped"] {
+        for key in [
+            "imported",
+            "overwritten",
+            "skipped_existing",
+            "duplicate_in_bundle",
+            "refused",
+        ] {
             assert_eq!(
                 json.get(key).and_then(|v| v.as_array()).unwrap().len(),
                 1,
                 "{key} must reach the frontend as an array"
             );
         }
+        // A refusal is only actionable with both sides of the collision, so
+        // the three fields are part of the contract, not decoration.
+        let refused = &json.get("refused").unwrap().as_array().unwrap()[0];
+        assert_eq!(refused.get("id").unwrap(), "e");
+        assert_eq!(refused.get("key_ref").unwrap(), "dbboard.owner.token");
+        assert_eq!(refused.get("owner").unwrap(), "owner");
     }
 
     // ---- SSH tunnel DTO mapping (ADR-0069) ----
