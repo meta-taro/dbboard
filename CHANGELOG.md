@@ -37,6 +37,12 @@ of the older state.
 None of those was wrong behaviour. Each of them left the person in front
 of it guessing, and this release stops that.
 
+In the same spirit: reaching a hosted database means a TLS stack, and the
+one libSQL pins carries two advisories with no fixed version available.
+They are narrow, and each one is listed in `deny.toml` with the reason it
+cannot be fixed today and what would clear it, rather than left to be
+found later.
+
 ### Added
 
 - **Turso Cloud is reachable** — a new `turso-remote` connection kind
@@ -110,6 +116,27 @@ of it guessing, and this release stops that.
   and a refusal names both sides of the collision: which slot the entry
   wanted and which connection holds it. The check itself is unchanged;
   nothing is imported that was not imported before.
+
+### Security
+
+- **The dependency advisory check runs in CI**
+  ([ADR-0117](docs/decisions.md)). `cargo deny check` has been configured
+  in this repo for a long time and named in `CLAUDE.md` as part of the
+  security posture, but no workflow ran it, so nobody found out it was
+  red: 21 advisories and four license failures, surfaced only because a
+  pre-release review ran it by hand. It is now a `deps` job on every push
+  and pull request to `develop` and `main`.
+- **`h2` moved to 0.4.17**, past the 0.4.16 that patches
+  [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258).
+- **Known exposure, stated rather than suppressed.** Turning on libSQL's
+  remote transport (above) brings `hyper-rustls` 0.25 with it, and that
+  pins `rustls-webpki` 0.102 and `h2` 0.3 — versions whose fixes landed
+  on major lines they cannot reach. The rest of this project already
+  resolves current copies of both. Every advisory that cannot be fixed
+  today is listed individually in `deny.toml` with its own reason, and
+  the reasons say which are unreachable here, which are reachable and
+  narrow, and which clear as soon as libSQL moves up. Four of the six
+  clear on that single bump.
 
 ## [0.9.0] — 2026-08-19
 

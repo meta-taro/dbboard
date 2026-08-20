@@ -11348,3 +11348,108 @@ the version reported here is what it would compare against.
 The description text is pinned by a test (`description_above`), so
 rewording it to something that no longer says the binary can be stale
 fails the build rather than quietly removing the reason to call the tool.
+
+## ADR-0117 — The advisory check runs in CI, and what it cannot fix is written down
+
+### Status
+
+Accepted.
+
+### Context
+
+`deny.toml` has been in this repo since early on, and CLAUDE.md names
+`cargo deny check` under "Security" as one of the two suggested tools. No
+workflow ran it. It was a check that existed on paper and in whoever's
+memory happened to hold it that week.
+
+It was red. A pre-release review before v0.10.0 ran it by hand and found
+21 advisories and four license failures — not one of which had been seen,
+because nothing looks. The license half was pure drift: `tiny-keccak`
+(CC0-1.0) and the Mozilla root bundle (CDLA-Permissive-2.0) had entered
+the tree and the allow list had not followed. Both are permissive and
+neither was ever a compliance question; the gate was simply telling the
+truth to an empty room.
+
+The advisory half is more awkward, and it is partly this release's doing.
+v0.10.0 turns on libsql's `remote` and `tls` features so a hosted Turso
+database can be opened at all (ADR-0111). `tls` is `dep:hyper-rustls`, and
+the version libsql pins is 0.25, which sits on the rustls 0.22 line, which
+pins `rustls-webpki` 0.102 and `hyper` 0.14 and therefore `h2` 0.3. Four
+advisories against the first and one against the second, all with fixes
+that landed on major lines those crates cannot reach. The workspace
+already resolves current copies of both — `rustls-webpki` 0.103 and `h2`
+0.4 — through reqwest, mongodb and sqlx; the flagged ones are libsql's
+alone. The Cargo.toml comment on the libsql dependency already called this
+duplicate out as something to collapse when libsql moves up. It is now
+also a security item, not just a tidiness one.
+
+### Decision
+
+**The check runs in CI, as its own job.** A `deps` job on every push and
+pull request to the integration branches, running all four checks. It
+needs neither the GTK stack nor a frontend build, because `cargo metadata`
+resolves the graph without compiling, so it does not belong inside the
+`rust` job: it finishes far sooner and it reports separately when it is
+the thing that broke. `cargo-deny` is pinned to a version and cached on
+that pin, because an unpinned install would let the advisory database's
+client change under a branch that was passing.
+
+**What can be fixed is fixed.** `h2` moved 0.4.14 → 0.4.17, past the
+0.4.16 that carries the patch. The two licenses are allowed.
+
+**What cannot be fixed is written down, one entry per advisory, each with
+its own reason.** Not a blanket suppression and not a lowered severity —
+`cargo deny` has no severity dial, and inventing one here would mean
+choosing between a permanently red gate that everyone learns to skip and a
+silent one. An ignore list with a reason per line is the honest third
+option: the check stays green, and the price of keeping it green is that
+somebody has to write down why each line is there.
+
+The reasons distinguish three cases, because they are not the same kind of
+risk:
+
+*Not reached.* The two CRL advisories against `rustls-webpki` 0.102.
+Nothing in this workspace supplies a certificate revocation list, and
+rustls performs no revocation checking unless one is configured.
+
+*Reached, and narrow.* The two name-constraint bypasses in the same crate.
+These weaken a layer that sits above chain validation; signature, validity
+and hostname checks are untouched. Exploiting either needs a trusted CA
+issuing a name-constrained intermediate to an attacker, plus a position on
+the path to a hosted endpoint. That is a real reduction in defence in
+depth and it is recorded as one.
+
+*Not this program's operation.* The RSA Marvin Attack, via sqlx-mysql. The
+attack times RSA decryption — a private-key operation. MySQL's
+`sha256_password` and `caching_sha2_password` have the client encrypt with
+the server's public key, so the private-key half runs on the server.
+
+The remainder are unmaintained-crate notices with no vulnerability
+attached: the `unic-*` tables under Tauri's URL-pattern parser, the ten
+GTK3 binding crates under Tauri's Linux backend, `rustls-pemfile`, and the
+two `proc-macro-error` crates that only run at compile time.
+
+### Consequences
+
+**v0.10.0 ships with a known, unfixable dependency exposure, stated rather
+than discovered.** Holding the release for it would trade a narrow risk
+with no available fix against shipping nothing: the only route off
+`hyper-rustls` 0.25 today is libsql 0.10, which is a pre-release, and
+putting a pre-release database engine into a signed desktop binary is the
+larger risk. The judgement is that this is acceptable *because it is
+written down and gated*, not because it is nil.
+
+**Every libsql bump is now a security review.** Four of the six ignored
+vulnerabilities clear the moment libsql moves off `hyper-rustls` 0.25, and
+their reasons say so. The instruction to revisit lives next to the thing
+to revisit, rather than in an issue that ages out.
+
+**The ignore list will rot, and that is visible.** `cargo deny` warns on
+an ignore entry that no longer matches anything, so an entry kept past its
+usefulness announces itself on the next run instead of silently widening
+what the gate permits.
+
+**A red `deps` job is now a real finding**, in the same sense the Windows
+libSQL teardown crash became one when the hooks stopped triggering it. The
+failure mode this replaces was not a check that failed; it was a check
+nobody ran.

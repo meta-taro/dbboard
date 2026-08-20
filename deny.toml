@@ -13,12 +13,84 @@ yanked = "deny"
 # Add entries here to silence a specific RustSec advisory. Each entry
 # must include `reason` so future readers know why.
 ignore = [
+    # ---- Build-time only -------------------------------------------------
+    #
     # Unmaintained (not a vulnerability). Pulled by i18n-embed-fl (a
     # build-time proc-macro) -> age -> dbboard-config. It runs only during
     # compilation, never at runtime, and there is no upstream fix: both
     # proc-macro-error and this fork are abandoned and i18n-embed-fl has
     # not migrated. No runtime exposure, so tracked rather than blocked.
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2: build-time-only transitive dep of i18n-embed-fl; no runtime exposure, no upstream fix" },
+    # The unforked original, reached the same way. This is a separate advisory
+    # ID for a separate crate; the entry above does not cover it.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: build-time-only transitive dep of i18n-embed-fl; no runtime exposure, no upstream fix" },
+
+    # ---- rustls-webpki 0.102, pinned by libsql ---------------------------
+    #
+    # All four are in the copy that `libsql -> hyper-rustls 0.25 -> rustls
+    # 0.22` pins. The workspace also resolves a current rustls-webpki 0.103
+    # (via reqwest / mongodb / sqlx-postgres); these advisories are about the
+    # old copy only. Every fix landed on the 0.103 line, which rustls 0.22
+    # cannot take, so this moves when libsql moves off hyper-rustls 0.25 —
+    # the duplicate the libsql comment in Cargo.toml already flags for
+    # collapsing. Recorded rather than blocked because there is no version to
+    # move to today, not because the risk is nil. Revisit at every libsql bump.
+    #
+    # The two CRL entries are not reached: nothing in this workspace supplies
+    # a certificate revocation list, and rustls does no revocation checking
+    # unless one is configured.
+    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102 via libsql/hyper-rustls 0.25: CRL distribution-point matching; no CRL is configured anywhere here, so unreached. Fixed only on 0.103, which rustls 0.22 cannot take" },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102 via libsql/hyper-rustls 0.25: panic parsing a CRL; no CRL is configured anywhere here, so unreached. Fixed only on 0.103, which rustls 0.22 cannot take" },
+    # These two are reachable. They weaken name-constraint enforcement, which
+    # is a defence-in-depth layer above the chain checks; signature, validity
+    # and hostname verification are unaffected. Exploiting either needs a
+    # trusted CA that issues a name-constrained intermediate to an attacker,
+    # plus a position on the path to a hosted Turso endpoint.
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102 via libsql/hyper-rustls 0.25: URI name-constraint bypass. Reachable but narrow; fixed only on 0.103, which rustls 0.22 cannot take. Revisit at every libsql bump" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102 via libsql/hyper-rustls 0.25: wildcard name-constraint bypass. Reachable but narrow; fixed only on 0.103, which rustls 0.22 cannot take. Revisit at every libsql bump" },
+    # Unmaintained (not a vulnerability), same hyper-rustls 0.25 subtree.
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: unmaintained, via libsql/hyper-rustls 0.25 -> rustls-native-certs 0.7; moves when that subtree does" },
+
+    # ---- h2 --------------------------------------------------------------
+    #
+    # The fix is on 0.4.16; the workspace's own copy has been moved to 0.4.17,
+    # so this ID now matches only the h2 0.3 that `libsql -> hyper 0.14` pins.
+    # The 0.3 line has no patched release. Same libsql-bump condition as above.
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 via libsql/hyper 0.14 (unbounded empty DATA frames). The workspace's own copy is on 0.4.17, which is patched; the 0.3 line has no fix" },
+
+    # ---- rsa -------------------------------------------------------------
+    #
+    # Marvin Attack, via sqlx-mysql -> dbboard-mysql. There is no fixed
+    # release: the mitigation has not shipped. The timed operation is RSA
+    # *decryption*, i.e. a private-key operation. MySQL's sha256_password and
+    # caching_sha2_password have the client encrypt with the server's public
+    # key, so the private-key half runs on the server, not here.
+    { id = "RUSTSEC-2023-0071", reason = "rsa: Marvin Attack via sqlx-mysql. No fixed release exists upstream; the private-key operation the attack times runs on the MySQL server, not in this client" },
+
+    # ---- Unmaintained, no vulnerability ----------------------------------
+    #
+    # unic-*: via urlpattern -> tauri-utils -> tauri. Unicode tables used to
+    # parse URL patterns at Tauri's build and runtime. Nothing here selects
+    # them and Tauri has not migrated; no fix exists.
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range: unmaintained, via urlpattern -> tauri-utils; no upstream fix, not a vulnerability" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common: unmaintained, via urlpattern -> tauri-utils; no upstream fix, not a vulnerability" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property: unmaintained, via urlpattern -> tauri-utils; no upstream fix, not a vulnerability" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: unmaintained, via urlpattern -> tauri-utils; no upstream fix, not a vulnerability" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: unmaintained, via urlpattern -> tauri-utils; no upstream fix, not a vulnerability" },
+    # gtk-rs GTK3 bindings: Tauri's Linux backend. Eight advisories across ten
+    # crates, all the same announcement. `[graph] all-features` resolves them
+    # on every host, but they compile only on Linux, which this project does
+    # ship. Tauri 2 has no GTK4 backend to move to.
+    { id = "RUSTSEC-2024-0411", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0412", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0413", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0414", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0415", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0416", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0417", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0418", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0419", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    { id = "RUSTSEC-2024-0420", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
 ]
 
 [licenses]
@@ -41,6 +113,8 @@ allow = [
     "OFL-1.1",              # epaint_default_fonts bundles SIL Open Font License fonts
     "Ubuntu-font-1.0",      # epaint_default_fonts bundles the Ubuntu font
     "MPL-2.0",              # option-ext (via directories/dirs-sys): file-level weak copyleft, fine to redistribute unmodified in a binary
+    "CC0-1.0",              # tiny-keccak: public-domain dedication, no attribution required
+    "CDLA-Permissive-2.0",  # webpki-roots / webpki-root-certs: the Mozilla root bundle, permissive with no reciprocal terms
 ]
 confidence-threshold = 0.8
 
