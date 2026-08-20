@@ -79,17 +79,27 @@ describe('progressPercent', () => {
 });
 
 describe('defaultDumpFileName', () => {
+  const AT = new Date(2026, 7, 19, 16, 30, 45); // 2026-08-19 16:30:45 local
+
   it('builds a .sql name from a connection name', () => {
-    expect(defaultDumpFileName('Prod DB')).toBe('prod-db-dump.sql');
+    expect(defaultDumpFileName('Prod DB', AT)).toBe('prod-db-dump-20260819-163045.sql');
   });
 
   it('falls back to a generic name when no connection name is given', () => {
-    expect(defaultDumpFileName()).toBe('dbboard-dump.sql');
-    expect(defaultDumpFileName('   ')).toBe('dbboard-dump.sql');
+    expect(defaultDumpFileName(undefined, AT)).toBe('dbboard-dump-20260819-163045.sql');
+    expect(defaultDumpFileName('   ', AT)).toBe('dbboard-dump-20260819-163045.sql');
   });
 
   it('slugifies punctuation and collapses separators', () => {
-    expect(defaultDumpFileName('store/A (main)')).toBe('store-a-main-dump.sql');
+    expect(defaultDumpFileName('store/A (main)', AT)).toBe('store-a-main-dump-20260819-163045.sql');
+  });
+
+  it('proposes a different name for a second dump of the same connection', () => {
+    // The one that matters most: a backup silently overwriting the previous
+    // backup of the same database loses the only copy of the older state.
+    const first = defaultDumpFileName('Prod DB', AT);
+    const second = defaultDumpFileName('Prod DB', new Date(2026, 7, 19, 16, 30, 46));
+    expect(first).not.toBe(second);
   });
 });
 

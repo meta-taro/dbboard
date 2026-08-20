@@ -10743,3 +10743,234 @@ which is the question on the sheet.
 
 The count of tools with no database behind them goes from six to seven;
 the surface goes from fifteen to sixteen.
+
+## ADR-0110 — A release goes out when there is something in it, not when a plan says so
+
+### Status
+
+Accepted.
+
+### Context
+
+Between v0.8.0 (2026-08-14) and this decision, `CHANGELOG.md`'s
+`[Unreleased]` accumulated three additions and three fixes over five days,
+and none of it reached the maintainer's machine — the installed build stayed
+at v0.8.0 while the work that fixed a *frozen query toolbar* sat on
+`develop`. The maintainer named the cost precisely: without a version plan
+the sense that anything will be released cannot be sustained, and while
+initiatives are bundled together you spend the whole time using an old
+dbboard.
+
+The mechanism is worth stating exactly, because the obvious diagnosis is
+wrong. Nothing blocked the release. The v1.0 gates
+(`.claude/issues/0021-v1-0-criteria.md`) block **1.0**, and by ADR-0011's
+reasoning they cannot block 0.x: the SemVer public API here is the HTTP
+contract, so a 0.x release promises nothing about features. There was no
+rule saying to wait. There was no rule saying to go, either — and this repo
+mechanises every other recurring judgement it has (baseline §31's 400-line
+count, §33's index-health check) precisely because "decide each time" decays
+into "not today".
+
+Releasing is also not free: four version fields, a `CHANGELOG` heading, a
+PR into `develop`, a second PR into `main`, and a tag. Nothing about that is
+hard, and all of it is enough friction to lose to whatever else is open.
+
+The tempting fix is a version-numbered plan — 0.9 gets these features, 1.0
+gets those. That reproduces the failure. Assigning initiatives to versions
+means a version cannot ship until its slowest initiative lands, which is the
+bundling the maintainer is objecting to.
+
+### Decision
+
+**A release is triggered by unreleased content, not by a plan, a date, or a
+feature set.**
+
+Check at the start of a session:
+
+```sh
+awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && /^- /' CHANGELOG.md | wc -l
+```
+
+- **1 or more, and `develop` is green** — a release *may* be cut, by anyone,
+  with no approval beyond the existing human-only push/tag gate.
+- **3 or more** — a release *is due*. Three is a ceiling, not a target: past
+  it, the maintainer is by definition using a build older than the fixes
+  they reported.
+- **0** — nothing to do. Most sessions land here, and that is the point.
+
+Two rules follow from it:
+
+- **Initiatives are never assigned to a version.** The roadmap says what is
+  planned; it does not say which release contains it. Whatever is finished
+  when the trigger fires is what ships. An initiative that spans three
+  releases is normal.
+- **The version number is derived, not chosen.** Additions present → minor;
+  fixes only → patch. A change to `docs/api-contract.md` that is not
+  additive → major, per ADR-0011, and that is the only thing 1.0 waits for.
+
+### Consequences
+
+Releases become small and frequent, which is the intended cost: more tags,
+more `main` merges, more release notes. Each is cheaper to write than a
+bundled one, because the `CHANGELOG` entry is composed when the change lands
+rather than reconstructed at release time.
+
+The v1.0 gates lose their gravitational pull on the 0.x line. They still
+gate 1.0 and are unchanged; they no longer imply that anything is waiting on
+them.
+
+`[Unreleased]` becomes load-bearing. A change merged without a `CHANGELOG`
+entry is invisible to the trigger and will ship silently — which is already
+against this repo's habits, and is now also the mechanism by which shipping
+stops.
+
+The friction is not removed, only regularised. If cutting a release by hand
+turns out to be what suppresses the cadence, the answer is a script that
+performs the four bumps, not a longer interval; that is deliberately left
+until the frequency is real enough to measure.
+
+## ADR-0114 — CI was never slow because of Rust
+
+### Status
+
+Accepted.
+
+### Context
+
+The `rust (fmt / clippy / check / test)` job of ADR-0104 was taking 16 to
+30 minutes, and the reading of that was "Rust is slow". Measurement on run
+32224336075 says otherwise. Of 16m46s:
+
+| step | time |
+|---|---|
+| install Tauri system dependencies | 572s |
+| restore + save the cargo cache | 255s |
+| fmt + clippy + check + test | **158s** |
+
+The verification the job exists to perform is under three minutes. The rest
+is two pieces of overhead that had never been looked at.
+
+The first is bandwidth, not package count: `Fetched 89.3 MB in 9min 9s
+(163 kB/s)`. The Azure Ubuntu mirror the hosted runners use serves this set
+an order of magnitude below a normal rate, and the rate varies per run —
+which is the whole explanation for the job's total varying between 16 and
+30-odd minutes. Nothing about the workspace changed between those runs.
+
+The second is the cache itself: `Cache Size: ~7347 MB`, 8.92 GiB stored.
+GitHub's per-repository cache quota is 10 GiB, so this one entry left room
+for nothing else; every save evicted every other entry, and the API confirms
+the repository held exactly one cache. Later runs then restored a partial
+key match and rebuilt anyway, having spent three and a half minutes moving
+the archive both ways.
+
+### Decision
+
+**Cache the `.deb` files, keyed on this workflow file.** The package set is
+written in the workflow and changes only when the workflow does, so the key
+is exact and a hit skips the network. apt downloads as `_apt` while
+`actions/cache` reads as `runner`, so the archive directory's ownership is
+handed over before the install and handed back after it; without the
+handback the post-job save stores nothing and the download is paid again
+every run, silently.
+
+**Build CI without debug info** (`CARGO_PROFILE_DEV_DEBUG=false`,
+`CARGO_PROFILE_TEST_DEBUG=false`). Nearly all of the 8.92 GiB is debug
+info, and nothing in CI reads it: no debugger is attached and no test
+asserts on a symbolicated backtrace. This is the same pair of variables the
+maintainer already sets locally, for the same reason — the machine that
+runs the git hooks is chronically short of disk.
+
+`cargo check` is kept even though `cargo clippy --all-targets
+--all-features` already subsumes it. It costs 11 seconds, and the job's
+stated purpose is to run the commands CLAUDE.md calls mandatory; dropping
+one to save 11 seconds would make the workflow and that list disagree.
+
+### Consequences
+
+A cold run still pays the download once, and the first run after this pays
+a full rebuild because the profile change invalidates every fingerprint.
+Steady state should be roughly five minutes rather than sixteen to thirty.
+
+**A CI backtrace will no longer carry symbols.** If a test ever fails only
+on Linux and only in CI, and the panic location is not enough to place it,
+the way back is to set the two variables to `true` on a branch rather than
+to guess.
+
+The cache dropping under the quota means other caches can coexist again, so
+a future job may cache without evicting this one.
+
+**This cannot be verified locally.** A workflow change is only exercised by
+running it, so the evidence for this ADR is the step timings of the first
+run on the branch, not a test.
+
+## ADR-0116 — The MCP server says which build is answering
+
+### Status
+
+Accepted.
+
+### Context
+
+`dbboard-mcp` is not installed by a package manager. It is an executable
+someone copied somewhere once and pointed a client's config at, and it
+never replaces itself. The desktop app checks for updates at startup
+(ADR-0067); the MCP binary has no equivalent and no obvious moment to
+acquire one — nothing launches it interactively, and a background
+self-update on a stdio server would restart the transport underneath a
+live session.
+
+So an installed copy drifts. A bug was reported against the MySQL path
+that had been fixed a release earlier: the binary in place predated the
+fix, and nothing about it said so. The agent could not tell — it had no
+version to compare — and neither could the operator, because the only
+visible symptom was the old behaviour, which is exactly what a live bug
+looks like.
+
+The cost lands on whoever investigates: reading code that already contains
+the fix while the running binary does not.
+
+### Decision
+
+**Put the version on two channels, because neither alone is dependable.**
+
+The handshake `instructions` open with it. That text reaches the model
+without anyone asking for it, which is the only way to inform an agent
+that has not yet decided something is wrong — but some clients drop
+instructions entirely, so it cannot be the only channel.
+
+`get_server_info` returns `{ name, version }`. A tool result always
+arrives intact, but only if something thinks to call it — so the tool
+description carries the reason to call it, stated at the moment it
+matters: *this binary can be stale; call it before reporting anything
+odd.* A tool an agent has no reason to reach for answers nothing.
+
+The instructions also ask for the version to be quoted in any report,
+because the report arrives as prose the agent writes. Knowing the version
+and passing it on are separate things.
+
+**`BuildInfo` carries no filesystem path.** The obvious companion field —
+which `connections.toml` this instance reads — is the one field that must
+not be there. On Windows that path is `C:\Users\<operator>\…`, and a tool
+result lands in the calling agent's transcript as plaintext on disk,
+outside this project's control. A version number diagnoses a stale binary
+without naming anybody, so the name is not worth the diagnosis. A test
+asserts the serialized form contains no path separator, so the field
+cannot be added back without the test saying why it was left out.
+
+### Consequences
+
+The version is `CARGO_PKG_VERSION`, so it identifies the release the
+binary was built from and not the commit. A binary built from a dirty
+working tree reports the release it branched off. That is the right
+granularity for the question being asked — "is this older than the fix?"
+is answered by a release number — and a git hash would require build
+plumbing that only helps when the answer is already known.
+
+This tells nobody how to update. There is still no distribution path for
+the MCP binary beyond copying a file, and this ADR does not create one; it
+makes the absence visible instead of silent. If a self-update ever lands,
+the version reported here is what it would compare against.
+
+The description text is pinned by a test (`description_above`), so
+rewording it to something that no longer says the binary can be stale
+fails the build rather than quietly removing the reason to call the tool.

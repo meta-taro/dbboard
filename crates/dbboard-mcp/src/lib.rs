@@ -13,6 +13,13 @@
 //! the running dbboard window, so a claim about what the interface renders
 //! can be checked rather than asserted.
 //!
+//! And it says which build it is. This binary is copied into place by hand
+//! and never replaces itself, so a running instance can be several releases
+//! behind the behaviour anyone expects of it. The version opens the
+//! handshake instructions and is repeated by `get_server_info`
+//! (ADR-0116) — two channels, because some clients drop the instructions
+//! and some agents never call a tool unprompted.
+//!
 //! Two layers:
 //!
 //! - [`service`] — [`McpService`], the transport-independent tool logic.
