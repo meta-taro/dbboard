@@ -56,6 +56,17 @@ public API is the HTTP contract in
   the operator's OS username and a tool result is written to the calling
   agent's transcript in plain text.
 
+### Changed
+
+- **The update dialog says what changed** ([ADR-0115](docs/decisions.md)).
+  It used to read "dbboard v0.9.0. See the release page for the full
+  changelog." — true, and no help to someone deciding whether to restart
+  now. It now shows this file's summary of the version being offered: the
+  paragraph under the version heading, or the entry titles where a version
+  has none. The dialog is the only moment anyone is asked to decide
+  something about a release, and until now it was the one place in the
+  project where "what changed?" was answered with a pointer.
+
 ### Fixed
 
 - **A refused import is no longer reported as "already present"**
