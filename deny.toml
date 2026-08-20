@@ -110,8 +110,6 @@ allow = [
     "Unicode-3.0",          # unicode-ident (newer crates)
     "Unlicense",            # byteorder
     "BSL-1.0",              # clipboard-win / error-code (Boost SL, permissive)
-    "OFL-1.1",              # epaint_default_fonts bundles SIL Open Font License fonts
-    "Ubuntu-font-1.0",      # epaint_default_fonts bundles the Ubuntu font
     "MPL-2.0",              # option-ext (via directories/dirs-sys): file-level weak copyleft, fine to redistribute unmodified in a binary
     "CC0-1.0",              # tiny-keccak: public-domain dedication, no attribution required
     "CDLA-Permissive-2.0",  # webpki-roots / webpki-root-certs: the Mozilla root bundle, permissive with no reciprocal terms
