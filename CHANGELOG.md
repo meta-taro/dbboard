@@ -9,6 +9,22 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Added
+
+- **The MCP server says which build is answering** — `get_server_info`
+  ([ADR-0116](docs/decisions.md)), and the same version now opens the
+  handshake instructions. `dbboard-mcp` is a file someone copied into
+  place and it never updates itself, so an installed copy can sit several
+  releases behind the behaviour expected of it — a bug reported against
+  the MySQL path had already been fixed a release earlier, and neither the
+  agent nor the operator could tell. The version goes on two channels
+  because neither alone is dependable: the instructions arrive without
+  anyone asking but some clients drop them, and a tool result always
+  arrives but only if something thinks to call it. It reports the build
+  and nothing else — no config path, because on Windows that path holds
+  the operator's OS username and a tool result is written to the calling
+  agent's transcript in plain text.
+
 ## [0.9.0] — 2026-08-19
 
 Seven MCP verbs, and what they are for. Checking a change by hand means

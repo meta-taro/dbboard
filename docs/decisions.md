@@ -10902,3 +10902,75 @@ a future job may cache without evicting this one.
 **This cannot be verified locally.** A workflow change is only exercised by
 running it, so the evidence for this ADR is the step timings of the first
 run on the branch, not a test.
+
+## ADR-0116 — The MCP server says which build is answering
+
+### Status
+
+Accepted.
+
+### Context
+
+`dbboard-mcp` is not installed by a package manager. It is an executable
+someone copied somewhere once and pointed a client's config at, and it
+never replaces itself. The desktop app checks for updates at startup
+(ADR-0067); the MCP binary has no equivalent and no obvious moment to
+acquire one — nothing launches it interactively, and a background
+self-update on a stdio server would restart the transport underneath a
+live session.
+
+So an installed copy drifts. A bug was reported against the MySQL path
+that had been fixed a release earlier: the binary in place predated the
+fix, and nothing about it said so. The agent could not tell — it had no
+version to compare — and neither could the operator, because the only
+visible symptom was the old behaviour, which is exactly what a live bug
+looks like.
+
+The cost lands on whoever investigates: reading code that already contains
+the fix while the running binary does not.
+
+### Decision
+
+**Put the version on two channels, because neither alone is dependable.**
+
+The handshake `instructions` open with it. That text reaches the model
+without anyone asking for it, which is the only way to inform an agent
+that has not yet decided something is wrong — but some clients drop
+instructions entirely, so it cannot be the only channel.
+
+`get_server_info` returns `{ name, version }`. A tool result always
+arrives intact, but only if something thinks to call it — so the tool
+description carries the reason to call it, stated at the moment it
+matters: *this binary can be stale; call it before reporting anything
+odd.* A tool an agent has no reason to reach for answers nothing.
+
+The instructions also ask for the version to be quoted in any report,
+because the report arrives as prose the agent writes. Knowing the version
+and passing it on are separate things.
+
+**`BuildInfo` carries no filesystem path.** The obvious companion field —
+which `connections.toml` this instance reads — is the one field that must
+not be there. On Windows that path is `C:\Users\<operator>\…`, and a tool
+result lands in the calling agent's transcript as plaintext on disk,
+outside this project's control. A version number diagnoses a stale binary
+without naming anybody, so the name is not worth the diagnosis. A test
+asserts the serialized form contains no path separator, so the field
+cannot be added back without the test saying why it was left out.
+
+### Consequences
+
+The version is `CARGO_PKG_VERSION`, so it identifies the release the
+binary was built from and not the commit. A binary built from a dirty
+working tree reports the release it branched off. That is the right
+granularity for the question being asked — "is this older than the fix?"
+is answered by a release number — and a git hash would require build
+plumbing that only helps when the answer is already known.
+
+This tells nobody how to update. There is still no distribution path for
+the MCP binary beyond copying a file, and this ADR does not create one; it
+makes the absence visible instead of silent. If a self-update ever lands,
+the version reported here is what it would compare against.
+
+The description text is pinned by a test (`description_above`), so
+rewording it to something that no longer says the binary can be stale
+fails the build rather than quietly removing the reason to call the tool.
