@@ -5,6 +5,50 @@
 
 ## 最終更新
 
+- 日付: 2026-08-21 その2 (**history 書き換えを実行し、force push まで完了した (push は user)。
+  公開履歴から実名と個人メールが消えた。GitHub 側に消せない残りが 1 種類ある。**
+
+  **1 パスでは終わらない。3 パス要る。** `--replace-text` は **blob の中身だけ**で
+  commit message を触らない。1 パス目が「成功」と出た後、2026-07 の commit message が
+  実名を 2 件抱えたまま残っていた。`--mailmap` が author/committer (ADR-0084)、
+  `--replace-message` が commit / tag message。**検証は ref ではなく
+  `git cat-file --batch-all-objects` で全オブジェクトを 1 回走査する** —
+  到達不能な残骸も含めて 0 件、旧アドレスのリテラル一致も 0 件。
+
+  **`refs/pull/` は消せない。** heads + tags = 644 commit で清潔だが、`--all` = 1320 commit。
+  **197 本の PR ref にぶら下がった旧 commit 676 本**が実名と旧メールを持ったまま残る。
+  **GitHub は `refs/pull/` への書き込みを拒否する**ので `push --force --mirror` は
+  失敗する (explicit refspec で回避)。**`for-each-ref 'refs/pull/*'` は 1 件も
+  マッチしない** — 3 階層なので `'refs/pull/'` が要る。消せるのは GitHub Support への
+  依頼だけで、依頼はアカウント所有者から出す必要がある = **user 側ボール**。
+
+  **削除して作り直す案は却下。** PR 214 本と、ADR が番号で参照している issue が消える。
+  塞げるのは「PR ref を意図的に列挙した人だけが辿れる穴」で、fork 0 / star 0 / watcher 0。
+  clone・`git log`・blame・Web UI・tag・release はすべて清潔になっている。
+
+  **追跡ファイル内の旧ハッシュ参照 427 件 (217 ユニーク / 21 ファイル) を付け替えた。**
+  1 回目は**対応表そのものが誤りで、217 件全部が実在しないハッシュ**になっていた。
+  原因は 2 つ。**filter-repo の `commit-map` は 2 回目以降に自動合成される** —
+  最後のパスの map が既に original→final で、手で連鎖させるとどこにも無い中間ハッシュが
+  できる。**`git rev-parse --short=7 <40桁>` はオブジェクトの実在を検証しない** —
+  それらしい短縮形が返るのでエラーにならない。検証を `cat-file -e "${short}^{commit}"` に
+  変えて作り直し、**HEAD の blob に同じ置換を当て直して作業ツリーとバイト比較**して確定
+  (改行正規化後 21/21 一致・369 insertions / 369 deletions)。
+
+  **ローカルの後始末**: stale な 48 branch は**削除せず `refs/pre-rewrite/` へ退避**した。
+  到達可能なまま `push --all` の対象外になり、§30 の削除ゲートも踏まない。
+  `refs/heads` は `develop` のみ。**`C:\claude\_dbboard-rewrite\pristine.git` と
+  `C:\claude\_dbboard-prerewrite-backup\` は実名入り** — 絶対に push しない。
+  前者は旧→新ハッシュ対応表の唯一の出所なので消さない。
+
+  `docs/maintainer/history-sanitize-runbook.md` を実態に合わせて全面改訂した
+  (3 パス構成 / `refs/pull` の 2 つの罠 / `--mirror` が失敗すること / `pii-scan.sh` の
+  自己テスト固定文字列がメールドメインの grep を誤爆させること / このリポには
+  再設定すべきブランチ保護がそもそも無いこと)。
+
+  **未完 (user 側)**: ① GitHub Support への `refs/pull/` + 到達不能オブジェクト purge 依頼、
+  ② `develop` / `main` に保護もルールセットも無い件の扱い、③ 公開 `.exe` の PII 目視確認。
+
 - 日付: 2026-08-21 (**公開リポに実接続名が出ていた。全 issue + 全 PR を掃除したが、
   GitHub の編集履歴に旧版が残っており、そこは画面からしか消せない。権限が足りず未完。**
 
