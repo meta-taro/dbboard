@@ -22,7 +22,7 @@ Desktop Phase 2 lands the capability model from ADR-0012:
 
 The shape was held back from issue 0001 on purpose ("Out of scope for
 Phase 1 (intentionally)") because it had not yet been implemented on
-desktop. It is now implemented at desktop commit `1c350f6` and
+desktop. It is now implemented at desktop commit `c3fe66c` and
 documented in [`docs/api-contract.md`](../../docs/api-contract.md). This
 issue tracks the desktop-side handoff so `dbboard-web` can mirror the
 addition.
@@ -34,7 +34,7 @@ scope for this repo.
 
 - **Not earlier**: the shape only stabilised when desktop Phase 2
   landed. Issue 0001 explicitly deferred it; mirroring before
-  `1c350f6` would have been guessing.
+  `c3fe66c` would have been guessing.
 - **Not later**: Phase 2 is purely **additive** to the Phase 1 surface
   (one new endpoint, one new error category, one new data shape — no
   existing endpoint or shape changes). A web service that mirrors
@@ -47,7 +47,7 @@ scope for this repo.
 ## Scope (what to mirror)
 
 Implement the additions to `docs/api-contract.md` of this repo,
-snapshotted at commit `1c350f6` or later. Concretely:
+snapshotted at commit `c3fe66c` or later. Concretely:
 
 ### Endpoint
 
@@ -116,7 +116,7 @@ snapshotted at commit `1c350f6` or later. Concretely:
   web service and asserts the two response bodies are deeply equal
   *modulo* the `id` field (each side reports its own adapter id).
 - [ ] `dbboard-web/docs/api-contract.md` is updated to mirror the
-  desktop additions at `1c350f6` (or the equivalent "pointer + delta"
+  desktop additions at `c3fe66c` (or the equivalent "pointer + delta"
   if the web copy is a pointer).
 
 ## Tech recommendations (non-binding for web)
@@ -141,10 +141,10 @@ snapshotted at commit `1c350f6` or later. Concretely:
 ## Handoff procedure
 
 1. Push the four pending desktop commits
-   (`0dc9e17..1c350f6`, plus this issue's docs commit) so
+   (`074c19f..c3fe66c`, plus this issue's docs commit) so
    `dbboard-web` planners can read the contract at a stable tag.
 2. In `dbboard-web`, open this issue (or its GitHub equivalent), link
-   back to this file and to `dbboard@1c350f6:docs/api-contract.md`.
+   back to this file and to `dbboard@c3fe66c:docs/api-contract.md`.
 3. Set this file's status to `in-progress` once web work starts, then
    `done` (with the web PR link) when acceptance criteria are met.
 

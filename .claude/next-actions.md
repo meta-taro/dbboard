@@ -7,6 +7,48 @@
 
 ## 最終更新
 
+- 日付: 2026-08-21 その2 (**git history の書き換えを実行して force push まで完了した
+  (push は user)。公開履歴から実名と個人メールが消えた。ただし GitHub 側に消せない
+  残りが 1 種類あり、それが user 側のボールとして残る。**
+  ① **書き換えは 1 パスでは終わらなかった。3 パス要る。**
+  `--replace-text` は **blob の中身だけ**で、commit message は触らない
+  (1 パス目「成功」の後に 2026-07 の commit message が実名を 2 件抱えたまま残っていた)。
+  `--mailmap` が author/committer、`--replace-message` が commit / tag message。
+  検証は ref ではなく **`git cat-file --batch-all-objects` で全オブジェクト 1 回走査** —
+  到達不能な残骸も含めて 0 件、旧アドレスのリテラル一致も 0 件。
+  ② **`refs/pull/` は消せない。** heads + tags = 644 commit で清潔だが、
+  `--all` = 1320 commit — **197 本の PR ref にぶら下がった旧 commit 676 本**が
+  実名と旧メールを持ったまま GitHub に残る。**GitHub は `refs/pull/` への書き込みを
+  拒否する**ので `push --force --mirror` は失敗する (explicit refspec で回避した)。
+  加えて **`for-each-ref 'refs/pull/*'` は 1 件もマッチしない** (3 階層なので
+  `'refs/pull/'` が要る)。**消せるのは GitHub Support への依頼だけで、
+  依頼はアカウント所有者から出す必要がある = user 側ボール。**
+  ③ **削除して作り直す案は却下した。** PR 214 本と、ADR が番号で参照している
+  issue が消える。塞げるのは「PR ref を意図的に列挙した人だけが辿れる穴」で、
+  fork 0 / star 0 / watcher 0。clone・`git log`・blame・Web UI・tag・release は
+  すべて清潔になっている。
+  ④ **追跡ファイル内の旧コミットハッシュ参照 427 件 (217 ユニーク / 21 ファイル) を
+  付け替えた。** 1 回目は**対応表そのものが間違っていて 217 件全部が実在しない
+  ハッシュ**になっていた。原因 2 つ — **filter-repo の `commit-map` は 2 回目以降
+  自動合成される**(最後のパスの map が既に original→final。手で連鎖させると
+  どこにも無い中間ハッシュができる)、**`git rev-parse --short=7 <40桁>` は
+  オブジェクトの実在を検証しない**(それらしい短縮形が返るのでエラーにならない)。
+  検証を `cat-file -e "${short}^{commit}"` に変えて作り直し、
+  さらに **HEAD の blob に同じ置換を当て直して作業ツリーとバイト比較**して確定。
+  ⑤ `docs/maintainer/history-sanitize-runbook.md` を実態に合わせて全面改訂した
+  (3 パス構成 / `refs/pull` の 2 つの罠 / `--mirror` が失敗すること /
+  `pii-scan.sh` の自己テスト固定文字列が `gmail.com` の grep を誤爆させること /
+  このリポには再設定すべきブランチ保護がそもそも無いこと)。
+  ⑥ **ローカルの後始末**: stale な 48 branch は**削除せず `refs/pre-rewrite/` へ退避**
+  (到達可能なまま `push --all` の対象外にする。§30 の削除ゲートも踏まない)。
+  `refs/heads` は `develop` のみ。**`C:\claude\_dbboard-rewrite\pristine.git` と
+  `C:\claude\_dbboard-prerewrite-backup\` は実名入り** — 絶対に push しない。
+  前者は旧→新ハッシュ対応表の唯一の出所なので消さない。
+  **user 側ボール = ① GitHub Support への purge 依頼 (上記②)、
+  ② `develop` / `main` がブランチ保護もルールセットも無い件の扱い、
+  ③ 公開 `.exe` の PII 目視確認、④ v1.0 の残り 3 ゲート、⑤ §36 の改善要望、
+  ⑥ C: の空き容量 (`/c/claude` の外が大半)。**)
+
 - 日付: 2026-08-21 (**公開リポに実接続名が出ていたので全件掃除した。本文の置換と、
   GitHub の「編集履歴」に残っていた旧版リビジョン 7 件の削除まで完了。**
   ① **公開範囲の実測**: 全 issue 16 件 + 全 PR 196 件を dump して実名を grep した。
@@ -56,7 +98,7 @@
   check が 1 つ見つかった。open PR = 0。**
   ① **リリース経路**: #207 (リリース準備) → develop、#208 (ロードマップ帳簿) →
   develop、#209 (セキュリティ) → develop、#211 (`develop` → `main`) マージ済 →
-  `main` = `3d8434b`、`main..develop` = 0。`main` の CI は 4 ジョブ + pii-scan すべて緑。
+  `main` = `7540b90`、`main..develop` = 0。`main` の CI は 4 ジョブ + pii-scan すべて緑。
   タグ `v0.10.0` (annotated) push 済 → release run `32366885046`。
   **今回は `--no-verify` を使っていない。** タグ push の直前に `target/release` を
   掴むプロセスを確認して 0 だったため、pre-push の `cargo build --release` が
@@ -71,7 +113,7 @@
   (`cargo metadata` はコンパイルせずグラフを解決する) ので `rust` から独立させ、
   cargo-deny をピン留めしてキャッシュ = **同一ブランチで 15 秒**。
   ③ **`deps` ジョブは初回実行でいきなり 1 件見つけた。** `deny.toml` の
-  `OFL-1.1` / `Ubuntu-font-1.0` が、egui クライアントを畳んだ `a2d92fa` 以降
+  `OFL-1.1` / `Ubuntu-font-1.0` が、egui クライアントを畳んだ `af17200` 以降
   **死んだ許可のまま残っていた**。ADR-0117 が「ignore リストは見える形で腐る」と
   主張する PR の中で、その主張が最初の機会に自分で発火した形。
   ④ **直せないものは advisory 1 件につき 1 エントリで理由を書いた。**

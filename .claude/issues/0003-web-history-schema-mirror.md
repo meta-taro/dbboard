@@ -8,7 +8,7 @@
 - **Follows**: [0002-web-capabilities-mirror](0002-web-capabilities-mirror.md)
 - **Anchors**: desktop ADR-0017 in [`docs/decisions.md`](../../docs/decisions.md)
   (search `## ADR-0017`); reference implementation in
-  `crates/dbboard-ui/src/history.rs` at desktop commit `72cb165` (or later).
+  `crates/dbboard-ui/src/history.rs` at desktop commit `42cf5f2` (or later).
 
 ## What this is — and what it isn't
 
@@ -47,7 +47,7 @@ diverge between the two repos. The record shape may not.
 ## Scope (what to mirror)
 
 Implement the persistence layer described by ADR-0017 sections 1, 2,
-5, 6, 7 of this repo, snapshotted at commit `72cb165` or later.
+5, 6, 7 of this repo, snapshotted at commit `42cf5f2` or later.
 Concretely:
 
 ### Record schema (single source of truth — copy verbatim)
@@ -228,11 +228,11 @@ not a *schema* policy, but the brief must flag it:
 ## Handoff procedure
 
 1. Push the pending desktop commits
-   (`62ed834..72cb165`, plus this issue's docs commit) so the
+   (`39e179f..42cf5f2`, plus this issue's docs commit) so the
    `dbboard-web` planner can read ADR-0017 at a stable point.
 2. In `dbboard-web`, open this issue (or its GitHub equivalent), link
    back to this file and to
-   `dbboard@72cb165:docs/decisions.md` (ADR-0017 anchor).
+   `dbboard@42cf5f2:docs/decisions.md` (ADR-0017 anchor).
 3. Set this file's status to `in-progress` once web work starts, then
    `done` (with the web PR link) when acceptance criteria are met.
 

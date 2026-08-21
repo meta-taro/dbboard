@@ -37,7 +37,7 @@ scope for this repo.
 ## Scope (what to mirror)
 
 Implement the exact surface defined in `docs/api-contract.md` of this
-repo, snapshotted at commit `075a879` or later. Concretely:
+repo, snapshotted at commit `0247022` or later. Concretely:
 
 ### Endpoints
 - `GET /health` → `200 { "status": "ok" }`
@@ -123,10 +123,10 @@ repo, snapshotted at commit `075a879` or later. Concretely:
 
 ## Handoff procedure
 
-1. Push the four pending desktop commits (`bad80e0..075a879`) so
+1. Push the four pending desktop commits (`682a05e..0247022`) so
    `dbboard-web` planners can read the contract at a stable tag.
 2. In `dbboard-web`, open this issue (or its GitHub equivalent), link
-   back to this file and to `dbboard@075a879:docs/api-contract.md`.
+   back to this file and to `dbboard@0247022:docs/api-contract.md`.
 3. Set this file's status to `in-progress` once web work starts, then
    `done` (with the web PR link) when acceptance criteria are met.
 

@@ -1,8 +1,8 @@
 # 0011: Full DDL extraction via `DatabaseAdapter::describe_table` (Phase 4 Stage 2 Group D-1)
 
 - **Status**: closed 2026-07-02 — all four slices landed on
-  `feature/ddl-extraction` (a `a42a27c` + review-fix `bba4072`,
-  b `b509a36`, c `dfdaaca`, d = docs sweep). ADR-0028 Accepted.
+  `feature/ddl-extraction` (a `92c5749` + review-fix `87542e4`,
+  b `305ac63`, c `50f335e`, d = docs sweep). ADR-0028 Accepted.
 - **Phase**: 4 Stage 2 Group D-1 (the first of two Group D ADRs).
   Group A (issue 0008 / PR #43), Group B (issue 0009 / PR #45), Group C
   (issue 0010 / PR #47) all closed on `develop`.
@@ -110,7 +110,7 @@ ADR-0028 §Context):
 
 - [x] ADR-0028 status Proposed (2026-07-01) → Accepted (2026-07-02),
       slice commit hashes embedded in ADR body (matching the
-      ADR-0026 `fff669c` / ADR-0027 `34ad0eb` slice-d placeholder
+      ADR-0026 `3b290da` / ADR-0027 `b2f5c95` slice-d placeholder
       pattern).
 - [x] `docs/roadmap.md` Phase 4 Stage 2 Group D-1 entry ticked
       (deferred to the post-merge doc-sync chore PR per the

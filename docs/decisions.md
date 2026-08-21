@@ -3050,21 +3050,21 @@ NestJS-side persistence; this ADR adds nothing for web to mirror.
 `.claude/issues/0009-ai-streaming-cancel-tokens.md`. Lands on
 `feature/ai-streaming-cancel-tokens` across four commits:
 
-- Slice (a) `2cb012e` — `dbboard-ai` trait extension with
+- Slice (a) `e869ff3` — `dbboard-ai` trait extension with
   `stream_explain` / `stream_suggest_sql` returning
   `BoxStream<'static, AiResult<StreamEvent>>`, plus normalized
   `StreamEvent` / `StopReason` enums and the previously-unused
   `AiCapabilities::has_streaming` flag.
-- Slice (b) `e5f49d0` — Anthropic SSE wired through
+- Slice (b) `edff3cb` — Anthropic SSE wired through
   `dbboard-anthropic` via `reqwest-eventsource` 0.6 with
   `RetryPolicy::Never` (Decision 4 — token-billed POSTs must not
   silently retry).
-- Slice (c) `e8f5fd5` — `dbboard-ui` worker rewired with a tokio
+- Slice (c) `a09316a` — `dbboard-ui` worker rewired with a tokio
   async loop + std-to-tokio mpsc bridge thread + per-request
   `CancellationToken`. `tokio::select!` races the stream against
   the token; the cancel arm emits `Reply::AiCancelled` directly
   rather than synthesising `AiError::Cancelled` (Decision 12).
-- Slice (d) `fff669c` — `AiPanel` state machine extended with
+- Slice (d) `3b290da` — `AiPanel` state machine extended with
   `StreamingAcc` + `streaming` + `cancelled` fields, real
   `on_stream_chunk` / `on_stream_complete` / `on_cancelled`,
   Send↔Cancel button toggle, token meter, and 3 new Fluent keys
@@ -3452,32 +3452,32 @@ coupling in the trait).
 - **Status:** Accepted (2026-07-01). Implementation tracker:
   [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
   Lands on `feature/ai-history-v2` across four commits:
-  - Slice (a) `b16537f` — `dbboard-ui::history` v:2 reader + writer
+  - Slice (a) `f14a387` — `dbboard-ui::history` v:2 reader + writer
     (`RecordWire` flattened, `kind: "query" | "ai"` discriminator,
     `HistoryEntry::{Query, Ai}` split, 64 KiB write-side truncation,
     v:1 records read transparently as `kind: "query"`, unknown `kind`
     / `intent` drop + counter tick). `emit_history_fixture` extended
     to emit `kind: "ai"` alongside `kind: "query"`.
-  - Slice (b) `13f7736` — `dbboard-ai::AiProvider::identity()` +
+  - Slice (b) `094e6a0` — `dbboard-ai::AiProvider::identity()` +
     `AiResponse { provider, model }` additive fields +
     `dbboard-anthropic` implementation + `dbboard-ui::worker`
     spawn-time identity snapshot stamped on every terminal reply
     (`Reply::AiResponded` / `AiStreamComplete` / `AiFailed` /
     `AiCancelled` gain `provider, model`).
-  - Slice (c) `0e76223` — `dbboard-ui::lib` UI-thread AI history
+  - Slice (c) `cb5f55d` — `dbboard-ui::lib` UI-thread AI history
     write point. `PendingAiSubmit` snapshot at Send, terminal-reply
     dispatch composes `HistoryEntry::Ai { … }` from the pending
     record + reply payload + spawn-time identity + streaming
     accumulator peek (peeked before `AiPanel::on_stream_complete`
     drains it). 18 new unit tests covering all four terminal reply
     arms + helper round-trips.
-  - Slice (d) `34ad0eb` — docs sweep (this ADR flipped to Accepted,
+  - Slice (d) `b2f5c95` — docs sweep (this ADR flipped to Accepted,
     `docs/roadmap.md` Phase 4 Stage 2 Group C ticked, `README.md`
     AI section gains the verbatim-logging warning,
     `.claude/issues/0010` closed, brief 0008 Anchors filled in,
     `.claude/project-status.md` records the slice landing).
     All five commits shipped via PR #47, merged to `develop` at
-    `768e009` on 2026-07-01.
+    `1aec99b` on 2026-07-01.
 - **Cross-repo brief:** [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md) (issued same PR)
 - **Supersedes:** ADR-0017 §1 record shape (the v:1 schema). ADR-0017's §3
   storage / §4 rotation / §6 forward-compat / §7 secret-handling stances
@@ -3798,12 +3798,12 @@ moves through brief 0008.
 - **Status:** Accepted (2026-07-02). Implementation tracker:
   [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md)
   (closed). Lands on `feature/ddl-extraction` across four commits:
-  - Slice (a) `a42a27c` — `dbboard-core` trait method + `TableSchema` +
+  - Slice (a) `92c5749` — `dbboard-core` trait method + `TableSchema` +
     `ColumnInfo` extension + `Capabilities::has_describe_table`
-    (review notes addressed in `bba4072`).
-  - Slice (b) `b509a36` — `describe_table` in the turso, d1, and
+    (review notes addressed in `87542e4`).
+  - Slice (b) `305ac63` — `describe_table` in the turso, d1, and
     postgres adapters with `has_describe_table = true` each.
-  - Slice (c) `dfdaaca` — `SuggestRequest.full_schema` +
+  - Slice (c) `50f335e` — `SuggestRequest.full_schema` +
     Anthropic prompt rendering + worker `PrefetchSchema` fan-out
     (semaphore cap 8) + `AiPanel` "Include column details" checkbox +
     warning banner + 11-locale i18n keys. One deviation from the plan
@@ -8700,9 +8700,9 @@ merge regardless of whether anything leaked. A check that fails identically
 whether or not the condition it tests for holds carries no information.
 
 That cost was paid before it was noticed. The merge of PR #127 leaked a
-personal address in the author field of `e15dcff` — a genuine finding, exactly
+personal address in the author field of `c355802` — a genuine finding, exactly
 what ADR-0084 exists to catch. The fix (turning on **Keep my email addresses
-private**) worked: the next squash commit, `d7ed16b`, was authored by the
+private**) worked: the next squash commit, `aa90129`, was authored by the
 noreply form. The identity step still failed, now on the committer, and the
 two failures are indistinguishable from the job status alone. A real leak and
 a false positive that had been firing on every merge since ADR-0084 landed

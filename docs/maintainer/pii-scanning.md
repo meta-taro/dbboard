@@ -116,7 +116,7 @@ authored — the "Squash and merge" button stamps it with the account's primary
 address, not with `git config user.email`. So a repo whose local commits are all
 clean still publishes a personal address on every merge, and CI fails on the
 resulting commit. That is exactly what happened on 2026-07-31: the branch
-commits of PR #127 were noreply, the squash commit `e15dcff` it produced on
+commits of PR #127 were noreply, the squash commit `c355802` it produced on
 `develop` was not, and the identity check went red on a range this clone did not
 write.
 

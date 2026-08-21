@@ -3,7 +3,7 @@
 - **Status**: closed (resolved by ADR-0022, 2026-06-11)
 - **Phase**: 2 (UX polish, post ADR-0020)
 - **Opened**: 2026-06-04
-- **Unblocked**: 2026-06-11 (ADR-0020 merged in PR #14, `develop@209fd81`)
+- **Unblocked**: 2026-06-11 (ADR-0020 merged in PR #14, `develop@91fee39`)
 - **Closed**: 2026-06-11 — implemented on `feature/runtime-locale-switcher`.
   ADR-0022 records the design (per-session in-process swap, no
   Command/Reply round trip, native names hard-coded in `apps/dbboard`,
@@ -74,5 +74,5 @@ re-rendering).
 - No web mirror — same category as ADR-0015 / ADR-0020 (desktop-
   side UX, no contract change).
 - ~~Blocked by: ADR-0020 implementation~~ — ADR-0020 shipped in PR #14
-  (`develop@209fd81`, 2026-06-11). ADR-0022 borrows the
+  (`develop@91fee39`, 2026-06-11). ADR-0022 borrows the
   in-process-mutation framing but lands a leaner wiring.

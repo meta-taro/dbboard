@@ -2,7 +2,7 @@
 
 - **Status**: done — all three slices shipped in v0.7.0. Slice 3 (the wiring
   into `dbboard-connect`, the desktop client and the MCP server) landed in
-  `44092ce`; this line said "next" for a week after the fact.
+  `1f5800d`; this line said "next" for a week after the fact.
 - **Opened**: 2026-08-05
 - **Owner**: unassigned
 - **Related ADRs**: ADR-0091 (document stores join through the same trait),

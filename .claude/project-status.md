@@ -5,6 +5,50 @@
 
 ## 最終更新
 
+- 日付: 2026-08-21 その2 (**history 書き換えを実行し、force push まで完了した (push は user)。
+  公開履歴から実名と個人メールが消えた。GitHub 側に消せない残りが 1 種類ある。**
+
+  **1 パスでは終わらない。3 パス要る。** `--replace-text` は **blob の中身だけ**で
+  commit message を触らない。1 パス目が「成功」と出た後、2026-07 の commit message が
+  実名を 2 件抱えたまま残っていた。`--mailmap` が author/committer (ADR-0084)、
+  `--replace-message` が commit / tag message。**検証は ref ではなく
+  `git cat-file --batch-all-objects` で全オブジェクトを 1 回走査する** —
+  到達不能な残骸も含めて 0 件、旧アドレスのリテラル一致も 0 件。
+
+  **`refs/pull/` は消せない。** heads + tags = 644 commit で清潔だが、`--all` = 1320 commit。
+  **197 本の PR ref にぶら下がった旧 commit 676 本**が実名と旧メールを持ったまま残る。
+  **GitHub は `refs/pull/` への書き込みを拒否する**ので `push --force --mirror` は
+  失敗する (explicit refspec で回避)。**`for-each-ref 'refs/pull/*'` は 1 件も
+  マッチしない** — 3 階層なので `'refs/pull/'` が要る。消せるのは GitHub Support への
+  依頼だけで、依頼はアカウント所有者から出す必要がある = **user 側ボール**。
+
+  **削除して作り直す案は却下。** PR 214 本と、ADR が番号で参照している issue が消える。
+  塞げるのは「PR ref を意図的に列挙した人だけが辿れる穴」で、fork 0 / star 0 / watcher 0。
+  clone・`git log`・blame・Web UI・tag・release はすべて清潔になっている。
+
+  **追跡ファイル内の旧ハッシュ参照 427 件 (217 ユニーク / 21 ファイル) を付け替えた。**
+  1 回目は**対応表そのものが誤りで、217 件全部が実在しないハッシュ**になっていた。
+  原因は 2 つ。**filter-repo の `commit-map` は 2 回目以降に自動合成される** —
+  最後のパスの map が既に original→final で、手で連鎖させるとどこにも無い中間ハッシュが
+  できる。**`git rev-parse --short=7 <40桁>` はオブジェクトの実在を検証しない** —
+  それらしい短縮形が返るのでエラーにならない。検証を `cat-file -e "${short}^{commit}"` に
+  変えて作り直し、**HEAD の blob に同じ置換を当て直して作業ツリーとバイト比較**して確定
+  (改行正規化後 21/21 一致・369 insertions / 369 deletions)。
+
+  **ローカルの後始末**: stale な 48 branch は**削除せず `refs/pre-rewrite/` へ退避**した。
+  到達可能なまま `push --all` の対象外になり、§30 の削除ゲートも踏まない。
+  `refs/heads` は `develop` のみ。**`C:\claude\_dbboard-rewrite\pristine.git` と
+  `C:\claude\_dbboard-prerewrite-backup\` は実名入り** — 絶対に push しない。
+  前者は旧→新ハッシュ対応表の唯一の出所なので消さない。
+
+  `docs/maintainer/history-sanitize-runbook.md` を実態に合わせて全面改訂した
+  (3 パス構成 / `refs/pull` の 2 つの罠 / `--mirror` が失敗すること / `pii-scan.sh` の
+  自己テスト固定文字列がメールドメインの grep を誤爆させること / このリポには
+  再設定すべきブランチ保護がそもそも無いこと)。
+
+  **未完 (user 側)**: ① GitHub Support への `refs/pull/` + 到達不能オブジェクト purge 依頼、
+  ② `develop` / `main` に保護もルールセットも無い件の扱い、③ 公開 `.exe` の PII 目視確認。
+
 - 日付: 2026-08-21 (**公開リポに実接続名が出ていた。全 issue + 全 PR を掃除したが、
   GitHub の編集履歴に旧版が残っており、そこは画面からしか消せない。権限が足りず未完。**
 
@@ -44,12 +88,12 @@
 
 - 日付: 2026-08-20 (**v0.10.0 を公開した。リリース前セキュリティレビュー (baseline §24) を
   回したところ、設定してあるのに誰も走らせていない check が 1 つ出てきた。
-  open PR = 0、develop = main = `3d8434b`。**
+  open PR = 0、develop = main = `7540b90`。**
 
-  **2026-08-20 security-reviewer 実行：HIGH 1 / MEDIUM 1。HIGH は #209 (`bc98d60`) で
+  **2026-08-20 security-reviewer 実行：HIGH 1 / MEDIUM 1。HIGH は #209 (`8d506b7`) で
   対処、MEDIUM は #210 に分離して未着手。**
 
-  **やったこと**: (a) v0.9.0 のリリース (#197 / タグ `v0.9.0` / `main` = `49634f3`)。
+  **やったこと**: (a) v0.9.0 のリリース (#197 / タグ `v0.9.0` / `main` = `3527998`)。
   (b) v0.10.0 のリリース準備 #207、ロードマップの帳簿修正 #208、
   セキュリティ #209 を develop へ。(c) リリース PR #211 (`develop` → `main`) をマージ。
   (d) タグ `v0.10.0` を push、release run `32366885046`。(e) Issue #210 を起票。
@@ -69,7 +113,7 @@
   `deny.toml` に記録 (ADR-0117)。
 
   **`deps` ジョブは初回実行で 1 件見つけた**: `deny.toml` の `OFL-1.1` /
-  `Ubuntu-font-1.0` が、egui クライアントを畳んだ `a2d92fa` 以降**死んだ許可のまま
+  `Ubuntu-font-1.0` が、egui クライアントを畳んだ `af17200` 以降**死んだ許可のまま
   残っていた**。ADR-0117 が「ignore リストは見える形で腐る」と主張する PR の中で、
   その主張が最初の機会に自分で発火した。
 
@@ -103,7 +147,7 @@
 
 - 日付: 2026-08-19 (**検証シート 003 を通すために MCP へ 7 動詞を足した。
   PR 6 本マージ (#182 #183 #184 #185 #186 #187)、open は #180 の 1 本。
-  develop = `b97cda2`。**
+  develop = `84d613c`。**
 
   **やったこと**: (a) MCP に `set_editor_sql` / `run_query` / `open_ai_panel` /
   `open_ai_settings` (#185)、`get_ui_locale` / `set_ui_locale` (#182)、
@@ -111,7 +155,7 @@
   (b) クエリツールバーの反応が履歴のキャッシュで止まる不具合を修正 (#183)。
   (c) シート 003 を user が実施し 10 行すべて `OK` (#186)。
   (d) 三つのシートから `実施日` / `担当` の列を削除 (#187)。
-  (e) Issue #181 起票。(f) #180 を `b97cda2` に rebase。
+  (e) Issue #181 起票。(f) #180 を `84d613c` に rebase。
 
   **なぜ MCP を足す話になったか**: 元のタスクは「シート 003 を人が実施する」で、
   言語メニューを開く・切り替える・画面を見る、を user に 1 手ずつ頼む予定だった。
@@ -163,7 +207,7 @@
   **動作確認 (アプリを実際に走らせての確認) は 003 の 10 行が該当し、user が実施済**。)
 
 - 日付: 2026-08-16 その2 (**v1.0 ゲート 4 (コード署名) を「買わない」側で閉じた (#178)。
-  残り 3 ゲート、全部 user 側。open PR = 0。develop = `d4c0c7f`。**
+  残り 3 ゲート、全部 user 側。open PR = 0。develop = `7e275a8`。**
 
   **やったこと**: ADR-0106 を追加し、README 2 箇所 / `site/index.html` /
   `release.yml` の `--notes` を「未署名は決定であって漏れではない」に統一。
@@ -242,7 +286,7 @@
 
   **入れたもの**: #171 エクスポートダイアログの接続リストの可読性修正 → develop、
   #172 リリース準備 (CHANGELOG / roadmap / DESIGN.md / バージョンスタンプ) → develop、
-  #173 `develop` → `main` のリリース PR。`main` = `2a9b1e8`、タグ `v0.8.0` を push 済。
+  #173 `develop` → `main` のリリース PR。`main` = `29413b4`、タグ `v0.8.0` を push 済。
 
   **リリース内容** (ADR 単位): 0100 文書セルのツリー表示 / 0101 ステータスバー /
   0102 ENUM プルダウン (MySQL) / 0103 `aurora-dsql-iam` の画面編集 /
@@ -262,7 +306,7 @@
   **エージェント側のミス 1 件 (記録)**: DESIGN.md の 3 コンポーネント仕様 (`128f18e`) を
   #171 のブランチを push した**後**に commit したため、#171 のマージに乗らなかった。
   リリースブランチを `origin/develop` に rebase してから `git cherry-pick` で拾って
-  `c316e9b` として復旧。**push 済みブランチに追加 commit を積んだら、その PR が
+  `19d0564` として復旧。**push 済みブランチに追加 commit を積んだら、その PR が
   マージ済みでないか必ず確認する。**
 
   **CI**: #172 (ci 4m41s / pii-scan 9s)、#173 (ci 4m59s / pii-scan 17s)、
@@ -286,7 +330,7 @@
 - 日付: 2026-08-14 (**open PR = 0。PR の滞留は解消しきった。**
 
   **入れたもの (develop)**: #159 文書ストアをガイドに記載 / #169 08-13 のセッション記録。
-  develop の HEAD は `7569cd5`。**未マージの PR は残っていない。**
+  develop の HEAD は `8dd3ac5`。**未マージの PR は残っていない。**
 
   **#159 の push で 1 往復ロスした (エージェント側のミス・再発防止のため記録)**:
   PR の head は `docs/document-stores-in-guides` だったが、
@@ -315,7 +359,7 @@
   スクリーンショット (ADR-0097・0098) / #163 貼り付け値の空白除去 (ADR-0099) /
   #162 文書セルのツリー表示・ステータスバー・ENUM プルダウン・Aurora DSQL の画面編集
   (ADR-0100〜0103) / #164 検証シート 003 (UI ロケール) / #149 姉妹リポ用の貼り付けブロック /
-  #165 llms.txt。develop の HEAD は `694bcb3`。
+  #165 llms.txt。develop の HEAD は `d89be6e`。
 
   **CI (ADR-0104)**: ubuntu-latest で 3 ジョブ (cargo fmt/clippy/check/test ・
   svelte-check + vitest ・ site の node --test) + 既存の `scan` (pii-scan)。
@@ -334,7 +378,7 @@
   互いにコンフリクトし、**1 本ずつしか解けない**。番号順になるよう差し込んで解消し、
   現在は 0096 → 0105 が連続している。
 
-  **未了**: #159 (文書ストアをガイドに書く) はコンフリクト解消済み (`889a28a`) だが
+  **未了**: #159 (文書ストアをガイドに書く) はコンフリクト解消済み (`1ab3e74`) だが
   **未 push** — `target/release/dbboard-mcp.exe` が使用中で `cargo build --release` が
   上書きできず、pre-push が通らないため。衝突は `site/index.html` の OGP 1 箇所のみで、
   説明文は #159 側・プレビュー画像は develop 側 (ADR-0098) を採った。

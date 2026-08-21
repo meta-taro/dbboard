@@ -1,6 +1,6 @@
 # 0010: AI calls recorded in `history.jsonl` (Phase 4 Stage 2 Group C, schema v:2)
 
-- **Status**: closed 2026-07-01 (landed on `feature/ai-history-v2` across four commits: slice a `b16537f` + slice b `13f7736` + slice c `0e76223` + slice d = this commit)
+- **Status**: closed 2026-07-01 (landed on `feature/ai-history-v2` across four commits: slice a `f14a387` + slice b `094e6a0` + slice c `cb5f55d` + slice d = this commit)
 - **Phase**: 4 Stage 2 Group C. Phase 4 Stage 2 Group A (issue 0008
   closed via PR #43) and Group B (issue 0009 closed via PR #45) are
   both closed and on `develop`.
@@ -38,7 +38,7 @@ ADR-0027 §Context):
 
 ## Acceptance
 
-### `dbboard-ui::history` (the v:2 module) — slice (a) `b16537f`
+### `dbboard-ui::history` (the v:2 module) — slice (a) `f14a387`
 
 - [x] `CURRENT_VERSION` bumped from `1` to `2`.
 - [x] `RecordWire` becomes a flat struct with optional fields and a
@@ -61,7 +61,7 @@ ADR-0027 §Context):
 - [x] `fixture::serialize` (the doc-hidden shim) extends to AI
       records.
 
-### `dbboard-ai` (trait + value types) — slice (b) `13f7736`
+### `dbboard-ai` (trait + value types) — slice (b) `094e6a0`
 
 - [x] New `AiProvider::identity(&self) -> (&'static str, &str)`
       returning `(provider_id, model_id)`. Default impl returns
@@ -71,7 +71,7 @@ ADR-0027 §Context):
       the worker copies it through to the new `Reply` fields.
 - [x] No new dependency.
 
-### `dbboard-anthropic` — slice (b) `13f7736`
+### `dbboard-anthropic` — slice (b) `094e6a0`
 
 - [x] `AnthropicProvider::identity()` returns
       `("anthropic", &self.model)`.
@@ -79,7 +79,7 @@ ADR-0027 §Context):
 - [x] All existing tests pass unchanged (the new fields are
       populated; assertions ignore them).
 
-### `dbboard-ui::worker` (terminal reply plumbing) — slice (b) `13f7736`
+### `dbboard-ui::worker` (terminal reply plumbing) — slice (b) `094e6a0`
 
 - [x] `Reply::AiResponded` / `AiStreamComplete` / `AiFailed` /
       `AiCancelled` each gain `provider: String, model: String`
@@ -92,7 +92,7 @@ ADR-0027 §Context):
       reply (the existing 11 tokio tests grow by one assertion
       each — minimal churn).
 
-### `dbboard-ui::ai` + `dbboard-ui::lib` (the write point) — slice (c) `0e76223`
+### `dbboard-ui::ai` + `dbboard-ui::lib` (the write point) — slice (c) `cb5f55d`
 
 - [x] `AiPanel` exposes the in-flight submit snapshot (the prompt
       + intent + start instant) so `lib.rs` can compose the AI
@@ -114,7 +114,7 @@ ADR-0027 §Context):
 
 - [x] `examples/emit_history_fixture` emits one `kind: "query"` +
       one `kind: "ai"` line minimum, both v:2. Delivered as part of
-      slice (a) `b16537f` — the fixture example now emits 11 lines
+      slice (a) `f14a387` — the fixture example now emits 11 lines
       (10 query + 1 AI, all v:2) with a pinned assertion in
       `fixture_output_matches_brief_conventions`.
 - [x] Brief 0008 lands in this PR with status `open` and the
