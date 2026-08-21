@@ -56,7 +56,7 @@
   check が 1 つ見つかった。open PR = 0。**
   ① **リリース経路**: #207 (リリース準備) → develop、#208 (ロードマップ帳簿) →
   develop、#209 (セキュリティ) → develop、#211 (`develop` → `main`) マージ済 →
-  `main` = `3d8434b`、`main..develop` = 0。`main` の CI は 4 ジョブ + pii-scan すべて緑。
+  `main` = `7540b90`、`main..develop` = 0。`main` の CI は 4 ジョブ + pii-scan すべて緑。
   タグ `v0.10.0` (annotated) push 済 → release run `32366885046`。
   **今回は `--no-verify` を使っていない。** タグ push の直前に `target/release` を
   掴むプロセスを確認して 0 だったため、pre-push の `cargo build --release` が
@@ -71,7 +71,7 @@
   (`cargo metadata` はコンパイルせずグラフを解決する) ので `rust` から独立させ、
   cargo-deny をピン留めしてキャッシュ = **同一ブランチで 15 秒**。
   ③ **`deps` ジョブは初回実行でいきなり 1 件見つけた。** `deny.toml` の
-  `OFL-1.1` / `Ubuntu-font-1.0` が、egui クライアントを畳んだ `a2d92fa` 以降
+  `OFL-1.1` / `Ubuntu-font-1.0` が、egui クライアントを畳んだ `af17200` 以降
   **死んだ許可のまま残っていた**。ADR-0117 が「ignore リストは見える形で腐る」と
   主張する PR の中で、その主張が最初の機会に自分で発火した形。
   ④ **直せないものは advisory 1 件につき 1 エントリで理由を書いた。**

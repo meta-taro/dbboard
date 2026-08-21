@@ -12,10 +12,10 @@
   (search `## ADR-0027`, Accepted 2026-07-01); v:2 reference
   implementation in `crates/dbboard-ui/src/history.rs` on
   `feature/ai-history-v2` at the four-slice landing (slice a
-  `b16537f` = reader + writer, slice b `13f7736` = provider identity,
-  slice c `0e76223` = UI write point, slice d `34ad0eb` = docs sweep).
+  `f14a387` = reader + writer, slice b `094e6a0` = provider identity,
+  slice c `cb5f55d` = UI write point, slice d `b2f5c95` = docs sweep).
   All five commits landed on `develop` via PR #47 at merge commit
-  `768e009` on 2026-07-01.
+  `1aec99b` on 2026-07-01.
 
 ## What this is
 

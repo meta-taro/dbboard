@@ -87,7 +87,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 400 行トリ
   main の内容は develop に完全に含まれていた (`git log develop..main` の 2 コミットは
   どちらも develop の内容の squash) ので、`merge -s ours --no-commit` +
   `read-tree --reset -u develop` でツリーを develop と一致させたマージコミット
-  `b98f7a6` を作った。これで develop が main の祖先に戻り、次のリリース PR は
+  `bf7a696` を作った。これで develop が main の祖先に戻り、次のリリース PR は
   衝突しない。
   **代償**: squash が隠していた noreply 切替前の古いコミットが main から到達可能に
   なり、**`main` の `pii-scan` identity が赤になった**。アドレス自体は元から develop
@@ -99,7 +99,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 400 行トリ
   がすべて緑。`release: v0.5.1` のコミット 1 本だけ `--no-verify` を使ったが、これは
   Windows libSQL の teardown segfault (13 テスト全部 ok の後にプロセスが落ちる)
   という既知の唯一の例外で、PII スキャンは hook の 1 番目で通過済み + 手動で再実行済み。
-  マージコミット `b98f7a6` は hook を全部通している。)
+  マージコミット `bf7a696` は hook を全部通している。)
 
 - 日付: 2026-08-05 その4 (**v0.5.0 リリース + 文書ストアを Phase 6 に確定 (ADR-0091)。**
 
@@ -270,7 +270,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 400 行トリ
 - 日付: 2026-08-04 その3 (**v0.4.0 リリース。CI の Node バージョンずれを 1 件修正。**
   リリースが 2 週間止まっていた理由は、`Cargo.toml` のバージョンだけ 0.4.0 に上がって
   `CHANGELOG.md` の `## [Unreleased]` が空だったこと = タグを打つ根拠が無かった。
-  ADR-0047〜0086 を棚卸しして 0.4.0 節を書き (`7bc5e60`)、compare リンクも v0.4.0 を
+  ADR-0047〜0086 を棚卸しして 0.4.0 節を書き (`0359da6`)、compare リンクも v0.4.0 を
   追加して修正。PR #133 で main へ、タグ `v0.4.0` を push。
   **1 回目のタグビルド (run 30885499852) は Tauri 2 の 2 ジョブが `Install frontend deps`
   で即死**: `Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite`。
@@ -284,8 +284,8 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 400 行トリ
   → release not found) = タグを安全に張り直せる状態だった。
   修正は両 `setup-node` を `node-version: 22` にするだけ (PR #134)。
   ただし #133 が squash マージだったため develop と main が `release.yml` で衝突し、
-  `origin/main` を develop に取り込んで解決 (`d977403`)。#134 は **merge commit** で
-  取り込み (`174fb97`) — squash を続けると同じ乖離が毎回出るため。
+  `origin/main` を develop に取り込んで解決 (`d881fc5`)。#134 は **merge commit** で
+  取り込み (`4a3364e`) — squash を続けると同じ乖離が毎回出るため。
   タグは `git tag -d` + `git push origin :refs/tags/v0.4.0` で消してから main 先端
   (`1dad53e`) に張り直し、**run 30888094754 は 5 ジョブ全緑で publish まで到達**。
   リリース v0.4.0 (draft=false) に 10 資産が付いた: `dbboard-windows-x86_64.exe` /
@@ -302,14 +302,14 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 400 行トリ
   公開してよいのは `apply_row_update` まで。**接続 CRUD は開けない** — agent が接続定義と
   keychain ref を書き換えられるようになり、baseline §15 の「credential 操作は人間のみ」を
   構造的に壊すため。dump/restore も同様に破壊的。v0.5.0 スコープにするかは user 未回答。
-  なお commit `d531e20` と `d977403` は pre-commit の cargo test が例の Windows libSQL
+  なお commit `743ecea` と `d881fc5` は pre-commit の cargo test が例の Windows libSQL
   teardown segfault (rc=139) で落ちたため `--no-verify`。pii-scan は両方 clean、
   変更は YAML のみ。)
 
 - 日付: 2026-08-04 その2 (**#130 クローズ + 記録の訂正 2 件。**
-  PR #132 (squash `051c9cd`) が develop にマージされ、issue #130 はクローズ済
+  PR #132 (squash `b08bb69`) が develop にマージされ、issue #130 はクローズ済
   (計測値を添えたコメントを投稿)。`feature/desktop-design-polish` の 14 コミットも
-  push 済 (`f703a54..3e6c6a4`)。両 push とも pre-push は全緑で、既知の libSQL teardown
+  push 済 (`7f4f940..42dfa1c`)。両 push とも pre-push は全緑で、既知の libSQL teardown
   segfault も出なかった (= `--no-verify` 不使用)。所要は修正後の実測どおり 1 回あたり約 58s。
   **訂正: #42 (外部 bastion 経由の live MySQL 検証) は未着手ではなく完了済だった。**
   user の指摘を受けて実機側を確認 — dbboard の接続一覧に MySQL 種別が 1 件登録されており、
@@ -357,16 +357,16 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 400 行トリ
   **pre-push が唯一のビルド・テストゲート**であり、遅さを理由に飛ばされると検査は
   どこにも残らない。#131 が持ち込んだ baseline §35 は「最後の砦は CI」を前提にするが、
   その前提はこのリポでは成立しない。cargo CI の新設が次の候補。)
-- 日付: 2026-08-03 (**identity 誤検出の除去 = ADR-0085 (PR #128 `d7ed16b` / PR #129 `27824b0`)、
+- 日付: 2026-08-03 (**identity 誤検出の除去 = ADR-0085 (PR #128 `aa90129` / PR #129 `27824b0`)、
   および CI の denylist 層が初めて実稼働。コード変更は `scripts/pii-scan.sh` の許可正規表現
   1 行のみ。** 発端はセッション開始時の §18 手順で `develop` の `pii-scan` が赤だったこと。
   **(1) ADR-0084 の穴が 2 つ連続で出た。** 1 つ目は**本物**: GitHub の「Squash and merge」は
   この clone が書いていないコミットを web UI 側で作るので、`git config user.email` を
   noreply にしても**アカウントのプライマリアドレスが author に入る**。PR #127 の squash
-  コミット `e15dcff` がこれで、CI が赤くなった。対応は GitHub の
+  コミット `c355802` がこれで、CI が赤くなった。対応は GitHub の
   Settings → Emails → **Keep my email addresses private** を ON (§15 = human 操作、user が実施)。
-  効果は次の squash `d7ed16b` の author が noreply になったことで実証済み。
-  2 つ目は**誤検出**: 同じ `d7ed16b` の *committer* が `noreply@github.com` — GitHub 自身の
+  効果は次の squash `aa90129` の author が noreply になったことで実証済み。
+  2 つ目は**誤検出**: 同じ `aa90129` の *committer* が `noreply@github.com` — GitHub 自身の
   web-flow アドレスで、`users.` 配下ではないため ADR-0084 の許可正規表現が弾いていた。
   **つまり ADR-0084 が着地して以来、web マージのたびに誤検出が出ていた**。しかも
   「設定で直せる本物の author リーク」と「設定では絶対に直らない committer 誤検出」が

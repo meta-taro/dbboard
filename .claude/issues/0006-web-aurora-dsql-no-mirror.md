@@ -15,7 +15,7 @@
   - Desktop ADR-0021 in [`docs/decisions.md`](../../docs/decisions.md)
     (search `## ADR-0021`).
   - Reference implementation: `crates/dbboard-postgres` `connect_aurora_dsql`
-    + `FLAVOR_AURORA_DSQL` at desktop tip `cd41641` (PR #13 merged
+    + `FLAVOR_AURORA_DSQL` at desktop tip `1643a30` (PR #13 merged
     2026-06-04).
   - Web-side trigger: `dbboard-web/.claude/project-status.md` line
     listing **"Aurora DSQL adapter (`0010`)"** as "Blocked on a desktop

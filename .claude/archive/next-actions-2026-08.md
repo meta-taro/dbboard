@@ -76,7 +76,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
 
 - 日付: 2026-08-04 その3 (**v0.4.0 をリリースした。** 経緯: バージョンは 2 週間前に
   0.4.0 へ上がっていたが `CHANGELOG.md` の `## [Unreleased]` が空で、タグを打つ根拠が
-  無いまま放置されていた。0.4.0 節を書き起こし (`7bc5e60`)、PR #133 で main へ、
+  無いまま放置されていた。0.4.0 節を書き起こし (`0359da6`)、PR #133 で main へ、
   タグ `v0.4.0` を push。**1 回目のタグビルドは Tauri 2 ジョブが両方落ちた** —
   `Install frontend deps` で `ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite`。
   `release.yml` が Node 20 固定なのに `apps/desktop` は `pnpm@11.1.1` を pin しており、
@@ -84,7 +84,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   v22.22.2 なので手元では一切再現しない類の失敗。** cargo だけの
   `build-windows` / `build-macos` は成功、`publish` は skip = **何も publish されて
   いなかったのでタグを移動して復旧できた**。修正 = 両 `setup-node` を `node-version: 22`
-  (PR #134、`174fb97`)。`v0.4.0` を削除して main 先端で張り直し
+  (PR #134、`4a3364e`)。`v0.4.0` を削除して main 先端で張り直し
   (`1dad53e`)、**run 30888094754 は全緑で publish 完了** — v0.4.0 に 10 資産
   (egui 版 exe/dmg/msi + Tauri 版 setup.exe/dmg/app.tar.gz + updater 署名 +
   `latest.json` + `SHA256SUMS.txt`) が付いた。
@@ -100,8 +100,8 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   **user 側ボール = (1) MCP write を v0.5.0 に入れるかの判断、
   (2) 公開済 468 コミットの履歴書き換えの判断。**)
 
-- 日付: 2026-08-04 その2 (**#130 は PR #132 (`051c9cd`) で develop に着地・issue クローズ済。
-  `feature/desktop-design-polish` も push 済 (`f703a54..3e6c6a4`)。**
+- 日付: 2026-08-04 その2 (**#130 は PR #132 (`b08bb69`) で develop に着地・issue クローズ済。
+  `feature/desktop-design-polish` も push 済 (`7f4f940..42dfa1c`)。**
   **さらに #42 (外部 bastion 経由の live MySQL 検証) は既に済んでいた** — user から
   「MySQL の接続は先日確認した」と指摘を受けて実機を確認したところ、dbboard の接続一覧に
   MySQL 種別のエントリが 1 件登録済で、`connections.toml` の当該ブロックには
@@ -155,10 +155,10 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   赤だったのが発端。中身は**本物 1 件と誤検出 1 件が重なっていた**。
   **本物** = GitHub の「Squash and merge」は web UI 側でコミットを作るので、この clone の
   `git config user.email` が noreply でも**アカウントのプライマリアドレスが author に入る**
-  (PR #127 の squash `e15dcff`)。→ user が GitHub の Settings → Emails →
-  **Keep my email addresses private** を ON (§15 = human 操作)。次の squash `d7ed16b` の
+  (PR #127 の squash `c355802`)。→ user が GitHub の Settings → Emails →
+  **Keep my email addresses private** を ON (§15 = human 操作)。次の squash `aa90129` の
   author が noreply になったことで効果は実証済み。
-  **誤検出** = 同じ `d7ed16b` の *committer* が `noreply@github.com` (GitHub 自身の web-flow
+  **誤検出** = 同じ `aa90129` の *committer* が `noreply@github.com` (GitHub 自身の web-flow
   アドレス)。`users.` 配下ではないので ADR-0084 の許可正規表現が弾いていた。**ADR-0084 が
   着地して以来 web マージのたびに出ていた**が、上の本物と同じ赤い X に見えるので
   **片方がもう片方を隠していた**。→ ADR-0085 で許可を全文 alternation にしてこの 1 個を追加。
@@ -180,7 +180,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
 
 ---
 
-- 日付: 2026-08-06 (**v0.5.1 リリース済み。タグは `main` の `b98f7a6`。**
+- 日付: 2026-08-06 (**v0.5.1 リリース済み。タグは `main` の `bf7a696`。**
   ① **実運用で出た 2 バグを 1 本のブランチにまとめた。** `release/v0.5.1` に
   `fix(mysql)` → `fix(connect)` → `release: v0.5.1` の 3 コミット。
   もともと別ブランチ 2 本だったが、両方が `CHANGELOG.md` の `[Unreleased]` 直下を
@@ -211,7 +211,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   `release: v0.5.1` のコミットだけ `--no-verify` を使ったが、これは
   **Windows libSQL の teardown segfault** (13 テスト全部 ok の後にプロセスが落ちる)
   という既知の唯一の例外。PII スキャンは hook の 1 番目で通過済み + 手動で再実行済み。
-  マージコミット `b98f7a6` は hook を全部通している。
+  マージコミット `bf7a696` は hook を全部通している。
   ⑦ **release ビルド中に `target/release/dbboard-mcp.exe` がロックされていたので、
   そこから起動された古い MCP プロセス 2 つを kill した** (`%LOCALAPPDATA%` の
   インストール版ではなくビルド成果物)。クライアント側が再起動するので実害なし。
@@ -312,7 +312,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   特に #162 は git が ADR-0100 の見出しと ADR-0099 の `### Status` 定型文を共通行として
   噛み合わせ、コンフリクトが 2 箇所に割れて本文が入れ替わる形になっていた。
   ③ **#159 (文書ストアをガイドに書く) はコンフリクト解消済みだが未 push。**
-  `docs/document-store-guides` の `889a28a`。衝突は `site/index.html` の OGP 1 箇所で、
+  `docs/document-store-guides` の `1ab3e74`。衝突は `site/index.html` の OGP 1 箇所で、
   **説明文は #159 側 (Firestore / MongoDB 入りの新しい DB 一覧)、プレビュー画像は
   develop 側 (ADR-0098 でロゴからスクリーンショットに変えた判断)** を採って組み合わせた。
   `site` の `node --test` は 15/15 緑。**この commit だけ `--no-verify` を使った** —
@@ -352,7 +352,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   渡していたのが原因。Unix では `\` は区切り文字ではないので `Path::components()` が
   1 セグメントに潰れて何にも一致しない。セグメントの配列から `PathBuf` を組む形に直し
   (`cfg(windows)` で消すのではなく、Windows レイアウトのケースを全プラットフォームで
-  踏み続ける)、`d2bbfc2` として commit 済み — **これも未 push**。
+  踏み続ける)、`c5833f3` として commit 済み — **これも未 push**。
   ③ **`feat/selective-export-and-upsert-import` (ADR-0105) が未 push のまま。**
   接続の選択エクスポートと、インポート時の上書き (`ImportMode`、既定は Skip)。
   空の id リストは「全件」と読まずに拒否する。ADR-0038 のキーリング参照拒否は緩めていない。
@@ -368,7 +368,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   #161 に 3 点の観察 (ボタンの色 / カーソルが指の形になるか / フォーカスを外してから押すと
   動くか) を依頼済み。回答が来るまでは推測で直さない。
   **user 側ボール = ① 未 push のブランチ 3 本を push する
-  — `ci/cargo-and-frontend-checks` (テスト修正 `d2bbfc2` を載せて #166 を緑にする)、
+  — `ci/cargo-and-frontend-checks` (テスト修正 `c5833f3` を載せて #166 を緑にする)、
   `feat/selective-export-and-upsert-import`、`chore/next-actions-sync` (この文書)。
   push 後の PR 作成はエージェント側でやる旨、本セッションで合意済み、
   ② **green で MERGEABLE のまま滞留している PR 8 本を入れる**
@@ -457,19 +457,19 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
 
 - 日付: 2026-08-19 その2 (**v0.9.0 を出した。タグ push まで完了、release CI 実行中。
   あわせて CI が遅い件を計測して潰し、#194 を実装した。未 push は 5 本に増えた。**
-  ① **リリース経路**: #197 (`develop` → `main`) マージ済 → `main` = `49634f3`、
-  タグ `v0.9.0` (annotated・`49634f3` を指す) push 済 → release run `32265722883`。
+  ① **リリース経路**: #197 (`develop` → `main`) マージ済 → `main` = `3527998`、
+  タグ `v0.9.0` (annotated・`3527998` を指す) push 済 → release run `32265722883`。
   タグ push だけで完結する (v0.5.0 以降)。**残るのは公開 `.exe` の PII 目視確認だけ。**
   ② **タグ push に `--no-verify` を使った (baseline §35 の記録)。** pre-push の
   `cargo build --release` が `LNK1104: dbboard_mcp.exe を開くことができません` で落ちた。
   原因は `target/release/dbboard-mcp.exe` が **3 プロセス動いていた**こと (PID 12340 /
   17524 / 31856、いずれも親が生きている `claude` = **別セッションの MCP サーバー**)。
-  他セッションを落とす判断はしていない。タグが指す `49634f3` は**すでに origin/main に
+  他セッションを落とす判断はしていない。タグが指す `3527998` は**すでに origin/main に
   あるコミット**で、その SHA に対する CI は当日 14:26Z に `ci` / `pii-scan` とも緑。
   つまり pre-push が確かめようとしたことはリモート側で既に済んでおり、タグ push は
   新しい内容を 1 バイトも送っていない。環境要因 + CI 緑確認済 = §35 の条件どおり。
   ③ **CI が遅い件は Rust のせいではなかった (ADR-0114、`ci/faster-verification` =
-  `6609e97`)。** 16m46s のジョブの内訳を実測すると、apt install **572s** /
+  `e7442f9`)。** 16m46s のジョブの内訳を実測すると、apt install **572s** /
   cargo キャッシュ復元 **255s** に対し、**fmt + clippy + check + test は 158s** しかない。
   真因は 2 つ。(a) `-dev` パッケージ 89.3 MB を Azure の Ubuntu ミラーが **~163 kB/s**
   でしか流さない (レートが run ごとに変わるので、総時間が 16 分〜30 分超と暴れていた
@@ -483,30 +483,30 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   包含されるが 11s なので**残した** — ワークフロー冒頭が CLAUDE.md の必須コマンドを
   回すと約束しているため。**ローカルでは検証できない**ので、証拠は最初の run の
   ステップ時間になる。
-  ④ **#194 を実装した (`fix/export-ref-ownership` = `c373778`、ADR-0113)。**
+  ④ **#194 を実装した (`fix/export-ref-ownership` = `d6f8b84`、ADR-0113)。**
   他接続の keychain スロットを名乗る entry を**エクスポート時**に検出する。ref は
   `admin.rs` の `keyring_ref()` 1 箇所でしか作られず、`update` は `id` を書き戻すので
   **rename 経路が存在しない** = 「自分の id から導出されない ref を持つ entry は不正」が
   **ストアを引かずに entry 単体で**判定できる。インポート側 (ADR-0038) より強い。
   **拒否はしない・警告する**のが ADR-0113 の決定 — バックアップを最も必要とする
   操作者にとって、成功行を警告で押しのけたら「失敗した」と読めてしまう。
-  ⑤ **未 push = 5 本。** `ci/faster-verification` (`6609e97`) と
-  `fix/export-file-names` (`943c26e`) は独立、残り 3 本は stack
-  (`feat/turso-remote` `8a9bf2a` → `fix/import-report-reasons` `601ff61` →
-  `fix/export-ref-ownership` `c373778`)。**`ci/faster-verification` を先に入れると、
+  ⑤ **未 push = 5 本。** `ci/faster-verification` (`e7442f9`) と
+  `fix/export-file-names` (`a993ad0`) は独立、残り 3 本は stack
+  (`feat/turso-remote` `c645fe4` → `fix/import-report-reasons` `e5ae75c` →
+  `fix/export-ref-ownership` `d6f8b84`)。**`ci/faster-verification` を先に入れると、
   以降の全 run が 9 分の apt ダウンロードを払わなくなる**ので優先度が高い。
   **user 側ボール = ① 公開 `.exe` の PII 目視確認、② 5 本の push (→ PR は私が作る)、
   ③ #180 / #189 のマージ、④ v1.0 の残り 3 ゲート (下記 候補 0)、⑤ 従来からの継続分。**
   次のエージェント側タスク = push 後の PR 作成のみ。)
 
 - 日付: 2026-08-19 (**未 push のブランチが 3 本たまった。3 本とも中身は完成・検証済で、
-  詰まっているのは push だけ。** develop = `9403077` (v0.9.0)、open PR = #180 / #189。
-  ① **`fix/export-file-names` = `943c26e`** — エクスポートの既定ファイル名に日時を入れた。
+  詰まっているのは push だけ。** develop = `5ac81bf` (v0.9.0)、open PR = #180 / #189。
+  ① **`fix/export-file-names` = `a993ad0`** — エクスポートの既定ファイル名に日時を入れた。
   user 要望「ファイル名固定なのやめてほしい。日時いれるだけでだいぶ変わる」そのまま。
-  ② **`feat/turso-remote` = `4bbdf63` + `8a9bf2a`** — issue #191。リモート Turso を
+  ② **`feat/turso-remote` = `1d39378` + `c645fe4`** — issue #191。リモート Turso を
   2 つ目の kind として実装 (**ADR-0111**)。kind は 11 種になったが**ワイヤ id は 9 のまま**
   (`turso-remote` は `turso` として名乗る) = コントラクト非破壊。docs は別コミット。
-  ③ **`fix/import-report-reasons` = `601ff61`** (②の上に stack) — user の指摘どおり、
+  ③ **`fix/import-report-reasons` = `e5ae75c`** (②の上に stack) — user の指摘どおり、
   **インポートの「入らなかった理由」3 つを分けて報告する**ようにした (**ADR-0112**)。
   もとは `skipped: Vec<String>` 1 本に (1) 束内 id 重複 / (2) 既存 + Skip モード /
   (3) 他接続が持つ keyring ref との衝突 (ADR-0038) が全部入っていた。
@@ -623,7 +623,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   ブランチ先端に無く、PR に入っていなかった**。ローカル HEAD で
   `git log origin/develop..HEAD` を数えたのが原因。**PR 本文は push 済みの範囲
   (`origin/<branch>`) で数える。** マージ後に PR 本文へ訂正を追記し、
-  中身は `ci/checkout-v6` の `330cd59` として cherry-pick 済 (原 commit と patch 一致を確認、
+  中身は `ci/checkout-v6` の `55fbba1` として cherry-pick 済 (原 commit と patch 一致を確認、
   author は user のまま)。
   ⑤ **`actions/checkout` の最新は v7.0.1** で v6 は 1 世代前。今回は user の明示的な選択なので
   v6 のまま出す。
@@ -646,7 +646,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
 - 日付: 2026-08-14 その2 (**v0.8.0 を切った。タグ push まで完了、release CI 実行中。
   ここから先は全部 user 側ボール。**
   ① **リリース経路**: #171 (エクスポートダイアログの可読性) → develop、
-  #172 (リリース準備) → develop、#173 (`develop` → `main`) → `main` = `2a9b1e8`、
+  #172 (リリース準備) → develop、#173 (`develop` → `main`) → `main` = `29413b4`、
   タグ `v0.8.0` push 済 → release CI run `31784033330` 実行中。
   Windows exe + MSI / macOS dmg + `SHA256SUMS.txt` を publish する。
   **タグ push だけで完結する** (v0.5.0 以降、publish ジョブが release オブジェクトを
@@ -655,7 +655,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   v0.7.0 を現行として説明したままだった。どちらも**タグ後には埋められない**場所なので
   #172 で先に埋めた。
   ③ **エージェント側のミス**: DESIGN.md の追記 (`128f18e`) を #171 の push 後に commit して
-  マージに乗せ損ねた。rebase + cherry-pick (`c316e9b`) で復旧済み。
+  マージに乗せ損ねた。rebase + cherry-pick (`19d0564`) で復旧済み。
   ④ **release CI は 5 ジョブすべて緑**、`v0.8.0` は 08-14 08:44Z に publish 済
   (`dbboard-desktop_0.8.0_x64-setup.exe` / `_universal.dmg` / `.app.tar.gz` /
   MCP の win・mac / `latest.json` / `SHA256SUMS.txt`)。
@@ -672,7 +672,7 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   `docker compose -f docker/firestore-emulator/compose.yaml down`。)
 
 - 日付: 2026-08-14 (**open PR = 0。滞留は完全に解消した。残っているのは全部 user 側ボール。**
-  ① **#159 と #169 をマージし、open PR がゼロになった。** develop = `7569cd5`。
+  ① **#159 と #169 をマージし、open PR がゼロになった。** develop = `8dd3ac5`。
   #159 = 文書ストアをガイドに書く (`site/index.html` の OGP 衝突は説明文 #159 側 /
   プレビュー画像 develop 側で組み合わせ済み)、#169 = 08-13 のセッション記録 2 ファイル。
   ② **#159 の push で 1 往復ロスした。私 (エージェント) のブランチ名取り違え。**

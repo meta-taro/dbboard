@@ -1,6 +1,6 @@
 # 0005: `dbboard-ai` trait + Anthropic provider (Phase 4 Stage 1)
 
-- **Status**: closed by PR #27 (merged 2026-06-23 at desktop@c86424a) —
+- **Status**: closed by PR #27 (merged 2026-06-23 at desktop@8ec4b1a) —
   all acceptance boxes ticked. Slice (a) (trait crate + Anthropic
   provider + `apps/dbboard` env-var wiring) closed previously by
   PRs #20 / #22 / #24; slice (b) (`dbboard-ui` AI panel + worker

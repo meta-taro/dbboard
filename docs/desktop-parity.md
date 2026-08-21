@@ -34,7 +34,7 @@ _Last updated: 2026-07-29 (SSH tunnel connection UI — ADR-0069; desktop leads 
 | Foreign-key relationships | ✅ | ✅ | Shown on the Structure tab. |
 | Local annotations (table/column notes) | ✅ | ✅ | Display **and** edit — see the write-surface section (ADR-0045). |
 | Run read-only SQL | ✅ | ✅ | SELECT/WITH/EXPLAIN; writes rejected at the engine. |
-| Aurora DSQL read path | ✅ | ✅ | Streaming row-cap instead of `DECLARE CURSOR` (854b1f2). |
+| Aurora DSQL read path | ✅ | ✅ | Streaming row-cap instead of `DECLARE CURSOR` (91ce12a). |
 | Results grid: sort / multi-select / copy TSV·CSV / download | ✅ | ✅ | |
 | Row-limit control + explicit cap display | ✅ | 🟦 | Selector 100/200/500/1000; grid shows "capped at N". Backend hard cap is 1000 (`MAX_MAX_ROWS`). |
 | SQL query history | ✅ | 🟦 | Per-connection, localStorage, dedup, click-to-load, clear. |

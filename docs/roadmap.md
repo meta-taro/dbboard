@@ -91,7 +91,7 @@ focus:
   out here — only the HTTP contract and the history JSON schema are shared).
   As of that sync `web` had closed its Phase 1 (pnpm + Nuxt 4 + NestJS 11
   monorepo scaffold with a `GET /health` smoke on `develop`, contract
-  byte-content-mirrored at `dbboard@89b7c70`), with the baton back on
+  byte-content-mirrored at `dbboard@9acbdef`), with the baton back on
   `desktop`. **Retiring egui needs no web mirror** — it changed no shared
   contract; `crates/dbboard-server` still implements the HTTP surface
   `dbboard-web` mirrors, it simply has no in-repo consumer now.
@@ -394,19 +394,19 @@ work without it. Trait + first-provider shape locked in
       tracked in
       [`.claude/issues/0009-ai-streaming-cancel-tokens.md`](../.claude/issues/0009-ai-streaming-cancel-tokens.md).
       **Closed 2026-06-30 on `feature/ai-streaming-cancel-tokens`.**
-      Slice (a) `2cb012e` — `dbboard-ai` trait extension with
+      Slice (a) `e869ff3` — `dbboard-ai` trait extension with
       `stream_explain` / `stream_suggest_sql` returning
       `BoxStream<'static, AiResult<StreamEvent>>`, normalized
       `StreamEvent` / `StopReason` enums, and the
       `AiCapabilities::has_streaming` flag activated. Slice (b)
-      `e5f49d0` — Anthropic SSE wired through `dbboard-anthropic` via
+      `edff3cb` — Anthropic SSE wired through `dbboard-anthropic` via
       `reqwest-eventsource` 0.6 with `RetryPolicy::Never` (token-billed
-      POSTs must not silently retry). Slice (c) `e8f5fd5` —
+      POSTs must not silently retry). Slice (c) `a09316a` —
       `dbboard-ui` worker rewired with a tokio async loop + std-to-tokio
       mpsc bridge thread + per-request `CancellationToken`;
       `tokio::select!` races the stream against the token, with the
       cancel arm emitting `Reply::AiCancelled` directly. Slice (d)
-      `fff669c` — `AiPanel` state machine extended with `StreamingAcc`,
+      `3b290da` — `AiPanel` state machine extended with `StreamingAcc`,
       lazy chunk accumulator, real `on_stream_chunk` /
       `on_stream_complete` / `on_cancelled`, Send↔Cancel button toggle,
       "Tokens: N in / M out" meter, and 3 new Fluent keys
@@ -418,15 +418,15 @@ work without it. Trait + first-provider shape locked in
       Implementation tracked in
       [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
       **Closed 2026-07-01 on `feature/ai-history-v2`.** Slice (a)
-      `b16537f` — `dbboard-ui::history` v:2 reader + writer with a
+      `f14a387` — `dbboard-ui::history` v:2 reader + writer with a
       `kind: "query" | "ai"` discriminator, `HistoryEntry::{Query, Ai}`
       variant split, 64 KiB write-side truncation, and transparent
-      v:1 read-through as `kind: "query"`. Slice (b) `13f7736` —
+      v:1 read-through as `kind: "query"`. Slice (b) `094e6a0` —
       `dbboard-ai::AiProvider::identity()` additive method +
       `AiResponse { provider, model }` fields + `dbboard-anthropic`
       impl + `dbboard-ui::worker` spawn-time identity snapshot
       stamped on all four terminal AI reply variants. Slice (c)
-      `0e76223` — `dbboard-ui::lib` UI-thread AI history write point
+      `cb5f55d` — `dbboard-ui::lib` UI-thread AI history write point
       (`PendingAiSubmit` submit-time snapshot, terminal-reply
       dispatch composing `HistoryEntry::Ai { … }` from the pending
       record + spawn-time identity + streaming accumulator peek,
@@ -440,15 +440,15 @@ work without it. Trait + first-provider shape locked in
       Implementation tracked in
       [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md).
       **Closed 2026-07-03 on `feature/ddl-extraction` (PR #49, merge
-      `6c34ee3`).** Slice (a) `a42a27c` (+ review-fix `bba4072`) —
+      `3a294dc`).** Slice (a) `92c5749` (+ review-fix `87542e4`) —
       `dbboard-core` `TableSchema` struct, additive `ColumnInfo.ordinal`
       + `default_value`, `describe_table` trait method with a default
       `Capability`-error impl, and the `Capabilities::has_describe_table`
-      flag. Slice (b) `b509a36` — Postgres (`information_schema` +
+      flag. Slice (b) `305ac63` — Postgres (`information_schema` +
       composite PK), Turso, and D1 (`PRAGMA table_info`) implementations,
       each flipping `has_describe_table = true`; Postgres integration
       test gated by the `DBBOARD_PG_URL` env-var self-skip. Slice (c)
-      `dfdaaca` — additive `SuggestRequest.full_schema`, Anthropic
+      `50f335e` — additive `SuggestRequest.full_schema`, Anthropic
       prompt rendering, worker `Command::PrefetchSchema` /
       `Reply::SchemaPrefetched` with a Semaphore-8 fan-out, the AiPanel
       "Include column details" checkbox (session-local, gated on
@@ -456,7 +456,7 @@ work without it. Trait + first-provider shape locked in
       and 11-locale i18n. A narrow `SchemaSource` trait (impl
       `DesktopSchemaSource` in `apps/dbboard`) gives the worker its
       in-process path to the live adapter — the one deviation from the
-      ADR, recorded in the ADR status block. Slice (d) `3c3e3d8` —
+      ADR, recorded in the ADR status block. Slice (d) `4146bed` —
       docs sweep + `.claude/issues/0011` closed + ADR-0028 flipped to
       Accepted. HTTP contract and `history.jsonl` unchanged, so no
       web mirror is needed._
