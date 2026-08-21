@@ -11532,3 +11532,123 @@ better than it silently working by borrowing.
 
 **Export's warning and import's refusal are unchanged.** Both were correct;
 they were just terminal. They now name a state the application can leave.
+
+---
+
+## ADR-0119 — The libSQL serialisation follows the dependency, and the hooks follow their source
+
+### Status
+
+Accepted.
+
+### Context
+
+A push failed on a green branch:
+
+```
+error: test failed, to rerun pass `-p dbboard-mcp --lib`
+  process didn't exit successfully: dbboard_mcp-0625371a1d9cb3ed.exe
+  (exit code: 0xc0000005, STATUS_ACCESS_VIOLATION)
+```
+
+Nothing in the branch touched `dbboard-mcp`. This is the Windows libSQL
+teardown crash the pre-push hook has documented since the workspace was
+bootstrapped: two in-memory databases torn down at the same instant take the
+whole test binary with them, after every assertion has already passed. The
+mitigation was to run the affected tests one thread at a time, and it named
+the affected crate — `dbboard-turso` — because that is the crate the crash
+was first seen in.
+
+That is the wrong boundary. The hazard is not a crate name; it is *opens
+libSQL in a test*, which a crate inherits the moment it takes the adapter as
+a dependency, directly or through `dbboard-connect`, as a normal dependency
+or a dev one. Five workspace crates could reach it and one was covered:
+
+| crate | in-memory databases in tests | serialised before |
+|---|---|---|
+| `dbboard-turso` | 15 | yes |
+| `dbboard-mcp` | 17 | no |
+| `dbboard-desktop` | 12 | no |
+| `dbboard-connect` | 6 | no |
+| `dbboard-server` | 6 | no |
+
+Nothing announced the gap for months, because the crash is rare: 30
+deliberate reproduction runs here produced zero. It surfaces as a push that
+fails for no reason the branch can explain, which is the precise shape that
+teaches whoever hits it to reach for `--no-verify`.
+
+Fixing it in the adapter was considered and rejected twice over. A
+`#[cfg(test)]` teardown mutex — the shape `dbboard-config`'s `kdf_guard`
+uses — is inactive when `dbboard-turso` is compiled as a *dependency*, which
+is every case that matters here. Making the lock unconditional would put a
+mutex in the shipping adapter to suit the test harness, and `bundle.rs`
+already recorded why that is the wrong trade: production takes no lock.
+
+Finding the second half was an accident of fixing the first. The corrected
+hook was written into `.cargo-husky/hooks/pre-push` and had no effect,
+because git runs `.git/hooks/pre-push` and nothing had copied one to the
+other since 2026-08-20. `cargo-husky` was a dev-dependency at the bootstrap
+commit and was dropped when the workspace was restructured; it is in no
+manifest and no lockfile today. Five documents went on saying the hooks
+install themselves on first `cargo test`. They do not, and have not for
+months. The failure is silent in the worst way: you edit a hook, read the
+file back, and see your edit.
+
+### Decision
+
+**The set of serialised crates is derived, not remembered.**
+`scripts/libsql-serialised-crates.txt` lists them, and
+`crates/dbboard-turso/tests/serialised_teardown.rs` walks the workspace
+manifests, computes which members reach `dbboard-turso`, and fails when the
+file disagrees in either direction. Adding the adapter to a sixth crate now
+fails a test that names the crate and says what to add.
+
+**One runner reads the list.** `scripts/cargo-test-serialised.sh` turns it
+into `--exclude` flags for the parallel `--workspace` run and one
+`--test-threads=1` invocation per listed crate. Both hooks and CLAUDE.md's
+mandatory commands call it, so the loop exists once. A second test asserts
+the runner reads the list and that both hooks call the runner — checking
+only lines that are not shell comments, because the first version of that
+assertion was satisfied by a hook that merely mentioned the runner in one.
+
+**A missing list stops the run.** Running these crates in parallel is the
+bug; falling back to the fast path when the list cannot be found would
+reintroduce it exactly when something is already wrong.
+
+**The hooks are installed by `scripts/install-hooks.sh`, and drift is a test
+failure.** `crates/dbboard-config/tests/hook_install_drift.rs` compares
+`.git/hooks/` against `.cargo-husky/hooks/`, ignoring line endings. A
+checkout with no hooks at all passes — CI has none by design (ADR-0104) and
+a fresh clone should not fail its first `cargo test` over a convenience it
+has not been offered. A checkout with *some* of them, or with a stale copy,
+fails and names the files.
+
+**CI is unchanged.** It runs on `ubuntu-latest`, where the crash does not
+occur, and serialising there would spend wall-clock on a Windows-only
+hazard. ADR-0104 already makes CI the gate; the hooks are the local
+convenience that gate is not allowed to depend on.
+
+### Consequences
+
+**The serialised set will grow, and that is the mechanism working.** Every
+crate that gains a libSQL-backed test joins the list. The cost of
+over-approximating is close to nothing: measured with everything pre-built,
+serialising the four newly-listed crates cost about 0.7 s in total, and two
+of them came in under the noise floor.
+
+**`--no-verify` loses its last honest excuse here.** CLAUDE.md retired the
+libSQL segfault as a sanctioned bypass when the hooks stopped triggering it;
+that claim was true for one crate and false for four. It is now true for all
+five, so a crash at this gate is a finding, not a known nuisance.
+
+**The hooks now need one manual step after cloning, and one after editing
+them.** That is worse than a dependency that did it automatically and better
+than a document that says a dependency does it when none exists. The drift
+test is what makes the manual step self-correcting: forget it, and the next
+`cargo test` tells you.
+
+**Three earlier documents describe the old arrangement.** ADR-0055,
+ADR-0104 and the `pii-scanning` guide all refer to cargo-husky installing
+the hooks. The prose in the maintainer guide is corrected; the ADRs are
+not, because the log is appended to rather than rewritten. This entry is
+where the arrangement changed.

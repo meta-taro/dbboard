@@ -31,6 +31,25 @@ public API is the HTTP contract in
   slot and its secret untouched. See
   [ADR-0118](docs/decisions.md).
 
+### Fixed
+
+- **Verification no longer crashes on a green branch.** On Windows,
+  tearing down two in-memory libSQL databases at the same instant takes the
+  whole test binary with it, after every assertion has passed. The
+  workaround ran the adapter crate's tests one at a time — but four other
+  crates reach that adapter through their dependencies and inherit the same
+  hazard, and none of them were covered. The set is now derived from the
+  dependency graph and checked by a test, so a crate that starts using the
+  adapter cannot quietly drop off it. See
+  [ADR-0119](docs/decisions.md).
+- **Editing a git hook now takes effect.** The hooks were documented as
+  installing themselves on first `cargo test`; the dependency that did that
+  was dropped from the workspace some time ago and the documentation was
+  not. `sh scripts/install-hooks.sh` installs them, and a test fails when
+  the installed copies have fallen behind the ones in the repository. This
+  affects contributors only: CI runs the same checks either way
+  ([ADR-0104](docs/decisions.md)).
+
 ## [0.10.0] — 2026-08-20
 
 One database that could not be reached, and four things the program knew

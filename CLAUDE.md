@@ -50,23 +50,29 @@ Run before every commit:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo check --all-targets --all-features
-cargo test --all-features --workspace --exclude dbboard-turso
-cargo test --all-features -p dbboard-turso -- --test-threads=1
+sh scripts/cargo-test-serialised.sh
 ```
 
 Run before every push (in addition to the above):
 
 ```sh
 cargo build --release
-cargo test --all-features --release --workspace --exclude dbboard-turso
-cargo test --all-features --release -p dbboard-turso -- --test-threads=1
+sh scripts/cargo-test-serialised.sh --release
 ```
 
-`dbboard-turso` is tested one thread at a time because a parallel run tears
-down two in-memory libSQL databases at once, which crashes the test binary on
-Windows after every assertion has passed. The hooks carry the measurement.
+`scripts/cargo-test-serialised.sh` runs `cargo test` over the whole workspace,
+except that the crates named in `scripts/libsql-serialised-crates.txt` run one
+thread at a time. A parallel run there tears down two in-memory libSQL
+databases at once, which crashes the test binary on Windows after every
+assertion has passed.
 
-These commands are wired into `cargo-husky` git hooks (see "Git Hooks" below).
+That list is every crate that can reach `dbboard-turso` in the dependency
+graph, not just the adapter itself: the hazard travels with the dependency.
+Do not edit it by hand — `crates/dbboard-turso/tests/serialised_teardown.rs`
+derives the set from the workspace manifests and tells you what it should
+contain.
+
+These commands are wired into the git hooks (see "Git Hooks" below).
 
 ## Code Quality Standards
 
@@ -151,14 +157,25 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 
 ## Git Hooks
 
-Hooks are installed automatically via `cargo-husky` the first time
-`cargo test` is run after cloning.
+Hook scripts live in `.cargo-husky/hooks/`. Install them with:
 
-- **pre-commit**: `cargo fmt --check`, `cargo clippy -D warnings`,
-  `cargo check`, `cargo test`.
+```sh
+sh scripts/install-hooks.sh
+```
+
+- **pre-commit**: `pii-scan --staged`, `cargo fmt --check`,
+  `cargo clippy -D warnings`, `cargo check`, `cargo test`.
+- **commit-msg**: `pii-scan --message`.
 - **pre-push**: `cargo build --release`, `cargo test --release`.
 
-Hook scripts live in `.cargo-husky/hooks/`.
+Run the installer again after editing a hook. Nothing does it for you:
+`cargo-husky` used to, and was dropped when the workspace was restructured
+while five documents went on claiming it (ADR-0119).
+`crates/dbboard-config/tests/hook_install_drift.rs` fails when `.git/hooks/`
+has fallen behind its source.
+
+The hooks are a local convenience, not the gate. CI runs the same commands
+on every push and pull request (ADR-0104).
 
 ## Documentation Policy
 
@@ -184,7 +201,7 @@ non-trivial decision is made, add an ADR entry to `docs/decisions.md`.
 - Provide a `.env.example` if and when environment variables are
   introduced.
 - Document setup in `README.md`.
-- Git hooks install themselves via `cargo-husky` on first `cargo test`.
+- Install the git hooks with `sh scripts/install-hooks.sh` after cloning.
 
 ## Security
 
