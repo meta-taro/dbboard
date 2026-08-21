@@ -375,6 +375,38 @@ export const updateConnection = (
     mcpAlias,
   });
 
+// Copy a connection into a new one that owns its own keychain slots, seeded
+// with the source's secret values (issue #213). The copy drops the MCP alias
+// (it is a unique handle) and leaves MCP writes off (nobody approved writes to
+// the copy's database yet).
+//
+// Rejects a source that itself points at another connection's slot: reading
+// that slot to seed a third entry is the thing the import guard refuses. Repair
+// it first with `repairConnectionRef`.
+export const duplicateConnection = (
+  id: string,
+  newId: string,
+  newName: string,
+): Promise<void> => invoke('duplicate_connection', { id, newId, newName });
+
+// Re-point one of `id`'s keychain slots at a slot of its own and store
+// `secret` there (issue #213).
+//
+// The secret is asked for rather than copied out of the slot being abandoned,
+// because that value belongs to another connection. That slot is left alone
+// for the same reason — this stops referencing it, nothing more.
+export const repairConnectionRef = (
+  id: string,
+  keyRef: string,
+  secret: string,
+): Promise<void> => invoke('repair_connection_ref', { id, keyRef, secret });
+
+// Every connection pointing at a keychain slot minted for a different one
+// (issue #194). Shown in the connection list rather than only at export time
+// (issue #213): it is also the reason such a connection cannot be duplicated.
+export const foreignConnectionRefs = (): Promise<ForeignRef[]> =>
+  invoke('foreign_connection_refs');
+
 export const deleteConnection = (id: string): Promise<void> =>
   invoke('delete_connection', { id });
 

@@ -9,6 +9,28 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Added
+
+- **A connection can be duplicated.** The connection list gains a
+  *Duplicate* action that copies an entry's settings and its saved
+  secrets into a new connection with saved-secret slots of its own. Making
+  a second connection to the same database no longer means editing
+  `connections.toml` by hand — which was also the only way to end up with
+  the broken state below. The copy starts with no AI-agent alias and with
+  agent writes off.
+- **A connection that reads another connection's saved secret can be
+  repaired, and is now visible before an export.** Since 0.10.0 dbboard
+  could tell that an entry's saved-secret slot had been minted for a
+  different connection, but only said so while writing a bundle, and
+  offered no way out except editing the file by hand again. The state now
+  shows in the connection list, and a *Repair* action gives the entry a
+  slot of its own. It asks for the secret rather than copying the other
+  connection's: reading a credential that belongs to something else, and
+  writing a second copy of it into the keychain without saying so, is the
+  thing the import guard already refuses. The other connection keeps its
+  slot and its secret untouched. See
+  [ADR-0118](docs/decisions.md).
+
 ## [0.10.0] — 2026-08-20
 
 One database that could not be reached, and four things the program knew

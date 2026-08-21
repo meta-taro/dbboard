@@ -263,6 +263,33 @@ export const en = {
   "conn-mcp-alias-placeholder": "e.g. store-a",
   "conn-mcp-alias-hint":
     "Optional. When set, an agent sees this name in place of both the id and the display name above, and the real id stops working as a handle — so a host or customer name you already used as an id no longer reaches the agent's transcript. Leave blank to show the real ones.",
+  // Duplicating a connection, and repairing one whose saved-secret slot was
+  // minted for a different connection (issue #213)
+  "conn-duplicate": "Duplicate",
+  "conn-duplicate-title": "Duplicate connection",
+  "conn-duplicate-lead":
+    "Copies “{ $name }” — its settings and its saved secrets — into a new connection with its own saved-secret slots. The original is left untouched. The copy starts with no AI-agent alias and with agent writes off.",
+  "conn-duplicate-name-default": "{ $name } (copy)",
+  "conn-duplicate-run": "Duplicate",
+  "conn-duplicate-ok": "Duplicated as “{ $id }”.",
+  "conn-duplicate-id-taken": "That ID is already in use.",
+  "conn-foreign-badge": "Points at another connection's secret",
+  "conn-foreign-note":
+    "This connection reads its secret from the slot “{ $ref }”, which belongs to “{ $owner }”. dbboard never creates that state itself, so connections.toml was edited by hand or imported before this was checked. Until it is repaired, exporting warns and duplicating is refused.",
+  "conn-repair": "Repair…",
+  "conn-repair-title": "Repair saved secret",
+  "conn-repair-lead":
+    "Gives “{ $name }” a saved-secret slot of its own and stores the value below in it. “{ $owner }” keeps its own slot and its own secret — this only stops “{ $name }” from reading it.",
+  "conn-repair-secret": "Secret",
+  "conn-repair-secret-url": "Connection URL",
+  "conn-repair-secret-token": "API token",
+  "conn-repair-secret-service_account": "Service account JSON",
+  "conn-repair-secret-secret_key": "Secret access key",
+  "conn-repair-secret-ssh_password": "SSH password",
+  "conn-repair-secret-ssh_passphrase": "SSH key passphrase",
+  "conn-repair-secret-required": "Enter the value to store.",
+  "conn-repair-run": "Repair",
+  "conn-repair-ok": "“{ $id }” now has its own saved-secret slot.",
   // Connection bundle import/export (ADR-0038)
   "conn-export": "Export…",
   "conn-import": "Import…",
@@ -511,6 +538,32 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-delete": "削除",
   "conn-delete-confirm": "「{ $name }」を削除しますか？保存されたシークレットも削除されます。",
   "conn-empty": "接続がまだありません。追加して始めましょう。",
+  // 接続の複製と、他の接続のシークレット枠を指している接続の修復 (issue #213)
+  "conn-duplicate": "複製",
+  "conn-duplicate-title": "接続を複製",
+  "conn-duplicate-lead":
+    "「{ $name }」の設定と保存されたシークレットを、専用のシークレット枠を持つ新しい接続にコピーします。元の接続はそのまま残ります。複製には AI エージェント向けの別名は設定されず、エージェントからの書き込みもオフの状態で作成されます。",
+  "conn-duplicate-name-default": "{ $name }（コピー）",
+  "conn-duplicate-run": "複製する",
+  "conn-duplicate-ok": "「{ $id }」として複製しました。",
+  "conn-duplicate-id-taken": "その ID はすでに使われています。",
+  "conn-foreign-badge": "他の接続のシークレットを参照しています",
+  "conn-foreign-note":
+    "この接続はシークレットを「{ $ref }」から読み込んでいますが、この枠は「{ $owner }」のものです。dbboard 自身がこの状態を作ることはないため、connections.toml を手で編集したか、この検査が入る前にインポートされたものです。修復するまで、書き出しでは警告が出て、複製はできません。",
+  "conn-repair": "修復…",
+  "conn-repair-title": "保存されたシークレットを修復",
+  "conn-repair-lead":
+    "「{ $name }」に専用のシークレット枠を用意し、下の値をそこへ保存します。「{ $owner }」の枠とシークレットはそのまま残ります。ここで変わるのは、「{ $name }」がそれを読まなくなることだけです。",
+  "conn-repair-secret": "シークレット",
+  "conn-repair-secret-url": "接続 URL",
+  "conn-repair-secret-token": "API トークン",
+  "conn-repair-secret-service_account": "サービスアカウント JSON",
+  "conn-repair-secret-secret_key": "シークレットアクセスキー",
+  "conn-repair-secret-ssh_password": "SSH パスワード",
+  "conn-repair-secret-ssh_passphrase": "SSH 鍵のパスフレーズ",
+  "conn-repair-secret-required": "保存する値を入力してください。",
+  "conn-repair-run": "修復する",
+  "conn-repair-ok": "「{ $id }」が専用のシークレット枠を持つようになりました。",
   "conn-save": "保存",
   "conn-browse": "参照…",
   "conn-cancel": "キャンセル",

@@ -121,6 +121,44 @@ pub enum ConfigError {
     #[error("config bundle failed: {0}")]
     Bundle(#[from] BundleError),
 
+    /// [`crate::ConnectionAdmin::duplicate`] refused because the source entry
+    /// carries a `keyring_*_ref` that was not minted from its own id
+    /// (issue #213). Copying it would read a slot belonging to someone else —
+    /// which is exactly the state a duplicate is supposed to stop producing —
+    /// so the entry has to be repaired before it can be copied.
+    #[error("connection {id}: cannot duplicate while it points at the keyring slot {key_ref}; repair it first")]
+    UnusableSourceRef {
+        /// The source connection's id.
+        id: String,
+        /// The ref on it that does not derive from that id.
+        key_ref: String,
+    },
+
+    /// [`crate::ConnectionAdmin::repair_foreign_ref`] was handed a ref the
+    /// named entry does not carry. The caller is working from a stale view of
+    /// the store, the same way [`ConfigError::NotFound`] means it is working
+    /// from a stale view of the ids (ADR-0016).
+    #[error("connection {id} does not point at the keyring slot {key_ref}")]
+    RefNotOnEntry {
+        /// The connection that was asked to repair the ref.
+        id: String,
+        /// The ref it does not carry.
+        key_ref: String,
+    },
+
+    /// [`crate::ConnectionAdmin::repair_foreign_ref`] was handed a ref that is
+    /// already the entry's own, or one shaped so that no owner can be read out
+    /// of it at all. Neither is repairable here: the first needs no repair, and
+    /// the second names no field to re-mint (the same shape
+    /// [`crate::ConnectionAdmin::foreign_refs`] deliberately skips).
+    #[error("connection {id}: the keyring slot {key_ref} is not another connection's to repair")]
+    NothingToRepair {
+        /// The connection that was asked to repair the ref.
+        id: String,
+        /// The ref that turned out not to need — or not to admit — repair.
+        key_ref: String,
+    },
+
     /// A selective export named no connections (ADR-0105). Refused rather
     /// than honoured: an empty bundle encrypts and decrypts perfectly well
     /// and then imports nothing, which the user reads as a wrong

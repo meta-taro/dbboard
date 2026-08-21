@@ -11453,3 +11453,82 @@ what the gate permits.
 libSQL teardown crash became one when the hooks stopped triggering it. The
 failure mode this replaces was not a check that failed; it was a check
 nobody ran.
+
+## ADR-0118 — A connection can be copied, and one that names a foreign slot can be repaired
+
+### Status
+
+Accepted.
+
+### Context
+
+ADR-0112 and ADR-0113 established that an entry can carry a keyring ref
+minted for a *different* connection, that dbboard's own CRUD cannot
+produce that state, and that import refuses it and export names it. What
+neither did was give the operator anywhere to go afterwards. The only
+route back to a healthy file was hand-editing `connections.toml` — the
+very act that produces the state in the first place.
+
+The same hand-edit is also how a second connection to the same database
+gets made today. There is no copy: the operator opens the file, pastes an
+entry, changes the id, and leaves `keyring_url_ref` pointing at the
+original's slot because it is not obvious that it must not. That is the
+foreign-ref state, manufactured on purpose, for a reason the application
+never offered an alternative to.
+
+Two commands close both halves, and the interesting difference between
+them is **where the secret comes from**.
+
+### Decision
+
+**`ConnectionAdmin::duplicate(id, new_id, new_name)` copies an entry, mints
+fresh refs from the new id, and reads the source's secrets into the new
+slots.** The copy is entitled to those values: the source owns the slots it
+reads, so nothing is being taken from a third party. The copy starts with
+`mcp_alias: None` and `mcp_write: false` — an alias is unique by
+construction and a write grant is a decision, not an attribute of the thing
+copied.
+
+Duplicating a source that already carries a foreign ref is refused
+(`UnusableSourceRef`). Copying that entry would mean reading a slot the
+source does not own in order to seed a third one, which is the case for the
+repair path, not this one.
+
+**`ConnectionAdmin::repair_foreign_ref(id, key_ref, secret)` mints the
+entry's own ref and stores a secret the caller supplies.** It does not read
+the slot it is stopping the entry from referencing. That slot has a live
+owner, and reading it to copy the value is exactly the silent credential
+duplication ADR-0038's import guard refuses; the fact that this side of the
+same act is user-initiated does not change what lands in the keychain.
+
+For the same reason, **repair never deletes the abandoned slot.** An
+orphan is a slot with no owner. This one has one.
+
+The order of the two refusals is deliberate. `RefNotOnEntry` is checked
+before `NothingToRepair`, because a caller passing a ref the entry does not
+carry is far more likely holding a stale view of the list than to have
+constructed a nonsense ref, and the stale-view diagnosis is the one that
+tells them what to do.
+
+**The connection list shows the state.** Previously it surfaced only when a
+bundle was built, which is both late and the wrong moment. The badge is fed
+by its own `foreign_connection_refs` command rather than a field on
+`ConnectionView`: that projection is shared with the MCP server, and this
+is a desktop repair affordance, not something an agent should be reasoning
+about.
+
+### Consequences
+
+**Hand-editing `connections.toml` stops being the supported way to get a
+second connection to one database.** That is the point. The failure mode
+ADR-0112 and ADR-0113 detect is largely self-inflicted by the absence of
+this command.
+
+**Repair asks for a secret the operator may not have to hand.** This is
+real friction and it is not removable: the alternative is reading another
+connection's credential without saying so. If they cannot produce the
+value, the entry stays broken and stays visibly broken, which is still
+better than it silently working by borrowing.
+
+**Export's warning and import's refusal are unchanged.** Both were correct;
+they were just terminal. They now name a state the application can leave.
