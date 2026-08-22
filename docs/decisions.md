@@ -11864,3 +11864,67 @@ still reads like a promise somebody made.
 client toward an operations tool. Reserving them is not agreeing to them — the
 place to disagree is before a band opens. Recording the order is what makes
 disagreeing possible at all, which is the whole complaint this ADR answers.
+
+## ADR-0123 — A handed-over plan is stored before it is read for what to do (2026-08-22)
+
+**Status**: accepted.
+
+**Context.** Plans for dbboard arrive as `.md` files. Each one gets read, and
+what it implies gets written up as an issue under `.claude/issues/`. Only one
+of them was ever kept: `.claude/plans/2026-08-17-database-workspace.md`, and
+that was incidental rather than policy.
+
+Checking the rest found the shape of the loss:
+
+| Handed over | Kept as | Lines |
+|---|---|---|
+| Additional database adapters | issue 0023 | 862 → 150 |
+| Competitive watch | issue 0024 | 875 → 141 |
+| Awareness and launch | nothing at all | 363 → 0 |
+| Database Workspace | the plan itself | 372 → 372 |
+
+The compression is not the failure on its own — an issue is meant to be
+shorter than the plan behind it. The failure is that the long version stopped
+existing, so the issue became the only record of a document nobody could
+re-read. What a summary keeps is the *what*: which databases, in which order.
+What it drops is the *why*: what was already ruled out and on what grounds.
+Six months later the questions that arrive are all of the second kind, and by
+then the answer is not recoverable from the summary or from anyone's memory.
+
+The fourth case is worse than compression and came from the same habit. A
+plan whose contents were mostly not code — README positioning, a demo
+recording, where to post and in what order — matched no existing issue, so
+nothing was written and the file was gone by the time anyone looked.
+
+**Decision.** A handed-over plan is copied to `.claude/plans/<date>-<slug>.md`
+byte for byte **before** anything is derived from it. Deriving issues is a
+separate, later step, and each derived issue names the plan file it came from.
+Plans are never edited afterwards; corrections and decisions go in the issue,
+which is what issues are for.
+
+This applies even when the plan is obviously going to be reshaped, even when
+only part of it applies, and even when it restates something already known.
+Judging what is worth keeping is the step that failed, so it is the step being
+removed.
+
+**Consequences.**
+
+- `.claude/plans/` joins the Documentation Policy table in `CLAUDE.md`, marked
+  as verbatim and never edited.
+- Issues 0023 and 0024 now link back to their originals; the awareness plan
+  gained issue 0027, which records who does which half — the writing is the
+  agent's, the posting is the maintainer's, because those are accounts nobody
+  else can act on.
+- These plans are internal working documents in a public repository. That was
+  already true of `.claude/issues/`. They were checked for names, handles and
+  URLs before being committed; `scripts/pii-scan.sh` covers them from now on
+  like anything else tracked.
+- One further constraint fell out of the awareness plan rather than out of
+  this decision: the 30-second demo GIF it asks for cannot be recorded on the
+  machine that has real connections configured. `pii-scan` reads text, not
+  pixels, so a recording is checked by eye or not at all (ADR-0055).
+
+**Not decided here.** Whether plans handed over before 2026-07-21 can be
+recovered. They arrived the same way and were treated the same way; the
+difference is only that the earlier ones are no longer anywhere on this
+machine to copy from.

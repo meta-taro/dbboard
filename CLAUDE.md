@@ -218,11 +218,31 @@ maintainer's preferred language.
 | `docs/architecture.md` | Layer/crate map, adapter trait spec, dependency rules. |
 | `docs/roadmap.md` | Phase plan. Update when a phase completes. |
 | `docs/decisions.md` | ADR log for technical decisions. Append, do not rewrite. |
+| `.claude/plans/` | Handed-over plans, stored verbatim. Never edited. |
 | `.claude/issues/` | Task tracking — one Markdown file per issue. |
 | `.claude/project-status.md` | Running session status (internal). |
 
 When a phase ships, mark it complete in `docs/roadmap.md`. When a
 non-trivial decision is made, add an ADR entry to `docs/decisions.md`.
+
+### Plans arrive as files, and are kept as files
+
+A plan handed over as a `.md` goes into `.claude/plans/<date>-<slug>.md`
+**byte for byte, before anything is done with it**. Then, separately, derive
+whatever issues it implies and link each one back to the file it came from.
+
+Not the other way round. A plan read once and turned straight into issues
+survives only as whatever the reader thought was important that day: three
+handovers of 360–880 lines each became issues of 140–150 lines, and a fourth
+was never written down at all. The parts that get dropped are the reasons —
+why this database, why not that ordering, what was already ruled out — and
+those are exactly the parts needed later, when the summary no longer answers
+the question. The original is a few hundred lines; keeping it costs nothing
+and the reader six months from now cannot recover it.
+
+Store it whole even when it is obviously going to be reshaped, even when only
+part of it applies, and even when it repeats something already known.
+Summarise in the issue, not in the archive.
 
 ## Local Development
 
