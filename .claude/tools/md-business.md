@@ -5,7 +5,6 @@
 
 Markdown を正本にした業務文書（請求書・検証シート・設計書）のビューワー兼編集環境。
 **AI エージェントからは MCP サーバー経由で読み書きする。**
-横断ノウハウ側の参照元: `.claude/browser-verification.md` §0（§22 検証シート・§36 改善要望シート）。
 
 - リポジトリ: <https://github.com/meta-taro/md-business>（MIT）
 - ダウンロード: <https://meta-taro.github.io/md-business/download/>
@@ -122,7 +121,7 @@ node <clone 先>/packages/mcp-server/dist/bin.js --version 2>&1 | head -1
 | `update_document` | frontmatter（浅くマージ）／本文を更新。更新後に再検証し、前後の行 diff を返す |
 | `search_documents` | 全文・スキーマ・日付範囲で検索。文書と検証シートの両方を一覧できる |
 
-### 検証シート（TSV・§22）
+### 検証シート（TSV）
 
 | ツール | 何をする |
 |---|---|
