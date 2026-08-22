@@ -11,6 +11,12 @@
 # it fails a branch that is green and teaches whoever hits it to reach for
 # --no-verify.
 #
+# 0 in 150 is not 0. On 2026-08-22 a serialised dbboard-mcp run crashed exactly
+# this way, on a branch whose entire diff was TypeScript, and 35 deliberate
+# reproduction runs afterwards came back clean. Serialising removed the common
+# case, not the race, so the residual is retried below rather than left to
+# fail a green branch once or twice a year (ADR-0125).
+#
 # Which crates those are is data rather than a name written here, because the
 # hazard spreads by dependency: any crate taking dbboard-turso, directly or
 # through dbboard-connect, inherits it.
@@ -43,6 +49,43 @@ done
 # shellcheck disable=SC2086
 cargo test --all-features "$@" --workspace $excludes
 
+# The crash, as it looks from outside the dead process: an access violation
+# and no failure ever reported, because the harness did not survive to print
+# one. Matched on the signature rather than on the exit code, so that a crate
+# whose tests genuinely failed is never retried — retrying a real failure is
+# how a fault gets quietly turned into a pass.
+crashed_at_teardown() {
+    grep -qE 'STATUS_ACCESS_VIOLATION|0xc0000005|Segmentation fault' "$1" &&
+        ! grep -qE '^failures:|^test result: FAILED' "$1"
+}
+
+log="${TMPDIR:-/tmp}/dbboard-serialised-$$.log"
+rc="${TMPDIR:-/tmp}/dbboard-serialised-$$.rc"
+trap 'rm -f "$log" "$rc"' EXIT
+
 for pkg in $serialised; do
-    cargo test --all-features "$@" -p "$pkg" -- --test-threads=1
+    attempt=1
+    while :; do
+        # The status wanted is cargo's, not tee's, and `sh` is dash on CI so
+        # there is no pipefail to ask for it.
+        set +e
+        { cargo test --all-features "$@" -p "$pkg" -- --test-threads=1; echo $? >"$rc"; } 2>&1 | tee "$log"
+        set -e
+        status=$(cat "$rc")
+
+        if [ "$status" -eq 0 ]; then
+            break
+        fi
+
+        # Once. Twice in a row is no longer the tail of a race, and calling it
+        # one would be the same mistake as calling it impossible.
+        if [ "$attempt" -eq 1 ] && crashed_at_teardown "$log"; then
+            echo "[test] $pkg died at teardown (0xc0000005) with no test reported failed." >&2
+            echo "[test] that is the known libSQL race, not a result — running $pkg once more." >&2
+            attempt=2
+            continue
+        fi
+
+        exit "$status"
+    done
 done

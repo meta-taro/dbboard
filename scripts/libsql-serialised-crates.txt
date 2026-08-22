@@ -4,7 +4,9 @@
 # crashes the whole test binary with STATUS_ACCESS_VIOLATION (0xc0000005),
 # after every assertion has already passed. The mitigation is to stop two
 # teardowns from overlapping, which means running the affected test binaries
-# single-threaded.
+# single-threaded. It makes the crash rare rather than impossible -- one got
+# through on 2026-08-22 -- so the runner retries that one signature once
+# (ADR-0125). Being on this list is still what makes it rare enough to retry.
 #
 # The hazard is not a crate name, it is "opens libSQL in a test". Any crate
 # that can reach dbboard-turso in the dependency graph -- directly or through

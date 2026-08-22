@@ -11997,3 +11997,62 @@ different and worse change.
 **Not decided here.** Whether the commit and tag should also be scripted. They
 are two commands and they are the point at which a human is meant to look at
 what is about to go out.
+
+## ADR-0125 — The libSQL teardown crash is retried once, because serialising made it rare and not impossible (2026-08-22)
+
+**Status**: accepted.
+
+**Context.** On Windows, tearing down two in-memory libSQL databases at the
+same instant kills the test binary with `STATUS_ACCESS_VIOLATION`
+(0xc0000005) after every assertion has already passed. ADR-0119 answered it by
+running the crates that can reach `dbboard-turso` one thread at a time, and the
+measurement in `scripts/cargo-test-serialised.sh` recorded the result: 5
+crashes in 150 parallel runs, 0 in 150 serialised ones.
+
+Everything written afterwards treated that zero as a cure. `CLAUDE.md` said the
+hooks no longer trigger the crash and that a crash there "is now a real
+finding"; the list header called serialising "the mitigation"; the derivation
+test said the same.
+
+On 2026-08-22 a pre-commit run crashed exactly that way, in `dbboard-mcp`,
+which is on the list and was running with `--test-threads=1`. The branch's
+entire diff was TypeScript and Svelte — no Rust at all. Afterwards: 25
+serialised runs of that crate clean, 10 more with two copies of the binary
+running at once clean. 0 in 150 was a small sample of a rare event, not the
+absence of one.
+
+The cost of the wrong belief is specific. It tells whoever hits the crash that
+their green branch contains a real fault, and the hour they spend looking for
+it ends where this one did — at a race in a dependency's teardown that nobody
+is going to fix from here. The likely second lesson is worse: that the rule
+about not bypassing the hook is written by people who have not hit this.
+
+**Decision.** `scripts/cargo-test-serialised.sh` re-runs a serialised crate
+once when it dies with `0xc0000005` (or a `Segmentation fault`) **and** the
+output reports no failing test. Both halves are required: the exit code alone
+would retry genuine failures, which is how a fault gets turned into a pass. A
+second crash in a row fails the run.
+
+The retry says out loud what it is doing. A crash that leaves no trace teaches
+the next reader it never happens, which is the belief being corrected here.
+
+**Consequences.**
+
+- `CLAUDE.md`, the list header and
+  `crates/dbboard-turso/tests/serialised_teardown.rs` now say the same thing:
+  serialising is what makes the crash rare enough for one retry to be enough.
+  Being on the list still matters, and the derivation test still enforces it.
+- The sanctioned-bypass wording changes rather than returns. The bypass is not
+  back; the runner absorbs the crash itself, and a crash that survives the
+  retry is a real finding.
+- `scripts/serialised-retry.test.mjs` drives the script with a fake `cargo` on
+  `PATH`, because the behaviour under test is what happens when cargo dies and
+  the real one cannot be asked to die on cue. It covers the retry, the refusal
+  to retry a real failure, and the second crash failing the run.
+- cargo's exit status is captured through a file rather than a pipeline, since
+  `sh` is dash on CI and there is no `pipefail` to ask for.
+
+**Not decided here.** The race itself. It is below the adapter, in the driver's
+teardown, and reproducing it on demand has failed twice now — 30 runs when
+ADR-0119 was written, 35 here. Retrying a rare crash is a workaround; it is
+recorded as one.

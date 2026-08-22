@@ -72,6 +72,11 @@ Do not edit it by hand — `crates/dbboard-turso/tests/serialised_teardown.rs`
 derives the set from the workspace manifests and tells you what it should
 contain.
 
+Serialising makes that crash rare, not impossible, so the script re-runs a
+crate once when it dies with `0xc0000005` and no test reported a failure
+(ADR-0125). A second crash in a row fails the run, and a genuine test failure
+is never retried.
+
 These commands are wired into the git hooks (see "Git Hooks" below).
 
 ## Code Quality Standards
@@ -299,8 +304,9 @@ every commit message (commit-msg hook), and daily in CI (`pii-scan.yml`).
 - A blocked commit means a real leak (remove it) or a false positive (add a
   narrow regex to `scripts/pii-scan.allow`). Never `--no-verify` past a PII
   finding. The Windows libSQL teardown segfault used to be a sanctioned
-  bypass; it is not one any more, because the hooks no longer trigger it (see
-  "Mandatory Verification Commands"). A crash there is now a real finding.
+  bypass; it is not one any more, because the runner now retries it once by
+  itself (see "Mandatory Verification Commands"). A crash that survives the
+  retry is a real finding.
 - Operator guide: `docs/maintainer/pii-scanning.md`.
 
 ## Progress Tracking

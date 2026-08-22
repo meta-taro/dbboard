@@ -15,6 +15,12 @@
 //! branch. Nothing announced the gap, because the crash is rare enough to hide
 //! for months: 0 failures in 30 deliberate reproduction runs here.
 //!
+//! Serialising is what makes it rare; it is not what makes it impossible. A
+//! serialised `dbboard-mcp` run crashed on 2026-08-22 with every assertion
+//! passed, so `scripts/cargo-test-serialised.sh` retries that one signature
+//! once (ADR-0125). Being on the list is the reason a single retry is enough,
+//! which is why the list still has to be right.
+//!
 //! So the list is checked rather than remembered. This test derives the set
 //! from the dependency graph and fails when the recipe's list disagrees with
 //! it, which is what happens the next time someone adds the adapter to a crate
