@@ -7,6 +7,31 @@
 
 ## 最終更新
 
+- 日付: 2026-08-22 (**#210 webview の CSP を実装して commit まで完了。push は user。**
+  `app.security.csp` は `null` だった = 「既定のポリシー」ではなく **CSP ヘッダを一切出さない**。
+  今の frontend に注入口は無い (DB の値も AI の応答も HTML として描画していない) ので
+  挙動は変わらない。**要る機能が来る前に置く**ための guard。
+  調べて分かった点が 3 つ、いずれも tauri のソースを読んで確定した (推測ではない):
+  ① **`script-src 'self'` で足りる。** tauri-codegen が inline script 2 本
+  (テーマ適用と SvelteKit の bootstrap) を build 時に hash 化し、`set_csp` が実行時に
+  追加する。ビルド済み exe に hash 2 本が埋まっていることを確認済み。
+  ② **SvelteKit の `kit.csp` は無効のままにする。** 有効にすると `<meta>` で 2 枚目の
+  ポリシーが出て交差し、しかも手書きのテーマ script を知らない = 壊れる。
+  issue のチェックリストは「hash mode を有効に」と書いてあったが、それは誤り。
+  ③ **`style-src` は `'unsafe-inline'` を残すしかない。** CodeMirror が `<style>` を
+  作って `textContent` を代入する方式でテーマを載せるため、build 時に hash 化できない。
+  ここが**何も報告されずに壊れる**: CSP3 は nonce/hash が付いた瞬間 `'unsafe-inline'` を
+  無視し、tauri は `app.html` に `<style>` が 1 つでもあると nonce を入れる。
+  → `app.html` に `<style>` が無いことを test で固定した (他 2 本と合わせて 3 本)。
+  **状態**: PR #217 で `feature/duplicate-and-repair-connection` に merge 済み (840038a)。
+  CSP は **#216 の中**にあり、#216 が develop に入った時点で本体に載る。
+  push で `dbboard-mcp.exe` のロックに当たった (別セッションの MCP が掴んでいた)。
+  **プロセスは止めず、exe を `dbboard-mcp.exe.inuse` に改名して退かした** —
+  Windows は実行中の exe を削除できないが改名はできる。`.inuse` は
+  そのセッションが終わったら消す。
+  **AI がやれていないこと**: issue の「webview console を開いてアプリを一周する」。
+  release build に devtools は無く、debug build は `pnpm dev` が要る (共有 PC で禁止)。
+  → **画面での確認は user 側**。app は起動済み (target/release/dbboard-desktop.exe)。)
 - 日付: 2026-08-21 その2 (**git history の書き換えを実行して force push まで完了した
   (push は user)。公開履歴から実名と個人メールが消えた。ただし GitHub 側に消せない
   残りが 1 種類あり、それが user 側のボールとして残る。**
