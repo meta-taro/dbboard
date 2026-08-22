@@ -11928,3 +11928,72 @@ removed.
 recovered. They arrived the same way and were treated the same way; the
 difference is only that the earlier ones are no longer anywhere on this
 machine to copy from.
+
+## ADR-0124 — Cutting a release is one command, and it stops before the tag (2026-08-22)
+
+**Status**: accepted.
+
+**Context.** ADR-0121 made the release trigger visible: every push prints how
+much is sitting unreleased and what version it would become. It answers *when*.
+It says nothing about *how*, and how was never written down anywhere.
+
+Reconstructing the last bump (`65128e4`) from its diff, a release is five
+files: the `[Unreleased]` heading moves down to a version, `Cargo.toml`'s
+workspace version moves, `apps/desktop/package.json` and
+`apps/desktop/src-tauri/tauri.conf.json` each repeat that version, and
+`Cargo.lock` follows from a `cargo check`. Then a commit and a tag.
+
+None of that is difficult, which is exactly why it stayed unwritten. But a
+ritual that exists only in whoever performed it last has a cost that shows up
+elsewhere: dbboard is at v0.10 with five unreleased entries, while a sibling
+project of comparable age releases on implementation. The difference is not
+implementation speed. It is that here, deciding to release means also
+remembering four files and hoping none were missed, and that is enough friction
+to postpone. dbboard is used while it is being built, so a release deferred is
+an improvement withheld from someone already running it.
+
+Two smaller things were also unresolved. The changelog's own history writes
+`## [0.10.0] — 2026-08-20`; the roadmap and `CLAUDE.md`, written later for
+ADR-0122's slots, showed `## [0.11.0] — Connection repair and duplication`.
+Both were in the repository, describing the same line, disagreeing.
+
+**Decision.** `scripts/release-cut.mjs` performs the four text edits and stops.
+
+It takes the version from the trigger (`releaseDue`) or from an argument, dates
+the heading from the clock, carries the `[Unreleased]` headline down with the
+entries it described, and leaves a bare `## [Unreleased]` above for what comes
+next. It refuses to cut an empty section, which is the shape a second run
+takes.
+
+Version headings carry both facts:
+`## [0.11.0] — 2026-08-22 — Connection repair and duplication`. The date is
+when it was cut, the headline is the slot's. The two examples in
+`docs/roadmap.md` and `CLAUDE.md` were corrected to match; neither was wrong so
+much as half-written.
+
+It does not commit, does not tag, and does not push. The tag push *is* the
+release, and it stays human (ADR-0121, baseline §6). Mechanising the
+mechanical half is the whole point; mechanising the decision would be a
+different and worse change.
+
+**Consequences.**
+
+- The `## Releases` section of `CLAUDE.md` names the command next to the
+  trigger that says when to run it, and lists what is left afterwards —
+  `cargo check`, the commit, the tag.
+- The manifests are edited as text, not reparsed. `JSON.parse` then
+  `stringify` would reformat both files and lose their key order, turning a
+  one-line release into a whole-file diff that nobody can review.
+- The `Cargo.toml` edit is scoped to `[workspace.package]`.
+  `[workspace.dependencies]` below it is full of `version = "1"`, and a bump
+  that caught one of those would be a dependency change wearing a release's
+  commit message. `scripts/release-cut.test.mjs` holds that case.
+- The tests read the four real files and assert the cut can parse each one, so
+  a manifest that is reshaped later fails here rather than mid-release.
+- CRLF is preserved from whatever the file already uses. Every one of the four
+  is CRLF in the working copy; a release that rewrote line endings would
+  restate the entire changelog as a change to itself.
+
+**Not decided here.** Whether the commit and tag should also be scripted. They
+are two commands and they are the point at which a human is meant to look at
+what is about to go out.

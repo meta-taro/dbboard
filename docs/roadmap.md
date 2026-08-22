@@ -91,16 +91,17 @@ and is not — the work accumulates where no one can use it.
 
 ### What a shipped version contained
 
-Every version heading in [`CHANGELOG.md`](../CHANGELOG.md) carries its
-headline, so the question is answerable without reading a diff:
+Every version heading in [`CHANGELOG.md`](../CHANGELOG.md) carries its date
+and its headline, so the question is answerable without reading a diff:
 
 ```
-## [0.11.0] — Connection repair and duplication
+## [0.11.0] — 2026-08-22 — Connection repair and duplication
 ```
 
-The headline is the slot's, copied over when the release is cut. If what
-actually shipped no longer matches the slot, the headline changes and the
-slot table is corrected — the record of what shipped wins over the plan.
+The date is the day it was cut and the headline is the slot's;
+`scripts/release-cut.mjs` writes both. If what actually shipped no longer
+matches the slot, the headline changes and the slot table is corrected — the
+record of what shipped wins over the plan.
 
 ## Pacing Note
 

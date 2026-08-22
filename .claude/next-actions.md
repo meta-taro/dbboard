@@ -82,7 +82,7 @@ push のたびに次の枠の見出しも出る:
 
 | # | やること | 出典 |
 |---|---|---|
-| 1 | #216 が develop に入る → **v0.11.0 を切る** (tag push は user) | CHANGELOG 5 件 |
+| 1 | #216 が develop に入る → **v0.11.0 を切る** = `node scripts/release-cut.mjs` + cargo check + commit (tag push は user) | CHANGELOG 5 件 |
 | 2 | 接続リスト C — hover に id ではなく名前を出す | #192 / 0026 |
 | 3 | 接続リスト A — ▲▼ で並び替え (`move_to`)。スキーマ変更不要 | #192 / 0026 |
 | 4 | 接続リスト B — リスト上の絞り込み入力 → **ここで #192 closed** | #192 / 0026 |

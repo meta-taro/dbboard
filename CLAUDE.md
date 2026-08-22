@@ -132,10 +132,22 @@ One unreleased entry means a release *may* be cut; three mean one is *due*.
 The same line prints on every push. Deciding to release, and pushing the tag,
 stay human (ADR-0121).
 
-Every `CHANGELOG.md` version heading carries its slot's headline
-(`## [0.11.0] — Connection repair and duplication`), so "what shipped?" is
-answerable without reading a diff. `scripts/release-plan.test.mjs` fails when
-the plan and the changelog drift apart.
+Every `CHANGELOG.md` version heading carries its date and its slot's headline
+(`## [0.11.0] — 2026-08-22 — Connection repair and duplication`), so "what
+shipped?" is answerable without reading a diff. `scripts/release-plan.test.mjs`
+fails when the plan and the changelog drift apart.
+
+Cutting one is a single command, so that the mechanical half is never the
+reason to put a release off:
+
+```sh
+node scripts/release-cut.mjs        # or: … release-cut.mjs 0.12.0
+```
+
+It rewrites the changelog heading, the workspace version and both manifests,
+then prints what is left: `cargo check` to move `Cargo.lock`, the commit, and
+the tag. It stops there deliberately — the tag push is the release, and that
+is the human's (ADR-0121).
 
 ## Git & Commits
 

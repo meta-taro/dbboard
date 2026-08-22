@@ -2,12 +2,12 @@
 // release trigger says about it.
 //
 // docs/roadmap.md ("Release plan", ADR-0110 as amended by ADR-0122) does not
-// schedule
-// releases from dates: it derives them from content. One unreleased entry means a release
-// *may* be cut; three mean one is *due*. That rule was only ever reachable by
-// running an awk one-liner out of the roadmap, so in practice nobody saw the
-// counter move and the next version looked like it was never coming. This
-// prints the same rule where the work already happens — the pre-push hook.
+// schedule releases from dates: it derives them from content. One unreleased
+// entry means a release *may* be cut; three mean one is *due*. That rule was
+// only ever reachable by running an awk one-liner out of the roadmap, so in
+// practice nobody saw the counter move and the next version looked like it
+// was never coming. This prints the same rule where the work already
+// happens — the pre-push hook.
 //
 // Run directly to print one line and exit 0. It must never fail a push: a
 // release counter that can block work would be worse than no counter.
