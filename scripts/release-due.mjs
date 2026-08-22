@@ -1,8 +1,9 @@
 // How much unreleased content CHANGELOG.md is holding, and what the roadmap's
 // release trigger says about it.
 //
-// docs/roadmap.md ("Releases are not planned here", ADR-0110) does not schedule
-// releases: it derives them from content. One unreleased entry means a release
+// docs/roadmap.md ("Release plan", ADR-0110 as amended by ADR-0122) does not
+// schedule
+// releases from dates: it derives them from content. One unreleased entry means a release
 // *may* be cut; three mean one is *due*. That rule was only ever reachable by
 // running an awk one-liner out of the roadmap, so in practice nobody saw the
 // counter move and the next version looked like it was never coming. This
@@ -91,7 +92,6 @@ function nextVersion(current, bump) {
     : `${major}.${minor}.${patch + 1}`;
 }
 
-/** The one line the hook prints. */
 /** A row of the roadmap's slot table: `| **v0.11** | Headline | … |`. */
 const SLOT = /^\|\s*\*\*v(\d+)\.(\d+)\*\*\s*\|\s*([^|]+?)\s*\|/;
 
@@ -114,6 +114,92 @@ export function plannedFor(version, roadmap) {
   return null;
 }
 
+/** Every reserved slot, in page order, as `{ major, minor, headline }`. */
+function slots(roadmap) {
+  const found = [];
+  for (const line of (roadmap ?? "").split(/\r?\n/)) {
+    const m = SLOT.exec(line);
+    if (m) found.push({ major: +m[1], minor: +m[2], headline: m[3] });
+  }
+  return found;
+}
+
+/** The `## [Unreleased]` headline, `null` when the heading carries none. */
+function unreleasedHeadline(changelog) {
+  for (const line of changelog.split(/\r?\n/)) {
+    const m = /^## \[Unreleased\]\s*(?:[\u2014-]\s*(.+?))?\s*$/.exec(line);
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+
+/** Is `slot` at or behind `shipped`? */
+function behind(slot, shipped) {
+  return (
+    slot.major < shipped.major ||
+    (slot.major === shipped.major && slot.minor <= shipped.minor)
+  );
+}
+
+/**
+ * Where the reserved plan and the changelog disagree, as human sentences.
+ *
+ * A plan on a page rots quietly. A slot for a version that already shipped
+ * still reads like a promise, and an `[Unreleased]` headline that no longer
+ * matches its slot answers "what shipped?" with last month's answer. Neither
+ * is visible by reading, and both are cheap to check.
+ *
+ * This is a test, not part of the hook line: a stale plan should stop a merge,
+ * never a push (ADR-0121 — the counter must not be able to block work).
+ *
+ * A stale slot suppresses the headline check. Until the table is moved past
+ * what is already out, every headline below it is wrong for the same reason,
+ * and one cause should not be reported as several problems.
+ */
+export function planDrift(roadmap, changelog) {
+  const reserved = slots(roadmap);
+  if (reserved.length === 0) return [];
+
+  const state = releaseDue(changelog);
+  const parts = /^(\d+)\.(\d+)/.exec(state.current ?? "");
+  const shipped = parts ? { major: +parts[1], minor: +parts[2] } : null;
+
+  if (shipped) {
+    const stale = reserved.filter((slot) => behind(slot, shipped));
+    if (stale.length > 0) {
+      return stale.map(
+        (slot) =>
+          `docs/roadmap.md still reserves a slot for v${slot.major}.${slot.minor}, ` +
+          `but ${state.current} is already released — move the plan forward`,
+      );
+    }
+  }
+
+  if (state.count === 0) return [];
+
+  const next = shipped
+    ? reserved.find((slot) => !behind(slot, shipped))
+    : reserved[0];
+  if (!next) return [];
+
+  const headline = unreleasedHeadline(changelog);
+  const where = `v${next.major}.${next.minor} reserves "${next.headline}"`;
+  if (headline === null) {
+    return [
+      `CHANGELOG.md's [Unreleased] carries no headline, but ${where} — ` +
+        `a version that ships without one is a number again`,
+    ];
+  }
+  if (headline !== next.headline) {
+    return [
+      `CHANGELOG.md's [Unreleased] says "${headline}" where ${where} — ` +
+        `one of the two moved and the other did not`,
+    ];
+  }
+  return [];
+}
+
+/** The one line the hook prints. */
 export function summary(state, roadmap) {
   const { count, verdict, current, next } = state;
   if (verdict === "none") return "[changelog] nothing unreleased yet";

@@ -109,6 +109,34 @@ Rules:
 
 See `docs/architecture.md` for the trait sketches and dependency diagram.
 
+## Releases
+
+Every version has its contents reserved in advance. `docs/roadmap.md`
+("Release plan") holds one slot per version up to 1.0, then bands of several
+releases each for the eight phases of the handed-over Database Workspace plan
+(`.claude/plans/`). Before starting anything, know which slot it belongs to;
+if it belongs to none, the plan is what to change first, not the code.
+
+A slot is a reservation, not a deadline. Unfinished content moves to the next
+slot and slots are never renumbered, so no release ever waits on its slowest
+initiative (ADR-0110, as amended by ADR-0122).
+
+**When a slot is full, cut it before starting the next one.** Code that is
+written but not tagged has reached nobody. What is due is not a judgement call:
+
+```sh
+node scripts/release-due.mjs
+```
+
+One unreleased entry means a release *may* be cut; three mean one is *due*.
+The same line prints on every push. Deciding to release, and pushing the tag,
+stay human (ADR-0121).
+
+Every `CHANGELOG.md` version heading carries its slot's headline
+(`## [0.11.0] — Connection repair and duplication`), so "what shipped?" is
+answerable without reading a diff. `scripts/release-plan.test.mjs` fails when
+the plan and the changelog drift apart.
+
 ## Git & Commits
 
 - Commits are authored by the agent. **Pushes are done by the human.**
