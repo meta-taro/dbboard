@@ -1,3 +1,4 @@
+<!-- prettier-ignore-start -->
 # md-business — 道具カード
 
 > **このファイルは自動同期されます。**直接編集しても次の同期で上書きされます。
@@ -220,3 +221,4 @@ node <clone 先>/packages/mcp-server/dist/bin.js --version 2>&1 | head -1
 
 セル内改行を実改行で入れている。`
 `（バックスラッシュ + n）で書く。
+<!-- prettier-ignore-end -->
