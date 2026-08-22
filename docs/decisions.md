@@ -11764,3 +11764,54 @@ this arrangement breaks quietly.
 be.** `connect-src` deliberately lists no provider endpoint. If a future AI
 provider or telemetry path needs one, the answer recorded in #210 is to move
 the call into Rust rather than widen this line.
+
+## ADR-0121 — The release trigger reports itself, because a rule nobody can see is not a rule
+
+**Date**: 2026-08-22
+**Status**: Accepted
+
+ADR-0110 decided that releases are derived from content rather than scheduled:
+one unreleased CHANGELOG entry means a release may be cut, three mean one is
+due. The rule was correct and it was written down, and it still failed, because
+reading it required running an `awk` one-liner copied out of `docs/roadmap.md`.
+Nobody runs that. The observable result over v0.9.0 and v0.10.0 was a long run
+of commit, push, PR with no visible sign that a version was approaching — which
+reads, from outside, as a project that has stopped releasing.
+
+The defect is surfacing, not policy. So the counter is now a program rather
+than a paragraph: `scripts/release-due.mjs` exports `releaseDue(changelog)` and
+prints one line when run, and `.cargo-husky/hooks/pre-push` prints it after the
+build and tests pass.
+
+```
+[changelog] 5 unreleased entries — a release is due (0.10.0 -> 0.11.0)
+```
+
+**Why the pre-push hook and not CI.** The push output is the one channel that is
+demonstrably read — it is what gets pasted into a session when something goes
+wrong. A CI annotation would be correct and unread. The hook already runs a
+release build and the full test suite at that moment, so the marginal cost is a
+few milliseconds of `node`.
+
+**Why it cannot fail a push.** Every part of the call is guarded: the hook skips
+it when `node` is absent, the invocation is `|| true` under `set -e`, and the
+script swallows its own errors and exits 0 even with no `CHANGELOG.md`. A
+release counter that could block a push would be a worse defect than the one it
+fixes.
+
+**What it deliberately does not do.** It does not bump a version, write a
+heading, or create a tag. Deciding to release stays a human act (baseline §6);
+this only removes the excuse of not knowing. It also does not appear in the
+CHANGELOG itself — the counter must not count itself.
+
+**The bump it reports is a guess about the shape, not the number.** `### Added`
+or `### Changed` present means minor, otherwise patch. It has no opinion about
+major: that is reserved for a non-compatible change to `docs/api-contract.md`
+(ADR-0011), which no line-counting can detect. When the newest released heading
+is not three numbers, `next` is `null` rather than invented.
+
+Tested in `scripts/release-due.test.mjs`, picked up by the existing
+`site (node --test)` CI job. The cases worth keeping: a wrapped entry is one
+entry, an indented sub-bullet is not an entry, entries in already-released
+sections below are not counted, and CRLF input must produce exactly the LF
+result — this repository's `CHANGELOG.md` is CRLF.

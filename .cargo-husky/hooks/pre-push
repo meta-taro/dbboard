@@ -38,3 +38,10 @@ echo "[pre-push] cargo test --all-features --release"
 sh scripts/cargo-test-serialised.sh --release
 
 echo "[pre-push] ok"
+
+# What is waiting to be released, per docs/roadmap.md (ADR-0110). Reported, not
+# enforced: a release counter must never be able to fail a push, so every part
+# of this line is guarded.
+if command -v node >/dev/null 2>&1; then
+    node scripts/release-due.mjs || true
+fi

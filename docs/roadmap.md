@@ -14,10 +14,17 @@ deliberate** ([ADR-0110](decisions.md)). Tying an initiative to a release
 means the release waits for its slowest initiative, and everyone keeps using
 the previous build meanwhile.
 
-What triggers a release is unreleased content:
+What triggers a release is unreleased content. The pre-push hook prints the
+count on every push, so it does not have to be looked up:
+
+```
+[changelog] 5 unreleased entries — a release is due (0.10.0 -> 0.11.0)
+```
+
+To ask at any other time:
 
 ```sh
-awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && /^- /' ../CHANGELOG.md | wc -l
+node scripts/release-due.mjs
 ```
 
 `>= 1` and `develop` green — a release may be cut. `>= 3` — one is due.
@@ -25,6 +32,8 @@ The number is derived from what is in it (additions → minor, fixes only →
 patch); a non-additive change to `docs/api-contract.md` is the major bump,
 and is the only thing v1.0 waits on. Whatever is finished when the trigger
 fires is what ships; an initiative spanning three releases is normal.
+Reporting the count is all the tool does — deciding to release, and pushing
+the tag, stay human ([ADR-0121](decisions.md)).
 
 ## Pacing Note
 
