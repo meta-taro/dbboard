@@ -5,6 +5,7 @@
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import ConnectionManager from './ConnectionManager.svelte';
   import { tableMenuActions } from '$lib/sidebar/menu';
+  import { connectionTooltip } from '$lib/connections/label';
 
   let query = $state('');
   let managerOpen = $state(false);
@@ -129,7 +130,7 @@
             class="nav-row conn"
             class:active={workspace.connectionId === c.id}
             onclick={() => selectConnection(c.id)}
-            title={c.id}
+            title={connectionTooltip(c)}
           >
             {@render dbIcon()}
             <span class="nav-name">{c.name}</span>

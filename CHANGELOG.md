@@ -49,6 +49,12 @@ public API is the HTTP contract in
   the installed copies have fallen behind the ones in the repository. This
   affects contributors only: CI runs the same checks either way
   ([ADR-0104](docs/decisions.md)).
+- **Hovering a connection now shows its name, not its internal id.** The
+  sidebar cuts a long connection name off with an ellipsis, and the tooltip
+  that would have shown the rest was showing the generated id instead — the
+  one piece of text about a connection that appears nowhere else and that
+  nobody has ever needed. Both the sidebar row and the toolbar pill now name
+  the connection and its kind.
 
 ### Security
 

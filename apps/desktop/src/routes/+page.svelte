@@ -18,6 +18,7 @@
     reportUiCommandResult,
   } from '$lib/api';
   import { uiCommands } from '$lib/ui-command/bus';
+  import { connectionTooltip } from '$lib/connections/label';
   import { attachUiCommands, type Detach } from '$lib/ui-command/channel';
   import { updateState } from '$lib/update/state.svelte';
   import {
@@ -224,7 +225,7 @@
           >
             {i18n.t('restore-button')}
           </button>
-          <span class="conn-pill" title={workspace.connection.id}>
+          <span class="conn-pill" title={connectionTooltip(workspace.connection)}>
             <span class="dot" aria-hidden="true"></span>
             {workspace.connection.name}
             <button
