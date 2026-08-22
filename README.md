@@ -168,8 +168,14 @@ cd dbboard
 cargo test
 ```
 
-Running `cargo test` once installs the `cargo-husky` git hooks
-(pre-commit, pre-push).
+Then install the git hooks (pre-commit, commit-msg, pre-push):
+
+```sh
+sh scripts/install-hooks.sh
+```
+
+They are a local convenience — CI runs the same checks on every push and
+pull request either way. Re-run the installer after editing a hook.
 
 ## Run
 

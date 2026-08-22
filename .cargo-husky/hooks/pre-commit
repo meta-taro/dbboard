@@ -34,10 +34,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 echo "[pre-commit] cargo check --all-targets --all-features"
 cargo check --all-targets --all-features
 
-# Serialised for the same reason as in the pre-push hook — see the comment
-# there for the measurement.
+# The crates that reach the libSQL adapter run one thread at a time; the runner
+# holds the reason and the list. See scripts/cargo-test-serialised.sh.
 echo "[pre-commit] cargo test --all-features"
-cargo test --all-features --workspace --exclude dbboard-turso
-cargo test --all-features -p dbboard-turso -- --test-threads=1
+sh scripts/cargo-test-serialised.sh
 
 echo "[pre-commit] ok"

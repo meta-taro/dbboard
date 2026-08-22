@@ -7,24 +7,101 @@ roadmap; the two are coordinated at the concept level only.
 Mark phases `✅ done` as they ship. Add concrete dates only after the
 fact; estimates belong in the issue tracker, not here.
 
-## Releases are not planned here
+## Release plan
 
-**Nothing on this page is assigned to a version number, and that is
-deliberate** ([ADR-0110](decisions.md)). Tying an initiative to a release
-means the release waits for its slowest initiative, and everyone keeps using
-the previous build meanwhile.
+This page used to leave two questions unanswered: what the next version will
+contain, and what the last one contained. Version numbers were deliberately
+unassigned ([ADR-0110](decisions.md)) so a release could never wait on its
+slowest initiative. That reasoning still holds, and the trigger below is
+unchanged — but the price was that a release arrived as a number with no
+advertised content, and the only way to learn what shipped was to read the
+diff. Slots are now reserved in advance ([ADR-0122](decisions.md)).
 
-What triggers a release is unreleased content:
+**A slot is a reservation, not a deadline.** Whatever is finished when the
+trigger fires is what ships. Content that is not ready moves to the next
+slot — it never holds a release, and slots are not renumbered when it moves.
 
-```sh
-awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && /^- /' ../CHANGELOG.md | wc -l
+### Near slots — one release each
+
+| Version | Headline | What it carries |
+|---|---|---|
+| **v0.11** | Connection repair and duplication | Duplicate and Repair actions (#213), webview CSP (#210), the Windows verification fix, the self-reporting release trigger |
+| **v0.12** | A connection list you can steer | Operator-controlled order, search, names instead of ids, colour marks (#192). Splitting `ConnectionManager.svelte` — 1,614 lines — comes first |
+| **v0.13** | Speed, measured | Startup, connect-and-browse, large result sets. Measurement lands before any optimisation, so the numbers are comparable afterwards |
+| **v0.14** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder |
+| **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 fixed or its workaround documented, the contract mirrored to `dbboard-web`, sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
+
+New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
+Elasticsearch/OpenSearch, Oracle) hold no slot on purpose: each is additive
+and independent, so one ships in whichever release is open when it is
+finished. Demand decides the order, not this table.
+
+### Bands after 1.0 — several releases each
+
+The eight phases of the Database Workspace plan
+(`.claude/plans/2026-08-17-database-workspace.md`, reviewed in
+`.claude/issues/0025-…`). **The order is fixed; the width is not** — a band
+is however many minors its phase turns out to need. That review sized the
+whole set at multiple years for one maintainer, so this is a sequence, not
+a schedule. Band N opens when band N−1 closes.
+
+| Band | Phase | Content |
+|---|---|---|
+| 1st (opens at v1.1) | 1 | Adapter Capability API, execution history, activity timeline, metrics collection, charts |
+| 2nd | 2 | MySQL / PostgreSQL / SQLite native features |
+| 3rd | 3 | Backup, restore, verification, S3 / R2 / MinIO, storage explorer |
+| 4th | 4 | Scheduler: scheduled queries, scheduled backups, maintenance, retention |
+| 5th | 5 | Topology: replication, lag graphs, health |
+| 6th | 6 | Load testing, performance metrics, before/after reports |
+| 7th | 7 | Migration: pre-flight, compatibility, validation, data and performance comparison, rollback |
+| 8th | 8 | AI: compatibility advisor, cross-DB translation, metrics/migration/topology analysis |
+
+Phase 1 is the forced entry point: every later phase needs the capability
+API, and most of them need the history and metrics that come with it. Phases
+3 through 7 also push dbboard from a database client toward an operations
+tool, which is a product decision — taking a band is agreeing to that, and
+the place to disagree is before the band opens, not during it.
+
+### What triggers a release
+
+A slot says what a version will contain. It does not say when the tag gets
+pushed — unreleased content does. The pre-push hook prints the count and the
+slot on every push, so neither has to be looked up:
+
+```
+[changelog] 5 unreleased entries — a release is due (0.10.0 -> 0.11.0: Connection repair and duplication)
 ```
 
-`>= 1` and `develop` green — a release may be cut. `>= 3` — one is due.
-The number is derived from what is in it (additions → minor, fixes only →
-patch); a non-additive change to `docs/api-contract.md` is the major bump,
-and is the only thing v1.0 waits on. Whatever is finished when the trigger
-fires is what ships; an initiative spanning three releases is normal.
+To ask at any other time:
+
+```sh
+node scripts/release-due.mjs
+```
+
+`>= 1` and `develop` green — a release may be cut. `>= 3` — one is due. The
+number is derived from what is in it (additions → minor, fixes only → patch);
+a non-additive change to `docs/api-contract.md` is the major bump. Deciding
+to release, and pushing the tag, stay human ([ADR-0121](decisions.md)).
+
+When a slot is full, cutting it comes before starting the next one. Software
+that is written but not tagged has reached nobody: the people waiting on
+dbboard get it at the moment the tag is pushed and not before. Carrying on
+implementing while `release-due` says a release is due looks like progress
+and is not — the work accumulates where no one can use it.
+
+### What a shipped version contained
+
+Every version heading in [`CHANGELOG.md`](../CHANGELOG.md) carries its date
+and its headline, so the question is answerable without reading a diff:
+
+```
+## [0.11.0] — 2026-08-22 — Connection repair and duplication
+```
+
+The date is the day it was cut and the headline is the slot's;
+`scripts/release-cut.mjs` writes both. If what actually shipped no longer
+matches the slot, the headline changes and the slot table is corrected — the
+record of what shipped wins over the plan.
 
 ## Pacing Note
 

@@ -17,9 +17,10 @@ See [ADR-0055](../decisions.md) for the rationale.
 | commit-msg hook | `pii-scan.sh --message <file> --reveal` | yes — the message text |
 | CI push/PR/daily | `--selftest`, `--tree`, `--range origin/main..HEAD`, `--identity <pushed range>` | yes — tracked files, new commit messages, new commit identity |
 
-The hooks are installed by cargo-husky from `.cargo-husky/hooks/` on the next
-`cargo test` after this lands. `--reveal` is passed locally (private terminal)
-but **never** in CI (public Actions log).
+The hooks live in `.cargo-husky/hooks/` and are installed by
+`sh scripts/install-hooks.sh` (ADR-0119 — they do not install themselves).
+`--reveal` is passed locally (private terminal) but **never** in CI (public
+Actions log).
 
 ## Two severities
 

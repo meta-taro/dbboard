@@ -8,12 +8,16 @@
     addConnection,
     updateConnection,
     deleteConnection,
+    duplicateConnection,
+    repairConnectionRef,
+    foreignConnectionRefs,
     connectionEditFields,
     exportConnections,
     importConnections,
     probeSshHostKey,
     configPath,
     type ConnectionView,
+    type ForeignRef,
   } from '$lib/api';
   import {
     emptyForm,
@@ -56,6 +60,14 @@
     pickerTitle,
     type PathField,
   } from '$lib/connections/file-picker';
+  import {
+    foreignRefFor,
+    suggestCopyId,
+    validateCopy,
+    secretLabelKey,
+    type CopyForm,
+    type CopyField,
+  } from '$lib/connections/repair';
   import { exportSummary } from '$lib/connections/export-report';
   import { importSummary } from '$lib/connections/import-report';
 
@@ -64,7 +76,7 @@
   }
   let { onClose }: Props = $props();
 
-  type Mode = 'list' | 'form' | 'export' | 'import';
+  type Mode = 'list' | 'form' | 'export' | 'import' | 'duplicate' | 'repair';
   let mode = $state<Mode>('list');
   let editorMode = $state<EditorMode>('add');
   let form = $state<ConnectionForm>(emptyForm());
@@ -88,6 +100,18 @@
   // Off by default: replacing an entry destroys a credential the bundle may
   // not carry, so it is never the choice a stray click makes.
   let overwriteExisting = $state(false);
+
+  // Entries whose saved-secret slot was minted for a *different* connection
+  // (issue #213). dbboard never writes that state itself, so this is only ever
+  // a hand-edited or pre-ADR-0038 file — but it is silent until an export
+  // refuses, which is too late. The list shows it instead.
+  let foreignRefs = $state<ForeignRef[]>([]);
+  let copySource = $state<ConnectionView | null>(null);
+  let copyForm = $state<CopyForm>({ id: '', name: '' });
+  let invalidCopy = $state<CopyField[]>([]);
+  let repairTarget = $state<{ name: string; ref: ForeignRef } | null>(null);
+  let repairSecret = $state('');
+  let repairSecretMissing = $state(false);
 
   const KIND_LABEL: Record<ConnectionKind, MessageKey> = {
     turso: 'conn-kind-turso',
@@ -186,6 +210,29 @@
     }
   });
 
+  // Not reactive on purpose: the list is fetched once per open of this dialog,
+  // then refreshed explicitly by whatever changed it.
+  let refsLoaded = false;
+  $effect(() => {
+    if (refsLoaded) return;
+    refsLoaded = true;
+    void loadForeignRefs();
+  });
+
+  async function loadForeignRefs() {
+    try {
+      foreignRefs = await foreignConnectionRefs();
+    } catch {
+      // A list we cannot check is shown without badges rather than not at all.
+      // Export still refuses a bundle that carries one, so nothing slips out.
+    }
+  }
+
+  async function refreshAll() {
+    await refreshAll();
+    await loadForeignRefs();
+  }
+
   // Fill a path field from the native open dialog. The user is looking at the
   // file in Explorer while filling this form; asking them to transcribe the
   // path is how a stray quote or the wrong slash gets in.
@@ -244,6 +291,12 @@
     importFileName = '';
     exportIds = [];
     overwriteExisting = false;
+    copySource = null;
+    copyForm = { id: '', name: '' };
+    invalidCopy = [];
+    repairTarget = null;
+    repairSecret = '';
+    repairSecretMissing = false;
   }
 
   function goList() {
@@ -318,7 +371,7 @@
           form.mcp_alias,
         );
       }
-      await workspace.refreshConnections();
+      await refreshAll();
       goList();
     } catch (e) {
       error = String(e);
@@ -333,7 +386,75 @@
     error = '';
     try {
       await deleteConnection(c.id);
-      await workspace.refreshConnections();
+      await refreshAll();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function startDuplicate(c: ConnectionView) {
+    resetTransient();
+    copySource = c;
+    copyForm = {
+      id: suggestCopyId(
+        c.id,
+        workspace.connections.map((x) => x.id),
+      ),
+      name: i18n.t('conn-duplicate-name-default', { name: c.name }),
+    };
+    mode = 'duplicate';
+  }
+
+  async function runDuplicate() {
+    if (!copySource) return;
+    invalidCopy = validateCopy(
+      copyForm,
+      workspace.connections.map((c) => c.id),
+    );
+    if (invalidCopy.length > 0) return;
+    const newId = copyForm.id.trim();
+    busy = true;
+    error = '';
+    try {
+      await duplicateConnection(copySource.id, newId, copyForm.name.trim());
+      await refreshAll();
+      // goList clears the banners, so the confirmation is set after it.
+      goList();
+      info = i18n.t('conn-duplicate-ok', { id: newId });
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function startRepair(c: ConnectionView) {
+    const ref = foreignRefFor(foreignRefs, c.id);
+    if (!ref) return;
+    resetTransient();
+    repairTarget = { name: c.name, ref };
+    mode = 'repair';
+  }
+
+  async function runRepair() {
+    if (!repairTarget) return;
+    if (repairSecret === '') {
+      repairSecretMissing = true;
+      return;
+    }
+    const { id, key_ref } = repairTarget.ref;
+    busy = true;
+    error = '';
+    try {
+      await repairConnectionRef(id, key_ref, repairSecret);
+      // The value is in the keychain now; there is no reason to keep a copy in
+      // a field the user cannot see.
+      repairSecret = '';
+      await refreshAll();
+      goList();
+      info = i18n.t('conn-repair-ok', { id });
     } catch (e) {
       error = String(e);
     } finally {
@@ -430,7 +551,7 @@
     busy = true;
     try {
       const report = await importConnections(importPath, passphrase, overwriteExisting);
-      await workspace.refreshConnections();
+      await refreshAll();
       passphrase = '';
       // Wording rules live in `import-report.ts` so they are testable; which
       // reason gets which sentence is the whole substance of ADR-0112.
@@ -488,6 +609,18 @@
               <div class="row-main">
                 <span class="row-name">{c.name}</span>
                 <span class="row-meta">{c.kind} · {c.id}</span>
+                {#if foreignRefFor(foreignRefs, c.id)}
+                  {@const fr = foreignRefFor(foreignRefs, c.id)}
+                  <span
+                    class="row-warn"
+                    title={i18n.t('conn-foreign-note', {
+                      ref: fr?.key_ref ?? '',
+                      owner: fr?.owner ?? '',
+                    })}
+                  >
+                    {i18n.t('conn-foreign-badge')}
+                  </span>
+                {/if}
                 {#if !isEditableInApp(c.kind)}
                   <span class="row-note">
                     {i18n.t('conn-edit-toml-only')}
@@ -507,6 +640,20 @@
                 >
                   {i18n.t('conn-edit')}
                 </button>
+                {#if foreignRefFor(foreignRefs, c.id)}
+                  <button type="button" class="ghost" disabled={busy} onclick={() => startRepair(c)}>
+                    {i18n.t('conn-repair')}
+                  </button>
+                {:else}
+                  <button
+                    type="button"
+                    class="ghost"
+                    disabled={busy}
+                    onclick={() => startDuplicate(c)}
+                  >
+                    {i18n.t('conn-duplicate')}
+                  </button>
+                {/if}
                 <button type="button" class="ghost danger" disabled={busy} onclick={() => remove(c)}>
                   {i18n.t('conn-delete')}
                 </button>
@@ -1015,6 +1162,76 @@
           </button>
         </div>
       </div>
+    {:else if mode === 'duplicate'}
+      <div class="form">
+        <h3 class="sub">{i18n.t('conn-duplicate-title')}</h3>
+        <p class="note">{i18n.t('conn-duplicate-lead', { name: copySource?.name ?? '' })}</p>
+        <label class="field">
+          <span class="label">{i18n.t('conn-field-id')}</span>
+          <input
+            class:bad={invalidCopy.includes('id')}
+            value={copyForm.id}
+            oninput={(e) => (copyForm.id = e.currentTarget.value)}
+            autocomplete="off"
+          />
+          {#if invalidCopy.includes('id') && copyForm.id.trim() !== ''}
+            <span class="hint bad-text">{i18n.t('conn-duplicate-id-taken')}</span>
+          {/if}
+        </label>
+        <label class="field">
+          <span class="label">{i18n.t('conn-field-name')}</span>
+          <input
+            class:bad={invalidCopy.includes('name')}
+            value={copyForm.name}
+            oninput={(e) => (copyForm.name = e.currentTarget.value)}
+            autocomplete="off"
+          />
+        </label>
+        <div class="actions">
+          <button type="button" class="ghost" disabled={busy} onclick={goList}>
+            {i18n.t('conn-cancel')}
+          </button>
+          <button type="button" class="primary" disabled={busy} onclick={runDuplicate}>
+            {i18n.t('conn-duplicate-run')}
+          </button>
+        </div>
+      </div>
+    {:else if mode === 'repair'}
+      <div class="form">
+        <h3 class="sub">{i18n.t('conn-repair-title')}</h3>
+        <p class="note">
+          {i18n.t('conn-repair-lead', {
+            name: repairTarget?.name ?? '',
+            owner: repairTarget?.ref.owner ?? '',
+          })}
+        </p>
+        <label class="field">
+          <span class="label">
+            {i18n.t(secretLabelKey(repairTarget?.ref.key_ref ?? '') as MessageKey)}
+          </span>
+          <input
+            type="password"
+            class:bad={repairSecretMissing}
+            value={repairSecret}
+            oninput={(e) => {
+              repairSecret = e.currentTarget.value;
+              repairSecretMissing = false;
+            }}
+            autocomplete="off"
+          />
+          {#if repairSecretMissing}
+            <span class="hint bad-text">{i18n.t('conn-repair-secret-required')}</span>
+          {/if}
+        </label>
+        <div class="actions">
+          <button type="button" class="ghost" disabled={busy} onclick={goList}>
+            {i18n.t('conn-cancel')}
+          </button>
+          <button type="button" class="primary" disabled={busy} onclick={runRepair}>
+            {i18n.t('conn-repair-run')}
+          </button>
+        </div>
+      </div>
     {/if}
   </div>
 </div>
@@ -1131,6 +1348,10 @@
   .row-note {
     font-size: var(--text-hint);
     color: var(--faint);
+  }
+  .row-warn {
+    font-size: var(--text-hint);
+    color: var(--danger);
   }
   .row-path {
     font-family: var(--font-mono);

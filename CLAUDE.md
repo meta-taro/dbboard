@@ -50,23 +50,29 @@ Run before every commit:
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo check --all-targets --all-features
-cargo test --all-features --workspace --exclude dbboard-turso
-cargo test --all-features -p dbboard-turso -- --test-threads=1
+sh scripts/cargo-test-serialised.sh
 ```
 
 Run before every push (in addition to the above):
 
 ```sh
 cargo build --release
-cargo test --all-features --release --workspace --exclude dbboard-turso
-cargo test --all-features --release -p dbboard-turso -- --test-threads=1
+sh scripts/cargo-test-serialised.sh --release
 ```
 
-`dbboard-turso` is tested one thread at a time because a parallel run tears
-down two in-memory libSQL databases at once, which crashes the test binary on
-Windows after every assertion has passed. The hooks carry the measurement.
+`scripts/cargo-test-serialised.sh` runs `cargo test` over the whole workspace,
+except that the crates named in `scripts/libsql-serialised-crates.txt` run one
+thread at a time. A parallel run there tears down two in-memory libSQL
+databases at once, which crashes the test binary on Windows after every
+assertion has passed.
 
-These commands are wired into `cargo-husky` git hooks (see "Git Hooks" below).
+That list is every crate that can reach `dbboard-turso` in the dependency
+graph, not just the adapter itself: the hazard travels with the dependency.
+Do not edit it by hand — `crates/dbboard-turso/tests/serialised_teardown.rs`
+derives the set from the workspace manifests and tells you what it should
+contain.
+
+These commands are wired into the git hooks (see "Git Hooks" below).
 
 ## Code Quality Standards
 
@@ -102,6 +108,46 @@ Rules:
   contracts everything else implements.
 
 See `docs/architecture.md` for the trait sketches and dependency diagram.
+
+## Releases
+
+Every version has its contents reserved in advance. `docs/roadmap.md`
+("Release plan") holds one slot per version up to 1.0, then bands of several
+releases each for the eight phases of the handed-over Database Workspace plan
+(`.claude/plans/`). Before starting anything, know which slot it belongs to;
+if it belongs to none, the plan is what to change first, not the code.
+
+A slot is a reservation, not a deadline. Unfinished content moves to the next
+slot and slots are never renumbered, so no release ever waits on its slowest
+initiative (ADR-0110, as amended by ADR-0122).
+
+**When a slot is full, cut it before starting the next one.** Code that is
+written but not tagged has reached nobody. What is due is not a judgement call:
+
+```sh
+node scripts/release-due.mjs
+```
+
+One unreleased entry means a release *may* be cut; three mean one is *due*.
+The same line prints on every push. Deciding to release, and pushing the tag,
+stay human (ADR-0121).
+
+Every `CHANGELOG.md` version heading carries its date and its slot's headline
+(`## [0.11.0] — 2026-08-22 — Connection repair and duplication`), so "what
+shipped?" is answerable without reading a diff. `scripts/release-plan.test.mjs`
+fails when the plan and the changelog drift apart.
+
+Cutting one is a single command, so that the mechanical half is never the
+reason to put a release off:
+
+```sh
+node scripts/release-cut.mjs        # or: … release-cut.mjs 0.12.0
+```
+
+It rewrites the changelog heading, the workspace version and both manifests,
+then prints what is left: `cargo check` to move `Cargo.lock`, the commit, and
+the tag. It stops there deliberately — the tag push is the release, and that
+is the human's (ADR-0121).
 
 ## Git & Commits
 
@@ -151,14 +197,25 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 
 ## Git Hooks
 
-Hooks are installed automatically via `cargo-husky` the first time
-`cargo test` is run after cloning.
+Hook scripts live in `.cargo-husky/hooks/`. Install them with:
 
-- **pre-commit**: `cargo fmt --check`, `cargo clippy -D warnings`,
-  `cargo check`, `cargo test`.
+```sh
+sh scripts/install-hooks.sh
+```
+
+- **pre-commit**: `pii-scan --staged`, `cargo fmt --check`,
+  `cargo clippy -D warnings`, `cargo check`, `cargo test`.
+- **commit-msg**: `pii-scan --message`.
 - **pre-push**: `cargo build --release`, `cargo test --release`.
 
-Hook scripts live in `.cargo-husky/hooks/`.
+Run the installer again after editing a hook. Nothing does it for you:
+`cargo-husky` used to, and was dropped when the workspace was restructured
+while five documents went on claiming it (ADR-0119).
+`crates/dbboard-config/tests/hook_install_drift.rs` fails when `.git/hooks/`
+has fallen behind its source.
+
+The hooks are a local convenience, not the gate. CI runs the same commands
+on every push and pull request (ADR-0104).
 
 ## Documentation Policy
 
@@ -173,18 +230,38 @@ maintainer's preferred language.
 | `docs/architecture.md` | Layer/crate map, adapter trait spec, dependency rules. |
 | `docs/roadmap.md` | Phase plan. Update when a phase completes. |
 | `docs/decisions.md` | ADR log for technical decisions. Append, do not rewrite. |
+| `.claude/plans/` | Handed-over plans, stored verbatim. Never edited. |
 | `.claude/issues/` | Task tracking — one Markdown file per issue. |
 | `.claude/project-status.md` | Running session status (internal). |
 
 When a phase ships, mark it complete in `docs/roadmap.md`. When a
 non-trivial decision is made, add an ADR entry to `docs/decisions.md`.
 
+### Plans arrive as files, and are kept as files
+
+A plan handed over as a `.md` goes into `.claude/plans/<date>-<slug>.md`
+**byte for byte, before anything is done with it**. Then, separately, derive
+whatever issues it implies and link each one back to the file it came from.
+
+Not the other way round. A plan read once and turned straight into issues
+survives only as whatever the reader thought was important that day: three
+handovers of 360–880 lines each became issues of 140–150 lines, and a fourth
+was never written down at all. The parts that get dropped are the reasons —
+why this database, why not that ordering, what was already ruled out — and
+those are exactly the parts needed later, when the summary no longer answers
+the question. The original is a few hundred lines; keeping it costs nothing
+and the reader six months from now cannot recover it.
+
+Store it whole even when it is obviously going to be reshaped, even when only
+part of it applies, and even when it repeats something already known.
+Summarise in the issue, not in the archive.
+
 ## Local Development
 
 - Provide a `.env.example` if and when environment variables are
   introduced.
 - Document setup in `README.md`.
-- Git hooks install themselves via `cargo-husky` on first `cargo test`.
+- Install the git hooks with `sh scripts/install-hooks.sh` after cloning.
 
 ## Security
 

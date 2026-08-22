@@ -1,7 +1,9 @@
 # 0023 — 追加データベースアダプターの企画
 
 - 状態: 未着手（企画確定・着手順まで決定、実装は未）
-- 出典: 2026-08-16 に共有された企画草案「dbboard 追加データベース対応」
+- 出典: 共有された企画草案「dbboard 追加データベース対応」。原文は
+  `.claude/plans/2026-08-14-additional-database-adapters.md` に全文のまま置いてある。
+  下は要約なので、判断に迷ったら原文を見る。
 - 関連: ADR-0018（Postgres 系のフレーバー方式）、0019 Firestore、0020 MongoDB、
   `docs/roadmap.md` Phase 6
 
