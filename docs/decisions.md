@@ -11652,3 +11652,115 @@ ADR-0104 and the `pii-scanning` guide all refer to cargo-husky installing
 the hooks. The prose in the maintainer guide is corrected; the ADRs are
 not, because the log is appended to rather than rewritten. This entry is
 where the arrangement changed.
+
+## ADR-0120 — The webview's Content-Security-Policy, and what each directive is holding
+
+### Status
+
+Accepted.
+
+### Context
+
+`app.security.csp` was `null` (#210). `null` is not "a default policy"; it is
+no `Content-Security-Policy` header at all. Every source the webview can name
+was allowed: any remote script, any style, any `connect-src`, any frame.
+
+Nothing walked that path. There is no HTML-injection sink in the frontend --
+no `{@html}`, no `innerHTML`, no `insertAdjacentHTML` — and the frontend
+makes no network call of its own; drivers, AI providers and the updater all
+run in Rust behind IPC. So this is defence-in-depth, and it was deliberately
+kept out of the v0.10.0 release rather than folded into it.
+
+The reason it needed its own change is the failure mode. A wrong CSP does not
+fail the build and does not crash the app. The window opens, and then some
+part of it quietly does not work — a panel that never renders, an update
+check that never fires — and the only evidence is a console message in a
+webview that, in a bundled build, has no devtools to open.
+
+### Decision
+
+```
+default-src 'self';
+script-src  'self';
+style-src   'self' 'unsafe-inline';
+img-src     'self';
+font-src    'self';
+connect-src 'self' ipc: http://ipc.localhost;
+object-src  'none';
+base-uri    'self';
+form-action 'none';
+frame-ancestors 'none'
+```
+
+**`default-src 'self'`** is the floor every unlisted fetch directive falls
+back to. It is stated first so that adding a feature that needs a new source
+fails closed rather than inheriting a wildcard.
+
+**`script-src 'self'` — and nothing else.** The built `index.html` has two
+inline scripts: the theme applier hand-written in `app.html`, which is inline
+on purpose so an explicit Light/Dark choice never flashes the OS theme first,
+and SvelteKit's hydration bootstrap. Neither survives a bare `script-src
+'self'` — but neither needs to. `tauri-codegen` walks every embedded HTML
+asset at build time, hashes each non-empty `<script>` over its
+CSP-normalised text, and `tauri::manager::set_csp` appends those hashes (plus
+`'self'`) to this directive at runtime. Verified on the built binary: both
+hashes are present in `dbboard-desktop.exe`.
+
+**SvelteKit's `kit.csp` stays unset.** It was the obvious fix and it is the
+wrong one. It emits a second policy as a `<meta http-equiv>`, and two
+policies on one document intersect — so the strictest wins, silently. It
+also only knows about the scripts SvelteKit itself emits, not the theme
+script. Tauri already covers both. Enabling it could only subtract.
+
+**`style-src` carries `'unsafe-inline'`, and that is not laziness.**
+CodeMirror mounts its themes through `style-mod`, which for a document root
+does `document.createElement("style")` and assigns `textContent`. That is
+subject to `style-src`, carries no nonce, and has no hash any build step
+could precompute. Svelte's `style="..."` attributes need it too.
+
+  This is the fragile line. Under CSP3, `'unsafe-inline'` is *ignored* the
+  moment the same directive gains a nonce or a hash — and Tauri adds a style
+  nonce for every `<style>` element it finds in the HTML it embeds. Today
+  `app.html` has none, so nothing is added and `'unsafe-inline'` stands. Add
+  one `<style>` block to `app.html` and the editor loses its styling, with
+  nothing failing at build time. `tests/csp_policy.rs` asserts `app.html`
+  contains no `<style>` element for exactly this reason. Put rules in a
+  `.css` file.
+
+**`connect-src` names both IPC origins.** Every backend call is a `fetch` to
+Tauri's IPC custom protocol: `http://ipc.localhost/<cmd>` on Windows and
+Android, `ipc://localhost/<cmd>` elsewhere. Both are listed so the same
+config works on every target. Getting this wrong degrades rather than breaks
+-- Tauri catches the failure and falls back to the `postMessage` transport --
+which is precisely why it would not have been noticed.
+
+**`img-src 'self'` and `font-src 'self'` are honest today.** The frontend has
+no `<img>`, no `@font-face`, and no `url()` in any authored stylesheet. One
+`data:` SVG does ship, in CodeMirror's `.cm-highlightTab` rule, but that class
+is only applied by the `highlightWhitespace` extension, which is not enabled.
+Enabling it means adding `data:` to `img-src`; that is the line to extend.
+
+**`object-src 'none'`, `base-uri 'self'`, `form-action 'none'`,
+`frame-ancestors 'none'`** are the four that `default-src` does not cover.
+There are no plugins, no `<base>`, no `<form>` and no framing, so each is set
+to the narrowest value that describes the app rather than to whatever it
+happens to tolerate.
+
+### Consequences
+
+**The policy only exists in a bundled build.** A debug build loads `devUrl`
+from the dev server, whose responses Tauri does not write headers on. That is
+why the issue asks for verification on a built binary, and why a green
+`pnpm dev` session proves nothing about this.
+
+**Three properties are pinned by a test, not by memory.**
+`apps/desktop/src-tauri/tests/csp_policy.rs` fails if `csp` returns to `null`
+or gains `'unsafe-inline'`/`'unsafe-eval'` under `script-src`, if `style-src`
+loses `'unsafe-inline'` or `app.html` gains a `<style>` element, or if
+`svelte.config.js` starts emitting its own policy. Those are the three ways
+this arrangement breaks quietly.
+
+**A frontend that starts calling out directly will be blocked, and should
+be.** `connect-src` deliberately lists no provider endpoint. If a future AI
+provider or telemetry path needs one, the answer recorded in #210 is to move
+the call into Rust rather than widen this line.

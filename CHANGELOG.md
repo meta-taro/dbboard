@@ -50,6 +50,18 @@ public API is the HTTP contract in
   affects contributors only: CI runs the same checks either way
   ([ADR-0104](docs/decisions.md)).
 
+### Security
+
+- **The desktop webview now runs under a Content-Security-Policy.** It had
+  none: every remote script, style and connection the webview could name
+  was allowed. Nothing in the app walks that path today — there is no
+  place where a database value, an AI response or an export is rendered as
+  HTML — so this changes no behaviour. It is the guard being put in place
+  before the feature that needs it, rather than after. Scripts are limited
+  to the bundle's own, whose two inline blocks the build hashes; network
+  access is limited to Tauri's IPC, since every driver, provider and the
+  updater already run in Rust. See [ADR-0120](docs/decisions.md).
+
 ## [0.10.0] — 2026-08-20
 
 One database that could not be reached, and four things the program knew
