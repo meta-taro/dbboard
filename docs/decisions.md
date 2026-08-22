@@ -11815,3 +11815,52 @@ Tested in `scripts/release-due.test.mjs`, picked up by the existing
 entry, an indented sub-bullet is not an entry, entries in already-released
 sections below are not counted, and CRLF input must produce exactly the LF
 result — this repository's `CHANGELOG.md` is CRLF.
+
+## ADR-0122 — Versions get their contents reserved in advance (2026-08-22)
+
+**Status**: accepted. Amends ADR-0110; does not replace it.
+
+ADR-0110 said nothing on the roadmap is assigned to a version number, and gave
+a good reason: tying an initiative to a release means the release waits for its
+slowest initiative. Ten releases later the maintainer put the cost plainly:
+you wait for v0.9, then v0.10, it finally arrives — and then what shipped? The
+trigger answered *when*. Nothing answered *what*, in either direction.
+
+Two defects, not one.
+
+*Forward*: no one could say what the next version would contain, so the backlog
+looked unordered even when it was not. *Backward*: a shipped version was a
+number. Answering "what is in 0.9.0" meant reading a diff, which in practice
+means nobody asked.
+
+**The decision.** `docs/roadmap.md` now reserves slots. Near versions get one
+release each with a headline and named contents; the eight phases of the
+Database Workspace plan get ordered bands after 1.0, because a phase is several
+minors wide and pretending otherwise would be a schedule nobody could keep.
+
+ADR-0110's mechanism survives intact, because its reasoning was never wrong:
+
+- A slot is a reservation, not a deadline. Content that is not ready **moves to
+  the next slot**. It does not hold the release, and slots are not renumbered.
+- What triggers a release is still unreleased content, counted by
+  `scripts/release-due.mjs` (ADR-0121). A slot never triggers anything.
+- Dates stay off the page. What replaces them is measured cadence: v0.4.0
+  through v0.10.0 was seven releases in sixteen days. That is an observation
+  about the past, and it is the only honest thing available.
+
+**The headline is the load-bearing part.** `scripts/release-due.mjs` reads the
+slot table and prints it at push time:
+
+```
+[changelog] 5 unreleased entries — a release is due (0.10.0 -> 0.11.0: Connection repair and duplication)
+```
+
+and every version heading in `CHANGELOG.md` carries the same line, so the
+backward question is answerable from the file. `plannedFor` returns `null` for
+a version with no row rather than inventing one: a headline that nobody chose
+still reads like a promise somebody made.
+
+**What this does not decide.** Bands 3 through 7 move dbboard from a database
+client toward an operations tool. Reserving them is not agreeing to them — the
+place to disagree is before a band opens. Recording the order is what makes
+disagreeing possible at all, which is the whole complaint this ADR answers.

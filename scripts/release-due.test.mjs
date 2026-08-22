@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { releaseDue } from "./release-due.mjs";
+import { releaseDue, plannedFor, summary } from "./release-due.mjs";
 
 /** A changelog with `body` under `## [Unreleased]` and one released section. */
 function changelog(body, released = "0.10.0") {
@@ -102,4 +102,53 @@ test("no Unreleased section is not an error", () => {
 test("a non-numeric released heading leaves next null rather than guessing", () => {
   const c = changelog(["### Added", "", "- New.", ""].join("\n"), "unreleased-draft");
   assert.equal(releaseDue(c).next, null);
+});
+
+/** A roadmap holding the slot table, in the shape docs/roadmap.md uses. */
+const ROADMAP = [
+  "## Release plan",
+  "",
+  "### Near slots — one release each",
+  "",
+  "| Version | Headline | What it carries |",
+  "|---|---|---|",
+  "| **v0.11** | Connection repair and duplication | Duplicate and Repair actions |",
+  "| **v0.12** | A connection list you can steer | Order, search, colour marks |",
+  "| **v1.0** | The HTTP contract freezes | Not a feature release |",
+  "",
+].join("\n");
+
+test("a reserved slot gives the version its headline", () => {
+  assert.equal(plannedFor("0.11.0", ROADMAP), "Connection repair and duplication");
+  assert.equal(plannedFor("0.12.0", ROADMAP), "A connection list you can steer");
+});
+
+test("a slot written as two parts matches a three-part version", () => {
+  assert.equal(plannedFor("1.0.0", ROADMAP), "The HTTP contract freezes");
+});
+
+test("a version with no slot is null, not an invented headline", () => {
+  assert.equal(plannedFor("0.99.0", ROADMAP), null);
+});
+
+test("a patch release inherits the slot of its minor", () => {
+  assert.equal(plannedFor("0.11.3", ROADMAP), "Connection repair and duplication");
+});
+
+test("a missing or empty roadmap is not an error", () => {
+  assert.equal(plannedFor("0.11.0", ""), null);
+  assert.equal(plannedFor("0.11.0", null), null);
+});
+
+test("the summary names the slot when one is reserved", () => {
+  const state = { count: 5, verdict: "due", current: "0.10.0", bump: "minor", next: "0.11.0" };
+  assert.equal(
+    summary(state, ROADMAP),
+    "[changelog] 5 unreleased entries — a release is due (0.10.0 -> 0.11.0: Connection repair and duplication)",
+  );
+});
+
+test("the summary is unchanged when no slot is reserved", () => {
+  const state = { count: 1, verdict: "may", current: "0.98.0", bump: "patch", next: "0.98.1" };
+  assert.equal(summary(state, ROADMAP), "[changelog] 1 unreleased entry — a release may be cut (0.98.0 -> 0.98.1)");
 });

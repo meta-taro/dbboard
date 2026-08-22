@@ -92,12 +92,36 @@ function nextVersion(current, bump) {
 }
 
 /** The one line the hook prints. */
-export function summary(state) {
+/** A row of the roadmap's slot table: `| **v0.11** | Headline | … |`. */
+const SLOT = /^\|\s*\*\*v(\d+)\.(\d+)\*\*\s*\|\s*([^|]+?)\s*\|/;
+
+/**
+ * The headline reserved for `version` in `roadmap`, or `null`.
+ *
+ * Slots are written `major.minor` because a patch ships whatever its minor was
+ * about; `0.11.3` therefore answers with `0.11`'s headline. A version with no
+ * row returns null rather than a guess — an invented headline on a release is
+ * worse than none, because it reads as a promise somebody made.
+ */
+export function plannedFor(version, roadmap) {
+  if (!roadmap || !version) return null;
+  const parts = /^(\d+)\.(\d+)/.exec(version);
+  if (!parts) return null;
+  for (const line of roadmap.split(/\r?\n/)) {
+    const slot = SLOT.exec(line);
+    if (slot && slot[1] === parts[1] && slot[2] === parts[2]) return slot[3];
+  }
+  return null;
+}
+
+export function summary(state, roadmap) {
   const { count, verdict, current, next } = state;
   if (verdict === "none") return "[changelog] nothing unreleased yet";
   const entries = `${count} unreleased ${count === 1 ? "entry" : "entries"}`;
   const verb = verdict === "due" ? "a release is due" : "a release may be cut";
-  const target = current && next ? ` (${current} -> ${next})` : "";
+  const slot = plannedFor(next, roadmap);
+  const headline = slot ? `: ${slot}` : "";
+  const target = current && next ? ` (${current} -> ${next}${headline})` : "";
   return `[changelog] ${entries} — ${verb}${target}`;
 }
 
@@ -109,7 +133,16 @@ if (invokedDirectly) {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
     const path = process.argv[2] ?? join(here, "..", "CHANGELOG.md");
-    console.log(summary(releaseDue(readFileSync(path, "utf8"))));
+    // The roadmap is optional: without it the line loses the headline, not
+    // the count, so a renamed or missing roadmap degrades instead of going
+    // silent.
+    let roadmap = null;
+    try {
+      roadmap = readFileSync(join(here, "..", "docs", "roadmap.md"), "utf8");
+    } catch {
+      /* no plan on file, no headline */
+    }
+    console.log(summary(releaseDue(readFileSync(path, "utf8")), roadmap));
   } catch {
     /* no changelog, no counter, no complaint */
   }
