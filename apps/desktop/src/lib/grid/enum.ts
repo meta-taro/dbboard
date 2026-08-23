@@ -57,6 +57,19 @@ export function enumVariants(declaredType: string | null): string[] | null {
   }
 }
 
+/**
+ * What the dropdown offers for `draft`, given a column's declared members.
+ *
+ * A draft outside the members — a value written before the type was narrowed,
+ * or the empty draft a NULL starts from — is kept at the head of the list.
+ * Without it, merely opening the editor on such a row would rewrite the value
+ * to the first member, and the operator would have no way back to what was
+ * there. `members` is left untouched: it belongs to the schema, not the row.
+ */
+export function enumOptions(members: readonly string[], draft: string): string[] {
+  return members.includes(draft) ? [...members] : [draft, ...members];
+}
+
 function skipSpace(s: string, i: number): number {
   while (i < s.length && /\s/.test(s[i])) i++;
   return i;

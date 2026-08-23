@@ -6,6 +6,7 @@ import {
   needsWideEditor,
   INLINE_EDITOR_COLUMNS,
   type StagedValue,
+  charCount,
 } from './edit';
 import type { Cell, Column } from '$lib/api';
 
@@ -142,5 +143,24 @@ describe('buildRowUpdates', () => {
     const projected = [col('name'), col('note')];
     const projectedRows: Cell[][] = [['a', 'first']];
     expect(() => buildRowUpdates(staged([[0, 0, 'x']]), projectedRows, projected, ['id'])).toThrow();
+  });
+});
+
+describe('charCount (ADR-0082)', () => {
+  it('counts plain characters', () => {
+    expect(charCount('')).toBe(0);
+    expect(charCount('abc')).toBe(3);
+  });
+
+  it('counts a character outside the BMP once, not twice', () => {
+    // The dialog shows this against a `varchar(500)` limit, and the column
+    // counts characters. `.length` would report 2 for one emoji and tell the
+    // operator they are twice as close to the limit as they are.
+    expect(charCount('\u{1f600}')).toBe(1);
+    expect(charCount('a\u{1f600}b')).toBe(3);
+  });
+
+  it('counts a newline', () => {
+    expect(charCount('a\nb')).toBe(3);
   });
 });

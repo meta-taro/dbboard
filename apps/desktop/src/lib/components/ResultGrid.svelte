@@ -24,7 +24,10 @@
     type EditContext,
     type StagedValue,
   } from '$lib/grid/edit';
-  import { allContainerPaths, flattenDocument, toggled } from '$lib/grid/tree';
+  import { enumOptions } from '$lib/grid/enum';
+  import CellViewer from './CellViewer.svelte';
+  import ExpandedCellEditor from './ExpandedCellEditor.svelte';
+  import '$lib/styles/result-grid.css';
 
   interface Props {
     columns: Column[];
@@ -68,12 +71,6 @@
   let popup = $state<{ col: string; value: string; doc: { value: unknown } | null } | null>(
     null,
   );
-  // Which subtrees of the open document are closed, by dotted path. Documents
-  // open fully expanded: the point of the view is that the shape is visible
-  // without further clicking.
-  let treeClosed = $state<Set<string>>(new Set());
-  let treeNodes = $derived(popup?.doc ? flattenDocument(popup.doc.value, treeClosed) : []);
-
   // Inline editing (ADR-0042). Staged edits are keyed by cellKey(origRow, col)
   // — original row index, so they survive re-sorting — mapping to the new value
   // (text, or null for SQL NULL). `editing` is the one open inline editor.
@@ -151,14 +148,6 @@
     return enums[columns[ci].name] ?? null;
   }
 
-  // What the dropdown offers. A draft outside the declared members — a value
-  // written before the type was narrowed, or the empty draft a NULL starts from
-  // — is kept at the head of the list, so merely opening the editor on a row
-  // cannot silently rewrite it to the first member.
-  function optionsFor(variants: string[], draft: string): string[] {
-    return variants.includes(draft) ? variants : [draft, ...variants];
-  }
-
   function beginEdit(origIdx: number, ci: number, cell: Cell) {
     if (!columnEditable(ci) || isUneditable(cell)) return;
     editing = { row: origIdx, col: ci, draft: draftFor(origIdx, ci, cell) };
@@ -192,21 +181,6 @@
 
   function cancelExpanded() {
     expanded = null;
-  }
-
-  // Enter inserts a newline in the dialog's textarea, so committing needs a
-  // modifier. Escape is handled by the window listener, like the value popup.
-  function onExpandedKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      commitExpanded();
-    }
-  }
-
-  // Characters, not UTF-16 units: a `varchar(500)` limit counts the same way,
-  // so the number shown is the one the column actually constrains.
-  function charCount(text: string): number {
-    return [...text].length;
   }
 
   function setStaged(origIdx: number, ci: number, value: StagedValue) {
@@ -385,7 +359,6 @@
     // A document always opens, however short its serialisation: the row shows
     // it as one line of JSON, and one line is exactly what a tree is not.
     if (isDocument(cell)) {
-      treeClosed = new Set();
       popup = { col, value: JSON.stringify(cell.$json, null, 2), doc: { value: cell.$json } };
       return;
     }
@@ -408,7 +381,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="wrap">
+<div class="wrap result-grid">
   <div class="toolbar">
     <span class="count">
       {#if selected.size > 0}
@@ -512,7 +485,7 @@
                         onblur={commitEditor}
                         title={i18n.t('edit-enum-editing')}
                       >
-                        {#each optionsFor(variants, editing.draft) as v (v)}
+                        {#each enumOptions(variants, editing.draft) as v (v)}
                           <option value={v}>{v === '' ? i18n.t('edit-enum-blank') : v}</option>
                         {/each}
                       </select>
@@ -565,568 +538,16 @@
 </div>
 
 {#if expanded && columns[expanded.col]}
-  {@const dialogVariants = variantsFor(expanded.col)}
-  <div
-    class="backdrop"
-    onclick={(e) => {
-      // Clicking away cancels rather than commits: a dialog opened by accident
-      // must not be able to stage an edit on its way out.
-      if (e.target === e.currentTarget) cancelExpanded();
-    }}
-    role="presentation"
-  >
-    <div
-      class="popup editor"
-      role="dialog"
-      aria-modal="true"
-      aria-label={i18n.t('edit-cell-dialog')}
-    >
-      <div class="popup-head">
-        <span class="popup-col">{columns[expanded.col].name}</span>
-        {#if !dialogVariants}
-          <span class="popup-len">
-            {i18n.t('edit-cell-chars', { count: charCount(expanded.draft) })}
-          </span>
-        {/if}
-      </div>
-      {#if dialogVariants}
-        <!-- Reachable when a declared member is long enough to route past the
-             inline box; it must still be a choice, not a text field. -->
-        <!-- svelte-ignore a11y_autofocus -->
-        <select class="popup-select" bind:value={expanded.draft} autofocus>
-          {#each optionsFor(dialogVariants, expanded.draft) as v (v)}
-            <option value={v}>{v === '' ? i18n.t('edit-enum-blank') : v}</option>
-          {/each}
-        </select>
-      {:else}
-        <!-- svelte-ignore a11y_autofocus -->
-        <textarea
-          class="popup-edit"
-          bind:value={expanded.draft}
-          autofocus
-          spellcheck="false"
-          onkeydown={onExpandedKeydown}
-        ></textarea>
-      {/if}
-      <div class="popup-foot">
-        <button type="button" class="ghost" onclick={nullExpanded} title={i18n.t('edit-null-title')}>
-          ∅ NULL
-        </button>
-        {#if !dialogVariants}
-          <span class="popup-hint">{i18n.t('edit-cell-dialog-hint')}</span>
-        {:else}
-          <span class="popup-hint"></span>
-        {/if}
-        <button type="button" onclick={cancelExpanded}>{i18n.t('edit-cell-cancel')}</button>
-        <button type="button" class="primary" onclick={commitExpanded}>
-          {i18n.t('edit-cell-apply')}
-        </button>
-      </div>
-    </div>
-  </div>
+  <ExpandedCellEditor
+    col={columns[expanded.col].name}
+    bind:draft={expanded.draft}
+    variants={variantsFor(expanded.col)}
+    onCommit={commitExpanded}
+    onNull={nullExpanded}
+    onCancel={cancelExpanded}
+  />
 {/if}
 
 {#if popup}
-  <div
-    class="backdrop"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) popup = null;
-    }}
-    role="presentation"
-  >
-    <div class="popup" role="dialog" aria-modal="true" aria-label={i18n.t('result-cell-dialog')} tabindex="-1">
-      <div class="popup-head">
-        <span class="popup-col">{popup.col}</span>
-        <span class="popup-actions">
-          {#if popup.doc}
-            <button
-              type="button"
-              class="ghost"
-              onclick={() =>
-                (treeClosed =
-                  treeClosed.size > 0 ? new Set() : allContainerPaths(popup?.doc?.value))}
-            >
-              {treeClosed.size > 0
-                ? i18n.t('cell-tree-expand-all')
-                : i18n.t('cell-tree-collapse-all')}
-            </button>
-          {/if}
-          <button
-            type="button"
-            class="ghost"
-            onclick={() => navigator.clipboard.writeText(popup?.value ?? '')}
-          >
-            {i18n.t('cell-copy')}
-          </button>
-        </span>
-      </div>
-      {#if popup.doc}
-        <div class="tree" role="tree" aria-label={i18n.t('cell-tree')}>
-          {#each treeNodes as node (node.path)}
-            <div
-              class="tree-row"
-              role="treeitem"
-              aria-level={node.depth + 1}
-              aria-expanded={node.hasChildren ? !node.collapsed : undefined}
-              aria-selected="false"
-              style="padding-left: {node.depth * 1.25}rem"
-            >
-              {#if node.hasChildren}
-                <button
-                  type="button"
-                  class="twist"
-                  aria-label={node.collapsed
-                    ? i18n.t('cell-tree-expand', { path: node.path })
-                    : i18n.t('cell-tree-collapse', { path: node.path })}
-                  onclick={() => (treeClosed = toggled(treeClosed, node.path))}
-                >
-                  {node.collapsed ? '▸' : '▾'}
-                </button>
-              {:else}
-                <span class="twist" aria-hidden="true"></span>
-              {/if}
-              {#if node.label !== ''}<span class="tree-label">{node.label}</span>{/if}
-              <span class="tree-value {node.kind}">{node.preview}</span>
-            </div>
-          {/each}
-        </div>
-      {:else}
-        <pre class="popup-body">{popup.value}</pre>
-      {/if}
-    </div>
-  </div>
+  <CellViewer col={popup.col} value={popup.value} doc={popup.doc} onClose={() => (popup = null)} />
 {/if}
-
-<style>
-  .wrap {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    gap: var(--space-2);
-  }
-
-  .toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
-  }
-  .count {
-    color: var(--text-muted);
-    font-size: var(--text-small);
-  }
-  .tools {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-  }
-  .tools button {
-    background: var(--bg-surface);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-widget);
-    padding: 4px 10px;
-    font-size: var(--text-hint);
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .tools button:hover {
-    border-color: var(--border-strong);
-    background: var(--bg-surface-alt);
-  }
-  .tools .ghost {
-    color: var(--text-muted);
-  }
-  .flash {
-    font-size: var(--text-hint);
-    color: var(--success);
-  }
-
-  /* Edit action bar: appears only while there are staged edits (or an error). */
-  .edit-bar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: 6px 10px;
-    background: var(--accent-weak);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-widget);
-  }
-  .edit-count {
-    font-size: var(--text-small);
-    font-weight: 600;
-    color: var(--text-accent);
-  }
-  .edit-error {
-    flex: 1;
-    min-width: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-hint);
-    color: var(--danger);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .edit-actions {
-    margin-left: auto;
-    display: flex;
-    gap: var(--space-2);
-  }
-  .edit-actions button {
-    border: 1px solid var(--border);
-    background: var(--bg-surface);
-    color: var(--text);
-    border-radius: var(--radius-widget);
-    padding: 4px 12px;
-    font-size: var(--text-hint);
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .edit-actions button:hover:not(:disabled) {
-    border-color: var(--border-strong);
-  }
-  .edit-actions .primary {
-    background: var(--accent);
-    color: var(--on-accent);
-    border-color: var(--accent);
-  }
-  .edit-actions button:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  .grid-wrap {
-    overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-window);
-  }
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    font-size: var(--text-body);
-  }
-  th,
-  td {
-    text-align: left;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-    max-width: 420px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  th {
-    position: sticky;
-    top: 0;
-    /* Above the inline editor's overlay, so scrolling a tall result does not
-       slide the editor over the header. */
-    z-index: 2;
-    background: var(--bg-code);
-    color: var(--text-accent);
-    font-weight: 600;
-    cursor: pointer;
-    user-select: none;
-  }
-  th:hover {
-    background: var(--bg-surface-alt);
-  }
-  th.sorted {
-    color: var(--text-accent);
-  }
-  .th-inner {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .th-sort {
-    font-size: var(--text-hint);
-    color: var(--accent);
-    font-variant-numeric: tabular-nums;
-  }
-
-  tbody tr {
-    cursor: default;
-  }
-  tbody tr:nth-child(even) {
-    background: var(--bg-surface-alt);
-  }
-  tbody tr:hover {
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-  }
-  tbody tr.selected {
-    background: var(--accent-weak);
-  }
-  /* Inset accent bar on the leading cell marks the selected row — reliable
-     under border-collapse, where an inset box-shadow on <tr> is not. */
-  tbody tr.selected td:first-child {
-    box-shadow: inset 2px 0 0 var(--accent);
-  }
-  .null-cell {
-    color: var(--text-muted);
-    font-style: italic;
-  }
-  /* An editable cell hints its affordance on hover; a staged (dirty) cell keeps
-     a persistent accent tint until the edit is saved or discarded. */
-  td.editable {
-    cursor: text;
-  }
-  td.editable:hover {
-    box-shadow: inset 0 0 0 1px var(--accent);
-  }
-  td.dirty {
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-    font-weight: 600;
-  }
-  /* The editor floats over the cell instead of replacing its content: laid out
-     in flow it would shrink the column to the input's minimum width, which is
-     what made a varchar(500) unusable to edit. */
-  td.editing {
-    position: relative;
-    overflow: visible;
-  }
-  td.editing .cell-value {
-    visibility: hidden;
-  }
-  .cell-editor {
-    position: absolute;
-    top: 50%;
-    left: 0;
-    transform: translateY(-50%);
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    /* At least as wide as the cell, but never narrower than a usable field. */
-    min-width: max(100%, 22rem);
-    padding: 3px;
-    box-sizing: border-box;
-    background: var(--bg-surface);
-    border-radius: var(--radius-widget);
-    box-shadow: var(--shadow-popover);
-  }
-  .cell-input {
-    flex: 1;
-    min-width: 0;
-    box-sizing: border-box;
-    background: var(--bg-surface);
-    color: var(--text);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-widget);
-    padding: 2px 6px;
-    font: inherit;
-    font-family: var(--font-mono);
-  }
-  .cell-input:focus-visible {
-    outline: none;
-  }
-  select.cell-input {
-    cursor: pointer;
-  }
-  .cell-btn {
-    flex: none;
-    border: 1px solid var(--border);
-    background: var(--bg-surface);
-    color: var(--text-muted);
-    border-radius: var(--radius-widget);
-    padding: 1px 6px;
-    font-size: var(--text-hint);
-    cursor: pointer;
-  }
-  .cell-btn:hover {
-    color: var(--text);
-    border-color: var(--border-strong);
-  }
-  /* Numeric columns right-align with figure-aligned digits so the ones, tens
-     and hundreds stack — detected from the JSON scalar, never fabricated. */
-  .num-cell {
-    text-align: right;
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.4);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-6);
-    z-index: 10;
-  }
-  .popup {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-window);
-    box-shadow: var(--shadow-popover);
-    max-width: min(720px, 90vw);
-    max-height: 70vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .popup-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
-    padding: var(--space-2) var(--space-3);
-    border-bottom: 1px solid var(--border);
-  }
-  .popup-col {
-    font-family: var(--font-mono);
-    font-size: var(--text-small);
-    font-weight: 600;
-    color: var(--text-accent);
-  }
-  .popup .ghost {
-    background: transparent;
-    color: var(--text-muted);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-widget);
-    padding: 3px 10px;
-    font-size: var(--text-hint);
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .popup .ghost:hover {
-    color: var(--text);
-    border-color: var(--border-strong);
-  }
-  /* The editor dialog: a fixed, generous surface, so the room to type does not
-     depend on how wide the column happened to be. */
-  .popup.editor {
-    width: min(720px, 90vw);
-  }
-  .popup-len {
-    font-size: var(--text-hint);
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .popup-edit {
-    margin: 0;
-    padding: var(--space-3);
-    border: none;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-surface);
-    color: var(--text);
-    resize: vertical;
-    min-height: 40vh;
-    font-family: var(--font-mono);
-    font-size: var(--text-small);
-    line-height: 1.5;
-  }
-  .popup-edit:focus-visible {
-    outline: none;
-  }
-  /* An enum has a handful of choices, so the dialog does not need the 40vh
-     the free-text editor reserves. */
-  .popup-select {
-    margin: var(--space-3);
-    padding: var(--space-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-widget);
-    background: var(--bg-surface);
-    color: var(--text);
-    font-family: var(--font-mono);
-    font-size: var(--text-small);
-  }
-  .popup-foot {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-  }
-  .popup-hint {
-    margin-left: auto;
-    font-size: var(--text-hint);
-    color: var(--text-muted);
-  }
-  .popup-foot button {
-    border: 1px solid var(--border);
-    background: var(--bg-surface);
-    color: var(--text);
-    border-radius: var(--radius-widget);
-    padding: 4px 12px;
-    font-size: var(--text-hint);
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .popup-foot button:hover {
-    border-color: var(--border-strong);
-  }
-  .popup-foot .primary {
-    background: var(--accent);
-    color: var(--on-accent);
-    border-color: var(--accent);
-  }
-
-  .popup-body {
-    margin: 0;
-    padding: var(--space-3);
-    overflow: auto;
-    font-family: var(--font-mono);
-    font-size: var(--text-small);
-    line-height: 1.5;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--text);
-  }
-
-  /* The document tree (ADR-0100). Monospace and one row per node, so it reads
-     as the same kind of surface as the grid behind it. */
-  .tree {
-    padding: var(--space-2) var(--space-3);
-    overflow: auto;
-    font-family: var(--font-mono);
-    font-size: var(--text-small);
-    line-height: 1.6;
-  }
-  .tree-row {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
-  }
-  .tree-row:hover {
-    background: var(--bg-surface-alt);
-  }
-  .twist {
-    flex: none;
-    width: 1.1em;
-    padding: 0;
-    background: transparent;
-    border: 0;
-    color: var(--text-muted);
-    font-size: var(--text-hint);
-    line-height: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-  button.twist:hover {
-    color: var(--text);
-  }
-  .tree-label {
-    flex: none;
-    color: var(--text-accent);
-  }
-  .tree-label::after {
-    content: ':';
-    color: var(--text-muted);
-  }
-  /* Values wrap rather than scroll the dialog sideways: a long string is
-     common in a document, and losing the tree to read it is a poor trade. */
-  .tree-value {
-    color: var(--text);
-    word-break: break-word;
-  }
-  /* A container's size and a null are structure, not content — muted so the
-     eye lands on the values that came from the data. */
-  .tree-value.object,
-  .tree-value.array,
-  .tree-value.null {
-    color: var(--text-muted);
-  }
-  .tree-value.number,
-  .tree-value.boolean {
-    color: var(--text-accent);
-  }
-</style>
