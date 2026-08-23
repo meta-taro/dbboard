@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { save, open } from '@tauri-apps/plugin-dialog';
-  import { timestampedFileName } from '$lib/export/filename';
+  import { open } from '@tauri-apps/plugin-dialog';
   import { workspace } from '$lib/state/workspace.svelte';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import type { MessageKey } from '$lib/i18n/messages';
@@ -8,12 +7,8 @@
     addConnection,
     updateConnection,
     deleteConnection,
-    duplicateConnection,
-    repairConnectionRef,
     foreignConnectionRefs,
     connectionEditFields,
-    exportConnections,
-    importConnections,
     configPath,
     type ConnectionView,
     type ForeignRef,
@@ -50,20 +45,15 @@
     pickerTitle,
     type PathField,
   } from '$lib/connections/file-picker';
-  import {
-    foreignRefFor,
-    suggestCopyId,
-    validateCopy,
-    secretLabelKey,
-    type CopyForm,
-    type CopyField,
-  } from '$lib/connections/repair';
+  import { foreignRefFor } from '$lib/connections/repair';
   import { refreshConnectionList } from '$lib/connections/refresh';
   import DsnFieldset from './DsnFieldset.svelte';
   import SshFieldset from './SshFieldset.svelte';
+  import ExportPanel from './ExportPanel.svelte';
+  import ImportPanel from './ImportPanel.svelte';
+  import DuplicatePanel from './DuplicatePanel.svelte';
+  import RepairPanel from './RepairPanel.svelte';
   import '$lib/styles/connection-dialog.css';
-  import { exportSummary } from '$lib/connections/export-report';
-  import { importSummary } from '$lib/connections/import-report';
 
   interface Props {
     onClose: () => void;
@@ -81,31 +71,13 @@
   let error = $state('');
   let info = $state('');
 
-  // Bundle passphrase buffers, cleared on every mode change so a secret never
-  // lingers in a hidden form.
-  let passphrase = $state('');
-  let passphraseConfirm = $state('');
-  let importPath = $state('');
-  let importFileName = $state('');
-  // Which connections the next export includes (ADR-0105). Seeded to all of
-  // them on entry, so the panel opens on the behaviour it had before the
-  // picker existed and narrowing is the deliberate act.
-  let exportIds = $state<string[]>([]);
-  // Off by default: replacing an entry destroys a credential the bundle may
-  // not carry, so it is never the choice a stray click makes.
-  let overwriteExisting = $state(false);
-
   // Entries whose saved-secret slot was minted for a *different* connection
   // (issue #213). dbboard never writes that state itself, so this is only ever
   // a hand-edited or pre-ADR-0038 file — but it is silent until an export
   // refuses, which is too late. The list shows it instead.
   let foreignRefs = $state<ForeignRef[]>([]);
   let copySource = $state<ConnectionView | null>(null);
-  let copyForm = $state<CopyForm>({ id: '', name: '' });
-  let invalidCopy = $state<CopyField[]>([]);
   let repairTarget = $state<{ name: string; ref: ForeignRef } | null>(null);
-  let repairSecret = $state('');
-  let repairSecretMissing = $state(false);
 
   const KIND_LABEL: Record<ConnectionKind, MessageKey> = {
     turso: 'conn-kind-turso',
@@ -212,18 +184,29 @@
     // The host-key probe's error is not listed: it lives in SshFieldset,
     // which is unmounted at every point this runs — each of the seven
     // callers is either leaving the form or entering it from the list.
-    passphrase = '';
-    passphraseConfirm = '';
-    importPath = '';
-    importFileName = '';
-    exportIds = [];
-    overwriteExisting = false;
+    //
+    // Nor are the panels' passphrases, ids and secrets: each panel below owns
+    // its own, and leaving unmounts it. A buffer that empties because the
+    // markup went away cannot be forgotten here the way these once could.
     copySource = null;
-    copyForm = { id: '', name: '' };
-    invalidCopy = [];
     repairTarget = null;
-    repairSecret = '';
-    repairSecretMissing = false;
+  }
+
+  /** Leave a panel for the list, carrying one sentence of confirmation. */
+  function finishPanel(message: string) {
+    goList();
+    // goList clears the banners, so the confirmation is set after it.
+    info = message;
+  }
+
+  /** As `finishPanel`, for the three panels that changed the list itself. */
+  async function finishPanelAfterRefresh(message: string) {
+    await refreshAll();
+    finishPanel(message);
+  }
+
+  function setBusy(value: boolean) {
+    busy = value;
   }
 
   function goList() {
@@ -324,37 +307,7 @@
   function startDuplicate(c: ConnectionView) {
     resetTransient();
     copySource = c;
-    copyForm = {
-      id: suggestCopyId(
-        c.id,
-        workspace.connections.map((x) => x.id),
-      ),
-      name: i18n.t('conn-duplicate-name-default', { name: c.name }),
-    };
     mode = 'duplicate';
-  }
-
-  async function runDuplicate() {
-    if (!copySource) return;
-    invalidCopy = validateCopy(
-      copyForm,
-      workspace.connections.map((c) => c.id),
-    );
-    if (invalidCopy.length > 0) return;
-    const newId = copyForm.id.trim();
-    busy = true;
-    error = '';
-    try {
-      await duplicateConnection(copySource.id, newId, copyForm.name.trim());
-      await refreshAll();
-      // goList clears the banners, so the confirmation is set after it.
-      goList();
-      info = i18n.t('conn-duplicate-ok', { id: newId });
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
   }
 
   function startRepair(c: ConnectionView) {
@@ -365,132 +318,14 @@
     mode = 'repair';
   }
 
-  async function runRepair() {
-    if (!repairTarget) return;
-    if (repairSecret === '') {
-      repairSecretMissing = true;
-      return;
-    }
-    const { id, key_ref } = repairTarget.ref;
-    busy = true;
-    error = '';
-    try {
-      await repairConnectionRef(id, key_ref, repairSecret);
-      // The value is in the keychain now; there is no reason to keep a copy in
-      // a field the user cannot see.
-      repairSecret = '';
-      await refreshAll();
-      goList();
-      info = i18n.t('conn-repair-ok', { id });
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
-  }
-
   function startExport() {
     resetTransient();
-    exportIds = workspace.connections.map((c) => c.id);
     mode = 'export';
-  }
-
-  function toggleExportId(id: string) {
-    exportIds = exportIds.includes(id)
-      ? exportIds.filter((x) => x !== id)
-      : [...exportIds, id];
   }
 
   function startImport() {
     resetTransient();
     mode = 'import';
-  }
-
-  async function runExport() {
-    error = '';
-    if (passphrase !== passphraseConfirm) {
-      error = i18n.t('conn-passphrase-mismatch');
-      return;
-    }
-    if (passphrase.trim().length === 0) {
-      error = i18n.t('conn-required');
-      return;
-    }
-    if (exportIds.length === 0) {
-      error = i18n.t('conn-export-none-selected');
-      return;
-    }
-    let path: string | null;
-    try {
-      path = await save({
-        title: i18n.t('conn-export-heading'),
-        defaultPath: timestampedFileName('dbboard-connections', 'dbbx'),
-        filters: [{ name: i18n.t('conn-manager-title'), extensions: ['dbbx'] }],
-      });
-    } catch (e) {
-      error = String(e);
-      return;
-    }
-    if (!path) return; // user cancelled the dialog
-    busy = true;
-    try {
-      const report = await exportConnections(path, passphrase, exportIds);
-      passphrase = '';
-      passphraseConfirm = '';
-      // Wording rules live in `export-report.ts` so they are testable. The
-      // warning about a foreign keychain slot must not read as a failure —
-      // the bundle is on disk either way (issue #194).
-      info = exportSummary(report, (key, params) =>
-        i18n.t(key as Parameters<typeof i18n.t>[0], params),
-      ).join(' ');
-      mode = 'list';
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function chooseImportFile() {
-    error = '';
-    try {
-      const picked = await open({
-        title: i18n.t('conn-import-heading'),
-        multiple: false,
-        directory: false,
-        filters: [{ name: i18n.t('conn-manager-title'), extensions: ['dbbx'] }],
-      });
-      if (typeof picked === 'string') {
-        importPath = picked;
-        importFileName = picked.split(/[\\/]/).pop() ?? picked;
-      }
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function runImport() {
-    error = '';
-    if (!importPath) {
-      error = i18n.t('conn-required');
-      return;
-    }
-    busy = true;
-    try {
-      const report = await importConnections(importPath, passphrase, overwriteExisting);
-      await refreshAll();
-      passphrase = '';
-      // Wording rules live in `import-report.ts` so they are testable; which
-      // reason gets which sentence is the whole substance of ADR-0112.
-      info = importSummary(report, (key, params) =>
-        i18n.t(key as Parameters<typeof i18n.t>[0], params),
-      ).join(' ');
-      mode = 'list';
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -788,137 +623,39 @@
         </div>
       </div>
     {:else if mode === 'export'}
-      <div class="form">
-        <h3 class="sub">{i18n.t('conn-export-heading')}</h3>
-        <p class="note">{i18n.t('conn-bundle-note')}</p>
-        <div class="field">
-          <span class="label">{i18n.t('conn-export-select')}</span>
-          <div class="picker">
-            {#each workspace.connections as c (c.id)}
-              <label class="pick">
-                <input
-                  type="checkbox"
-                  checked={exportIds.includes(c.id)}
-                  onchange={() => toggleExportId(c.id)}
-                />
-                <span class="pick-name">{c.name}</span>
-                <span class="pick-meta">{c.kind} · {c.id}</span>
-              </label>
-            {/each}
-          </div>
-        </div>
-        <label class="field">
-          <span class="label">{i18n.t('conn-passphrase')}</span>
-          <input type="password" value={passphrase} oninput={(e) => (passphrase = e.currentTarget.value)} autocomplete="off" />
-        </label>
-        <label class="field">
-          <span class="label">{i18n.t('conn-passphrase-confirm')}</span>
-          <input type="password" value={passphraseConfirm} oninput={(e) => (passphraseConfirm = e.currentTarget.value)} autocomplete="off" />
-        </label>
-        <div class="actions">
-          <button type="button" class="ghost" disabled={busy} onclick={goList}>{i18n.t('conn-cancel')}</button>
-          <button type="button" class="primary" disabled={busy} onclick={runExport}>{i18n.t('conn-export')}</button>
-        </div>
-      </div>
+      <ExportPanel
+        {busy}
+        {setBusy}
+        onError={(m) => (error = m)}
+        onDone={finishPanel}
+        onCancel={goList}
+      />
     {:else if mode === 'import'}
-      <div class="form">
-        <h3 class="sub">{i18n.t('conn-import-heading')}</h3>
-        <div class="field">
-          <button type="button" class="ghost" disabled={busy} onclick={chooseImportFile}>
-            {i18n.t('conn-choose-file')}
-          </button>
-          {#if importFileName}<code class="file-name">{importFileName}</code>{/if}
-        </div>
-        <label class="field">
-          <span class="label">{i18n.t('conn-passphrase')}</span>
-          <input type="password" value={passphrase} oninput={(e) => (passphrase = e.currentTarget.value)} autocomplete="off" />
-        </label>
-        <label class="pick">
-          <input
-            type="checkbox"
-            checked={overwriteExisting}
-            onchange={(e) => (overwriteExisting = e.currentTarget.checked)}
-          />
-          <span class="pick-name">{i18n.t('conn-import-overwrite')}</span>
-          <span class="pick-meta">{i18n.t('conn-import-overwrite-note')}</span>
-        </label>
-        <div class="actions">
-          <button type="button" class="ghost" disabled={busy} onclick={goList}>{i18n.t('conn-cancel')}</button>
-          <button type="button" class="primary" disabled={busy || !importPath} onclick={runImport}>
-            {i18n.t('conn-import')}
-          </button>
-        </div>
-      </div>
-    {:else if mode === 'duplicate'}
-      <div class="form">
-        <h3 class="sub">{i18n.t('conn-duplicate-title')}</h3>
-        <p class="note">{i18n.t('conn-duplicate-lead', { name: copySource?.name ?? '' })}</p>
-        <label class="field">
-          <span class="label">{i18n.t('conn-field-id')}</span>
-          <input
-            class:bad={invalidCopy.includes('id')}
-            value={copyForm.id}
-            oninput={(e) => (copyForm.id = e.currentTarget.value)}
-            autocomplete="off"
-          />
-          {#if invalidCopy.includes('id') && copyForm.id.trim() !== ''}
-            <span class="hint bad-text">{i18n.t('conn-duplicate-id-taken')}</span>
-          {/if}
-        </label>
-        <label class="field">
-          <span class="label">{i18n.t('conn-field-name')}</span>
-          <input
-            class:bad={invalidCopy.includes('name')}
-            value={copyForm.name}
-            oninput={(e) => (copyForm.name = e.currentTarget.value)}
-            autocomplete="off"
-          />
-        </label>
-        <div class="actions">
-          <button type="button" class="ghost" disabled={busy} onclick={goList}>
-            {i18n.t('conn-cancel')}
-          </button>
-          <button type="button" class="primary" disabled={busy} onclick={runDuplicate}>
-            {i18n.t('conn-duplicate-run')}
-          </button>
-        </div>
-      </div>
-    {:else if mode === 'repair'}
-      <div class="form">
-        <h3 class="sub">{i18n.t('conn-repair-title')}</h3>
-        <p class="note">
-          {i18n.t('conn-repair-lead', {
-            name: repairTarget?.name ?? '',
-            owner: repairTarget?.ref.owner ?? '',
-          })}
-        </p>
-        <label class="field">
-          <span class="label">
-            {i18n.t(secretLabelKey(repairTarget?.ref.key_ref ?? '') as MessageKey)}
-          </span>
-          <input
-            type="password"
-            class:bad={repairSecretMissing}
-            value={repairSecret}
-            oninput={(e) => {
-              repairSecret = e.currentTarget.value;
-              repairSecretMissing = false;
-            }}
-            autocomplete="off"
-          />
-          {#if repairSecretMissing}
-            <span class="hint bad-text">{i18n.t('conn-repair-secret-required')}</span>
-          {/if}
-        </label>
-        <div class="actions">
-          <button type="button" class="ghost" disabled={busy} onclick={goList}>
-            {i18n.t('conn-cancel')}
-          </button>
-          <button type="button" class="primary" disabled={busy} onclick={runRepair}>
-            {i18n.t('conn-repair-run')}
-          </button>
-        </div>
-      </div>
+      <ImportPanel
+        {busy}
+        {setBusy}
+        onError={(m) => (error = m)}
+        onDone={finishPanelAfterRefresh}
+        onCancel={goList}
+      />
+    {:else if mode === 'duplicate' && copySource}
+      <DuplicatePanel
+        source={copySource}
+        {busy}
+        {setBusy}
+        onError={(m) => (error = m)}
+        onDone={finishPanelAfterRefresh}
+        onCancel={goList}
+      />
+    {:else if mode === 'repair' && repairTarget}
+      <RepairPanel
+        target={repairTarget}
+        {busy}
+        {setBusy}
+        onError={(m) => (error = m)}
+        onDone={finishPanelAfterRefresh}
+        onCancel={goList}
+      />
     {/if}
   </div>
 </div>
