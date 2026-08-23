@@ -68,6 +68,7 @@
     type CopyForm,
     type CopyField,
   } from '$lib/connections/repair';
+  import { refreshConnectionList } from '$lib/connections/refresh';
   import { exportSummary } from '$lib/connections/export-report';
   import { importSummary } from '$lib/connections/import-report';
 
@@ -229,8 +230,10 @@
   }
 
   async function refreshAll() {
-    await refreshAll();
-    await loadForeignRefs();
+    await refreshConnectionList({
+      connections: () => workspace.refreshConnections(),
+      foreignRefs: loadForeignRefs,
+    });
   }
 
   // Fill a path field from the native open dialog. The user is looking at the
