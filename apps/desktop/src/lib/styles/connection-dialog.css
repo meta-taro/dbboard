@@ -1,0 +1,387 @@
+/* The connection dialog's styling, lifted out of ConnectionManager.svelte.
+ *
+ * It is here rather than in a component `<style>` because the dialog is being
+ * split into one component per panel, and every one of them needs the same
+ * `.field` / `.check` / `.ghost` rules. Copying them into each child is the
+ * version of this that drifts; Svelte's scoping cannot reach across the
+ * boundary, so the rules have to leave the component to be shared at all.
+ *
+ * Every selector is prefixed `.conn-dialog`, the class on the dialog's root.
+ * These names — `.field`, `.row`, `.note` — are too ordinary to be global,
+ * and the prefix keeps them confined to the subtree that already owned them.
+ */
+
+.conn-dialog {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  z-index: 50;
+}
+.conn-dialog .dialog {
+  width: min(560px, 94vw);
+  max-height: 86vh;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-window);
+  box-shadow: var(--shadow-popover);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  overflow: hidden;
+}
+.conn-dialog .head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.conn-dialog .title {
+  margin: 0;
+  font-size: var(--text-heading);
+  font-weight: 600;
+  color: var(--text);
+}
+.conn-dialog .icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--text-body);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-widget);
+}
+.conn-dialog .icon-btn:hover {
+  background: var(--bg-surface-alt);
+  color: var(--text);
+}
+
+.conn-dialog .banner {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-widget);
+  font-size: var(--text-small);
+  white-space: pre-wrap;
+}
+.conn-dialog .banner.error {
+  background: var(--danger-weak, rgba(220, 38, 38, 0.12));
+  color: var(--danger);
+  font-family: var(--font-mono);
+}
+.conn-dialog .banner.info {
+  background: var(--accent-weak);
+  color: var(--text-accent);
+}
+
+.conn-dialog .list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.conn-dialog .empty {
+  margin: 0;
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+.conn-dialog .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-widget);
+}
+.conn-dialog .row:hover {
+  background: var(--bg-surface-alt);
+}
+.conn-dialog .row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.conn-dialog .row-name {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conn-dialog .row-meta {
+  font-size: var(--text-hint);
+  color: var(--faint);
+  font-family: var(--font-mono);
+}
+.conn-dialog .row-note {
+  font-size: var(--text-hint);
+  color: var(--faint);
+}
+.conn-dialog .row-warn {
+  font-size: var(--text-hint);
+  color: var(--danger);
+}
+.conn-dialog .row-path {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+.conn-dialog .row-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.conn-dialog .foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.conn-dialog .foot-left {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.conn-dialog .form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  overflow-y: auto;
+  min-height: 0;
+}
+.conn-dialog .sub {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--text);
+}
+.conn-dialog .note {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.conn-dialog .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.conn-dialog .label {
+  font-size: var(--text-hint);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.conn-dialog .hint {
+  font-size: var(--text-hint);
+  color: var(--faint);
+}
+.conn-dialog .hint.bad-text {
+  color: var(--danger);
+}
+/* An input paired with the action that fills it in. The button keeps its
+   intrinsic width so the field still grows with the dialog. */
+.conn-dialog .with-action {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.conn-dialog .with-action input {
+  flex: 1;
+  min-width: 0;
+}
+.conn-dialog .with-action button {
+  flex: none;
+  white-space: nowrap;
+}
+.conn-dialog .field input,
+.conn-dialog .field select,
+.conn-dialog .field textarea {
+  width: 100%;
+  background: var(--bg-surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-widget);
+  padding: 7px 10px;
+  font-size: var(--text-body);
+}
+.conn-dialog .field input:focus-visible,
+.conn-dialog .field select:focus-visible,
+.conn-dialog .field textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+.conn-dialog .field input.bad,
+.conn-dialog .field textarea.bad {
+  border-color: var(--danger);
+}
+/* JSON, so monospace — a stray character in a pasted key is only findable
+   when the columns line up. */
+.conn-dialog .field textarea {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  resize: vertical;
+}
+.conn-dialog .field input.readonly {
+  color: var(--text-muted);
+  background: var(--bg-surface);
+}
+.conn-dialog .file-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  color: var(--text-accent);
+  word-break: break-all;
+}
+
+/* Scrolls rather than pushing the passphrase fields off the panel: the
+   list is as long as the user has connections. Both axes scroll — a row
+   that wrapped would put the name underneath its own checkbox, and the
+   list is only scannable while every row starts at the same left edge. */
+.conn-dialog .picker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  max-height: 12rem;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-2);
+  padding: var(--space-2);
+}
+
+.conn-dialog .pick {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+/* Only inside the picker, which is the one place with a scroll container
+   to absorb the overflow. The import dialog reuses `.pick` outside one,
+   where an unwrappable row would be clipped by the dialog instead. */
+.conn-dialog .picker .pick {
+  flex: none;
+  width: max-content;
+  min-width: 100%;
+  white-space: nowrap;
+}
+
+/* `.field input` stretches every control to the full width of the field.
+   A checkbox has to opt out of that, or it becomes a full-width box with
+   the tick floating in the middle of it, which is what pushes the name
+   off its own row. `.check input` opts out the same way. */
+.conn-dialog .picker input {
+  width: auto;
+  flex: none;
+  margin: 0;
+  padding: 0;
+}
+
+.conn-dialog .pick-name {
+  color: var(--text-primary);
+}
+
+.conn-dialog .pick-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+.conn-dialog .ssh,
+.conn-dialog .dsn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-widget);
+}
+.conn-dialog .ssh legend,
+.conn-dialog .dsn legend {
+  padding: 0 var(--space-1);
+  font-size: var(--text-hint);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.conn-dialog .ssh .note {
+  margin: 0;
+  font-size: var(--text-hint);
+  color: var(--faint);
+}
+/* The mode switch is a control, not a call to action — it must not compete
+   with Save for attention, so it reads as a link. */
+.conn-dialog .linkish {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: var(--text-hint);
+  color: var(--text-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.conn-dialog .linkish:hover {
+  color: var(--accent-hover);
+}
+.conn-dialog .check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-body);
+  color: var(--text);
+}
+.conn-dialog .check input {
+  width: auto;
+  margin: 0;
+}
+
+.conn-dialog .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+}
+.conn-dialog .primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  border: none;
+  border-radius: var(--radius-widget);
+  padding: 7px 20px;
+  cursor: pointer;
+}
+.conn-dialog .primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.conn-dialog .ghost {
+  background: var(--bg-surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-widget);
+  padding: 6px 14px;
+  font-size: var(--text-small);
+  font-weight: 600;
+  cursor: pointer;
+}
+.conn-dialog .ghost:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.conn-dialog .ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.conn-dialog .ghost.danger {
+  color: var(--danger);
+}
+.conn-dialog .ghost.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+}
