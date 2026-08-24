@@ -12193,3 +12193,42 @@ dragging.
   the next thing anyone will hit.
 * `dragDropEnabled` stays at its default. A later `.dbbx`-onto-the-window import
   does not have to undo this one.
+
+## ADR-0128 — The handle is the only reorder control, and it takes ↑↓ (2026-08-24)
+
+**Status.** Accepted. Amends [ADR-0127](#adr-0127) the same day it was written.
+
+**Context.** ADR-0127 kept ▲▼ beside the new drag handle, on the reasoning that
+the arrows were the keyboard path and drag was therefore an addition rather
+than a replacement. That is true of the *capability* and false of the *row*:
+with drag working, every row carried five controls — ▲, ▼, Edit, Duplicate,
+Delete — and two of them now said what the handle said. The first look at the
+list with real connections in it made that the visible problem, not the win.
+
+**Decision.** Remove ▲▼. Focus the handle instead: it is a real tab stop with
+an accessible name, it shows itself on focus as well as on hover, and `↑`/`↓`
+while it is focused call the same `move_to` the arrows called.
+
+The keyboard path is not weakened by this. It is the same two keys, on a
+control the operator reaches by tabbing to the row rather than by tabbing past
+three buttons to find a pair of glyphs. What is lost is the *discoverability*
+of a visible arrow, which is real — mitigated by the handle's tooltip naming
+both ways, and by the handle appearing on focus.
+
+**Consequences.**
+
+* `moveTarget` (`$lib/connections/order.ts`) and its tests stay. The arithmetic
+  is still exactly what a key press needs; only the thing that calls it moved.
+* `conn-move-up` / `conn-move-down` are gone from both locales.
+  `conn-move-filtered` stays: the handle is disabled while the filter hides
+  rows, for the reason the arrows were.
+* Rows now hold one non-word control. That is why `.row-main` had to take
+  `flex: 1` — with three children under `space-between`, the leftover width
+  fell either side of the middle one and each name landed at an indent decided
+  by its own length. The names had been ragged since the handle was added a
+  commit earlier, and nothing in `svelte-check` or the unit tests could have
+  said so.
+
+**Not decided here.** Whether a row should be draggable by its whole surface
+rather than by a handle. That trades a discoverable grab area for the ability
+to select text in the row, and no one has asked for either yet.

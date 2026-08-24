@@ -119,10 +119,12 @@
   background: var(--bg-surface-alt);
 }
 
-/* Drag to reorder (issue #192). The handle is only offered on hover: it is a
-   shortcut for the ▲▼ next to it, and a permanent second control on every row
-   would read as a third action rather than as another way to reach the two
-   already there. */
+/* Drag to reorder (issue #192). The handle is only offered on hover, and on
+   focus, because it is the only control on the row that is not a word: a
+   permanent glyph at the left of every row reads as status rather than as
+   something to press. Focus has to show it too — it is the keyboard path now
+   that ▲▼ are gone (ADR-0128), and a control you can tab to but cannot see
+   is worse than no control. */
 .conn-dialog .grip {
   flex: none;
   border: 0;
@@ -134,7 +136,8 @@
   opacity: 0;
   touch-action: none;
 }
-.conn-dialog .row:hover .grip {
+.conn-dialog .row:hover .grip,
+.conn-dialog .grip:focus-visible {
   opacity: 1;
 }
 .conn-dialog .grip:disabled {
@@ -159,8 +162,13 @@
 .conn-dialog .row.drop-after {
   box-shadow: inset 0 -2px 0 0 var(--accent);
 }
+/* `flex: 1` is what keeps the names on one left edge. Without it the row's
+   three children are laid out `space-between`, and the leftover width falls
+   either side of the middle child — so every name sits at a different
+   indent, decided by how long it happens to be. */
 .conn-dialog .row-main {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
@@ -475,12 +483,6 @@
 .conn-dialog .ghost:disabled {
   opacity: 0.5;
   cursor: default;
-}
-/* The ▲▼ reorder pair: the same chrome as the other row actions, narrow
-   enough that two more buttons do not crowd Edit / Duplicate / Delete. */
-.conn-dialog .ghost.move {
-  padding: 6px 8px;
-  line-height: 1;
 }
 .conn-dialog .ghost.danger {
   color: var(--danger);

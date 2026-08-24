@@ -189,7 +189,12 @@ Each component will get a small style spec in this file once it is built.
   rows themselves: the destination is a 2px inset accent line on the row above
   or below the gap. Opening a real gap would move the midpoints the drop
   position is measured from, and the line would then flicker wherever two rows
-  meet (ADR-0127). ▲▼ remain beside it as the keyboard path.
+  meet (ADR-0127). It is also the **only** reorder control: ▲▼ were removed the
+  same day, and the handle takes `↑`/`↓` while focused instead (ADR-0128). It
+  shows itself on focus as well as on hover, because a tab stop that cannot be
+  seen is worse than none. Rows are laid out so the middle column takes the
+  leftover width — otherwise `space-between` splits it either side of the name
+  and every row starts at a different indent.
 
 ## Layout
 

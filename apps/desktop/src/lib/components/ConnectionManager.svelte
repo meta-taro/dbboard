@@ -99,9 +99,9 @@
   // feature, and a silent wrong answer is worse than a disabled button.
   const filtering = $derived(visible.length !== workspace.connections.length);
 
-  // Drag to reorder (issue #192, criterion 1). ▲▼ came first and stays: it is
-  // the keyboard path, and it is what makes this addition rather than a
-  // replacement.
+  // Drag to reorder (issue #192, criterion 1). ▲▼ came first and were removed
+  // the same day drag landed (ADR-0128); the keyboard path moved onto this
+  // handle, which takes ↑↓ when focused.
   //
   // Pointer events rather than HTML5 drag-and-drop. Tauri hands the OS-level
   // drag-drop to the window before the webview sees it, so the HTML5 events
@@ -162,6 +162,16 @@
   function cancelDrag() {
     dragFrom = null;
     dragGap = null;
+  }
+
+  // The handle is also the keyboard path. ▲▼ used to be that, one pair per
+  // row; with drag in place they were a second control saying the same thing,
+  // and three buttons plus two arrows is what made the row wide enough to
+  // notice. The arrows the operator presses are now the ones on the keyboard.
+  function gripKeydown(e: KeyboardEvent, index: number) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    void move(index, e.key === 'ArrowUp' ? -1 : 1);
   }
 
   // Entries whose saved-secret slot was minted for a *different* connection
@@ -531,14 +541,14 @@
               <button
                 type="button"
                 class="grip"
-                tabindex={-1}
-                aria-hidden="true"
                 disabled={busy || filtering}
                 title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-drag-handle')}
+                aria-label={i18n.t('conn-drag-handle')}
                 onpointerdown={(e) => beginDrag(e, i)}
                 onpointermove={trackDrag}
                 onpointerup={finishDrag}
                 onpointercancel={cancelDrag}
+                onkeydown={(e) => gripKeydown(e, i)}
               >
                 ⠿
               </button>
@@ -570,26 +580,6 @@
                 {/if}
               </div>
               <div class="row-actions">
-                <button
-                  type="button"
-                  class="ghost move"
-                  disabled={busy || filtering || i === 0}
-                  title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-move-up')}
-                  aria-label={i18n.t('conn-move-up')}
-                  onclick={() => move(i, -1)}
-                >
-                  ▲
-                </button>
-                <button
-                  type="button"
-                  class="ghost move"
-                  disabled={busy || filtering || i === workspace.connections.length - 1}
-                  title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-move-down')}
-                  aria-label={i18n.t('conn-move-down')}
-                  onclick={() => move(i, 1)}
-                >
-                  ▼
-                </button>
                 <button
                   type="button"
                   class="ghost"
