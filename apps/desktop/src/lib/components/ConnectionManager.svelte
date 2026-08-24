@@ -48,6 +48,7 @@
   } from '$lib/connections/file-picker';
   import { foreignRefFor } from '$lib/connections/repair';
   import { moveTarget } from '$lib/connections/order';
+  import { dropTarget, gapForPointer } from '$lib/connections/reorder';
   import { filterConnections } from '$lib/connections/filter';
   import {
     CONNECTION_COLORS,
@@ -97,6 +98,81 @@
   // Disabled rather than remapped: "below the next visible row" is a different
   // feature, and a silent wrong answer is worse than a disabled button.
   const filtering = $derived(visible.length !== workspace.connections.length);
+
+  // Drag to reorder (issue #192, criterion 1). ▲▼ came first and were removed
+  // the same day drag landed (ADR-0128); the keyboard path moved onto this
+  // handle, which takes ↑↓ when focused.
+  //
+  // Pointer events rather than HTML5 drag-and-drop. Tauri hands the OS-level
+  // drag-drop to the window before the webview sees it, so the HTML5 events
+  // only arrive with `dragDropEnabled: false` — and that is the same switch a
+  // later "drop a .dbbx onto the window" would need left on. Nothing uses it
+  // today, but turning it off to save code here would spend it.
+  let dragFrom = $state<number | null>(null);
+  let dragGap = $state<number | null>(null);
+  let listEl: HTMLDivElement | undefined = $state();
+
+  // Rows do not move while a drag is in flight — only the insertion line does.
+  // Reordering under the pointer would move the midpoints this reads, and the
+  // gap would oscillate wherever two rows meet.
+  function rowMidpoints(): number[] {
+    if (!listEl) return [];
+    return [...listEl.querySelectorAll('.row')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return r.top + r.height / 2;
+    });
+  }
+
+  function beginDrag(e: PointerEvent, index: number) {
+    if (busy || filtering) return;
+    // Capture so the drag survives the pointer leaving the handle, which it
+    // does immediately — the handle is a few pixels tall.
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+    dragFrom = index;
+    dragGap = index;
+  }
+
+  function trackDrag(e: PointerEvent) {
+    if (dragFrom === null) return;
+    dragGap = gapForPointer(e.clientY, rowMidpoints());
+  }
+
+  async function finishDrag() {
+    const from = dragFrom;
+    const gap = dragGap;
+    dragFrom = null;
+    dragGap = null;
+    if (from === null || gap === null) return;
+    const target = dropTarget(from, gap, workspace.connections.length);
+    if (target === null) return;
+    const c = workspace.connections[from];
+    busy = true;
+    error = '';
+    try {
+      await moveConnection(c.id, target);
+      await refreshAll();
+    } catch (err) {
+      error = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function cancelDrag() {
+    dragFrom = null;
+    dragGap = null;
+  }
+
+  // The handle is also the keyboard path. ▲▼ used to be that, one pair per
+  // row; with drag in place they were a second control saying the same thing,
+  // and three buttons plus two arrows is what made the row wide enough to
+  // notice. The arrows the operator presses are now the ones on the keyboard.
+  function gripKeydown(e: KeyboardEvent, index: number) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    void move(index, e.key === 'ArrowUp' ? -1 : 1);
+  }
 
   // Entries whose saved-secret slot was minted for a *different* connection
   // (issue #213). dbboard never writes that state itself, so this is only ever
@@ -401,7 +477,10 @@
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
-      if (mode === 'list') onClose();
+      // A drag with no way out would make Escape close the dialog mid-move,
+      // which is the one moment the operator most wants to take it back.
+      if (dragFrom !== null) cancelDrag();
+      else if (mode === 'list') onClose();
       else goList();
     }
   }
@@ -442,7 +521,7 @@
           aria-label={i18n.t('conn-filter-placeholder')}
         />
       {/if}
-      <div class="list">
+      <div class="list" bind:this={listEl}>
         {#if workspace.connections.length === 0}
           <p class="empty">{i18n.t('conn-empty')}</p>
         {:else if visible.length === 0}
@@ -451,7 +530,28 @@
           {#each visible as c (c.id)}
             {@const i = workspace.connections.indexOf(c)}
             {@const mark = markFor(workspace.marks, c.id)}
-            <div class="row">
+            <div
+              class="row"
+              class:dragging={dragFrom === i}
+              class:drop-before={dragGap === i && dragFrom !== null}
+              class:drop-after={dragGap === workspace.connections.length &&
+                i === workspace.connections.length - 1 &&
+                dragFrom !== null}
+            >
+              <button
+                type="button"
+                class="grip"
+                disabled={busy || filtering}
+                title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-drag-handle')}
+                aria-label={i18n.t('conn-drag-handle')}
+                onpointerdown={(e) => beginDrag(e, i)}
+                onpointermove={trackDrag}
+                onpointerup={finishDrag}
+                onpointercancel={cancelDrag}
+                onkeydown={(e) => gripKeydown(e, i)}
+              >
+                ⠿
+              </button>
               <div class="row-main">
                 <span class="row-name-line">
                   <span class="row-name">{c.name}</span>
@@ -480,26 +580,6 @@
                 {/if}
               </div>
               <div class="row-actions">
-                <button
-                  type="button"
-                  class="ghost move"
-                  disabled={busy || filtering || i === 0}
-                  title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-move-up')}
-                  aria-label={i18n.t('conn-move-up')}
-                  onclick={() => move(i, -1)}
-                >
-                  ▲
-                </button>
-                <button
-                  type="button"
-                  class="ghost move"
-                  disabled={busy || filtering || i === workspace.connections.length - 1}
-                  title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-move-down')}
-                  aria-label={i18n.t('conn-move-down')}
-                  onclick={() => move(i, 1)}
-                >
-                  ▼
-                </button>
                 <button
                   type="button"
                   class="ghost"

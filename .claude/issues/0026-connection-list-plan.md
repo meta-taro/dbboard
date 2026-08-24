@@ -72,6 +72,23 @@ larger one — pointer events, a keyboard equivalent so it stays reachable witho
 a mouse, autoscroll at the edges. Worth doing only if ▲▼ turns out to be tedious
 in practice, which is knowable after a week of use and not before.
 
+**Also built** (2026-08-24, `feature/connection-drag-order`) — the condition was
+met on first use, not after a week. Two of the three costs above turned out not
+to be costs: the keyboard equivalent is the ▲▼ that shipped an hour earlier, and
+autoscroll is unreachable until the list outgrows the dialog. What was left is
+the drop arithmetic, which is a unit test (`$lib/connections/reorder.ts`) rather
+than something to be found by dragging. Pointer events rather than HTML5 drag,
+so the window keeps the OS-level drop a `.dbbx` import will want
+([ADR-0127](../../docs/decisions.md)).
+
+**And ▲▼ were then removed** ([ADR-0128](../../docs/decisions.md)) — within the
+hour, on the first look at the list with real connections in it. The plan had
+treated the keyboard equivalent as a cost of drag; it turned out to be a
+control that could move onto the handle (`↑`/`↓` while focused) rather than one
+that had to sit beside it. Five controls per row was the visible problem, and
+it hid a second one: three flex children under `space-between` put every name
+at an indent decided by its own length.
+
 ### B. Narrow the list by typing — #192 criterion 2
 
 A second search input, above the list, visually distinct from the table/column

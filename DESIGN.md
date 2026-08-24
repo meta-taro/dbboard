@@ -183,6 +183,18 @@ Each component will get a small style spec in this file once it is built.
   scrolls on both axes rather than reflowing, because a wrapped row puts the
   name underneath its own checkbox and the list stops being scannable. Capped
   at `12rem` so the passphrase fields below it stay on the panel (ADR-0105).
+- **Drag handle** (connection manager) — a `⠿` grip at the left edge of each
+  row, invisible until the row is hovered, so a list that is only ever read
+  stays as quiet as it was before reordering existed. Dragging never moves the
+  rows themselves: the destination is a 2px inset accent line on the row above
+  or below the gap. Opening a real gap would move the midpoints the drop
+  position is measured from, and the line would then flicker wherever two rows
+  meet (ADR-0127). It is also the **only** reorder control: ▲▼ were removed the
+  same day, and the handle takes `↑`/`↓` while focused instead (ADR-0128). It
+  shows itself on focus as well as on hover, because a tab stop that cannot be
+  seen is worse than none. Rows are laid out so the middle column takes the
+  leftover width — otherwise `space-between` splits it either side of the name
+  and every row starts at a different indent.
 
 ## Layout
 
