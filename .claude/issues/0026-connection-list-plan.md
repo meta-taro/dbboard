@@ -126,6 +126,18 @@ It needed three decisions. Two are now settled; the third is a constraint, not a
   greyscale screenshot. Whatever ships should pair the colour with something
   non-chromatic — a short tag string, or a shape on the icon.
 
+**Shipped 2026-08-24 (`4e0e6d9`, ADR-0126) — with the third point widened.** The
+non-chromatic half became an operator-written tag of at most 12 characters, and
+the form *requires* it: a colour with no tag will not save. The alternative this
+plan left open — rendering the colour's own name as the text half — satisfies
+the constraint literally and helps nobody, because "Red" beside a connection
+says less than the connection's name already did. It survives only as the
+fallback for a hand-edited config that carries a colour without a tag, so that
+such a row still draws something rather than looking unmarked while the file
+says otherwise. Palette, theme values and the tag limit are held in step by
+`crates/dbboard-config/tests/mark_drift.rs`; the markup lives in one component
+(`ConnectionMark.svelte`) so no caller can render half a mark.
+
 ### E. Grouping / folders — not yet
 
 #192 draws this line and it is the right one: grouping is only worth doing if
@@ -149,7 +161,8 @@ worse in a way that gets progressively harder to undo.
 4. ~~**F** — split the manager before D adds a colour picker to it.~~ Done
    (`497a185`, `e0ce918`): 1,617 lines to 662. It ran ahead of B because both
    remaining items add UI to that file.
-5. **D** — the palette is settled, so this is now unblocked.
+5. ~~**D** — the palette is settled, so this is now unblocked.~~ Done
+   (`4e0e6d9`). See the note under D for what changed against the plan.
 6. **E** — only if A did not settle it. Ask again after a week of ▲▼.
 
 A, B and C together close #192. D and E do not, and should not be folded into
