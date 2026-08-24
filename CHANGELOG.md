@@ -7,7 +7,66 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Connection repair and duplication
+
+### Added
+
+- **A connection can be duplicated.** The connection list gains a
+  *Duplicate* action that copies an entry's settings and its saved
+  secrets into a new connection with saved-secret slots of its own. Making
+  a second connection to the same database no longer means editing
+  `connections.toml` by hand — which was also the only way to end up with
+  the broken state below. The copy starts with no AI-agent alias and with
+  agent writes off.
+- **A connection that reads another connection's saved secret can be
+  repaired, and is now visible before an export.** Since 0.10.0 dbboard
+  could tell that an entry's saved-secret slot had been minted for a
+  different connection, but only said so while writing a bundle, and
+  offered no way out except editing the file by hand again. The state now
+  shows in the connection list, and a *Repair* action gives the entry a
+  slot of its own. It asks for the secret rather than copying the other
+  connection's: reading a credential that belongs to something else, and
+  writing a second copy of it into the keychain without saying so, is the
+  thing the import guard already refuses. The other connection keeps its
+  slot and its secret untouched. See
+  [ADR-0118](docs/decisions.md).
+
+### Fixed
+
+- **Verification no longer crashes on a green branch.** On Windows,
+  tearing down two in-memory libSQL databases at the same instant takes the
+  whole test binary with it, after every assertion has passed. The
+  workaround ran the adapter crate's tests one at a time — but four other
+  crates reach that adapter through their dependencies and inherit the same
+  hazard, and none of them were covered. The set is now derived from the
+  dependency graph and checked by a test, so a crate that starts using the
+  adapter cannot quietly drop off it. See
+  [ADR-0119](docs/decisions.md).
+- **Editing a git hook now takes effect.** The hooks were documented as
+  installing themselves on first `cargo test`; the dependency that did that
+  was dropped from the workspace some time ago and the documentation was
+  not. `sh scripts/install-hooks.sh` installs them, and a test fails when
+  the installed copies have fallen behind the ones in the repository. This
+  affects contributors only: CI runs the same checks either way
+  ([ADR-0104](docs/decisions.md)).
+- **Hovering a connection now shows its name, not its internal id.** The
+  sidebar cuts a long connection name off with an ellipsis, and the tooltip
+  that would have shown the rest was showing the generated id instead — the
+  one piece of text about a connection that appears nowhere else and that
+  nobody has ever needed. Both the sidebar row and the toolbar pill now name
+  the connection and its kind.
+
+### Security
+
+- **The desktop webview now runs under a Content-Security-Policy.** It had
+  none: every remote script, style and connection the webview could name
+  was allowed. Nothing in the app walks that path today — there is no
+  place where a database value, an AI response or an export is rendered as
+  HTML — so this changes no behaviour. It is the guard being put in place
+  before the feature that needs it, rather than after. Scripts are limited
+  to the bundle's own, whose two inline blocks the build hashes; network
+  access is limited to Tauri's IPC, since every driver, provider and the
+  updater already run in Rust. See [ADR-0120](docs/decisions.md).
 
 ## [0.10.0] — 2026-08-20
 

@@ -1,0 +1,235 @@
+// How much unreleased content CHANGELOG.md is holding, and what the roadmap's
+// release trigger says about it.
+//
+// docs/roadmap.md ("Release plan", ADR-0110 as amended by ADR-0122) does not
+// schedule releases from dates: it derives them from content. One unreleased
+// entry means a release *may* be cut; three mean one is *due*. That rule was
+// only ever reachable by running an awk one-liner out of the roadmap, so in
+// practice nobody saw the counter move and the next version looked like it
+// was never coming. This prints the same rule where the work already
+// happens — the pre-push hook.
+//
+// Run directly to print one line and exit 0. It must never fail a push: a
+// release counter that can block work would be worse than no counter.
+//
+// See scripts/release-due.test.mjs.
+
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const VERSION_HEADING = /^## \[([^\]]+)\]/;
+const SECTION_HEADING = /^### (.+?)\s*$/;
+/** A top-level entry. Indented bullets are continuations, not entries. */
+const ENTRY = /^- /;
+
+/** Sections whose presence makes the next release a minor rather than a patch. */
+const ADDITIVE = new Set(["Added", "Changed"]);
+
+/**
+ * Read the unreleased state of `changelog`.
+ *
+ * Returns `{ count, verdict, current, bump, next }`:
+ * - `count`   — top-level entries under `## [Unreleased]`
+ * - `verdict` — `"none"` | `"may"` | `"due"`, the roadmap's thresholds
+ * - `current` — the newest released version heading, or `null`
+ * - `bump`    — `"minor"` if anything was added, else `"patch"`
+ * - `next`    — `current` with `bump` applied, or `null` when `current` is not
+ *               three numbers (a heading this cannot parse is left alone
+ *               rather than guessed at)
+ */
+export function releaseDue(changelog) {
+  const lines = changelog.split(/\r?\n/);
+
+  let inUnreleased = false;
+  let current = null;
+  let section = null;
+  let count = 0;
+  let additive = 0;
+
+  for (const line of lines) {
+    const heading = VERSION_HEADING.exec(line);
+    if (heading) {
+      if (heading[1] === "Unreleased") {
+        inUnreleased = true;
+        section = null;
+      } else {
+        inUnreleased = false;
+        current ??= heading[1];
+      }
+      continue;
+    }
+    if (!inUnreleased) continue;
+
+    const sub = SECTION_HEADING.exec(line);
+    if (sub) {
+      section = sub[1];
+      continue;
+    }
+    if (!ENTRY.test(line)) continue;
+
+    count += 1;
+    if (section !== null && ADDITIVE.has(section)) additive += 1;
+  }
+
+  const bump = additive > 0 ? "minor" : "patch";
+  return {
+    count,
+    verdict: count === 0 ? "none" : count < 3 ? "may" : "due",
+    current,
+    bump,
+    next: nextVersion(current, bump),
+  };
+}
+
+/** `current` with `bump` applied, or null when it is not `major.minor.patch`. */
+function nextVersion(current, bump) {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(current ?? "");
+  if (!m) return null;
+  const [major, minor, patch] = m.slice(1).map(Number);
+  return bump === "minor"
+    ? `${major}.${minor + 1}.0`
+    : `${major}.${minor}.${patch + 1}`;
+}
+
+/** A row of the roadmap's slot table: `| **v0.11** | Headline | … |`. */
+const SLOT = /^\|\s*\*\*v(\d+)\.(\d+)\*\*\s*\|\s*([^|]+?)\s*\|/;
+
+/**
+ * The headline reserved for `version` in `roadmap`, or `null`.
+ *
+ * Slots are written `major.minor` because a patch ships whatever its minor was
+ * about; `0.11.3` therefore answers with `0.11`'s headline. A version with no
+ * row returns null rather than a guess — an invented headline on a release is
+ * worse than none, because it reads as a promise somebody made.
+ */
+export function plannedFor(version, roadmap) {
+  if (!roadmap || !version) return null;
+  const parts = /^(\d+)\.(\d+)/.exec(version);
+  if (!parts) return null;
+  for (const line of roadmap.split(/\r?\n/)) {
+    const slot = SLOT.exec(line);
+    if (slot && slot[1] === parts[1] && slot[2] === parts[2]) return slot[3];
+  }
+  return null;
+}
+
+/** Every reserved slot, in page order, as `{ major, minor, headline }`. */
+function slots(roadmap) {
+  const found = [];
+  for (const line of (roadmap ?? "").split(/\r?\n/)) {
+    const m = SLOT.exec(line);
+    if (m) found.push({ major: +m[1], minor: +m[2], headline: m[3] });
+  }
+  return found;
+}
+
+/** The `## [Unreleased]` headline, `null` when the heading carries none. */
+function unreleasedHeadline(changelog) {
+  for (const line of changelog.split(/\r?\n/)) {
+    const m = /^## \[Unreleased\]\s*(?:[\u2014-]\s*(.+?))?\s*$/.exec(line);
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+
+/** Is `slot` at or behind `shipped`? */
+function behind(slot, shipped) {
+  return (
+    slot.major < shipped.major ||
+    (slot.major === shipped.major && slot.minor <= shipped.minor)
+  );
+}
+
+/**
+ * Where the reserved plan and the changelog disagree, as human sentences.
+ *
+ * A plan on a page rots quietly. A slot for a version that already shipped
+ * still reads like a promise, and an `[Unreleased]` headline that no longer
+ * matches its slot answers "what shipped?" with last month's answer. Neither
+ * is visible by reading, and both are cheap to check.
+ *
+ * This is a test, not part of the hook line: a stale plan should stop a merge,
+ * never a push (ADR-0121 — the counter must not be able to block work).
+ *
+ * A stale slot suppresses the headline check. Until the table is moved past
+ * what is already out, every headline below it is wrong for the same reason,
+ * and one cause should not be reported as several problems.
+ */
+export function planDrift(roadmap, changelog) {
+  const reserved = slots(roadmap);
+  if (reserved.length === 0) return [];
+
+  const state = releaseDue(changelog);
+  const parts = /^(\d+)\.(\d+)/.exec(state.current ?? "");
+  const shipped = parts ? { major: +parts[1], minor: +parts[2] } : null;
+
+  if (shipped) {
+    const stale = reserved.filter((slot) => behind(slot, shipped));
+    if (stale.length > 0) {
+      return stale.map(
+        (slot) =>
+          `docs/roadmap.md still reserves a slot for v${slot.major}.${slot.minor}, ` +
+          `but ${state.current} is already released — move the plan forward`,
+      );
+    }
+  }
+
+  if (state.count === 0) return [];
+
+  const next = shipped
+    ? reserved.find((slot) => !behind(slot, shipped))
+    : reserved[0];
+  if (!next) return [];
+
+  const headline = unreleasedHeadline(changelog);
+  const where = `v${next.major}.${next.minor} reserves "${next.headline}"`;
+  if (headline === null) {
+    return [
+      `CHANGELOG.md's [Unreleased] carries no headline, but ${where} — ` +
+        `a version that ships without one is a number again`,
+    ];
+  }
+  if (headline !== next.headline) {
+    return [
+      `CHANGELOG.md's [Unreleased] says "${headline}" where ${where} — ` +
+        `one of the two moved and the other did not`,
+    ];
+  }
+  return [];
+}
+
+/** The one line the hook prints. */
+export function summary(state, roadmap) {
+  const { count, verdict, current, next } = state;
+  if (verdict === "none") return "[changelog] nothing unreleased yet";
+  const entries = `${count} unreleased ${count === 1 ? "entry" : "entries"}`;
+  const verb = verdict === "due" ? "a release is due" : "a release may be cut";
+  const slot = plannedFor(next, roadmap);
+  const headline = slot ? `: ${slot}` : "";
+  const target = current && next ? ` (${current} -> ${next}${headline})` : "";
+  return `[changelog] ${entries} — ${verb}${target}`;
+}
+
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  // Any failure here is silence, not an error: this runs inside a git hook.
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const path = process.argv[2] ?? join(here, "..", "CHANGELOG.md");
+    // The roadmap is optional: without it the line loses the headline, not
+    // the count, so a renamed or missing roadmap degrades instead of going
+    // silent.
+    let roadmap = null;
+    try {
+      roadmap = readFileSync(join(here, "..", "docs", "roadmap.md"), "utf8");
+    } catch {
+      /* no plan on file, no headline */
+    }
+    console.log(summary(releaseDue(readFileSync(path, "utf8")), roadmap));
+  } catch {
+    /* no changelog, no counter, no complaint */
+  }
+}

@@ -17,6 +17,9 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+# `tests/serialised_teardown.rs` reads the workspace manifests to derive which
+# crates reach this one, and so must run their tests one at a time.
+toml = { workspace = true }
 
 [lints]
 workspace = true

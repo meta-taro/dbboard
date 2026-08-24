@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { enumVariants, enumColumns } from './enum';
+import {
+  enumVariants,
+  enumColumns,
+  enumOptions,
+} from './enum';
 
 describe('enumVariants', () => {
   it('reads the variants of a MySQL ENUM declaration', () => {
@@ -68,5 +72,27 @@ describe('enumColumns', () => {
 
   it('is empty when the table has no enum column', () => {
     expect(enumColumns([{ name: 'id', declared_type: 'int' }])).toEqual({});
+  });
+});
+
+describe('enumOptions', () => {
+  it('offers the declared members when the draft is one of them', () => {
+    expect(enumOptions(['draft', 'sent'], 'sent')).toEqual(['draft', 'sent']);
+  });
+
+  it('keeps a draft outside the members at the head of the list', () => {
+    // A value written before the type was narrowed. Dropping it would mean
+    // that merely opening the editor rewrites the row to the first member.
+    expect(enumOptions(['draft', 'sent'], 'void')).toEqual(['void', 'draft', 'sent']);
+  });
+
+  it('keeps the empty draft a NULL starts from', () => {
+    expect(enumOptions(['draft', 'sent'], '')).toEqual(['', 'draft', 'sent']);
+  });
+
+  it('does not mutate the members it was given', () => {
+    const members = ['draft', 'sent'];
+    enumOptions(members, 'void');
+    expect(members).toEqual(['draft', 'sent']);
   });
 });

@@ -425,6 +425,9 @@ pub fn run() {
             add_connection,
             update_connection,
             delete_connection,
+            duplicate_connection,
+            repair_connection_ref,
+            foreign_connection_refs,
             reconnect_connection,
             export_connections,
             import_connections,
@@ -1442,6 +1445,75 @@ async fn update_connection(
     } // drop the guard before awaiting — keeps the command future Send.
     state.service.invalidate(&id).await;
     Ok(())
+}
+
+/// Copy an existing connection into a new one that owns its own keychain
+/// slots, seeded with the source's secret values (issue #213).
+///
+/// This exists because a ref is minted only on add: before this command the
+/// only way to register a second connection sharing one credential — two D1
+/// databases behind one API token, two schemas behind one Postgres URL — was
+/// to hand-edit `connections.toml`, which produces exactly the state
+/// `foreign_connection_refs` reports and the import guard refuses (ADR-0038).
+///
+/// The copy drops the MCP alias and leaves MCP writes off; see
+/// [`dbboard_config::ConnectionAdmin::duplicate`] for why.
+#[tauri::command]
+fn duplicate_connection(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    new_id: String,
+    new_name: String,
+) -> Result<(), String> {
+    let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    admin
+        .duplicate(&id, new_id, new_name)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Re-point one of `id`'s keyring slots — currently another connection's —
+/// at a slot of its own, and store `secret` there (issue #213).
+///
+/// `secret` comes from the user rather than being copied out of the slot
+/// being abandoned, because that value belongs to the other connection. The
+/// abandoned slot is left in place for the same reason.
+///
+/// Evicts the cached adapter: the entry now reads its credential from a
+/// different place, so a pooled adapter built from the old one is stale.
+#[tauri::command]
+async fn repair_connection_ref(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    key_ref: String,
+    secret: String,
+) -> Result<(), String> {
+    {
+        let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+        admin
+            .repair_foreign_ref(&id, &key_ref, secret)
+            .map_err(|e| e.to_string())?;
+    } // drop the guard before awaiting — keeps the command future Send.
+    state.service.invalidate(&id).await;
+    Ok(())
+}
+
+/// Every connection that points at a keychain slot minted for a different
+/// connection (issue #194).
+///
+/// Reported to the connection list rather than only at export time (issue
+/// #213): the state is worth seeing before a bundle is built, because it is
+/// also why such a connection cannot be duplicated.
+#[tauri::command]
+fn foreign_connection_refs(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ForeignRefDto>, String> {
+    let admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    Ok(admin
+        .foreign_refs()
+        .into_iter()
+        .map(ForeignRefDto::from)
+        .collect())
 }
 
 /// Delete a connection and purge its keyring secrets, then evict any

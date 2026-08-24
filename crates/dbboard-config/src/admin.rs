@@ -40,6 +40,8 @@ use crate::store::{
     load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind, SshTunnelToml,
 };
 
+mod repair;
+
 /// User-supplied draft for **adding** a new connection.
 ///
 /// Unlike [`ConnectionEntry`] the secret material is carried inline
@@ -1565,9 +1567,18 @@ fn keyring_ref(id: &str, field: &str) -> String {
 /// the fixed `url` / `token`). Splitting from the left would read
 /// `dbboard.my.db.url` as owner `my`.
 fn ref_owner(key_ref: &str) -> Option<&str> {
+    split_ref(key_ref).map(|(owner, _field)| owner)
+}
+
+/// Take a ref apart into `(owner, field)` — everything [`keyring_ref`] put
+/// together. `None` if `key_ref` is not of that shape at all.
+///
+/// The field is split off from the **right** because an id may contain dots
+/// while a field name never does; see [`ref_owner`].
+fn split_ref(key_ref: &str) -> Option<(&str, &str)> {
     let rest = key_ref.strip_prefix("dbboard.")?;
-    let (owner, _field) = rest.rsplit_once('.')?;
-    (!owner.is_empty()).then_some(owner)
+    let (owner, field) = rest.rsplit_once('.')?;
+    (!owner.is_empty() && !field.is_empty()).then_some((owner, field))
 }
 
 /// Keyring field names for the two SSH secrets. Kept as consts so the add and
@@ -1833,7 +1844,7 @@ mod tests {
     use crate::secrets::InMemorySecretStore;
     use tempfile::tempdir;
 
-    fn fresh_admin() -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin) {
+    pub(super) fn fresh_admin() -> (tempfile::TempDir, Arc<InMemorySecretStore>, ConnectionAdmin) {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("connections.toml");
         let secrets = Arc::new(InMemorySecretStore::new());
@@ -1842,7 +1853,7 @@ mod tests {
         (dir, secrets, admin)
     }
 
-    fn turso_draft(id: &str, name: &str, path: &str) -> ConnectionDraft {
+    pub(super) fn turso_draft(id: &str, name: &str, path: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -1855,7 +1866,7 @@ mod tests {
         }
     }
 
-    fn remote_turso_draft(id: &str, url: &str) -> ConnectionDraft {
+    pub(super) fn remote_turso_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -1869,7 +1880,7 @@ mod tests {
         }
     }
 
-    fn d1_draft(id: &str) -> ConnectionDraft {
+    pub(super) fn d1_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -1885,7 +1896,7 @@ mod tests {
         }
     }
 
-    fn pg_draft(id: &str, url: &str) -> ConnectionDraft {
+    pub(super) fn pg_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -1898,7 +1909,7 @@ mod tests {
         }
     }
 
-    fn mysql_draft(id: &str, url: &str) -> ConnectionDraft {
+    pub(super) fn mysql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -1911,7 +1922,7 @@ mod tests {
         }
     }
 
-    fn neon_draft(id: &str, url: &str) -> ConnectionDraft {
+    pub(super) fn neon_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -1924,7 +1935,7 @@ mod tests {
         }
     }
 
-    fn supabase_draft(id: &str, url: &str) -> ConnectionDraft {
+    pub(super) fn supabase_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -1937,7 +1948,7 @@ mod tests {
         }
     }
 
-    fn aurora_dsql_draft(id: &str, url: &str) -> ConnectionDraft {
+    pub(super) fn aurora_dsql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -1950,7 +1961,7 @@ mod tests {
         }
     }
 
-    fn aurora_dsql_iam_draft(id: &str, secret_access_key: &str) -> ConnectionDraft {
+    pub(super) fn aurora_dsql_iam_draft(id: &str, secret_access_key: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -2022,7 +2033,7 @@ mod tests {
     }
 
     /// `service_account: None` is the emulator: no credential exists to store.
-    fn firestore_draft(id: &str, service_account: Option<&str>) -> ConnectionDraft {
+    pub(super) fn firestore_draft(id: &str, service_account: Option<&str>) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
@@ -2066,7 +2077,7 @@ mod tests {
         }
     }
 
-    fn mongodb_draft(id: &str, uri: &str, database: Option<&str>) -> ConnectionDraft {
+    pub(super) fn mongodb_draft(id: &str, uri: &str, database: Option<&str>) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
             mcp_write: false,
