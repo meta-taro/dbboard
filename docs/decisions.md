@@ -12056,3 +12056,89 @@ the next reader it never happens, which is the belief being corrected here.
 teardown, and reproducing it on demand has failed twice now — 30 runs when
 ADR-0119 was written, 35 here. Retrying a rare crash is a workaround; it is
 recorded as one.
+
+## ADR-0126 — A connection is marked by a colour *and* a tag, and the tag is what carries the meaning (2026-08-24)
+
+**Status.** Accepted.
+
+**Context.** Several rows in the connection list read alike, and the one that
+matters is the one that must not be mistaken for the others: production, sitting
+next to a copy of it made for a repair. That is what the request was —
+「開発本番のタグとかカラーを付ける」「接続するサーバの見分け方として」 — and it is
+what plan `.claude/issues/0026`, section D, had already reserved a slot for.
+
+Section D settled two of the three questions and left the third as a constraint
+rather than a choice:
+
+- Storage is a **scalar on `ConnectionEntry`**, not a sidecar keyed by id. It
+  travels with an export and appears wherever the connection does, at the price
+  of fact 2 in that plan: an older build reads an unknown key without complaint
+  and drops it on its next save. Losing a colour is not losing a credential.
+- The palette is a **closed set of eight names**, decided by the maintainer, not
+  a colour picker and not a hex field.
+- **Colour alone is not a mark.** It fails for a colour-blind operator and in a
+  greyscale screenshot.
+
+The third of those is what this ADR answers. The obvious cheap discharge — render
+the colour's *name* beside the swatch — satisfies the letter of it and none of
+the purpose. "red" tells a reader that the row is red. It does not tell them the
+row is production, which is the entire question being asked at the moment someone
+looks.
+
+**Decision.** A connection carries two optional scalars, and the pair is the
+mark.
+
+1. `color`, one of `CONNECTION_COLORS` — eight names, stored as the **name**, not
+   a value. `dbboard-config` rejects anything else with `ConfigError::UnknownColor`
+   rather than storing it and hoping the frontend copes. The eight get a light and
+   a dark value in `tokens.css` and a third axis in `DESIGN.md`, deliberately
+   separate from `--accent` and from the semantic `--danger` / `--warning` /
+   `--success`: identity colours carry no meaning of their own, so nothing here may
+   be reused to say "this went wrong".
+2. `tag`, **free text the operator writes**, capped at twelve characters. This is
+   the non-chromatic half, and the half a reader actually reads: `prod`, `本番`,
+   `staging`, `検証環境`.
+
+The tag is free text rather than a second closed set because the words a team
+uses for its own servers are not ones this crate can enumerate. A fixed
+`Production | Staging | Development` would be wrong for the first operator who
+runs four environments, or names them in their own language, and the failure mode
+of guessing wrong here is that the mark goes unused.
+
+Twelve characters, counted in **`chars()` and not bytes**. The limit exists
+because the same plan's section C records that the connection *name* is what
+loses the width fight on a row; an unbounded tag would make that worse in exactly
+the place the mark is supposed to help. Counting bytes would reject twelve kanji
+(thirty-six bytes) while accepting twelve latin letters, which is backwards —
+the kanji are the narrower label of the two. The frontend counts with the string
+iterator rather than `.length`, so an emoji costs one and not two.
+
+**Consequences.**
+
+- `dbboard-config` gains `mark.rs` — named for what it holds, since a module
+  called `color.rs` would be the wrong home for the half of the mark that has no
+  colour in it. It owns `CONNECTION_COLORS`, `is_connection_color`,
+  `CONNECTION_TAG_MAX_CHARS` and `is_connection_tag`, and nothing else knows the
+  eight names or the twelve.
+- Both fields follow `mcp_alias` (ADR-0088) exactly: `Option<String>`,
+  `skip_serializing_if = "Option::is_none"`, declared **before** `ssh` because TOML
+  wants values ahead of tables, and three edit states through one `Option` —
+  `None` keeps, `Some(v)` sets, `Some("")` clears.
+- The frontend keeps its own copy of both the palette and the limit, because a
+  form that cannot stop the operator at the limit lets them type past it and lose
+  the tail on save. `tests/mark_drift.rs` reads `marks.ts` and `tokens.css` from
+  the workspace and fails when the two sides disagree — on the names, on their
+  order, on a colour missing a value in any of the four theme blocks, or on the
+  number twelve. Same shape as `locale_drift.rs`.
+- **`duplicate()` drops both.** A copy inherits the credentials it needs and none
+  of the identity: the mark exists to tell production from a copy of it, so a copy
+  that arrives already wearing production's mark defeats it at the one moment it
+  is load-bearing. Covered by a test in `admin/repair.rs`.
+- The swatch and the tag travel together in every surface that renders them. A row
+  showing the swatch alone is a bug and not a compact variant — that is the
+  accessibility constraint, restated as something reviewable.
+
+**Not decided here.** Whether `dbboard-mcp` sees either field. Plan 0026 leaves
+the agent surface out on purpose: a colour is for a human eye and a tag is for a
+human reading a list. Neither has a use on the agent side yet, and a field the
+agent can read is a field the agent can be confused by.

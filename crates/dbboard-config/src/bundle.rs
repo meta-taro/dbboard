@@ -332,6 +332,8 @@ mod tests {
             connections: vec![
                 ConnectionEntry {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: false,
                     ssh: None,
                     id: "store-a".to_string(),
@@ -345,6 +347,8 @@ mod tests {
                 },
                 ConnectionEntry {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: false,
                     ssh: None,
                     id: "store-c".to_string(),

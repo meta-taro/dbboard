@@ -124,6 +124,16 @@
   gap: 2px;
   min-width: 0;
 }
+/* The name and its identity mark share one line so the mark reads as part of
+   the name rather than as another line of metadata. `min-width: 0` is what
+   lets the name keep ellipsing while the mark holds its width — without it
+   the mark is the part that gets squeezed off, which is backwards. */
+.conn-dialog .row-name-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
 .conn-dialog .row-name {
   color: var(--text);
   font-weight: 600;
@@ -239,6 +249,35 @@
 .conn-dialog .field textarea.bad {
   border-color: var(--danger);
 }
+/* The identity mark's two halves and its preview on one line (ADR-0126).
+   Wraps rather than shrinking, because a tag input narrower than the tag it
+   accepts hides the end of what was typed. */
+.conn-dialog .mark-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.conn-dialog .mark-row .field:first-child {
+  flex: 0 0 auto;
+  min-width: 9rem;
+}
+.conn-dialog .mark-row .field:nth-child(2) {
+  flex: 1 1 8rem;
+}
+/* `--mark` is set inline only while a colour is chosen, so both fallbacks
+   are the uncoloured state — no separate rule for "no colour". */
+.conn-dialog .field select.mark-color {
+  border-color: var(--mark, var(--border));
+  box-shadow: inset 3px 0 0 var(--mark, transparent);
+}
+/* Sits on the controls' baseline, not the labels' — the padding is the
+   height of the label line above each input. */
+.conn-dialog .mark-preview {
+  flex: none;
+  padding-bottom: 8px;
+}
+
 /* JSON, so monospace — a stray character in a pasted key is only findable
    when the columns line up. */
 .conn-dialog .field textarea {

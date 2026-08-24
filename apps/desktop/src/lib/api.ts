@@ -330,6 +330,22 @@ export const onRestoreProgress = (
 export const connectionEditFields = (id: string): Promise<EditFields> =>
   invoke('connection_edit_fields', { id });
 
+// The identity mark of every marked connection, keyed by id (ADR-0126). Both
+// halves in one call because they are rendered together — a swatch with no tag
+// beside it is the failure mode the tag exists to prevent.
+//
+// Unmarked connections are absent, so a lookup returns `undefined` rather than
+// a pair of nulls. A connection with only one half set is still marked and does
+// appear. Separate from `listConnections` because that projection is the
+// agent's view of a connection and a mark is for a human eye.
+export interface ConnectionMark {
+  color: string | null;
+  tag: string | null;
+}
+
+export const connectionMarks = (): Promise<Record<string, ConnectionMark>> =>
+  invoke('connection_marks');
+
 // Ask the SSH server for its host-key fingerprint (`SHA256:…`) so the form can
 // offer it for pinning. Opens a connection to `host`, but never authenticates —
 // see the command's doc comment.
@@ -343,6 +359,12 @@ export const probeSshHostKey = (host: string, port: number): Promise<string> =>
 // `mcpWrite` is the MCP write gate (ADR-0087) — a permission, not a secret, so
 // it rides in plain and comes back out on edit. `mcpAlias` is the agent-facing
 // name (ADR-0088); blank means none, and the backend trims it.
+//
+// `color` and `tag` are the identity mark (ADR-0126): a name from
+// `CONNECTION_COLORS`, and up to `CONNECTION_TAG_MAX_CHARS` characters the
+// operator writes. Blank means no mark on either — that is what an emptied
+// picker and an emptied input send, so on edit each clears rather than keeps,
+// the same three states as `mcpAlias`.
 export const addConnection = (
   id: string,
   name: string,
@@ -350,8 +372,19 @@ export const addConnection = (
   ssh: Record<string, unknown> | null,
   mcpWrite: boolean,
   mcpAlias: string,
+  color: string,
+  tag: string,
 ): Promise<void> =>
-  invoke('add_connection', { id, name, kind, ssh, mcpWrite, mcpAlias });
+  invoke('add_connection', {
+    id,
+    name,
+    kind,
+    ssh,
+    mcpWrite,
+    mcpAlias,
+    color,
+    tag,
+  });
 
 // `keepPassword` is the structured-input counterpart of a blank secret: the
 // form rebuilt the DSN from the parts it was shown, which never included the
@@ -364,6 +397,8 @@ export const updateConnection = (
   keepPassword: boolean,
   mcpWrite: boolean,
   mcpAlias: string,
+  color: string,
+  tag: string,
 ): Promise<void> =>
   invoke('update_connection', {
     id,
@@ -373,6 +408,8 @@ export const updateConnection = (
     keepPassword,
     mcpWrite,
     mcpAlias,
+    color,
+    tag,
   });
 
 // Copy a connection into a new one that owns its own keychain slots, seeded

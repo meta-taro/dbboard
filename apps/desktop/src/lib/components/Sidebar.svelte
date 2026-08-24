@@ -4,8 +4,10 @@
   import { i18n } from '$lib/i18n/i18n.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import ConnectionManager from './ConnectionManager.svelte';
+  import ConnectionMark from './ConnectionMark.svelte';
   import { tableMenuActions } from '$lib/sidebar/menu';
   import { connectionTooltip } from '$lib/connections/label';
+  import { markFor } from '$lib/connections/marks';
 
   let query = $state('');
   let managerOpen = $state(false);
@@ -125,6 +127,7 @@
         <p class="hint">{i18n.t('sidebar-connections-empty')}</p>
       {:else}
         {#each workspace.connections as c (c.id)}
+          {@const mark = markFor(workspace.marks, c.id)}
           <button
             type="button"
             class="nav-row conn"
@@ -134,7 +137,15 @@
           >
             {@render dbIcon()}
             <span class="nav-name">{c.name}</span>
-            <span class="nav-meta">{c.kind}</span>
+            <!-- The mark takes the kind's place rather than sitting beside
+                 it: the row is one line wide, and "which server is this" is
+                 the question being answered here. The kind is still in the
+                 tooltip. -->
+            {#if mark}
+              <ConnectionMark {mark} />
+            {:else}
+              <span class="nav-meta">{c.kind}</span>
+            {/if}
           </button>
         {/each}
       {/if}

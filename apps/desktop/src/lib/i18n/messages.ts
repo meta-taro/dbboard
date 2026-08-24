@@ -272,6 +272,29 @@ export const en = {
   "conn-mcp-alias-placeholder": "e.g. store-a",
   "conn-mcp-alias-hint":
     "Optional. When set, an agent sees this name in place of both the id and the display name above, and the real id stops working as a handle — so a host or customer name you already used as an id no longer reaches the agent's transcript. Leave blank to show the real ones.",
+  // Identity mark: which server this is (ADR-0126)
+  "conn-mark-section": "How this connection is marked",
+  "conn-mark-lead":
+    "Shown on this connection everywhere it appears, so the one you are about to run a statement against is the one you meant.",
+  "conn-mark-color": "Colour",
+  "conn-mark-color-none": "No colour",
+  // The eight identity colours, in the order the picker lists them. Named
+  // rather than shown as swatches alone: the name is what a screen reader
+  // reads out, and what the row falls back to when a config carries a colour
+  // with no tag.
+  "conn-color-red": "Red",
+  "conn-color-orange": "Orange",
+  "conn-color-yellow": "Yellow",
+  "conn-color-green": "Green",
+  "conn-color-teal": "Teal",
+  "conn-color-blue": "Blue",
+  "conn-color-purple": "Purple",
+  "conn-color-pink": "Pink",
+  "conn-mark-tag": "Tag",
+  "conn-mark-tag-placeholder": "e.g. prod",
+  "conn-mark-tag-hint":
+    "Up to { $max } characters. The colour alone is invisible to a colour-blind reader and in a greyscale screenshot, so a colour is only saved with a tag beside it. A tag on its own is fine.",
+  "conn-mark-tag-required": "Write a tag, or clear the colour.",
   // Duplicating a connection, and repairing one whose saved-secret slot was
   // minted for a different connection (issue #213)
   "conn-duplicate": "Duplicate",
@@ -696,6 +719,25 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-mcp-alias-placeholder": "例: store-a",
   "conn-mcp-alias-hint":
     "任意です。設定すると、エージェントには上の ID と表示名の代わりにこの名前だけが見え、実の ID は接続先として使えなくなります。すでに ID にホスト名や店舗名を使っていても、エージェントの履歴には残りません。空の場合は実の ID と表示名が見えます。",
+  // 接続の目印: どのサーバーなのか (ADR-0126)
+  "conn-mark-section": "この接続の目印",
+  "conn-mark-lead":
+    "この接続が表示される場所すべてに出ます。これから実行しようとしている相手が、意図したサーバーかどうかがひと目で分かります。",
+  "conn-mark-color": "色",
+  "conn-mark-color-none": "色なし",
+  "conn-color-red": "赤",
+  "conn-color-orange": "橙",
+  "conn-color-yellow": "黄",
+  "conn-color-green": "緑",
+  "conn-color-teal": "青緑",
+  "conn-color-blue": "青",
+  "conn-color-purple": "紫",
+  "conn-color-pink": "桃",
+  "conn-mark-tag": "ラベル",
+  "conn-mark-tag-placeholder": "例: 本番",
+  "conn-mark-tag-hint":
+    "{ $max } 文字までです。色だけでは、色覚特性のある方やグレースケールのスクリーンショットでは判別できません。そのため色はラベルと一緒でなければ保存しません。ラベルだけなら問題ありません。",
+  "conn-mark-tag-required": "ラベルを入力するか、色を外してください。",
   // 接続バンドルのインポート/エクスポート (ADR-0038)
   "conn-export": "エクスポート…",
   "conn-import": "インポート…",

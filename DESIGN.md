@@ -46,6 +46,35 @@ are exposed as the `--danger` / `--warn` / `--success` custom properties, which
 resolve per theme, so a call site names the role and gets the right colour
 without knowing the mode.
 
+### Identity colours
+
+A **third axis**, and the one a call site must never borrow from: these say
+*which server this is*, not *how it is going*. Eight names an operator picks
+from when marking a connection, so production and a copy of it stop reading
+alike in the list (issue #192). A connection stores the **name**, never the
+value — that is what lets each theme choose its own, and what keeps a stray
+`#1A73E8` out of `connections.toml`.
+
+| Token | Dark | Light |
+|---|---|---|
+| `conn.red` | `#F28B82` | `#D93025` |
+| `conn.orange` | `#FCAD70` | `#E8710A` |
+| `conn.yellow` | `#FDD663` | `#F9AB00` |
+| `conn.green` | `#81C995` | `#188038` |
+| `conn.teal` | `#78D9EC` | `#007B83` |
+| `conn.blue` | `#8AB4F8` | `#1A73E8` |
+| `conn.purple` | `#D7AEFB` | `#8430CE` |
+| `conn.pink` | `#FF8BCB` | `#D01884` |
+
+The dark values are not the light ones lightened: hues tuned for a white chip
+go muddy on a dark ground, so each is picked for its own surface.
+
+**Colour is never the only mark.** It fails for a colour-blind reader and in a
+greyscale screenshot, so a marked connection also carries a short **tag** the
+operator writes — `prod`, `本番`, `staging` — and the swatch and the tag always
+travel together. A row that shows the swatch alone is a bug, not a compact
+variant.
+
 We offer a **Light**, **Dark**, and **Auto** (follow-OS) theme; Auto is the
 default (ADR-0041). Any brand-tinted UI colour (e.g. the accent, or the
 staged-edit tint in issue 0013) must be read from a token so it holds up in

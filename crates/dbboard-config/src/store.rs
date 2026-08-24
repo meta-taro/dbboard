@@ -77,6 +77,38 @@ pub struct ConnectionEntry {
     /// emitted before the `ssh` table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_alias: Option<String>,
+    /// The identity colour this connection is marked with, as a palette name
+    /// from [`CONNECTION_COLORS`](crate::CONNECTION_COLORS) — never a hex
+    /// string, so the theme still picks the value that suits the surface
+    /// (issue #192).
+    ///
+    /// `None` is the normal state: an unmarked connection, which is what every
+    /// existing file holds.
+    ///
+    /// Nothing here sets `deny_unknown_fields`, so an older build reads a file
+    /// containing this key without complaint — and drops it on its next save.
+    /// That is accepted rather than guarded against: losing a colour is not
+    /// losing a credential, and the alternatives (a sidecar keyed by id, or a
+    /// `CONFIG_VERSION` bump and a migration) both cost more than the mark is
+    /// worth.
+    ///
+    /// Same TOML ordering constraint as `mcp_alias` — a scalar, so it must be
+    /// emitted before the `ssh` table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// The identity tag this connection is marked with — a few characters the
+    /// operator writes themselves (`prod`, `本番`, `staging`), capped at
+    /// [`CONNECTION_TAG_MAX_CHARS`](crate::CONNECTION_TAG_MAX_CHARS).
+    ///
+    /// The other half of the mark, and the half that still works in a greyscale
+    /// screenshot or for a colour-blind reader (ADR-0126). Free text rather than
+    /// a second closed set: the words a team uses for its own servers are not
+    /// ones this crate can enumerate.
+    ///
+    /// `None` is the normal state, and the same older-build caveat as `color`
+    /// applies. Scalar, so it too is emitted before the `ssh` table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
     /// Optional SSH local-forward tunnel (ADR-0069). Cross-cutting: it applies
     /// uniformly to the URL-bearing TCP engines and to none of the others, so
     /// it lives here on the entry rather than being copied onto each
@@ -741,6 +773,8 @@ keyring_token_ref = "dbboard.cloud-turso.token"
             },
             mcp_write: false,
             mcp_alias: None,
+            color: None,
+            tag: None,
             ssh: None,
         };
         let file = ConnectionFile {
@@ -1158,91 +1192,83 @@ path = ":memory:"
         assert!(matches!(err, ConfigError::Parse(_)));
     }
 
+    /// Every entry here is unmarked and agent-invisible; the fields those two
+    /// features add are round-tripped by their own tests. What this one is for
+    /// is the `kind` table, which is the part that differs per adapter.
+    fn plain(id: &str, name: &str, kind: ConnectionKind) -> ConnectionEntry {
+        ConnectionEntry {
+            mcp_alias: None,
+            color: None,
+            tag: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: name.to_string(),
+            kind,
+        }
+    }
+
     #[test]
     fn serialize_then_parse_is_identity_for_every_kind() {
         let original = ConnectionFile {
             version: CONFIG_VERSION,
             connections: vec![
-                ConnectionEntry {
-                    mcp_alias: None,
-                    mcp_write: false,
-                    ssh: None,
-                    id: "local-turso".to_string(),
-                    name: "Local libSQL".to_string(),
-                    kind: ConnectionKind::Turso {
+                plain(
+                    "local-turso",
+                    "Local libSQL",
+                    ConnectionKind::Turso {
                         path: ":memory:".to_string(),
                     },
-                },
-                ConnectionEntry {
-                    mcp_alias: None,
-                    mcp_write: false,
-                    ssh: None,
-                    id: "prod-d1".to_string(),
-                    name: "Prod D1".to_string(),
-                    kind: ConnectionKind::D1 {
+                ),
+                plain(
+                    "prod-d1",
+                    "Prod D1",
+                    ConnectionKind::D1 {
                         account_id: "acct".to_string(),
                         database_id: "db".to_string(),
                         base_url: Some("https://example.test".to_string()),
                         keyring_token_ref: "dbboard.prod-d1.token".to_string(),
                     },
-                },
-                ConnectionEntry {
-                    mcp_alias: None,
-                    mcp_write: false,
-                    ssh: None,
-                    id: "neon".to_string(),
-                    name: "Neon".to_string(),
-                    kind: ConnectionKind::Postgres {
+                ),
+                plain(
+                    "neon",
+                    "Neon",
+                    ConnectionKind::Postgres {
                         keyring_url_ref: "dbboard.neon.url".to_string(),
                     },
-                },
-                ConnectionEntry {
-                    mcp_alias: None,
-                    mcp_write: false,
-                    ssh: None,
-                    id: "shop-mysql".to_string(),
-                    name: "Shop MySQL".to_string(),
-                    kind: ConnectionKind::MySql {
+                ),
+                plain(
+                    "shop-mysql",
+                    "Shop MySQL",
+                    ConnectionKind::MySql {
                         keyring_url_ref: "dbboard.shop-mysql.url".to_string(),
                     },
-                },
-                ConnectionEntry {
-                    mcp_alias: None,
-                    mcp_write: false,
-                    ssh: None,
-                    id: "neon-managed".to_string(),
-                    name: "Neon (managed)".to_string(),
-                    kind: ConnectionKind::Neon {
+                ),
+                plain(
+                    "neon-managed",
+                    "Neon (managed)",
+                    ConnectionKind::Neon {
                         keyring_url_ref: "dbboard.neon-managed.url".to_string(),
                     },
-                },
-                ConnectionEntry {
-                    mcp_alias: None,
-                    mcp_write: false,
-                    ssh: None,
-                    id: "supabase-prod".to_string(),
-                    name: "Supabase (prod)".to_string(),
-                    kind: ConnectionKind::Supabase {
+                ),
+                plain(
+                    "supabase-prod",
+                    "Supabase (prod)",
+                    ConnectionKind::Supabase {
                         keyring_url_ref: "dbboard.supabase-prod.url".to_string(),
                     },
-                },
-                ConnectionEntry {
-                    mcp_alias: None,
-                    mcp_write: false,
-                    ssh: None,
-                    id: "dsql-prod".to_string(),
-                    name: "Aurora DSQL (prod)".to_string(),
-                    kind: ConnectionKind::AuroraDsql {
+                ),
+                plain(
+                    "dsql-prod",
+                    "Aurora DSQL (prod)",
+                    ConnectionKind::AuroraDsql {
                         keyring_url_ref: "dbboard.dsql-prod.url".to_string(),
                     },
-                },
-                ConnectionEntry {
-                    mcp_alias: None,
-                    mcp_write: false,
-                    ssh: None,
-                    id: "dsql-iam".to_string(),
-                    name: "Aurora DSQL (IAM)".to_string(),
-                    kind: ConnectionKind::AuroraDsqlIam {
+                ),
+                plain(
+                    "dsql-iam",
+                    "Aurora DSQL (IAM)",
+                    ConnectionKind::AuroraDsqlIam {
                         endpoint: "abc123.dsql.ap-northeast-1.on.aws".to_string(),
                         region: "ap-northeast-1".to_string(),
                         database: "postgres".to_string(),
@@ -1250,7 +1276,7 @@ path = ":memory:"
                         access_key_id: "AKIAEXAMPLE".to_string(),
                         keyring_secret_key_ref: "dbboard.dsql-iam.secret_key".to_string(),
                     },
-                },
+                ),
             ],
         };
         let serialized = toml::to_string(&original).expect("serialize");
@@ -1270,6 +1296,8 @@ path = ":memory:"
             version: CONFIG_VERSION,
             connections: vec![ConnectionEntry {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: "prod-d1".to_string(),
@@ -1300,6 +1328,8 @@ path = ":memory:"
             version: CONFIG_VERSION,
             connections: vec![ConnectionEntry {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: "d1".to_string(),

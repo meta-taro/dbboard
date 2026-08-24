@@ -18,6 +18,8 @@ fn toml_round_trip_never_carries_a_secret_token() {
         version: CONFIG_VERSION,
         connections: vec![ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "cf-d1".to_string(),
@@ -49,6 +51,8 @@ fn toml_round_trip_never_carries_a_postgres_url() {
         version: CONFIG_VERSION,
         connections: vec![ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "neon-prod".to_string(),

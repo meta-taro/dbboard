@@ -79,6 +79,23 @@
   /* Elevation — kept subtle; this is a calm dev tool, not a consumer app. */
   --shadow-popover: 0 6px 24px rgba(12, 14, 20, 0.18);
 
+  /*
+   * Identity colours — the mark an operator puts on a connection so
+   * production and a copy of it stop reading alike (issue #192). A third
+   * axis, deliberately separate from --accent and from the semantic
+   * --danger / --warning / --success: these carry no meaning of their own,
+   * so nothing here should be reused to say "this went wrong".
+   * Names, not values, are what a connection stores; DESIGN.md lists them.
+   */
+  --conn-red: #d93025;
+  --conn-orange: #e8710a;
+  --conn-yellow: #f9ab00;
+  --conn-green: #188038;
+  --conn-teal: #007b83;
+  --conn-blue: #1a73e8;
+  --conn-purple: #8430ce;
+  --conn-pink: #d01884;
+
   color-scheme: light;
 }
 
@@ -107,6 +124,20 @@
     --on-accent: #fafbff;
 
     --shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.5);
+
+    /*
+     * Identity colours, lifted for a dark surface. The light hues are tuned
+     * for a white chip and go muddy here, so these are their own values
+     * rather than the same eight with an opacity on top.
+     */
+    --conn-red: #f28b82;
+    --conn-orange: #fcad70;
+    --conn-yellow: #fdd663;
+    --conn-green: #81c995;
+    --conn-teal: #78d9ec;
+    --conn-blue: #8ab4f8;
+    --conn-purple: #d7aefb;
+    --conn-pink: #ff8bcb;
 
     color-scheme: dark;
   }
@@ -138,6 +169,23 @@
 
   --shadow-popover: 0 6px 24px rgba(12, 14, 20, 0.18);
 
+  /*
+   * Identity colours — the mark an operator puts on a connection so
+   * production and a copy of it stop reading alike (issue #192). A third
+   * axis, deliberately separate from --accent and from the semantic
+   * --danger / --warning / --success: these carry no meaning of their own,
+   * so nothing here should be reused to say "this went wrong".
+   * Names, not values, are what a connection stores; DESIGN.md lists them.
+   */
+  --conn-red: #d93025;
+  --conn-orange: #e8710a;
+  --conn-yellow: #f9ab00;
+  --conn-green: #188038;
+  --conn-teal: #007b83;
+  --conn-blue: #1a73e8;
+  --conn-purple: #8430ce;
+  --conn-pink: #d01884;
+
   color-scheme: light;
 }
 
@@ -166,6 +214,20 @@
   --on-accent: #fafbff;
 
   --shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.5);
+
+  /*
+   * Identity colours, lifted for a dark surface. The light hues are tuned
+   * for a white chip and go muddy here, so these are their own values
+   * rather than the same eight with an opacity on top.
+   */
+  --conn-red: #f28b82;
+  --conn-orange: #fcad70;
+  --conn-yellow: #fdd663;
+  --conn-green: #81c995;
+  --conn-teal: #78d9ec;
+  --conn-blue: #8ab4f8;
+  --conn-purple: #d7aefb;
+  --conn-pink: #ff8bcb;
 
   color-scheme: dark;
 }

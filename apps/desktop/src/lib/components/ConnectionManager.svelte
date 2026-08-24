@@ -49,6 +49,15 @@
   import { foreignRefFor } from '$lib/connections/repair';
   import { moveTarget } from '$lib/connections/order';
   import { filterConnections } from '$lib/connections/filter';
+  import {
+    CONNECTION_COLORS,
+    CONNECTION_TAG_MAX_CHARS,
+    colorVar,
+    isConnectionColor,
+    markFor,
+    markNeedsTag,
+    type ConnectionColor,
+  } from '$lib/connections/marks';
   import { refreshConnectionList } from '$lib/connections/refresh';
   import DsnFieldset from './DsnFieldset.svelte';
   import SshFieldset from './SshFieldset.svelte';
@@ -56,6 +65,7 @@
   import ImportPanel from './ImportPanel.svelte';
   import DuplicatePanel from './DuplicatePanel.svelte';
   import RepairPanel from './RepairPanel.svelte';
+  import ConnectionMark from './ConnectionMark.svelte';
   import '$lib/styles/connection-dialog.css';
 
   interface Props {
@@ -70,6 +80,10 @@
   let invalid = $state<FormField[]>([]);
   let invalidSsh = $state<SshFormField[]>([]);
   let invalidDsn = $state<DsnField[]>([]);
+  // The one mark combination the form will not save: a colour with no tag
+  // (ADR-0126). A boolean rather than a field list — there is only one field
+  // it can be about.
+  let invalidMark = $state(false);
   let busy = $state(false);
   let error = $state('');
   let info = $state('');
@@ -104,6 +118,19 @@
     aurora_dsql_iam: 'conn-kind-aurora_dsql_iam',
     firestore: 'conn-kind-firestore',
     mongodb: 'conn-kind-mongodb',
+  };
+
+  // Spelled out rather than built from the colour name, so that adding a
+  // colour without naming it fails to compile instead of showing a raw key.
+  const COLOR_LABEL: Record<ConnectionColor, MessageKey> = {
+    red: 'conn-color-red',
+    orange: 'conn-color-orange',
+    yellow: 'conn-color-yellow',
+    green: 'conn-color-green',
+    teal: 'conn-color-teal',
+    blue: 'conn-color-blue',
+    purple: 'conn-color-purple',
+    pink: 'conn-color-pink',
   };
 
   const FIELD_LABEL: Record<FormField, MessageKey> = {
@@ -194,6 +221,7 @@
     invalid = [];
     invalidSsh = [];
     invalidDsn = [];
+    invalidMark = false;
     // The host-key probe's error is not listed: it lives in SshFieldset,
     // which is unmounted at every point this runs — each of the seven
     // callers is either leaving the form or entering it from the list.
@@ -270,7 +298,14 @@
     invalid = validate(form, editorMode);
     invalidSsh = validateSsh(form, editorMode);
     invalidDsn = validateDsnFields(form);
-    if (invalid.length > 0 || invalidSsh.length > 0 || invalidDsn.length > 0) return;
+    invalidMark = markNeedsTag(form.color, form.tag);
+    if (
+      invalid.length > 0 ||
+      invalidSsh.length > 0 ||
+      invalidDsn.length > 0 ||
+      invalidMark
+    )
+      return;
     busy = true;
     error = '';
     try {
@@ -282,6 +317,8 @@
           buildSshInput(form),
           form.mcp_write,
           form.mcp_alias,
+          form.color,
+          form.tag,
         );
       } else {
         await updateConnection(
@@ -292,6 +329,8 @@
           keepStoredPassword(form, editorMode),
           form.mcp_write,
           form.mcp_alias,
+          form.color,
+          form.tag,
         );
       }
       await refreshAll();
@@ -411,9 +450,13 @@
         {:else}
           {#each visible as c (c.id)}
             {@const i = workspace.connections.indexOf(c)}
+            {@const mark = markFor(workspace.marks, c.id)}
             <div class="row">
               <div class="row-main">
-                <span class="row-name">{c.name}</span>
+                <span class="row-name-line">
+                  <span class="row-name">{c.name}</span>
+                  {#if mark}<ConnectionMark {mark} />{/if}
+                </span>
                 <span class="row-meta">{c.kind} · {c.id}</span>
                 {#if foreignRefFor(foreignRefs, c.id)}
                   {@const fr = foreignRefFor(foreignRefs, c.id)}
@@ -650,6 +693,64 @@
             clearInvalid={(f) => (invalidSsh = invalidSsh.filter((x) => x !== f))}
           />
         {/if}
+
+        <!-- The identity mark (ADR-0126). Above the agent section on
+             purpose: this one is about the human sitting here, and it is the
+             thing they will come back to change. -->
+        <fieldset class="ssh">
+          <legend>{i18n.t('conn-mark-section')}</legend>
+          <p class="note">{i18n.t('conn-mark-lead')}</p>
+          <div class="mark-row">
+            <label class="field">
+              <span class="label">{i18n.t('conn-mark-color')}</span>
+              <select
+                class="mark-color"
+                style={isConnectionColor(form.color)
+                  ? `--mark: ${colorVar(form.color)}`
+                  : undefined}
+                value={form.color}
+                onchange={(e) => {
+                  form.color = e.currentTarget.value;
+                  invalidMark = false;
+                }}
+              >
+                <option value="">{i18n.t('conn-mark-color-none')}</option>
+                {#each CONNECTION_COLORS as name (name)}
+                  <option value={name}>{i18n.t(COLOR_LABEL[name])}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">{i18n.t('conn-mark-tag')}</span>
+              <input
+                class:bad={invalidMark}
+                value={form.tag}
+                maxlength={CONNECTION_TAG_MAX_CHARS}
+                oninput={(e) => {
+                  form.tag = e.currentTarget.value;
+                  invalidMark = false;
+                }}
+                placeholder={i18n.t('conn-mark-tag-placeholder')}
+                spellcheck="false"
+              />
+            </label>
+            <!-- Only once there is a tag. A colour with no tag previews as
+                 the colour's own name, which is what a hand-edited config
+                 renders as but not what this form will save — showing it
+                 would advertise a state the save then refuses. -->
+            {#if form.tag.trim()}
+              {@const preview = markFor({ p: { color: form.color, tag: form.tag } }, 'p')}
+              {#if preview}
+                <span class="mark-preview"><ConnectionMark mark={preview} /></span>
+              {/if}
+            {/if}
+          </div>
+          <span class="hint" class:bad-text={invalidMark}>
+            {invalidMark
+              ? i18n.t('conn-mark-tag-required')
+              : i18n.t('conn-mark-tag-hint', { max: String(CONNECTION_TAG_MAX_CHARS) })}
+          </span>
+        </fieldset>
 
         <!-- Rendered in both modes on purpose: an edit form without this
              toggle would send no opinion and the gate would look absent,

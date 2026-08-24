@@ -749,6 +749,8 @@ mod tests {
     fn turso_entry(id: &str, path: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -762,6 +764,8 @@ mod tests {
     fn remote_turso_entry(id: &str, token_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -776,6 +780,8 @@ mod tests {
     fn d1_entry(id: &str, token_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -792,6 +798,8 @@ mod tests {
     fn pg_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -805,6 +813,8 @@ mod tests {
     fn mysql_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -818,6 +828,8 @@ mod tests {
     fn neon_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -831,6 +843,8 @@ mod tests {
     fn supabase_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -844,6 +858,8 @@ mod tests {
     fn aurora_dsql_entry(id: &str, url_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -857,6 +873,8 @@ mod tests {
     fn aurora_dsql_iam_entry(id: &str, secret_ref: &str) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -877,6 +895,8 @@ mod tests {
     fn firestore_entry(id: &str, service_account_ref: Option<&str>) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1069,6 +1089,8 @@ mod tests {
     fn mongodb_entry(id: &str, url_ref: &str, database: Option<&str>) -> ConnectionEntry {
         ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),

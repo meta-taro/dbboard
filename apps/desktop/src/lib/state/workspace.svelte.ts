@@ -8,10 +8,12 @@
 // panel — it is specific to that view and preserved by keeping the panel
 // mounted, not by living here.
 import {
+  connectionMarks,
   listConnections,
   listTables,
   reconnectConnection,
   tableKey,
+  type ConnectionMark,
   type ConnectionView,
   type TableInfo,
 } from '$lib/api';
@@ -22,6 +24,12 @@ export type MainTab = 'query' | 'structure';
 
 class Workspace {
   connections = $state<ConnectionView[]>([]);
+  /** The identity mark of each marked connection, keyed by id (ADR-0126).
+   *  Unmarked connections are absent. Held here rather than fetched by each
+   *  renderer because the sidebar and the connection manager draw the same
+   *  mark, and two independent reads would drift for as long as it takes the
+   *  slower one to land. */
+  marks = $state<Record<string, ConnectionMark>>({});
   connectionId = $state('');
   tables = $state<TableInfo[]>([]);
   selectedTable = $state<TableInfo | null>(null);
@@ -52,6 +60,7 @@ class Workspace {
   async init(): Promise<void> {
     try {
       this.connections = await listConnections();
+      await this.#loadMarks();
       if (this.connections.length > 0) {
         await this.selectConnection(this.connections[0].id);
       }
@@ -67,6 +76,7 @@ class Workspace {
   async refreshConnections(): Promise<void> {
     try {
       this.connections = await listConnections();
+      await this.#loadMarks();
       const survived = this.connections.some((c) => c.id === this.connectionId);
       if (survived) {
         await this.selectConnection(this.connectionId);
@@ -79,6 +89,17 @@ class Workspace {
       }
     } catch (e) {
       this.error = String(e);
+    }
+  }
+
+  /** Re-read the marks. Swallows its failure on purpose: a mark is a
+   *  decoration, and a panel that refuses to list connections because it could
+   *  not colour them is worse than an uncoloured list. */
+  async #loadMarks(): Promise<void> {
+    try {
+      this.marks = await connectionMarks();
+    } catch {
+      this.marks = {};
     }
   }
 
