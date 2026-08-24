@@ -3,7 +3,8 @@
 - **Status**: open — C's one line, F, A and B are built, which is all of #192;
   D and E are still planning only, and nothing here is scheduled by this file
 - **Opened**: 2026-08-22
-- **Asked for**: operator-controlled order, and colour marks. Neither exists.
+- **Asked for**: operator-controlled order, and colour marks. Order is built
+  (2026-08-24); colour marks are not.
 - **Owner**: maintainer decides what, if anything, moves to `docs/roadmap.md`
 - **Related**: #192 (order / narrowing / truncation — open), #213 and PR #216
   (duplicate and repair — the last work in this area), ADR-0045 (annotations:

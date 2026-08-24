@@ -5,6 +5,47 @@
 
 ## 最終更新
 
+- 日付: 2026-08-24 (**接続一覧 #192 の 3 条件がすべて実装できた。commit 2 本、push は user。**
+
+  **ブランチは `feature/connection-order`。`feature/duplicate-and-repair-connection`
+  (PR #216) の上に積んである** — 依存する `ConnectionManager.svelte` の分割が #216 の中に
+  あり、user がこれから 10 枚見て merge するブランチを今いじると、見た直後に中身が変わるため。
+  したがって **#216 の merge が先**で、この 2 本はその後。
+
+  **① ▲▼ で並び替え (`917aa09`)**。`[[connections]]` は TOML の array of tables =
+  **順序はもう保存されている**ので、並び替えは Vec を並べ替えて書き戻すだけ。スキーマ変更も
+  `CONFIG_VERSION` の bump も不要で、古いビルドでも読め、`.dbbx` バンドルにもそのまま乗る。
+  `ConnectionAdmin::move_to(id, index)`。範囲外の index は **clamp せず `IndexOutOfRange`
+  で error** — clamp すると operator が指していない場所に置かれる (ADR-0016 と同じ判断)。
+  同じ index への移動は no-op でファイルを書き直さない。keyring に触らないのでアダプタの
+  キャッシュも evict しない。Tauri 側 `move_connection`、フロント側 `moveTarget()`。
+
+  **② 名前 / id で絞り込み (`8f38abb`)**。`filterConnections()` は空白区切りの語を
+  **すべて**含む行だけ返す (2 語目が絞り込みになる)。**kind はわざと対象外** — 「my」で
+  "my shop" を探すと MySQL の行が全部返り、絞り込みの逆になる。id を対象に含めたのは、
+  ログやエラーメッセージから貼れる唯一のハンドルだから。空クエリのときは**同じ配列参照を
+  返す** (keyed `{#each}` が毎キーストロークで作り直されないように)。
+
+  **計画になかった衝突を 1 つ見つけた**: ①と②は干渉する。▲▼ は*保存された*リストの中で
+  動くので、行が隠れている間は見えない行を飛び越える。**絞り込み中は ▲▼ を disabled** に
+  し、tooltip で理由を出した。「見えている次の行の下へ」は別の機能で、黙って違う答えを
+  返すより disabled の方がまし。
+
+  **テスト**: `move_to` 5 件 (Rust)、`moveTarget` 4 件・`filterConnections` 6 件 (vitest)。
+  いずれも**先に落ちるのを確認してから**実装。`cargo check --all-targets --all-features` と
+  `sh scripts/cargo-test-serialised.sh` が exit 0、`pnpm check` 311 files / 0 errors、
+  `pnpm test` 546 passed (33 files)。pre-commit フックは 2 本とも通過 (`--no-verify` なし)。
+
+  **CHANGELOG はまだ書いていない。意図的。** 唯一の `## [Unreleased]` は v0.11
+  「接続の複製と修復」の枠で、`release-cut.mjs` はその本文をまるごと切ったバージョンへ
+  移す。並び替えと絞り込みは **v0.12「接続一覧を操れるようにする」**の中身なので、
+  v0.11.0 を切って `## [Unreleased]` が v0.12 の枠になってから書く。先に書くと
+  v0.11.0 の内容として下に落ちる。**#192 の close も develop に入ってから**。
+
+  **AI がやれていないこと**: 画面で見ること。→ user 側: 接続マネージャの一覧 1 枚
+  (▲▼ が行の右端に収まっているか、絞り込み入力が下のテーブル検索と見分けが付くか、
+  絞り込み中に ▲▼ が灰色になるか)。)
+
 - 日付: 2026-08-21 その2 (**history 書き換えを実行し、force push まで完了した (push は user)。
   公開履歴から実名と個人メールが消えた。GitHub 側に消せない残りが 1 種類ある。**
 
