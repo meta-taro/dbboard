@@ -457,6 +457,19 @@ mod tests {
     }
 
     #[test]
+    fn syntactically_broken_toml_is_a_parse_error() {
+        // The other rejection paths (version, duplicates) run *after* a
+        // successful deserialise, so none of them exercise Parse. A file
+        // hand-edited into invalid TOML has to fail loudly rather than be
+        // read as an empty store and silently overwritten on the next save.
+        let err = AnnotationsFile::parse("version = ").expect_err("broken toml rejected");
+        assert!(
+            matches!(err, AnnotationsError::Parse(_)),
+            "expected a parse error, got {err:?}"
+        );
+    }
+
+    #[test]
     fn unsupported_version_is_rejected() {
         let err = AnnotationsFile::parse("version = 2\n").expect_err("v2 rejected");
         assert!(matches!(err, AnnotationsError::UnsupportedVersion(2)));
@@ -554,6 +567,45 @@ key = "orders"
             "emptied stores prune to nothing, got {:?}",
             admin.file().connections
         );
+    }
+
+    #[test]
+    fn prune_only_drops_the_entries_that_emptied_out() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut admin = admin_in(&dir);
+        admin
+            .set_table_note("store-a", "orders", "the table note")
+            .expect("table note");
+        admin
+            .set_column_note("store-a", "orders", "status", "temp")
+            .expect("orders column");
+        admin
+            .set_column_note("store-a", "customers", "email", "keep me")
+            .expect("customers column");
+
+        admin
+            .set_column_note("store-a", "orders", "status", "")
+            .expect("clear");
+
+        // `orders` keeps its stanza on the strength of the table note alone,
+        // and the sibling table is untouched. The prune-to-nothing test only
+        // covers the case where both retain predicates go false at once.
+        assert_eq!(admin.column_note("store-a", "orders", "status"), None);
+        assert_eq!(
+            admin.table_note("store-a", "orders"),
+            Some("the table note")
+        );
+        assert_eq!(
+            admin.column_note("store-a", "customers", "email"),
+            Some("keep me")
+        );
+        let conn = admin
+            .file()
+            .connections
+            .iter()
+            .find(|c| c.id == "store-a")
+            .expect("connection survives");
+        assert_eq!(conn.tables.len(), 2, "got {:?}", conn.tables);
     }
 
     #[test]
