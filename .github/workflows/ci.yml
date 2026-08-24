@@ -31,11 +31,18 @@
 # than a third-party setup action.
 name: ci
 
+# Why `feature/**` is a pull_request target and not a push one: a stacked PR
+# — one whose base is another feature branch rather than develop — matched
+# neither trigger, so #219, #220 and #221 all merged without CI ever running
+# (ADR-0129). Listing the base branches is what makes a stacked PR carry its
+# own evidence, which is the whole point of ADR-0104. Pushes stay limited to
+# the integration branches: a branch with no PR open on it has nobody waiting
+# on the answer.
 on:
   push:
     branches: [develop, main]
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, 'feature/**']
   workflow_dispatch: {}
 
 permissions:

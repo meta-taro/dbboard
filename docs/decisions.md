@@ -12232,3 +12232,47 @@ both ways, and by the handle appearing on focus.
 **Not decided here.** Whether a row should be draggable by its whole surface
 rather than by a handle. That trades a discoverable grab area for the ability
 to select text in the row, and no one has asked for either yet.
+
+## ADR-0129 — A stacked pull request runs CI too (2026-08-24)
+
+**Status.** Accepted. Amends [ADR-0104](#adr-0104).
+
+**Context.** ADR-0104 put the mandatory verification commands into CI so that a
+pull request would carry its own evidence rather than depend on whether the
+author had the hooks installed. It listed the branches to watch as `develop`
+and `main`, on both triggers, which reads as "the integration branches" and is
+correct for `push`.
+
+It is not correct for `pull_request`. That filter matches the **base** branch,
+not the head. A branch stacked on another feature branch — #221 onto #219 onto
+#216 — has a base of `feature/…`, matches neither trigger, and merges with no
+run at all. Three did. The gap was found by reading a `gh run list` result
+carefully enough to notice the SHA was two days old, after it had already been
+reported as green once.
+
+Nothing unverified reached `develop`: the eventual PR into `develop` runs the
+full suite over the accumulated result, and the local hooks had run on every
+commit. What was lost is *when* the answer arrives — after the last merge in
+the stack instead of before the first — and, worse, the appearance of an answer
+where there was none. A stale green is more dangerous than a missing one,
+because nobody goes looking for it.
+
+**Decision.** Add `'feature/**'` to the `pull_request` branch list. Leave
+`push` on the integration branches: a feature branch with no PR open on it has
+nobody waiting on the answer, and CI on every push to every branch is a cost
+paid for no reader.
+
+**Consequences.**
+* Each stacked PR now runs rust / frontend / site on open and on every push to
+  its head. The stack pays for the same commits more than once — #221's commits
+  are verified again when #219 goes to `develop`. That is the price of the
+  answer arriving at the review rather than after it.
+* `concurrency: ci-${{ github.ref }}` already cancels superseded runs per ref,
+  so a burst of pushes to one stacked branch costs one run, not one per push.
+* `pii-scan.yml` is unaffected: it runs on a schedule and on the integration
+  branches, and the pre-commit hook is what blocks a leak at the source.
+
+**Not decided here.** Whether a stacked PR should be *required* to be green
+before merge, via branch protection. Protection rules are repository settings
+rather than tree contents, and this repo has none today; adding the first one
+is a larger decision than closing this hole.
