@@ -72,6 +72,19 @@ pub enum ConfigError {
     #[error("no connection entry with id: {0}")]
     NotFound(String),
 
+    /// [`crate::ConnectionAdmin::move_to`] was handed a destination index
+    /// that is not a position in the list. Like [`ConfigError::NotFound`],
+    /// this means the caller is working from a stale view of the entries
+    /// (ADR-0016); clamping it instead would silently put the connection
+    /// somewhere the operator did not point at.
+    #[error("connection order index {index} is out of range (the store holds {len})")]
+    IndexOutOfRange {
+        /// The destination index the caller asked for.
+        index: usize,
+        /// How many entries the store actually holds.
+        len: usize,
+    },
+
     /// `ConnectionAdmin::update` was called with a draft whose
     /// `ConnectionKind` variant differs from the existing entry's. Kind
     /// changes are intentionally not supported on edit (ADR-0016): they

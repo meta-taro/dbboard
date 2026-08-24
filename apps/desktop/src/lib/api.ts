@@ -410,6 +410,13 @@ export const foreignConnectionRefs = (): Promise<ForeignRef[]> =>
 export const deleteConnection = (id: string): Promise<void> =>
   invoke('delete_connection', { id });
 
+// Move a connection to position `index` in the stored order (issue #192).
+// `index` is a position in the resulting list, so one row up from `i` is
+// `moveConnection(id, i - 1)`. The order lives in the connections file
+// itself, so it survives a restart and travels inside a `.dbbx` bundle.
+export const moveConnection = (id: string, index: number): Promise<void> =>
+  invoke('move_connection', { id, index });
+
 // Drop the cached adapter and dial again. The backend already re-checks an
 // idle adapter before handing it out, so this is not needed to *recover* — it
 // is needed to recover now, without guessing whether the next click will work.

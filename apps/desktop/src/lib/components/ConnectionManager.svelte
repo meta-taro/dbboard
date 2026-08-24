@@ -7,6 +7,7 @@
     addConnection,
     updateConnection,
     deleteConnection,
+    moveConnection,
     foreignConnectionRefs,
     connectionEditFields,
     configPath,
@@ -46,6 +47,7 @@
     type PathField,
   } from '$lib/connections/file-picker';
   import { foreignRefFor } from '$lib/connections/repair';
+  import { moveTarget } from '$lib/connections/order';
   import { refreshConnectionList } from '$lib/connections/refresh';
   import DsnFieldset from './DsnFieldset.svelte';
   import SshFieldset from './SshFieldset.svelte';
@@ -304,6 +306,25 @@
     }
   }
 
+  // Reorder the list the sidebar renders (issue #192). The order lives in the
+  // connections file, so this is not a view preference: it is saved, and it
+  // travels inside a `.dbbx` bundle.
+  async function move(index: number, delta: number) {
+    const target = moveTarget(index, delta, workspace.connections.length);
+    if (target === null) return;
+    const c = workspace.connections[index];
+    busy = true;
+    error = '';
+    try {
+      await moveConnection(c.id, target);
+      await refreshAll();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
   function startDuplicate(c: ConnectionView) {
     resetTransient();
     copySource = c;
@@ -366,7 +387,7 @@
         {#if workspace.connections.length === 0}
           <p class="empty">{i18n.t('conn-empty')}</p>
         {:else}
-          {#each workspace.connections as c (c.id)}
+          {#each workspace.connections as c, i (c.id)}
             <div class="row">
               <div class="row-main">
                 <span class="row-name">{c.name}</span>
@@ -393,6 +414,26 @@
                 {/if}
               </div>
               <div class="row-actions">
+                <button
+                  type="button"
+                  class="ghost move"
+                  disabled={busy || i === 0}
+                  title={i18n.t('conn-move-up')}
+                  aria-label={i18n.t('conn-move-up')}
+                  onclick={() => move(i, -1)}
+                >
+                  ▲
+                </button>
+                <button
+                  type="button"
+                  class="ghost move"
+                  disabled={busy || i === workspace.connections.length - 1}
+                  title={i18n.t('conn-move-down')}
+                  aria-label={i18n.t('conn-move-down')}
+                  onclick={() => move(i, 1)}
+                >
+                  ▼
+                </button>
                 <button
                   type="button"
                   class="ghost"

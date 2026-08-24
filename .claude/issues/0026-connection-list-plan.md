@@ -1,6 +1,7 @@
 # 0026: The connection list — what could be built there, and in what order
 
-- **Status**: open — planning only; nothing here is scheduled by this file
+- **Status**: open — C's one line, F and A are built; B, D and E are still
+  planning only, and nothing here is scheduled by this file
 - **Opened**: 2026-08-22
 - **Asked for**: operator-controlled order, and colour marks. Neither exists.
 - **Owner**: maintainer decides what, if anything, moves to `docs/roadmap.md`
@@ -27,8 +28,9 @@ Verified against `feature/duplicate-and-repair-connection` (= `develop` + #216).
 - `ConnectionEntry` carries `id`, `name`, flattened `kind`, `mcp_write`,
   `mcp_alias`, `ssh`. Two of those are working precedents for "optional scalar,
   skipped when default, emitted before the `ssh` table".
-- `ConnectionManager.svelte` is **1614 lines** against CLAUDE.md's 800-line hard
-  limit. Every item below lands in that file.
+- `ConnectionManager.svelte` was **1614 lines** against CLAUDE.md's 800-line
+  hard limit, which is what F below is about. It is 662 since the split, so the
+  remaining items land in a file that has room for them.
 
 ## Two facts that decide most of the design
 
@@ -56,6 +58,13 @@ Reorder the `Vec` and save: a `ConnectionAdmin::move_to(id, index)` beside
 `add` / `update` / `delete`, and ▲▼ buttons on each row of the manager list.
 The cheapest item on this page that removes a daily irritation, and the only one
 whose storage question is already settled.
+
+**Built** (2026-08-24, `feature/connection-order`), as described: `move_to`
+errors rather than clamps an index the list does not have, because a clamp would
+put the connection somewhere the operator did not point at; a move to the index
+an entry already occupies is a no-op that does not rewrite the file. The index
+arithmetic that decides when ▲ and ▼ are disabled lives in
+`$lib/connections/order.ts` so the ends of the list are testable at all.
 
 Drag-and-drop in the sidebar is the nicer version of the same feature and a much
 larger one — pointer events, a keyboard equivalent so it stays reachable without
@@ -119,12 +128,15 @@ worse in a way that gets progressively harder to undo.
 
 ## Suggested order
 
-1. **C, the one-line half** — `title` shows the name. Minutes.
-2. **A (▲▼)** — settled storage, daily payoff.
-3. **B** — pure frontend, no dependencies.
-4. **F** — split the manager before D adds a colour picker to it.
+1. ~~**C, the one-line half** — `title` shows the name. Minutes.~~ Done
+   (`b48c974`).
+2. ~~**A (▲▼)** — settled storage, daily payoff.~~ Done — see A above.
+3. **B** — pure frontend, no dependencies. Next.
+4. ~~**F** — split the manager before D adds a colour picker to it.~~ Done
+   (`497a185`, `e0ce918`): 1,617 lines to 662. It ran ahead of B because both
+   remaining items add UI to that file.
 5. **D** — the palette is settled, so this is now unblocked.
-6. **E** — only if A did not settle it.
+6. **E** — only if A did not settle it. Ask again after a week of ▲▼.
 
 A, B and C together close #192. D and E do not, and should not be folded into
 it.

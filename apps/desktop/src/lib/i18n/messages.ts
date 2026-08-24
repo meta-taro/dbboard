@@ -144,6 +144,10 @@ export const en = {
   "conn-delete": "Delete",
   "conn-delete-confirm": "Delete “{ $name }”? Its stored secret is removed too.",
   "conn-empty": "No connections yet — add one to get started.",
+  // Reordering the list (issue #192). The order is saved in the connections
+  // file, so it is the order the sidebar shows on every later run too.
+  "conn-move-up": "Move up",
+  "conn-move-down": "Move down",
   "conn-save": "Save",
   "conn-browse": "Browse…",
   "conn-cancel": "Cancel",
@@ -538,6 +542,9 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-delete": "削除",
   "conn-delete-confirm": "「{ $name }」を削除しますか？保存されたシークレットも削除されます。",
   "conn-empty": "接続がまだありません。追加して始めましょう。",
+  // 並び替え (issue #192)
+  "conn-move-up": "上へ",
+  "conn-move-down": "下へ",
   // 接続の複製と、他の接続のシークレット枠を指している接続の修復 (issue #213)
   "conn-duplicate": "複製",
   "conn-duplicate-title": "接続を複製",

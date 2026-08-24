@@ -781,6 +781,52 @@ impl ConnectionAdmin {
         Ok(())
     }
 
+    /// Move the entry with id `id` so that it sits at position `index`
+    /// in the list, sliding the entries in between over by one.
+    ///
+    /// The order of `[[connections]]` in the TOML *is* the order the
+    /// sidebar and the manager list render (issue #192, criterion 1), so
+    /// reordering needs no schema change and no new field: the array of
+    /// tables already carries it, and a `.dbbx` bundle carries it too.
+    /// Nothing touches the keyring — only the sequence changes.
+    ///
+    /// `index` is a position in the resulting list, which is what the ▲/▼
+    /// buttons ask for: one row up from `i` is `move_to(id, i - 1)`.
+    /// Moving an entry to the index it already has is not an error and
+    /// does not rewrite the file.
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::NotFound`] if no entry has id `id`.
+    /// - [`ConfigError::IndexOutOfRange`] if `index` is not a position in
+    ///   the list. Both mean the caller is working from a stale view of
+    ///   the entries (ADR-0016).
+    /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML
+    ///   write. The in-memory order is only adopted once the file is on
+    ///   disk, so a failed save leaves the store as it was.
+    pub fn move_to(&mut self, id: &str, index: usize) -> Result<(), ConfigError> {
+        let from = self
+            .find_index(id)
+            .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
+
+        let len = self.file.connections.len();
+        if index >= len {
+            return Err(ConfigError::IndexOutOfRange { index, len });
+        }
+        if from == index {
+            return Ok(());
+        }
+
+        let mut new_file = self.file.clone();
+        let entry = new_file.connections.remove(from);
+        new_file.connections.insert(index, entry);
+
+        save_atomic(&self.path, &new_file)?;
+        self.file = new_file;
+
+        Ok(())
+    }
+
     /// Encrypt the entire connection store — every entry plus every
     /// secret it references — into a passphrase-protected bundle blob
     /// (ADR-0038, slice b). The returned bytes are written verbatim to a
@@ -3635,6 +3681,98 @@ mod tests {
             .expect("add");
         admin.delete("local").expect("delete");
         assert!(admin.entries().is_empty());
+    }
+
+    // --- Reorder (issue #192, criterion 1) ----------------------------
+
+    /// Seed three connections in a known order so a reorder is visible.
+    fn three_in_order() -> (tempfile::TempDir, ConnectionAdmin) {
+        let (dir, _secrets, mut admin) = fresh_admin();
+        admin.add(turso_draft("a", "A", ":memory:")).expect("add a");
+        admin.add(turso_draft("b", "B", ":memory:")).expect("add b");
+        admin.add(turso_draft("c", "C", ":memory:")).expect("add c");
+        (dir, admin)
+    }
+
+    fn ids(admin: &ConnectionAdmin) -> Vec<&str> {
+        admin.entries().iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn move_to_puts_the_entry_at_the_index_asked_for() {
+        let (_dir, mut admin) = three_in_order();
+
+        admin.move_to("c", 0).expect("move c to the front");
+        assert_eq!(ids(&admin), ["c", "a", "b"]);
+
+        admin.move_to("c", 2).expect("move c to the back");
+        assert_eq!(ids(&admin), ["a", "b", "c"]);
+
+        // One step up, which is what the ▲ button asks for.
+        admin.move_to("c", 1).expect("move c up one");
+        assert_eq!(ids(&admin), ["a", "c", "b"]);
+    }
+
+    #[test]
+    fn move_to_persists_so_reopen_reads_the_new_order() {
+        let (dir, mut admin) = three_in_order();
+        admin.move_to("c", 0).expect("move");
+
+        let path = dir.path().join("connections.toml");
+        let reopen_secrets = Arc::new(InMemorySecretStore::new());
+        let reopened =
+            ConnectionAdmin::open(path, reopen_secrets as Arc<dyn SecretStore>).expect("reopen");
+        assert_eq!(ids(&reopened), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn move_to_unknown_id_returns_not_found() {
+        let (_dir, mut admin) = three_in_order();
+        let err = admin
+            .move_to("missing", 0)
+            .expect_err("missing id must error");
+        match &err {
+            ConfigError::NotFound(id) => assert_eq!(id, "missing"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+        assert_eq!(
+            ids(&admin),
+            ["a", "b", "c"],
+            "a refused move changes nothing"
+        );
+    }
+
+    #[test]
+    fn move_to_an_index_past_the_end_is_refused() {
+        let (_dir, mut admin) = three_in_order();
+        let err = admin.move_to("a", 3).expect_err("index 3 of 3 must error");
+        match &err {
+            ConfigError::IndexOutOfRange { index, len } => {
+                assert_eq!((*index, *len), (3, 3));
+            }
+            other => panic!("expected IndexOutOfRange, got {other:?}"),
+        }
+        assert_eq!(
+            ids(&admin),
+            ["a", "b", "c"],
+            "a refused move changes nothing"
+        );
+    }
+
+    #[test]
+    fn move_to_the_index_it_already_has_does_not_rewrite_the_file() {
+        let (dir, mut admin) = three_in_order();
+        let path = dir.path().join("connections.toml");
+        // Removing the file is how we observe a write that should not happen:
+        // a save would put it back, a no-op leaves it gone.
+        std::fs::remove_file(&path).expect("clear the file");
+
+        admin
+            .move_to("b", 1)
+            .expect("moving where it already is is not an error");
+
+        assert!(!path.exists(), "a no-op move must not touch the file");
+        assert_eq!(ids(&admin), ["a", "b", "c"]);
     }
 
     // --- Bundle export / import (ADR-0038 slice b) --------------------

@@ -379,6 +379,12 @@
   opacity: 0.5;
   cursor: default;
 }
+/* The ▲▼ reorder pair: the same chrome as the other row actions, narrow
+   enough that two more buttons do not crowd Edit / Duplicate / Delete. */
+.conn-dialog .ghost.move {
+  padding: 6px 8px;
+  line-height: 1;
+}
 .conn-dialog .ghost.danger {
   color: var(--danger);
 }

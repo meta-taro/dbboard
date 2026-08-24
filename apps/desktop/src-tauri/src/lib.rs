@@ -425,6 +425,7 @@ pub fn run() {
             add_connection,
             update_connection,
             delete_connection,
+            move_connection,
             duplicate_connection,
             repair_connection_ref,
             foreign_connection_refs,
@@ -1526,6 +1527,22 @@ async fn delete_connection(state: tauri::State<'_, AppState>, id: String) -> Res
     }
     state.service.invalidate(&id).await;
     Ok(())
+}
+
+/// Move a connection to position `index` in the stored order (issue #192).
+///
+/// The order of `[[connections]]` is the order the sidebar and the manager
+/// list render, so this is the whole of "put my connections in the order I
+/// work in". No adapter is evicted: nothing about how a connection dials
+/// changed, only where it sits in the list.
+#[tauri::command]
+fn move_connection(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    index: usize,
+) -> Result<(), String> {
+    let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    admin.move_to(&id, index).map_err(|e| e.to_string())
 }
 
 /// Drop the cached adapter for `id` and open a fresh connection.
