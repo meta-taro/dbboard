@@ -1,4 +1,4 @@
-# アーカイブ — next-actions.md セッションログ (2026-08-03 〜 2026-08-19)
+# アーカイブ — next-actions.md セッションログ (2026-08-03 〜 2026-08-22)
 
 baseline §31 に基づく退避。いずれも全文で、要約していない。
 
@@ -13,6 +13,16 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   2026-08-19 その2 (v0.8.0 リリース 〜 v1.0 ゲート確定 〜 v0.9.0 リリース) を
   追加で退避。ファイル末尾の 3 つ目の `---` 以降がそれ。**この退避で
   `next-actions.md` に残る日付エントリは 2026-08-20 (v0.10.0) の 1 本だけになった。**
+
+- **退避日 2026-08-24**: 498 行でトリガを踏んだため、2026-08-22 (webview CSP) の
+  日付エントリと、**決着済みで現況を騙っていた「候補」節 5 本** (A-3 / B / C / D / D-2) を
+  追加で退避。ファイル末尾の 4 つ目の `---` 以降がそれ。候補 D-2 (Tauri CSP) は
+  「`kit.csp` を設定する必要がある」と書いていたが、2026-08-22 の実装で**それは誤り**
+  (有効にすると 2 枚目のポリシーが `<meta>` で出て壊れる) と分かっている。**古い方を
+  残すと次に読んだ者が誤った方を実装する**ので、正しい結論を持つ 08-22 のログごと
+  ここへ移し、`next-actions.md` からは消した。候補 B (履歴サニタイズ) は
+  「未実行」と題したまま 2026-08-21 に実行済みだった。同じ理由で
+  「⚠️ 接続名サニタイズ」節 (履歴書き換えを「未実行」と書き続けていた) も退避した。
 
 これより古いものは `.claude/archive/next-actions-2026-07.md`。
 
@@ -831,3 +841,122 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   `.pii-denylist` が無いのでスキャナは本名を見ていない)、② v1.0 の残り 3 ゲート
   (下記 候補 0)、③ §36 の改善要望 3 件の記入 (下記)、④ 従来からの継続分。**
   次のエージェント側タスク = **無し**。)
+
+---
+
+- 日付: 2026-08-22 (**#210 webview の CSP を実装して commit まで完了。push は user。**
+  `app.security.csp` は `null` だった = 「既定のポリシー」ではなく **CSP ヘッダを一切出さない**。
+  今の frontend に注入口は無い (DB の値も AI の応答も HTML として描画していない) ので
+  挙動は変わらない。**要る機能が来る前に置く**ための guard。
+  調べて分かった点が 3 つ、いずれも tauri のソースを読んで確定した (推測ではない):
+  ① **`script-src 'self'` で足りる。** tauri-codegen が inline script 2 本
+  (テーマ適用と SvelteKit の bootstrap) を build 時に hash 化し、`set_csp` が実行時に
+  追加する。ビルド済み exe に hash 2 本が埋まっていることを確認済み。
+  ② **SvelteKit の `kit.csp` は無効のままにする。** 有効にすると `<meta>` で 2 枚目の
+  ポリシーが出て交差し、しかも手書きのテーマ script を知らない = 壊れる。
+  issue のチェックリストは「hash mode を有効に」と書いてあったが、それは誤り。
+  ③ **`style-src` は `'unsafe-inline'` を残すしかない。** CodeMirror が `<style>` を
+  作って `textContent` を代入する方式でテーマを載せるため、build 時に hash 化できない。
+  ここが**何も報告されずに壊れる**: CSP3 は nonce/hash が付いた瞬間 `'unsafe-inline'` を
+  無視し、tauri は `app.html` に `<style>` が 1 つでもあると nonce を入れる。
+  → `app.html` に `<style>` が無いことを test で固定した (他 2 本と合わせて 3 本)。
+  **状態**: PR #217 で `feature/duplicate-and-repair-connection` に merge 済み (840038a)。
+  CSP は **#216 の中**にあり、#216 が develop に入った時点で本体に載る。
+  push で `dbboard-mcp.exe` のロックに当たった (別セッションの MCP が掴んでいた)。
+  **プロセスは止めず、exe を `dbboard-mcp.exe.inuse` に改名して退かした** —
+  Windows は実行中の exe を削除できないが改名はできる。`.inuse` は
+  そのセッションが終わったら消す。
+  **AI がやれていないこと**: issue の「webview console を開いてアプリを一周する」。
+  release build に devtools は無く、debug build は `pnpm dev` が要る (共有 PC で禁止)。
+  → **画面での確認は user 側**。app は起動済み (target/release/dbboard-desktop.exe)。)
+
+### 候補 A-3: アップデート通知の「変更点」が定型文 — **完了 (v0.10.0 / ADR-0115)**
+
+`latest.json` の `notes` をタグ名から組み立てていたため、通知の「変更点」が
+`dbboard v0.8.0. See the release page for the full changelog.` のような定型文になり、
+何が変わったかが読めなかった。`scripts/release-notes.mjs <changelog> <bare-version>` で
+`CHANGELOG.md` の当該バージョン節から**最初の `###` までのリード段落**を抜いて入れる。
+
+**次のリリースで気をつける点**: 通知に出るのは**リード段落だけ**なので、
+`CHANGELOG.md` を書くときに**その段落だけで意味が通る**ようにする
+(`### Added` 以降を読まないと分からない書き方をすると、通知が中途半端になる)。
+v0.9.0 → v0.10.0 の配信が、この経路の初めての実地確認になる。
+
+### 候補 B: git 履歴の一括サニタイズ (human ボール・破壊的・未実行)
+
+**1 回の rewrite で 2 つが同時に片付く。** どちらも「ファイルなら次のコミットで
+直せるが、既に公開された過去コミットは書き換えないと消えない」もの:
+
+1. **実店舗名** — 過去コミットに残る (実名は**非公開メモリと `.pii-denylist`
+   のみ**。ここには書かない。対応表からローカルで `replacements.txt` を作る)。
+   バイナリは CI ビルドで名前を含まないためリリースは塞がない。
+2. **コミット identity** — 公開済コミットの一部の author/committer が個人 Gmail
+   (ADR-0084)。**未公開のローカル 28 コミットは書き換え済** (2026-07-31、
+   force-push 不要だったので実行した)。以後の新規コミットも noreply で clean。
+   残るのは origin 上の分だけ。**「468 コミット」と書いていたのは 2026-08-09 時点の
+   `main` の総数**で、現在は 585 (v0.10.0 時点)。汚染されているのはその一部なので、
+   着手時に `git log --format='%ae %ce' origin/main | sort -u` で実数を数え直す。
+
+手順は `docs/maintainer/history-sanitize-runbook.md` (Step 1-3 = 文字列置換、
+Step 3b = `--mailmap` で identity、Step 4 = force-push)。全ハッシュ変更・既存
+クローン/PR/フォーク破損のため **human 実行**。fork 0 / star 0 なので実効性は
+ある = 検討する理由になるが、勝手に実行する理由にはならない。
+
+**順序を間違えると全部無駄になる:** rewrite + force-push は**未 push の
+ローカル作業を全部 push してから**やり、その後クローンを捨てて re-clone する。
+先に rewrite すると、残った未書き換えのローカルコミットを次の `git push` が
+そのまま remote に戻して再汚染する (git から見れば単なる新規コミットなので
+警告も出ない)。`git pull --rebase` では直らない。runbook の「Ordering」節参照。
+**2026-08-20 時点で open PR は 0 本**なので、壊れる PR は無い (以前ここに書いてあった
+#125 は CLOSED)。着手前に `gh pr list --state open` で 0 を確認すること。
+
+### 候補 C: release.yml の publish 自己作成化 — **完了 (v0.5.0)**
+
+publish ステップが `gh release view <tag> || gh release create <tag>` になり、
+タグ push だけでリリースが完結するようになった。v0.8.0 / v0.9.0 のリリースは
+この経路で実行済み。**残るのは公開 `.exe` の PII 目視確認だけで、これは CI がやらない
+人間の作業。**[[project-release-ci-needs-release-object]]。
+
+### 候補 D: cargo-deny の既存ドリフト対応 — **完了 (v0.10.0 / ADR-0117)**
+
+**「commit フックではないので緊急ではない」と書いたまま何か月も放置し、
+その間ずっと赤かった。** リリース前セキュリティレビューが手で叩いて初めて
+現状 (advisory 21 件・ライセンス 4 件) が分かった。#209 で `deps` ジョブを
+CI に足し、直せたもの (`h2` → 0.4.17、死んだライセンス許可 2 件の削除) は直し、
+直せないもの (libsql が `hyper-rustls` 0.25 経由で固定する `rustls-webpki` 0.102 /
+`h2` 0.3 系) は **advisory 1 件につき 1 エントリで理由を書いて** `deny.toml` に記録した。
+
+**残っているのは「libsql を上げる」1 点だけ。** 6 件中 4 件がそれで消える。
+libsql 0.10 は pre-release なので、**stable が出たら `deny.toml` の
+`rustls-webpki 0.102` 節と `h2` 節を再検査する** (`ignore` エントリのコメントにも
+「Revisit at every libsql bump」と書いてある)。
+
+### 候補 D-2: Tauri の CSP を有効にする (#210・小〜中)
+
+`tauri.conf.json` の `"csp": null` = ポリシーを一切注入していない。
+**急ぎではない** — 検証したところフロントエンドに HTML 注入口は 0 件
+(`{@html}` / `innerHTML` 無し)。**着手時は前提を再検証すること**、
+その後の変更で注入口が増えている可能性がある。
+
+難所は `script-src`。`app.html` にテーマ適用のインラインスクリプトがあり
+(初回描画前に `data-theme` を当てて色のちらつきを消す意図的なもの)、
+SvelteKit のハイドレーションスクリプトもインラインなので、
+素の `script-src 'self'` では両方止まる。`apps/desktop/svelte.config.js` の
+`kit.csp` (hash / nonce モード) を設定する必要がある。現在は未設定。
+`connect-src` は軽い (直接 `fetch` が 0 件で通信は全部 Rust 側)。
+
+## ⚠️ 接続名サニタイズ (2026-07-15 着手)
+
+- **経緯**: public リポジトリのソース/テスト/テンプレに実業務接続名が
+  露出していた (2026-07-13〜14 のハンドオフ準備でテストのサンプルデータ
+  として実名を使ってしまったのが原因)。**出荷 exe には非埋め込み**
+  (テストは `#[cfg(test)]`、テンプレは `tests/` の include_str! のみ)。
+- **現行置換 = 実施済み** (このブランチ `chore/sanitize-connection-names`)。
+  実名を中立サンプル id (store-a / store-b / store-c) + サンプル行データ
+  (Alpha / Beta) に一括置換。実名↔サンプルの対応は非公開メモリのみ保持。
+- **履歴書き換え = human のボール (未実行)**: 過去コミットにはまだ実名が
+  残る。`docs/maintainer/history-sanitize-runbook.md` の手順で
+  `git filter-repo --replace-text` → develop/main を force-push する。
+  破壊的操作 (全ハッシュ変更・既存クローン/PR/フォーク破損) のため human 実行。
+
+---
