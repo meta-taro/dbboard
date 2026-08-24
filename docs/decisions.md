@@ -3050,21 +3050,21 @@ NestJS-side persistence; this ADR adds nothing for web to mirror.
 `.claude/issues/0009-ai-streaming-cancel-tokens.md`. Lands on
 `feature/ai-streaming-cancel-tokens` across four commits:
 
-- Slice (a) `2cb012e` — `dbboard-ai` trait extension with
+- Slice (a) `e869ff3` — `dbboard-ai` trait extension with
   `stream_explain` / `stream_suggest_sql` returning
   `BoxStream<'static, AiResult<StreamEvent>>`, plus normalized
   `StreamEvent` / `StopReason` enums and the previously-unused
   `AiCapabilities::has_streaming` flag.
-- Slice (b) `e5f49d0` — Anthropic SSE wired through
+- Slice (b) `edff3cb` — Anthropic SSE wired through
   `dbboard-anthropic` via `reqwest-eventsource` 0.6 with
   `RetryPolicy::Never` (Decision 4 — token-billed POSTs must not
   silently retry).
-- Slice (c) `e8f5fd5` — `dbboard-ui` worker rewired with a tokio
+- Slice (c) `a09316a` — `dbboard-ui` worker rewired with a tokio
   async loop + std-to-tokio mpsc bridge thread + per-request
   `CancellationToken`. `tokio::select!` races the stream against
   the token; the cancel arm emits `Reply::AiCancelled` directly
   rather than synthesising `AiError::Cancelled` (Decision 12).
-- Slice (d) `fff669c` — `AiPanel` state machine extended with
+- Slice (d) `3b290da` — `AiPanel` state machine extended with
   `StreamingAcc` + `streaming` + `cancelled` fields, real
   `on_stream_chunk` / `on_stream_complete` / `on_cancelled`,
   Send↔Cancel button toggle, token meter, and 3 new Fluent keys
@@ -3452,32 +3452,32 @@ coupling in the trait).
 - **Status:** Accepted (2026-07-01). Implementation tracker:
   [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
   Lands on `feature/ai-history-v2` across four commits:
-  - Slice (a) `b16537f` — `dbboard-ui::history` v:2 reader + writer
+  - Slice (a) `f14a387` — `dbboard-ui::history` v:2 reader + writer
     (`RecordWire` flattened, `kind: "query" | "ai"` discriminator,
     `HistoryEntry::{Query, Ai}` split, 64 KiB write-side truncation,
     v:1 records read transparently as `kind: "query"`, unknown `kind`
     / `intent` drop + counter tick). `emit_history_fixture` extended
     to emit `kind: "ai"` alongside `kind: "query"`.
-  - Slice (b) `13f7736` — `dbboard-ai::AiProvider::identity()` +
+  - Slice (b) `094e6a0` — `dbboard-ai::AiProvider::identity()` +
     `AiResponse { provider, model }` additive fields +
     `dbboard-anthropic` implementation + `dbboard-ui::worker`
     spawn-time identity snapshot stamped on every terminal reply
     (`Reply::AiResponded` / `AiStreamComplete` / `AiFailed` /
     `AiCancelled` gain `provider, model`).
-  - Slice (c) `0e76223` — `dbboard-ui::lib` UI-thread AI history
+  - Slice (c) `cb5f55d` — `dbboard-ui::lib` UI-thread AI history
     write point. `PendingAiSubmit` snapshot at Send, terminal-reply
     dispatch composes `HistoryEntry::Ai { … }` from the pending
     record + reply payload + spawn-time identity + streaming
     accumulator peek (peeked before `AiPanel::on_stream_complete`
     drains it). 18 new unit tests covering all four terminal reply
     arms + helper round-trips.
-  - Slice (d) `34ad0eb` — docs sweep (this ADR flipped to Accepted,
+  - Slice (d) `b2f5c95` — docs sweep (this ADR flipped to Accepted,
     `docs/roadmap.md` Phase 4 Stage 2 Group C ticked, `README.md`
     AI section gains the verbatim-logging warning,
     `.claude/issues/0010` closed, brief 0008 Anchors filled in,
     `.claude/project-status.md` records the slice landing).
     All five commits shipped via PR #47, merged to `develop` at
-    `768e009` on 2026-07-01.
+    `1aec99b` on 2026-07-01.
 - **Cross-repo brief:** [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md) (issued same PR)
 - **Supersedes:** ADR-0017 §1 record shape (the v:1 schema). ADR-0017's §3
   storage / §4 rotation / §6 forward-compat / §7 secret-handling stances
@@ -3798,12 +3798,12 @@ moves through brief 0008.
 - **Status:** Accepted (2026-07-02). Implementation tracker:
   [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md)
   (closed). Lands on `feature/ddl-extraction` across four commits:
-  - Slice (a) `a42a27c` — `dbboard-core` trait method + `TableSchema` +
+  - Slice (a) `92c5749` — `dbboard-core` trait method + `TableSchema` +
     `ColumnInfo` extension + `Capabilities::has_describe_table`
-    (review notes addressed in `bba4072`).
-  - Slice (b) `b509a36` — `describe_table` in the turso, d1, and
+    (review notes addressed in `87542e4`).
+  - Slice (b) `305ac63` — `describe_table` in the turso, d1, and
     postgres adapters with `has_describe_table = true` each.
-  - Slice (c) `dfdaaca` — `SuggestRequest.full_schema` +
+  - Slice (c) `50f335e` — `SuggestRequest.full_schema` +
     Anthropic prompt rendering + worker `PrefetchSchema` fan-out
     (semaphore cap 8) + `AiPanel` "Include column details" checkbox +
     warning banner + 11-locale i18n keys. One deviation from the plan
@@ -8700,9 +8700,9 @@ merge regardless of whether anything leaked. A check that fails identically
 whether or not the condition it tests for holds carries no information.
 
 That cost was paid before it was noticed. The merge of PR #127 leaked a
-personal address in the author field of `e15dcff` — a genuine finding, exactly
+personal address in the author field of `c355802` — a genuine finding, exactly
 what ADR-0084 exists to catch. The fix (turning on **Keep my email addresses
-private**) worked: the next squash commit, `d7ed16b`, was authored by the
+private**) worked: the next squash commit, `aa90129`, was authored by the
 noreply form. The identity step still failed, now on the committer, and the
 two failures are indistinguishable from the job status alone. A real leak and
 a false positive that had been firing on every merge since ADR-0084 landed
@@ -11453,3 +11453,606 @@ what the gate permits.
 libSQL teardown crash became one when the hooks stopped triggering it. The
 failure mode this replaces was not a check that failed; it was a check
 nobody ran.
+
+## ADR-0118 — A connection can be copied, and one that names a foreign slot can be repaired
+
+### Status
+
+Accepted.
+
+### Context
+
+ADR-0112 and ADR-0113 established that an entry can carry a keyring ref
+minted for a *different* connection, that dbboard's own CRUD cannot
+produce that state, and that import refuses it and export names it. What
+neither did was give the operator anywhere to go afterwards. The only
+route back to a healthy file was hand-editing `connections.toml` — the
+very act that produces the state in the first place.
+
+The same hand-edit is also how a second connection to the same database
+gets made today. There is no copy: the operator opens the file, pastes an
+entry, changes the id, and leaves `keyring_url_ref` pointing at the
+original's slot because it is not obvious that it must not. That is the
+foreign-ref state, manufactured on purpose, for a reason the application
+never offered an alternative to.
+
+Two commands close both halves, and the interesting difference between
+them is **where the secret comes from**.
+
+### Decision
+
+**`ConnectionAdmin::duplicate(id, new_id, new_name)` copies an entry, mints
+fresh refs from the new id, and reads the source's secrets into the new
+slots.** The copy is entitled to those values: the source owns the slots it
+reads, so nothing is being taken from a third party. The copy starts with
+`mcp_alias: None` and `mcp_write: false` — an alias is unique by
+construction and a write grant is a decision, not an attribute of the thing
+copied.
+
+Duplicating a source that already carries a foreign ref is refused
+(`UnusableSourceRef`). Copying that entry would mean reading a slot the
+source does not own in order to seed a third one, which is the case for the
+repair path, not this one.
+
+**`ConnectionAdmin::repair_foreign_ref(id, key_ref, secret)` mints the
+entry's own ref and stores a secret the caller supplies.** It does not read
+the slot it is stopping the entry from referencing. That slot has a live
+owner, and reading it to copy the value is exactly the silent credential
+duplication ADR-0038's import guard refuses; the fact that this side of the
+same act is user-initiated does not change what lands in the keychain.
+
+For the same reason, **repair never deletes the abandoned slot.** An
+orphan is a slot with no owner. This one has one.
+
+The order of the two refusals is deliberate. `RefNotOnEntry` is checked
+before `NothingToRepair`, because a caller passing a ref the entry does not
+carry is far more likely holding a stale view of the list than to have
+constructed a nonsense ref, and the stale-view diagnosis is the one that
+tells them what to do.
+
+**The connection list shows the state.** Previously it surfaced only when a
+bundle was built, which is both late and the wrong moment. The badge is fed
+by its own `foreign_connection_refs` command rather than a field on
+`ConnectionView`: that projection is shared with the MCP server, and this
+is a desktop repair affordance, not something an agent should be reasoning
+about.
+
+### Consequences
+
+**Hand-editing `connections.toml` stops being the supported way to get a
+second connection to one database.** That is the point. The failure mode
+ADR-0112 and ADR-0113 detect is largely self-inflicted by the absence of
+this command.
+
+**Repair asks for a secret the operator may not have to hand.** This is
+real friction and it is not removable: the alternative is reading another
+connection's credential without saying so. If they cannot produce the
+value, the entry stays broken and stays visibly broken, which is still
+better than it silently working by borrowing.
+
+**Export's warning and import's refusal are unchanged.** Both were correct;
+they were just terminal. They now name a state the application can leave.
+
+---
+
+## ADR-0119 — The libSQL serialisation follows the dependency, and the hooks follow their source
+
+### Status
+
+Accepted.
+
+### Context
+
+A push failed on a green branch:
+
+```
+error: test failed, to rerun pass `-p dbboard-mcp --lib`
+  process didn't exit successfully: dbboard_mcp-0625371a1d9cb3ed.exe
+  (exit code: 0xc0000005, STATUS_ACCESS_VIOLATION)
+```
+
+Nothing in the branch touched `dbboard-mcp`. This is the Windows libSQL
+teardown crash the pre-push hook has documented since the workspace was
+bootstrapped: two in-memory databases torn down at the same instant take the
+whole test binary with them, after every assertion has already passed. The
+mitigation was to run the affected tests one thread at a time, and it named
+the affected crate — `dbboard-turso` — because that is the crate the crash
+was first seen in.
+
+That is the wrong boundary. The hazard is not a crate name; it is *opens
+libSQL in a test*, which a crate inherits the moment it takes the adapter as
+a dependency, directly or through `dbboard-connect`, as a normal dependency
+or a dev one. Five workspace crates could reach it and one was covered:
+
+| crate | in-memory databases in tests | serialised before |
+|---|---|---|
+| `dbboard-turso` | 15 | yes |
+| `dbboard-mcp` | 17 | no |
+| `dbboard-desktop` | 12 | no |
+| `dbboard-connect` | 6 | no |
+| `dbboard-server` | 6 | no |
+
+Nothing announced the gap for months, because the crash is rare: 30
+deliberate reproduction runs here produced zero. It surfaces as a push that
+fails for no reason the branch can explain, which is the precise shape that
+teaches whoever hits it to reach for `--no-verify`.
+
+Fixing it in the adapter was considered and rejected twice over. A
+`#[cfg(test)]` teardown mutex — the shape `dbboard-config`'s `kdf_guard`
+uses — is inactive when `dbboard-turso` is compiled as a *dependency*, which
+is every case that matters here. Making the lock unconditional would put a
+mutex in the shipping adapter to suit the test harness, and `bundle.rs`
+already recorded why that is the wrong trade: production takes no lock.
+
+Finding the second half was an accident of fixing the first. The corrected
+hook was written into `.cargo-husky/hooks/pre-push` and had no effect,
+because git runs `.git/hooks/pre-push` and nothing had copied one to the
+other since 2026-08-20. `cargo-husky` was a dev-dependency at the bootstrap
+commit and was dropped when the workspace was restructured; it is in no
+manifest and no lockfile today. Five documents went on saying the hooks
+install themselves on first `cargo test`. They do not, and have not for
+months. The failure is silent in the worst way: you edit a hook, read the
+file back, and see your edit.
+
+### Decision
+
+**The set of serialised crates is derived, not remembered.**
+`scripts/libsql-serialised-crates.txt` lists them, and
+`crates/dbboard-turso/tests/serialised_teardown.rs` walks the workspace
+manifests, computes which members reach `dbboard-turso`, and fails when the
+file disagrees in either direction. Adding the adapter to a sixth crate now
+fails a test that names the crate and says what to add.
+
+**One runner reads the list.** `scripts/cargo-test-serialised.sh` turns it
+into `--exclude` flags for the parallel `--workspace` run and one
+`--test-threads=1` invocation per listed crate. Both hooks and CLAUDE.md's
+mandatory commands call it, so the loop exists once. A second test asserts
+the runner reads the list and that both hooks call the runner — checking
+only lines that are not shell comments, because the first version of that
+assertion was satisfied by a hook that merely mentioned the runner in one.
+
+**A missing list stops the run.** Running these crates in parallel is the
+bug; falling back to the fast path when the list cannot be found would
+reintroduce it exactly when something is already wrong.
+
+**The hooks are installed by `scripts/install-hooks.sh`, and drift is a test
+failure.** `crates/dbboard-config/tests/hook_install_drift.rs` compares
+`.git/hooks/` against `.cargo-husky/hooks/`, ignoring line endings. A
+checkout with no hooks at all passes — CI has none by design (ADR-0104) and
+a fresh clone should not fail its first `cargo test` over a convenience it
+has not been offered. A checkout with *some* of them, or with a stale copy,
+fails and names the files.
+
+**CI is unchanged.** It runs on `ubuntu-latest`, where the crash does not
+occur, and serialising there would spend wall-clock on a Windows-only
+hazard. ADR-0104 already makes CI the gate; the hooks are the local
+convenience that gate is not allowed to depend on.
+
+### Consequences
+
+**The serialised set will grow, and that is the mechanism working.** Every
+crate that gains a libSQL-backed test joins the list. The cost of
+over-approximating is close to nothing: measured with everything pre-built,
+serialising the four newly-listed crates cost about 0.7 s in total, and two
+of them came in under the noise floor.
+
+**`--no-verify` loses its last honest excuse here.** CLAUDE.md retired the
+libSQL segfault as a sanctioned bypass when the hooks stopped triggering it;
+that claim was true for one crate and false for four. It is now true for all
+five, so a crash at this gate is a finding, not a known nuisance.
+
+**The hooks now need one manual step after cloning, and one after editing
+them.** That is worse than a dependency that did it automatically and better
+than a document that says a dependency does it when none exists. The drift
+test is what makes the manual step self-correcting: forget it, and the next
+`cargo test` tells you.
+
+**Three earlier documents describe the old arrangement.** ADR-0055,
+ADR-0104 and the `pii-scanning` guide all refer to cargo-husky installing
+the hooks. The prose in the maintainer guide is corrected; the ADRs are
+not, because the log is appended to rather than rewritten. This entry is
+where the arrangement changed.
+
+## ADR-0120 — The webview's Content-Security-Policy, and what each directive is holding
+
+### Status
+
+Accepted.
+
+### Context
+
+`app.security.csp` was `null` (#210). `null` is not "a default policy"; it is
+no `Content-Security-Policy` header at all. Every source the webview can name
+was allowed: any remote script, any style, any `connect-src`, any frame.
+
+Nothing walked that path. There is no HTML-injection sink in the frontend --
+no `{@html}`, no `innerHTML`, no `insertAdjacentHTML` — and the frontend
+makes no network call of its own; drivers, AI providers and the updater all
+run in Rust behind IPC. So this is defence-in-depth, and it was deliberately
+kept out of the v0.10.0 release rather than folded into it.
+
+The reason it needed its own change is the failure mode. A wrong CSP does not
+fail the build and does not crash the app. The window opens, and then some
+part of it quietly does not work — a panel that never renders, an update
+check that never fires — and the only evidence is a console message in a
+webview that, in a bundled build, has no devtools to open.
+
+### Decision
+
+```
+default-src 'self';
+script-src  'self';
+style-src   'self' 'unsafe-inline';
+img-src     'self';
+font-src    'self';
+connect-src 'self' ipc: http://ipc.localhost;
+object-src  'none';
+base-uri    'self';
+form-action 'none';
+frame-ancestors 'none'
+```
+
+**`default-src 'self'`** is the floor every unlisted fetch directive falls
+back to. It is stated first so that adding a feature that needs a new source
+fails closed rather than inheriting a wildcard.
+
+**`script-src 'self'` — and nothing else.** The built `index.html` has two
+inline scripts: the theme applier hand-written in `app.html`, which is inline
+on purpose so an explicit Light/Dark choice never flashes the OS theme first,
+and SvelteKit's hydration bootstrap. Neither survives a bare `script-src
+'self'` — but neither needs to. `tauri-codegen` walks every embedded HTML
+asset at build time, hashes each non-empty `<script>` over its
+CSP-normalised text, and `tauri::manager::set_csp` appends those hashes (plus
+`'self'`) to this directive at runtime. Verified on the built binary: both
+hashes are present in `dbboard-desktop.exe`.
+
+**SvelteKit's `kit.csp` stays unset.** It was the obvious fix and it is the
+wrong one. It emits a second policy as a `<meta http-equiv>`, and two
+policies on one document intersect — so the strictest wins, silently. It
+also only knows about the scripts SvelteKit itself emits, not the theme
+script. Tauri already covers both. Enabling it could only subtract.
+
+**`style-src` carries `'unsafe-inline'`, and that is not laziness.**
+CodeMirror mounts its themes through `style-mod`, which for a document root
+does `document.createElement("style")` and assigns `textContent`. That is
+subject to `style-src`, carries no nonce, and has no hash any build step
+could precompute. Svelte's `style="..."` attributes need it too.
+
+  This is the fragile line. Under CSP3, `'unsafe-inline'` is *ignored* the
+  moment the same directive gains a nonce or a hash — and Tauri adds a style
+  nonce for every `<style>` element it finds in the HTML it embeds. Today
+  `app.html` has none, so nothing is added and `'unsafe-inline'` stands. Add
+  one `<style>` block to `app.html` and the editor loses its styling, with
+  nothing failing at build time. `tests/csp_policy.rs` asserts `app.html`
+  contains no `<style>` element for exactly this reason. Put rules in a
+  `.css` file.
+
+**`connect-src` names both IPC origins.** Every backend call is a `fetch` to
+Tauri's IPC custom protocol: `http://ipc.localhost/<cmd>` on Windows and
+Android, `ipc://localhost/<cmd>` elsewhere. Both are listed so the same
+config works on every target. Getting this wrong degrades rather than breaks
+-- Tauri catches the failure and falls back to the `postMessage` transport --
+which is precisely why it would not have been noticed.
+
+**`img-src 'self'` and `font-src 'self'` are honest today.** The frontend has
+no `<img>`, no `@font-face`, and no `url()` in any authored stylesheet. One
+`data:` SVG does ship, in CodeMirror's `.cm-highlightTab` rule, but that class
+is only applied by the `highlightWhitespace` extension, which is not enabled.
+Enabling it means adding `data:` to `img-src`; that is the line to extend.
+
+**`object-src 'none'`, `base-uri 'self'`, `form-action 'none'`,
+`frame-ancestors 'none'`** are the four that `default-src` does not cover.
+There are no plugins, no `<base>`, no `<form>` and no framing, so each is set
+to the narrowest value that describes the app rather than to whatever it
+happens to tolerate.
+
+### Consequences
+
+**The policy only exists in a bundled build.** A debug build loads `devUrl`
+from the dev server, whose responses Tauri does not write headers on. That is
+why the issue asks for verification on a built binary, and why a green
+`pnpm dev` session proves nothing about this.
+
+**Three properties are pinned by a test, not by memory.**
+`apps/desktop/src-tauri/tests/csp_policy.rs` fails if `csp` returns to `null`
+or gains `'unsafe-inline'`/`'unsafe-eval'` under `script-src`, if `style-src`
+loses `'unsafe-inline'` or `app.html` gains a `<style>` element, or if
+`svelte.config.js` starts emitting its own policy. Those are the three ways
+this arrangement breaks quietly.
+
+**A frontend that starts calling out directly will be blocked, and should
+be.** `connect-src` deliberately lists no provider endpoint. If a future AI
+provider or telemetry path needs one, the answer recorded in #210 is to move
+the call into Rust rather than widen this line.
+
+## ADR-0121 — The release trigger reports itself, because a rule nobody can see is not a rule
+
+**Date**: 2026-08-22
+**Status**: Accepted
+
+ADR-0110 decided that releases are derived from content rather than scheduled:
+one unreleased CHANGELOG entry means a release may be cut, three mean one is
+due. The rule was correct and it was written down, and it still failed, because
+reading it required running an `awk` one-liner copied out of `docs/roadmap.md`.
+Nobody runs that. The observable result over v0.9.0 and v0.10.0 was a long run
+of commit, push, PR with no visible sign that a version was approaching — which
+reads, from outside, as a project that has stopped releasing.
+
+The defect is surfacing, not policy. So the counter is now a program rather
+than a paragraph: `scripts/release-due.mjs` exports `releaseDue(changelog)` and
+prints one line when run, and `.cargo-husky/hooks/pre-push` prints it after the
+build and tests pass.
+
+```
+[changelog] 5 unreleased entries — a release is due (0.10.0 -> 0.11.0)
+```
+
+**Why the pre-push hook and not CI.** The push output is the one channel that is
+demonstrably read — it is what gets pasted into a session when something goes
+wrong. A CI annotation would be correct and unread. The hook already runs a
+release build and the full test suite at that moment, so the marginal cost is a
+few milliseconds of `node`.
+
+**Why it cannot fail a push.** Every part of the call is guarded: the hook skips
+it when `node` is absent, the invocation is `|| true` under `set -e`, and the
+script swallows its own errors and exits 0 even with no `CHANGELOG.md`. A
+release counter that could block a push would be a worse defect than the one it
+fixes.
+
+**What it deliberately does not do.** It does not bump a version, write a
+heading, or create a tag. Deciding to release stays a human act (baseline §6);
+this only removes the excuse of not knowing. It also does not appear in the
+CHANGELOG itself — the counter must not count itself.
+
+**The bump it reports is a guess about the shape, not the number.** `### Added`
+or `### Changed` present means minor, otherwise patch. It has no opinion about
+major: that is reserved for a non-compatible change to `docs/api-contract.md`
+(ADR-0011), which no line-counting can detect. When the newest released heading
+is not three numbers, `next` is `null` rather than invented.
+
+Tested in `scripts/release-due.test.mjs`, picked up by the existing
+`site (node --test)` CI job. The cases worth keeping: a wrapped entry is one
+entry, an indented sub-bullet is not an entry, entries in already-released
+sections below are not counted, and CRLF input must produce exactly the LF
+result — this repository's `CHANGELOG.md` is CRLF.
+
+## ADR-0122 — Versions get their contents reserved in advance (2026-08-22)
+
+**Status**: accepted. Amends ADR-0110; does not replace it.
+
+ADR-0110 said nothing on the roadmap is assigned to a version number, and gave
+a good reason: tying an initiative to a release means the release waits for its
+slowest initiative. Ten releases later the maintainer put the cost plainly:
+you wait for v0.9, then v0.10, it finally arrives — and then what shipped? The
+trigger answered *when*. Nothing answered *what*, in either direction.
+
+Two defects, not one.
+
+*Forward*: no one could say what the next version would contain, so the backlog
+looked unordered even when it was not. *Backward*: a shipped version was a
+number. Answering "what is in 0.9.0" meant reading a diff, which in practice
+means nobody asked.
+
+**The decision.** `docs/roadmap.md` now reserves slots. Near versions get one
+release each with a headline and named contents; the eight phases of the
+Database Workspace plan get ordered bands after 1.0, because a phase is several
+minors wide and pretending otherwise would be a schedule nobody could keep.
+
+ADR-0110's mechanism survives intact, because its reasoning was never wrong:
+
+- A slot is a reservation, not a deadline. Content that is not ready **moves to
+  the next slot**. It does not hold the release, and slots are not renumbered.
+- What triggers a release is still unreleased content, counted by
+  `scripts/release-due.mjs` (ADR-0121). A slot never triggers anything.
+- Dates stay off the page. What replaces them is measured cadence: v0.4.0
+  through v0.10.0 was seven releases in sixteen days. That is an observation
+  about the past, and it is the only honest thing available.
+
+**The headline is the load-bearing part.** `scripts/release-due.mjs` reads the
+slot table and prints it at push time:
+
+```
+[changelog] 5 unreleased entries — a release is due (0.10.0 -> 0.11.0: Connection repair and duplication)
+```
+
+and every version heading in `CHANGELOG.md` carries the same line, so the
+backward question is answerable from the file. `plannedFor` returns `null` for
+a version with no row rather than inventing one: a headline that nobody chose
+still reads like a promise somebody made.
+
+**What this does not decide.** Bands 3 through 7 move dbboard from a database
+client toward an operations tool. Reserving them is not agreeing to them — the
+place to disagree is before a band opens. Recording the order is what makes
+disagreeing possible at all, which is the whole complaint this ADR answers.
+
+## ADR-0123 — A handed-over plan is stored before it is read for what to do (2026-08-22)
+
+**Status**: accepted.
+
+**Context.** Plans for dbboard arrive as `.md` files. Each one gets read, and
+what it implies gets written up as an issue under `.claude/issues/`. Only one
+of them was ever kept: `.claude/plans/2026-08-17-database-workspace.md`, and
+that was incidental rather than policy.
+
+Checking the rest found the shape of the loss:
+
+| Handed over | Kept as | Lines |
+|---|---|---|
+| Additional database adapters | issue 0023 | 862 → 150 |
+| Competitive watch | issue 0024 | 875 → 141 |
+| Awareness and launch | nothing at all | 363 → 0 |
+| Database Workspace | the plan itself | 372 → 372 |
+
+The compression is not the failure on its own — an issue is meant to be
+shorter than the plan behind it. The failure is that the long version stopped
+existing, so the issue became the only record of a document nobody could
+re-read. What a summary keeps is the *what*: which databases, in which order.
+What it drops is the *why*: what was already ruled out and on what grounds.
+Six months later the questions that arrive are all of the second kind, and by
+then the answer is not recoverable from the summary or from anyone's memory.
+
+The fourth case is worse than compression and came from the same habit. A
+plan whose contents were mostly not code — README positioning, a demo
+recording, where to post and in what order — matched no existing issue, so
+nothing was written and the file was gone by the time anyone looked.
+
+**Decision.** A handed-over plan is copied to `.claude/plans/<date>-<slug>.md`
+byte for byte **before** anything is derived from it. Deriving issues is a
+separate, later step, and each derived issue names the plan file it came from.
+Plans are never edited afterwards; corrections and decisions go in the issue,
+which is what issues are for.
+
+This applies even when the plan is obviously going to be reshaped, even when
+only part of it applies, and even when it restates something already known.
+Judging what is worth keeping is the step that failed, so it is the step being
+removed.
+
+**Consequences.**
+
+- `.claude/plans/` joins the Documentation Policy table in `CLAUDE.md`, marked
+  as verbatim and never edited.
+- Issues 0023 and 0024 now link back to their originals; the awareness plan
+  gained issue 0027, which records who does which half — the writing is the
+  agent's, the posting is the maintainer's, because those are accounts nobody
+  else can act on.
+- These plans are internal working documents in a public repository. That was
+  already true of `.claude/issues/`. They were checked for names, handles and
+  URLs before being committed; `scripts/pii-scan.sh` covers them from now on
+  like anything else tracked.
+- One further constraint fell out of the awareness plan rather than out of
+  this decision: the 30-second demo GIF it asks for cannot be recorded on the
+  machine that has real connections configured. `pii-scan` reads text, not
+  pixels, so a recording is checked by eye or not at all (ADR-0055).
+
+**Not decided here.** Whether plans handed over before 2026-07-21 can be
+recovered. They arrived the same way and were treated the same way; the
+difference is only that the earlier ones are no longer anywhere on this
+machine to copy from.
+
+## ADR-0124 — Cutting a release is one command, and it stops before the tag (2026-08-22)
+
+**Status**: accepted.
+
+**Context.** ADR-0121 made the release trigger visible: every push prints how
+much is sitting unreleased and what version it would become. It answers *when*.
+It says nothing about *how*, and how was never written down anywhere.
+
+Reconstructing the last bump (`65128e4`) from its diff, a release is five
+files: the `[Unreleased]` heading moves down to a version, `Cargo.toml`'s
+workspace version moves, `apps/desktop/package.json` and
+`apps/desktop/src-tauri/tauri.conf.json` each repeat that version, and
+`Cargo.lock` follows from a `cargo check`. Then a commit and a tag.
+
+None of that is difficult, which is exactly why it stayed unwritten. But a
+ritual that exists only in whoever performed it last has a cost that shows up
+elsewhere: dbboard is at v0.10 with five unreleased entries, while a sibling
+project of comparable age releases on implementation. The difference is not
+implementation speed. It is that here, deciding to release means also
+remembering four files and hoping none were missed, and that is enough friction
+to postpone. dbboard is used while it is being built, so a release deferred is
+an improvement withheld from someone already running it.
+
+Two smaller things were also unresolved. The changelog's own history writes
+`## [0.10.0] — 2026-08-20`; the roadmap and `CLAUDE.md`, written later for
+ADR-0122's slots, showed `## [0.11.0] — Connection repair and duplication`.
+Both were in the repository, describing the same line, disagreeing.
+
+**Decision.** `scripts/release-cut.mjs` performs the four text edits and stops.
+
+It takes the version from the trigger (`releaseDue`) or from an argument, dates
+the heading from the clock, carries the `[Unreleased]` headline down with the
+entries it described, and leaves a bare `## [Unreleased]` above for what comes
+next. It refuses to cut an empty section, which is the shape a second run
+takes.
+
+Version headings carry both facts:
+`## [0.11.0] — 2026-08-22 — Connection repair and duplication`. The date is
+when it was cut, the headline is the slot's. The two examples in
+`docs/roadmap.md` and `CLAUDE.md` were corrected to match; neither was wrong so
+much as half-written.
+
+It does not commit, does not tag, and does not push. The tag push *is* the
+release, and it stays human (ADR-0121, baseline §6). Mechanising the
+mechanical half is the whole point; mechanising the decision would be a
+different and worse change.
+
+**Consequences.**
+
+- The `## Releases` section of `CLAUDE.md` names the command next to the
+  trigger that says when to run it, and lists what is left afterwards —
+  `cargo check`, the commit, the tag.
+- The manifests are edited as text, not reparsed. `JSON.parse` then
+  `stringify` would reformat both files and lose their key order, turning a
+  one-line release into a whole-file diff that nobody can review.
+- The `Cargo.toml` edit is scoped to `[workspace.package]`.
+  `[workspace.dependencies]` below it is full of `version = "1"`, and a bump
+  that caught one of those would be a dependency change wearing a release's
+  commit message. `scripts/release-cut.test.mjs` holds that case.
+- The tests read the four real files and assert the cut can parse each one, so
+  a manifest that is reshaped later fails here rather than mid-release.
+- CRLF is preserved from whatever the file already uses. Every one of the four
+  is CRLF in the working copy; a release that rewrote line endings would
+  restate the entire changelog as a change to itself.
+
+**Not decided here.** Whether the commit and tag should also be scripted. They
+are two commands and they are the point at which a human is meant to look at
+what is about to go out.
+
+## ADR-0125 — The libSQL teardown crash is retried once, because serialising made it rare and not impossible (2026-08-22)
+
+**Status**: accepted.
+
+**Context.** On Windows, tearing down two in-memory libSQL databases at the
+same instant kills the test binary with `STATUS_ACCESS_VIOLATION`
+(0xc0000005) after every assertion has already passed. ADR-0119 answered it by
+running the crates that can reach `dbboard-turso` one thread at a time, and the
+measurement in `scripts/cargo-test-serialised.sh` recorded the result: 5
+crashes in 150 parallel runs, 0 in 150 serialised ones.
+
+Everything written afterwards treated that zero as a cure. `CLAUDE.md` said the
+hooks no longer trigger the crash and that a crash there "is now a real
+finding"; the list header called serialising "the mitigation"; the derivation
+test said the same.
+
+On 2026-08-22 a pre-commit run crashed exactly that way, in `dbboard-mcp`,
+which is on the list and was running with `--test-threads=1`. The branch's
+entire diff was TypeScript and Svelte — no Rust at all. Afterwards: 25
+serialised runs of that crate clean, 10 more with two copies of the binary
+running at once clean. 0 in 150 was a small sample of a rare event, not the
+absence of one.
+
+The cost of the wrong belief is specific. It tells whoever hits the crash that
+their green branch contains a real fault, and the hour they spend looking for
+it ends where this one did — at a race in a dependency's teardown that nobody
+is going to fix from here. The likely second lesson is worse: that the rule
+about not bypassing the hook is written by people who have not hit this.
+
+**Decision.** `scripts/cargo-test-serialised.sh` re-runs a serialised crate
+once when it dies with `0xc0000005` (or a `Segmentation fault`) **and** the
+output reports no failing test. Both halves are required: the exit code alone
+would retry genuine failures, which is how a fault gets turned into a pass. A
+second crash in a row fails the run.
+
+The retry says out loud what it is doing. A crash that leaves no trace teaches
+the next reader it never happens, which is the belief being corrected here.
+
+**Consequences.**
+
+- `CLAUDE.md`, the list header and
+  `crates/dbboard-turso/tests/serialised_teardown.rs` now say the same thing:
+  serialising is what makes the crash rare enough for one retry to be enough.
+  Being on the list still matters, and the derivation test still enforces it.
+- The sanctioned-bypass wording changes rather than returns. The bypass is not
+  back; the runner absorbs the crash itself, and a crash that survives the
+  retry is a real finding.
+- `scripts/serialised-retry.test.mjs` drives the script with a fake `cargo` on
+  `PATH`, because the behaviour under test is what happens when cargo dies and
+  the real one cannot be asked to die on cue. It covers the retry, the refusal
+  to retry a real failure, and the second crash failing the run.
+- cargo's exit status is captured through a file rather than a pipeline, since
+  `sh` is dash on CI and there is no `pipefail` to ask for.
+
+**Not decided here.** The race itself. It is below the adapter, in the driver's
+teardown, and reproducing it on demand has failed twice now — 30 runs when
+ADR-0119 was written, 35 here. Retrying a rare crash is a workaround; it is
+recorded as one.

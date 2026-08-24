@@ -1459,7 +1459,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dbboard-ai"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-anthropic"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-config"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "age",
  "directories",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-connect"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-config",
@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-d1"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-desktop"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "dbboard-ai",
  "dbboard-anthropic",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-firestore"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mcp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mongodb"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mysql"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1635,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-openai"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-postgres"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1666,7 +1666,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-server"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "axum",
  "dbboard-config",
@@ -1682,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-tunnel"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "russh",
  "thiserror 2.0.18",
@@ -1691,13 +1691,14 @@ dependencies = [
 
 [[package]]
 name = "dbboard-turso"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
  "libsql",
  "thiserror 2.0.18",
  "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]

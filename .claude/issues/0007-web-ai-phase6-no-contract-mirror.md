@@ -20,12 +20,12 @@
     (search `## ADR-0023`), Decision 3 in particular ("In-process
     wiring, not HTTP-mediated") and Decision 9 (Stage 2 deferrals).
   - Reference implementation:
-    - Trait crate `crates/dbboard-ai` (PR #20, desktop@`584348f`).
+    - Trait crate `crates/dbboard-ai` (PR #20, desktop@`2fb7e34`).
     - First concrete provider `crates/dbboard-anthropic` (PR #22,
-      desktop@`c705918`).
-    - `apps/dbboard` env-var wiring (PR #24, desktop@`6ad670d`).
+      desktop@`6c9b5e7`).
+    - `apps/dbboard` env-var wiring (PR #24, desktop@`10e694d`).
     - `dbboard-ui` AI panel + worker dispatch + 11-locale Fluent +
-      docs sweep (PR #27, desktop@`c86424a`).
+      docs sweep (PR #27, desktop@`8ec4b1a`).
   - Web-side trigger: `dbboard-web/.claude/roadmap.md` Phase 6
     ("Optional AI provider interface") and its DoD bullet
     "**API-contract alignment on AI shapes**" with the desktop

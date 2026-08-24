@@ -7,24 +7,102 @@ roadmap; the two are coordinated at the concept level only.
 Mark phases `✅ done` as they ship. Add concrete dates only after the
 fact; estimates belong in the issue tracker, not here.
 
-## Releases are not planned here
+## Release plan
 
-**Nothing on this page is assigned to a version number, and that is
-deliberate** ([ADR-0110](decisions.md)). Tying an initiative to a release
-means the release waits for its slowest initiative, and everyone keeps using
-the previous build meanwhile.
+This page used to leave two questions unanswered: what the next version will
+contain, and what the last one contained. Version numbers were deliberately
+unassigned ([ADR-0110](decisions.md)) so a release could never wait on its
+slowest initiative. That reasoning still holds, and the trigger below is
+unchanged — but the price was that a release arrived as a number with no
+advertised content, and the only way to learn what shipped was to read the
+diff. Slots are now reserved in advance ([ADR-0122](decisions.md)).
 
-What triggers a release is unreleased content:
+**A slot is a reservation, not a deadline.** Whatever is finished when the
+trigger fires is what ships. Content that is not ready moves to the next
+slot — it never holds a release, and slots are not renumbered when it moves.
 
-```sh
-awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && /^- /' ../CHANGELOG.md | wc -l
+### Near slots — one release each
+
+| Version | Headline | What it carries |
+|---|---|---|
+| **v0.12** | A connection list you can steer | Operator-controlled order, search, names instead of ids, colour marks (#192). Its prerequisite is done: `ConnectionManager.svelte` is 662 lines, from 1,617 |
+| **v0.13** | Speed, measured | Startup, connect-and-browse, large result sets. Measurement lands before any optimisation, so the numbers are comparable afterwards |
+| **v0.14** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder |
+| **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 fixed or its workaround documented, the contract mirrored to `dbboard-web`, sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
+
+New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
+Elasticsearch/OpenSearch, Oracle) hold no slot on purpose: each is additive
+and independent, so one ships in whichever release is open when it is
+finished. Demand decides the order, not this table.
+
+### Bands after 1.0 — several releases each
+
+The eight phases of the Database Workspace plan
+(`.claude/plans/2026-08-17-database-workspace.md`, reviewed in
+`.claude/issues/0025-…`). **The order is fixed; the width is not** — a band
+is however many minors its phase turns out to need. That review sized the
+whole set at multiple years for one maintainer, so this is a sequence, not
+a schedule. Band N opens when band N−1 closes.
+
+| Band | Phase | Content |
+|---|---|---|
+| 1st (opens at v1.1) | 1 | Adapter Capability API, execution history, activity timeline, metrics collection, charts |
+| 2nd | 2 | MySQL / PostgreSQL / SQLite native features |
+| 3rd | 3 | Backup, restore, verification, S3 / R2 / MinIO, storage explorer |
+| 4th | 4 | Scheduler: scheduled queries, scheduled backups, maintenance, retention |
+| 5th | 5 | Topology: replication, lag graphs, health |
+| 6th | 6 | Load testing, performance metrics, before/after reports |
+| 7th | 7 | Migration: pre-flight, compatibility, validation, data and performance comparison, rollback |
+| 8th | 8 | AI: compatibility advisor, cross-DB translation, metrics/migration/topology analysis |
+
+Phase 1 is the forced entry point: every later phase needs the capability
+API, and most of them need the history and metrics that come with it. Phases
+3 through 7 also push dbboard from a database client toward an operations
+tool, which is a product decision — taking a band is agreeing to that, and
+the place to disagree is before the band opens, not during it.
+
+### What triggers a release
+
+A slot says what a version will contain. It does not say when the tag gets
+pushed — unreleased content does. The pre-push hook prints the count and the
+slot on every push, so neither has to be looked up:
+
+```
+[changelog] 5 unreleased entries — a release is due (0.10.0 -> 0.11.0: Connection repair and duplication)
 ```
 
-`>= 1` and `develop` green — a release may be cut. `>= 3` — one is due.
-The number is derived from what is in it (additions → minor, fixes only →
-patch); a non-additive change to `docs/api-contract.md` is the major bump,
-and is the only thing v1.0 waits on. Whatever is finished when the trigger
-fires is what ships; an initiative spanning three releases is normal.
+To ask at any other time:
+
+```sh
+node scripts/release-due.mjs
+```
+
+`>= 1` and `develop` green — a release may be cut. `>= 3` — one is due. The
+number is derived from what is in it (additions → minor, fixes only → patch);
+a non-additive change to `docs/api-contract.md` is the major bump. Deciding
+to release, and pushing the tag, stay human ([ADR-0121](decisions.md)).
+
+When a slot is full, cutting it comes before starting the next one. Software
+that is written but not tagged has reached nobody: the people waiting on
+dbboard get it at the moment the tag is pushed and not before. Carrying on
+implementing while `release-due` says a release is due looks like progress
+and is not — the work accumulates where no one can use it.
+
+### What a shipped version contained
+
+Every version heading in [`CHANGELOG.md`](../CHANGELOG.md) carries its date
+and its headline, so the question is answerable without reading a diff:
+
+```
+## [0.11.0] — 2026-08-24 — Connection repair and duplication
+```
+
+The date is the day it was cut and the headline is the slot's;
+`scripts/release-cut.mjs` writes both. A slot leaves the table above the
+moment its version is cut, because from then on the changelog answers for it
+and two answers to one question is how a plan starts lying. If what actually shipped no longer
+matches the slot, the headline changes and the slot table is corrected — the
+record of what shipped wins over the plan.
 
 ## Pacing Note
 
@@ -91,7 +169,7 @@ focus:
   out here — only the HTTP contract and the history JSON schema are shared).
   As of that sync `web` had closed its Phase 1 (pnpm + Nuxt 4 + NestJS 11
   monorepo scaffold with a `GET /health` smoke on `develop`, contract
-  byte-content-mirrored at `dbboard@89b7c70`), with the baton back on
+  byte-content-mirrored at `dbboard@9acbdef`), with the baton back on
   `desktop`. **Retiring egui needs no web mirror** — it changed no shared
   contract; `crates/dbboard-server` still implements the HTTP surface
   `dbboard-web` mirrors, it simply has no in-repo consumer now.
@@ -394,19 +472,19 @@ work without it. Trait + first-provider shape locked in
       tracked in
       [`.claude/issues/0009-ai-streaming-cancel-tokens.md`](../.claude/issues/0009-ai-streaming-cancel-tokens.md).
       **Closed 2026-06-30 on `feature/ai-streaming-cancel-tokens`.**
-      Slice (a) `2cb012e` — `dbboard-ai` trait extension with
+      Slice (a) `e869ff3` — `dbboard-ai` trait extension with
       `stream_explain` / `stream_suggest_sql` returning
       `BoxStream<'static, AiResult<StreamEvent>>`, normalized
       `StreamEvent` / `StopReason` enums, and the
       `AiCapabilities::has_streaming` flag activated. Slice (b)
-      `e5f49d0` — Anthropic SSE wired through `dbboard-anthropic` via
+      `edff3cb` — Anthropic SSE wired through `dbboard-anthropic` via
       `reqwest-eventsource` 0.6 with `RetryPolicy::Never` (token-billed
-      POSTs must not silently retry). Slice (c) `e8f5fd5` —
+      POSTs must not silently retry). Slice (c) `a09316a` —
       `dbboard-ui` worker rewired with a tokio async loop + std-to-tokio
       mpsc bridge thread + per-request `CancellationToken`;
       `tokio::select!` races the stream against the token, with the
       cancel arm emitting `Reply::AiCancelled` directly. Slice (d)
-      `fff669c` — `AiPanel` state machine extended with `StreamingAcc`,
+      `3b290da` — `AiPanel` state machine extended with `StreamingAcc`,
       lazy chunk accumulator, real `on_stream_chunk` /
       `on_stream_complete` / `on_cancelled`, Send↔Cancel button toggle,
       "Tokens: N in / M out" meter, and 3 new Fluent keys
@@ -418,15 +496,15 @@ work without it. Trait + first-provider shape locked in
       Implementation tracked in
       [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
       **Closed 2026-07-01 on `feature/ai-history-v2`.** Slice (a)
-      `b16537f` — `dbboard-ui::history` v:2 reader + writer with a
+      `f14a387` — `dbboard-ui::history` v:2 reader + writer with a
       `kind: "query" | "ai"` discriminator, `HistoryEntry::{Query, Ai}`
       variant split, 64 KiB write-side truncation, and transparent
-      v:1 read-through as `kind: "query"`. Slice (b) `13f7736` —
+      v:1 read-through as `kind: "query"`. Slice (b) `094e6a0` —
       `dbboard-ai::AiProvider::identity()` additive method +
       `AiResponse { provider, model }` fields + `dbboard-anthropic`
       impl + `dbboard-ui::worker` spawn-time identity snapshot
       stamped on all four terminal AI reply variants. Slice (c)
-      `0e76223` — `dbboard-ui::lib` UI-thread AI history write point
+      `cb5f55d` — `dbboard-ui::lib` UI-thread AI history write point
       (`PendingAiSubmit` submit-time snapshot, terminal-reply
       dispatch composing `HistoryEntry::Ai { … }` from the pending
       record + spawn-time identity + streaming accumulator peek,
@@ -440,15 +518,15 @@ work without it. Trait + first-provider shape locked in
       Implementation tracked in
       [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md).
       **Closed 2026-07-03 on `feature/ddl-extraction` (PR #49, merge
-      `6c34ee3`).** Slice (a) `a42a27c` (+ review-fix `bba4072`) —
+      `3a294dc`).** Slice (a) `92c5749` (+ review-fix `87542e4`) —
       `dbboard-core` `TableSchema` struct, additive `ColumnInfo.ordinal`
       + `default_value`, `describe_table` trait method with a default
       `Capability`-error impl, and the `Capabilities::has_describe_table`
-      flag. Slice (b) `b509a36` — Postgres (`information_schema` +
+      flag. Slice (b) `305ac63` — Postgres (`information_schema` +
       composite PK), Turso, and D1 (`PRAGMA table_info`) implementations,
       each flipping `has_describe_table = true`; Postgres integration
       test gated by the `DBBOARD_PG_URL` env-var self-skip. Slice (c)
-      `dfdaaca` — additive `SuggestRequest.full_schema`, Anthropic
+      `50f335e` — additive `SuggestRequest.full_schema`, Anthropic
       prompt rendering, worker `Command::PrefetchSchema` /
       `Reply::SchemaPrefetched` with a Semaphore-8 fan-out, the AiPanel
       "Include column details" checkbox (session-local, gated on
@@ -456,7 +534,7 @@ work without it. Trait + first-provider shape locked in
       and 11-locale i18n. A narrow `SchemaSource` trait (impl
       `DesktopSchemaSource` in `apps/dbboard`) gives the worker its
       in-process path to the live adapter — the one deviation from the
-      ADR, recorded in the ADR status block. Slice (d) `3c3e3d8` —
+      ADR, recorded in the ADR status block. Slice (d) `4146bed` —
       docs sweep + `.claude/issues/0011` closed + ADR-0028 flipped to
       Accepted. HTTP contract and `history.jsonl` unchanged, so no
       web mirror is needed._

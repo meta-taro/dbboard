@@ -1,0 +1,440 @@
+/* The result grid's styling, lifted out of ResultGrid.svelte.
+ *
+ * It is here rather than in a component `<style>` because the grid is being
+ * split into one component per modal, and the two of them share the whole
+ * `.popup` / `.popup-head` / `.popup-foot` chrome. Copying those rules into
+ * each child is the version of this that drifts; Svelte's scoping cannot
+ * reach across the boundary, so the rules have to leave the component to be
+ * shared at all.
+ *
+ * Every selector is prefixed `.result-grid`, the class carried by the grid's
+ * root and by both modal backdrops. The bare element rules below — `table`,
+ * `td`, `th` — are the reason the prefix is not optional: unscoped they would
+ * restyle every table in the application.
+ */
+
+.result-grid.wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--space-2);
+}
+
+.result-grid .toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.result-grid .count {
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+.result-grid .tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.result-grid .tools button {
+  background: var(--bg-surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-widget);
+  padding: 4px 10px;
+  font-size: var(--text-hint);
+  font-weight: 600;
+  cursor: pointer;
+}
+.result-grid .tools button:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-surface-alt);
+}
+.result-grid .tools .ghost {
+  color: var(--text-muted);
+}
+.result-grid .flash {
+  font-size: var(--text-hint);
+  color: var(--success);
+}
+
+/* Edit action bar: appears only while there are staged edits (or an error). */
+.result-grid .edit-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 6px 10px;
+  background: var(--accent-weak);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-widget);
+}
+.result-grid .edit-count {
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--text-accent);
+}
+.result-grid .edit-error {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-hint);
+  color: var(--danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.result-grid .edit-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-2);
+}
+.result-grid .edit-actions button {
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  border-radius: var(--radius-widget);
+  padding: 4px 12px;
+  font-size: var(--text-hint);
+  font-weight: 600;
+  cursor: pointer;
+}
+.result-grid .edit-actions button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.result-grid .edit-actions .primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+.result-grid .edit-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.result-grid .grid-wrap {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-window);
+}
+.result-grid table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--text-body);
+}
+.result-grid th,
+.result-grid td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.result-grid th {
+  position: sticky;
+  top: 0;
+  /* Above the inline editor's overlay, so scrolling a tall result does not
+     slide the editor over the header. */
+  z-index: 2;
+  background: var(--bg-code);
+  color: var(--text-accent);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+.result-grid th:hover {
+  background: var(--bg-surface-alt);
+}
+.result-grid th.sorted {
+  color: var(--text-accent);
+}
+.result-grid .th-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.result-grid .th-sort {
+  font-size: var(--text-hint);
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.result-grid tbody tr {
+  cursor: default;
+}
+.result-grid tbody tr:nth-child(even) {
+  background: var(--bg-surface-alt);
+}
+.result-grid tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.result-grid tbody tr.selected {
+  background: var(--accent-weak);
+}
+/* Inset accent bar on the leading cell marks the selected row — reliable
+.result-grid under border-collapse,
+.result-grid where an inset box-shadow on <tr> is not. */ tbody tr.selected td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.result-grid .null-cell {
+  color: var(--text-muted);
+  font-style: italic;
+}
+/* An editable cell hints its affordance on hover; a staged (dirty) cell keeps
+.result-grid a persistent accent tint until the edit is saved or discarded. */ td.editable {
+  cursor: text;
+}
+.result-grid td.editable:hover {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.result-grid td.dirty {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  font-weight: 600;
+}
+/* The editor floats over the cell instead of replacing its content: laid out
+.result-grid in flow it would shrink the column to the input's minimum width,
+.result-grid which is what made a varchar(500) unusable to edit. */ td.editing {
+  position: relative;
+  overflow: visible;
+}
+.result-grid td.editing .cell-value {
+  visibility: hidden;
+}
+.result-grid .cell-editor {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* At least as wide as the cell, but never narrower than a usable field. */
+  min-width: max(100%, 22rem);
+  padding: 3px;
+  box-sizing: border-box;
+  background: var(--bg-surface);
+  border-radius: var(--radius-widget);
+  box-shadow: var(--shadow-popover);
+}
+.result-grid .cell-input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  background: var(--bg-surface);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-widget);
+  padding: 2px 6px;
+  font: inherit;
+  font-family: var(--font-mono);
+}
+.result-grid .cell-input:focus-visible {
+  outline: none;
+}
+.result-grid select.cell-input {
+  cursor: pointer;
+}
+.result-grid .cell-btn {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  border-radius: var(--radius-widget);
+  padding: 1px 6px;
+  font-size: var(--text-hint);
+  cursor: pointer;
+}
+.result-grid .cell-btn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+/* Numeric columns right-align with figure-aligned digits so the ones, tens
+.result-grid and hundreds stack — detected from the JSON scalar,
+.result-grid never fabricated. */ .num-cell {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.result-grid.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  z-index: 10;
+}
+.result-grid .popup {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-window);
+  box-shadow: var(--shadow-popover);
+  max-width: min(720px, 90vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.result-grid .popup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.result-grid .popup-col {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--text-accent);
+}
+.result-grid .popup .ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-widget);
+  padding: 3px 10px;
+  font-size: var(--text-hint);
+  font-weight: 600;
+  cursor: pointer;
+}
+.result-grid .popup .ghost:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+/* The editor dialog: a fixed, generous surface, so the room to type does not
+.result-grid depend on how wide the column happened to be. */ .popup.editor {
+  width: min(720px, 90vw);
+}
+.result-grid .popup-len {
+  font-size: var(--text-hint);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.result-grid .popup-edit {
+  margin: 0;
+  padding: var(--space-3);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  resize: vertical;
+  min-height: 40vh;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: 1.5;
+}
+.result-grid .popup-edit:focus-visible {
+  outline: none;
+}
+/* An enum has a handful of choices, so the dialog does not need the 40vh
+.result-grid the free-text editor reserves. */ .popup-select {
+  margin: var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-widget);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+}
+.result-grid .popup-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.result-grid .popup-hint {
+  margin-left: auto;
+  font-size: var(--text-hint);
+  color: var(--text-muted);
+}
+.result-grid .popup-foot button {
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  border-radius: var(--radius-widget);
+  padding: 4px 12px;
+  font-size: var(--text-hint);
+  font-weight: 600;
+  cursor: pointer;
+}
+.result-grid .popup-foot button:hover {
+  border-color: var(--border-strong);
+}
+.result-grid .popup-foot .primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+.result-grid .popup-body {
+  margin: 0;
+  padding: var(--space-3);
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+/* The document tree (ADR-0100). Monospace and one row per node, so it reads
+.result-grid as the same kind of surface as the grid behind it. */ .tree {
+  padding: var(--space-2) var(--space-3);
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: 1.6;
+}
+.result-grid .tree-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.result-grid .tree-row:hover {
+  background: var(--bg-surface-alt);
+}
+.result-grid .twist {
+  flex: none;
+  width: 1.1em;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: var(--text-hint);
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.result-grid button.twist:hover {
+  color: var(--text);
+}
+.result-grid .tree-label {
+  flex: none;
+  color: var(--text-accent);
+}
+.result-grid .tree-label::after {
+  content: ':';
+  color: var(--text-muted);
+}
+/* Values wrap rather than scroll the dialog sideways: a long string is
+.result-grid common in a document,
+.result-grid and losing the tree to read it is a poor trade. */ .tree-value {
+  color: var(--text);
+  word-break: break-word;
+}
+/* A container's size and a null are structure, not content — muted so the
+.result-grid eye lands on the values that came from the data. */ .tree-value.object,
+.result-grid .tree-value.array,
+.result-grid .tree-value.null {
+  color: var(--text-muted);
+}
+.result-grid .tree-value.number,
+.result-grid .tree-value.boolean {
+  color: var(--text-accent);
+}

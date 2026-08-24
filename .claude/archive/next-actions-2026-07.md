@@ -17,7 +17,7 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
 ---
 
 - 日付: 2026-07-29 (**MySQL / MariaDB アダプタが着地 — 初の「別 SQL 方言」エンジン
-  (ADR-0068, commit `6b6e887`, branch `feature/desktop-design-polish`)。**
+  (ADR-0068, commit `f07be49`, branch `feature/desktop-design-polish`)。**
   仕事で MySQL を使う maintainer の要望 (#36) を**フルパリティ**で実装 (読み取り専用
   プレビューではない): 接続・クエリ・イントロスペクション・セル書き戻し・エクスポート・
   ダンプ・アトミックリストア・read-only MCP/AI 面・接続マネージャ UI の全バーティカル。
@@ -45,7 +45,7 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
   全完了。次に着手し得るのは新規書き込み面 (row insert/delete、両クライアント未実装) —
   ポートではないのでロードマップの選択事項。)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ完了 — 自動更新 + リリース CI が着地
-  (ADR-0067, commit `d65c008`, branch `feature/desktop-design-polish`)。**
+  (ADR-0067, commit `1bb4c5b`, branch `feature/desktop-design-polish`)。**
   egui の inform-only 更新チェック (ADR-0040) を一歩超えて、Tauri は**その場で
   更新・再起動する**: `tauri-plugin-updater` が署名済み `latest.json` を検証して
   インストール → `tauri-plugin-process` が再起動。**アーキテクチャの肝は純ロジックと
@@ -78,7 +78,7 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
   `dbboard-mysql` + `SqlDialect::MySql` (backtick クォート・read-only 分類) + 接続種別・
   ドラフト/管理/編集・ダンプ/リストア方言分岐。TDD + 専用 ADR (ADR-0068 見込み)。)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — AI アシスタントが着地
-  (ADR-0066, commit `c1ccec5`, branch `feature/desktop-design-polish`)。**
+  (ADR-0066, commit `08a66c1`, branch `feature/desktop-design-polish`)。**
   egui の AI アシスタント (ai.rs + ai_settings.rs) を Tauri へ移植 = プロバイダ
   トレイトと 2 実装 (dbboard-ai / dbboard-anthropic / dbboard-openai) をそのまま
   再利用。**トランスポートだけが変わる** = egui のワーカーチャネル → Tauri コマンド、
@@ -102,7 +102,7 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
   ボール = (1) `feature/desktop-design-polish` の push、(2) 最後のバーティカル =
   auto-update + release CI へ着手。方針は「くぎってはならない」なので全部入れる。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — 論理リストア/インポートが着地
-  (ADR-0065, commit `0f8194d`, branch `feature/desktop-design-polish`)。**
+  (ADR-0065, commit `5c15812`, branch `feature/desktop-design-polish`)。**
   egui の論理リストア (restore.rs) を Tauri へ移植 = pure な `dbboard-core` の
   restore オーケストレータ/preflight (`plan_restore`/`run_restore`) をそのまま再利用。
   **書き込みは `McpService::plan_restore`/`run_restore` だが MCP ツールには未登録** =
@@ -126,7 +126,7 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
   の push、(2) 次バーティカル選定 (AI か auto-update)。方針は「くぎってはならない」なので
   最終的に全部入れる。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ — 論理バックアップ/ダンプが着地
-  (ADR-0064, commit `4b53a39`, branch `feature/desktop-design-polish`)。**
+  (ADR-0064, commit `292db89`, branch `feature/desktop-design-polish`)。**
   egui の論理ダンプ (backup.rs) を Tauri へ移植 = pure な `dbboard-core` の
   dump オーケストレータ/preflight (`plan_dump`/`run_dump`) をそのまま再利用。
   **書き込みは `McpService::plan_dump`/`run_dump` だが MCP ツールには未登録** =
@@ -143,7 +143,7 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
   (1) `feature/desktop-design-polish` の push、(2) 次バーティカル選定 (restore か AI か
   auto-update)。方針は「くぎってはならない」なので最終的に全部入れる。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 フィーチャーパリティ進行中 — インライン
-  セル編集が着地 (ADR-0063, commit `c5f165f`, branch `feature/desktop-design-polish`)。**
+  セル編集が着地 (ADR-0063, commit `d2b8a13`, branch `feature/desktop-design-polish`)。**
   上位方針は user の厳命「**小さくきらないで、機能面の仕様を全部いれる。くぎっては
   ならない**」= egui 版の全機能を Tauri 2 + SvelteKit (`apps/desktop/`) へ一括移植し
   v0.4.0 (パリティ + 自動更新) として出す。Tauri は元々 **読み取り専用スパイク**
@@ -264,7 +264,7 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
   `.claude/project-status.md` に ADR-0069 エントリを追加。(3) **⚠ 実 bastion の
   `user@IP:port` が tracked な `.claude/next-actions.md` に生で入っていた** (前セッションの
   handoff コミット `d9e26f5`)。**未 push だったので `--amend` で履歴ごと除去** (新ハッシュ
-  `671d805`、force-push 不要 = そのコミットは一度も push されていない)。`git log --all -S`
+  `f309e97`、force-push 不要 = そのコミットは一度も push されていない)。`git log --all -S`
   で全 ref 検索 → 0 件を確認。実 host/user は非公開メモリ側にのみ保持。
   **なぜすり抜けたか = `.pii-denylist` がこのマシンに存在しないため** literal 検出が
   丸ごと OFF (`[pii-scan] note: no denylist file — literal name detection off`)。
@@ -276,7 +276,7 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
   `TAURI_SIGNING_PRIVATE_KEY` シークレット設定、(4) #42 = 外部 bastion 経由の live MySQL
   検証 (**実接続 = 明示的な GO と認証情報が必要。エージェントは勝手に接続しない**)。)
 - 日付: 2026-07-29 (**デスクトップの SSH トンネル編集 UI が着地 — ここで初めて
-  Tauri 版が egui を追い越した (ADR-0069, commit `22892b6`, branch
+  Tauri 版が egui を追い越した (ADR-0069, commit `7431ef5`, branch
   `feature/desktop-design-polish`)。** バスチオン越しにしか届かない DB
   (bastion の `localhost` のみ listen) に接続するための SSH トンネルを、接続フォームから
   編集可能に。対象は tunnel 可能な種別 (Postgres ファミリ + MySQL)。フォームに **SSH
@@ -307,13 +307,13 @@ baseline §31 に基づく退避。`.claude/next-actions.md` が 475 行まで�
 > [`.claude/archive/next-actions-2026-07.md`](archive/next-actions-2026-07.md)
 > へ全文退避した (要約ではない)。
 
-- develop tip: PR #123 (design system, ADR-0056 + ADR-0057, merge `4e5623c`) が最新。
-  直前は #122 (PII scan, ADR-0055, merge `d3ee8dd`)。
-  直前は #121 (MCP 5→7 doc-sync `95b6922`) → #120 (list_relationships, ADR-0054
-  `fa378c5`) → #118 (search_schema, ADR-0053 `3887784`) → #116 (error-wrap fix
-  `aa5fa9d`) → #115
-  (OpenAI doc-sync `21cb898`) → #114 (OpenAI provider ADR-0052 `ba54d02`) → #112
-  (restore/import ADR-0051 `e624bbb`) → #113 (doc-sync)。main = `70ecb93` =
+- develop tip: PR #123 (design system, ADR-0056 + ADR-0057, merge `a62ef5f`) が最新。
+  直前は #122 (PII scan, ADR-0055, merge `ed12ecb`)。
+  直前は #121 (MCP 5→7 doc-sync `7d2e238`) → #120 (list_relationships, ADR-0054
+  `ea58050`) → #118 (search_schema, ADR-0053 `18ae423`) → #116 (error-wrap fix
+  `6fdb3f8`) → #115
+  (OpenAI doc-sync `51a1fe9`) → #114 (OpenAI provider ADR-0052 `e6df7a5`) → #112
+  (restore/import ADR-0051 `f83ccf0`) → #113 (doc-sync)。main = `0325571` =
   **v0.3.0 タグ** (未リリース差分あり = MCP 以降 + backup + restore + OpenAI provider
   + error-wrap fix)。
 - **✅ OpenAI/ChatGPT プロバイダ (PR #114, ADR-0052):** Claude と並ぶ 2 つ目の

@@ -15,7 +15,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
 ---
 
 - 日付: 2026-07-26 (**ブランド design system = PR #123 マージ済**
-  (develop tip `4e5623c`, ADR-0056 + ADR-0057)。user 依頼「デザインをモックに
+  (develop tip `a62ef5f`, ADR-0056 + ADR-0057)。user 依頼「デザインをモックに
   寄せたい」への回答。**Phase 1 = ADR-0056**: `dbboard-ui::theme` モジュールが
   stock egui を置換 — インディゴ基調パレットを Light/Dark 両方に登録 (Auto は
   無償で追従)、spacing/radius トークン、`danger`/`warning`/`success` の意味色軸で
@@ -42,7 +42,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   Schema diff / MCP 継続 等)、(3) PII 運用セットアップ・OpenAI 実応答・restore/backup
   実地確認の積み残し。**)
 - 日付: 2026-07-24 (**OSS 個人情報除去ワークフロー = PR #122 マージ済**
-  (develop tip `d3ee8dd`, ADR-0055)。user 依頼「OSS は個人情報を除去するワーク
+  (develop tip `ed12ecb`, ADR-0055)。user 依頼「OSS は個人情報を除去するワーク
   フロー (日次・コミット時・コミットコメントも)」への回答。**`scripts/pii-scan.sh`**
   (POSIX sh) を **3 経路**で起動: pre-commit フック (`--staged`)・新 commit-msg
   フック (`--message`)・CI `pii-scan.yml` (push/PR/**日次 cron** で `--selftest`
@@ -67,7 +67,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   マージ、(2) 上記 PII 運用セットアップ、(3) 次テーマ選定 (MCP 継続 / Export / Saved
   queries / Schema diff 等)、(4) OpenAI 実応答・restore/backup 実地確認の積み残し。**)
 - 日付: 2026-07-24 (**MCP ツール面を 5→7 に拡張 = PR #118 + PR #120 マージ済**
-  (develop tip `fa378c5`)。user 意向「OpenAI より MCP の需要が高い」を受けた
+  (develop tip `ea58050`)。user 意向「OpenAI より MCP の需要が高い」を受けた
   MCP 方面の 2 スライス。**(1) `search_schema` (ADR-0053, PR #118) = 6 つ目**:
   接続内の全テーブル/カラムを **名前** の大文字小文字無視部分一致で横断検索する
   「email カラムはどのテーブル?」の高速版 (`describe_table` を全テーブルに投げず
@@ -92,7 +92,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   (fmt/clippy/check/test)。**次の user 側ボール = この doc-sync PR のマージ + 次の
   実利用摩擦テーマ選定** (MCP 継続 or Export/Saved queries/Schema diff 等)。)
 - 日付: 2026-07-24 (**エラー折り返し fix = PR #116 マージ済** (develop tip
-  `aa5fa9d`)。OpenAI プロバイダ (PR #114) を develop ローカルビルドで**実機スモーク**
+  `6fdb3f8`)。OpenAI プロバイダ (PR #114) を develop ローカルビルドで**実機スモーク**
   した際に拾った実利用摩擦への即応。長いプロバイダエラー本文 (例 OpenAI の
   `429 insufficient_quota`) が AI アシスタントパネルを右に溢れて折り返さず読めなかった
   → 共通インラインエラー表示 `render_error` (ADR-0039) で、localized 行がコピーボタンと
@@ -106,7 +106,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   不足 `429 insufficient_quota` で未到達、残高チャージ後に各自確認)。**次テーマは MCP
   方面** (user 意向: OpenAI より MCP の需要が高い)。)
 - 日付: 2026-07-24 (**OpenAI/ChatGPT プロバイダ = ADR-0052、PR #114 マージ済**
-  (develop tip `ba54d02`)。ADR-0025 §Out-of-scope が defer した 2 つ目の
+  (develop tip `e6df7a5`)。ADR-0025 §Out-of-scope が defer した 2 つ目の
   プロバイダ。**新クレート `dbboard-openai`** (dbboard-anthropic の兄弟、
   dbboard-ai のみ依存) が **Chat Completions** (`POST /v1/chat/completions`) を
   実装。**ストリーミング parity** = 実 SSE パーサ (`data:` フレーム・`[DONE]`
@@ -123,7 +123,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   の実地スモーク (Settings で openai 追加 → Use → Explain/Suggest のトークン
   逐次表示 + トークンメータ + Cancel)。restore 実地確認 (ADR-0051) は未消化のまま。)
 - 日付: 2026-07-23 (**論理リストア/インポート = ADR-0051、PR #112 マージ済
-  (develop tip `e624bbb`)。** ADR-0049 ダンプの読み側 = クエリツールバーの
+  (develop tip `f83ccf0`)。** ADR-0049 ダンプの読み側 = クエリツールバーの
   **Restore…** で `.sql` を現接続へ流し込む。**6 スライスで着地 (core→adapters→
   UI):** (1) `split_statements` = 字句スプリッタ (文字列/識別子/ドル/コメントを
   尊重、`pg_dump`/`sqlite3 .dump` の他形式 `.sql` も分割可)、(3) `classify_script`
@@ -146,7 +146,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   (md-business 用) は「ちょい待ち」で保留のまま。)
 
 - 日付: 2026-07-23 (**バックアップ警告閾値を設定化 = ADR-0050、PR #110 マージ済
-  (develop tip `6116d1e`)。** 経緯: maintainer の「500k 閾値はソフト側で利用者が
+  (develop tip `41ae45a`)。** 経緯: maintainer の「500k 閾値はソフト側で利用者が
   変えられた方がいい」+「restore より先に単独で (設定永続化の基盤を先に用意)」。
   **設計 = 既存 `ui-settings.toml` (ADR-0041) を再利用、新ストアなし:**
   `UiSettingsFile` に `backup_warn_rows: Option<u64>` を
@@ -184,7 +184,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   keyset ページングでの全行読み出し (PK 順、PK 無しは rowid/ctid/OFFSET) を
   ファイルシンクへ直書き + (c2) preflight `COUNT(*)` 合算で進行総数 + 閾値
   warn-and-allow + (d) `run_dump` の進捗コールバック/キャンセル + (e) UI 配線 +
-  (f) i18n 11 ロケール + docs。**UI (slice e、commit `22e8533`):** `BackupState`
+  (f) i18n 11 ロケール + docs。**UI (slice e、commit `8381752`):** `BackupState`
   を純粋な状態機械 (Idle/Planning/Confirming/ReadyToSave/Running/Done/Failed) に
   設計 = drain_replies は状態遷移のみ、UI 専用の 2 ステップ (警告モーダル =
   Confirming、保存ダイアログ = ReadyToSave) は render 経路 (CSV export の
@@ -209,7 +209,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   リリース後、in-app update 通知が「download page」へリンクするのに実ページが
   無かった → PR #104 `feat/download-page` (ADR-0047) で GitHub Pages に静的 DL
   ページを載せ、first-party action 3 種 (`configure-pages`/`upload-pages-artifact`/
-  `deploy-pages`) の workflow で develop merge (tip `4fa5981`) 時に自動デプロイ →
+  `deploy-pages`) の workflow で develop merge (tip `898d6a1`) 時に自動デプロイ →
   https://meta-taro.github.io/dbboard/ が live (pages workflow は `site/**` 変更で
   発火、23s で成功)。`.exe` = primary (塗り) / `.msi` = secondary (アウトライン)
   の意図的 2 段ボタン、user 合意で維持。**user が MSI を初テストして 2 つの摩擦を
@@ -217,7 +217,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   加えて MSI アンインストールの残留を質問 → exe/PATH/フォルダ/ARP は消えるが
   `%APPDATA%\dbboard\dbboard\` 設定 + Windows 資格情報マネージャーのエントリは
   残ると回答 (クリーンアップ手順提示、README 明文化は任意 follow-up)。
-  **PR #105 `feature/msi-shortcuts` (`bb73bf1`) = MSI ショートカット:** WiX v3
+  **PR #105 `feature/msi-shortcuts` (`a7e9790`) = MSI ショートカット:** WiX v3
   非アドバタイズ型 (Shortcut + 各ユーザ HKCU `RegistryValue` key-path +
   `RemoveFolder`) でスタートメニュー (`ProgramMenuFolder\dbboard`) + デスクトップ。
   当初 Shortcuts を別サブフィーチャにしたら **ICE69 (LGHT0204 error)** = 対象ファイル
@@ -226,7 +226,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   `cargo wix --package dbboard --nocapture` (workspace は `--package` 必須) で MSI
   ビルド成功。ADR は新設せず (ADR-0032 installer の自然な拡張、根拠は wxs コメント、
   append-only 番号のブランチ間衝突回避)。**PR #106 `feature/result-multi-sort`
-  (`0049719`) = 最大 3 キーのソート (ADR-0048):** 順序ロジックを新 crate モジュール
+  (`af94a5d`) = 最大 3 キーのソート (ADR-0048):** 順序ロジックを新 crate モジュール
   `dbboard-core::sort` に分離 (UI イベントハンドラにビジネスロジックを置かない
   アーキ規則) = `compare_values` (NULL<数値<テキスト<Blob の全順序、`f64::total_cmp`
   で panic なし、int/real は `cmp_int_real` ヘルパで `#[allow(cast_precision_loss)]`)
@@ -238,11 +238,11 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   ロケールに `result-sort-hint` 追加。core 10 + UI sort_state 9 テスト。検証は fmt/
   clippy -D warnings (pedantic)/check/test --all-features 全緑、pre-commit 通過。
   両ブランチとも develop から独立分岐 = 相互衝突なし、user が push → PR #105/#106 を
-  develop 宛に作成 → user が両方マージ (merge `a5dbbb8` / `ef501fd`)。**CI 補足:**
+  develop 宛に作成 → user が両方マージ (merge `40e8a58` / `050ca5c`)。**CI 補足:**
   このリポは PR/ブランチ CI が無い (workflow は pages.yml=site 変更 push と
   release.yml=タグのみ)、品質ゲートは cargo-husky の pre-commit/pre-push フック。
   この doc-sync (`chore/post-105-106-doc-sync`) = roadmap に 3 項目 tick (DL ページ/
-  ソート/MSI ショートカット) + 本ファイル + next-actions。develop tip = `ef501fd`。)
+  ソート/MSI ショートカット) + 本ファイル + next-actions。develop tip = `050ca5c`。)
 - 日付: 2026-07-22 (**v0.3.0 リリース完了。目玉 = read-only MCP サーバ
   (`dbboard-mcp`, ADR-0046)。** PR #90 (注釈) 以降の未記録分をまとめて記録:
   #92 `fix/anthropic-error-body` (AI エラー本文の扱い修正) → #93
@@ -280,11 +280,11 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   `<user>` に伏字化 (コミットコメントは伏せた内容を再記載しない最小限)。
   公開 exe も実名/PII を `grep -a -i` で 0 件確認、SHA256 が
   `SHA256SUMS.txt` と一致。→ #102 で develop を再度 main にマージ、タグ v0.3.0 は
-  最終コミット `70ecb93` を指す。
+  最終コミット `0325571` を指す。
   **未了 (human ball, リリースを塞がない):** git 履歴に残る実店舗名の破壊的
   rewrite (`git filter-repo --replace-text` + force-push, [[private-connection-name-mapping]])、
   release.yml の publish ステップ自己作成化 (`gh release view || gh release
-  create`)。develop tip = `97ed4ef` / main = `70ecb93` (= v0.3.0)。
+  create`)。develop tip = `1770753` / main = `0325571` (= v0.3.0)。
   この doc-sync (`chore/post-0.3.0-doc-sync`) = README に MCP サーバ節追加 +
   macOS bundle の壊れた `--package` 例修正、roadmap の Release CI を proven-green
   化 + MCP 項目追加 + Pacing Note 刷新、本ファイル + next-actions。)
@@ -297,14 +297,14 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   全アダプタ一律。前セッションで実装済みだったブランチを本セッションで検証
   (fmt/clippy/check/test 全 green, 281 tests, うち annotations 15) →
   `rust-reviewer` = Approve/CRITICAL・HIGH ゼロ → レビュー指摘の軽微 doc ズレ
-  2 件 (main.rs の doc-comment 帰属バグ + ADR の API 名) を `3916dde` で修正 →
+  2 件 (main.rs の doc-comment 帰属バグ + ADR の API 名) を `2f69172` で修正 →
   延期 MEDIUM (Structure render のファイル/関数サイズ・per-frame clone) を
-  `.claude/issues/0016` に follow-up 化 → push → PR #90 (merge commit `0f734ff`)。
+  `.claude/issues/0016` に follow-up 化 → push → PR #90 (merge commit `e4e94fe`)。
   意図的に範囲外: Postgres `pg_description` 併記 (別 ADR)、`.dbbx` 同梱 (却下:
   暗号 secret bundle と非 secret ドキュメントは intent 不一致)。maintainer 意向
   では候補 A (AI プロバイダ実地テスト) と同リリース同梱予定 = 次の着手先。
   この doc-sync は roadmap の annotations 項目 tick + 本ファイル + next-actions。
-  develop tip = `0f734ff`。付随: Norton 隔離された harness の `claude.exe` を
+  develop tip = `e4e94fe`。付随: Norton 隔離された harness の `claude.exe` を
   復旧 (Grep ツールが一時失効していた, [[env-windows-norton]] の既知パターン)。)
 - 日付: 2026-07-17 (**配れるインストーラ + Release CI を PR #88 で整備。**
   経緯: 「いきなり unsigned exe は OSS として怪しまれる」という指摘を受け、
@@ -322,7 +322,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   初ライブテスト。未署名なので SmartScreen/Gatekeeper 警告は残る (署名は有料・
   後日, ADR-0044 §Future にプレースホルダ済)。この doc-sync は roadmap の
   packaging 3 項目 tick (exe ハンドオフ #14 済 / Release CI / macOS) +
-  未対応の署名・Linux を新規項目化 + 本ファイル。develop tip = `7a01f23`。)
+  未対応の署名・Linux を新規項目化 + 本ファイル。develop tip = `19e3353`。)
 - 日付: 2026-07-17 (**v0.2.0 リリース済 + Help メニュー更新通知の 2 バグを
   PR #86 で修正。** 経緯: PR #82 の 4 バグ修正 → doc-sync PR #83 → バージョンを
   0.1.0→0.2.0 に bump (PR #84) → develop を main にマージして v0.2.0 タグ +
@@ -332,9 +332,9 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   (番号 0.1.0 + update-check) の bump 直前ビルドで検証したところ、更新通知は
   出るが Help メニューが**クリックで即閉じてリンク/変更点を操作できない**、
   かつ変更点が**生 Markdown のまま**という 2 バグを確認 → PR #86 で修正。
-  develop tip = `bcd7db1`。この `chore/post-pr86-doc-sync` は roadmap の
+  develop tip = `06e3646`。この `chore/post-pr86-doc-sync` は roadmap の
   update-check 項目に追随注記 + 本ファイル + next-actions の sync。)
-- ブランチ: `chore/post-pr86-doc-sync` (develop `bcd7db1` から分岐)。
+- ブランチ: `chore/post-pr86-doc-sync` (develop `06e3646` から分岐)。
 - **PR #82 = 純デスクトップ/in-process 修正 = ワイヤ契約不変・web ミラー
   不要。** テスト `theme_preference_maps_onto_viewport_theme` 追加、
   検証コマンド全通過 (release build/test 含む)。
@@ -362,7 +362,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
   export/import (ADR-0038, PR #68)。加えて先行して aurora-dsql-iam 段階A
   (ADR-0036, PR #56)。
 - **#14 ハンドオフ最終ビルド:** 0012–0015 + PR #82 の 4 バグ修正が develop
-  `22cb6d3` に入ったので、**引き渡し前にこの develop から
+  `69c0680` に入ったので、**引き渡し前にこの develop から
   `cargo build --release` を取り直すのが理想** = 収集担当が最新 UX
   (即実行簡易SQL・テーマ (タイトルバー追従込み)・再編集可能なセル編集 +
   常時見える Save 行) と配布ガイド記載のコピー可能エラー + 起動時アップデート
@@ -378,7 +378,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
 
 - **v0.2.0 リリース (PR #84 bump → PR #85 release merge):** `develop→main`
   リリース規約どおり、workspace を 0.1.0→0.2.0 に bump 後、develop を main に
-  マージして v0.2.0 タグ (`891d2cc`) + `gh release create` で exe 資産添付。
+  マージして v0.2.0 タグ (`7c9201c`) + `gh release create` で exe 資産添付。
   公開前に exe を実接続名でスキャン (0 一致 = 公開安全)。`releases/latest` が
   v0.2.0 を返すこと (= update-check が GET する対象)・draft/prerelease=false・
   資産 `dbboard.exe` 添付・downloadCount=0 を確認。CHANGELOG に 0.2.0 節、
@@ -412,7 +412,7 @@ baseline §31 に基づく退避。`.claude/project-status.md` が 3,689 行ま�
 develop から分岐した独立 3 ブランチを推奨マージ順 (エラー i18n →
 アップデート確認 → 配布ガイド) で順次 develop 着地。この順序で #72 の
 配布ガイド記述が develop の実装 (コピー可能エラー + 更新通知) と一致し、
-#14 の exe 再ビルド地点が確定する。develop tip = `bb9f46f`。
+#14 の exe 再ビルド地点が確定する。develop tip = `e5d8d92`。
 
 - **PR #70 = エラー表示の統一 (ADR-0039)**: アプリ由来エラーを「日本語訳
   + 原文英語」併記 + Copy ボタン (テキストも selectable)。SQL / プロバイダ
@@ -456,27 +456,27 @@ develop から分岐した独立 3 ブランチを推奨マージ順 (エラー 
 ### PR #68 (ADR-0038 = 接続設定の暗号化バンドル export/import) マージクローズ (前セッション / 2026-07-16)
 
 - PR #68 (`feat/connection-bundle-export` → `develop`) マージ済 =
-  `de19e34`。ローカル `develop` は `origin/develop` (= `de19e34`) と
+  `8b17111`。ローカル `develop` は `origin/develop` (= `8b17111`) と
   fast-forward sync 済。本 chore (`chore/post-pr68-doc-sync`) は
   develop ベース。
 - feat PR が運んだ 5 commit:
-  - `9555445` slice a = 暗号コア (`dbboard-config::bundle`:
+  - `ab881de` slice a = 暗号コア (`dbboard-config::bundle`:
     `BundlePayload` / `encrypt_bundle` / `decrypt_bundle` /
     `validate_passphrase` / `BundleError`、`age` passphrase mode、
     `MIN_PASSPHRASE_LEN=8`、redacting Debug)。
-  - `6d096a1` slice b = orchestration (`ConnectionAdmin::export_bundle`
+  - `1756b16` slice b = orchestration (`ConnectionAdmin::export_bundle`
     / `import_bundle`、keyring ref 解決 + seed、`ImportReport`
     skip-and-report、`ConfigError::Bundle`)。
-  - `d215376` hardening = **レビューで検出した CRITICAL/HIGH 修正**:
+  - `bca8b2c` hardening = **レビューで検出した CRITICAL/HIGH 修正**:
     (1) ref 衝突拒否 = 新規 id の keyring ref が既存接続の keychain
     スロットを指す細工バンドルを skip (全 kind、手書き AuroraDsqlIam
     含む)。(2) 復号後 secret の zeroize = `BundlePayload` Drop +
     `secret_writes` を error/success 両経路で zeroize。
-  - `b33d2ad` slice c = UI 配線 (connections view の Export/Import
+  - `f1e3746` slice c = UI 配線 (connections view の Export/Import
     ボタン + パスフレーズフォーム、`rfd` ダイアログは
     `drive_file_dialogs()` でロック解放後に実行 = `DesktopSwitcher`
     が同じ admin ロックを別スレッドで取るため。en/ja i18n 17 キー)。
-  - `7c2328e` slice d = user-facing docs (ADR-0038 に Implementation
+  - `215e4c4` slice d = user-facing docs (ADR-0038 に Implementation
     hardening 節、`docs/connections.md` に "Moving connections between
     machines" 節、`docs/collector-setup/README.md` にバンドル
     fast-path、README 注記)。
@@ -491,11 +491,11 @@ develop から分岐した独立 3 ブランチを推奨マージ順 (エラー 
 - **web sibling**: desktop-only / HTTP wire-contract 無変更 = web 影響
   ゼロ、cross-repo brief 不要 (ADR-0036/0037 と同 posture)。
 
-### 収集セットアップ pack (#9 / 2026-07-14、PR #63 = `b69d3a4`)
+### 収集セットアップ pack (#9 / 2026-07-14、PR #63 = `4a93a4e`)
 
 収集担当機に dbboard を立ち上げるための自己完結パック。build/docs のみ
-= ソース挙動不変、crate/HTTP contract 不変。commit 2 本 (`cc067e1` feat
-+ `249f44b` docs)、リリースゲート (build --release / test --release) まで
+= ソース挙動不変、crate/HTTP contract 不変。commit 2 本 (`c04cf39` feat
++ `af3f2e9` docs)、リリースゲート (build --release / test --release) まで
 green。
 
 - **`docs/collector-setup/connections.template.toml`**: 3 接続
@@ -517,12 +517,12 @@ green。
 - **残**: #14 = `cargo build --release` の exe を担当へ (exe 単体で
   自己完結、ADR-0032)。
 
-### Windows 内々配布パッケージング (本セッション / 2026-07-10、PR #52 = `1cec10f`)
+### Windows 内々配布パッケージング (本セッション / 2026-07-10、PR #52 = `d372388`)
 
 maintainer の「内内に配布したい。一旦 win のみで OK」に対応
 (**ADR-0032**、`feature/windows-packaging` → PR #52 merge)。build /
 packaging のみ = ソース挙動・crate/HTTP contract・`history.jsonl` 不変、
-非 Windows では no-op。commit 2 本 (`2281726` code + `bb064f7` docs)、
+非 Windows では no-op。commit 2 本 (`497ba95` code + `fe13273` docs)、
 pre-commit フック完走・全テスト green (29 result blocks)。
 
 - **コンソール窓抑止**: `main.rs` に
@@ -556,19 +556,19 @@ pre-commit フック完走・全テスト green (29 result blocks)。
 cargo-husky pre-commit フック (fmt/clippy/check/test) 完走、dbboard-ui
 lib test = 215 passed、全ワークスペーステスト green。
 
-- `76f7520` **run trigger UX**: Run ボタンだけでなく F5 /
+- `fba6828` **run trigger UX**: Run ボタンだけでなく F5 /
   Ctrl(Cmd)+Enter / エディタ右クリックメニューから SQL 実行。
   純関数 `should_run_from_keys` + 4 test。
-- `874ab8e` **result grid 刷新 (ADR-0030)**: egui_extras `TableBuilder`
+- `9351494` **result grid 刷新 (ADR-0030)**: egui_extras `TableBuilder`
   へ載せ替え。sticky header (スクロール追従) + 縦罫線付き resizable
   カラム + striping + `body.rows()` 仮想化。長文/複数行セルは省略表示
   + `⋯` ボタンで full-text popup (Copy 付き)。egui_extras 0.34 を
   workspace 依存に追加。
-- `2a1d446` **auto-LIMIT ガード (ADR-0030)**: 裸の SELECT に既定
+- `33577cc` **auto-LIMIT ガード (ADR-0030)**: 裸の SELECT に既定
   `LIMIT 100` を付与し無制限スキャンでの UI フリーズを防止。ツールバー
   チェックボックスで可視 + off 可、ユーザーが自分で LIMIT を書けば
   無干渉 (`is_bare_select` / `apply_auto_limit`)。
-- `8ccc1f6` **structure タブ (ADR-0031)**: サイドバーのテーブルクリックで
+- `26ef91b` **structure タブ (ADR-0031)**: サイドバーのテーブルクリックで
   結果ペイン横に「構造」タブを開き列情報 (ordinal/name/type/nullable/
   key/default) を表示。SQLite 固有 PRAGMA ではなく cross-adapter の
   `describe_table` (ADR-0028) 経由なので D1/Turso/Postgres で共通動作。
@@ -582,17 +582,17 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### ADR-0028 slice (a)〜(d) 実装完了 (本セッション / 2026-07-02)
 
 - branch: `feature/ddl-extraction`、commit 積み上げ:
-  - `a42a27c` slice (a) = `dbboard-core`: `describe_table`
+  - `92c5749` slice (a) = `dbboard-core`: `describe_table`
     trait method (default = `DbError::Capability`)、`TableSchema`、
     `ColumnInfo.ordinal` + `default_value` additive、
     `Capabilities::has_describe_table` (JSON round-trip test 付き)。
-    review notes は `bba4072` で解消。
-  - `b509a36` slice (b) = turso (`PRAGMA table_info`) / d1 (同 PRAGMA
+    review notes は `87542e4` で解消。
+  - `305ac63` slice (b) = turso (`PRAGMA table_info`) / d1 (同 PRAGMA
     を HTTP envelope 経由) / postgres (`information_schema` 2 クエリ)
     の 3 実装 + 各 `has_describe_table = true`。postgres 統合テストは
     crate 既存の `DBBOARD_PG_URL` env-var self-skip パターン
     (issue 0011 の当初記述「testcontainers」は実態に合わせ訂正済)。
-  - `dfdaaca` slice (c) = `SuggestRequest.full_schema:
+  - `50f335e` slice (c) = `SuggestRequest.full_schema:
     Option<Vec<TableSchema>>` (additive) + Anthropic の compact
     CREATE TABLE 風 rendering + worker `Command::PrefetchSchema` /
     `Reply::SchemaPrefetched` fan-out (`tokio::sync::Semaphore` cap 8、
@@ -630,10 +630,10 @@ lib test = 215 passed、全ワークスペーステスト green。
 
 ### ADR-0028 (Phase 4 Stage 2 Group D-1 = full DDL extraction) draft コミット (本セッション / 2026-07-02)
 
-- branch: `feature/ddl-extraction` (未 push、1 commit = `00ac1b8`)。
+- branch: `feature/ddl-extraction` (未 push、1 commit = `5a21e22`)。
 - ADR-0028 status: **Proposed (2026-07-01)**。全 slice hash は将来の
-  Slice (d) 前に本文に埋め込み予定 = ADR-0026 slice (d) `fff669c` /
-  ADR-0027 slice (d) `34ad0eb` の埋め込み precedent 継承。
+  Slice (d) 前に本文に埋め込み予定 = ADR-0026 slice (d) `3b290da` /
+  ADR-0027 slice (d) `b2f5c95` の埋め込み precedent 継承。
 - Group D の分割理由 (再掲): DDL extraction は DB adapter 側 (Postgres /
   Turso / D1 各実装 + trait 拡張)、function-calling は AI provider 側
   (Anthropic tool_use API + StreamEvent variant + worker round-trip)。
@@ -709,17 +709,17 @@ lib test = 215 passed、全ワークスペーステスト green。
 
 ### PR #47 (ADR-0027 Phase 4 Stage 2 Group C / AI history.jsonl v:2) マージクローズ (前セッション / 2026-07-01)
 
-- PR #47 (`feature/ai-history-v2` → `develop`) マージ済 = `768e009`
+- PR #47 (`feature/ai-history-v2` → `develop`) マージ済 = `1aec99b`
   (mergedAt 2026-07-01T05:02:24Z)。ローカル `develop` は
-  `origin/develop` (= `768e009`) と fast-forward sync 済、feature
+  `origin/develop` (= `1aec99b`) と fast-forward sync 済、feature
   ブランチはローカル削除済 (`git branch -D`)、origin 側も merge 時に
   auto-delete。
 - 着地した 5 commit はすべて PR #47 内で完結 = 下記「ADR-0027 Phase 4
   Stage 2 Group C ローカル実装完了」セクション (本ファイル下部) に
   詳細が残っている。本 chore は **新規実装ゼロ**、`.claude/next-actions.md`
   + 本ファイル冒頭 + `docs/decisions.md` の ADR-0027 slice (d)
-  placeholder (TBD → `34ad0eb`) + `.claude/issues/0008-web-history-v2-mirror.md`
-  Anchors の "desktop merge commit ID" フィルイン (→ `768e009`) のみ更新。
+  placeholder (TBD → `b2f5c95`) + `.claude/issues/0008-web-history-v2-mirror.md`
+  Anchors の "desktop merge commit ID" フィルイン (→ `1aec99b`) のみ更新。
 - post-PR doc-sync chore PR としての位置づけ: PR #38 (post-PR37) /
   #40 (post-PR39) / #42 (post-PR41) / #44 (post-PR43) / #46 (post-PR45)
   に続く 6 件目。同パターン継続 = feat PR が code + ADR + user-facing
@@ -732,16 +732,16 @@ lib test = 215 passed、全ワークスペーステスト green。
 - ADR-0027 status: **Proposed (2026-06-30) → Accepted (2026-07-01)**
   に切替、4 slice の着地 commit ID を ADR 本文 + roadmap + issue 0010
   に embed。Slice d 自身の hash は本 commit の hash が決まってから
-  post-merge chore で埋める運用 = ADR-0026 slice (d) `fff669c` の
+  post-merge chore で埋める運用 = ADR-0026 slice (d) `3b290da` の
   precedent と同じ。
 - 5 コミット内訳 (`feature/ai-history-v2` 上、user push 待ち):
 
 | コミット | スコープ | 中身 |
 |---|---|---|
-| `958c117` | `docs: ADR-0027 draft` | `docs/decisions.md` 末尾に ADR-0027 (10 Decision + slice plan + out-of-scope)。`.claude/issues/0010-ai-history-v2.md` 実装トラッカ作成、`.claude/issues/0008-web-history-v2-mirror.md` cross-repo brief 作成 (issue 0008 = ADR-0025 の Settings UI issue と紛らわしい番号被りだが、これは cross-repo brief 番号系列 (0003 / 0006 / 0007 / 0008 …) の連番)。 |
-| `b16537f` | `feat(history) Slice a: v:2 reader + writer + AI variant` | `dbboard-ui::history::CURRENT_VERSION` を 1 → 2、`RecordWire` を flat struct に変換 + `kind: "query" \| "ai"` discriminator、`HistoryEntry` を `{ Query { … }, Ai { … } }` の 2 variant に split。v:1 record は `kind` 無しなら `Query` として transparent read (ADR-0027 §Decision 3)、v:2 で `kind` 不明 or `intent` 不明なら drop + counter tick。writer は `prompt` / `response` を 64 KiB で truncate + `[truncated at 64 KiB]` marker 付加 (Decision 10)。`examples/emit_history_fixture` を 10 query + 1 AI (計 11 line、all v:2) に拡張、`fixture_output_matches_brief_conventions` test で pin。 |
-| `13f7736` | `feat(ai) Slice b: identity() + provider/model plumbing` | `dbboard-ai::AiProvider` に `identity(&self) -> (&'static str, &str)` を additive 追加 (default impl `("unknown", "")`)。`AiResponse` に `provider: String, model: String` 追加。`dbboard-anthropic::AnthropicProvider::identity()` = `("anthropic", &self.model)` 実装。`dbboard-ui::worker` の 4 terminal AI reply variants (`AiResponded` / `AiStreamComplete` / `AiFailed` / `AiCancelled`) が `provider, model` を carry するように拡張、dispatch arm は spawn-time identity snapshot (slot swap 対策 = ADR-0027 §Implementation Slice b) を取って terminal reply にスタンプ。既存 worker tokio test に provider/model assert を 1 行ずつ追加、new test は最小 diff。 |
-| `0e76223` | `feat(history) Slice c: AI history write point on UI thread` | `dbboard-ui::lib` に `PendingAiSubmit { conn, intent, prompt, submit_ts, started }` を追加 (`PendingSubmit` SQL 記録の型と対称、ADR-0017 model)。Send-click → `pending_ai_from_command` snapshot → worker forward、send 失敗時は drop。4 terminal AI reply arm を helper (`on_ai_responded` / `on_ai_failed` / `on_ai_stream_complete` / `on_ai_cancelled`) に分解 (`drain_replies` 100 行制限のため refactor)、各 helper は `build_ai_ok_entry` / `build_ai_failed_entry` / `build_ai_cancelled_entry` で `HistoryEntry::Ai { … }` を構築、`record_ai_history` で `PersistentHistoryStore` に append。streaming/cancelled は `AiPanel::streaming()` を drain **前に** peek すること、cancel token bookkeeping (`Cancel` command は既存 pending を上書きしない)、cancelled でも 0-token accumulator は tokens `None` semantics (ADR-0027 §Decision 5 "no usage event yet") 遵守。`stop_reason_wire` (`StopReason` → wire string) + `ai_error_history_parts` (`AiError` → `(category, message)`) の変換 helper 追加、`error: null` は `cancelled` 固定 (Decision 5 の cancel-is-top-level 遵守)。18 新規 unit test = helpers 6 + 4 terminal arm round-trip + defensive no-pending case × 2。`ui` 100 行超え対策で `render_ai_panel` に extract、`too_many_arguments` 対策で `provider: String, model: String` を `identity: (String, String)` tuple に集約 (`build_ai_ok_entry` 8→7 引数)、`needless_pass_by_value` 対策で `error: &AiError` / `stop_reason: &StopReason`。 |
+| `573b08b` | `docs: ADR-0027 draft` | `docs/decisions.md` 末尾に ADR-0027 (10 Decision + slice plan + out-of-scope)。`.claude/issues/0010-ai-history-v2.md` 実装トラッカ作成、`.claude/issues/0008-web-history-v2-mirror.md` cross-repo brief 作成 (issue 0008 = ADR-0025 の Settings UI issue と紛らわしい番号被りだが、これは cross-repo brief 番号系列 (0003 / 0006 / 0007 / 0008 …) の連番)。 |
+| `f14a387` | `feat(history) Slice a: v:2 reader + writer + AI variant` | `dbboard-ui::history::CURRENT_VERSION` を 1 → 2、`RecordWire` を flat struct に変換 + `kind: "query" \| "ai"` discriminator、`HistoryEntry` を `{ Query { … }, Ai { … } }` の 2 variant に split。v:1 record は `kind` 無しなら `Query` として transparent read (ADR-0027 §Decision 3)、v:2 で `kind` 不明 or `intent` 不明なら drop + counter tick。writer は `prompt` / `response` を 64 KiB で truncate + `[truncated at 64 KiB]` marker 付加 (Decision 10)。`examples/emit_history_fixture` を 10 query + 1 AI (計 11 line、all v:2) に拡張、`fixture_output_matches_brief_conventions` test で pin。 |
+| `094e6a0` | `feat(ai) Slice b: identity() + provider/model plumbing` | `dbboard-ai::AiProvider` に `identity(&self) -> (&'static str, &str)` を additive 追加 (default impl `("unknown", "")`)。`AiResponse` に `provider: String, model: String` 追加。`dbboard-anthropic::AnthropicProvider::identity()` = `("anthropic", &self.model)` 実装。`dbboard-ui::worker` の 4 terminal AI reply variants (`AiResponded` / `AiStreamComplete` / `AiFailed` / `AiCancelled`) が `provider, model` を carry するように拡張、dispatch arm は spawn-time identity snapshot (slot swap 対策 = ADR-0027 §Implementation Slice b) を取って terminal reply にスタンプ。既存 worker tokio test に provider/model assert を 1 行ずつ追加、new test は最小 diff。 |
+| `cb5f55d` | `feat(history) Slice c: AI history write point on UI thread` | `dbboard-ui::lib` に `PendingAiSubmit { conn, intent, prompt, submit_ts, started }` を追加 (`PendingSubmit` SQL 記録の型と対称、ADR-0017 model)。Send-click → `pending_ai_from_command` snapshot → worker forward、send 失敗時は drop。4 terminal AI reply arm を helper (`on_ai_responded` / `on_ai_failed` / `on_ai_stream_complete` / `on_ai_cancelled`) に分解 (`drain_replies` 100 行制限のため refactor)、各 helper は `build_ai_ok_entry` / `build_ai_failed_entry` / `build_ai_cancelled_entry` で `HistoryEntry::Ai { … }` を構築、`record_ai_history` で `PersistentHistoryStore` に append。streaming/cancelled は `AiPanel::streaming()` を drain **前に** peek すること、cancel token bookkeeping (`Cancel` command は既存 pending を上書きしない)、cancelled でも 0-token accumulator は tokens `None` semantics (ADR-0027 §Decision 5 "no usage event yet") 遵守。`stop_reason_wire` (`StopReason` → wire string) + `ai_error_history_parts` (`AiError` → `(category, message)`) の変換 helper 追加、`error: null` は `cancelled` 固定 (Decision 5 の cancel-is-top-level 遵守)。18 新規 unit test = helpers 6 + 4 terminal arm round-trip + defensive no-pending case × 2。`ui` 100 行超え対策で `render_ai_panel` に extract、`too_many_arguments` 対策で `provider: String, model: String` を `identity: (String, String)` tuple に集約 (`build_ai_ok_entry` 8→7 引数)、`needless_pass_by_value` 対策で `error: &AiError` / `stop_reason: &StopReason`。 |
 | (Slice d = this commit) | `docs: close ADR-0027 (Phase 4 Stage 2 Group C = AI history.jsonl v:2)` | ADR-0027 status を Proposed (2026-06-30) → **Accepted (2026-07-01)** に切替 + 4 slice 着地 commit ID を ADR status 本文 + roadmap Group C tick に embed。`docs/roadmap.md` Phase 4 Stage 2 に "AI calls recorded in `history.jsonl` with schema v:2 bump" を `[x]` で追加 + Exit criteria メモを Groups A / B / C 全部クローズに書き換え。`README.md` AI integration セクション末尾に verbatim-logging 警告段落追加 (prompt/response が verbatim、ADR-0024 at-rest posture 継承) + deferred リストから "AI calls recorded in `history.jsonl`" を削除。`.claude/issues/0010-ai-history-v2.md` status flip open → closed、全 acceptance checkbox `[x]`、slice tag 付与。`.claude/issues/0008-web-history-v2-mirror.md` Anchors セクションを feature branch の 4 slice hash に更新 (merge commit は post-merge chore で埋める)。`.claude/project-status.md` (本ファイル) 冒頭 sync。`.claude/next-actions.md` を Group C ローカル完了 / 次の選択肢 = push + PR create、その先 = Group D or friction、に再生成。 |
 
 #### 検証コマンド (全 commit で pre-commit hook pass)
@@ -767,16 +767,16 @@ lib test = 215 passed、全ワークスペーステスト green。
 
 - 日付: 2026-06-30 (**PR #45 マージクローズ** = ADR-0026 Phase 4
   Stage 2 Group B = streaming + cooperative cancel + token meter
-  が `develop` に着地 = `3bb82c4` (mergedAt 2026-06-30T04:22:45Z)。
-  6 commit (`3f16697` ADR draft → `2cb012e` Slice a → `e5f49d0`
-  Slice b → `e8f5fd5` Slice c → `fff669c` Slice d → `806b04a` docs
+  が `develop` に着地 = `01bdca6` (mergedAt 2026-06-30T04:22:45Z)。
+  6 commit (`d5af904` ADR draft → `e869ff3` Slice a → `edff3cb`
+  Slice b → `a09316a` Slice c → `3b290da` Slice d → `faa6ffb` docs
   close-out) 全部緑で merge。これで **Phase 4 Stage 2 で in-process
   スコープの 2 大 Group (A = ADR-0025 / B = ADR-0026) が両方クローズ**。
   本 chore PR (`chore/post-pr45-doc-sync`) は PR #38 / #40 / #42 /
   #44 と同じ post-PR doc-sync パターンで `.claude/*` のみ触り、
   next-actions.md を「Group B merged / 次の選択肢 = Group C / Group D /
   friction」状態に再生成 + project-status.md に PR #45 close-out 記録。)
-- ブランチ: `develop` (= `3bb82c4`)、ローカル `chore/post-pr45-doc-sync`
+- ブランチ: `develop` (= `01bdca6`)、ローカル `chore/post-pr45-doc-sync`
   作業中 (`feature/ai-streaming-cancel-tokens` は merged 済 / ローカルから
   削除済 = `git branch -D` / origin auto-delete 判断は maintainer)
 - 現在の Phase: **Phase 2 + 2.5 + 3 + Phase 4 Stage 1 = 据え置き。
@@ -792,8 +792,8 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #45 (ADR-0026 Phase 4 Stage 2 Group B / streaming + cooperative cancel + token meter) マージクローズ (本セッション / 2026-06-30)
 
 - PR #45 (`feature/ai-streaming-cancel-tokens` → `develop`) マージ済 =
-  `3bb82c4` (mergedAt 2026-06-30T04:22:45Z = JST 13:22)。ローカル
-  `develop` は `origin/develop` (= `3bb82c4`) と fast-forward sync 済、
+  `01bdca6` (mergedAt 2026-06-30T04:22:45Z = JST 13:22)。ローカル
+  `develop` は `origin/develop` (= `01bdca6`) と fast-forward sync 済、
   feature ブランチはローカル削除済 (`git branch -D`)。
 - 着地した 6 commit はすべて PR #45 内で完結 = 下記「ADR-0026 Phase 4
   Stage 2 Group B ローカル実装完了」セクション (本ファイル下部) に
@@ -816,12 +816,12 @@ lib test = 215 passed、全ワークスペーステスト green。
 
 | コミット | スコープ | 中身 |
 |---|---|---|
-| `3f16697` | `docs: ADR-0026 draft` | `docs/decisions.md` 末尾に ADR-0026 (11 Decision)。`.claude/issues/0009-ai-streaming-cancel-tokens.md` 実装トラッカ作成。 |
-| `2cb012e` | `feat(ai) Slice a: dbboard-ai trait 拡張` | `AiProvider::stream_explain` / `stream_suggest_sql` を additive 追加、戻り値 `BoxStream<'static, AiResult<StreamEvent>>`。`StreamEvent { MessageStart, TextDelta, Usage, MessageStop, Error }` + `StopReason { EndTurn, MaxTokens, StopSequence, ToolUse, Refusal, Other(String) }`。default impl で atomic `explain`/`suggest_sql` を 1-shot stream に wrap → 既存プロバイダ無改変で streaming 契約満たす。`AiCapabilities::has_streaming` の意味づけを「true = token-granularity chunks、false = default delegate」に正式化。 |
-| `e5f49d0` | `feat(ai) Slice b: Anthropic SSE` | `dbboard-anthropic` で `reqwest-eventsource` 0.6 + `RetryPolicy::Never` (token-billed POST は silent retry 厳禁)。SSE event を `StreamEvent` に変換、`message_delta.usage.output_tokens` の cumulative 性質を respect (sum せず last-write-wins)。`ping`/`error` event の正規化、`AnthropicCapabilities::has_streaming = true`。 |
-| `e8f5fd5` | `feat(ai) Slice c: worker channel 改造` | `dbboard-ui::worker` を tokio async loop 化 = std::mpsc → tokio::mpsc bridge thread で `Command` 受信、`run_command_loop` が per-request `Option<CancellationToken>` slot を保持。streaming/atomic 両方 `tokio::select!` で stream future vs `token.cancelled()` race、cancel arm が `Reply::AiCancelled` を直接 emit (`AiError::Cancelled` を絶対に作らない = ADR-0026 Decision 12)。`Command::{AiExplainStream, AiSuggestStream, CancelAiRequest}` + `Reply::{AiChunk, AiStreamComplete, AiCancelled}` 追加。11 件の worker tokio test (happy path / mid-stream error / outer stream Err / no terminator synthetic / streaming cancel mid-flight / atomic cancel mid-flight / atomic success short-circuit / no-provider gate × 2)。 |
-| `fff669c` | `feat(ai) Slice d: AiPanel state machine + UI + i18n` | `AiPanel` に `StreamingAcc { text, tokens_in, tokens_out }` + `streaming: Option<StreamingAcc>` + `cancelled: bool` 追加。lazy chunk accumulator (初回 chunk まで spinner 維持)、cumulative token replace (sum しない)、cancel-on-stream → 部分テキストを `last_response::Ok` に保全 (ユーザーが支払ったバイトを捨てない)、cancel-on-atomic → flag のみ反転。`prepare_send(dialect, schema, has_streaming)` で has_streaming に応じて `AiExplain`/`AiExplainStream` 切替、`prepare_cancel() -> Option<Command::CancelAiRequest>`。UI = Send ↔ Cancel toggle、token meter、cancelled message。3 Fluent keys × 11 locales (`ai-cancel-button` / `ai-cancelled-message` / `ai-tokens-meter`)。`DbboardApp::ai_has_streaming()` helper で slot snapshot から capability 読出 → ui() に thread。23 panel test (既存 13 + 新規 10)。 |
-| `806b04a` | `docs: close ADR-0026` | ADR-0026 status を Proposed (2026-06-29) → **Accepted (2026-06-30)** に切替、4 slice 着地 commit ID embed。`docs/roadmap.md` Phase 4 Stage 2 Group B 完了マーク。`README.md` AI セクションに streaming + cancel + token meter 段落追加 + deferred list から streaming 削除。`.claude/issues/0009-ai-streaming-cancel-tokens.md` closed (2026-06-30)。同 PR 内で完結。|
+| `d5af904` | `docs: ADR-0026 draft` | `docs/decisions.md` 末尾に ADR-0026 (11 Decision)。`.claude/issues/0009-ai-streaming-cancel-tokens.md` 実装トラッカ作成。 |
+| `e869ff3` | `feat(ai) Slice a: dbboard-ai trait 拡張` | `AiProvider::stream_explain` / `stream_suggest_sql` を additive 追加、戻り値 `BoxStream<'static, AiResult<StreamEvent>>`。`StreamEvent { MessageStart, TextDelta, Usage, MessageStop, Error }` + `StopReason { EndTurn, MaxTokens, StopSequence, ToolUse, Refusal, Other(String) }`。default impl で atomic `explain`/`suggest_sql` を 1-shot stream に wrap → 既存プロバイダ無改変で streaming 契約満たす。`AiCapabilities::has_streaming` の意味づけを「true = token-granularity chunks、false = default delegate」に正式化。 |
+| `edff3cb` | `feat(ai) Slice b: Anthropic SSE` | `dbboard-anthropic` で `reqwest-eventsource` 0.6 + `RetryPolicy::Never` (token-billed POST は silent retry 厳禁)。SSE event を `StreamEvent` に変換、`message_delta.usage.output_tokens` の cumulative 性質を respect (sum せず last-write-wins)。`ping`/`error` event の正規化、`AnthropicCapabilities::has_streaming = true`。 |
+| `a09316a` | `feat(ai) Slice c: worker channel 改造` | `dbboard-ui::worker` を tokio async loop 化 = std::mpsc → tokio::mpsc bridge thread で `Command` 受信、`run_command_loop` が per-request `Option<CancellationToken>` slot を保持。streaming/atomic 両方 `tokio::select!` で stream future vs `token.cancelled()` race、cancel arm が `Reply::AiCancelled` を直接 emit (`AiError::Cancelled` を絶対に作らない = ADR-0026 Decision 12)。`Command::{AiExplainStream, AiSuggestStream, CancelAiRequest}` + `Reply::{AiChunk, AiStreamComplete, AiCancelled}` 追加。11 件の worker tokio test (happy path / mid-stream error / outer stream Err / no terminator synthetic / streaming cancel mid-flight / atomic cancel mid-flight / atomic success short-circuit / no-provider gate × 2)。 |
+| `3b290da` | `feat(ai) Slice d: AiPanel state machine + UI + i18n` | `AiPanel` に `StreamingAcc { text, tokens_in, tokens_out }` + `streaming: Option<StreamingAcc>` + `cancelled: bool` 追加。lazy chunk accumulator (初回 chunk まで spinner 維持)、cumulative token replace (sum しない)、cancel-on-stream → 部分テキストを `last_response::Ok` に保全 (ユーザーが支払ったバイトを捨てない)、cancel-on-atomic → flag のみ反転。`prepare_send(dialect, schema, has_streaming)` で has_streaming に応じて `AiExplain`/`AiExplainStream` 切替、`prepare_cancel() -> Option<Command::CancelAiRequest>`。UI = Send ↔ Cancel toggle、token meter、cancelled message。3 Fluent keys × 11 locales (`ai-cancel-button` / `ai-cancelled-message` / `ai-tokens-meter`)。`DbboardApp::ai_has_streaming()` helper で slot snapshot から capability 読出 → ui() に thread。23 panel test (既存 13 + 新規 10)。 |
+| `faa6ffb` | `docs: close ADR-0026` | ADR-0026 status を Proposed (2026-06-29) → **Accepted (2026-06-30)** に切替、4 slice 着地 commit ID embed。`docs/roadmap.md` Phase 4 Stage 2 Group B 完了マーク。`README.md` AI セクションに streaming + cancel + token meter 段落追加 + deferred list から streaming 削除。`.claude/issues/0009-ai-streaming-cancel-tokens.md` closed (2026-06-30)。同 PR 内で完結。|
 
 ### 検証コマンド (全 commit で pre-commit hook pass)
 
@@ -846,19 +846,19 @@ lib test = 215 passed、全ワークスペーステスト green。
 #### 旧最終更新 (2026-06-29 / PR #43 マージクローズ — 参考保持)
 
 - 日付: 2026-06-29 = ADR-0025 Phase 4 Stage 2 Group A slice (b)
-  が `develop` に着地 = `5124b00` (mergedAt 2026-06-29T05:59:26Z)。
+  が `develop` に着地 = `801157d` (mergedAt 2026-06-29T05:59:26Z)。
   これで ADR-0025 全 4 slice (a-1 PR #37 / a-2-α PR #39 / a-2-β PR #41
   / b PR #43) が `develop` に着地完了 = **Phase 4 Stage 2 Group A
   クローズ**。`ai-providers.toml` + Settings UI + runtime in-process
   provider switcher の全体像完成。post-PR43 chore (PR #44) で
   `.claude/project-status.md` + `next-actions.md` を同期、
-  `develop` tip = `6e6eb83`。
+  `develop` tip = `3c7a69e`。
 
 ### PR #43 (ADR-0025 Phase 4 Stage 2 Group A — slice (b) / `AiSettingsView` egui + 11-locale Fluent + `apps/dbboard` mount) マージクローズ (本セッション / 2026-06-29)
 
-- PR #43 (`feature/ai-settings-ui` → `develop`) マージ済 = `5124b00`
+- PR #43 (`feature/ai-settings-ui` → `develop`) マージ済 = `801157d`
   (mergedAt 2026-06-29T05:59:26Z = JST 14:59)。ローカル `develop` は
-  `origin/develop` (= `5124b00`) と fast-forward sync 済。
+  `origin/develop` (= `801157d`) と fast-forward sync 済。
 - 本 chore (`chore/post-pr43-doc-sync`) は `develop` ベース、本セッション
   で切り直し。PR #40 (post-PR39 chore) / PR #42 (post-PR41 chore) の
   連番続き = doc-fresh feedback ([[feedback-keep-docs-fresh]]) の
@@ -869,12 +869,12 @@ lib test = 215 passed、全ワークスペーステスト green。
 
 | コミット | スコープ | 中身 |
 |---|---|---|
-| `a1eae06` | `feat(ui): AiSettingsView state machine` | `crates/dbboard-ui/src/ai_settings.rs` 新規 787 行 + 13 unit test。`Mode::{List, Add, Edit, ConfirmDelete}`、`SecretField::{Keep, Set}` 編集セマンティクス (ADR-0016 §3 write-only)、`AiSettingsAdmin::new_with_file` を使った in-process テスト、`InMemorySecretStore` 利用、`take_pending_switch()` で host にスイッチ要求を渡す pattern。`lib.rs` で `pub use AiSettingsView`。 |
-| `e087ac8` | `feat(i18n): ai-settings-* keys × 11 locales` | en/ja/de/es/fr/it/ko/pt-BR/ru/zh-CN/zh-TW の `.ftl` に 19 キー + `ai-active-with-name` を同時追加 = ADR-0022 Tier 1+2 same-commit sync ポリシー遵守。i18n テスト 9/9 維持。 |
-| `99e0ba4` | `feat(ui): wire AI provider swap replies + Active subtitle` | `DbboardApp` に `active_ai_provider_label: Option<String>` / `last_ai_switch_error: Option<String>` フィールド + `switch_ai_provider` / `set_active_ai_provider_label` / `active_ai_provider_label` / `last_ai_switch_error` accessor 追加。`Reply::AiProviderSwitched` で error クリア、`Reply::AiProviderSwitchFailed { reason }` で error 保持。`AiPanel::ui` に `active_provider_label: Option<&str>` 引数を追加し、`t_args!("ai-active-with-name", name = owned)` で `FluentValue<'static>` の lifetime 制約を `String` 所有化で回避。 |
-| `11a5ef6` | `feat(apps): mount AiSettingsView in desktop binary` | `bootstrap_ai` の戻り値に `Option<Arc<Mutex<AiSettingsAdmin>>>` を追加 = `DesktopAiSwitcher` と同じ admin インスタンスを共有。`DesktopApp` に `ai_settings: AiSettingsView` + `ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>` 追加。`DesktopApp::ui` で menu button (`ai-settings-menu-button`) を `ai_admin.is_some()` で gating、毎フレーム `active_id` → `name` lookup → `set_active_ai_provider_label` push、`AiSettingsView::ui(ctx, &mut guard, active_id.as_deref())` 描画、`take_pending_switch()` → `switch_ai_provider(id)` drain。Connections UI と同じ Mutex poison-handling パターン (`unwrap_or_else(PoisonError::into_inner)`)。 |
-| `e00ae20` | `docs: close ADR-0025 slice (b)` | README "AI integration" を "in-flight Settings UI" 注記から "open the AI Providers menu" の実ワークフローに書き直し。`docs/roadmap.md` の "Settings UI for API key, provider choice" を `[ ]` → `[x]` に変更、4 スライスの着地記録を全て embed。`docs/decisions.md` の ADR-0025 status note に "Implementation closed 2026-06-29" を追加。`.claude/issues/0008` を open → closed に flip。 |
-| `e56db43` | `chore(status): record slice (b) close + branch ready to push` | 本ステータス + next-actions の事前更新 (push 前に書いた = PR description 内で参照できる形)。 |
+| `f8c7c91` | `feat(ui): AiSettingsView state machine` | `crates/dbboard-ui/src/ai_settings.rs` 新規 787 行 + 13 unit test。`Mode::{List, Add, Edit, ConfirmDelete}`、`SecretField::{Keep, Set}` 編集セマンティクス (ADR-0016 §3 write-only)、`AiSettingsAdmin::new_with_file` を使った in-process テスト、`InMemorySecretStore` 利用、`take_pending_switch()` で host にスイッチ要求を渡す pattern。`lib.rs` で `pub use AiSettingsView`。 |
+| `042287e` | `feat(i18n): ai-settings-* keys × 11 locales` | en/ja/de/es/fr/it/ko/pt-BR/ru/zh-CN/zh-TW の `.ftl` に 19 キー + `ai-active-with-name` を同時追加 = ADR-0022 Tier 1+2 same-commit sync ポリシー遵守。i18n テスト 9/9 維持。 |
+| `d707288` | `feat(ui): wire AI provider swap replies + Active subtitle` | `DbboardApp` に `active_ai_provider_label: Option<String>` / `last_ai_switch_error: Option<String>` フィールド + `switch_ai_provider` / `set_active_ai_provider_label` / `active_ai_provider_label` / `last_ai_switch_error` accessor 追加。`Reply::AiProviderSwitched` で error クリア、`Reply::AiProviderSwitchFailed { reason }` で error 保持。`AiPanel::ui` に `active_provider_label: Option<&str>` 引数を追加し、`t_args!("ai-active-with-name", name = owned)` で `FluentValue<'static>` の lifetime 制約を `String` 所有化で回避。 |
+| `13b3ec8` | `feat(apps): mount AiSettingsView in desktop binary` | `bootstrap_ai` の戻り値に `Option<Arc<Mutex<AiSettingsAdmin>>>` を追加 = `DesktopAiSwitcher` と同じ admin インスタンスを共有。`DesktopApp` に `ai_settings: AiSettingsView` + `ai_admin: Option<Arc<Mutex<AiSettingsAdmin>>>` 追加。`DesktopApp::ui` で menu button (`ai-settings-menu-button`) を `ai_admin.is_some()` で gating、毎フレーム `active_id` → `name` lookup → `set_active_ai_provider_label` push、`AiSettingsView::ui(ctx, &mut guard, active_id.as_deref())` 描画、`take_pending_switch()` → `switch_ai_provider(id)` drain。Connections UI と同じ Mutex poison-handling パターン (`unwrap_or_else(PoisonError::into_inner)`)。 |
+| `af46bec` | `docs: close ADR-0025 slice (b)` | README "AI integration" を "in-flight Settings UI" 注記から "open the AI Providers menu" の実ワークフローに書き直し。`docs/roadmap.md` の "Settings UI for API key, provider choice" を `[ ]` → `[x]` に変更、4 スライスの着地記録を全て embed。`docs/decisions.md` の ADR-0025 status note に "Implementation closed 2026-06-29" を追加。`.claude/issues/0008` を open → closed に flip。 |
+| `1d33e18` | `chore(status): record slice (b) close + branch ready to push` | 本ステータス + next-actions の事前更新 (push 前に書いた = PR description 内で参照できる形)。 |
 
 ### 検証コマンド (全て pass)
 
@@ -897,8 +897,8 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #41 (ADR-0025 Phase 4 Stage 2 Group A — slice a-2-β / `apps/dbboard` 側 `DesktopAiSwitcher` + `resolve_ai_provider_from` 解決チェーン + `AiProviderSlot` 共有スロット + README 書き直し) マージクローズ (本セッション / 2026-06-26)
 
 - PR #41 (`feature/ai-provider-desktop-switcher` → `develop`)
-  マージ済 = `2b49fac` (mergedAt 2026-06-26T02:57:23Z = JST 11:57)。
-  ローカル `develop` は `origin/develop` (= `2b49fac`) と
+  マージ済 = `ffb1488` (mergedAt 2026-06-26T02:57:23Z = JST 11:57)。
+  ローカル `develop` は `origin/develop` (= `ffb1488`) と
   fast-forward sync 済。
 - 本 chore (`chore/post-pr41-doc-sync`) は `develop` ベース、
   本セッションで切り直し。PR #40 (post-PR39 chore) の連番続き。
@@ -1129,8 +1129,8 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #39 (ADR-0025 Phase 4 Stage 2 Group A — slice a-2-α / `dbboard-ui` worker plumbing: `AiProviderSwitcher` trait + `Command::SwitchAiProvider` + `Reply::AiProviderSwitched` / `Reply::AiProviderSwitchFailed`) マージクローズ (本セッション / 2026-06-25)
 
 - PR #39 (`feature/ai-provider-switcher-trait` → `develop`) マージ済
-  = `abc718b` (mergedAt 2026-06-25T11:14:07Z = JST 20:14)。
-  ローカル `develop` は `origin/develop` (= `abc718b`) と
+  = `839ab4c` (mergedAt 2026-06-25T11:14:07Z = JST 20:14)。
+  ローカル `develop` は `origin/develop` (= `839ab4c`) と
   fast-forward sync 済。
 - 本 chore (`chore/post-pr39-doc-sync`) は `develop` ベース、
   本セッションで切り直し。PR #38 (post-PR37 chore) の連番続き。
@@ -1258,8 +1258,8 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #37 (ADR-0025 Phase 4 Stage 2 Group A — slice a-1 / `dbboard-config` 層: `ai-providers.toml` schema + `AiSettingsAdmin`) マージクローズ (前セッション / 2026-06-25)
 
 - PR #37 (`feature/ai-settings-config-layer` → `develop`) マージ済
-  = `e72ebb5` (mergedAt 2026-06-25T05:03:12Z = JST 14:03)。
-  ローカル `develop` は `origin/develop` (= `e72ebb5`) と
+  = `4033a0d` (mergedAt 2026-06-25T05:03:12Z = JST 14:03)。
+  ローカル `develop` は `origin/develop` (= `4033a0d`) と
   fast-forward sync 済。
 - 本 chore (`chore/post-pr37-doc-sync`) は `develop` ベース、
   本セッションで切り直し。PR #36 (post-PR35 chore) の連番続き。
@@ -1381,8 +1381,8 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #35 (ADR-0025 — Phase 4 Stage 2 Group A planning: `ai-providers.toml` + Settings UI + multi-provider switcher) マージクローズ (前セッション / 2026-06-24)
 
 - PR #35 (`feature/adr-phase-4-stage-2-planning` → `develop`)
-  マージ済 = `f4126f1`。ローカル `develop` は `origin/develop`
-  (= `f4126f1`) と fast-forward sync 済。
+  マージ済 = `8fc658d`。ローカル `develop` は `origin/develop`
+  (= `8fc658d`) と fast-forward sync 済。
 - 本 chore (`chore/post-pr35-doc-sync`) は `develop` ベース、
   本セッションで切り直し。PR #34 (post-PR33 chore) の連番続き。
 - 本 PR の scope: Phase 4 Stage 2 を開く設計 ADR。ADR-0023 §9 で
@@ -1488,8 +1488,8 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #33 (cross-repo outbound briefs: 0006 Aurora DSQL no-mirror + 0007 AI Phase 6 no-contract-mirror) マージクローズ (前セッション / 2026-06-23)
 
 - PR #33 (`feature/handoff-briefs-aurora-dsql-and-ai` → `develop`)
-  マージ済 = `359778a`。ローカル `develop` は
-  `origin/develop` (= `359778a`) と fast-forward sync 済。
+  マージ済 = `ceea4e1`。ローカル `develop` は
+  `origin/develop` (= `ceea4e1`) と fast-forward sync 済。
 - 本 chore (`chore/post-pr33-doc-sync`) は `develop` ベース、
   本セッションで切り直し。PR #32 (post-PR31 chore) の連番続き。
 - 本 PR の scope: cross-repo coordination の整理。web 側の
@@ -1564,8 +1564,8 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #31 (`emit_history_fixture` に `--output PATH` フラグ追加 / shell encoding 回避 / ADR-0017 cross-impl round-trip 操作性ハードニング) マージクローズ (前セッション / 2026-06-23)
 
 - PR #31 (`feature/history-fixture-output-flag` → `develop`) マージ済
-  = `34b60ff` (mergedAt 2026-06-23T06:01:07Z = JST 15:01)。
-- ローカル `develop` は `origin/develop` (= `34b60ff`) と
+  = `63366fc` (mergedAt 2026-06-23T06:01:07Z = JST 15:01)。
+- ローカル `develop` は `origin/develop` (= `63366fc`) と
   fast-forward sync 済。origin 側の `feature/history-fixture-output-flag`
   はマージ時 auto-delete された (今までと違って手動で `gh pr merge --delete-branch`
   を使ったか、リポジトリ側で auto-delete が有効になった模様)。
@@ -1671,10 +1671,10 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #29 (`emit_history_fixture` example + `history::fixture` doc-hidden shim / ADR-0017 cross-impl round-trip support, web sibling issue 0018) マージクローズ (前セッション / 2026-06-23)
 
 - PR #29 (`feature/history-fixture-emit-helper` → `develop`) マージ済
-  = `8d73e75` (mergedAt 2026-06-23T04:07:54Z = JST 13:07)。
-- ローカル `develop` は `origin/develop` (= `8d73e75`) と
-  fast-forward sync 済 (`09d2c52..8d73e75`、2 commit ぶん advance:
-  feat commit `a87a73e` + merge commit)。
+  = `19c41e8` (mergedAt 2026-06-23T04:07:54Z = JST 13:07)。
+- ローカル `develop` は `origin/develop` (= `19c41e8`) と
+  fast-forward sync 済 (`9dba65b..19c41e8`、2 commit ぶん advance:
+  feat commit `4248b6a` + merge commit)。
 - マージ済 feature ブランチ `feature/history-fixture-emit-helper`
   は local / remote ともそのまま残置 (本セッション中に削除を試行 →
   permission denied で skip)。次セッション以降で maintainer 判断。
@@ -1770,7 +1770,7 @@ lib test = 215 passed、全ワークスペーステスト green。
   `git reset --soft HEAD~1` + `git commit -F` (UTF-8 file 経由) で
   リコミット。CLAUDE.md の "Always create NEW commits rather than
   amending" を尊重するため `--amend` ではなく soft reset を使った。
-  最終コミット `a87a73e`。本文中の "section 6" は ADR-0017 §6
+  最終コミット `4248b6a`。本文中の "section 6" は ADR-0017 §6
   指して書いている (ASCII 化)。
 - web 側との関係:
   - **HTTP contract: 未変更**。`docs/api-contract.md` UNTOUCHED、
@@ -1798,12 +1798,12 @@ lib test = 215 passed、全ワークスペーステスト green。
 
 ### PR #27 (`dbboard-ui` AI panel slice (b) + 11-locale Fluent + docs sweep / ADR-0023 issue 0005) マージクローズ (前セッション / 2026-06-23)
 
-- PR #27 (`feat/ai-panel-slice-b` → `develop`) マージ済 = `c86424a`
+- PR #27 (`feat/ai-panel-slice-b` → `develop`) マージ済 = `8ec4b1a`
   (mergedAt 2026-06-23T02:31:38Z = JST 11:31)。
-- ローカル `develop` は `origin/develop` (= `c86424a`) と
-  fast-forward sync 済 (`409fa54..c86424a`、5 commit ぶん advance:
-  feat commits `e56d58d` + `1ba5660` + `a676ea7` + 前段 chore
-  `0eaab59` (PR #26 = post-PR25-doc-sync) + merge commits)。
+- ローカル `develop` は `origin/develop` (= `8ec4b1a`) と
+  fast-forward sync 済 (`952e452..8ec4b1a`、5 commit ぶん advance:
+  feat commits `85d5643` + `b9c8ffd` + `633957b` + 前段 chore
+  `6e9ef5f` (PR #26 = post-PR25-doc-sync) + merge commits)。
 - マージ済 feature ブランチ (`feat/ai-panel-slice-b`) は local /
   remote 両方削除済。本 chore (`chore/post-pr27-doc-sync`) は
   `develop` ベース、本セッションで切り直し。
@@ -1856,11 +1856,11 @@ lib test = 215 passed、全ワークスペーステスト green。
     の全 acceptance ボックスをチェック。
 - コミット粒度: 3 commits (CLAUDE.md "small focused chunks per
   logical change" に従い、(コード) / (翻訳) / (ドキュメント) に分離):
-  - `e56d58d` `feat(ui): wire AI Explain/Suggest panel into the
+  - `85d5643` `feat(ui): wire AI Explain/Suggest panel into the
     desktop worker (ADR-0023)`
-  - `1ba5660` `feat(i18n): translate AI panel keys for slice (b)
+  - `b9c8ffd` `feat(i18n): translate AI panel keys for slice (b)
     across all 11 locales`
-  - `a676ea7` `docs: tick slice (b) acceptance and refresh AI
+  - `633957b` `docs: tick slice (b) acceptance and refresh AI
     panel surface (ADR-0023)`
 - 検証: mandatory verification 4 コマンド (`cargo fmt --all --
   check` / `cargo clippy --all-targets --all-features -- -D
@@ -1926,13 +1926,13 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #25 (at-rest file permissions / ADR-0024) マージクローズ (前セッション / 2026-06-22)
 
 - PR #25 (`feat/secure-fs-permissions` → `develop`) マージ済 =
-  `5590996` (mergedAt 2026-06-22T05:52:56Z)。
-- ローカル `develop` は `origin/develop` (= `5590996`) と
-  fast-forward sync 済 (`6ad670d..5590996`、5 commit ぶん advance:
-  feat commits `36daa95` + `9e26456` + `ef1380b` + `47ed5c4` +
-  merge commit `5590996`)。
+  `e23484f` (mergedAt 2026-06-22T05:52:56Z)。
+- ローカル `develop` は `origin/develop` (= `e23484f`) と
+  fast-forward sync 済 (`10e694d..e23484f`、5 commit ぶん advance:
+  feat commits `9ee9ae3` + `fbae4dd` + `c315d74` + `8a869a0` +
+  merge commit `e23484f`)。
 - マージ済 feature ブランチ (`feat/secure-fs-permissions`) は
-  origin 側で自動削除済、ローカルは `47ed5c4 [origin/...: gone]`
+  origin 側で自動削除済、ローカルは `8a869a0 [origin/...: gone]`
   状態で残置 (clean-up は次セッション or 任意)。
 - 本 PR の scope: at-rest secret 保護 + cloud-sync 警告 + ADR-0024
   策定の 8 ファイル / +690 / −22。きっかけはユーザの「PC 紛失したと
@@ -2015,18 +2015,18 @@ lib test = 215 passed、全ワークスペーステスト green。
   - **issue 0005 slice (b)** = `dbboard-ui` AI panel + worker
     `Command::AiExplain` / `Command::AiSuggest` + 11-locale Fluent
     + 状態機械テスト。本セッションで audit のため一時中断したスコープ。
-  - **`feat/dbboard-ui-ai-panel` ローカル空ブランチ** が `6ad670d`
+  - **`feat/dbboard-ui-ai-panel` ローカル空ブランチ** が `10e694d`
     時点で残置中。slice (b) 着手時に rebase or 削除 + 切り直し。
 
 ### PR #24 (apps/dbboard AI 起動配線) マージクローズ (前セッション / 2026-06-17)
 
 - PR #24 (`feat/apps-dbboard-ai-wiring` → `develop`) マージ済 =
-  `6ad670d` (mergedAt 2026-06-17T04:03:12Z)。
-- ローカル `develop` は `origin/develop` (= `6ad670d`) と
-  fast-forward sync 済 (`1459899..6ad670d`、2 commit ぶん advance:
-  feat commit `481c667` + merge commit `6ad670d`)。
+  `10e694d` (mergedAt 2026-06-17T04:03:12Z)。
+- ローカル `develop` は `origin/develop` (= `10e694d`) と
+  fast-forward sync 済 (`8b37331..10e694d`、2 commit ぶん advance:
+  feat commit `890ab87` + merge commit `10e694d`)。
 - マージ済ローカル feature ブランチ (`feat/apps-dbboard-ai-wiring`
-  = `481c667`) は `git branch -d` 済。
+  = `890ab87`) は `git branch -d` 済。
 - 本 PR の scope: `apps/dbboard` 起動経路 + `dbboard-ui::DbboardApp`
   シグネチャ拡張 + README + issue 0005 ティック の 7 ファイル /
   +204 / −6。中身:
@@ -2112,12 +2112,12 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### PR #22 (dbboard-anthropic 具象 provider) マージクローズ (本セッション / 2026-06-15)
 
 - PR #22 (`feat/dbboard-anthropic-provider` → `develop`) マージ済 =
-  `c705918` (mergedAt 2026-06-15T11:51:41Z)。
-- ローカル `develop` は `origin/develop` (= `c705918`) と
-  fast-forward sync 済 (`c7fca0b..c705918`、2 commit ぶん advance:
-  feat commit `89f0cdf` + merge commit `c705918`)。
+  `6c9b5e7` (mergedAt 2026-06-15T11:51:41Z)。
+- ローカル `develop` は `origin/develop` (= `6c9b5e7`) と
+  fast-forward sync 済 (`fb50826..6c9b5e7`、2 commit ぶん advance:
+  feat commit `956c1f6` + merge commit `6c9b5e7`)。
 - マージ済ローカル feature ブランチ (`feat/dbboard-anthropic-provider`
-  = `89f0cdf`) は `git branch -d` 済。
+  = `956c1f6`) は `git branch -d` 済。
 - 本 PR の scope: `crates/dbboard-anthropic` 新規 + workspace 配線
   (workspace member 追加、`wiremock = "0.6"` dev-only workspace dep
   追加) + issue 0005 チェックマーク更新の 7 ファイル / +1143 / −25。
@@ -2223,13 +2223,13 @@ lib test = 215 passed、全ワークスペーステスト green。
 
 ### PR #20 (dbboard-ai trait crate) マージクローズ (前セッション / 2026-06-15)
 
-- PR #20 (`feat/dbboard-ai-crate` → `develop`) マージ済 = `584348f`
+- PR #20 (`feat/dbboard-ai-crate` → `develop`) マージ済 = `2fb7e34`
   (mergedAt 2026-06-15T06:21:33Z)。
-- ローカル `develop` は `origin/develop` (= `584348f`) と
-  fast-forward sync 済 (`d7e6ac9..584348f`、2 commit ぶん advance:
-  feat commit `8b582a7` + merge commit `584348f`)。
+- ローカル `develop` は `origin/develop` (= `2fb7e34`) と
+  fast-forward sync 済 (`8f8ca02..2fb7e34`、2 commit ぶん advance:
+  feat commit `76bfb2d` + merge commit `2fb7e34`)。
 - マージ済ローカル feature ブランチ (`feat/dbboard-ai-crate` =
-  `8b582a7`) は `git branch -d` 済。リモートも GitHub 側で削除済
+  `76bfb2d`) は `git branch -d` 済。リモートも GitHub 側で削除済
   想定 (Settings の auto-delete branch on merge が ON なら自動、
   OFF でも次回 `git fetch --prune` で剥がれる)。
 - 本 PR の scope: `crates/dbboard-ai` 新規 + workspace 配線 + issue
@@ -2306,11 +2306,11 @@ lib test = 215 passed、全ワークスペーステスト green。
 
 - PR #17 (`chore/post-pr16-doc-sync` → `develop`) マージ済 (前段)、
   続けて PR #18 (`docs/adr-0023-ai-provider-trait` → `develop`)
-  マージ済 = `673a0c2`。
-- ローカル `develop` は `origin/develop` (= `673a0c2`) と
-  fast-forward sync 済 (`5a06a00..673a0c2`、4 commit ぶん advance)。
+  マージ済 = `077d12c`。
+- ローカル `develop` は `origin/develop` (= `077d12c`) と
+  fast-forward sync 済 (`10dad6c..077d12c`、4 commit ぶん advance)。
 - マージ済ローカルブランチ 2 本 (`chore/post-pr16-doc-sync` =
-  `a520b54` / `docs/adr-0023-ai-provider-trait` = `07b932c`) は
+  `2d72159` / `docs/adr-0023-ai-provider-trait` = `e32b77b`) は
   `git branch -d` 済。リモート `docs/adr-0023-ai-provider-trait`
   は GitHub 側で削除済 (`git fetch --prune` で
   `[deleted] (none) -> origin/docs/adr-0023-ai-provider-trait` 確認)。
@@ -2354,7 +2354,7 @@ lib test = 215 passed、全ワークスペーステスト green。
 ### Phase 4 (ADR-0023) 起票準備 (前セッション / 2026-06-11)
 
 ユーザ指示 (`(a) Phase 4 dbboard-ai ADR 起票お願いします。`) を
-受けて `develop@99c11b0` から `docs/adr-0023-ai-provider-trait` を
+受けて `develop@f3b8d28` から `docs/adr-0023-ai-provider-trait` を
 切り、設計判断を固めた段階で usage limit 接近のため区切り終了。
 ADR 本文・issue 0005・roadmap / status 更新は次セッション。
 
@@ -2442,20 +2442,20 @@ ADR drafting 時点で先送り):
   共有で YAGNI、レイテンシ問題出たら Stage 2 で分離 ADR)
 
 **並行して push 待ちの別件**:
-- `chore/post-pr16-doc-sync@fb6085d` — PR #16 マージクローズの
+- `chore/post-pr16-doc-sync@eadd83e` — PR #16 マージクローズの
   status / memory 同期 commit。本セッション末記録 (本コミット) を
   乗せた 2 commit ぶん。1 PR としてまとめて push 可。
 
 ### PR #16 (ADR-0022) マージクローズ (前セッション同日 / 2026-06-11)
 
 - PR #16 (`feature/runtime-locale-switcher` → `develop`) マージ済 =
-  `99c11b0` (mergedAt 2026-06-11T09:40:38Z)。
+  `f3b8d28` (mergedAt 2026-06-11T09:40:38Z)。
 - リモート `feature/runtime-locale-switcher` は GitHub 側で削除済
   (`git fetch --prune` で `[deleted] (none) -> origin/feature/runtime-
   locale-switcher` 確認)。ローカル feature ブランチも `git branch -d`
-  済 (was `135cf79`)。
-- ローカル `develop` は `origin/develop` (= `99c11b0`) と fast-forward
-  sync 済 (`701422b..99c11b0`、4 commit ぶん advance)。
+  済 (was `5869e0c`)。
+- ローカル `develop` は `origin/develop` (= `f3b8d28`) と fast-forward
+  sync 済 (`e3714d5..f3b8d28`、4 commit ぶん advance)。
 - 本ブランチ (`chore/post-pr16-doc-sync`) は project-status と memory
   の anchor 更新のみの 1 commit。push & merge は別 PR。
 - web 側への影響: **HTTP contract / JSON schema 変更なし**。web mirror
@@ -2474,15 +2474,15 @@ ADR drafting 時点で先送り):
 
 ### ADR-0022 runtime locale switcher 実装 (前セッション同日 / 2026-06-11)
 
-ADR-0020 PR #14 マージクローズ直後、`develop@209fd81` を起点に
+ADR-0020 PR #14 マージクローズ直後、`develop@91fee39` を起点に
 `feature/runtime-locale-switcher` を切って issue 0004 を実装、
 合計 4 commit ぶん advance。
 
 本セッションで追加した commit (古い順):
 
-- `8ddd7e1` `feat(i18n): expose set_language / current_language for runtime swap (ADR-0022)`
-- `3be9845` `feat(i18n): add language-menu key across all 11 locales`
-- `1057ff7` `feat(ui): add Language submenu to the menu bar (ADR-0022)`
+- `1b63fd0` `feat(i18n): expose set_language / current_language for runtime swap (ADR-0022)`
+- `96fd881` `feat(i18n): add language-menu key across all 11 locales`
+- `8dabb1a` `feat(ui): add Language submenu to the menu bar (ADR-0022)`
 - (4 つめ = 本コミット) `docs: ADR-0022 + supersede ADR-0015 startup-only + close issue 0004`
 
 実装の要点 (issue 0004 の予測より大幅にシンプル):
@@ -2549,15 +2549,15 @@ ADR-0020 PR #14 マージクローズ直後、`develop@209fd81` を起点に
 ### ADR-0020 PR #14 マージクローズ (前セッション同日 / 2026-06-11)
 
 - PR #14 (`feature/in-process-connect-switching` → `develop`) マージ済 =
-  `209fd81` (mergedAt 2026-06-11T08:34:03Z)。
+  `91fee39` (mergedAt 2026-06-11T08:34:03Z)。
 - リモート `feature/in-process-connect-switching` は GitHub 側で削除済
   (`git fetch --prune` で `[deleted] (none) -> origin/feature/in-process
   -connect-switching` 確認)。ローカル feature ブランチも `git branch -d`
-  済 (was `85e0cae`)。
-- ローカル `develop` は `origin/develop` (= `209fd81`) と fast-forward
-  sync 済 (`cdb35bc..209fd81`、8 commit ぶん advance)。
+  済 (was `c168b52`)。
+- ローカル `develop` は `origin/develop` (= `91fee39`) と fast-forward
+  sync 済 (`094eec1..91fee39`、8 commit ぶん advance)。
 - README / docs/roadmap / .claude/issues/0004 / memory を一括で
-  209fd81 整合状態に更新:
+  91fee39 整合状態に更新:
   - **README.md**: connections.toml 説明の直後に「Connections ウィンドウ
     + per-row Connect ボタンでリスタート不要に in-place swap」の段落を
     追加 (ADR-0020 link)。
@@ -2569,7 +2569,7 @@ ADR-0020 PR #14 マージクローズ直後、`develop@209fd81` を起点に
     「PR #14 でブロック解除、ConnectionSwitcher パターンが直接の
     テンプレート」と上書き。
   - **memory** (`dbboard-web-state.md` / `MEMORY.md`): anchor を
-    `desktop@209fd81 / 2026-06-11` に更新、ADR-0020 用「web 側 mirror
+    `desktop@91fee39 / 2026-06-11` に更新、ADR-0020 用「web 側 mirror
     不要」セクションを追加 (ADR-0019/0021 と同じカテゴリ)、MEMORY.md
     index 行を対応更新。
 - web 側への影響: **HTTP contract: 変更なし**、**history JSON schema:
@@ -2594,17 +2594,17 @@ ADR-0020 PR #14 マージクローズ直後、`develop@209fd81` を起点に
 
 ### ADR-0020 in-process connection switching (前セッション / 2026-06-05)
 
-`develop` (= `d7c58ad`) から `feature/in-process-connect-switching`
+`develop` (= `4b5d18e`) から `feature/in-process-connect-switching`
 (ADR-0020 + issue 0004 と同居) で `swap_backend` server API → UI
 worker `SwitchConnection` → 一覧 UI の `Connect` ボタン、と 3 段で
 段階的に実装。Phase 3 Aurora DSQL (ADR-0021) は別ブランチで先行
-shipped 済 (`d7c58ad` 含まれ済) なので本ブランチには重複しない。
+shipped 済 (`4b5d18e` 含まれ済) なので本ブランチには重複しない。
 
 本セッションで追加した commit (古い順):
 
-- `fd3e36f` `feat(server): allow live adapter swap on a running AppState (ADR-0020)`
-- `0237a45` `feat(ui,bin): wire SwitchConnection through UI worker and desktop app (ADR-0020)`
-- `6f63382` `feat(ui): add per-row Connect button to the connection list`
+- `7e1f1da` `feat(server): allow live adapter swap on a running AppState (ADR-0020)`
+- `6b511d6` `feat(ui,bin): wire SwitchConnection through UI worker and desktop app (ADR-0020)`
+- `bf7874c` `feat(ui): add per-row Connect button to the connection list`
 
 実装の要点:
 
@@ -2678,7 +2678,7 @@ shipped 済 (`d7c58ad` 含まれ済) なので本ブランチには重複しな�
 2. GitHub で PR open: base = `develop`, head =
    `feature/in-process-connect-switching`, title 例
    `feat: in-process connection switching (ADR-0020)`。本文に
-   3 機能 commit (fd3e36f / 0237a45 / 6f63382) + ADR-0020 +
+   3 機能 commit (7e1f1da / 6b511d6 / bf7874c) + ADR-0020 +
    issue 0004 を引用、scope (UI restart 不要で adapter を live swap、
    in-flight クエリは古い adapter で完了する semantics) を明記。
 3. 動作確認 (#50 マニュアル部、任意): Supabase など複数接続を
@@ -2702,7 +2702,7 @@ web 側への影響:
 
 - 日付: 2026-06-04 (前セッション末、Phase 3 Aurora DSQL ADR-0021
   実装完了 + docs catch up 済、push 待ち)
-- ブランチ: `feature/aurora-dsql-adapter-kind` (= `develop` (`d7c58ad`)
+- ブランチ: `feature/aurora-dsql-adapter-kind` (= `develop` (`4b5d18e`)
   から分岐、5 commit + 後続 ADR-0020 / issue 0004 含む、workspace
   tests 全 green、`cargo build --release` + `cargo test --all-features
   --release` も green、未 push)
@@ -2710,14 +2710,14 @@ web 側への影響:
   over `dbboard-postgres`) 実装完了。ADR-0021 起票 → flavor 定数 +
   constructor → config/admin/store + server/resolver + UI 配線 →
   live test gate + 各 README/docs catch up の 3 機能 commit
-  (cdca5fa / 82f8de7 / 95fe2d4)。Phase 3 の roadmap は Neon
+  (9576394 / a3c1768 / 5d6a850)。Phase 3 の roadmap は Neon
   (ADR-0018) + Supabase (ADR-0019) + Aurora DSQL (ADR-0021) の
   3 flavored kind で完了。次は `git push -u origin
   feature/aurora-dsql-adapter-kind` → PR open against `develop`。**
 
 ### Phase 3 Aurora DSQL adapter (本セッション / 2026-06-04)
 
-`develop` (= `d7c58ad`) から `feature/aurora-dsql-adapter-kind`
+`develop` (= `4b5d18e`) から `feature/aurora-dsql-adapter-kind`
 (ADR-0020 + issue 0004 と同居) で 3 機能 commit を積み、workspace
 tests 全 green + release build/test も green。scope は **「pg-wire
 flavored kind のみ、SDK-driven IAM token auto-refresh は future
@@ -2725,10 +2725,10 @@ ADR」** (ユーザ「すすめてください」で先行プラン承認済)。
 
 積んだ commit (古い順、本セッション分):
 
-- `36bba1c` `docs: ADR-0021 Aurora DSQL as a flavored kind over dbboard-postgres`
-- `cdca5fa` `feat(postgres): add FLAVOR_AURORA_DSQL and connect_aurora_dsql (ADR-0021)`
-- `82f8de7` `feat(aurora-dsql): wire ConnectionKind::AuroraDsql through config, resolver, and UI (ADR-0021)`
-- `95fe2d4` `docs(aurora-dsql): add live test gate and catch up READMEs (ADR-0021)`
+- `82ad6f7` `docs: ADR-0021 Aurora DSQL as a flavored kind over dbboard-postgres`
+- `9576394` `feat(postgres): add FLAVOR_AURORA_DSQL and connect_aurora_dsql (ADR-0021)`
+- `a3c1768` `feat(aurora-dsql): wire ConnectionKind::AuroraDsql through config, resolver, and UI (ADR-0021)`
+- `5d6a850` `docs(aurora-dsql): add live test gate and catch up READMEs (ADR-0021)`
 
 実装の要点:
 
@@ -2771,7 +2771,7 @@ ADR」** (ユーザ「すすめてください」で先行プラン承認済)。
   を共有、11 locale の同期コストゼロ — ADR-0015 tier stability)。
   新規 UI テスト 3 (Aurora DSQL add 経路 / edit prefill /
   replace_url=true 上書き)。
-- **docs catch up** (`95fe2d4`): `crates/dbboard-postgres/README.md`
+- **docs catch up** (`5d6a850`): `crates/dbboard-postgres/README.md`
   flavor table に Aurora DSQL 行 + `DBBOARD_AURORA_DSQL_URL` の
   Tests セクション + ADR-0021 リンク、TLS hardening note 拡張。
   `docs/connections.md` Resolution order を 4 flavored kind に拡張
@@ -2816,7 +2816,7 @@ ADR」** (ユーザ「すすめてください」で先行プラン承認済)。
 2. GitHub で PR open: base = `develop`, head =
    `feature/aurora-dsql-adapter-kind`, title 例
    `feat: Aurora DSQL as flavored kind over dbboard-postgres
-   (ADR-0021)`。本文に 3 commit (cdca5fa / 82f8de7 / 95fe2d4)
+   (ADR-0021)`。本文に 3 commit (9576394 / a3c1768 / 5d6a850)
    と ADR-0021 を引用、scope (pg-wire flavored kind only、SDK
    auto-refresh deferred to future ADR) も明記。
 3. merge 後にローカル feature ブランチを `git branch -d`、
@@ -2837,7 +2837,7 @@ web 側への影響:
 
 ### Phase 3 Supabase adapter (本セッション / 2026-06-04)
 
-`develop` (= `87c4eb6`) から `feature/supabase-adapter-kind` を切って
+`develop` (= `63ab356`) から `feature/supabase-adapter-kind` を切って
 4 機能 commit + 本 close-out commit = 5 commit、workspace tests
 全 green。ユーザ確認済の scope は **「pg-wire flavored kind のみ
 (推奨)」** — ADR-0019 で Neon (ADR-0018) と同じ recipe を Supabase
@@ -2846,10 +2846,10 @@ web 側への影響:
 
 積んだ commit (古い順):
 
-- `84c1137` `docs: ADR-0019 Supabase as a flavored kind over dbboard-postgres`
-- `2c0b734` `feat(postgres): add FLAVOR_SUPABASE and connect_supabase (ADR-0019)`
-- `618344f` `feat(supabase): wire ConnectionKind::Supabase through config, resolver, and UI (ADR-0019)`
-- `a5090af` `docs: document Supabase flavor and add DBBOARD_SUPABASE_URL live test (ADR-0019)`
+- `e47ccdb` `docs: ADR-0019 Supabase as a flavored kind over dbboard-postgres`
+- `dd19d0c` `feat(postgres): add FLAVOR_SUPABASE and connect_supabase (ADR-0019)`
+- `9c785d9` `feat(supabase): wire ConnectionKind::Supabase through config, resolver, and UI (ADR-0019)`
+- `ea5b5cb` `docs: document Supabase flavor and add DBBOARD_SUPABASE_URL live test (ADR-0019)`
 - (本 commit) `chore(status): record Phase 3 Supabase ADR-0019 close-out`
 
 実装の要点:
@@ -2962,17 +2962,17 @@ web 側への影響:
 
 ### Phase 3 Neon adapter (本セッション / 2026-06-04)
 
-`develop` (= `7555c58`) から `feature/neon-adapter-kind` を切って
+`develop` (= `3bbdaef`) から `feature/neon-adapter-kind` を切って
 4 commit、workspace tests 全 green。ユーザ確認済の scope は
 **「Neon を first-class kind に (推奨)」** — docs-only でも別
 クレートでもない、`dbboard-postgres` への flavor 注入。
 
 積んだ commit (古い順):
 
-- `8b0a72a` `docs: ADR-0018 Neon as a flavored kind over dbboard-postgres`
-- `45ffe2b` `feat(postgres): add flavor field, connect_neon constructor (ADR-0018)`
-- `6936902` `feat(neon): wire ConnectionKind::Neon through config, resolver, and UI (ADR-0018)`
-- `0385aaf` `docs: document Neon flavor + add DBBOARD_NEON_URL live test gate (ADR-0018)`
+- `43442d4` `docs: ADR-0018 Neon as a flavored kind over dbboard-postgres`
+- `ff9d9a6` `feat(postgres): add flavor field, connect_neon constructor (ADR-0018)`
+- `56ab7a1` `feat(neon): wire ConnectionKind::Neon through config, resolver, and UI (ADR-0018)`
+- `c0ea198` `docs: document Neon flavor + add DBBOARD_NEON_URL live test gate (ADR-0018)`
 
 実装の要点:
 
@@ -3062,49 +3062,49 @@ web 側への影響:
 ### Phase 2 PR #10 マージクローズ (本セッション末 / 2026-06-04)
 
 - PR #10 (`feature/query-history-persistence` → `develop`) マージ済
-  = `ca6ca93` (GitHub 上で merge commit、`mergedAt`
+  = `85ae7c8` (GitHub 上で merge commit、`mergedAt`
   2026-06-04T03:57:54Z)。
-- 取り込まれた 7 commits: `62ed834` (ADR) / `b4c1c1c` (path fix) /
-  `c023eba` (default_history_path) / `c3bfcb5` (persistence layer) /
-  `72cb165` (app wiring + server label helper) / `c7aac22` (web
-  handoff brief) / `ae86627` (closeout)。
+- 取り込まれた 7 commits: `39e179f` (ADR) / `53e9264` (path fix) /
+  `653b06d` (default_history_path) / `99f5daa` (persistence layer) /
+  `42cf5f2` (app wiring + server label helper) / `bcecb38` (web
+  handoff brief) / `aee7a15` (closeout)。
 - リモート `feature/query-history-persistence` は merge 時に削除済
   (`git fetch --prune` で `[deleted] (none) -> origin/feature/
   query-history-persistence`)、ローカル feature ブランチも
   `git branch -d` 済。
-- ローカル `develop` は `origin/develop` (= `ca6ca93`) と fast-forward
+- ローカル `develop` は `origin/develop` (= `85ae7c8`) と fast-forward
   sync 済。
 - web 側への handoff: `.claude/issues/0003-web-history-schema-mirror.md`
   が `develop` 上で読める状態。web 側 Claude が pickup する時のアンカー
-  commit は `ca6ca93` (PR コメントには `72cb165` を引用しているが、
-  実体は merge 後の `ca6ca93` から参照可)。HTTP contract には触らない
+  commit は `85ae7c8` (PR コメントには `42cf5f2` を引用しているが、
+  実体は merge 後の `85ae7c8` から参照可)。HTTP contract には触らない
   ので desktop 側の追加作業なしに並行可。
 
 ### 本セッション (2026-06-04) で landed したもの
 
 - `feature/query-history-persistence` ブランチを `develop` から切り出し
-  (commit `7180407` 起点)。
-- **ADR-0017 起票** (`62ed834`): `docs/decisions.md` に append。JSON
+  (commit `c174b86` 起点)。
+- **ADR-0017 起票** (`39e179f`): `docs/decisions.md` に append。JSON
   Lines / record schema / storage / rotation / secret handling / 8 項目
   + cross-repo coordination policy を採択。Stage 1 ADR-0014 の「Stage 2
   ADR」プレースホルダを realise。
-- **`default_history_path()` 追加** (`c023eba`): `dbboard-config::store`
+- **`default_history_path()` 追加** (`653b06d`): `dbboard-config::store`
   に `history.jsonl` 解決 helper を追加 (`default_path()` と対称)。
-- **persistence layer 実装** (`c3bfcb5`): `crates/dbboard-ui/src/history.rs`
+- **persistence layer 実装** (`99f5daa`): `crates/dbboard-ui/src/history.rs`
   に `PersistentHistoryStore`、JSON envelope (v/ts/conn/actor/sql/status/
   duration_ms/rows/rows_affected/error)、`load_tail` (起動時末尾 N 行
   hydrate、malformed line / unknown v / unknown status は count して skip)、
   startup-only rotation (50 MiB or 100k 行で `.jsonl.1` overwrite)、
   `O_APPEND` 1 record 1 line atomic write。Stage 1 の `HistoryStore`
   公開 API は不変。
-- **app wiring + server label helper** (`72cb165`): `record_submit`
+- **app wiring + server label helper** (`42cf5f2`): `record_submit`
   (in-memory、submit-time、即時 UX) と `record_completion` (disk、
   reply-time、rich record) を分離 (Option D)。`dbboard-server` に
   `resolved_connection_label()` を追加し ADR-0017 `conn` field をスタンプ。
   `apps/dbboard` で `time` crate (`formatting` + `std` only) 経由の
   RFC 3339 clock を `RfcClock = fn() -> String` として inject (UI 本体は
   date crate non-dependent)。
-- **handoff brief 起票** (`c7aac22`): `.claude/issues/0003-web-history
+- **handoff brief 起票** (`bcecb38`): `.claude/issues/0003-web-history
   -schema-mirror.md`。`0001`/`0002` と異なり HTTP wire contract mirror
   ではなく **per-record JSON schema mirror**。web 側 ADR は「desktop
   ADR-0017 と同一 schema」だけ書けば済む。secret handling delta
@@ -3138,14 +3138,14 @@ web 側への影響:
 
 ### Phase 2 PR #9 マージクローズ (前々セッション末 / 2026-06-03)
 
-- PR #9 (`feature/connection-admin-ui` → `develop`) マージ済 = `88d0f45`
+- PR #9 (`feature/connection-admin-ui` → `develop`) マージ済 = `38fc542`
   (GitHub 上で merge commit、squash ではない)。
 - ローカル `feature/connection-admin-ui` 削除済 (`git branch -d`、
-  `263d9b1` was)。リモート側 branch は人間が削除済 (確認:
+  `40b7ed4` was)。リモート側 branch は人間が削除済 (確認:
   `git fetch --prune` で `[deleted] (none) -> origin/feature/
   connection-admin-ui`)。
-- ローカル `develop` は `origin/develop` (= `88d0f45`) と sync 済。
-- memory 更新済: `dbboard-web-state.md` で desktop@88d0f45 snapshot
+- ローカル `develop` は `origin/develop` (= `38fc542`) と sync 済。
+- memory 更新済: `dbboard-web-state.md` で desktop@38fc542 snapshot
   反映 + ADR-0016 を「contract change ではない (UI / config のみ)
   ので mirror 不要」リストに追加、`MEMORY.md` index も対応更新。
 
@@ -3157,11 +3157,11 @@ workspace tests green (dbboard-config 12 → 17、dbboard-ui 30 → 46、
 
 積んだ commit (古い順):
 
-- `720516a` `docs: ADR-0016 connection management UI (HeidiSQL model, Stage 1)`
-- `5a07728` `feat(config): add ConnectionAdmin use-case (ADR-0016)`
-- `c8e4099` `feat(ui): add ConnectionsView for connection management (ADR-0016)`
-- `2541ef7` `feat(app): wire ConnectionAdmin and the Connections window (ADR-0016)`
-- `05aaf93` `i18n(connections): translate connections window for tiers 1+2 locales`
+- `5116fdc` `docs: ADR-0016 connection management UI (HeidiSQL model, Stage 1)`
+- `5004293` `feat(config): add ConnectionAdmin use-case (ADR-0016)`
+- `a418bbb` `feat(ui): add ConnectionsView for connection management (ADR-0016)`
+- `6f33a69` `feat(app): wire ConnectionAdmin and the Connections window (ADR-0016)`
+- `634588e` `i18n(connections): translate connections window for tiers 1+2 locales`
 - (本 commit) `docs: tick Phase 2 connection management UI in roadmap and status`
 
 実装の要点:
@@ -3225,13 +3225,13 @@ workspace tests green (dbboard-config 12 → 17、dbboard-ui 30 → 46、
 
 ### Phase 2.5 PR #8 マージクローズ (本セッション末 / 2026-06-03)
 
-- PR #8 (`feature/i18n-locales` → `develop`) マージ済 = `c36d1b4`
+- PR #8 (`feature/i18n-locales` → `develop`) マージ済 = `048c99d`
   (GitHub 上で merge commit、squash ではない)。
-- ローカル `feature/i18n-locales` 削除済 (`git branch -d`、`f6f5107` was)。
+- ローカル `feature/i18n-locales` 削除済 (`git branch -d`、`47c6070` was)。
   リモート側 branch は人間が削除済 (確認: `git fetch --prune` で
   `[deleted] (none) -> origin/feature/i18n-locales`)。
-- ローカル `develop` は `origin/develop` (= `c36d1b4`) と sync 済。
-- memory 更新済: `dbboard-web-state.md` で desktop@c36d1b4 snapshot 反映
+- ローカル `develop` は `origin/develop` (= `048c99d`) と sync 済。
+- memory 更新済: `dbboard-web-state.md` で desktop@048c99d snapshot 反映
   + ADR-0015 を「contract change ではない (DbError 本文は English 維持)
   ので mirror 不要」リストに追加、`MEMORY.md` index も対応更新。
 
@@ -3243,7 +3243,7 @@ workspace tests green (dbboard-config 12 → 17、dbboard-ui 30 → 46、
 
 積んだ commit の構成 (古い順):
 
-- `6a804fe` `feat(i18n): add dbboard-i18n crate with 11-locale Fluent loader (ADR-0015)`
+- `a817493` `feat(i18n): add dbboard-i18n crate with 11-locale Fluent loader (ADR-0015)`
 - (本セッション後半) `feat(i18n): wire dbboard-ui labels and apps/dbboard startup`
 - (本セッション後半) `docs: tick Phase 2.5 multilingual UI roadmap entry`
 
@@ -3288,10 +3288,10 @@ Push は人間担当。
 
 積んだ commit (古い順):
 
-- `992f7a5` `docs: add ADR-0014 for in-memory query history`
-- `1356c6e` `feat(ui): in-memory query history store (ADR-0014)`
-- `8b2eefb` `feat(ui): wire query history into editor with click-to-restore`
-- `fbb1fa7` `docs(roadmap): tick Phase 2 in-memory query history (Stage 1)`
+- `7d1ecc6` `docs: add ADR-0014 for in-memory query history`
+- `3da4764` `feat(ui): in-memory query history store (ADR-0014)`
+- `63ece0f` `feat(ui): wire query history into editor with click-to-restore`
+- `9fb87b8` `docs(roadmap): tick Phase 2 in-memory query history (Stage 1)`
 
 実装の要点:
 
@@ -3344,12 +3344,12 @@ Push は人間担当。
 
 ### Phase 2 config 層 PR #6 マージクローズ (本セッション末 / 2026-06-03)
 
-- PR #6 (`feature/config-store` → `develop`) マージ済 = `00756d7`
+- PR #6 (`feature/config-store` → `develop`) マージ済 = `b56fea2`
   (GitHub 上で merge commit、squash ではない)。
-- ローカル `feature/config-store` 削除済 (`git branch -d`、`42871db` was)。
+- ローカル `feature/config-store` 削除済 (`git branch -d`、`a7461d0` was)。
   リモート側 branch 削除は人間担当。
-- ローカル `develop` は `origin/develop` (= `00756d7`) と sync 済。
-- memory 更新済: `dbboard-web-state.md` で desktop@00756d7 snapshot
+- ローカル `develop` は `origin/develop` (= `b56fea2`) と sync 済。
+- memory 更新済: `dbboard-web-state.md` で desktop@b56fea2 snapshot
   反映 (ADR-0012 + ADR-0013 の双方が contract 層に追加された旨)。
 
 ### Phase 2 config 層 (本セッション / 2026-06-03)
@@ -3362,8 +3362,8 @@ tests green (1 ignored = live keyring)。Push は人間担当。
 - `<adr>` ADR-0013 起票 (`docs/decisions.md` 末尾追記)。
 - `<skel>` `crates/dbboard-config` skeleton + schema (serde-only, `kind`
   discriminator で Turso/D1/Postgres、CONFIG_VERSION=1)。
-- `d7bc17c` `feat(config): load and persist connections.toml via the directories crate`。
-- `76f22f9` `feat(config): keyring-backed SecretStore with in-memory fallback`。
+- `d53e545` `feat(config): load and persist connections.toml via the directories crate`。
+- `e0625ea` `feat(config): keyring-backed SecretStore with in-memory fallback`。
 - `<wire>` `apps/dbboard` 配線 + `docs/connections.md` 新設 + roadmap
   Phase 2 checkbox 更新。
 
@@ -3395,16 +3395,16 @@ tests green (1 ignored = live keyring)。Push は人間担当。
 
 ### Phase 2 PR #5 マージクローズ (本セッション末 / 2026-05-27)
 
-- PR #5 (`feature/adapter-trait-capability` → `develop`) マージ済 = `7f463ef`。
+- PR #5 (`feature/adapter-trait-capability` → `develop`) マージ済 = `0a1a08b`。
   GitHub 上で squash ではなく merge commit (CHANGELOG への影響なし、Phase 2
   は未 release)。
 - ローカル + リモート `feature/adapter-trait-capability` 削除済。pre-push
   hook が release build + 132 tests を実行してから削除を通した。
 - memory 更新済:
-  - `dbboard-web-state.md` → desktop@7f463ef snapshot、delta-mirror waiting
+  - `dbboard-web-state.md` → desktop@0a1a08b snapshot、delta-mirror waiting
     on web の状態を反映。
   - `MEMORY.md` index の dbboard-web エントリ description 更新。
-- ローカル `develop` は `origin/develop` (= `7f463ef`) と sync 済。
+- ローカル `develop` は `origin/develop` (= `0a1a08b`) と sync 済。
 
 ### Phase 2 ブランチ実装完了 (本セッション後半 / 2026-05-27)
 
@@ -3413,11 +3413,11 @@ tests green (1 ignored = live keyring)。Push は人間担当。
 
 積んだ commit (古い順):
 
-- `0dc9e17` `feat(core): introduce Capabilities discovery struct (ADR-0012)`
-- `17e8a84` `feat(core): define DatabaseAdapter trait and capability markers`
-- `5e46e99` `refactor(adapters): implement DatabaseAdapter trait and dispatch via Arc<dyn>`
-- `1c350f6` `feat(server): add GET /capabilities and the capability error category`
-- `f59107b` `docs: document GET /capabilities and queue web mirror brief`
+- `074c19f` `feat(core): introduce Capabilities discovery struct (ADR-0012)`
+- `50649b5` `feat(core): define DatabaseAdapter trait and capability markers`
+- `c6aa314` `refactor(adapters): implement DatabaseAdapter trait and dispatch via Arc<dyn>`
+- `c3fe66c` `feat(server): add GET /capabilities and the capability error category`
+- `fb514f9` `docs: document GET /capabilities and queue web mirror brief`
 
 Phase 2 実装の要点:
 
@@ -3454,8 +3454,8 @@ Phase 2 実装の要点:
 
 ### v0.1.0 出荷完了 (本セッション前半)
 
-- PR #3 (`feature/dev-hardening-husky-deny` → `develop`) マージ済 = `9de9f67`。
-- PR #4 (`develop` → `main`, release for v0.1.0) マージ済 = `84c08be`。
+- PR #3 (`feature/dev-hardening-husky-deny` → `develop`) マージ済 = `758ebdf`。
+- PR #4 (`develop` → `main`, release for v0.1.0) マージ済 = `3fb2c48`。
 - `v0.1.0` git tag 作成 + push 済。CHANGELOG.md の `[0.1.0]` リンクは resolve 済。
 - 旧 feature branch (`feature/dev-hardening-husky-deny`) は local 削除済。
   remote の削除は人間にお任せ (GitHub 上で stale branch クリーンアップ)。
@@ -3465,14 +3465,14 @@ Phase 2 実装の要点:
 ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち。
 
 1. ✅ status / memory 同期 (`v0.1.0` 出荷反映)。
-2. ✅ `Capabilities` struct 定義 (`0dc9e17`)。
-3. ✅ `DatabaseAdapter` trait 定義 (`17e8a84`)。
-4. ✅ 3 アダプタを trait に migration + `Backend` enum 解体 (`5e46e99`)。
+2. ✅ `Capabilities` struct 定義 (`074c19f`)。
+3. ✅ `DatabaseAdapter` trait 定義 (`50649b5`)。
+4. ✅ 3 アダプタを trait に migration + `Backend` enum 解体 (`c6aa314`)。
    元の task 4/5 は compile-time に分離不能 (循環) と判明し 1 commit に統合。
-6. ✅ `GET /capabilities` + `DbError::Capability(404)` (`1c350f6`)。
+6. ✅ `GET /capabilities` + `DbError::Capability(404)` (`c3fe66c`)。
 7. ✅ UI scrub (no-op で完了; Phase 1.5 ですでに達成済)。
 8. ✅ `docs/api-contract.md` 改訂 + `.claude/issues/0002-web-capabilities-mirror.md`
-   起票 (`f59107b`)。
+   起票 (`fb514f9`)。
 
 ## 直近の作業 (前セッション後半 / 2026-05-26)
 
@@ -3498,17 +3498,17 @@ ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち
 
 - `feature/dev-hardening-husky-deny` 上に積んでいた以下を `develop` → `main`
   経由で出荷:
-  - `chore(security)`: `cargo-deny` を `deny.toml` で設定し pre-push に組込 (`6ae8652`)。
-  - `chore(husky)`: 削除のみの push では release build/test をスキップ (`8b4ebe7`)。
+  - `chore(security)`: `cargo-deny` を `deny.toml` で設定し pre-push に組込 (`321c243`)。
+  - `chore(husky)`: 削除のみの push では release build/test をスキップ (`26af214`)。
   - `docs(policy)`: ADR-0011 で SemVer + tiered DB support を採択、
-    `docs/compatibility.md` 新設 (`bad80e0`)。
+    `docs/compatibility.md` 新設 (`682a05e`)。
   - `chore(release)`: ワークスペース版を `0.1.0` に bump、`CHANGELOG.md` 新設、
-    roadmap.md Phase 1/1.5/1.6/1.7 に ✅ done (`456045f` `99ff580`)。
+    roadmap.md Phase 1/1.5/1.6/1.7 に ✅ done (`53087ad` `7d574ea`)。
   - `docs(adapter)`: ADR-0012 で Capability パターンを採択 — 必須最小面 +
     `Option<&dyn ...>` でぶら下げる任意 capability。HTTP は `/views` `/auth` などで
-    階層化、新エラーカテゴリ `capability` (`46d1d16`)。
-  - `docs`: README / architecture.md を 0.1.0 実態に同期 (`264d68e`)。
-  - `chore(handoff)`: dbboard-web Phase 1 contract-mirror brief (`939fe22`)。
+    階層化、新エラーカテゴリ `capability` (`17e600b`)。
+  - `docs`: README / architecture.md を 0.1.0 実態に同期 (`a659c33`)。
+  - `chore(handoff)`: dbboard-web Phase 1 contract-mirror brief (`4bdf54e`)。
 
 ### 結果セット行数上限 (security HIGH 解消、Phase 1.7)
 
@@ -3531,7 +3531,7 @@ ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち
 ## 2026-08-05 その2 追加退避 (baseline §31・400 行トリガ)
 
 - 日付: 2026-07-29 (**SSH トンネルが着地 — デスクトップ (Tauri) が初めて egui を追い越した**
-  (branch `feature/desktop-design-polish`, commits `8bfe07b`→`22892b6`, ADR-0069)。
+  (branch `feature/desktop-design-polish`, commits `47d173d`→`7431ef5`, ADR-0069)。
   **動機:** バスチオン越しにしか届かない DB (VPS 側が `localhost` のみ listen) は、これまで
   第二のツールでトンネルを張らないと dbboard から一切使えなかった。dbboard が単体で完結する
   クライアントであるためには**自分でトンネルを開く**必要がある。**設計の肝 = 純 Rust の
@@ -3548,7 +3548,7 @@ ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち
   **秘匿情報は ADR-0016 と同じ扱い:** 鍵ファイルの**パス**と非秘匿な host/port/user は
   TOML インライン、鍵**パスフレーズ**と SSH **パスワード**は OS キーチェーンのみ
   (`ssh_passphrase`/`ssh_password` ref)。env 面 `DBBOARD_SSH_*` も並行提供。
-  **編集 UI (`22892b6`) は desktop のみ = ここで初めて desktop が egui を先行**。
+  **編集 UI (`7431ef5`) は desktop のみ = ここで初めて desktop が egui を先行**。
   対象は tunnel 可能な種別 (Postgres ファミリ + MySQL)。egui は `connections.toml` 手編集の
   まま (意図的、desktop が「トンネル編集の正本」)。**3 人の並列レビュー
   (security/rust/typescript) が同一の実バグに独立収束** → 「維持すべきものが無いのに keep」
@@ -3567,7 +3567,7 @@ ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち
   `TAURI_SIGNING_PRIVATE_KEY` シークレット設定、(3) #42 = 外部 bastion 経由の live MySQL
   検証 — **実接続なので user の明示的 GO と認証情報が必要。エージェントは勝手に接続しない**。)
 - 日付: 2026-07-29 (**MySQL / MariaDB アダプタが着地 — 初の「別 SQL 方言」エンジン**
-  (branch `feature/desktop-design-polish`, commit `6b6e887`, ADR-0068)。仕事で MySQL を
+  (branch `feature/desktop-design-polish`, commit `f07be49`, ADR-0068)。仕事で MySQL を
   使う maintainer からの要望 (#36) をフルパリティで実装 = 読み取り専用プレビューではなく
   接続・クエリ・イントロスペクション・セル書き戻し・エクスポート・ダンプ・アトミック
   リストア・read-only MCP/AI 面・接続マネージャ UI の全バーティカルを満たす。**設計の肝 =
@@ -3597,7 +3597,7 @@ ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち
   完了。今の user 側ボール = (1) `feature/desktop-design-polish` の push、(2) 初回 v0.4.0
   リリース前に `TAURI_SIGNING_PRIVATE_KEY` シークレットを設定 (前エントリ参照)。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ完了: 自動更新 + リリース CI が着地**
-  (branch `feature/desktop-design-polish`, commit `d65c008`, ADR-0067)。
+  (branch `feature/desktop-design-polish`, commit `1bb4c5b`, ADR-0067)。
   上位方針は不変 = egui 版全機能を Tauri 2 + SvelteKit へ一括移植し **v0.4.0
   (パリティ + 自動更新)** として出荷。**今回のバーティカル (ADR-0067):** egui の
   inform-only 更新チェック (ADR-0040) を一歩超え、Tauri は**その場で更新・再起動**する。
@@ -3625,7 +3625,7 @@ ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち
   `build-tauri-*` が署名できず失敗する。** **次の作業 (「両方まとめて連続で」):**
   MySQL アダプタ (#36, ADR-0068 見込み)。)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ: AI アシスタントが着地**
-  (branch `feature/desktop-design-polish`, commit `c1ccec5`, ADR-0066)。
+  (branch `feature/desktop-design-polish`, commit `08a66c1`, ADR-0066)。
   上位方針は不変 = egui 版全機能を Tauri 2 + SvelteKit へ一括移植し **v0.4.0
   (パリティ + 自動更新)** として出荷。**今回のバーティカル (ADR-0066):** egui の
   AI アシスタント (ai.rs + ai_settings.rs) をトランスポートだけ差し替えて移植。
@@ -3646,7 +3646,7 @@ ADR-0012 に従い 1 PR にまとめた。実装はすべて完了、push 待ち
   (1) `feature/desktop-design-polish` の push、(2) 最後のバーティカル auto-update +
   release CI へ着手。**)
 - 日付: 2026-07-29 (**Tauri 版 v0.4.0 パリティ: インラインセル編集が着地**
-  (branch `feature/desktop-design-polish`, commit `c5f165f`, ADR-0063)。
+  (branch `feature/desktop-design-polish`, commit `d2b8a13`, ADR-0063)。
   上位方針 = user 厳命「小さくきらないで機能面の仕様を全部いれる。くぎっては
   ならない」= egui 版全機能を Tauri 2 + SvelteKit (`apps/desktop/`) へ一括移植し
   **v0.4.0 (パリティ + 自動更新)** として出荷する。Tauri は読み取り専用スパイク
