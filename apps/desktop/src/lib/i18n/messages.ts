@@ -153,6 +153,7 @@ export const en = {
   "conn-filter-placeholder": "Filter by name or id",
   "conn-filter-none": "No connection matches that.",
   "conn-move-filtered": "Clear the filter to change the order",
+  "conn-drag-handle": "Drag to reorder",
   "conn-save": "Save",
   "conn-browse": "Browse…",
   "conn-cancel": "Cancel",
@@ -577,6 +578,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-filter-placeholder": "名前または id で絞り込む",
   "conn-filter-none": "一致する接続がありません。",
   "conn-move-filtered": "並び替えるには絞り込みを解除してください",
+  "conn-drag-handle": "ドラッグして並び替え",
   // 接続の複製と、他の接続のシークレット枠を指している接続の修復 (issue #213)
   "conn-duplicate": "複製",
   "conn-duplicate-title": "接続を複製",

@@ -12142,3 +12142,54 @@ iterator rather than `.length`, so an emoji costs one and not two.
 the agent surface out on purpose: a colour is for a human eye and a tag is for a
 human reading a list. Neither has a use on the agent side yet, and a field the
 agent can read is a field the agent can be confused by.
+
+## ADR-0127 — Drag-to-reorder uses pointer events, so the window keeps its OS drop (2026-08-24)
+
+**Status.** Accepted.
+
+**Context.** ▲▼ reorder the connection list ([#192](https://github.com/meta-taro/dbboard/issues/192) criterion 1, shipped 2026-08-24). Plan
+`.claude/issues/0026` deferred drag-and-drop behind a condition — "worth doing
+only if ▲▼ turns out to be tedious in practice" — and that condition was met
+the first time the feature was used with a real list.
+
+Two ways to do it in a Tauri webview:
+
+* **HTML5 drag-and-drop.** Less code — the browser supplies the drag image, the
+  hit-testing and the cursor. But Tauri intercepts the OS-level drag-drop at the
+  window before the webview sees it, so `dragstart`/`drop` only fire with
+  `app.windows[].dragDropEnabled: false`.
+* **Pointer events.** More code: the drop position has to be computed from the
+  rows' own geometry, and the pointer has to be captured so the drag survives
+  leaving the handle.
+
+**Decision.** Pointer events.
+
+`dragDropEnabled` is a window-wide switch, and the thing it disables is the only
+way a file dropped onto the window can ever be noticed. dbboard does not use it
+today — there is no `onDragDrop` anywhere in the tree — but it already imports
+and exports `.dbbx` bundles through a file picker, and "drop the bundle on the
+window" is the obvious next form of that. Turning the switch off to save code in
+the connection list spends something that belongs to a different feature.
+
+The extra code is also where the correctness lives, and it is testable in a way
+the browser's version would not have been. `$lib/connections/reorder.ts` holds
+both halves: `gapForPointer` decides which gap the pointer is over, and
+`dropTarget` converts that gap into the absolute position `move_to` takes. The
+off-by-one — a gap below the dragged row is one too high, because lifting the
+row out closes the gaps past it — is a unit test rather than something found by
+dragging.
+
+**Consequences.**
+
+* Rows do not move while a drag is in flight; only an inset line moves. Opening
+  a gap between rows would shift the midpoints `gapForPointer` reads, and the
+  answer would oscillate wherever two rows meet.
+* ▲▼ stay. They are the keyboard path, which is what makes drag an addition
+  rather than a replacement, and they are what a filtered list falls back to —
+  both are disabled while the filter hides rows, for the reason recorded with
+  the arrows.
+* No autoscroll at the list edges yet. The list has to be longer than the dialog
+  before that is reachable at all, and the dialog is tall enough that it is not
+  the next thing anyone will hit.
+* `dragDropEnabled` stays at its default. A later `.dbbx`-onto-the-window import
+  does not have to undo this one.
