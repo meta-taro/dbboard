@@ -25,7 +25,6 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.11** | Connection repair and duplication | Duplicate and Repair actions (#213), webview CSP (#210), the Windows verification fix, the self-reporting release trigger |
 | **v0.12** | A connection list you can steer | Operator-controlled order, search, names instead of ids, colour marks (#192). Its prerequisite is done: `ConnectionManager.svelte` is 662 lines, from 1,617 |
 | **v0.13** | Speed, measured | Startup, connect-and-browse, large result sets. Measurement lands before any optimisation, so the numbers are comparable afterwards |
 | **v0.14** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder |
@@ -95,11 +94,13 @@ Every version heading in [`CHANGELOG.md`](../CHANGELOG.md) carries its date
 and its headline, so the question is answerable without reading a diff:
 
 ```
-## [0.11.0] — 2026-08-22 — Connection repair and duplication
+## [0.11.0] — 2026-08-24 — Connection repair and duplication
 ```
 
 The date is the day it was cut and the headline is the slot's;
-`scripts/release-cut.mjs` writes both. If what actually shipped no longer
+`scripts/release-cut.mjs` writes both. A slot leaves the table above the
+moment its version is cut, because from then on the changelog answers for it
+and two answers to one question is how a plan starts lying. If what actually shipped no longer
 matches the slot, the headline changes and the slot table is corrected — the
 record of what shipped wins over the plan.
 
