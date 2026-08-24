@@ -1,7 +1,7 @@
 # 0026: The connection list — what could be built there, and in what order
 
-- **Status**: open — C's one line, F and A are built; B, D and E are still
-  planning only, and nothing here is scheduled by this file
+- **Status**: open — C's one line, F, A and B are built, which is all of #192;
+  D and E are still planning only, and nothing here is scheduled by this file
 - **Opened**: 2026-08-22
 - **Asked for**: operator-controlled order, and colour marks. Neither exists.
 - **Owner**: maintainer decides what, if anything, moves to `docs/roadmap.md`
@@ -77,6 +77,18 @@ A second search input, above the list, visually distinct from the table/column
 one below it. Pure frontend: no crate, no config, no contract change. Filters on
 name and id, not on kind.
 
+**Built** (2026-08-24, `feature/connection-order`), in the manager list rather
+than the sidebar — that is where the rows carry actions, and where A put the
+▲▼. Every typed word has to match, so a second word narrows. The kind stays
+unmatched as planned: typing `my` to reach "my shop" would otherwise return
+every MySQL row. `$lib/connections/filter.ts`.
+
+One thing the plan did not anticipate: **A and B interfere.** ▲▼ move an entry
+within the *stored* list, so while rows are hidden they would move a connection
+past something the operator cannot see. They are disabled while a filter is
+narrowing, rather than remapped — "below the next visible row" is a different
+feature, and a silent wrong answer is worse than a disabled button.
+
 ### C. Stop the name and the adapter label fighting — #192 criterion 3
 
 Three sub-options in ascending cost: make `title` show the name (do this
@@ -131,7 +143,8 @@ worse in a way that gets progressively harder to undo.
 1. ~~**C, the one-line half** — `title` shows the name. Minutes.~~ Done
    (`b48c974`).
 2. ~~**A (▲▼)** — settled storage, daily payoff.~~ Done — see A above.
-3. **B** — pure frontend, no dependencies. Next.
+3. ~~**B** — pure frontend, no dependencies.~~ Done — see B above.
+   **A + B + C close #192.**
 4. ~~**F** — split the manager before D adds a colour picker to it.~~ Done
    (`497a185`, `e0ce918`): 1,617 lines to 662. It ran ahead of B because both
    remaining items add UI to that file.

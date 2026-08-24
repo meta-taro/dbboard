@@ -48,6 +48,7 @@
   } from '$lib/connections/file-picker';
   import { foreignRefFor } from '$lib/connections/repair';
   import { moveTarget } from '$lib/connections/order';
+  import { filterConnections } from '$lib/connections/filter';
   import { refreshConnectionList } from '$lib/connections/refresh';
   import DsnFieldset from './DsnFieldset.svelte';
   import SshFieldset from './SshFieldset.svelte';
@@ -72,6 +73,16 @@
   let busy = $state(false);
   let error = $state('');
   let info = $state('');
+
+  // Narrow the list by typing (issue #192, criterion 2). Not persisted: it is
+  // a way of finding one row, not a saved view — the order below *is* saved.
+  let filter = $state('');
+  const visible = $derived(filterConnections(workspace.connections, filter));
+  // ▲▼ move an entry within the stored list, so while rows are hidden the
+  // buttons would move a connection past something the operator cannot see.
+  // Disabled rather than remapped: "below the next visible row" is a different
+  // feature, and a silent wrong answer is worse than a disabled button.
+  const filtering = $derived(visible.length !== workspace.connections.length);
 
   // Entries whose saved-secret slot was minted for a *different* connection
   // (issue #213). dbboard never writes that state itself, so this is only ever
@@ -383,11 +394,23 @@
     {#if info && mode === 'list'}<p class="banner info">{info}</p>{/if}
 
     {#if mode === 'list'}
+      {#if workspace.connections.length > 0}
+        <input
+          class="filter"
+          type="search"
+          bind:value={filter}
+          placeholder={i18n.t('conn-filter-placeholder')}
+          aria-label={i18n.t('conn-filter-placeholder')}
+        />
+      {/if}
       <div class="list">
         {#if workspace.connections.length === 0}
           <p class="empty">{i18n.t('conn-empty')}</p>
+        {:else if visible.length === 0}
+          <p class="empty">{i18n.t('conn-filter-none')}</p>
         {:else}
-          {#each workspace.connections as c, i (c.id)}
+          {#each visible as c (c.id)}
+            {@const i = workspace.connections.indexOf(c)}
             <div class="row">
               <div class="row-main">
                 <span class="row-name">{c.name}</span>
@@ -417,8 +440,8 @@
                 <button
                   type="button"
                   class="ghost move"
-                  disabled={busy || i === 0}
-                  title={i18n.t('conn-move-up')}
+                  disabled={busy || filtering || i === 0}
+                  title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-move-up')}
                   aria-label={i18n.t('conn-move-up')}
                   onclick={() => move(i, -1)}
                 >
@@ -427,8 +450,8 @@
                 <button
                   type="button"
                   class="ghost move"
-                  disabled={busy || i === workspace.connections.length - 1}
-                  title={i18n.t('conn-move-down')}
+                  disabled={busy || filtering || i === workspace.connections.length - 1}
+                  title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-move-down')}
                   aria-label={i18n.t('conn-move-down')}
                   onclick={() => move(i, 1)}
                 >

@@ -148,6 +148,11 @@ export const en = {
   // file, so it is the order the sidebar shows on every later run too.
   "conn-move-up": "Move up",
   "conn-move-down": "Move down",
+  // Narrowing the list (issue #192). While rows are hidden the ▲▼ buttons are
+  // disabled: they move an entry within the stored list, not within the view.
+  "conn-filter-placeholder": "Filter by name or id",
+  "conn-filter-none": "No connection matches that.",
+  "conn-move-filtered": "Clear the filter to change the order",
   "conn-save": "Save",
   "conn-browse": "Browse…",
   "conn-cancel": "Cancel",
@@ -545,6 +550,10 @@ const ja: Partial<Record<MessageKey, string>> = {
   // 並び替え (issue #192)
   "conn-move-up": "上へ",
   "conn-move-down": "下へ",
+  // 絞り込み (issue #192)
+  "conn-filter-placeholder": "名前または id で絞り込む",
+  "conn-filter-none": "一致する接続がありません。",
+  "conn-move-filtered": "並び替えるには絞り込みを解除してください",
   // 接続の複製と、他の接続のシークレット枠を指している接続の修復 (issue #213)
   "conn-duplicate": "複製",
   "conn-duplicate-title": "接続を複製",

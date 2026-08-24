@@ -76,6 +76,23 @@
   color: var(--text-accent);
 }
 
+/* The list's own filter (issue #192). It sits outside `.field`, so it does not
+   inherit the form-input rules and states them itself. `type="search"` gets a
+   clear button in WebKit; the padding leaves room for it. */
+.conn-dialog .filter {
+  flex: none;
+  background: var(--bg-surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-widget);
+  padding: 7px 10px;
+  font-size: var(--text-body);
+}
+.conn-dialog .filter:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .conn-dialog .list {
   display: flex;
   flex-direction: column;
