@@ -173,7 +173,9 @@ Phase 1 の Adapter Capability API だけは他のどれを選んでも先に要
 
 | やること | なぜエージェントには無理か |
 |---|---|
-| ~~#216 を merge~~ → **merged** (2026-08-24、`1790c66`)。**いま: `develop` と タグ `v0.11.0` を push** | push は §6、タグ push は ADR-0121 で user のもの。これがリリースそのもの |
+| ~~#216 を merge~~ → **merged**。~~`develop` と タグ `v0.11.0` を push~~ → **2026-08-24 に完了。v0.11.0 は出た** (`28b3415` / release.yml が起動) | push は §6、タグ push は ADR-0121 で user のもの。これがリリースそのものだった |
+| **いま: `feature/connection-order` を push** (`git push`) | #222 に v0.12 の CHANGELOG (`6f4df88`) を乗せる。これが無いと merge しても changelog が空のまま |
+| **公開された exe を目視で PII チェック** | `.pii-denylist` はこのマシンに無い (untracked・§55)。機械では見られないので、実店舗名が exe に混ざっていないかは人の目でしか確認できない |
 | **その次: #222 `feature/connection-order` を merge (接続一覧を 1 枚見てから)** | **#219 は GitHub が閉じた**ので #222 で立て直した (ブランチも commit もそのまま)。**タグ push の後**に merge すること — v0.11.0 の枠は「接続の複製と修復」で予約済みで、この 4 つはその中身ではない。見るのは接続マネージャの一覧と接続フォーム: 絞り込み入力が下のテーブル検索と見分けが付くか、**絞り込み中に掴み手が灰色になって掴めないか** (唯一の未チェック)、**色 + タグの目印がサイドバーと一覧の両方で名前を押しのけていないか**、**フォームの色セレクトの左端に色が出ているか** |
 | ~~`feature/connection-drag-order`~~ → **#221 merged** (2026-08-24)。`feature/connection-order` に入り、CI green。**まだ人が見ていないのは 1 つだけ**: 絞り込み中に掴み手が灰色になって掴めないか (PR #221 のチェックリストで唯一未チェック)。#222 を見るときに一緒に | 見るのは #222 の 1 枚で足りる |
 | **その次: #223 `chore/annotations-test-gaps` を merge** | **画面を見る必要は無い** (Rust のテスト 2 本だけ・非テスト行はゼロ)。#220 も GitHub が閉じたので立て直した。#222 とは順不同 |
@@ -191,6 +193,18 @@ Phase 1 の Adapter Capability API だけは他のどれを選んでも先に要
 ---
 
 ## 最終更新
+
+- 日付: 2026-08-24 その7 (**v0.11.0 が出た**。user が `git push` + `git push origin v0.11.0`
+  を実行し、`origin/develop` = `28b3415`、タグが着地、release.yml が起動した。
+  **1 回目の push は 2 分で切られた**: Claude Code の `!` コマンドに 2 分の上限があり、
+  pre-push の `cargo build --release` (51s) + `cargo test --release` がそこを越える。
+  着地は何も無かったので中途半端な状態は残っていない。**`--no-verify` には逃げなかった** —
+  §35 は環境要因での bypass を許しているが、通常の PowerShell を 1 枚開けば上限は無く、
+  逃げる理由が無い。先にこちらで release テストを実測して緑を確認 (exit 0・実行だけで 1m42) し、
+  「窓を 1 枚開けて押す」だけを渡した。**次に同じ壁に当たったらこの手を思い出すこと**:
+  上限があるのは Claude Code 側であって、フックでもマシンでもない。
+  **AI がやれていないこと**: `feature/connection-order` の push、#222 / #223 の merge、
+  公開 exe の目視 PII チェック。→ **user 側**。)
 
 - 日付: 2026-08-24 その6 (**v0.11.0 を切った**。user の「切って」を受けて
   `node scripts/release-cut.mjs` → `cargo check` → `28b3415` → タグ `v0.11.0`。
