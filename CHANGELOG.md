@@ -55,6 +55,17 @@ public API is the HTTP contract in
   one does not shift its name sideways. A colour with no tag is accepted
   here, unlike in the form, since the bar sits on a row that already carries
   the connection's name. See [ADR-0130](docs/decisions.md).
+- **The line between the connections and the tables can be moved.** It was
+  fixed, and the connection list above it had no height of its own: three
+  connections left a boundary sitting near the top of the sidebar, and twenty
+  pushed the table list off the bottom of the window with no way to bring it
+  back. The line is now dragged up and down, and double-clicking it hands the
+  split back to the number of connections registered — which is what "back to
+  where it belongs" means when the number of rows is not fixed. Until the line
+  is dragged for the first time it keeps following that count on its own, so
+  adding a connection makes room for itself. The connection list scrolls once
+  it reaches its ceiling instead of growing without limit. Arrow keys move the
+  line and `Home` resets it. See [ADR-0131](docs/decisions.md).
 
 ### Fixed
 

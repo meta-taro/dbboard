@@ -12334,3 +12334,55 @@ starts wherever the name happens to end.
 query editor's chrome, where "which server is this" is asked with more at
 stake than in a list. That wants a look at the whole running-query surface,
 not one more render site.
+
+## ADR-0131 — The sidebar's two lists are split by a divider whose home position follows the connection count (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0083](#adr-0083--the-sidebar-splits-and-popovers-place-themselves).
+
+**Context.** The sidebar holds two lists: the connections above, the tables
+below, separated by a static border. The connections section had no height and
+no scroll, so it was simply as tall as its contents — three connections left
+the boundary near the top, and twenty pushed the table list off the bottom of
+the window with no way to get it back. The right boundary is not a constant.
+It depends on how many connections are registered, and on which of the two
+lists is being used that day.
+
+**Decision.** A horizontal divider between the sections, working exactly like
+the window splitter of ADR-0083 turned on its side: drag to move, double-click
+to reset, arrow keys to nudge, `Home` to reset from the keyboard. The pure
+sizing rules live in `lib/layout/panel-split.ts` with the component owning only
+the pointer plumbing, which is the same division of labour as `splitter.ts`.
+
+Two things differ from the width, and both come from the count.
+
+* The stored value is `number | null`, and `null` — never dragged — is the
+  default state rather than a stored constant. While it holds, the list sizes
+  itself to the number of connections, so registering a fourth one makes room
+  for itself. The first drag replaces the null and the following stops.
+* Double-click therefore does not restore a fixed height. It clears the stored
+  value, handing the pane back to the count, which is what "定位置" means when
+  the number of rows is not fixed.
+
+The numbers: 30px per row, a floor of 60px (two rows — below that there is no
+room to tell a scroll from a stutter), a ceiling of 420px (fourteen rows, past
+which a connection list is being scrolled rather than scanned), and never more
+than half the sidebar's own height, because the table list is the one being
+scrolled all day.
+
+**Consequences.**
+* The connection list scrolls now. It never did, and a long one used to hide
+  the tables entirely; that is the bug this fixes, and the divider is how it
+  gets fixed without picking a height for everyone.
+* A second layout key in `localStorage` (`dbboard.connectionsHeight`), stored
+  and read on the same terms as the width: clamped on the way in and out, and
+  silently ignored when the webview refuses storage.
+* A remembered height is clamped against the sidebar's current height on every
+  render, so shrinking the window squeezes the pane and widening it again
+  restores what was chosen — the same rule the width already follows.
+* The sections no longer draw a shared border. The divider draws it, as a
+  hairline inside 7px of grab area, so the visible gap between the lists is
+  unchanged while the target is large enough to hit.
+
+**Not decided here.** Whether the table list wants the same treatment. It is
+the last pane, so there is nothing below it to trade against; the question only
+arrives with a third pane, and the shape of that pane should decide it.
