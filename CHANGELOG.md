@@ -22,6 +22,18 @@ public API is the HTTP contract in
   about the data in a database, and putting a sidebar colour behind it would
   mean granting production write access to have a list sorted. See
   [ADR-0136](docs/decisions.md).
+- **The About dialog says what each version changed.** The version number was
+  all it showed, and the only description a release ever gave came from the
+  update dialog — once, at the moment the update was offered. Anyone who took
+  an update without reading it, or who skipped a version because two arrived
+  as one step, had no way back to the text. About now shows the notes for the
+  version it is running, with every earlier version reachable from the same
+  picker. They are read from the `CHANGELOG.md` the build was cut from, so
+  there is no second list to keep current, and the file travels inside the
+  binary rather than being fetched — the dialog works with no network and
+  cannot describe a release you are not running. The notes are in English,
+  and a line under them says so where the interface is not. See
+  [ADR-0137](docs/decisions.md).
 
 ## [0.12.0] — 2026-08-25 — A connection list you can steer
 

@@ -12,5 +12,10 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     watch: { ignored: ['**/src-tauri/**'] },
+    // The About dialog imports the repo's CHANGELOG.md, which sits two levels
+    // above this app. A production build inlines it, but the dev server
+    // refuses to serve outside its root unless told — and the failure is a
+    // dialog with no release notes, in dev only.
+    fs: { allow: ['../..'] },
   },
 });

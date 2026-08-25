@@ -12716,3 +12716,71 @@ inherited:
   it refreshes, the same as after `add_connection` (ADR-0134).
 * Every call opens its own `ConnectionAdmin` (ADR-0133), so a sort driven by
   an agent interleaves safely with edits made in the window.
+
+## ADR-0137 — The About dialog shows what the running build changed, from the changelog it was cut from (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0121](#adr-0121--the-release-trigger-reports-itself-because-a-rule-nobody-can-see-is-not-a-rule) and [ADR-0124](#adr-0124--cutting-a-release-is-one-command-and-it-stops-before-the-tag-2026-08-22).
+
+**Context.** Until now the only place a release described itself to a user was
+the update dialog, and it says its piece once: at the moment the update is
+offered. Anyone who took the update without reading it, or who was handed an
+installed copy by someone else, had no way back to the text. The About dialog
+knew the version number and nothing about what that number contained.
+
+The gap is not hypothetical. The report that prompted this came from an
+operator who went from 0.10.0 to 0.12.0 in one step — 0.11.0 was never
+offered, so nothing ever described it, and the version they now run is two
+releases past the last one they saw explained. "Which of these things do I
+have?" had no answer inside the app.
+
+**Decision.** The About dialog shows the release notes for the version it is
+running, with every earlier version reachable from the same place.
+
+* **The notes come from `CHANGELOG.md`, not from a second list.** It is
+  already the file `scripts/release-notes.mjs` reads for the update dialog and
+  the file `scripts/release-plan.test.mjs` holds against the plan. A separate
+  in-app list would be a third copy, and the copy nobody is cutting a release
+  from is the one that goes stale.
+* **It is inlined at build time (`?raw`), not read from disk and not
+  fetched.** An installed copy has no repository beside it, so there is no
+  file to read; and fetching from GitHub would describe whatever is on
+  `develop` rather than what this binary is, in a dialog that has to work
+  with no network. Inlining makes the notes and the binary one artefact —
+  they are cut together and cannot drift apart.
+* **Every shipped version is in the picker; `[Unreleased]` is not.** No build
+  is ever running the unreleased section, and showing it would tell an
+  operator they have something they do not. Skipped versions are the reason
+  the picker exists at all.
+* **A version the changelog does not describe shows nothing, not the newest
+  one.** A locally built binary, or one from a tag whose section was never
+  written, leaves the notes empty and says so. Falling back to the latest
+  release would be the one failure mode worse than silence: confidently
+  wrong about what the reader is running.
+* **The parser flattens markdown by the same rules as
+  `scripts/release-notes.mjs`.** Both readers strip links, emphasis and code
+  spans identically, so a bullet cannot read one way in the update dialog and
+  another in About. The About dialog keeps the group headings and the bullets
+  where the update notice keeps only a summary line, because a dialog opened
+  on purpose has room that a notice interrupting an update does not.
+* **The notes stay English, and non-English locales are told so.** Every
+  other string in the app is translated; the changelog is not, and
+  translating it would double the writing at every release. A line under the
+  notes says they are in English rather than leaving a Japanese reader to
+  wonder whether the localisation broke.
+
+**Consequences.**
+* `CHANGELOG.md` now ships inside the binary. It is public and already
+  covered by the PII scan (ADR-0055), so this exposes nothing new, but it
+  does mean the file is a shipped artefact and not only a repository
+  document.
+* A release cut without writing its section is now visible to the people
+  running it, not only to the maintainer reading the diff. That pressure is
+  wanted.
+* The file sits outside the frontend's workspace root, so the dev server
+  needs `server.fs.allow` to serve it. A production build inlines it either
+  way, which is exactly the arrangement that hides the mistake: the failure
+  is dev-only, and the comment in `vite.config.ts` says why the line is
+  there.
+* Wanting Japanese release notes remains a live question. It is a decision
+  about how much writing every release carries, not a bug in this one, and
+  it is deliberately not settled here.
