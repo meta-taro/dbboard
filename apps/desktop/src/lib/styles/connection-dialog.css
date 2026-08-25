@@ -38,6 +38,22 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* The header is the grip. The dialog is centred by default, which on a
+     short window puts it over whatever is being copied from (ADR-0132);
+     dragging the title bar is the gesture the OS gives a window. */
+  cursor: grab;
+  /* Otherwise a drag selects the title, and the double-click that
+     re-centres highlights it instead. */
+  user-select: none;
+}
+
+.conn-dialog .head:active {
+  cursor: grabbing;
+}
+
+/* The close button keeps its own pointer — it is not part of the grip. */
+.conn-dialog .head .icon-btn {
+  cursor: pointer;
 }
 .conn-dialog .title {
   margin: 0;

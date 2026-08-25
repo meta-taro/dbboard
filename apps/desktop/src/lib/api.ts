@@ -24,7 +24,11 @@ import type {
   AiOutcome,
   AiProviderView,
 } from '$lib/ai/panel';
-import type { AvailableUpdate, DownloadEvent } from '$lib/update/notice';
+import type {
+  AvailableUpdate,
+  DownloadEvent,
+  StalledUpdate,
+} from '$lib/update/notice';
 
 export interface ConnectionView {
   id: string;
@@ -706,6 +710,14 @@ let pendingUpdate: Update | null = null;
 // parity with the egui client, ADR-0040). Cheap; call once before checking.
 export const updateOptOut = (): Promise<boolean> => invoke('update_opt_out');
 
+// Report an update that was started on a previous run and never landed, and
+// clear the record so it is said once rather than on every launch after.
+export const takeStalledUpdate = (): Promise<StalledUpdate | null> =>
+  invoke('take_stalled_update');
+
+const recordUpdateAttempt = (to: string): Promise<void> =>
+  invoke('record_update_attempt', { to });
+
 // Check the release endpoint for a newer signed bundle. Resolves to the mapped
 // update (version + notes) or null when already current. Applies the same
 // strictly-newer guard the egui client uses, so a same/older endpoint entry
@@ -737,6 +749,16 @@ export const installUpdate = async (
   onEvent: (event: DownloadEvent) => void,
 ): Promise<void> => {
   if (!pendingUpdate) throw new Error('no pending update to install');
+  // Written down before control leaves this process. The installer replaces
+  // the binary and relaunches it (ADR-0067); when that relaunch never comes
+  // there is nothing left running to note it afterwards. A failure here is
+  // not worth cancelling the update over: it costs the diagnostic, not the
+  // install.
+  try {
+    await recordUpdateAttempt(pendingUpdate.version);
+  } catch {
+    /* best effort */
+  }
   await pendingUpdate.downloadAndInstall((event) =>
     onEvent(event as DownloadEvent),
   );

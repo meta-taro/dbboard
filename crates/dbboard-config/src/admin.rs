@@ -462,6 +462,10 @@ pub struct ConnectionAdmin {
     path: PathBuf,
     secrets: Arc<dyn SecretStore>,
     file: ConnectionFile,
+    /// Whether `path` is the authority for `file`, and so worth re-reading
+    /// before a write (ADR-0133). False for [`ConnectionAdmin::new_with_file`],
+    /// whose caller supplied the entries and has no disk to be behind.
+    tracks_disk: bool,
 }
 
 impl ConnectionAdmin {
@@ -478,6 +482,7 @@ impl ConnectionAdmin {
             path,
             secrets,
             file,
+            tracks_disk: true,
         })
     }
 
@@ -494,7 +499,29 @@ impl ConnectionAdmin {
             path,
             secrets,
             file,
+            tracks_disk: false,
         }
+    }
+
+    /// Re-read `connections.toml` so this admin is writing on top of what is
+    /// actually there.
+    ///
+    /// Every mutator saves the whole file, so an entry written by another
+    /// process — the MCP server, or the operator with a text editor — would be
+    /// erased by the next change made through a long-lived admin (ADR-0133).
+    /// Called at the top of each mutator rather than left to the caller: the
+    /// desktop locks this admin from thirteen places, and a rule that has to be
+    /// remembered at each of them is a rule that will be missed at one.
+    ///
+    /// # Errors
+    ///
+    /// Any error from [`load_or_empty`]. A mutator that cannot read the current
+    /// file refuses rather than overwriting it with a stale one.
+    fn sync(&mut self) -> Result<(), ConfigError> {
+        if self.tracks_disk {
+            self.file = load_or_empty(&self.path)?;
+        }
+        Ok(())
     }
 
     /// Borrow the current entries. The UI uses this to render the
@@ -598,6 +625,7 @@ impl ConnectionAdmin {
     /// the in-memory file via `last()`. A panic here would imply a bug
     /// in `Vec::push` itself.
     pub fn add(&mut self, draft: ConnectionDraft) -> Result<&ConnectionEntry, ConfigError> {
+        self.sync()?;
         if self.find_index(&draft.id).is_some() {
             return Err(ConfigError::DuplicateId(draft.id));
         }
@@ -703,6 +731,7 @@ impl ConnectionAdmin {
         id: &str,
         draft: ConnectionEditDraft,
     ) -> Result<&ConnectionEntry, ConfigError> {
+        self.sync()?;
         let idx = self
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
@@ -804,6 +833,7 @@ impl ConnectionAdmin {
     /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML
     ///   write.
     pub fn delete(&mut self, id: &str) -> Result<(), ConfigError> {
+        self.sync()?;
         let idx = self
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
@@ -848,6 +878,7 @@ impl ConnectionAdmin {
     ///   write. The in-memory order is only adopted once the file is on
     ///   disk, so a failed save leaves the store as it was.
     pub fn move_to(&mut self, id: &str, index: usize) -> Result<(), ConfigError> {
+        self.sync()?;
         let from = self
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
@@ -909,6 +940,7 @@ impl ConnectionAdmin {
         color: Option<String>,
         tag: Option<String>,
     ) -> Result<(), ConfigError> {
+        self.sync()?;
         let index = self
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
@@ -1129,6 +1161,7 @@ impl ConnectionAdmin {
         passphrase: &str,
         mode: ImportMode,
     ) -> Result<ImportReport, ConfigError> {
+        self.sync()?;
         let mut payload = decrypt_bundle(blob, passphrase)?;
         // Take the incoming entries out of the payload so we can iterate
         // them by value while still borrowing `payload.secrets` below.
@@ -3331,6 +3364,9 @@ mod tests {
             path,
             secrets: secrets.clone() as Arc<dyn SecretStore>,
             file: ConnectionFile::empty(),
+            // The subject here is the save, not the read: re-reading a path
+            // whose parent is a file would fail first and prove nothing.
+            tracks_disk: false,
         };
 
         let err = admin
@@ -4119,6 +4155,10 @@ mod tests {
         let blocker = dir.path().join("blocker");
         std::fs::write(&blocker, b"file-not-dir").expect("seed blocker");
         admin.path = blocker.join("connections.toml");
+        // The subject is the failing save, not the read: a re-pointed admin
+        // whose new path holds nothing would otherwise sync itself empty
+        // before it got there (ADR-0133).
+        admin.tracks_disk = false;
 
         let err = admin
             .update(
@@ -4278,15 +4318,25 @@ mod tests {
     fn move_to_the_index_it_already_has_does_not_rewrite_the_file() {
         let (dir, mut admin) = three_in_order();
         let path = dir.path().join("connections.toml");
-        // Removing the file is how we observe a write that should not happen:
-        // a save would put it back, a no-op leaves it gone.
-        std::fs::remove_file(&path).expect("clear the file");
+        // A comment is how we observe a write that should not happen: the
+        // serialiser does not emit one, so a save loses it and a no-op keeps
+        // it. Deleting the file would not do — a mutator re-reads it first
+        // (ADR-0133), so an absent file reads as an empty one.
+        let sentinel = "
+# a no-op must not rewrite this file
+";
+        let seeded = std::fs::read_to_string(&path).expect("read") + sentinel;
+        std::fs::write(&path, &seeded).expect("seed sentinel");
 
         admin
             .move_to("b", 1)
             .expect("moving where it already is is not an error");
 
-        assert!(!path.exists(), "a no-op move must not touch the file");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            seeded,
+            "a no-op move must not touch the file"
+        );
         assert_eq!(ids(&admin), ["a", "b", "c"]);
     }
 
@@ -4427,13 +4477,22 @@ mod tests {
             .expect("set");
 
         let path = dir.path().join("connections.toml");
-        std::fs::remove_file(&path).expect("clear the file");
+        // Same sentinel as the no-op move above, and for the same reason.
+        let sentinel = "
+# a no-op must not rewrite this file
+";
+        let seeded = std::fs::read_to_string(&path).expect("read") + sentinel;
+        std::fs::write(&path, &seeded).expect("seed sentinel");
 
         admin
             .set_mark("b", Some("red".into()), Some("prod".into()))
             .expect("re-setting the same mark is not an error");
 
-        assert!(!path.exists(), "a no-op set must not touch the file");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            seeded,
+            "a no-op set must not touch the file"
+        );
     }
 
     /// The mark is the only thing that moves. Nothing about the connection
@@ -5100,6 +5159,10 @@ mod tests {
         let blocker = dir.path().join("blocker");
         std::fs::write(&blocker, b"file-not-dir").expect("seed blocker");
         target.path = blocker.join("connections.toml");
+        // The subject is the failing save, not the read: a re-pointed admin
+        // whose new path holds nothing would otherwise sync itself empty
+        // before it got there (ADR-0133).
+        target.tracks_disk = false;
 
         let err = target
             .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
@@ -5870,5 +5933,100 @@ mod tests {
             admin.dsn_with_stored_password("local", "mysql://app@db:3306/shop"),
             Err(ConfigError::NotFound(id)) if id == "local"
         ));
+    }
+
+    /// Another process — the MCP server, or a text editor — may add a
+    /// connection while a long-lived admin is open. The admin writes the whole
+    /// file back on every change, so anything it has not seen is overwritten
+    /// (ADR-0133).
+    #[test]
+    fn add_keeps_an_entry_another_process_wrote() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new()) as Arc<dyn SecretStore>;
+        let mut held = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("open");
+        held.add(turso_draft("first", "First", "/tmp/first.db"))
+            .expect("add first");
+
+        let mut other = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("reopen");
+        other
+            .add(turso_draft("outside", "Outside", "/tmp/outside.db"))
+            .expect("add outside");
+
+        held.add(turso_draft("second", "Second", "/tmp/second.db"))
+            .expect("add second");
+
+        let on_disk = load_or_empty(&path).expect("reload");
+        let ids: Vec<&str> = on_disk.connections.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["first", "outside", "second"]);
+    }
+
+    /// The same staleness makes a duplicate id slip through: the guard only
+    /// sees the entries this admin knows about.
+    #[test]
+    fn add_rejects_a_duplicate_of_an_entry_another_process_wrote() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new()) as Arc<dyn SecretStore>;
+        let mut held = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("open");
+
+        let mut other = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("reopen");
+        other
+            .add(turso_draft("shared", "Outside", "/tmp/outside.db"))
+            .expect("add outside");
+
+        assert!(matches!(
+            held.add(turso_draft("shared", "Mine", "/tmp/mine.db")),
+            Err(ConfigError::DuplicateId(id)) if id == "shared"
+        ));
+    }
+
+    /// Deleting an entry must not resurrect the ones it never saw either.
+    #[test]
+    fn delete_keeps_an_entry_another_process_wrote() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new()) as Arc<dyn SecretStore>;
+        let mut held = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("open");
+        held.add(turso_draft("first", "First", "/tmp/first.db"))
+            .expect("add first");
+        held.add(turso_draft("doomed", "Doomed", "/tmp/doomed.db"))
+            .expect("add doomed");
+
+        let mut other = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("reopen");
+        other
+            .add(turso_draft("outside", "Outside", "/tmp/outside.db"))
+            .expect("add outside");
+
+        held.delete("doomed").expect("delete");
+
+        let on_disk = load_or_empty(&path).expect("reload");
+        let ids: Vec<&str> = on_disk.connections.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["first", "outside"]);
+    }
+
+    /// An admin built from an explicit in-memory file has no disk to trust:
+    /// re-reading would throw the fixture away.
+    #[test]
+    fn an_in_memory_admin_does_not_re_read_the_disk() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new()) as Arc<dyn SecretStore>;
+        let mut other = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("open");
+        other
+            .add(turso_draft("on-disk", "On disk", "/tmp/on-disk.db"))
+            .expect("add on-disk");
+
+        let file = ConnectionFile {
+            version: crate::store::CONFIG_VERSION,
+            connections: Vec::new(),
+        };
+        let mut held = ConnectionAdmin::new_with_file(path.clone(), secrets.clone(), file);
+        held.add(turso_draft("in-memory", "In memory", "/tmp/in-memory.db"))
+            .expect("add in-memory");
+
+        let on_disk = load_or_empty(&path).expect("reload");
+        let ids: Vec<&str> = on_disk.connections.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["in-memory"]);
     }
 }

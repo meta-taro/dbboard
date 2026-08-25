@@ -11,7 +11,8 @@
 //! The tool set: `list_connections`, `list_tables`, `describe_table`,
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
 //! `search_schema` (ADR-0053), `list_relationships` (ADR-0054),
-//! `run_write` + `dump_database` (ADR-0087), the `get_ui_locale` /
+//! `run_write` + `dump_database` (ADR-0087), `add_connection` (ADR-0134),
+//! the `get_ui_locale` /
 //! `set_ui_locale` pair, `capture_window` (ADR-0108), and the four that
 //! work the window — `set_editor_sql`, `run_query`, `open_ai_panel`,
 //! `open_ai_settings` (ADR-0109). Those last seven reach no database at
@@ -39,7 +40,40 @@ use dbboard_config::UiCommand;
 use dbboard_core::DbError;
 
 use crate::capture::{self, CaptureError};
-use crate::service::{McpService, ServiceError};
+use crate::service::{McpService, NewConnection, NewConnectionKind, ServiceError};
+
+/// Parameters for [`DbboardMcp::add_connection`] (ADR-0134).
+///
+/// Flat rather than one shape per kind: the fields that matter differ
+/// between the two kinds, but an agent filling a `oneOf` schema has to pick
+/// a branch before it knows the vocabulary. A `kind` string it has already
+/// seen in `list_connections` output, plus optional fields, is the same
+/// information in a form it can fill incrementally.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddConnectionParams {
+    /// The handle this connection will answer to in every other tool.
+    /// Lowercase and hyphenated by convention (`local-scratch`).
+    pub id: String,
+    /// The display name the operator will see in the app's sidebar.
+    pub name: String,
+    /// `turso` for a SQLite/libSQL file on this machine, `firestore` for the
+    /// Firestore emulator. No other kind can be registered here.
+    pub kind: String,
+    /// For `turso`: the absolute path to the database file. Not a URL.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// For `firestore`: the emulator's project id (e.g. `demo-project`).
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// For `firestore`: the database id. Omit for `(default)`.
+    #[serde(default)]
+    pub database_id: Option<String>,
+    /// For `firestore`: the emulator's HTTP address, e.g.
+    /// `http://127.0.0.1:8080`. Required — it is what distinguishes the
+    /// emulator from a real project.
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
 
 /// Parameters for [`DbboardMcp::list_tables`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -236,6 +270,59 @@ impl DbboardMcp {
             .await
             .map_err(|e| to_mcp(&e))?;
         json_block(&views)
+    }
+
+    // Two things the description has to establish before the agent tries: the
+    // closed list of kinds, and that the refusal for everything else is
+    // permanent. An agent that reads "add a connection" and sends a Postgres
+    // URL has already put a password in the transcript by the time the error
+    // arrives, so the boundary is stated first and as a rule about
+    // credentials, not as a list of unsupported names.
+    #[tool(
+        description = "Register a new database connection in dbboard, so a database you just set up is usable straight away without asking a person to retype its path.         
+
+Only connections that need NO credential can be registered: `turso` (a SQLite/libSQL file on this machine — pass `path`) and `firestore` (the local Firestore emulator — pass `project_id` and `base_url`). Everything else — Postgres, MySQL, Neon, Supabase, Aurora DSQL, D1, MongoDB, Turso Cloud — needs a password, token, or key, and is refused permanently: no setting enables it, so do not rephrase or retry. Say the operator must add it in the dbboard app, and do not send the credential here.         
+
+The connection is created read-only: `mcp_write` stays off and only a human can turn it on. A dbboard window that is already open lists it after a refresh."
+    )]
+    async fn add_connection(
+        &self,
+        Parameters(AddConnectionParams {
+            id,
+            name,
+            kind,
+            path,
+            project_id,
+            database_id,
+            base_url,
+        }): Parameters<AddConnectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let kind = match kind.trim().to_ascii_lowercase().as_str() {
+            // `sqlite` and `libsql` are not the label `list_connections`
+            // returns, but they are what an agent naming a local file reaches
+            // for first. Accepting them costs two match arms and saves a
+            // round-trip spent learning our vocabulary.
+            "turso" | "sqlite" | "libsql" => NewConnectionKind::Sqlite {
+                path: path.unwrap_or_default(),
+            },
+            "firestore" | "firestore-emulator" => NewConnectionKind::FirestoreEmulator {
+                project_id: project_id.unwrap_or_default(),
+                database_id,
+                base_url: base_url.unwrap_or_default(),
+            },
+            other => {
+                return Err(to_mcp(&ServiceError::InvalidRequest(format!(
+                    "kind {other:?} cannot be registered here: only \"turso\" (a local                      SQLite/libSQL file) and \"firestore\" (the local emulator) need no                      credential. Everything else must be added by the operator in the                      dbboard app"
+                ))))
+            }
+        };
+
+        let view = self
+            .service
+            .add_connection(NewConnection { id, name, kind })
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&view)
     }
 
     #[tool(
@@ -970,6 +1057,31 @@ mod tests {
             .next()
             .and_then(|rest| rest.split('"').next())
             .unwrap_or_else(|| panic!("the {name} description has moved"))
+    }
+
+    // The refusal has to arrive before the credential does. An agent that
+    // learns "no Postgres" from an error has already put the password in the
+    // transcript, and no later redaction takes it back out (ADR-0134).
+    #[test]
+    fn add_connection_refuses_credentials_up_front() {
+        let description = description_above("add_connection");
+
+        assert!(
+            description.contains("NO credential"),
+            "add_connection does not state the boundary before the agent sends one"
+        );
+        assert!(
+            description.contains("refused permanently"),
+            "add_connection does not say the refusal is not worth rephrasing"
+        );
+        assert!(
+            description.contains("dbboard app"),
+            "add_connection does not say where a credentialed connection is added instead"
+        );
+        assert!(
+            description.contains("mcp_write"),
+            "add_connection does not say the new connection cannot be written to"
+        );
     }
 
     // A window that is not open does not open by itself. An agent told only

@@ -42,7 +42,10 @@ use std::time::{Duration, Instant};
 use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
 use dbboard_config::store::{self, ConnectionKind};
 pub use dbboard_config::UiCommand;
-use dbboard_config::{ui_command, ui_settings, ConfigError, SecretStore};
+use dbboard_config::{
+    ui_command, ui_settings, ConfigError, ConnectionAdmin, ConnectionDraft, ConnectionKindDraft,
+    SecretStore,
+};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
     build_update_sql, classify_write, dialect_for_adapter_id, plan_dump as core_plan_dump,
@@ -89,6 +92,45 @@ pub struct ConnectionView {
     pub id: String,
     pub name: String,
     pub kind: String,
+}
+
+/// A connection an agent asks dbboard to register (ADR-0134).
+///
+/// Deliberately far narrower than [`ConnectionDraft`], which every other
+/// caller uses: the two variants below are the only connection kinds that
+/// store **nothing** in the keychain. That is the whole boundary. An agent
+/// can register the databases whose entire configuration is already
+/// non-secret — a file on this disk, an emulator on loopback — and cannot
+/// register anything whose configuration includes a password or a token.
+///
+/// The invariant is deliberately structural rather than a check: no string
+/// that arrives here can become a keyring entry, so there is no inspection
+/// of a URL to get subtly wrong (`postgres://user:@host`, percent-encoded
+/// passwords, `?password=` in the query) and no transcript that ends up
+/// holding a credential.
+#[derive(Debug, Clone)]
+pub struct NewConnection {
+    pub id: String,
+    pub name: String,
+    pub kind: NewConnectionKind,
+}
+
+/// The credential-free half of [`ConnectionKindDraft`].
+#[derive(Debug, Clone)]
+pub enum NewConnectionKind {
+    /// A SQLite/libSQL file on this machine. Stored as
+    /// [`ConnectionKindDraft::Turso`], which is what a local file is here.
+    Sqlite { path: String },
+    /// The Firestore emulator, which authenticates with a fixed
+    /// `Bearer owner` and so has no service account to store (ADR-0093).
+    /// `base_url` is required rather than optional: it is what distinguishes
+    /// the emulator from the real project, and the real project needs a
+    /// credential this tool will not accept.
+    FirestoreEmulator {
+        project_id: String,
+        database_id: Option<String>,
+        base_url: String,
+    },
 }
 
 /// Result of [`McpService::ui_locale`]: what the UI language is set to, and
@@ -204,6 +246,65 @@ impl DumpControl for UnattendedDump {
 
     fn is_cancelled(&self) -> bool {
         false
+    }
+}
+
+/// Trim a required field, or say which one was blank.
+fn required(label: &str, value: &str) -> Result<String, ServiceError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ServiceError::InvalidRequest(format!(
+            "{label} must not be blank"
+        )));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Trim an optional field, treating a blank string as absent — an agent
+/// filling a schema tends to send `""` where it means "not set".
+fn optional(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
+/// Build the store's draft from what an agent sent, refusing anything that
+/// would put a secret in the keychain (ADR-0134).
+fn draft_kind(kind: NewConnectionKind) -> Result<ConnectionKindDraft, ServiceError> {
+    match kind {
+        NewConnectionKind::Sqlite { path } => {
+            let path = required("path", &path)?;
+            // A URL here is not a typo to correct — it is the one shape this
+            // tool exists to keep out. Every remote libSQL endpoint comes with
+            // a token, and the message has to name where that can be done
+            // instead, or the agent will simply try again.
+            if path.contains("://") {
+                return Err(ServiceError::InvalidRequest(format!(
+                    "path must be a local file, not a URL like {path:?}.                      A remote database needs a token or a password, and those                      are added by the operator in the dbboard app — never sent                      to a tool"
+                )));
+            }
+            Ok(ConnectionKindDraft::Turso { path })
+        }
+        NewConnectionKind::FirestoreEmulator {
+            project_id,
+            database_id,
+            base_url,
+        } => {
+            let project_id = required("project_id", &project_id)?;
+            let base_url = required("base_url", &base_url)?;
+            if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+                return Err(ServiceError::InvalidRequest(format!(
+                    "base_url must be the emulator's HTTP address, got {base_url:?}"
+                )));
+            }
+            Ok(ConnectionKindDraft::Firestore {
+                project_id,
+                database_id: optional(database_id),
+                base_url: Some(base_url),
+                // The line this tool does not cross: a real Firestore project
+                // needs a service account, so only the emulator can be
+                // registered this way.
+                service_account: None,
+            })
+        }
     }
 }
 
@@ -773,6 +874,79 @@ impl McpService {
                 }
             })
             .collect())
+    }
+
+    /// Register a new connection in `connections.toml` (ADR-0134).
+    ///
+    /// The point is to remove a pointless handover: setting up a local
+    /// database and then asking a person to retype its path into a dialog is
+    /// two jobs where there is one. Only kinds that store no secret can be
+    /// registered — see [`NewConnection`] for why that is the boundary rather
+    /// than an inspection of what was sent.
+    ///
+    /// Three things are deliberately *not* parameters:
+    ///
+    /// - `mcp_write`, which stays shut. A tool that granted its own write
+    ///   access would not be a gate (ADR-0087); enabling it stays an act of
+    ///   the operator's, in the app or in the file.
+    /// - `mcp_alias`, because the alias exists to hide a name *from* agents
+    ///   (ADR-0088). One chosen by the agent hides nothing.
+    /// - Any refresh of a running window. A dbboard that happens to be open
+    ///   lists what it read at startup, so the new entry appears there after
+    ///   a refresh. Reporting that as a failure of the write — which is what
+    ///   a UI command that nothing answers would do — would be worse than
+    ///   the delay.
+    ///
+    /// The admin is opened per call rather than held: another process may
+    /// have written the file since the last one, and a long-lived admin
+    /// rewrites the whole file from what it last read (ADR-0133).
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::InvalidRequest`] for a blank field, a URL where a
+    /// local path belongs, an emulator address that is not HTTP, or an id
+    /// another connection already answers to. [`ServiceError::Config`] when
+    /// the file cannot be read or written.
+    pub async fn add_connection(
+        &self,
+        request: NewConnection,
+    ) -> Result<ConnectionView, ServiceError> {
+        let draft = ConnectionDraft {
+            id: required("id", &request.id)?,
+            name: required("name", &request.name)?,
+            kind: draft_kind(request.kind)?,
+            ssh: None,
+            mcp_write: false,
+            mcp_alias: None,
+            color: None,
+            tag: None,
+        };
+
+        let path = self.config_path.clone();
+        let secrets = Arc::clone(&self.secrets);
+        tokio::task::spawn_blocking(move || -> Result<ConnectionView, ConfigError> {
+            let mut admin = ConnectionAdmin::open(path, secrets)?;
+            let entry = admin.add(draft)?;
+            Ok(ConnectionView {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                kind: kind_label(&entry.kind).to_string(),
+            })
+        })
+        .await
+        .map_err(|e| ServiceError::Task(e.to_string()))?
+        // A taken handle is something the caller sent, not a fault of this
+        // machine, and the two are routed to different MCP error classes. Left
+        // as `Config` it would reach the agent as an internal error — the one
+        // shape it is most likely to retry unchanged.
+        .map_err(|err| match err {
+            ConfigError::DuplicateId(id) | ConfigError::DuplicateAlias(id) => {
+                ServiceError::InvalidRequest(format!(
+                    "the handle {id:?} is already taken by another connection; choose another id"
+                ))
+            }
+            other => ServiceError::Config(other),
+        })
     }
 
     /// Translate a handle an agent supplied back into the real connection id
@@ -3166,5 +3340,183 @@ path = ":memory:"
                 expected
             );
         }
+    }
+
+    // --- Registering a connection over MCP (ADR-0134) ------------------
+
+    /// Read the connection file back as text. The assertions below are about
+    /// what was written, not about what the service remembers.
+    fn written(fx: &Fixture) -> String {
+        std::fs::read_to_string(&fx.config_path).expect("read connections.toml")
+    }
+
+    fn sqlite_request(id: &str, path: &str) -> NewConnection {
+        NewConnection {
+            id: id.to_string(),
+            name: format!("{id} (local)"),
+            kind: NewConnectionKind::Sqlite {
+                path: path.to_string(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn add_connection_registers_a_local_sqlite_file() {
+        let fx = fixture();
+        let view = fx
+            .service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("add");
+
+        assert_eq!(view.id, "scratch");
+        assert_eq!(view.kind, "turso");
+
+        let listed = fx
+            .service
+            .list_agent_connections()
+            .await
+            .expect("list after add");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "scratch");
+    }
+
+    /// The whole reason this tool can exist: nothing it accepts becomes a
+    /// keyring entry, so no credential travels through the transcript.
+    #[tokio::test]
+    async fn add_connection_stores_no_secret() {
+        let fx = fixture();
+        fx.service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("add");
+        assert!(
+            !written(&fx).contains("keyring"),
+            "a connection an agent registered must reference no secret:
+{}",
+            written(&fx)
+        );
+    }
+
+    /// A tool that granted its own write access would not be a gate
+    /// (ADR-0087), so the flag is not a parameter and stays shut. Read back
+    /// from the store rather than the text: `mcp_write = false` is the
+    /// default and is not emitted, so its absence is the assertion.
+    #[tokio::test]
+    async fn add_connection_leaves_the_write_gate_shut() {
+        let fx = fixture();
+        fx.service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("add");
+
+        let file = store::load_or_empty(&fx.config_path).expect("reload");
+        assert!(!file.connections[0].mcp_write, "{}", written(&fx));
+        // The alias hides a name from agents, so one an agent chose would
+        // hide nothing (ADR-0088) — it is not a parameter either.
+        assert!(file.connections[0].mcp_alias.is_none(), "{}", written(&fx));
+    }
+
+    /// The emulator is the other kind with nothing to keep secret: no
+    /// service account exists to store.
+    #[tokio::test]
+    async fn add_connection_registers_the_firestore_emulator() {
+        let fx = fixture();
+        let view = fx
+            .service
+            .add_connection(NewConnection {
+                id: "emulator".to_string(),
+                name: "Firestore emulator".to_string(),
+                kind: NewConnectionKind::FirestoreEmulator {
+                    project_id: "demo-project".to_string(),
+                    database_id: None,
+                    base_url: "http://127.0.0.1:8080".to_string(),
+                },
+            })
+            .await
+            .expect("add");
+
+        assert_eq!(view.kind, "firestore");
+        assert!(!written(&fx).contains("keyring"), "{}", written(&fx));
+    }
+
+    /// A remote libSQL URL is not a file path, and the token that goes with
+    /// it is exactly what must not be sent here.
+    #[tokio::test]
+    async fn add_connection_refuses_a_url_where_a_path_belongs() {
+        let fx = fixture();
+        let err = fx
+            .service
+            .add_connection(sqlite_request("remote", "libsql://db.turso.io"))
+            .await
+            .expect_err("a URL is not a local file");
+        assert!(
+            matches!(&err, ServiceError::InvalidRequest(m) if m.contains("dbboard app")),
+            "the refusal must say where it can be done instead, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_connection_refuses_a_blank_path() {
+        let fx = fixture();
+        assert!(matches!(
+            fx.service
+                .add_connection(sqlite_request("blank", "   "))
+                .await,
+            Err(ServiceError::InvalidRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn add_connection_refuses_a_blank_id() {
+        let fx = fixture();
+        assert!(matches!(
+            fx.service
+                .add_connection(sqlite_request("  ", "/tmp/x.db"))
+                .await,
+            Err(ServiceError::InvalidRequest(_))
+        ));
+    }
+
+    /// The store, not this method, owns uniqueness — but an agent that gets
+    /// a bare "duplicate" with no id cannot tell which handle it clashed on.
+    #[tokio::test]
+    async fn add_connection_refuses_an_id_that_is_taken() {
+        let fx = fixture();
+        fx.service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("first");
+        let err = fx
+            .service
+            .add_connection(sqlite_request("scratch", "/tmp/other.db"))
+            .await
+            .expect_err("second");
+        assert!(err.to_string().contains("scratch"), "got {err:?}");
+    }
+
+    /// An entry the operator added in the app must survive a registration
+    /// that arrives while the file is already populated.
+    #[tokio::test]
+    async fn add_connection_keeps_the_entries_already_there() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            r#"version = 1
+[[connections]]
+id = "existing"
+name = "Existing"
+kind = "turso"
+path = "/tmp/existing.db"
+"#,
+        );
+        fx.service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("add");
+
+        let listed = fx.service.list_agent_connections().await.expect("list");
+        let ids: Vec<&str> = listed.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["existing", "scratch"]);
     }
 }

@@ -43,6 +43,7 @@ pub mod secure_fs;
 pub mod store;
 pub mod ui_command;
 pub mod ui_settings;
+pub mod update_attempt;
 
 pub use admin::{
     ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,

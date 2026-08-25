@@ -55,13 +55,74 @@ public API is the HTTP contract in
   one does not shift its name sideways. A colour with no tag is accepted
   here, unlike in the form, since the bar sits on a row that already carries
   the connection's name. See [ADR-0130](docs/decisions.md).
+- **The line between the connections and the tables can be moved.** It was
+  fixed, and the connection list above it had no height of its own: three
+  connections left a boundary sitting near the top of the sidebar, and twenty
+  pushed the table list off the bottom of the window with no way to bring it
+  back. The line is now dragged up and down, and double-clicking it hands the
+  split back to the number of connections registered — which is what "back to
+  where it belongs" means when the number of rows is not fixed. Until the line
+  is dragged for the first time it keeps following that count on its own, so
+  adding a connection makes room for itself. The connection list scrolls once
+  it reaches its ceiling instead of growing without limit. Arrow keys move the
+  line and `Home` resets it. See [ADR-0131](docs/decisions.md).
+
+- **An AI agent can register a local database itself.** Setting up a SQLite
+  file and then asking a person to retype its path into a dialog is two jobs
+  where there is one. The MCP server gains `add_connection`, which writes the
+  entry into `connections.toml` directly. Only the kinds that store *nothing*
+  in the keychain can be registered this way — a SQLite/libSQL file on this
+  machine, and the local Firestore emulator, which authenticates with a fixed
+  token and so has no service account to save. Everything that needs a
+  password, a token or a key is refused, and the refusal is in the tool's own
+  description rather than in an error, so an agent learns it before sending
+  the credential rather than after. The new connection is created read-only:
+  agent writes stay off, and only a person can turn them on. See
+  [ADR-0134](docs/decisions.md).
 
 ### Fixed
 
+- **A half-typed connection is no longer thrown away by a stray click.**
+  While the add or edit form was open, clicking anywhere outside the dialog
+  closed it and discarded every field, and `Escape` did the same from the
+  keyboard the fields were being typed on. On a small window — where the panel
+  covers most of what is behind it — reaching past it to see the details being
+  copied was the same gesture as deleting the work, so registration could not
+  be completed at all. The backdrop now does nothing while any panel is open,
+  and `Escape` steps back to the list only from a form that has not been typed
+  into. Leaving is unchanged and still one deliberate click: the ✕ in the
+  header, or Cancel in the form. Import, export, duplicate and repair are
+  covered on the same terms. See [ADR-0132](docs/decisions.md).
+- **The connection dialog can be moved off whatever it is covering.** It was
+  fixed in the centre of the window with no way to reposition it, so on a
+  laptop screen there was no way to read what was behind it. Drag its header
+  to move it, double-click the header to put it back in the centre — the same
+  gesture the sidebar divider already uses. It cannot be dragged out of reach:
+  a strip stays on screen sideways, the header never passes the top or bottom
+  edge, and shrinking the window pulls a moved dialog back into view. See
+  [ADR-0132](docs/decisions.md).
 - **The reorder handle no longer offers a drag it will refuse.** While a
   filter was hiding rows the handle correctly declined to move anything, but
   still brightened under the pointer and answered a press with a closed-fist
   cursor. Both were single-class CSS rules that outranked the disabled state.
+
+- **A connection added outside a running dbboard is no longer erased by it.**
+  The window read `connections.toml` once at startup and wrote the whole file
+  back on every change, so an entry added by hand — or, now, by an agent —
+  while dbboard was open disappeared at the next rename, with no error and no
+  conflict. The duplicate-id guard had the same blind spot and let an id
+  already taken on disk through. Every write now re-reads the file first. See
+  [ADR-0133](docs/decisions.md).
+- **An update that does not install now says so on the next launch.** On one
+  laptop the 0.10.0 → 0.11.0 update downloaded, dbboard quit, and nothing came
+  back; started again by hand it was 0.10.0 with no sign anything had been
+  attempted, and the same update was offered again. The attempt is now written
+  down before the installer is handed control, and read back at startup: if the
+  running build is still the one being replaced, the notice says the last update
+  did not finish and offers the download page to install by hand. It reports
+  once, is read before the update check so it still appears with no network, and
+  says nothing when the update did land. Why that install stalls is a separate
+  question and is not answered here. See [ADR-0135](docs/decisions.md).
 
 ## [0.11.0] — 2026-08-24 — Connection repair and duplication
 

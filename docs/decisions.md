@@ -12334,3 +12334,326 @@ starts wherever the name happens to end.
 query editor's chrome, where "which server is this" is asked with more at
 stake than in a list. That wants a look at the whole running-query surface,
 not one more render site.
+
+## ADR-0131 — The sidebar's two lists are split by a divider whose home position follows the connection count (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0083](#adr-0083--the-sidebar-splits-and-popovers-place-themselves).
+
+**Context.** The sidebar holds two lists: the connections above, the tables
+below, separated by a static border. The connections section had no height and
+no scroll, so it was simply as tall as its contents — three connections left
+the boundary near the top, and twenty pushed the table list off the bottom of
+the window with no way to get it back. The right boundary is not a constant.
+It depends on how many connections are registered, and on which of the two
+lists is being used that day.
+
+**Decision.** A horizontal divider between the sections, working exactly like
+the window splitter of ADR-0083 turned on its side: drag to move, double-click
+to reset, arrow keys to nudge, `Home` to reset from the keyboard. The pure
+sizing rules live in `lib/layout/panel-split.ts` with the component owning only
+the pointer plumbing, which is the same division of labour as `splitter.ts`.
+
+Two things differ from the width, and both come from the count.
+
+* The stored value is `number | null`, and `null` — never dragged — is the
+  default state rather than a stored constant. While it holds, the list sizes
+  itself to the number of connections, so registering a fourth one makes room
+  for itself. The first drag replaces the null and the following stops.
+* Double-click therefore does not restore a fixed height. It clears the stored
+  value, handing the pane back to the count, which is what "定位置" means when
+  the number of rows is not fixed.
+
+The numbers: 30px per row, a floor of 60px (two rows — below that there is no
+room to tell a scroll from a stutter), a ceiling of 420px (fourteen rows, past
+which a connection list is being scrolled rather than scanned), and never more
+than half the sidebar's own height, because the table list is the one being
+scrolled all day.
+
+**Consequences.**
+* The connection list scrolls now. It never did, and a long one used to hide
+  the tables entirely; that is the bug this fixes, and the divider is how it
+  gets fixed without picking a height for everyone.
+* A second layout key in `localStorage` (`dbboard.connectionsHeight`), stored
+  and read on the same terms as the width: clamped on the way in and out, and
+  silently ignored when the webview refuses storage.
+* A remembered height is clamped against the sidebar's current height on every
+  render, so shrinking the window squeezes the pane and widening it again
+  restores what was chosen — the same rule the width already follows.
+* The sections no longer draw a shared border. The divider draws it, as a
+  hairline inside 7px of grab area, so the visible gap between the lists is
+  unchanged while the target is large enough to hit.
+
+**Not decided here.** Whether the table list wants the same treatment. It is
+the last pane, so there is nothing below it to trade against; the question only
+arrives with a third pane, and the shape of that pane should decide it.
+
+## ADR-0132 — A dismissal gesture may not throw away a half-typed connection, and the dialog can be moved off what it covers (2026-08-25)
+
+**Status.** Accepted. Refines [ADR-0083](#adr-0083--the-sidebar-splits-and-popovers-place-themselves) and [ADR-0131](#adr-0131--the-sidebars-two-lists-are-split-by-a-divider-whose-home-position-follows-the-connection-count).
+
+**Context.** Reported from a laptop: registering a connection was impossible,
+not difficult. The connection dialog is a fixed, flex-centred panel of
+`min(560px, 94vw)` by `max-height: 86vh`. On a small window it covers most of
+what is behind it, including whatever the connection details are being copied
+from. There was no way to move it — no drag, no reposition of any kind — so the
+only way to see behind it was to reach past it, and a click on the backdrop
+closed the dialog unconditionally, taking every typed field with it. Reopening
+started from an empty form. That is a loop with no exit: the report's word for
+it was 永遠に.
+
+Two separate faults met here. Neither is fatal alone. A modal that discards
+work is merely irritating if you can see around it; an immovable modal is
+merely cramped if reaching past it is safe.
+
+**Decision.** Both are fixed, and the rules for both live in
+`lib/layout/dialog-move.ts` — pure, tested, with the component owning only the
+pointer plumbing. Same division of labour as `splitter.ts` and
+`panel-split.ts`.
+
+*What a stray dismissal does.* `dismissAction(source, mode, formDirty)` answers
+`close`, `back`, or `ignore`.
+
+* From the connection list, both the backdrop and `Escape` still close the
+  manager. Nothing is being assembled, so the gesture keeps its usual meaning.
+* From any other panel, a backdrop click does nothing at all. Not only the
+  form: import holds a chosen file, repair holds a half-answered prompt, and
+  none of those is cheaper to lose than a typed field.
+* `Escape` from an untouched form steps back to the list — it costs nothing and
+  it is the fastest way out. `Escape` from a form that has been typed into does
+  nothing. `Escape` shares a keyboard with the fields being filled in, and a
+  mis-hit is exactly the reported failure.
+
+Dirtiness is a comparison against a JSON snapshot taken when the panel opens,
+so it stays a pure function of state rather than a flag that has to be cleared
+correctly on every path.
+
+Leaving is never blocked, only made deliberate: the ✕ in the header and Cancel
+in the form act immediately, as they always did. What changes is that the exit
+must be aimed at.
+
+*Moving the dialog.* The header is the grip — the gesture the OS gives every
+window. Drag to move; double-click to re-centre, which is the same
+"double-click the handle for its home position" already established by
+ADR-0083 and ADR-0131. The offset is applied as a `translate`, so nothing about
+the centred layout has to change to support being moved.
+
+`clampDialogOffset` keeps the dialog reachable. Sideways it may leave all but a
+120px strip; that strip is what you grab to bring it back. Vertically the
+header is the constraint in both directions: it may never pass above the top
+edge, because above it there is nothing left to drag, and never below the
+bottom edge, for the same reason. The clamp is re-applied on window resize, so
+a window shrunk after the dialog was dropped cannot strand it.
+
+The offset is not persisted. Centred is the right default every time the dialog
+opens; a remembered position would carry one window's cramping into the next.
+
+**Consequences.**
+* The backdrop is no longer a close button while any panel is open. It looks
+  the same, which is the cost: a dead click is a small confusion, and the ✕ is
+  a hand's width away. Losing a filled form is the larger one.
+* Moving is pointer-only. The keyboard equivalent is not needed for the same
+  reason the drag exists: the centred position is fully usable by keyboard, and
+  moving is for seeing past the dialog, which a keyboard user is not doing.
+* `preventDefault` is deliberately absent from the header's `pointerdown`,
+  unlike the row-reorder handle of ADR-0128. Cancelling `pointerdown` costs the
+  compatibility mouse events that `dblclick` is built from, and `dblclick` is
+  the way back to centre. `user-select: none` on the header does the only work
+  `preventDefault` would have done there.
+* The add and edit forms are one panel with one `editorMode`, so both are
+  covered by construction — the rule that a change to one must reach the other
+  is satisfied by there being only one.
+
+**Not decided here.** Whether a confirmation belongs on the explicit exits (✕
+and Cancel) when the form is dirty. It would be a second, louder mechanism for
+the same worry, and this one has not been in front of anyone yet; if a
+deliberate click turns out to lose work too, that is the evidence for adding
+it.
+
+## ADR-0133 — A long-lived connection admin re-reads the file before it writes (2026-08-25)
+
+**Status.** Accepted. Refines [ADR-0013](#adr-0013--local-toml-connection-store-with-os-keychain-for-secrets).
+
+**Context.** `ConnectionAdmin` holds the whole of `connections.toml` in memory
+and every mutator saves the whole file back. That is correct for a process
+that is the only writer, and the desktop was written as if it were: the shell
+opens one admin at startup and locks it from thirteen call sites for the rest
+of the run.
+
+It is not the only writer. `connections.toml` is an ordinary file the operator
+is invited to edit — the MCP write gate is documented as something "a human
+must enable in connections.toml" — and now the MCP server writes it too
+([ADR-0134](#adr-0134--an-agent-may-register-only-the-connections-that-carry-no-credential-2026-08-25)).
+Anything written beside a running dbboard was erased by that window's next
+change, silently and completely: not a merge conflict, not an error, just an
+entry that was there before a rename and gone after it. The duplicate-id guard
+had the same blind spot — it consulted the in-memory copy, so an id already
+taken on disk passed.
+
+Nothing about the failure is visible from the call site. A rename is a rename;
+the loss is in what the save carried with it.
+
+**Decision.** Every mutator begins with `self.sync()`, which re-reads the file
+from disk. Six in `admin.rs` (`add`, `update`, `delete`, `move_to`, `set_mark`,
+`import_bundle`) and two in `admin/repair.rs` (`duplicate`,
+`repair_foreign_ref`). A mutator that cannot read the current file refuses
+rather than writing a stale one over it.
+
+Put inside the mutators rather than left to the caller. Thirteen lock sites,
+each of which would have to remember, is a rule that will be missed at one —
+and the one it is missed at will be whichever is added next, by someone who
+never read this.
+
+A `tracks_disk` flag distinguishes the two constructors.
+`ConnectionAdmin::open` reads from a path and sets it; `new_with_file` is
+handed its entries by a caller who has no disk to be behind, and does not.
+
+**Consequences.**
+* Every mutation now costs one file read. It is a few kilobytes of TOML on a
+  path already doing an atomic write; the read is not the expensive half.
+* Last-write-wins is unchanged for a *field* edited in two places at once. What
+  is fixed is losing entries nobody touched, which is the difference between a
+  conflict and a deletion.
+* Two no-op tests had to change technique. They observed "did not save" by
+  deleting the file and asserting it stayed gone, and an absent file now reads
+  as an empty one. They seed a comment instead: the serialiser never emits
+  comments, so a save loses it and a no-op keeps it. Stricter than what it
+  replaced.
+* Two rollback tests set `tracks_disk = false` by hand. Both re-point `path` at
+  an unwritable location while holding entries in memory, and the subject there
+  is the failing save, not the read.
+
+**Not decided here.** Watching the file. A running window still lists what it
+last read, so an entry added elsewhere appears after a refresh. That is a
+frontend concern and a different mechanism; this ADR is only about not
+destroying it.
+
+## ADR-0134 — An agent may register only the connections that carry no credential (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0046](#adr-0046--dbboard-mcp-expose-dbboard-as-a-read-only-mcp-server) and constrained by [ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list).
+
+**Context.** Setting up a local database and then asking a person to retype its
+path into a dialog is two jobs where there is one. The report was blunt about
+it: 人が別にやる意味ないから. The agent that just created the file is the one
+thing in the room that knows where it is.
+
+The reason this was not already possible is that connection *management* is a
+write surface, and the MCP surface is deliberately narrow. But the objection
+that matters is not the write — it is what a registration would carry. Most
+connection kinds are configured with a credential: a Postgres DSN's password
+rides in its authority, a Turso Cloud connection needs a token, D1 needs an API
+key. Sent to a tool, every one of those is in the transcript before any
+handling on our side begins, and no later redaction takes it back out.
+
+**Decision.** `add_connection` accepts exactly two kinds, and they are the two
+whose entire configuration is already non-secret:
+
+* `turso` — a SQLite/libSQL file on this machine, from a path.
+* `firestore` — the local emulator, which authenticates with a fixed
+  `Bearer owner` and so has no service account to store ([ADR-0093](#adr-0093--the-firestore-adapter-calls-rest-directly-signs-with-ring-and-overrides-query_read_only)). `base_url`
+  is required rather than optional here: it is what separates the emulator from
+  a real project, and a real project needs the credential this tool refuses.
+
+Everything else is refused permanently. The boundary is structural, not a
+check: `NewConnectionKind` cannot express a secret, so no string that arrives
+here can become a keyring entry. The alternative — accept a URL and inspect it
+— is a judgement about `postgres://user:@host`, percent-encoded passwords and
+`?password=` in a query string, and it only has to be wrong once.
+
+Three things are deliberately not parameters. `mcp_write` stays shut: a tool
+that granted its own write access would not be a gate (ADR-0087). `mcp_alias`
+is not offered, because the alias exists to hide a name *from* agents
+([ADR-0088](#adr-0088--the-mcp-surface-shows-an-alias-not-the-connections-real-id)) and one the agent chose hides nothing. And no UI command is sent.
+
+The refusal is stated in the tool description rather than left to an error.
+An agent that learns "no Postgres" from an error has already sent the password
+(the same reasoning as the `run_write` description).
+
+A taken id comes back as an invalid request, not an internal error — with the
+id in the message. Left as a config error it would reach the agent in the class
+that reads as "try again".
+
+**Consequences.**
+* The most common case is covered and the second most common is not. A local
+  SQLite file is what an agent creates for itself; a hosted Postgres is what
+  someone provisions in a browser, and provisioning it already involved a human
+  who can paste the DSN into the app.
+* A dbboard window that is open lists the new connection only after a refresh,
+  for the reason given in
+  [ADR-0133](#adr-0133--a-long-lived-connection-admin-re-reads-the-file-before-it-writes-2026-08-25).
+  A `RefreshConnections` UI command was considered and dropped: it answers
+  `UiNoResponse` when no window is watching, which would report a successful
+  write as a failure.
+* The kind vocabulary accepts `sqlite` and `libsql` alongside `turso`. `turso`
+  is what `list_connections` returns and what the description names, but an
+  agent naming a local file reaches for the other two first, and two match arms
+  are cheaper than a round-trip spent learning our words.
+
+**Not decided here.** Editing or deleting a connection over MCP. Registration
+is additive and the worst case is an entry nobody uses; the other two can
+destroy something the operator set up by hand, and no one has asked for them.
+
+## ADR-0135 — An update that starts is written down, so the launch after a failed one can say why (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0067](#adr-0067--desktop-auto-update-tauri-plugin-updater--a-ci-assembled-latestjson-v040).
+
+**Context.** A laptop on 0.10.0 took the update to 0.11.0. The download ran,
+dbboard quit, and nothing came back. Launched by hand it was 0.10.0 again,
+with no mention anywhere that an update had been attempted at all — and the
+notice offering 0.11.0 was waiting again, unchanged, as if nothing had
+happened.
+
+That silence is the defect, not the failed install. ADR-0067 hands control to
+an installer that replaces the binary and relaunches it; when the relaunch
+does not happen, the process that knew an update was in flight is gone. From
+the outside a stalled update and an update that was never started look
+identical, and the only move the app offers is the one that just failed.
+
+Why the install itself failed is not settled and is not settled here. On
+Windows the plausible causes (an installer waiting on a UAC prompt nobody saw,
+an antivirus holding the new binary, a running process pinning the old one)
+are all outside this app and mostly outside our reach. What is inside our
+reach is whether the person is told.
+
+**Decision.** Write the attempt down before handing over, read it back on the
+next launch, and say so when the running build is still the one we were
+updating away from.
+
+`crates/dbboard-config/src/update_attempt.rs` holds a one-line TOML file next
+to the other config, written by `record` and consumed by `take`. The frontend
+calls `record` immediately before `downloadAndInstall`, because after that
+call there may be no line left to run, and calls `take` at startup ahead of
+the update check.
+
+Three choices in `take` are deliberate:
+
+* **Only the version we left proves nothing landed.** If the running build is
+  the target, the update worked. If it is neither — the person installed
+  something else in between — *something* landed, and claiming a failure would
+  be an accusation they cannot check. Both stay quiet.
+* **The record is consumed whether or not it reports.** A notice that repeats
+  on every launch is noise, and the fact it describes is a single past event.
+* **An unreadable or unknown-version file is dropped, not raised.** It will
+  not become readable later, and a breadcrumb is never worth failing a launch
+  over — the same posture `ui-settings.toml` takes.
+
+The notice carries the download page rather than a release tag, and offers it
+as selectable text plus a copy button. There is no external-browser plugin in
+this app, and adding one to open a link is a dependency and a new surface for
+a job the clipboard already does.
+
+**Consequences.**
+* The failure is still a failure. This does not install anything the installer
+  could not; it replaces silence with a sentence and an address.
+* The report arrives one launch late, which is the earliest it can arrive: the
+  only run that knows the update stalled is the one after it.
+* A person who takes the manual installer gets no notice on the next launch,
+  because the build moved. That is correct — they already fixed it.
+* Recording is best-effort. If the file cannot be written the update still
+  proceeds; losing the diagnostic is cheaper than refusing the install.
+* Nothing is reported home. The file is local, holds two version strings, and
+  is deleted as it is read.
+
+**Not decided here.** Why the install stalls on that laptop. Two facts would
+narrow it — whether the updater's temp directory survives, and whether the
+antivirus quarantine names dbboard — and neither is available from inside the
+app.

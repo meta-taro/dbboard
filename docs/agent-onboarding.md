@@ -111,6 +111,17 @@ refusal as an answer rather than an obstacle: it is what tells you the
 provider settings are reached *through* the panel and not from the top
 level.
 
+`add_connection` registers a new connection, so a database you have just
+set up is usable without asking anyone to retype its path (ADR-0134). Only
+two kinds: a SQLite/libSQL file on this machine, and the local Firestore
+emulator. They are the two whose whole configuration is non-secret.
+Everything else — Postgres, MySQL, Neon, Supabase, Aurora DSQL, D1,
+MongoDB, Turso Cloud — needs a password, a token or a key, and is refused
+permanently: no setting turns it on, so do not rephrase and retry, and do
+not send the credential. Say that the operator adds it in the dbboard app.
+What you register is read-only — `mcp_write` stays off, and only a person
+can turn it on.
+
 `run_write` exists but is **refused unless the connection is opted in**
 with `mcp_write = true`, and a permanently-closed list (grants, user and
 role DDL, `TRUNCATE`, `DROP` of anything but an index) is refused
