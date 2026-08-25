@@ -157,6 +157,7 @@ export const en = {
   "conn-browse": "Browse…",
   "conn-cancel": "Cancel",
   "conn-close": "Close",
+  "conn-move-hint": "Drag to move · double-click to re-centre",
   "conn-field-id": "ID",
   "conn-field-id-hint":
     "A stable identifier — it cannot be changed later. An AI agent sees it, so avoid host names and customer names here; if one is already in use, set an alias under AI agent access.",
@@ -608,6 +609,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-browse": "参照…",
   "conn-cancel": "キャンセル",
   "conn-close": "閉じる",
+  "conn-move-hint": "ドラッグで移動・ダブルクリックで中央に戻す",
   "conn-field-id": "ID",
   "conn-field-id-hint":
     "安定した識別子です。後から変更できません。AI エージェントにも見えるため、ホスト名や実店舗名は避けてください。すでに使っている場合は「AI エージェントからの操作」で別名を設定してください。",

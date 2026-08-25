@@ -69,6 +69,25 @@ public API is the HTTP contract in
 
 ### Fixed
 
+- **A half-typed connection is no longer thrown away by a stray click.**
+  While the add or edit form was open, clicking anywhere outside the dialog
+  closed it and discarded every field, and `Escape` did the same from the
+  keyboard the fields were being typed on. On a small window — where the panel
+  covers most of what is behind it — reaching past it to see the details being
+  copied was the same gesture as deleting the work, so registration could not
+  be completed at all. The backdrop now does nothing while any panel is open,
+  and `Escape` steps back to the list only from a form that has not been typed
+  into. Leaving is unchanged and still one deliberate click: the ✕ in the
+  header, or Cancel in the form. Import, export, duplicate and repair are
+  covered on the same terms. See [ADR-0132](docs/decisions.md).
+- **The connection dialog can be moved off whatever it is covering.** It was
+  fixed in the centre of the window with no way to reposition it, so on a
+  laptop screen there was no way to read what was behind it. Drag its header
+  to move it, double-click the header to put it back in the centre — the same
+  gesture the sidebar divider already uses. It cannot be dragged out of reach:
+  a strip stays on screen sideways, the header never passes the top or bottom
+  edge, and shrinking the window pulls a moved dialog back into view. See
+  [ADR-0132](docs/decisions.md).
 - **The reorder handle no longer offers a drag it will refuse.** While a
   filter was hiding rows the handle correctly declined to move anything, but
   still brightened under the pointer and answered a press with a closed-fist

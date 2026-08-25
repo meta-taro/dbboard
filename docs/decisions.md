@@ -12386,3 +12386,85 @@ scrolled all day.
 **Not decided here.** Whether the table list wants the same treatment. It is
 the last pane, so there is nothing below it to trade against; the question only
 arrives with a third pane, and the shape of that pane should decide it.
+
+## ADR-0132 — A dismissal gesture may not throw away a half-typed connection, and the dialog can be moved off what it covers (2026-08-25)
+
+**Status.** Accepted. Refines [ADR-0083](#adr-0083--the-sidebar-splits-and-popovers-place-themselves) and [ADR-0131](#adr-0131--the-sidebars-two-lists-are-split-by-a-divider-whose-home-position-follows-the-connection-count).
+
+**Context.** Reported from a laptop: registering a connection was impossible,
+not difficult. The connection dialog is a fixed, flex-centred panel of
+`min(560px, 94vw)` by `max-height: 86vh`. On a small window it covers most of
+what is behind it, including whatever the connection details are being copied
+from. There was no way to move it — no drag, no reposition of any kind — so the
+only way to see behind it was to reach past it, and a click on the backdrop
+closed the dialog unconditionally, taking every typed field with it. Reopening
+started from an empty form. That is a loop with no exit: the report's word for
+it was 永遠に.
+
+Two separate faults met here. Neither is fatal alone. A modal that discards
+work is merely irritating if you can see around it; an immovable modal is
+merely cramped if reaching past it is safe.
+
+**Decision.** Both are fixed, and the rules for both live in
+`lib/layout/dialog-move.ts` — pure, tested, with the component owning only the
+pointer plumbing. Same division of labour as `splitter.ts` and
+`panel-split.ts`.
+
+*What a stray dismissal does.* `dismissAction(source, mode, formDirty)` answers
+`close`, `back`, or `ignore`.
+
+* From the connection list, both the backdrop and `Escape` still close the
+  manager. Nothing is being assembled, so the gesture keeps its usual meaning.
+* From any other panel, a backdrop click does nothing at all. Not only the
+  form: import holds a chosen file, repair holds a half-answered prompt, and
+  none of those is cheaper to lose than a typed field.
+* `Escape` from an untouched form steps back to the list — it costs nothing and
+  it is the fastest way out. `Escape` from a form that has been typed into does
+  nothing. `Escape` shares a keyboard with the fields being filled in, and a
+  mis-hit is exactly the reported failure.
+
+Dirtiness is a comparison against a JSON snapshot taken when the panel opens,
+so it stays a pure function of state rather than a flag that has to be cleared
+correctly on every path.
+
+Leaving is never blocked, only made deliberate: the ✕ in the header and Cancel
+in the form act immediately, as they always did. What changes is that the exit
+must be aimed at.
+
+*Moving the dialog.* The header is the grip — the gesture the OS gives every
+window. Drag to move; double-click to re-centre, which is the same
+"double-click the handle for its home position" already established by
+ADR-0083 and ADR-0131. The offset is applied as a `translate`, so nothing about
+the centred layout has to change to support being moved.
+
+`clampDialogOffset` keeps the dialog reachable. Sideways it may leave all but a
+120px strip; that strip is what you grab to bring it back. Vertically the
+header is the constraint in both directions: it may never pass above the top
+edge, because above it there is nothing left to drag, and never below the
+bottom edge, for the same reason. The clamp is re-applied on window resize, so
+a window shrunk after the dialog was dropped cannot strand it.
+
+The offset is not persisted. Centred is the right default every time the dialog
+opens; a remembered position would carry one window's cramping into the next.
+
+**Consequences.**
+* The backdrop is no longer a close button while any panel is open. It looks
+  the same, which is the cost: a dead click is a small confusion, and the ✕ is
+  a hand's width away. Losing a filled form is the larger one.
+* Moving is pointer-only. The keyboard equivalent is not needed for the same
+  reason the drag exists: the centred position is fully usable by keyboard, and
+  moving is for seeing past the dialog, which a keyboard user is not doing.
+* `preventDefault` is deliberately absent from the header's `pointerdown`,
+  unlike the row-reorder handle of ADR-0128. Cancelling `pointerdown` costs the
+  compatibility mouse events that `dblclick` is built from, and `dblclick` is
+  the way back to centre. `user-select: none` on the header does the only work
+  `preventDefault` would have done there.
+* The add and edit forms are one panel with one `editorMode`, so both are
+  covered by construction — the rule that a change to one must reach the other
+  is satisfied by there being only one.
+
+**Not decided here.** Whether a confirmation belongs on the explicit exits (✕
+and Cancel) when the form is dirty. It would be a second, louder mechanism for
+the same worry, and this one has not been in front of anyone yet; if a
+deliberate click turns out to lose work too, that is the evidence for adding
+it.

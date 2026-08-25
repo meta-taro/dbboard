@@ -67,6 +67,12 @@
   import DuplicatePanel from './DuplicatePanel.svelte';
   import RepairPanel from './RepairPanel.svelte';
   import ConnectionMark from './ConnectionMark.svelte';
+  import {
+    dismissAction,
+    clampDialogOffset,
+    centredOffset,
+    type DialogOffset,
+  } from '$lib/layout/dialog-move';
   import '$lib/styles/connection-dialog.css';
 
   interface Props {
@@ -162,6 +168,76 @@
   function cancelDrag() {
     dragFrom = null;
     dragGap = null;
+  }
+
+  // What the form held when it opened. A stray backdrop click or Escape
+  // used to close the dialog and take a half-typed connection with it
+  // (ADR-0132); comparing against this is how we know there was one.
+  let formOpenedAs = $state('');
+  const formDirty = $derived(mode === 'form' && JSON.stringify(form) !== formOpenedAs);
+
+  function dismiss(source: 'backdrop' | 'escape') {
+    const action = dismissAction(source, mode, formDirty);
+    if (action === 'close') onClose();
+    else if (action === 'back') goList();
+  }
+
+  // Dragging the dialog itself, by its header. The centred position is a
+  // good default and a bad prison: on a short window the panel covers the
+  // very thing being copied from, and reaching past it used to close it.
+  let offset = $state<DialogOffset>(centredOffset());
+  let dialogEl: HTMLDivElement | undefined = $state();
+  let moveFrom: { x: number; y: number; dx: number; dy: number } | null = null;
+
+  function geometry() {
+    const r = dialogEl?.getBoundingClientRect();
+    return {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      dialogWidth: r?.width ?? 0,
+      dialogHeight: r?.height ?? 0,
+    };
+  }
+
+  function beginMove(e: PointerEvent) {
+    // The header also holds the close button and the title text; only bare
+    // header space starts a move, so ✕ stays a single click.
+    if ((e.target as HTMLElement).closest('button')) return;
+    // No preventDefault here, unlike the row handle: cancelling pointerdown
+    // costs the compatibility mouse events, and the double-click that
+    // re-centres is built out of them. `user-select: none` on .head does
+    // the only job preventDefault would have done.
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    moveFrom = { x: e.clientX, y: e.clientY, dx: offset.dx, dy: offset.dy };
+  }
+
+  function trackMove(e: PointerEvent) {
+    if (!moveFrom) return;
+    offset = clampDialogOffset(
+      {
+        dx: moveFrom.dx + (e.clientX - moveFrom.x),
+        dy: moveFrom.dy + (e.clientY - moveFrom.y),
+      },
+      geometry(),
+    );
+  }
+
+  function endMove() {
+    moveFrom = null;
+  }
+
+  // Same gesture as the sidebar divider and the sidebar split: double-click
+  // the handle to put it back where it started (ADR-0083, ADR-0131).
+  function recentre(e: MouseEvent) {
+    if ((e.target as HTMLElement).closest('button')) return;
+    offset = centredOffset();
+  }
+
+  // A window resized smaller can strand a dialog that was legal when it was
+  // dropped, so the clamp is re-applied rather than only checked on drag.
+  function onResize() {
+    if (offset.dx === 0 && offset.dy === 0) return;
+    offset = clampDialogOffset(offset, geometry());
   }
 
   // The handle is also the keyboard path. ▲▼ used to be that, one pair per
@@ -334,6 +410,7 @@
   function startAdd() {
     resetTransient();
     form = emptyForm();
+    formOpenedAs = JSON.stringify(form);
     editorMode = 'add';
     mode = 'form';
   }
@@ -344,6 +421,7 @@
     try {
       const fields = await connectionEditFields(c.id);
       form = formForEdit(c.id, c.name, fields);
+      formOpenedAs = JSON.stringify(form);
       editorMode = 'edit';
       mode = 'form';
     } catch (e) {
@@ -480,28 +558,38 @@
       // A drag with no way out would make Escape close the dialog mid-move,
       // which is the one moment the operator most wants to take it back.
       if (dragFrom !== null) cancelDrag();
-      else if (mode === 'list') onClose();
-      else goList();
+      else dismiss('escape');
     }
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onresize={onResize} />
 
 <div
   class="backdrop conn-dialog"
   onclick={(e) => {
-    if (e.target === e.currentTarget) onClose();
+    if (e.target === e.currentTarget) dismiss('backdrop');
   }}
   role="presentation"
 >
   <div
     class="dialog"
+    style:translate="{offset.dx}px {offset.dy}px"
+    bind:this={dialogEl}
     role="dialog"
     aria-modal="true"
     aria-label={i18n.t('conn-manager-title')}
   >
-    <header class="head">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <header
+      class="head"
+      title={i18n.t('conn-move-hint')}
+      onpointerdown={beginMove}
+      onpointermove={trackMove}
+      onpointerup={endMove}
+      onpointercancel={endMove}
+      ondblclick={recentre}
+    >
       <h2 class="title">{i18n.t('conn-manager-title')}</h2>
       <button type="button" class="icon-btn" onclick={onClose} title={i18n.t('conn-close')}>
         ✕
