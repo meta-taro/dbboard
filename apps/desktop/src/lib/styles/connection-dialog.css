@@ -136,15 +136,20 @@
   opacity: 0;
   touch-action: none;
 }
-.conn-dialog .row:hover .grip,
-.conn-dialog .grip:focus-visible {
+/* Both of these exclude the disabled handle by hand. `:disabled` below is a
+   single class-level selector, so `.row:hover .grip` outranks it and
+   `:active` ties it and wins on order — on a filtered list the handle would
+   otherwise light up on hover and answer a press with a closed fist,
+   offering a drag that `beginDrag` then refuses. */
+.conn-dialog .row:hover .grip:not(:disabled),
+.conn-dialog .grip:focus-visible:not(:disabled) {
   opacity: 1;
 }
 .conn-dialog .grip:disabled {
   cursor: default;
   opacity: 0;
 }
-.conn-dialog .grip:active {
+.conn-dialog .grip:not(:disabled):active {
   cursor: grabbing;
 }
 .conn-dialog .row.dragging {

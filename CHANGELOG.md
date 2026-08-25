@@ -43,6 +43,13 @@ public API is the HTTP contract in
   greyscale screenshot pasted into an issue, and by a screen reader alike. A
   duplicate inherits neither half, because the mark exists to tell production
   from a copy of it. See [ADR-0126](docs/decisions.md).
+### Fixed
+
+- **The reorder handle no longer offers a drag it will refuse.** While a
+  filter was hiding rows the handle correctly declined to move anything, but
+  still brightened under the pointer and answered a press with a closed-fist
+  cursor. Both were single-class CSS rules that outranked the disabled state.
+
 ## [0.11.0] — 2026-08-24 — Connection repair and duplication
 
 ### Added
