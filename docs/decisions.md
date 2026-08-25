@@ -12657,3 +12657,62 @@ a job the clipboard already does.
 narrow it — whether the updater's temp directory survives, and whether the
 antivirus quarantine names dbboard — and neither is available from inside the
 app.
+
+## ADR-0136 — An agent may tidy the connection list, and the database write gate does not stand in its way (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0130](#adr-0130--the-mark-is-set-from-the-list-and-the-colour-rides-at-the-head-of-the-row-2026-08-25) and #192; sits beside [ADR-0134](#adr-0134--an-agent-may-register-only-the-connections-that-carry-no-credential-2026-08-25).
+
+**Context.** v0.12.0 gave the connection list a shape a person maintains: an
+identity mark (a colour and a short tag) and an order that is the order rows
+render in. Both are edited one row at a time, from the app, by hand.
+
+That is the wrong shape of work for a person and the right shape for an
+agent. Twenty connections that accumulated in the order they were first
+needed do not sort themselves, and the operator who most needs them sorted is
+the one who has twenty. The request that prompted this said so plainly:
+someone would be helped if the tidying were done for them.
+
+Nothing new is needed underneath. `ConnectionAdmin::set_mark` and
+`move_to` already exist, already validate, and are already what the app
+calls. What was missing was a way in from outside the window.
+
+**Decision.** Two MCP tools, `set_connection_mark` and `move_connection`,
+over the existing admin API. Four things about them are decided rather than
+inherited:
+
+* **`mcp_write` does not gate them.** That switch is about the data in a
+  database (ADR-0087) — it is the difference between reading a production
+  table and changing it. A colour in a sidebar is not that. Gating the two
+  together would mean an operator who wants their list sorted has to grant
+  write access to the database to get it, which trades a real permission for
+  a cosmetic one. The tools say in their own descriptions that they reach no
+  database, because an agent that assumes otherwise will not try.
+* **A mark is set whole.** Sending one half clears the other; sending
+  neither unmarks the connection. This matches the app's picker, and it is
+  the only reading that survives an agent composing JSON: "the key is
+  absent" and "the key is empty" are not reliably different at the far end
+  of a model, and the failure of guessing is silent.
+* **`position` is reported, never counted.** Every view carries the index it
+  sits at, and the description says to take the number from there. A
+  position counted off an array the agent read earlier is a stale view
+  (ADR-0016) — and unlike a stale query it fails quietly, by moving the row
+  next to the intended one.
+* **Both tools answer with the whole list, as the agent is allowed to see
+  it.** A sort is a run of moves, and each one shifts the indexes of the
+  rows it passed; answering with the new list lets the next move be aimed at
+  what now exists rather than at what was read before the first one. The
+  answer goes through the same alias projection as `list_connections`
+  (ADR-0088), so a write is not a side door onto a real id.
+
+**Consequences.**
+* An operator can ask an agent to sort and colour-code a list they would not
+  have sorted by hand, which is the point.
+* An agent can also recolour a list nobody asked it to touch. The mitigation
+  is the description — it says an existing mark was chosen by a person and
+  should be left alone unless changing it was the request — and the fact
+  that a mark is cosmetic and reversible. This is a weaker guarantee than a
+  gate, and it is accepted knowingly: the alternative gate is the wrong one.
+* A dbboard window already open shows the old marks and the old order until
+  it refreshes, the same as after `add_connection` (ADR-0134).
+* Every call opens its own `ConnectionAdmin` (ADR-0133), so a sort driven by
+  an agent interleaves safely with edits made in the window.

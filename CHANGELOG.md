@@ -7,7 +7,21 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Knowing what changed, and letting an agent tidy up
+
+### Added
+
+- **An agent can tidy the connection list.** The mark and the order that
+  arrived in 0.12.0 were editable only by hand, one row at a time — which is
+  the wrong shape of work for a person and the right shape for an agent, and
+  the operator who most needs twenty connections sorted is the one who has
+  twenty. `dbboard-mcp` gains `set_connection_mark` and `move_connection`,
+  and `list_connections` now reports each entry's `position` alongside its
+  `color` and `tag` so a sort is aimed at the list that exists rather than at
+  one read a move ago. Neither tool is behind `mcp_write`: that switch is
+  about the data in a database, and putting a sidebar colour behind it would
+  mean granting production write access to have a list sorted. See
+  [ADR-0136](docs/decisions.md).
 
 ## [0.12.0] — 2026-08-25 — A connection list you can steer
 

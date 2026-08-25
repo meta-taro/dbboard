@@ -12,11 +12,13 @@
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
 //! `search_schema` (ADR-0053), `list_relationships` (ADR-0054),
 //! `run_write` + `dump_database` (ADR-0087), `add_connection` (ADR-0134),
-//! the `get_ui_locale` /
-//! `set_ui_locale` pair, `capture_window` (ADR-0108), and the four that
-//! work the window — `set_editor_sql`, `run_query`, `open_ai_panel`,
-//! `open_ai_settings` (ADR-0109). Those last seven reach no database at
-//! all, and `get_server_info` (#195) reaches nothing whatever: it names
+//! `set_connection_mark` + `move_connection` (ADR-0136), the
+//! `get_ui_locale` / `set_ui_locale` pair, `capture_window` (ADR-0108),
+//! and the four that work the window — `set_editor_sql`, `run_query`,
+//! `open_ai_panel`, `open_ai_settings` (ADR-0109). The seven from
+//! `get_ui_locale` onwards reach no database at all, and neither does the
+//! mark-and-move pair: it rearranges dbboard's own list of connections.
+//! `get_server_info` (#195) reaches nothing whatever: it names
 //! the build, because this binary is installed by hand and a stale one
 //! is otherwise indistinguishable from a broken one.
 //!
@@ -73,6 +75,29 @@ pub struct AddConnectionParams {
     /// emulator from a real project.
     #[serde(default)]
     pub base_url: Option<String>,
+}
+
+/// Parameters for [`DbboardMcp::set_connection_mark`] (ADR-0136).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetConnectionMarkParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// One of dbboard's eight connection colours. Omit to clear the colour.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// A label of at most 12 characters (`prod`, `staging`). Omit to clear
+    /// the tag.
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+/// Parameters for [`DbboardMcp::move_connection`] (ADR-0136).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveConnectionParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// The destination position in the resulting list, counting from 0.
+    pub position: usize,
 }
 
 /// Parameters for [`DbboardMcp::list_tables`].
@@ -261,9 +286,19 @@ impl DbboardMcp {
     }
 
     #[tool(
-        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, turso-remote, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb). `turso` is a local SQLite/libSQL file and `turso-remote` is a Turso Cloud database reached over the network; both take the same SQL, so the distinction matters for latency and for where the data lives, not for what you send. Check the kind before you write a query: every kind above except firestore and mongodb takes SQL, firestore takes a Firestore StructuredQuery as JSON, and mongodb takes a MongoDB command document as JSON. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
+        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, turso-remote, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb). `turso` is a local SQLite/libSQL file and `turso-remote` is a Turso Cloud database reached over the network; both take the same SQL, so the distinction matters for latency and for where the data lives, not for what you send. Check the kind before you write a query: every kind above except firestore and mongodb takes SQL, firestore takes a Firestore StructuredQuery as JSON, and mongodb takes a MongoDB command document as JSON. Each entry also carries its position in the list, counting from zero, and the identity mark a person gave it (a color and a short tag) when it has one — position is what move_connection takes, and the mark is the operator's own shorthand rather than anything the database knows. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
     )]
     async fn list_connections(&self) -> Result<CallToolResult, McpError> {
+        self.connection_list().await
+    }
+
+    /// The connection list as the agent is allowed to see it (ADR-0088).
+    ///
+    /// The tools that change the list answer with this rather than with
+    /// nothing, so that the positions an agent sorts by are the ones the
+    /// write just produced. Reordering from a list read before the move is
+    /// how the second move lands on the wrong row.
+    async fn connection_list(&self) -> Result<CallToolResult, McpError> {
         let views = self
             .service
             .list_agent_connections()
@@ -323,6 +358,59 @@ The connection is created read-only: `mcp_write` stays off and only a human can 
             .await
             .map_err(|e| to_mcp(&e))?;
         json_block(&view)
+    }
+
+    // Two tools that change dbboard's own view of its connection list and
+    // reach no database at all (ADR-0136). Tidying a list of twenty
+    // connections is a chore a person does badly and an agent does well,
+    // and it was previously reachable only by hand.
+    #[tool(
+        description = "Set a connection's identity mark: a colour, a short tag, or neither. The mark is dbboard's own labelling of its connection list — a coloured stripe and a small chip beside the connection's name — so this changes nothing in the database and needs no write access to it.
+
+Both halves are set together: send the ones you want and omit the ones you want cleared, so sending only a color clears the tag. Send neither to unmark the connection entirely.
+
+color must be one of red, orange, yellow, green, teal, blue, purple, pink. tag is at most 12 characters — a label like prod or staging, not a description. Either may be sent alone.
+
+An existing mark was chosen by a person and usually means something to them; add marks to unmarked connections freely, but leave a mark that is already set unless you were asked to change it. Returns the whole list as it now stands."
+    )]
+    async fn set_connection_mark(
+        &self,
+        Parameters(SetConnectionMarkParams {
+            connection_id,
+            color,
+            tag,
+        }): Parameters<SetConnectionMarkParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
+        self.service
+            .set_connection_mark(&connection_id, color, tag)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        self.connection_list().await
+    }
+
+    #[tool(
+        description = "Move a connection to a position in the list, sliding the ones in between over by one. The list order is the order the app's sidebar and connection manager render, so this rearranges what a person sees and changes nothing in any database.
+
+position counts from 0 and is a position in the resulting list. Take it from the position field list_connections returns rather than counting rows yourself: another window may have reordered the file since you last read it, and a number counted off a stale list moves the wrong connection.
+
+To sort the whole list, move one at a time from the front: the connection that should come first to 0, then the one that should come second to 1, and so on. Returns the whole list in its new order.
+
+A dbboard window that is already open shows the old order until it is refreshed."
+    )]
+    async fn move_connection(
+        &self,
+        Parameters(MoveConnectionParams {
+            connection_id,
+            position,
+        }): Parameters<MoveConnectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
+        self.service
+            .move_connection(&connection_id, position)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        self.connection_list().await
     }
 
     #[tool(
@@ -679,8 +767,15 @@ const GUIDE: &str = "Read-only access to the databases dbboard is configured wit
                  has set mcp_write = true on — it is off by default. Privilege and \
                  role changes, TRUNCATE and DROP are refused on every connection and \
                  no setting enables them. \
-                 \n\nSeven tools are the exception to all of the above: they reach \
-                 no database and instead work the dbboard window itself. \
+                 \n\nThe connection list has a shape of its own, and a person \
+                 maintains it by hand: set_connection_mark gives a connection a \
+                 colour and a short tag, move_connection changes the order they \
+                 are listed in. Both write dbboard's own configuration and touch \
+                 no database, so neither is behind mcp_write. Offer to tidy the \
+                 list when it has grown long enough that its order stopped saying \
+                 anything. \
+                 \n\nSeven further tools reach no database either, and instead \
+                 work the dbboard window itself. \
                  get_ui_locale / set_ui_locale change the app's display language \
                  — use them only when the user asks. capture_window photographs \
                  the app's own window, which is how you check what it actually \
@@ -910,6 +1005,53 @@ mod tests {
                 "tool `{name}` uses the agent's connection_id without resolving it"
             );
         }
+    }
+
+    /// The palette and the tag limit are enforced in `dbboard-config`, and an
+    /// agent cannot see either one. If the description does not carry them,
+    /// the first thing it learns about the eight colours is that its ninth
+    /// was rejected — and the same goes for a thirteenth character.
+    ///
+    /// Checked against the constants rather than a copy of them, so growing
+    /// the palette fails here instead of quietly leaving a colour that works
+    /// but is never offered.
+    #[test]
+    fn the_mark_tool_states_the_palette_and_the_tag_limit() {
+        let source = include_str!("server.rs");
+        let description = source
+            .split("description = \"Set a connection's identity mark")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the set_connection_mark description has moved");
+
+        for colour in dbboard_config::CONNECTION_COLORS {
+            assert!(
+                description.contains(colour),
+                "colour `{colour}` is missing from the set_connection_mark description"
+            );
+        }
+        assert!(
+            description.contains(&dbboard_config::CONNECTION_TAG_MAX_CHARS.to_string()),
+            "the tag length limit is missing from the set_connection_mark description"
+        );
+    }
+
+    /// `position` is only usable if the agent knows where the number comes
+    /// from. Counted off its own transcript it drifts the moment anything
+    /// else writes the file, which is the stale-view failure ADR-0016 is
+    /// about — so the description has to point back at the read.
+    #[test]
+    fn the_reorder_tool_points_at_the_read_the_position_comes_from() {
+        let source = include_str!("server.rs");
+        let description = source
+            .split("description = \"Move a connection")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the move_connection description has moved");
+        assert!(
+            description.contains("list_connections"),
+            "the move_connection description does not say where `position` comes from"
+        );
     }
 
     /// Extract the kind labels `service::kind_label` can return, from its

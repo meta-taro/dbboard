@@ -50,7 +50,7 @@ registers a connection without ever touching a database.
 
 | Tool | What it returns |
 |---|---|
-| `list_connections` | Every configured connection as `{ id, name, kind }`. **No** keyring references, URLs, or tokens — secrets are never serialized. A connection with an `mcp_alias` shows that alias as *both* its id and its name, and the id you get back is the only one the other tools accept (see below). |
+| `list_connections` | Every configured connection as `{ id, name, kind, position }`, plus `color` and `tag` where a person has marked one. **No** keyring references, URLs, or tokens — secrets are never serialized. A connection with an `mcp_alias` shows that alias as *both* its id and its name, and the id you get back is the only one the other tools accept (see below). |
 | `list_tables` | The tables in a connection's database. |
 | `describe_table` | One table's columns (name, type, nullability, PK flag, ordinal) and primary key. `schema` is optional (the Postgres schema namespace; omit for SQLite/libSQL/D1). |
 | `search_schema` | The tables and columns across a connection whose **name** contains a case-insensitive substring — the fast "which table has the email column?" lookup, without `describe_table` on every table. Matches identifiers, not row data. Capped at 200 matched tables with a `truncated` flag. |
@@ -67,6 +67,8 @@ registers a connection without ever touching a database.
 | `open_ai_panel` | Opens the AI panel, which is where the AI provider settings live. Says so when it was already open. |
 | `get_server_info` | Which build is answering, as `{ name, version }`. This binary is installed by hand and never updates itself, so it can be older than the fix for whatever you are looking at — quote the version in any bug report. Deliberately carries **no** filesystem path: on Windows the config path holds the operator's OS username, and a tool result lands in the calling agent's transcript as plaintext on disk. The same version also opens the handshake `instructions`, because some clients drop those and some agents never call a tool they were not asked about. |
 | `add_connection` | Registers a new connection in `connections.toml` and returns it as `{ id, name, kind }`. Only the kinds that put **nothing** in the keychain: `turso` (a SQLite/libSQL file on this machine, from a `path`) and `firestore` (the local emulator, from a `project_id` and a `base_url` — it authenticates with a fixed token, so there is no service account to save, [ADR-0093](../../docs/decisions.md)). Every other kind is refused permanently, and the refusal is in the tool's *description* so an agent reads it before sending a password rather than after. The entry is created read-only — `mcp_write` stays off and no alias is set, since an alias the agent chose would hide nothing from it. A dbboard window that is already open lists the new connection after a refresh. See [ADR-0134](../../docs/decisions.md). |
+| `set_connection_mark` | Sets a connection's identity mark: a colour from dbboard's eight (`red`, `orange`, `yellow`, `green`, `teal`, `blue`, `purple`, `pink`) and a tag of at most 12 characters. Both halves are written together, so sending one clears the other and sending neither unmarks the connection — the same all-at-once edit the app's own picker makes, because a half-sent mark and a cleared one are indistinguishable in an agent-composed JSON object. Answers with the whole list in its new state. Reaches no database, so it is **not** behind `mcp_write`: that switch is about data (ADR-0087), and putting the sidebar's colours behind it would make an operator grant production write access to have their list tidied. See [ADR-0136](../../docs/decisions.md). |
+| `move_connection` | Moves a connection to a `position`, sliding the rest over. The list order is the order the sidebar renders (#192), and `position` counts from zero — it is the `position` field `list_connections` reports, not a row counted off by hand, because another window may have reordered the file since. Answers with the whole list in its new order, so a sort can be driven from the response rather than from a read that is one move stale. Reaches no database. See [ADR-0136](../../docs/decisions.md). |
 | `open_ai_settings` | Opens the AI provider settings, which live *inside* that panel — so it is refused while the panel is shut, and `open_ai_panel` comes first. The refusal is the point as much as the opening: there is no top-level route to these settings, and being told the verb has no owner is how an agent learns that. Says so when they were already open. |
 
 `run_read_query` has no write path at all. Any statement that is not a
@@ -441,6 +443,9 @@ receives Ctrl-C.
   `list_relationships` tool that extends it to seven.
 - [ADR-0134](../../docs/decisions.md) — `add_connection`, and why only the
   credential-free kinds can be registered by an agent.
+- [ADR-0136](../../docs/decisions.md) — `set_connection_mark` and
+  `move_connection`, and why the mark and the order are not behind
+  `mcp_write`.
 - [ADR-0087](../../docs/decisions.md) — the three-tier write policy and
   the `run_write` / `dump_database` tools that take the surface to nine.
 - [ADR-0045](../../docs/decisions.md) — local table/column annotations,

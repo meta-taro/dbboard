@@ -44,7 +44,7 @@ use dbboard_config::store::{self, ConnectionKind};
 pub use dbboard_config::UiCommand;
 use dbboard_config::{
     ui_command, ui_settings, ConfigError, ConnectionAdmin, ConnectionDraft, ConnectionKindDraft,
-    SecretStore,
+    SecretStore, CONNECTION_COLORS,
 };
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use dbboard_core::{
@@ -92,6 +92,21 @@ pub struct ConnectionView {
     pub id: String,
     pub name: String,
     pub kind: String,
+    /// Where this entry sits in the list, counting from zero. The order of
+    /// `[[connections]]` in the file *is* the order the sidebar renders
+    /// (issue #192), and it is what [`McpService::move_connection`] is
+    /// addressed by — so it is reported rather than left to be counted off
+    /// the array, which is how a caller ends up acting on a stale view
+    /// (ADR-0016).
+    pub position: usize,
+    /// The identity mark's colour, one of
+    /// [`CONNECTION_COLORS`](dbboard_config::CONNECTION_COLORS), or absent
+    /// when the connection is unmarked (ADR-0130).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// The identity mark's short label, or absent when unmarked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 /// A connection an agent asks dbboard to register (ADR-0134).
@@ -249,7 +264,33 @@ impl DumpControl for UnattendedDump {
     }
 }
 
-/// Trim a required field, or say which one was blank.
+/// Route a mark or reorder failure to the error class that tells the caller
+/// whether it can fix the request itself.
+///
+/// Left as [`ServiceError::Config`], all four of these reach an agent as an
+/// internal error — the one shape it is most likely to retry unchanged. Each
+/// message therefore says what would have been accepted, because an agent
+/// cannot see the palette or the length of the list.
+fn list_write_error(err: ConfigError) -> ServiceError {
+    match err {
+        ConfigError::NotFound(id) => ServiceError::ConnectionNotFound(id),
+        ConfigError::UnknownColor { name } => ServiceError::InvalidRequest(format!(
+            "{name:?} is not one of dbboard's connection colours; use one of: {}",
+            CONNECTION_COLORS.join(", ")
+        )),
+        ConfigError::TagTooLong { tag, max } => ServiceError::InvalidRequest(format!(
+            "the tag {tag:?} is longer than the {max}-character limit; shorten it"
+        )),
+        ConfigError::IndexOutOfRange { index, len } => ServiceError::InvalidRequest(format!(
+            "there is no position {index} in a list of {len} connections; \
+             positions count from 0, so the last one is {}",
+            len.saturating_sub(1)
+        )),
+        other => ServiceError::Config(other),
+    }
+}
+
+// Trim a required field, or say which one was blank.
 fn required(label: &str, value: &str) -> Result<String, ServiceError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -835,10 +876,14 @@ impl McpService {
         Ok(file
             .connections
             .iter()
-            .map(|entry| ConnectionView {
+            .enumerate()
+            .map(|(position, entry)| ConnectionView {
                 id: entry.id.clone(),
                 name: entry.name.clone(),
                 kind: kind_label(&entry.kind).to_string(),
+                position,
+                color: entry.color.clone(),
+                tag: entry.tag.clone(),
             })
             .collect())
     }
@@ -861,7 +906,8 @@ impl McpService {
         Ok(file
             .connections
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(position, entry)| {
                 let handle = entry.mcp_alias.as_deref().unwrap_or(&entry.id);
                 ConnectionView {
                     id: handle.to_string(),
@@ -871,6 +917,12 @@ impl McpService {
                         .unwrap_or(&entry.name)
                         .to_string(),
                     kind: kind_label(&entry.kind).to_string(),
+                    position,
+                    // The mark is the operator's own shorthand, not an
+                    // identifier: an alias hides the store's name, and a
+                    // colour called `red` reveals nothing further.
+                    color: entry.color.clone(),
+                    tag: entry.tag.clone(),
                 }
             })
             .collect())
@@ -926,12 +978,26 @@ impl McpService {
         let secrets = Arc::clone(&self.secrets);
         tokio::task::spawn_blocking(move || -> Result<ConnectionView, ConfigError> {
             let mut admin = ConnectionAdmin::open(path, secrets)?;
+            let view_id = draft.id.clone();
             let entry = admin.add(draft)?;
-            Ok(ConnectionView {
+            let view = ConnectionView {
                 id: entry.id.clone(),
                 name: entry.name.clone(),
                 kind: kind_label(&entry.kind).to_string(),
-            })
+                // Read back rather than assumed to be last: where `add`
+                // puts an entry is `add`'s business, and a position the
+                // caller then moves by would be wrong by one.
+                position: admin
+                    .entries()
+                    .iter()
+                    .position(|e| e.id == view_id)
+                    .unwrap_or(0),
+                // A new connection is registered unmarked; the agent can
+                // mark it with `set_connection_mark` if it has a reason to.
+                color: None,
+                tag: None,
+            };
+            Ok(view)
         })
         .await
         .map_err(|e| ServiceError::Task(e.to_string()))?
@@ -947,6 +1013,85 @@ impl McpService {
             }
             other => ServiceError::Config(other),
         })
+    }
+
+    /// Set a connection's identity mark — its colour, its short tag, or
+    /// neither (ADR-0130; reachable by an agent since ADR-0136).
+    ///
+    /// The mark is set as a whole, the way the picker in the app sets it:
+    /// a `None` half clears that half rather than leaving it. The
+    /// alternative needs "absent" and "empty" to mean different things in
+    /// a JSON object an agent composes by hand, and that difference goes
+    /// wrong without announcing itself.
+    ///
+    /// `mcp_write` deliberately does not gate this. That switch decides
+    /// whether an agent may change what is *in* a database (ADR-0087);
+    /// a colour and a twelve-character label are dbboard's own view of the
+    /// list, and nothing about them reaches the server on the other end.
+    /// Gating them behind the data switch would mean an operator has to
+    /// grant write access to a production database in order to let an
+    /// agent tidy the sidebar.
+    ///
+    /// The admin is opened per call rather than held (ADR-0133).
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] if no entry has that id,
+    /// [`ServiceError::InvalidRequest`] for a colour outside the palette or
+    /// a tag past the length limit, and [`ServiceError::Config`] when the
+    /// file cannot be read or written.
+    pub async fn set_connection_mark(
+        &self,
+        connection_id: &str,
+        color: Option<String>,
+        tag: Option<String>,
+    ) -> Result<(), ServiceError> {
+        let path = self.config_path.clone();
+        let secrets = Arc::clone(&self.secrets);
+        let id = connection_id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), ConfigError> {
+            let mut admin = ConnectionAdmin::open(path, secrets)?;
+            admin.set_mark(&id, color, tag)
+        })
+        .await
+        .map_err(|e| ServiceError::Task(e.to_string()))?
+        .map_err(list_write_error)
+    }
+
+    /// Move a connection to `position` in the list, sliding the entries in
+    /// between over by one (issue #192; reachable by an agent since
+    /// ADR-0136).
+    ///
+    /// `position` counts from zero and is a position in the *resulting*
+    /// list — the same number [`ConnectionView::position`] reports, so a
+    /// plan made from one read applies without arithmetic. Moving an entry
+    /// to the position it already holds is not an error.
+    ///
+    /// Nothing about the databases changes: the order of `[[connections]]`
+    /// in the file is the order the sidebar renders, so this rewrites a
+    /// sequence and touches no keyring entry.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] if no entry has that id,
+    /// [`ServiceError::InvalidRequest`] if `position` is past the end of
+    /// the list, and [`ServiceError::Config`] when the file cannot be read
+    /// or written.
+    pub async fn move_connection(
+        &self,
+        connection_id: &str,
+        position: usize,
+    ) -> Result<(), ServiceError> {
+        let path = self.config_path.clone();
+        let secrets = Arc::clone(&self.secrets);
+        let id = connection_id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), ConfigError> {
+            let mut admin = ConnectionAdmin::open(path, secrets)?;
+            admin.move_to(&id, position)
+        })
+        .await
+        .map_err(|e| ServiceError::Task(e.to_string()))?
+        .map_err(list_write_error)
     }
 
     /// Translate a handle an agent supplied back into the real connection id
@@ -1858,6 +2003,224 @@ path = ":memory:"
         let views = fx.service.list_connections().await.expect("after write");
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].id, "a");
+    }
+
+    // Marks and order over MCP (ADR-0136). Neither write is new — the app
+    // has had both since 0.12.0 — so what these cover is the reach: an agent
+    // asked to tidy the list needs to see the current mark and position
+    // before it can decide what to change, and the two writes have to fail
+    // as *the caller's* mistake rather than as a fault of this machine.
+
+    const THREE_MARKED: &str = r#"
+version = 1
+
+[[connections]]
+id    = "alpha"
+name  = "Alpha"
+kind  = "turso"
+path  = ":memory:"
+color = "red"
+tag   = "prod"
+
+[[connections]]
+id   = "beta"
+name = "Beta"
+kind = "turso"
+path = ":memory:"
+
+[[connections]]
+id   = "gamma"
+name = "Gamma"
+kind = "turso"
+path = ":memory:"
+"#;
+
+    /// The position is what `move_connection` is addressed by, so it has to
+    /// come from the same read the agent plans against rather than be counted
+    /// off the array by the caller — which is the stale-view mistake
+    /// ADR-0016 describes.
+    #[tokio::test]
+    async fn connection_views_carry_the_mark_and_the_position() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let views = fx
+            .service
+            .list_agent_connections()
+            .await
+            .expect("agent list");
+        assert_eq!(views[0].color.as_deref(), Some("red"));
+        assert_eq!(views[0].tag.as_deref(), Some("prod"));
+        assert_eq!(views[0].position, 0);
+
+        assert_eq!(views[1].color, None, "an unmarked entry reports no colour");
+        assert_eq!(views[1].tag, None);
+        assert_eq!(views[1].position, 1);
+        assert_eq!(views[2].position, 2);
+    }
+
+    #[tokio::test]
+    async fn set_connection_mark_writes_both_halves() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        fx.service
+            .set_connection_mark("beta", Some("blue".into()), Some("staging".into()))
+            .await
+            .expect("mark");
+
+        let views = fx.service.list_connections().await.expect("list");
+        assert_eq!(views[1].color.as_deref(), Some("blue"));
+        assert_eq!(views[1].tag.as_deref(), Some("staging"));
+        assert_eq!(views[0].color.as_deref(), Some("red"), "left alone");
+    }
+
+    /// The mark is set as a whole, the way the picker sets it: omitting a
+    /// half clears it rather than leaving it. Anything else needs a
+    /// distinction between "absent" and "empty" in a JSON payload an agent
+    /// writes by hand, and that is the kind of difference that goes wrong
+    /// without saying so.
+    #[tokio::test]
+    async fn set_connection_mark_with_neither_half_clears_the_mark() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        fx.service
+            .set_connection_mark("alpha", None, None)
+            .await
+            .expect("clear");
+
+        let views = fx.service.list_connections().await.expect("list");
+        assert_eq!(views[0].color, None);
+        assert_eq!(views[0].tag, None);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_colour_is_the_callers_mistake_not_a_config_fault() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let err = fx
+            .service
+            .set_connection_mark("beta", Some("chartreuse".into()), None)
+            .await
+            .expect_err("not a palette colour");
+        assert!(
+            matches!(err, ServiceError::InvalidRequest(_)),
+            "unexpected error: {err:?}"
+        );
+        // The palette has to be in the message: an agent that cannot see the
+        // eight names will guess a ninth.
+        assert!(
+            err.to_string().contains("red"),
+            "the error does not name the palette: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_over_long_tag_is_the_callers_mistake() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let err = fx
+            .service
+            .set_connection_mark("beta", None, Some("thirteen chars".into()))
+            .await
+            .expect_err("too long");
+        assert!(
+            matches!(err, ServiceError::InvalidRequest(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_connection_puts_the_entry_at_that_index() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        fx.service.move_connection("gamma", 0).await.expect("move");
+
+        let views = fx.service.list_connections().await.expect("list");
+        let ids: Vec<&str> = views.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, ["gamma", "alpha", "beta"]);
+        assert_eq!(views[0].position, 0, "the reported position moved with it");
+        assert_eq!(views[1].position, 1);
+    }
+
+    #[tokio::test]
+    async fn moving_past_the_end_is_the_callers_mistake() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let err = fx
+            .service
+            .move_connection("alpha", 3)
+            .await
+            .expect_err("no position 3 in a list of three");
+        assert!(
+            matches!(err, ServiceError::InvalidRequest(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn marking_or_moving_an_unknown_connection_is_a_clean_not_found() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let marked = fx
+            .service
+            .set_connection_mark("nope", Some("red".into()), None)
+            .await
+            .expect_err("unknown");
+        assert!(
+            matches!(&marked, ServiceError::ConnectionNotFound(id) if id == "nope"),
+            "unexpected error: {marked:?}"
+        );
+
+        let moved = fx
+            .service
+            .move_connection("nope", 0)
+            .await
+            .expect_err("unknown");
+        assert!(
+            matches!(&moved, ServiceError::ConnectionNotFound(id) if id == "nope"),
+            "unexpected error: {moved:?}"
+        );
+    }
+
+    /// Marking must not become a way to read back the name an alias hides:
+    /// what an agent sees after a write is the same projection it gets from
+    /// `list_connections` (ADR-0088).
+    #[tokio::test]
+    async fn marking_an_aliased_connection_still_reports_only_the_alias() {
+        let fx = fixture();
+        write(&fx.config_path, ALIASED);
+
+        let id = fx
+            .service
+            .resolve_agent_handle("store-a")
+            .await
+            .expect("resolve");
+        fx.service
+            .set_connection_mark(&id, Some("purple".into()), Some("live".into()))
+            .await
+            .expect("mark");
+
+        let views = fx
+            .service
+            .list_agent_connections()
+            .await
+            .expect("agent list");
+        assert_eq!(views[0].id, "store-a");
+        assert_eq!(views[0].name, "store-a");
+        assert_eq!(views[0].color.as_deref(), Some("purple"));
+
+        let json = serde_json::to_string(&views).expect("serialize");
+        assert!(
+            !json.contains("Store A") && !json.contains("db.internal"),
+            "the write leaked what the alias hides: {json}"
+        );
     }
 
     #[tokio::test]
