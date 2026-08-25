@@ -12468,3 +12468,62 @@ and Cancel) when the form is dirty. It would be a second, louder mechanism for
 the same worry, and this one has not been in front of anyone yet; if a
 deliberate click turns out to lose work too, that is the evidence for adding
 it.
+
+## ADR-0133 — A long-lived connection admin re-reads the file before it writes (2026-08-25)
+
+**Status.** Accepted. Refines [ADR-0013](#adr-0013--local-toml-connection-store-with-os-keychain-for-secrets).
+
+**Context.** `ConnectionAdmin` holds the whole of `connections.toml` in memory
+and every mutator saves the whole file back. That is correct for a process
+that is the only writer, and the desktop was written as if it were: the shell
+opens one admin at startup and locks it from thirteen call sites for the rest
+of the run.
+
+It is not the only writer. `connections.toml` is an ordinary file the operator
+is invited to edit — the MCP write gate is documented as something "a human
+must enable in connections.toml" — and now the MCP server writes it too
+([ADR-0134](#adr-0134--an-agent-may-register-only-the-connections-that-carry-no-credential-2026-08-25)).
+Anything written beside a running dbboard was erased by that window's next
+change, silently and completely: not a merge conflict, not an error, just an
+entry that was there before a rename and gone after it. The duplicate-id guard
+had the same blind spot — it consulted the in-memory copy, so an id already
+taken on disk passed.
+
+Nothing about the failure is visible from the call site. A rename is a rename;
+the loss is in what the save carried with it.
+
+**Decision.** Every mutator begins with `self.sync()`, which re-reads the file
+from disk. Six in `admin.rs` (`add`, `update`, `delete`, `move_to`, `set_mark`,
+`import_bundle`) and two in `admin/repair.rs` (`duplicate`,
+`repair_foreign_ref`). A mutator that cannot read the current file refuses
+rather than writing a stale one over it.
+
+Put inside the mutators rather than left to the caller. Thirteen lock sites,
+each of which would have to remember, is a rule that will be missed at one —
+and the one it is missed at will be whichever is added next, by someone who
+never read this.
+
+A `tracks_disk` flag distinguishes the two constructors.
+`ConnectionAdmin::open` reads from a path and sets it; `new_with_file` is
+handed its entries by a caller who has no disk to be behind, and does not.
+
+**Consequences.**
+* Every mutation now costs one file read. It is a few kilobytes of TOML on a
+  path already doing an atomic write; the read is not the expensive half.
+* Last-write-wins is unchanged for a *field* edited in two places at once. What
+  is fixed is losing entries nobody touched, which is the difference between a
+  conflict and a deletion.
+* Two no-op tests had to change technique. They observed "did not save" by
+  deleting the file and asserting it stayed gone, and an absent file now reads
+  as an empty one. They seed a comment instead: the serialiser never emits
+  comments, so a save loses it and a no-op keeps it. Stricter than what it
+  replaced.
+* Two rollback tests set `tracks_disk = false` by hand. Both re-point `path` at
+  an unwritable location while holding entries in memory, and the subject there
+  is the failing save, not the read.
+
+**Not decided here.** Watching the file. A running window still lists what it
+last read, so an entry added elsewhere appears after a refresh. That is a
+frontend concern and a different mechanism; this ADR is only about not
+destroying it.
+

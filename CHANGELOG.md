@@ -93,6 +93,14 @@ public API is the HTTP contract in
   still brightened under the pointer and answered a press with a closed-fist
   cursor. Both were single-class CSS rules that outranked the disabled state.
 
+- **A connection added outside a running dbboard is no longer erased by it.**
+  The window read `connections.toml` once at startup and wrote the whole file
+  back on every change, so an entry added by hand — or, now, by an agent —
+  while dbboard was open disappeared at the next rename, with no error and no
+  conflict. The duplicate-id guard had the same blind spot and let an id
+  already taken on disk through. Every write now re-reads the file first. See
+  [ADR-0133](docs/decisions.md).
+
 ## [0.11.0] — 2026-08-24 — Connection repair and duplication
 
 ### Added

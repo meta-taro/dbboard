@@ -75,6 +75,7 @@ impl ConnectionAdmin {
         new_id: String,
         new_name: String,
     ) -> Result<&ConnectionEntry, ConfigError> {
+        self.sync()?;
         let idx = self
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
@@ -206,6 +207,7 @@ impl ConnectionAdmin {
         key_ref: &str,
         mut secret: String,
     ) -> Result<&ConnectionEntry, ConfigError> {
+        self.sync()?;
         let outcome = self.repair_inner(id, key_ref, &secret);
         secret.zeroize();
         outcome?;
