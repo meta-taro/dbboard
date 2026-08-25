@@ -5,6 +5,58 @@
 
 ## 最終更新
 
+- 日付: 2026-08-25 その6 (**「更新で何が変わったか」をアプリ内に出した (ADR-0137) / 目印と
+  並び替えを MCP に開けた (ADR-0136)。commit 3 本が develop に未 push。**
+
+  どちらも 2026-08-25 に user から出た要望そのまま。
+  「md-business に比べて、アップデートによって何が変わったのか記載がない。
+  それはバージョン確認画面に記載してほしい」「今回のタグ・色付け・順番入れ替えは、
+  MCP いれてエージェントも操作可能にしてください。整理整頓を AI がやってくれたら
+  助かる人はいるはずです」。
+
+  ### バージョン確認画面に更新内容 (ADR-0137)
+
+  出どころは `CHANGELOG.md` 1 本。第 2 の一覧を作らない。
+  `?raw` でビルド時にバンドルへ焼き込む — インストールされた版の隣にリポジトリは無いし、
+  実行時にファイルを読むと「その版が何を出したか」ではなく
+  「いまの作業ツリーが何と言っているか」を表示してしまう。
+
+  - `apps/desktop/src/lib/about/changelog.ts` — パーサ。Tauri も fs も触らない純関数。
+    整形規則は `scripts/release-notes.mjs` と同一 (リンク→本文、`**`/`*`/backtick 除去)。
+  - `apps/desktop/src/lib/about/bundled.ts` — `?raw` import と 1 回だけのパース。
+  - `AboutDialog.svelte` — 版のプルダウン + 見出し + 変更一覧。`[Unreleased]` は出さない
+    (誰も動かしていない版なので)。**changelog に載っていない版は何も出さない** —
+    読み手が動かしている版について自信たっぷりに間違えるより、黙っている方がまし。
+  - 変更履歴は英語のまま。ja ロケールのときだけ「変更履歴は英語で書かれています」と出す。
+    和訳するとリリースごとの手間が倍になるので、これは別の判断として残す。
+
+  この 1 件は user 自身の体験から出ている: 0.10 → 0.12 と飛んだので **0.11 が何だったのかは
+  アプリのどこにも残っていなかった**。更新ダイアログは更新の瞬間に 1 度しゃべるだけで、
+  飛ばした版の記録にはならない。
+
+  ### 検証
+
+  `pnpm check` 0 errors / 324 files、フロント `vitest run` **38 files 632 tests pass**、
+  `pnpm build` 成功 + 焼き込みを実測で確認
+  (`grep -rlo "A connection list you can steer" build/_app/immutable/` が 1 件ヒット)。
+  `release-plan.test.mjs` 7/7、`release-notes.test.mjs` fail 0。
+  pre-commit の 4 コマンドすべて green、`--no-verify` なし。
+
+  `release-due.mjs` は **2 unreleased entries — a release may be cut
+  (0.12.0 -> 0.13.0: Knowing what changed, and letting an agent tidy up)**。
+  枠は `docs/roadmap.md` に v0.13 として取ってある (速度は v0.14、日々の作業は v0.15 へ繰り下げ。
+  ADR-0110/0122 のとおり枠は番号を振り直さない)。
+
+  ### §31 の棚卸し
+
+  414 行 > 400 行だったので、2026-08-24 の 2 エントリを
+  `.claude/archive/project-status-2026-08.md` へ**全文退避**し、
+  元の位置には 1 行の案内だけ残した (退避は承認不要・削除は要承認)。320 行になった。
+
+  **user 側に残っているもの**: `git push origin develop` (未 push は
+  `f200c02` docs / `81ef4e9` feat MCP / `c55825b` feat About + 本エントリの docs commit)。
+  タグを切るかどうかは ADR-0121 のとおり user の判断。
+
 - 日付: 2026-08-25 その5 (**#222 / #225 / #223 を merge して v0.12.0 を切った。
   commit は `57afbfe` 1 本、タグは `v0.12.0`。push とタグ push は user。**
 
@@ -278,102 +330,8 @@
   **次**: サイドバーの横区切りを上下ドラッグ + W クリックで既定位置 (2026-08-24 依頼)。
   **別ブランチ**にする — #222 は既に green で人も見ている。)
 
-- 日付: 2026-08-24 その2 (**接続に色 + 短いタグの目印を付けた。commit `4e0e6d9`、push は user。**
-
-  ブランチは引き続き `feature/connection-order` (#216 の上)。これで 0026 の D が閉じ、
-  **v0.12「接続一覧を操れるようにする」の中身は 4 つとも実装済**になった。
-
-  **何のためのものか**: いま繋いでいるのがどのサーバかを、一目で言えるようにする。
-  これまでの答えは接続名だけで、名前は説明的であることを目的に付けるので**見分けるのには
-  向いていない** — "shop-a" と "shop-a (staging)" は隣に並ぶと同じものに見える。
-
-  **計画 (0026 D) の 3 番目の条件を広げた。** 計画は「色だけでは目印にならない
-  (色覚・グレースケールのスクリーンショットで消える)」とだけ書き、非色成分の案として
-  「短いタグ文字列」か「アイコンの形」を並べていた。**タグを採り、さらに必須にした。**
-  色名をテキストで出す案は条件を字面どおり満たすが役に立たない — 接続の隣に「赤」と
-  出ても、その接続の名前より情報が少ない。運用者が書く `prod` / `dev` が、色が
-  立て替えているだけの意味そのものを運ぶ。
-
-  したがって **フォームは色だけのマークを保存しない**。ただし手で書いた config が
-  色だけを持っていた場合は、**色名にフォールバックして描く** — 描かないと、ファイルには
-  色があるのに行は無印に見える。この 2 つは矛盾ではなく、`markNeedsTag()` (保存側) と
-  `markFor()` (描画側) に分けてそれぞれテストしてある。
-
-  **中身**: パレットは 8 色、`tokens.css` に 1 箇所だけ定義し**全テーマに値を持つ**
-  (`:root` / `prefers-color-scheme: dark` / `data-theme` の light・dark)。config に入るのは
-  hex ではなく**色の名前**なので、後からテーマを差し替えられるし、変な値がファイルに残らない。
-  タグは 12 文字まで。`color` と `tag` はどちらも `mcp_alias` (ADR-0088) と同じ 3 状態
-  (`None`=据置 / `Some(v)`=設定 / `Some("")`=消去) で編集経路を通る。
-
-  **壊れ方を先に塞いだ 2 つ**:
-  ① マークアップは `ConnectionMark.svelte` 1 つに閉じた。サイドバーと接続マネージャが
-  別々に描いていると、片方だけ直して**半分のマーク**になる。構造的に不可能にした。
-  ② `crates/dbboard-config/tests/mark_drift.rs` が、Rust 側パレット / フロント側パレット /
-  テーマトークン / 2 つのタグ長制限の 4 つを突き合わせる。どれかがずれたらビルドで落ちる。
-
-  **テスト**: `marks.test.ts` 18 件、`mark_drift.rs` 4 件、Rust 側の正規化と `TagTooLong`。
-  いずれも**先に落ちるのを確認してから**実装。`pnpm check` 314 files / 0 errors、
-  `pnpm test` 568 passed (34 files)、`cargo fmt --check` / `clippy -D warnings` /
-  `sh scripts/cargo-test-serialised.sh` すべて exit 0。pre-commit ゲート通過
-  (`--no-verify` なし)。
-
-  **途中で潰した 2 つの clippy**: `store.rs` の round-trip テストが `color`/`tag` の追加で
-  `too_many_lines` (112/100) になったので `#[allow]` ではなく `plain(id, name, kind)`
-  ヘルパに畳んだ。`lib.rs` の `to_add_draft` が `too_many_arguments` (8/7) になったので
-  `MarkInput { color, tag }` 構造体にした — このファイルの既存の `#[allow]` は
-  「引数リストがワイヤ契約そのもの」という理由で正当化されており、内部ヘルパには当てはまらない。
-
-  **ドキュメント**: ADR-0126、DESIGN.md の identity colours 節、0026 の D に「計画から
-  何を変えたか」を追記。
-
-  **CHANGELOG はまだ書いていない**。理由は下の 2026-08-24 の項と同じ — 唯一の
-  `## [Unreleased]` は v0.11 の枠で、これは v0.12 の中身。v0.11.0 を切った**後**に書く。
-
-  **AI がやれていないこと**: 画面で見ること。**user 側のボール**は接続フォーム
-  (色セレクトの左端に色が出ているか、タグ入力とプレビューが 1 行に収まっているか) と、
-  サイドバー・接続マネージャの一覧 (マークが名前を押しのけていないか)。)
-
-- 日付: 2026-08-24 (**接続一覧 #192 の 3 条件がすべて実装できた。commit 2 本、push は user。**
-
-  **ブランチは `feature/connection-order`。`feature/duplicate-and-repair-connection`
-  (PR #216) の上に積んである** — 依存する `ConnectionManager.svelte` の分割が #216 の中に
-  あり、user がこれから 10 枚見て merge するブランチを今いじると、見た直後に中身が変わるため。
-  したがって **#216 の merge が先**で、この 2 本はその後。
-
-  **① ▲▼ で並び替え (`917aa09`)**。`[[connections]]` は TOML の array of tables =
-  **順序はもう保存されている**ので、並び替えは Vec を並べ替えて書き戻すだけ。スキーマ変更も
-  `CONFIG_VERSION` の bump も不要で、古いビルドでも読め、`.dbbx` バンドルにもそのまま乗る。
-  `ConnectionAdmin::move_to(id, index)`。範囲外の index は **clamp せず `IndexOutOfRange`
-  で error** — clamp すると operator が指していない場所に置かれる (ADR-0016 と同じ判断)。
-  同じ index への移動は no-op でファイルを書き直さない。keyring に触らないのでアダプタの
-  キャッシュも evict しない。Tauri 側 `move_connection`、フロント側 `moveTarget()`。
-
-  **② 名前 / id で絞り込み (`8f38abb`)**。`filterConnections()` は空白区切りの語を
-  **すべて**含む行だけ返す (2 語目が絞り込みになる)。**kind はわざと対象外** — 「my」で
-  "my shop" を探すと MySQL の行が全部返り、絞り込みの逆になる。id を対象に含めたのは、
-  ログやエラーメッセージから貼れる唯一のハンドルだから。空クエリのときは**同じ配列参照を
-  返す** (keyed `{#each}` が毎キーストロークで作り直されないように)。
-
-  **計画になかった衝突を 1 つ見つけた**: ①と②は干渉する。▲▼ は*保存された*リストの中で
-  動くので、行が隠れている間は見えない行を飛び越える。**絞り込み中は ▲▼ を disabled** に
-  し、tooltip で理由を出した。「見えている次の行の下へ」は別の機能で、黙って違う答えを
-  返すより disabled の方がまし。
-
-  **テスト**: `move_to` 5 件 (Rust)、`moveTarget` 4 件・`filterConnections` 6 件 (vitest)。
-  いずれも**先に落ちるのを確認してから**実装。`cargo check --all-targets --all-features` と
-  `sh scripts/cargo-test-serialised.sh` が exit 0、`pnpm check` 311 files / 0 errors、
-  `pnpm test` 546 passed (33 files)。pre-commit フックは 2 本とも通過 (`--no-verify` なし)。
-
-  **CHANGELOG はまだ書いていない。意図的。** 唯一の `## [Unreleased]` は v0.11
-  「接続の複製と修復」の枠で、`release-cut.mjs` はその本文をまるごと切ったバージョンへ
-  移す。並び替えと絞り込みは **v0.12「接続一覧を操れるようにする」**の中身なので、
-  v0.11.0 を切って `## [Unreleased]` が v0.12 の枠になってから書く。先に書くと
-  v0.11.0 の内容として下に落ちる。**#192 の close も develop に入ってから**。
-
-  **AI がやれていないこと**: 画面で見ること。→ user 側: 接続マネージャの一覧 1 枚
-  (▲▼ が行の右端に収まっているか、絞り込み入力が下のテーブル検索と見分けが付くか、
-  絞り込み中に ▲▼ が灰色になるか)。)
-
+> 2026-08-24 のセッションログ (接続一覧 #192 の 3 条件、色 + タグの目印) も、
+> 2026-08-25 に同じ場所へ全文退避した。
 > 2026-08-21 その2 〜 2026-08-20 のセッションログ (history 書き換えと force push、
 > 公開リポの実名掃除、v0.10.0 のリリース) も、2026-08-25 に同じ場所へ全文退避した。
 
