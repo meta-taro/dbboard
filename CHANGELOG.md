@@ -43,6 +43,19 @@ public API is the HTTP contract in
   greyscale screenshot pasted into an issue, and by a screen reader alike. A
   duplicate inherits neither half, because the mark exists to tell production
   from a copy of it. See [ADR-0126](docs/decisions.md).
+- **A mark can be set from the list, and the colour now sits at the head of
+  the row.** Marking was only reachable from the edit form, which also holds
+  the DSN, the tunnel and the AI-agent permissions: recolouring six
+  connections meant six whole-connection saves for a decision about nothing
+  but appearance. Right-clicking a row in the sidebar now opens a swatch
+  grid — one click paints the row, and the tag is typed beside it. The
+  colour renders as a bar at the left edge rather than as a pill after the
+  name, because down a list the left edge is the one column the eye can scan
+  without reading; the bar holds its width on unmarked rows so that marking
+  one does not shift its name sideways. A colour with no tag is accepted
+  here, unlike in the form, since the bar sits on a row that already carries
+  the connection's name. See [ADR-0130](docs/decisions.md).
+
 ### Fixed
 
 - **The reorder handle no longer offers a drag it will refuse.** While a

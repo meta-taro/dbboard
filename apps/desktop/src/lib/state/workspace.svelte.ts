@@ -9,6 +9,7 @@
 // mounted, not by living here.
 import {
   connectionMarks,
+  setConnectionMark,
   listConnections,
   listTables,
   reconnectConnection,
@@ -101,6 +102,18 @@ class Workspace {
     } catch {
       this.marks = {};
     }
+  }
+
+  /** Set one connection's mark and adopt it locally (ADR-0130).
+   *
+   *  Unlike `#loadMarks`, this one lets its failure through: the operator just
+   *  asked for this, so a mark that did not stick has to say so rather than
+   *  silently snapping back on the next read. Re-reads rather than patching
+   *  `marks` in place, because the backend is what decides how a mark is
+   *  trimmed and whether it counts as one at all. */
+  async setMark(id: string, color: string, tag: string): Promise<void> {
+    await setConnectionMark(id, color, tag);
+    await this.#loadMarks();
   }
 
   async selectConnection(id: string): Promise<void> {

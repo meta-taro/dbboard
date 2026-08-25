@@ -12276,3 +12276,61 @@ paid for no reader.
 before merge, via branch protection. Protection rules are repository settings
 rather than tree contents, and this repo has none today; adding the first one
 is a larger decision than closing this hole.
+
+## ADR-0130 — The mark is set from the list, and the colour rides at the head of the row (2026-08-25)
+
+**Status.** Accepted. Amends [ADR-0126](#adr-0126--a-connection-is-marked-by-a-colour-and-a-tag-and-the-tag-is-what-carries-the-meaning-2026-08-24).
+
+**Context.** ADR-0126 gave a connection an identity mark — a colour and a
+short tag — so that "which server am I about to run this on" is answerable
+without reading a hostname. It shipped in v0.11.0 with two properties that
+the first day of use pushed back on.
+
+The mark could only be set from the connection edit form. Changing a colour
+therefore meant opening a dialog that also holds the DSN, the tunnel and the
+MCP permissions, saving it, and closing it — a whole-connection write for a
+decision that is about nothing but appearance. Recolouring a list of six to
+make it scannable is six of those.
+
+And the mark rendered at the *end* of the row, as a pill after the name. A
+pill answers "what is this row" once you are already looking at it. It does
+not help the eye run down a column, because it does not sit in a column: it
+starts wherever the name happens to end.
+
+**Decision.** Two changes, and one consequence for ADR-0126's rule.
+
+* A `set_mark` on `ConnectionAdmin`, reached from a swatch picker opened by
+  right-clicking the row. It writes the colour and the tag, and nothing else.
+  Both halves are validated before either is written, and a mark that already
+  says what it is asked to say does not rewrite the file.
+* The colour renders as a 3px bar at the head of the row. It occupies its
+  width whether or not the row is marked, so marking one does not indent its
+  name relative to its neighbours.
+* `set_mark` accepts a colour with no tag, though the edit form still refuses
+  one (`markNeedsTag`). ADR-0126 forbade the bare swatch because it says
+  nothing to a colour-blind reader or a greyscale screenshot. At the head of a
+  row that already carries the connection's *name*, the meaning is present;
+  the stripe is a second, faster way to find a row that is legible without it.
+  `markFor` is unchanged, so a colour with no tag still shows the colour name
+  where the tag would go, which reads as an invitation to type one.
+
+**Consequences.**
+* The picker is a right-click, which is undiscoverable. It is the same gesture
+  this sidebar already uses for tables, and the edit form still works, so the
+  cost is that the faster path is found rather than announced. A visible
+  affordance would mean an interactive element inside `.nav-row`, which is a
+  `<button>` — invalid, and a larger change to the row than this earns.
+* `ConnectionMark` grew a `dot` flag so the sidebar can drop the swatch inside
+  the pill. Two swatches on one line is not what ADR-0126's invariant was
+  protecting. The connection manager, which has no head-of-row bar, keeps it.
+* The tag input commits on Enter or on dismissal, not per keystroke: every
+  character would otherwise be an atomic file write.
+* Marking is now cheap enough to be casual, so more connections will carry a
+  colour and fewer a considered tag. That is the trade the first property was
+  making in the other direction, and it is the right way round — an unlabelled
+  colour set in one click beats a labelled one nobody sets.
+
+**Not decided here.** Whether the mark should also reach the tab strip and the
+query editor's chrome, where "which server is this" is asked with more at
+stake than in a list. That wants a look at the whole running-query surface,
+not one more render site.

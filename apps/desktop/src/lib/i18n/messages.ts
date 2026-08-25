@@ -289,6 +289,7 @@ export const en = {
   "conn-color-blue": "Blue",
   "conn-color-purple": "Purple",
   "conn-color-pink": "Pink",
+  "mark-picker-title": "Mark { $name }",
   "conn-mark-tag": "Tag",
   "conn-mark-tag-placeholder": "e.g. prod",
   "conn-mark-tag-hint":
@@ -731,6 +732,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-color-blue": "青",
   "conn-color-purple": "紫",
   "conn-color-pink": "桃",
+  "mark-picker-title": "{ $name } の目印",
   "conn-mark-tag": "ラベル",
   "conn-mark-tag-placeholder": "例: 本番",
   "conn-mark-tag-hint":

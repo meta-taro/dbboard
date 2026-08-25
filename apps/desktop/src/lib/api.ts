@@ -346,6 +346,21 @@ export interface ConnectionMark {
 export const connectionMarks = (): Promise<Record<string, ConnectionMark>> =>
   invoke('connection_marks');
 
+// Set one connection's identity mark from the list, with no edit form
+// (ADR-0130). `updateConnection` can write a mark too, but only alongside the
+// whole connection, which means the form has to be open and every secret
+// decision re-made; marking is what an operator does while looking at the
+// sidebar.
+//
+// Blank clears: `color: ''` is "no colour", `tag: ''` is "no tag". Unlike the
+// form, a colour with no tag is accepted — the sidebar paints it as a stripe
+// on a row that already carries the connection's name (ADR-0130).
+export const setConnectionMark = (
+  id: string,
+  color: string,
+  tag: string,
+): Promise<void> => invoke('set_connection_mark', { id, color, tag });
+
 // Ask the SSH server for its host-key fingerprint (`SHA256:…`) so the form can
 // offer it for pinning. Opens a connection to `host`, but never authenticates —
 // see the command's doc comment.

@@ -3,11 +3,17 @@
      A component rather than two `{#if}` blocks because the swatch and the tag
      must always travel together — DESIGN.md calls a row that shows the swatch
      alone a bug, and the only way to keep that true in both the sidebar and
-     the connection manager is to make it impossible to render one half. -->
+     the connection manager is to make it impossible to render one half.
+
+     `dot` drops the swatch only for a caller whose row already paints the
+     colour somewhere else — the sidebar, which now carries it at the head of
+     the row (ADR-0130). Two swatches on one line is not the invariant this
+     component exists to protect. -->
 <script lang="ts">
   import { colorVar, type ConnectionMarkView } from '$lib/connections/marks';
 
-  let { mark }: { mark: ConnectionMarkView } = $props();
+  let { mark, dot = true }: { mark: ConnectionMarkView; dot?: boolean } =
+    $props();
 </script>
 
 <span
@@ -15,7 +21,7 @@
   class:uncoloured={!mark.color}
   style={mark.color ? `--mark: ${colorVar(mark.color)}` : undefined}
 >
-  {#if mark.color}
+  {#if mark.color && dot}
     <!-- Decorative: the tag beside it already says everything the colour does,
          so announcing "red" as well would only add noise. -->
     <span class="dot" aria-hidden="true"></span>

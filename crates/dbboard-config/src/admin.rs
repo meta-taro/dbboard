@@ -870,6 +870,69 @@ impl ConnectionAdmin {
         Ok(())
     }
 
+    /// Set the identity mark of `id` — its colour, its tag, or neither —
+    /// without touching anything else about the connection (ADR-0130).
+    ///
+    /// [`ConnectionAdmin::update`] can already write a mark, but only as part
+    /// of a whole connection: the caller must hand back the kind, the tunnel
+    /// and the MCP permissions, which means the edit form has to be open. The
+    /// mark is the one field an operator changes while *looking at the list*,
+    /// so it gets a mutation of its own.
+    ///
+    /// A colour with no tag is accepted here, which the form refuses. The rule
+    /// in ADR-0126 was aimed at a chip that shows a bare swatch and says
+    /// nothing; the sidebar paints this colour as a stripe down the edge of a
+    /// row that already carries the connection's name, so the meaning is
+    /// beside it either way (ADR-0130).
+    ///
+    /// Blank and whitespace read as "unmarked" for both halves, the same way
+    /// [`ConnectionAdmin::add`] and [`ConnectionAdmin::update`] read them, so
+    /// the picker clears a mark by sending empty strings.
+    ///
+    /// Setting the mark an entry already carries is not an error and does not
+    /// rewrite the file — reopening the picker and clicking the current swatch
+    /// is a normal thing to do.
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::NotFound`] if no entry has id `id`.
+    /// - [`ConfigError::UnknownColor`] for a colour outside
+    ///   [`CONNECTION_COLORS`](crate::CONNECTION_COLORS).
+    /// - [`ConfigError::TagTooLong`] for a tag past
+    ///   [`CONNECTION_TAG_MAX_CHARS`].
+    /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML write.
+    ///   The in-memory mark is only adopted once the file is on disk, so a
+    ///   failed save leaves the store as it was.
+    pub fn set_mark(
+        &mut self,
+        id: &str,
+        color: Option<String>,
+        tag: Option<String>,
+    ) -> Result<(), ConfigError> {
+        let index = self
+            .find_index(id)
+            .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
+
+        // Both validated before either is written: a bad tag must not leave a
+        // half-applied mark behind, and neither is worth a partial save.
+        let color = normalize_color(color)?;
+        let tag = normalize_tag(tag)?;
+
+        let entry = &self.file.connections[index];
+        if entry.color == color && entry.tag == tag {
+            return Ok(());
+        }
+
+        let mut new_file = self.file.clone();
+        new_file.connections[index].color = color;
+        new_file.connections[index].tag = tag;
+
+        save_atomic(&self.path, &new_file)?;
+        self.file = new_file;
+
+        Ok(())
+    }
+
     /// Encrypt the entire connection store — every entry plus every
     /// secret it references — into a passphrase-protected bundle blob
     /// (ADR-0038, slice b). The returned bytes are written verbatim to a
@@ -4225,6 +4288,180 @@ mod tests {
 
         assert!(!path.exists(), "a no-op move must not touch the file");
         assert_eq!(ids(&admin), ["a", "b", "c"]);
+    }
+
+    // --- Identity mark, set on its own (ADR-0130) ---------------------
+
+    /// The mark of one entry, as `(color, tag)`, for terse assertions.
+    fn mark_of<'a>(admin: &'a ConnectionAdmin, id: &str) -> (Option<&'a str>, Option<&'a str>) {
+        let e = admin
+            .entries()
+            .iter()
+            .find(|e| e.id == id)
+            .expect("entry exists");
+        (e.color.as_deref(), e.tag.as_deref())
+    }
+
+    #[test]
+    fn set_mark_writes_both_halves() {
+        let (_dir, mut admin) = three_in_order();
+
+        admin
+            .set_mark("b", Some("red".into()), Some("prod".into()))
+            .expect("set a mark");
+
+        assert_eq!(mark_of(&admin, "b"), (Some("red"), Some("prod")));
+    }
+
+    /// The point of the sidebar picker: one click paints the row, with no tag
+    /// typed. The row's own name carries the meaning a bare chip could not
+    /// (ADR-0130 amending ADR-0126).
+    #[test]
+    fn set_mark_accepts_a_colour_with_no_tag() {
+        let (_dir, mut admin) = three_in_order();
+
+        admin
+            .set_mark("a", Some("teal".into()), None)
+            .expect("colour alone is a mark");
+
+        assert_eq!(mark_of(&admin, "a"), (Some("teal"), None));
+    }
+
+    #[test]
+    fn set_mark_with_both_blank_clears_the_mark() {
+        let (_dir, mut admin) = three_in_order();
+        admin
+            .set_mark("a", Some("teal".into()), Some("prod".into()))
+            .expect("mark it");
+
+        admin.set_mark("a", None, None).expect("clear it");
+
+        assert_eq!(mark_of(&admin, "a"), (None, None));
+    }
+
+    /// Blank and whitespace mean "unmarked", the same reading `add` and
+    /// `update` give them — the picker sends `""` for "no colour".
+    #[test]
+    fn set_mark_reads_blanks_as_unmarked() {
+        let (_dir, mut admin) = three_in_order();
+        admin
+            .set_mark("a", Some("teal".into()), Some("prod".into()))
+            .expect("mark it");
+
+        admin
+            .set_mark("a", Some("   ".into()), Some(String::new()))
+            .expect("blank clears");
+
+        assert_eq!(mark_of(&admin, "a"), (None, None));
+    }
+
+    #[test]
+    fn set_mark_persists_so_reopen_reads_it() {
+        let (dir, mut admin) = three_in_order();
+        admin
+            .set_mark("c", Some("purple".into()), Some("staging".into()))
+            .expect("set");
+
+        let path = dir.path().join("connections.toml");
+        let reopen_secrets = Arc::new(InMemorySecretStore::new());
+        let reopened =
+            ConnectionAdmin::open(path, reopen_secrets as Arc<dyn SecretStore>).expect("reopen");
+        assert_eq!(mark_of(&reopened, "c"), (Some("purple"), Some("staging")));
+    }
+
+    #[test]
+    fn set_mark_unknown_id_returns_not_found() {
+        let (_dir, mut admin) = three_in_order();
+        let err = admin
+            .set_mark("missing", Some("red".into()), None)
+            .expect_err("missing id must error");
+        match &err {
+            ConfigError::NotFound(id) => assert_eq!(id, "missing"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    /// A colour outside the palette is refused rather than stored, exactly as
+    /// on `add`: a `--conn-<unknown>` custom property paints nothing, and an
+    /// invisible mark is worse than a refused one.
+    #[test]
+    fn set_mark_refuses_a_colour_outside_the_palette() {
+        let (_dir, mut admin) = three_in_order();
+        let err = admin
+            .set_mark("a", Some("chartreuse".into()), None)
+            .expect_err("unknown colour must error");
+        match &err {
+            ConfigError::UnknownColor { name } => assert_eq!(name, "chartreuse"),
+            other => panic!("expected UnknownColor, got {other:?}"),
+        }
+        assert_eq!(mark_of(&admin, "a"), (None, None), "nothing was written");
+    }
+
+    #[test]
+    fn set_mark_refuses_an_over_long_tag() {
+        let (_dir, mut admin) = three_in_order();
+        let long = "x".repeat(CONNECTION_TAG_MAX_CHARS + 1);
+        let err = admin
+            .set_mark("a", None, Some(long.clone()))
+            .expect_err("over-long tag must error");
+        match &err {
+            ConfigError::TagTooLong { tag, max } => {
+                assert_eq!(
+                    (tag.as_str(), *max),
+                    (long.as_str(), CONNECTION_TAG_MAX_CHARS)
+                );
+            }
+            other => panic!("expected TagTooLong, got {other:?}"),
+        }
+        assert_eq!(mark_of(&admin, "a"), (None, None), "nothing was written");
+    }
+
+    /// Setting the mark an entry already carries must not rewrite the file:
+    /// the picker re-sends the current colour whenever the operator reopens it
+    /// and clicks the same swatch.
+    #[test]
+    fn set_mark_to_what_it_already_is_does_not_rewrite_the_file() {
+        let (dir, mut admin) = three_in_order();
+        admin
+            .set_mark("b", Some("red".into()), Some("prod".into()))
+            .expect("set");
+
+        let path = dir.path().join("connections.toml");
+        std::fs::remove_file(&path).expect("clear the file");
+
+        admin
+            .set_mark("b", Some("red".into()), Some("prod".into()))
+            .expect("re-setting the same mark is not an error");
+
+        assert!(!path.exists(), "a no-op set must not touch the file");
+    }
+
+    /// The mark is the only thing that moves. Nothing about the connection
+    /// itself — least of all its keyring refs — is touched.
+    #[test]
+    fn set_mark_leaves_the_rest_of_the_entry_alone() {
+        let (_dir, mut admin) = three_in_order();
+        let before = admin
+            .entries()
+            .iter()
+            .find(|e| e.id == "b")
+            .expect("entry")
+            .clone();
+
+        admin
+            .set_mark("b", Some("green".into()), Some("dev".into()))
+            .expect("set");
+
+        let after = admin
+            .entries()
+            .iter()
+            .find(|e| e.id == "b")
+            .expect("entry")
+            .clone();
+
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.kind, before.kind);
+        assert_eq!(ids(&admin), ["a", "b", "c"], "order is untouched");
     }
 
     // --- Bundle export / import (ADR-0038 slice b) --------------------

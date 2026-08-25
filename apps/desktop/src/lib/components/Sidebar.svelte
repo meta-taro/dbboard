@@ -5,13 +5,18 @@
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import ConnectionManager from './ConnectionManager.svelte';
   import ConnectionMark from './ConnectionMark.svelte';
+  import MarkPicker from './MarkPicker.svelte';
   import { tableMenuActions } from '$lib/sidebar/menu';
   import { connectionTooltip } from '$lib/connections/label';
-  import { markFor } from '$lib/connections/marks';
+  import { markFor, isConnectionColor, colorVar } from '$lib/connections/marks';
 
   let query = $state('');
   let managerOpen = $state(false);
   let menu = $state<{ x: number; y: number; table: TableInfo } | null>(null);
+  // The mark picker, opened on a connection row rather than a table row.
+  let markMenu = $state<{ x: number; y: number; id: string; name: string } | null>(
+    null,
+  );
   // null = not searching (show the full table list); an array = search results.
   let matches = $state<SchemaMatch[] | null>(null);
   let searching = $state(false);
@@ -59,6 +64,33 @@
       !!workspace.selectedTable &&
       workspace.key(workspace.selectedTable) === workspace.key(t)
     );
+  }
+
+  function openMarkPicker(e: MouseEvent, id: string, name: string) {
+    e.preventDefault();
+    markMenu = { x: e.clientX, y: e.clientY, id, name };
+  }
+
+  /** The colour currently stored for `id`, or null. Read raw rather than
+   *  through `markFor`, which substitutes the colour name for a missing tag —
+   *  useful for rendering, wrong for a picker that has to show what is set. */
+  function markColor(id: string) {
+    const c = workspace.marks[id]?.color ?? '';
+    return isConnectionColor(c) ? c : null;
+  }
+
+  function markTag(id: string): string {
+    return workspace.marks[id]?.tag ?? '';
+  }
+
+  // Lets the failure through rather than swallowing it: the operator just
+  // clicked a colour, so a mark that did not stick has to say so.
+  async function applyMark(id: string, color: string, tag: string) {
+    try {
+      await workspace.setMark(id, color, tag);
+    } catch (e) {
+      workspace.error = String(e);
+    }
   }
 
   function openMenu(e: MouseEvent, table: TableInfo) {
@@ -133,8 +165,22 @@
             class="nav-row conn"
             class:active={workspace.connectionId === c.id}
             onclick={() => selectConnection(c.id)}
+            oncontextmenu={(e) => openMarkPicker(e, c.id, c.name)}
             title={connectionTooltip(c)}
           >
+            <!-- The colour rides at the head of the row, not beside the name:
+                 down a list of connections the left edge is the one column
+                 the eye can scan without reading (ADR-0130). The bar is
+                 rendered even when unmarked, transparent, so marking a row
+                 does not shift its name sideways. -->
+            <span
+              class="mark-bar"
+              class:on={!!markColor(c.id)}
+              style={markColor(c.id)
+                ? `--mark: ${colorVar(markColor(c.id)!)}`
+                : undefined}
+              aria-hidden="true"
+            ></span>
             {@render dbIcon()}
             <span class="nav-name">{c.name}</span>
             <!-- The mark takes the kind's place rather than sitting beside
@@ -142,7 +188,8 @@
                  the question being answered here. The kind is still in the
                  tooltip. -->
             {#if mark}
-              <ConnectionMark {mark} />
+              <!-- The head of the row is the swatch now. -->
+              <ConnectionMark {mark} dot={false} />
             {:else}
               <span class="nav-meta">{c.kind}</span>
             {/if}
@@ -247,6 +294,18 @@
     y={menu.y}
     items={menuItems(menu.table)}
     onClose={() => (menu = null)}
+  />
+{/if}
+
+{#if markMenu}
+  <MarkPicker
+    x={markMenu.x}
+    y={markMenu.y}
+    name={markMenu.name}
+    color={markColor(markMenu.id)}
+    tag={markTag(markMenu.id)}
+    onApply={(color, tag) => applyMark(markMenu!.id, color, tag)}
+    onClose={() => (markMenu = null)}
   />
 {/if}
 
@@ -392,6 +451,23 @@
     background: var(--accent-weak);
     color: var(--text-accent);
     box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  /* The identity colour, at the head of the row (ADR-0130).
+     Always occupies its 3px, coloured or not: a bar that appears only on
+     marked rows would indent their names relative to the rest and make the
+     list look ragged. The row's own selected-state bar sits further left, at
+     the very edge, as an inset shadow — this one starts inside the padding so
+     the two never overlap. */
+  .mark-bar {
+    flex: none;
+    width: 3px;
+    height: 15px;
+    border-radius: 2px;
+    background: transparent;
+  }
+  .mark-bar.on {
+    background: var(--mark);
   }
 
   .icon {

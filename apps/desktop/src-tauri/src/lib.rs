@@ -470,6 +470,7 @@ pub fn run() {
             update_connection,
             delete_connection,
             move_connection,
+            set_connection_mark,
             duplicate_connection,
             repair_connection_ref,
             foreign_connection_refs,
@@ -1641,6 +1642,31 @@ fn move_connection(
 ) -> Result<(), String> {
     let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
     admin.move_to(&id, index).map_err(|e| e.to_string())
+}
+
+/// Set one connection's identity mark from the list, with no edit form
+/// (ADR-0130).
+///
+/// [`update_connection`] can write a mark too, but only alongside the whole
+/// connection — the kind, the tunnel, the MCP permissions — which means the
+/// form has to be open and every secret decision re-made. Marking is the one
+/// thing an operator does while looking at the sidebar, so it gets a command
+/// that carries only what it changes.
+///
+/// Blank strings clear: `color: ""` is "no colour", `tag: ""` is "no tag", and
+/// both blank leaves the connection unmarked. No adapter is evicted — nothing
+/// about how the connection dials changed, only how it looks.
+#[tauri::command]
+fn set_connection_mark(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    color: String,
+    tag: String,
+) -> Result<(), String> {
+    let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    admin
+        .set_mark(&id, Some(color), Some(tag))
+        .map_err(|e| e.to_string())
 }
 
 /// Drop the cached adapter for `id` and open a fresh connection.
