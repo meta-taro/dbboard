@@ -12591,3 +12591,69 @@ that reads as "try again".
 **Not decided here.** Editing or deleting a connection over MCP. Registration
 is additive and the worst case is an entry nobody uses; the other two can
 destroy something the operator set up by hand, and no one has asked for them.
+
+## ADR-0135 — An update that starts is written down, so the launch after a failed one can say why (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0067](#adr-0067--desktop-auto-update-tauri-plugin-updater--a-ci-assembled-latestjson-v040).
+
+**Context.** A laptop on 0.10.0 took the update to 0.11.0. The download ran,
+dbboard quit, and nothing came back. Launched by hand it was 0.10.0 again,
+with no mention anywhere that an update had been attempted at all — and the
+notice offering 0.11.0 was waiting again, unchanged, as if nothing had
+happened.
+
+That silence is the defect, not the failed install. ADR-0067 hands control to
+an installer that replaces the binary and relaunches it; when the relaunch
+does not happen, the process that knew an update was in flight is gone. From
+the outside a stalled update and an update that was never started look
+identical, and the only move the app offers is the one that just failed.
+
+Why the install itself failed is not settled and is not settled here. On
+Windows the plausible causes (an installer waiting on a UAC prompt nobody saw,
+an antivirus holding the new binary, a running process pinning the old one)
+are all outside this app and mostly outside our reach. What is inside our
+reach is whether the person is told.
+
+**Decision.** Write the attempt down before handing over, read it back on the
+next launch, and say so when the running build is still the one we were
+updating away from.
+
+`crates/dbboard-config/src/update_attempt.rs` holds a one-line TOML file next
+to the other config, written by `record` and consumed by `take`. The frontend
+calls `record` immediately before `downloadAndInstall`, because after that
+call there may be no line left to run, and calls `take` at startup ahead of
+the update check.
+
+Three choices in `take` are deliberate:
+
+* **Only the version we left proves nothing landed.** If the running build is
+  the target, the update worked. If it is neither — the person installed
+  something else in between — *something* landed, and claiming a failure would
+  be an accusation they cannot check. Both stay quiet.
+* **The record is consumed whether or not it reports.** A notice that repeats
+  on every launch is noise, and the fact it describes is a single past event.
+* **An unreadable or unknown-version file is dropped, not raised.** It will
+  not become readable later, and a breadcrumb is never worth failing a launch
+  over — the same posture `ui-settings.toml` takes.
+
+The notice carries the download page rather than a release tag, and offers it
+as selectable text plus a copy button. There is no external-browser plugin in
+this app, and adding one to open a link is a dependency and a new surface for
+a job the clipboard already does.
+
+**Consequences.**
+* The failure is still a failure. This does not install anything the installer
+  could not; it replaces silence with a sentence and an address.
+* The report arrives one launch late, which is the earliest it can arrive: the
+  only run that knows the update stalled is the one after it.
+* A person who takes the manual installer gets no notice on the next launch,
+  because the build moved. That is correct — they already fixed it.
+* Recording is best-effort. If the file cannot be written the update still
+  proceeds; losing the diagnostic is cheaper than refusing the install.
+* Nothing is reported home. The file is local, holds two version strings, and
+  is deleted as it is read.
+
+**Not decided here.** Why the install stalls on that laptop. Two facts would
+narrow it — whether the updater's temp directory survives, and whether the
+antivirus quarantine names dbboard — and neither is available from inside the
+app.

@@ -19,6 +19,7 @@ mod dump;
 mod restore;
 
 use dbboard_config::secrets::{KeyringStore, SecretStore};
+use dbboard_config::update_attempt;
 use dbboard_config::{
     AnnotationsAdmin, ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKind,
     ConnectionKindDraft, ConnectionKindEditDraft, FirestoreCredentialField, ImportMode,
@@ -496,7 +497,9 @@ pub fn run() {
             get_ui_locale,
             set_ui_locale,
             report_ui_command_result,
-            update_opt_out
+            update_opt_out,
+            record_update_attempt,
+            take_stalled_update
         ])
         // Start watching `ui-settings.toml` and `ui-command.toml` once state
         // is managed: every path comes from the service, so a watcher and the
@@ -549,6 +552,35 @@ fn update_opt_out() -> bool {
 /// client's `opt_out`).
 fn opt_out(value: Option<&str>) -> bool {
     matches!(value, Some(v) if !v.is_empty())
+}
+
+/// The running build, as compiled in. The updater plugin reports the same
+/// string as `currentVersion` (both come from the workspace version, which
+/// `scripts/release-cut.mjs` moves in one step), so a breadcrumb written by
+/// one build is always comparable with the build that reads it back.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Note that an update to `to` is about to be installed.
+///
+/// Called immediately before the installer takes over, because from that
+/// point on this process may never run another line: ADR-0067 hands control
+/// to an installer that replaces the binary and relaunches it. When the
+/// relaunch does not happen, this file is the only trace left.
+#[tauri::command]
+fn record_update_attempt(to: String) -> Result<(), String> {
+    let path = update_attempt::default_update_attempt_path().map_err(|e| e.to_string())?;
+    update_attempt::record(&path, APP_VERSION, &to).map_err(|e| e.to_string())
+}
+
+/// Report an update that was started and did not land, once.
+///
+/// Returns `None` when there is nothing to say — no attempt, or one that
+/// finished. Consumes the record either way, so the notice appears on the
+/// launch after the failure and not on every launch after that.
+#[tauri::command]
+fn take_stalled_update() -> Result<Option<update_attempt::StalledUpdate>, String> {
+    let path = update_attempt::default_update_attempt_path().map_err(|e| e.to_string())?;
+    Ok(update_attempt::take(&path, APP_VERSION))
 }
 
 /// Run a single read-only statement. Read-only is engine-enforced inside

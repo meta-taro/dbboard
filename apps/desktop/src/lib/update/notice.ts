@@ -103,3 +103,18 @@ export function downloadPercent(state: DownloadState): number | null {
   const pct = Math.round((state.downloaded / state.total) * 100);
   return Math.min(100, Math.max(0, pct));
 }
+
+/** Where to fetch an installer by hand when the in-place update does not
+ *  land. The download page rather than a release tag: it always points at
+ *  the current build, so it cannot go stale the way a pinned tag would. */
+export const DOWNLOAD_PAGE_URL = 'https://meta-taro.github.io/dbboard/';
+
+/** An update that was started on a previous run and never completed — the
+ *  installer took over and the app came back as the old build. Mirrors
+ *  `StalledUpdate` in `crates/dbboard-config/src/update_attempt.rs`. */
+export interface StalledUpdate {
+  /** The version still running: the one the update meant to replace. */
+  from: string;
+  /** The version that was being installed. */
+  to: string;
+}

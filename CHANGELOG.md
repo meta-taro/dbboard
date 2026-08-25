@@ -113,6 +113,16 @@ public API is the HTTP contract in
   conflict. The duplicate-id guard had the same blind spot and let an id
   already taken on disk through. Every write now re-reads the file first. See
   [ADR-0133](docs/decisions.md).
+- **An update that does not install now says so on the next launch.** On one
+  laptop the 0.10.0 → 0.11.0 update downloaded, dbboard quit, and nothing came
+  back; started again by hand it was 0.10.0 with no sign anything had been
+  attempted, and the same update was offered again. The attempt is now written
+  down before the installer is handed control, and read back at startup: if the
+  running build is still the one being replaced, the notice says the last update
+  did not finish and offers the download page to install by hand. It reports
+  once, is read before the update check so it still appears with no network, and
+  says nothing when the update did land. Why that install stalls is a separate
+  question and is not answered here. See [ADR-0135](docs/decisions.md).
 
 ## [0.11.0] — 2026-08-24 — Connection repair and duplication
 
