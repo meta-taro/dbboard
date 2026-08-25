@@ -37,6 +37,7 @@ pub mod annotations;
 pub mod bundle;
 pub mod dsn;
 pub mod error;
+pub mod mark;
 pub mod secrets;
 pub mod secure_fs;
 pub mod store;
@@ -67,6 +68,9 @@ pub use bundle::{
 };
 pub use dsn::{parse_dsn, with_password, DsnParts};
 pub use error::ConfigError;
+pub use mark::{
+    is_connection_color, is_connection_tag, CONNECTION_COLORS, CONNECTION_TAG_MAX_CHARS,
+};
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{
     default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind,

@@ -190,6 +190,16 @@ export interface ConnectionForm extends DsnParts {
   // Prefilled on edit for the same reason `mcp_write` is: a box that opened
   // blank would send "" on the next save and quietly drop the alias.
   mcp_alias: string;
+  // The identity colour, as one of `CONNECTION_COLORS` (issue #192), or
+  // '' for no mark. Prefilled on edit for the same reason the alias is: a
+  // picker that always opened on "no colour" would clear the mark on the
+  // next save.
+  color: string;
+  // The identity tag the operator writes — `prod`, `本番`, `staging` — or ''
+  // for no mark (ADR-0126). Prefilled for the same reason the colour is, and
+  // more urgently: the tag is the half a reader actually reads, so losing it
+  // on save leaves a coloured row that no longer says what it is coloured for.
+  tag: string;
 }
 
 // Non-secret SSH prefill the backend returns alongside the edit fields. Secrets
@@ -255,6 +265,8 @@ export type EditFields = (
   dsn?: DsnPrefill | null;
   mcp_write?: boolean;
   mcp_alias?: string | null;
+  color?: string | null;
+  tag?: string | null;
 };
 
 /** The non-secret half of a stored DSN, split apart by the backend so the edit
@@ -310,6 +322,8 @@ export function emptyForm(): ConnectionForm {
     ssh_had_password: false,
     mcp_write: false,
     mcp_alias: '',
+    color: '',
+    tag: '',
   };
 }
 
@@ -391,6 +405,11 @@ export function formForEdit(id: string, name: string, fields: EditFields): Conne
         // `null` (no alias stored) and an older backend that omits the key both
         // mean the same thing to the form: an empty box.
         mcp_alias: fields.mcp_alias ?? '',
+        // Same reading as the alias: `null` and a key an older backend
+        // never sent both mean "unmarked", which is an empty picker and an
+        // empty box.
+        color: fields.color ?? '',
+        tag: fields.tag ?? '',
       },
       fields.ssh,
     ),

@@ -7,7 +7,61 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — A connection list you can steer
+
+### Added
+
+- **The connection list keeps the order you put it in.** Entries were
+  rendered in the order they happened to be added, so the ones opened every
+  day sat wherever they had landed. A row is now moved by dragging its handle, or
+  by focusing the handle and pressing `↑`/`↓`. The order is the order of
+  `[[connections]]` in the file: no new key, older builds read it unchanged,
+  and it travels inside a `.dbbx` bundle for free. The handle is disabled
+  while a filter is hiding rows — "below the next visible row" is a different
+  feature, and moving a connection past something the operator cannot see is
+  a silent wrong answer. The drag is built on pointer events rather than the
+  browser's own drag-and-drop, so the window keeps the OS-level drop that
+  dropping a bundle onto it will need. See
+  [ADR-0127](docs/decisions.md) and [ADR-0128](docs/decisions.md).
+- **A connection can be found by typing instead of by scanning.** The
+  manager's list had no way in but the eye, and the app's only search box
+  filters tables and columns, one panel below. Name and id are matched, every
+  typed word having to match, so a second word narrows. The kind is
+  deliberately not matched: typing `my` to reach "my shop" would otherwise
+  return every MySQL row, which is the opposite of narrowing. The id is
+  matched because it is the one handle that can be pasted in from a log.
+  Nothing is persisted — this is a way of finding one row, not a saved view.
+- **A connection can be marked with a colour and a short tag.** "Which server
+  am I about to run this against?" had only the connection's name to answer
+  it, and names are chosen to be descriptive rather than distinguishable at a
+  glance: a production store and the copy made to repair it read as the same
+  thing when you are already looking at a result grid. The mark is two halves
+  and both are required together — a colour from a fixed palette of eight,
+  with a value in every theme, and a tag of at most twelve characters that
+  the operator writes (`prod`, `本番`, `検証環境`). The tag is the half that
+  carries the meaning: colour alone is lost by a colour-blind reader, by a
+  greyscale screenshot pasted into an issue, and by a screen reader alike. A
+  duplicate inherits neither half, because the mark exists to tell production
+  from a copy of it. See [ADR-0126](docs/decisions.md).
+- **A mark can be set from the list, and the colour now sits at the head of
+  the row.** Marking was only reachable from the edit form, which also holds
+  the DSN, the tunnel and the AI-agent permissions: recolouring six
+  connections meant six whole-connection saves for a decision about nothing
+  but appearance. Right-clicking a row in the sidebar now opens a swatch
+  grid — one click paints the row, and the tag is typed beside it. The
+  colour renders as a bar at the left edge rather than as a pill after the
+  name, because down a list the left edge is the one column the eye can scan
+  without reading; the bar holds its width on unmarked rows so that marking
+  one does not shift its name sideways. A colour with no tag is accepted
+  here, unlike in the form, since the bar sits on a row that already carries
+  the connection's name. See [ADR-0130](docs/decisions.md).
+
+### Fixed
+
+- **The reorder handle no longer offers a drag it will refuse.** While a
+  filter was hiding rows the handle correctly declined to move anything, but
+  still brightened under the pointer and answered a press with a closed-fist
+  cursor. Both were single-class CSS rules that outranked the disabled state.
 
 ## [0.11.0] — 2026-08-24 — Connection repair and duplication
 

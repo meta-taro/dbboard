@@ -10,6 +10,7 @@
 //! `Err` to the frontend as JSON; the frontend only needs the message,
 //! not the typed variant.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -79,6 +80,48 @@ async fn list_connections(
         .list_connections()
         .await
         .map_err(|e| e.to_string())
+}
+
+/// The identity mark of every marked connection, keyed by id (ADR-0126).
+///
+/// Both halves in one call, because they are rendered together: a swatch with
+/// no tag beside it is the failure mode the tag exists to prevent, and two
+/// commands would let a caller fetch one without noticing the other.
+///
+/// Separate from [`list_connections`] rather than a field on it, because that
+/// projection is the *agent's* view of a connection and is deliberately narrow:
+/// a mark is for a human eye, so it never needed to cross into `dbboard-mcp`
+/// (issue #0026, "Not in scope here"). Reading it straight off the admin also
+/// means the list and the marks cannot disagree after an edit.
+///
+/// Unmarked connections are absent rather than present-with-nulls: "no key" and
+/// "no mark" are the same statement, and the caller has to handle a missing id
+/// anyway. A connection with only one half present *is* marked, and appears.
+#[derive(Debug, Clone, serde::Serialize)]
+struct ConnectionMark {
+    color: Option<String>,
+    tag: Option<String>,
+}
+
+#[tauri::command]
+fn connection_marks(
+    state: tauri::State<'_, AppState>,
+) -> Result<BTreeMap<String, ConnectionMark>, String> {
+    let admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    Ok(admin
+        .entries()
+        .iter()
+        .filter(|e| e.color.is_some() || e.tag.is_some())
+        .map(|e| {
+            (
+                e.id.clone(),
+                ConnectionMark {
+                    color: e.color.clone(),
+                    tag: e.tag.clone(),
+                },
+            )
+        })
+        .collect())
 }
 
 /// Tables for one connection. Returns the full [`TableInfo`] (schema +
@@ -421,10 +464,13 @@ pub fn run() {
             update_row,
             config_path,
             connection_edit_fields,
+            connection_marks,
             probe_ssh_host_key,
             add_connection,
             update_connection,
             delete_connection,
+            move_connection,
+            set_connection_mark,
             duplicate_connection,
             repair_connection_ref,
             foreign_connection_refs,
@@ -911,6 +957,18 @@ fn to_ssh_edit_field(ssh: SshEditInput) -> SshEditField {
     })
 }
 
+/// The identity mark as it arrives from a caller (ADR-0126).
+///
+/// One argument rather than two because the halves are never meaningfully
+/// separate: a colour with no tag is refused by the form and rendered as the
+/// colour's own name everywhere else, so nothing downstream wants one without
+/// having looked at the other.
+#[derive(Debug, Default)]
+struct MarkInput {
+    color: Option<String>,
+    tag: Option<String>,
+}
+
 fn to_add_draft(
     id: String,
     name: String,
@@ -918,6 +976,7 @@ fn to_add_draft(
     ssh: Option<SshInput>,
     mcp_write: bool,
     mcp_alias: Option<String>,
+    mark: MarkInput,
 ) -> ConnectionDraft {
     let kind = match kind {
         KindInput::Turso { path } => ConnectionKindDraft::Turso { path },
@@ -976,6 +1035,8 @@ fn to_add_draft(
     ConnectionDraft {
         mcp_write,
         mcp_alias,
+        color: mark.color,
+        tag: mark.tag,
         id,
         name,
         kind,
@@ -1021,6 +1082,7 @@ fn to_edit_draft(
     ssh: SshEditInput,
     mcp_write: Option<bool>,
     mcp_alias: Option<String>,
+    mark: MarkInput,
 ) -> ConnectionEditDraft {
     let kind = match kind {
         KindEditInput::Turso { path } => ConnectionKindEditDraft::Turso { path },
@@ -1099,6 +1161,8 @@ fn to_edit_draft(
     ConnectionEditDraft {
         mcp_write,
         mcp_alias,
+        color: mark.color,
+        tag: mark.tag,
         name,
         kind,
         ssh: to_ssh_edit_field(ssh),
@@ -1231,6 +1295,13 @@ struct EditFieldsResponse {
     /// box: an alias input that always opened blank would send `Some("")` on
     /// the next save and silently drop the alias the operator set.
     mcp_alias: Option<String>,
+    /// The identity colour, or `None` when the connection is unmarked (issue
+    /// #192). Sent back for the same reason as the alias: a picker that always
+    /// opened on "no colour" would clear the mark on the next save.
+    color: Option<String>,
+    /// The identity tag, or `None` when the connection is untagged (ADR-0126).
+    /// Sent back for the same reason as the colour.
+    tag: Option<String>,
 }
 
 /// Project a stored [`dbboard_config::SshTunnelToml`] into its non-secret
@@ -1280,6 +1351,8 @@ fn connection_edit_fields(
     let ssh = entry.ssh.as_ref().map(ssh_edit_fields);
     let mcp_write = entry.mcp_write;
     let mcp_alias = entry.mcp_alias.clone();
+    let color = entry.color.clone();
+    let tag = entry.tag.clone();
     let dto = match &entry.kind {
         ConnectionKind::Turso { path } => EditFieldsDto::Turso { path: path.clone() },
         ConnectionKind::TursoRemote { url, .. } => EditFieldsDto::TursoRemote { url: url.clone() },
@@ -1343,6 +1416,8 @@ fn connection_edit_fields(
         dsn,
         mcp_write,
         mcp_alias,
+        color,
+        tag,
     })
 }
 
@@ -1374,6 +1449,13 @@ async fn probe_ssh_host_key(host: String, port: u16) -> Result<String, String> {
 /// `mcp_alias` is optional for the mirror-image reason (ADR-0088): omitting it
 /// leaves the connection's real id and name visible to agents, which is what a
 /// caller with no alias input meant.
+///
+/// `color` and `tag` are optional the same way (ADR-0126): a caller with no
+/// picker and no tag input leaves the connection unmarked rather than guessing
+/// a mark for it.
+// The parameter list *is* the wire contract; see `update_connection` below for
+// why it is allowed to grow rather than being folded into a payload struct.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn add_connection(
     state: tauri::State<'_, AppState>,
@@ -1383,6 +1465,8 @@ fn add_connection(
     ssh: Option<SshInput>,
     mcp_write: Option<bool>,
     mcp_alias: Option<String>,
+    color: Option<String>,
+    tag: Option<String>,
 ) -> Result<(), String> {
     let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
     admin
@@ -1393,6 +1477,7 @@ fn add_connection(
             ssh,
             mcp_write.unwrap_or(false),
             mcp_alias,
+            MarkInput { color, tag },
         ))
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -1412,7 +1497,10 @@ fn add_connection(
 /// whatever is stored, so a caller with no toggle cannot revoke a permission
 /// it never showed. `mcp_alias` follows the same rule with one extra state
 /// (ADR-0088): omitted keeps, a filled string sets, and an empty string — what
-/// an emptied text input sends — clears the alias.
+/// an emptied text input sends — clears the alias. `color` has the same three
+/// states (issue #192), with the empty string sent by the picker's "no colour"
+/// option, and `tag` the same again with the empty string sent by an emptied
+/// tag input (ADR-0126).
 // The parameter list *is* the wire contract: each name is a key the webview
 // sends. Folding them into one payload struct would rename every key for a
 // lint, so the arity is allowed to grow with the form instead.
@@ -1427,6 +1515,8 @@ async fn update_connection(
     keep_password: Option<bool>,
     mcp_write: Option<bool>,
     mcp_alias: Option<String>,
+    color: Option<String>,
+    tag: Option<String>,
 ) -> Result<(), String> {
     {
         let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
@@ -1440,7 +1530,17 @@ async fn update_connection(
             kind
         };
         admin
-            .update(&id, to_edit_draft(name, kind, ssh, mcp_write, mcp_alias))
+            .update(
+                &id,
+                to_edit_draft(
+                    name,
+                    kind,
+                    ssh,
+                    mcp_write,
+                    mcp_alias,
+                    MarkInput { color, tag },
+                ),
+            )
             .map_err(|e| e.to_string())?;
     } // drop the guard before awaiting — keeps the command future Send.
     state.service.invalidate(&id).await;
@@ -1526,6 +1626,47 @@ async fn delete_connection(state: tauri::State<'_, AppState>, id: String) -> Res
     }
     state.service.invalidate(&id).await;
     Ok(())
+}
+
+/// Move a connection to position `index` in the stored order (issue #192).
+///
+/// The order of `[[connections]]` is the order the sidebar and the manager
+/// list render, so this is the whole of "put my connections in the order I
+/// work in". No adapter is evicted: nothing about how a connection dials
+/// changed, only where it sits in the list.
+#[tauri::command]
+fn move_connection(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    index: usize,
+) -> Result<(), String> {
+    let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    admin.move_to(&id, index).map_err(|e| e.to_string())
+}
+
+/// Set one connection's identity mark from the list, with no edit form
+/// (ADR-0130).
+///
+/// [`update_connection`] can write a mark too, but only alongside the whole
+/// connection — the kind, the tunnel, the MCP permissions — which means the
+/// form has to be open and every secret decision re-made. Marking is the one
+/// thing an operator does while looking at the sidebar, so it gets a command
+/// that carries only what it changes.
+///
+/// Blank strings clear: `color: ""` is "no colour", `tag: ""` is "no tag", and
+/// both blank leaves the connection unmarked. No adapter is evicted — nothing
+/// about how the connection dials changed, only how it looks.
+#[tauri::command]
+fn set_connection_mark(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    color: String,
+    tag: String,
+) -> Result<(), String> {
+    let mut admin = state.admin.lock().map_err(|_| lock_poisoned())?;
+    admin
+        .set_mark(&id, Some(color), Some(tag))
+        .map_err(|e| e.to_string())
 }
 
 /// Drop the cached adapter for `id` and open a fresh connection.
@@ -1949,7 +2090,7 @@ mod tests {
     use super::{
         graft_url, none_if_blank, secret_field, ssh_edit_fields, to_add_draft, to_edit_draft,
         to_ssh_draft, to_ssh_edit_field, EditFieldsDto, ImportReportDto, KindEditInput, KindInput,
-        RefusedEntryDto, SshAuthEditInput, SshAuthFieldsDto, SshAuthInput, SshEditInput,
+        MarkInput, RefusedEntryDto, SshAuthEditInput, SshAuthFieldsDto, SshAuthInput, SshEditInput,
         SshHostKeyInput, SshInput,
     };
     use dbboard_config::{
@@ -2080,6 +2221,7 @@ mod tests {
             None,
             false,
             None,
+            MarkInput::default(),
         );
         assert_eq!(draft.id, "d");
         assert_eq!(draft.name, "D");
@@ -2113,6 +2255,7 @@ mod tests {
             None,
             false,
             None,
+            MarkInput::default(),
         );
         match draft.kind {
             ConnectionKindDraft::Firestore {
@@ -2150,6 +2293,7 @@ mod tests {
             None,
             false,
             None,
+            MarkInput::default(),
         );
         match draft.kind {
             ConnectionKindDraft::Firestore {
@@ -2179,6 +2323,7 @@ mod tests {
                 SshEditInput::Keep,
                 None,
                 None,
+                MarkInput::default(),
             )
             .kind
         };
@@ -2231,6 +2376,7 @@ mod tests {
             None,
             false,
             None,
+            MarkInput::default(),
         );
         match draft.kind {
             ConnectionKindDraft::MongoDb { uri, database } => {
@@ -2255,6 +2401,7 @@ mod tests {
                 SshEditInput::Keep,
                 None,
                 None,
+                MarkInput::default(),
             )
             .kind
         };
@@ -2311,6 +2458,7 @@ mod tests {
                 None,
                 false,
                 alias.map(str::to_string),
+                MarkInput::default(),
             )
             .mcp_alias
         };
@@ -2333,11 +2481,61 @@ mod tests {
                 SshEditInput::Keep,
                 None,
                 alias.map(str::to_string),
+                MarkInput::default(),
             )
             .mcp_alias
         };
         assert_eq!(with(None), None, "omitted → keep the stored alias");
         assert_eq!(with(Some("store-a")), Some("store-a".to_string()));
+        assert_eq!(with(Some("")), Some(String::new()), "emptied → clear");
+    }
+
+    #[test]
+    fn to_add_draft_carries_the_colour() {
+        let with = |color: Option<&str>| {
+            to_add_draft(
+                "d".to_string(),
+                "D".to_string(),
+                KindInput::Turso {
+                    path: ":memory:".to_string(),
+                },
+                None,
+                false,
+                None,
+                MarkInput {
+                    color: color.map(str::to_string),
+                    tag: None,
+                },
+            )
+            .color
+        };
+        assert_eq!(with(None), None, "unmarked by default (issue #192)");
+        assert_eq!(with(Some("red")), Some("red".to_string()));
+    }
+
+    #[test]
+    fn to_edit_draft_passes_the_colour_through_unchanged() {
+        // Same three states as the alias, and the same reason for not
+        // collapsing them here: `Some("")` is how the picker says "no colour",
+        // and flattening it to `None` would mean a mark could never be removed.
+        let with = |color: Option<&str>| {
+            to_edit_draft(
+                "D".to_string(),
+                KindEditInput::Turso {
+                    path: ":memory:".to_string(),
+                },
+                SshEditInput::Keep,
+                None,
+                None,
+                MarkInput {
+                    color: color.map(str::to_string),
+                    tag: None,
+                },
+            )
+            .color
+        };
+        assert_eq!(with(None), None, "omitted → keep the stored colour");
+        assert_eq!(with(Some("teal")), Some("teal".to_string()));
         assert_eq!(with(Some("")), Some(String::new()), "emptied → clear");
     }
 
@@ -2365,6 +2563,7 @@ mod tests {
                 None,
                 false,
                 None,
+                MarkInput::default(),
             ))
             .expect("add turso");
         admin
@@ -2377,6 +2576,7 @@ mod tests {
                 None,
                 false,
                 None,
+                MarkInput::default(),
             ))
             .expect("add postgres");
         assert_eq!(admin.entries().len(), 2);
@@ -2392,6 +2592,7 @@ mod tests {
                     SshEditInput::Keep,
                     None,
                     None,
+                    MarkInput::default(),
                 ),
             )
             .expect("rename postgres, keep secret");
@@ -2420,6 +2621,7 @@ mod tests {
                 None,
                 false,
                 None,
+                MarkInput::default(),
             )
         };
         admin.add(mk()).expect("first add");
@@ -2441,6 +2643,7 @@ mod tests {
             None,
             false,
             None,
+            MarkInput::default(),
         ))
         .expect("seed source");
 

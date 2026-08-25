@@ -12056,3 +12056,281 @@ the next reader it never happens, which is the belief being corrected here.
 teardown, and reproducing it on demand has failed twice now — 30 runs when
 ADR-0119 was written, 35 here. Retrying a rare crash is a workaround; it is
 recorded as one.
+
+## ADR-0126 — A connection is marked by a colour *and* a tag, and the tag is what carries the meaning (2026-08-24)
+
+**Status.** Accepted.
+
+**Context.** Several rows in the connection list read alike, and the one that
+matters is the one that must not be mistaken for the others: production, sitting
+next to a copy of it made for a repair. That is what the request was —
+「開発本番のタグとかカラーを付ける」「接続するサーバの見分け方として」 — and it is
+what plan `.claude/issues/0026`, section D, had already reserved a slot for.
+
+Section D settled two of the three questions and left the third as a constraint
+rather than a choice:
+
+- Storage is a **scalar on `ConnectionEntry`**, not a sidecar keyed by id. It
+  travels with an export and appears wherever the connection does, at the price
+  of fact 2 in that plan: an older build reads an unknown key without complaint
+  and drops it on its next save. Losing a colour is not losing a credential.
+- The palette is a **closed set of eight names**, decided by the maintainer, not
+  a colour picker and not a hex field.
+- **Colour alone is not a mark.** It fails for a colour-blind operator and in a
+  greyscale screenshot.
+
+The third of those is what this ADR answers. The obvious cheap discharge — render
+the colour's *name* beside the swatch — satisfies the letter of it and none of
+the purpose. "red" tells a reader that the row is red. It does not tell them the
+row is production, which is the entire question being asked at the moment someone
+looks.
+
+**Decision.** A connection carries two optional scalars, and the pair is the
+mark.
+
+1. `color`, one of `CONNECTION_COLORS` — eight names, stored as the **name**, not
+   a value. `dbboard-config` rejects anything else with `ConfigError::UnknownColor`
+   rather than storing it and hoping the frontend copes. The eight get a light and
+   a dark value in `tokens.css` and a third axis in `DESIGN.md`, deliberately
+   separate from `--accent` and from the semantic `--danger` / `--warning` /
+   `--success`: identity colours carry no meaning of their own, so nothing here may
+   be reused to say "this went wrong".
+2. `tag`, **free text the operator writes**, capped at twelve characters. This is
+   the non-chromatic half, and the half a reader actually reads: `prod`, `本番`,
+   `staging`, `検証環境`.
+
+The tag is free text rather than a second closed set because the words a team
+uses for its own servers are not ones this crate can enumerate. A fixed
+`Production | Staging | Development` would be wrong for the first operator who
+runs four environments, or names them in their own language, and the failure mode
+of guessing wrong here is that the mark goes unused.
+
+Twelve characters, counted in **`chars()` and not bytes**. The limit exists
+because the same plan's section C records that the connection *name* is what
+loses the width fight on a row; an unbounded tag would make that worse in exactly
+the place the mark is supposed to help. Counting bytes would reject twelve kanji
+(thirty-six bytes) while accepting twelve latin letters, which is backwards —
+the kanji are the narrower label of the two. The frontend counts with the string
+iterator rather than `.length`, so an emoji costs one and not two.
+
+**Consequences.**
+
+- `dbboard-config` gains `mark.rs` — named for what it holds, since a module
+  called `color.rs` would be the wrong home for the half of the mark that has no
+  colour in it. It owns `CONNECTION_COLORS`, `is_connection_color`,
+  `CONNECTION_TAG_MAX_CHARS` and `is_connection_tag`, and nothing else knows the
+  eight names or the twelve.
+- Both fields follow `mcp_alias` (ADR-0088) exactly: `Option<String>`,
+  `skip_serializing_if = "Option::is_none"`, declared **before** `ssh` because TOML
+  wants values ahead of tables, and three edit states through one `Option` —
+  `None` keeps, `Some(v)` sets, `Some("")` clears.
+- The frontend keeps its own copy of both the palette and the limit, because a
+  form that cannot stop the operator at the limit lets them type past it and lose
+  the tail on save. `tests/mark_drift.rs` reads `marks.ts` and `tokens.css` from
+  the workspace and fails when the two sides disagree — on the names, on their
+  order, on a colour missing a value in any of the four theme blocks, or on the
+  number twelve. Same shape as `locale_drift.rs`.
+- **`duplicate()` drops both.** A copy inherits the credentials it needs and none
+  of the identity: the mark exists to tell production from a copy of it, so a copy
+  that arrives already wearing production's mark defeats it at the one moment it
+  is load-bearing. Covered by a test in `admin/repair.rs`.
+- The swatch and the tag travel together in every surface that renders them. A row
+  showing the swatch alone is a bug and not a compact variant — that is the
+  accessibility constraint, restated as something reviewable.
+
+**Not decided here.** Whether `dbboard-mcp` sees either field. Plan 0026 leaves
+the agent surface out on purpose: a colour is for a human eye and a tag is for a
+human reading a list. Neither has a use on the agent side yet, and a field the
+agent can read is a field the agent can be confused by.
+
+## ADR-0127 — Drag-to-reorder uses pointer events, so the window keeps its OS drop (2026-08-24)
+
+**Status.** Accepted.
+
+**Context.** ▲▼ reorder the connection list ([#192](https://github.com/meta-taro/dbboard/issues/192) criterion 1, shipped 2026-08-24). Plan
+`.claude/issues/0026` deferred drag-and-drop behind a condition — "worth doing
+only if ▲▼ turns out to be tedious in practice" — and that condition was met
+the first time the feature was used with a real list.
+
+Two ways to do it in a Tauri webview:
+
+* **HTML5 drag-and-drop.** Less code — the browser supplies the drag image, the
+  hit-testing and the cursor. But Tauri intercepts the OS-level drag-drop at the
+  window before the webview sees it, so `dragstart`/`drop` only fire with
+  `app.windows[].dragDropEnabled: false`.
+* **Pointer events.** More code: the drop position has to be computed from the
+  rows' own geometry, and the pointer has to be captured so the drag survives
+  leaving the handle.
+
+**Decision.** Pointer events.
+
+`dragDropEnabled` is a window-wide switch, and the thing it disables is the only
+way a file dropped onto the window can ever be noticed. dbboard does not use it
+today — there is no `onDragDrop` anywhere in the tree — but it already imports
+and exports `.dbbx` bundles through a file picker, and "drop the bundle on the
+window" is the obvious next form of that. Turning the switch off to save code in
+the connection list spends something that belongs to a different feature.
+
+The extra code is also where the correctness lives, and it is testable in a way
+the browser's version would not have been. `$lib/connections/reorder.ts` holds
+both halves: `gapForPointer` decides which gap the pointer is over, and
+`dropTarget` converts that gap into the absolute position `move_to` takes. The
+off-by-one — a gap below the dragged row is one too high, because lifting the
+row out closes the gaps past it — is a unit test rather than something found by
+dragging.
+
+**Consequences.**
+
+* Rows do not move while a drag is in flight; only an inset line moves. Opening
+  a gap between rows would shift the midpoints `gapForPointer` reads, and the
+  answer would oscillate wherever two rows meet.
+* ▲▼ stay. They are the keyboard path, which is what makes drag an addition
+  rather than a replacement, and they are what a filtered list falls back to —
+  both are disabled while the filter hides rows, for the reason recorded with
+  the arrows.
+* No autoscroll at the list edges yet. The list has to be longer than the dialog
+  before that is reachable at all, and the dialog is tall enough that it is not
+  the next thing anyone will hit.
+* `dragDropEnabled` stays at its default. A later `.dbbx`-onto-the-window import
+  does not have to undo this one.
+
+## ADR-0128 — The handle is the only reorder control, and it takes ↑↓ (2026-08-24)
+
+**Status.** Accepted. Amends [ADR-0127](#adr-0127) the same day it was written.
+
+**Context.** ADR-0127 kept ▲▼ beside the new drag handle, on the reasoning that
+the arrows were the keyboard path and drag was therefore an addition rather
+than a replacement. That is true of the *capability* and false of the *row*:
+with drag working, every row carried five controls — ▲, ▼, Edit, Duplicate,
+Delete — and two of them now said what the handle said. The first look at the
+list with real connections in it made that the visible problem, not the win.
+
+**Decision.** Remove ▲▼. Focus the handle instead: it is a real tab stop with
+an accessible name, it shows itself on focus as well as on hover, and `↑`/`↓`
+while it is focused call the same `move_to` the arrows called.
+
+The keyboard path is not weakened by this. It is the same two keys, on a
+control the operator reaches by tabbing to the row rather than by tabbing past
+three buttons to find a pair of glyphs. What is lost is the *discoverability*
+of a visible arrow, which is real — mitigated by the handle's tooltip naming
+both ways, and by the handle appearing on focus.
+
+**Consequences.**
+
+* `moveTarget` (`$lib/connections/order.ts`) and its tests stay. The arithmetic
+  is still exactly what a key press needs; only the thing that calls it moved.
+* `conn-move-up` / `conn-move-down` are gone from both locales.
+  `conn-move-filtered` stays: the handle is disabled while the filter hides
+  rows, for the reason the arrows were.
+* Rows now hold one non-word control. That is why `.row-main` had to take
+  `flex: 1` — with three children under `space-between`, the leftover width
+  fell either side of the middle one and each name landed at an indent decided
+  by its own length. The names had been ragged since the handle was added a
+  commit earlier, and nothing in `svelte-check` or the unit tests could have
+  said so.
+
+**Not decided here.** Whether a row should be draggable by its whole surface
+rather than by a handle. That trades a discoverable grab area for the ability
+to select text in the row, and no one has asked for either yet.
+
+## ADR-0129 — A stacked pull request runs CI too (2026-08-24)
+
+**Status.** Accepted. Amends [ADR-0104](#adr-0104).
+
+**Context.** ADR-0104 put the mandatory verification commands into CI so that a
+pull request would carry its own evidence rather than depend on whether the
+author had the hooks installed. It listed the branches to watch as `develop`
+and `main`, on both triggers, which reads as "the integration branches" and is
+correct for `push`.
+
+It is not correct for `pull_request`. That filter matches the **base** branch,
+not the head. A branch stacked on another feature branch — #221 onto #219 onto
+#216 — has a base of `feature/…`, matches neither trigger, and merges with no
+run at all. Three did. The gap was found by reading a `gh run list` result
+carefully enough to notice the SHA was two days old, after it had already been
+reported as green once.
+
+Nothing unverified reached `develop`: the eventual PR into `develop` runs the
+full suite over the accumulated result, and the local hooks had run on every
+commit. What was lost is *when* the answer arrives — after the last merge in
+the stack instead of before the first — and, worse, the appearance of an answer
+where there was none. A stale green is more dangerous than a missing one,
+because nobody goes looking for it.
+
+**Decision.** Add `'feature/**'` to the `pull_request` branch list. Leave
+`push` on the integration branches: a feature branch with no PR open on it has
+nobody waiting on the answer, and CI on every push to every branch is a cost
+paid for no reader.
+
+**Consequences.**
+* Each stacked PR now runs rust / frontend / site on open and on every push to
+  its head. The stack pays for the same commits more than once — #221's commits
+  are verified again when #219 goes to `develop`. That is the price of the
+  answer arriving at the review rather than after it.
+* `concurrency: ci-${{ github.ref }}` already cancels superseded runs per ref,
+  so a burst of pushes to one stacked branch costs one run, not one per push.
+* `pii-scan.yml` is unaffected: it runs on a schedule and on the integration
+  branches, and the pre-commit hook is what blocks a leak at the source.
+
+**Not decided here.** Whether a stacked PR should be *required* to be green
+before merge, via branch protection. Protection rules are repository settings
+rather than tree contents, and this repo has none today; adding the first one
+is a larger decision than closing this hole.
+
+## ADR-0130 — The mark is set from the list, and the colour rides at the head of the row (2026-08-25)
+
+**Status.** Accepted. Amends [ADR-0126](#adr-0126--a-connection-is-marked-by-a-colour-and-a-tag-and-the-tag-is-what-carries-the-meaning-2026-08-24).
+
+**Context.** ADR-0126 gave a connection an identity mark — a colour and a
+short tag — so that "which server am I about to run this on" is answerable
+without reading a hostname. It shipped in v0.11.0 with two properties that
+the first day of use pushed back on.
+
+The mark could only be set from the connection edit form. Changing a colour
+therefore meant opening a dialog that also holds the DSN, the tunnel and the
+MCP permissions, saving it, and closing it — a whole-connection write for a
+decision that is about nothing but appearance. Recolouring a list of six to
+make it scannable is six of those.
+
+And the mark rendered at the *end* of the row, as a pill after the name. A
+pill answers "what is this row" once you are already looking at it. It does
+not help the eye run down a column, because it does not sit in a column: it
+starts wherever the name happens to end.
+
+**Decision.** Two changes, and one consequence for ADR-0126's rule.
+
+* A `set_mark` on `ConnectionAdmin`, reached from a swatch picker opened by
+  right-clicking the row. It writes the colour and the tag, and nothing else.
+  Both halves are validated before either is written, and a mark that already
+  says what it is asked to say does not rewrite the file.
+* The colour renders as a 3px bar at the head of the row. It occupies its
+  width whether or not the row is marked, so marking one does not indent its
+  name relative to its neighbours.
+* `set_mark` accepts a colour with no tag, though the edit form still refuses
+  one (`markNeedsTag`). ADR-0126 forbade the bare swatch because it says
+  nothing to a colour-blind reader or a greyscale screenshot. At the head of a
+  row that already carries the connection's *name*, the meaning is present;
+  the stripe is a second, faster way to find a row that is legible without it.
+  `markFor` is unchanged, so a colour with no tag still shows the colour name
+  where the tag would go, which reads as an invitation to type one.
+
+**Consequences.**
+* The picker is a right-click, which is undiscoverable. It is the same gesture
+  this sidebar already uses for tables, and the edit form still works, so the
+  cost is that the faster path is found rather than announced. A visible
+  affordance would mean an interactive element inside `.nav-row`, which is a
+  `<button>` — invalid, and a larger change to the row than this earns.
+* `ConnectionMark` grew a `dot` flag so the sidebar can drop the swatch inside
+  the pill. Two swatches on one line is not what ADR-0126's invariant was
+  protecting. The connection manager, which has no head-of-row bar, keeps it.
+* The tag input commits on Enter or on dismissal, not per keystroke: every
+  character would otherwise be an atomic file write.
+* Marking is now cheap enough to be casual, so more connections will carry a
+  colour and fewer a considered tag. That is the trade the first property was
+  making in the other direction, and it is the right way round — an unlabelled
+  colour set in one click beats a labelled one nobody sets.
+
+**Not decided here.** Whether the mark should also reach the tab strip and the
+query editor's chrome, where "which server is this" is asked with more at
+stake than in a list. That wants a look at the whole running-query surface,
+not one more render site.

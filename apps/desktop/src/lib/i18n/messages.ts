@@ -144,6 +144,14 @@ export const en = {
   "conn-delete": "Delete",
   "conn-delete-confirm": "Delete “{ $name }”? Its stored secret is removed too.",
   "conn-empty": "No connections yet — add one to get started.",
+  // Reordering the list (issue #192). The order is saved in the connections
+  // file, so it is the order the sidebar shows on every later run too.
+  // Narrowing the list (issue #192). While rows are hidden the ▲▼ buttons are
+  // disabled: they move an entry within the stored list, not within the view.
+  "conn-filter-placeholder": "Filter by name or id",
+  "conn-filter-none": "No connection matches that.",
+  "conn-move-filtered": "Clear the filter to change the order",
+  "conn-drag-handle": "Drag to reorder, or ↑↓ when focused",
   "conn-save": "Save",
   "conn-browse": "Browse…",
   "conn-cancel": "Cancel",
@@ -263,6 +271,30 @@ export const en = {
   "conn-mcp-alias-placeholder": "e.g. store-a",
   "conn-mcp-alias-hint":
     "Optional. When set, an agent sees this name in place of both the id and the display name above, and the real id stops working as a handle — so a host or customer name you already used as an id no longer reaches the agent's transcript. Leave blank to show the real ones.",
+  // Identity mark: which server this is (ADR-0126)
+  "conn-mark-section": "How this connection is marked",
+  "conn-mark-lead":
+    "Shown on this connection everywhere it appears, so the one you are about to run a statement against is the one you meant.",
+  "conn-mark-color": "Colour",
+  "conn-mark-color-none": "No colour",
+  // The eight identity colours, in the order the picker lists them. Named
+  // rather than shown as swatches alone: the name is what a screen reader
+  // reads out, and what the row falls back to when a config carries a colour
+  // with no tag.
+  "conn-color-red": "Red",
+  "conn-color-orange": "Orange",
+  "conn-color-yellow": "Yellow",
+  "conn-color-green": "Green",
+  "conn-color-teal": "Teal",
+  "conn-color-blue": "Blue",
+  "conn-color-purple": "Purple",
+  "conn-color-pink": "Pink",
+  "mark-picker-title": "Mark { $name }",
+  "conn-mark-tag": "Tag",
+  "conn-mark-tag-placeholder": "e.g. prod",
+  "conn-mark-tag-hint":
+    "Up to { $max } characters. The colour alone is invisible to a colour-blind reader and in a greyscale screenshot, so a colour is only saved with a tag beside it. A tag on its own is fine.",
+  "conn-mark-tag-required": "Write a tag, or clear the colour.",
   // Duplicating a connection, and repairing one whose saved-secret slot was
   // minted for a different connection (issue #213)
   "conn-duplicate": "Duplicate",
@@ -538,6 +570,12 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-delete": "削除",
   "conn-delete-confirm": "「{ $name }」を削除しますか？保存されたシークレットも削除されます。",
   "conn-empty": "接続がまだありません。追加して始めましょう。",
+  // 並び替え (issue #192)
+  // 絞り込み (issue #192)
+  "conn-filter-placeholder": "名前または id で絞り込む",
+  "conn-filter-none": "一致する接続がありません。",
+  "conn-move-filtered": "並び替えるには絞り込みを解除してください",
+  "conn-drag-handle": "ドラッグ、またはフォーカス中に ↑↓ で並び替え",
   // 接続の複製と、他の接続のシークレット枠を指している接続の修復 (issue #213)
   "conn-duplicate": "複製",
   "conn-duplicate-title": "接続を複製",
@@ -680,6 +718,26 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-mcp-alias-placeholder": "例: store-a",
   "conn-mcp-alias-hint":
     "任意です。設定すると、エージェントには上の ID と表示名の代わりにこの名前だけが見え、実の ID は接続先として使えなくなります。すでに ID にホスト名や店舗名を使っていても、エージェントの履歴には残りません。空の場合は実の ID と表示名が見えます。",
+  // 接続の目印: どのサーバーなのか (ADR-0126)
+  "conn-mark-section": "この接続の目印",
+  "conn-mark-lead":
+    "この接続が表示される場所すべてに出ます。これから実行しようとしている相手が、意図したサーバーかどうかがひと目で分かります。",
+  "conn-mark-color": "色",
+  "conn-mark-color-none": "色なし",
+  "conn-color-red": "赤",
+  "conn-color-orange": "橙",
+  "conn-color-yellow": "黄",
+  "conn-color-green": "緑",
+  "conn-color-teal": "青緑",
+  "conn-color-blue": "青",
+  "conn-color-purple": "紫",
+  "conn-color-pink": "桃",
+  "mark-picker-title": "{ $name } の目印",
+  "conn-mark-tag": "ラベル",
+  "conn-mark-tag-placeholder": "例: 本番",
+  "conn-mark-tag-hint":
+    "{ $max } 文字までです。色だけでは、色覚特性のある方やグレースケールのスクリーンショットでは判別できません。そのため色はラベルと一緒でなければ保存しません。ラベルだけなら問題ありません。",
+  "conn-mark-tag-required": "ラベルを入力するか、色を外してください。",
   // 接続バンドルのインポート/エクスポート (ADR-0038)
   "conn-export": "エクスポート…",
   "conn-import": "インポート…",

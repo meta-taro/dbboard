@@ -72,6 +72,41 @@ pub enum ConfigError {
     #[error("no connection entry with id: {0}")]
     NotFound(String),
 
+    /// [`crate::ConnectionAdmin::move_to`] was handed a destination index
+    /// that is not a position in the list. Like [`ConfigError::NotFound`],
+    /// this means the caller is working from a stale view of the entries
+    /// (ADR-0016); clamping it instead would silently put the connection
+    /// somewhere the operator did not point at.
+    #[error("connection order index {index} is out of range (the store holds {len})")]
+    IndexOutOfRange {
+        /// The destination index the caller asked for.
+        index: usize,
+        /// How many entries the store actually holds.
+        len: usize,
+    },
+
+    /// A draft carried an identity colour that is not in
+    /// [`CONNECTION_COLORS`](crate::CONNECTION_COLORS). Refused rather than
+    /// dropped: a silently ignored colour looks like the mark was set, and
+    /// the operator finds out only by looking at a row that is still grey.
+    #[error("{name} is not one of dbboard's connection colours")]
+    UnknownColor {
+        /// The colour name the caller asked for.
+        name: String,
+    },
+
+    /// A draft carried an identity tag longer than
+    /// [`CONNECTION_TAG_MAX_CHARS`](crate::CONNECTION_TAG_MAX_CHARS). Refused
+    /// rather than truncated: a tag cut to `producti` is a different word, and
+    /// a mark that quietly says something else is worse than no mark.
+    #[error("{tag} is longer than {max} characters")]
+    TagTooLong {
+        /// The tag the caller asked for, whole.
+        tag: String,
+        /// The limit it exceeded, in characters.
+        max: usize,
+    },
+
     /// `ConnectionAdmin::update` was called with a draft whose
     /// `ConnectionKind` variant differs from the existing entry's. Kind
     /// changes are intentionally not supported on edit (ADR-0016): they
