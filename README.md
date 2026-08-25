@@ -577,7 +577,7 @@ the GUI, so it adds no new place to keep credentials. See
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
 full spec.
 
-Seventeen fixed tools. Seven read a database — `list_connections`,
+Eighteen fixed tools. Seven read a database — `list_connections`,
 `list_tables`, `describe_table`, `search_schema` (ADR-0053),
 `list_relationships` (ADR-0054), `run_read_query`, and `get_annotations`
 (dbboard's local notes, ADR-0045) — plus `run_write` and `dump_database`
@@ -591,7 +591,13 @@ asserted. Those seven act on a screen someone is sitting in front of; all
 but the two getters fail outright when dbboard is not running. The
 seventeenth, `get_server_info`, reaches nothing whatever: it names the
 build that is answering (ADR-0116), because this binary is installed by
-hand and a stale one is otherwise indistinguishable from a broken one.
+hand and a stale one is otherwise indistinguishable from a broken one. The
+eighteenth, `add_connection`, registers a connection in `connections.toml`
+so a database an agent has just set up is usable without asking a person to
+retype its path — and only for the kinds that store nothing in the
+keychain, a local SQLite/libSQL file and the Firestore emulator (ADR-0134).
+Everything that needs a password, a token or a key is refused in the tool's
+own description, before the credential is sent rather than after.
 The security posture is the reason it is safe to point an agent at:
 
 - **Secrets never cross the wire.** The only connection metadata

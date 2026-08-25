@@ -67,6 +67,19 @@ public API is the HTTP contract in
   it reaches its ceiling instead of growing without limit. Arrow keys move the
   line and `Home` resets it. See [ADR-0131](docs/decisions.md).
 
+- **An AI agent can register a local database itself.** Setting up a SQLite
+  file and then asking a person to retype its path into a dialog is two jobs
+  where there is one. The MCP server gains `add_connection`, which writes the
+  entry into `connections.toml` directly. Only the kinds that store *nothing*
+  in the keychain can be registered this way — a SQLite/libSQL file on this
+  machine, and the local Firestore emulator, which authenticates with a fixed
+  token and so has no service account to save. Everything that needs a
+  password, a token or a key is refused, and the refusal is in the tool's own
+  description rather than in an error, so an agent learns it before sending
+  the credential rather than after. The new connection is created read-only:
+  agent writes stay off, and only a person can turn them on. See
+  [ADR-0134](docs/decisions.md).
+
 ### Fixed
 
 - **A half-typed connection is no longer thrown away by a stray click.**

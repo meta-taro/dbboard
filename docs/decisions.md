@@ -12527,3 +12527,67 @@ last read, so an entry added elsewhere appears after a refresh. That is a
 frontend concern and a different mechanism; this ADR is only about not
 destroying it.
 
+## ADR-0134 — An agent may register only the connections that carry no credential (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0046](#adr-0046--dbboard-mcp-expose-dbboard-as-a-read-only-mcp-server) and constrained by [ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list).
+
+**Context.** Setting up a local database and then asking a person to retype its
+path into a dialog is two jobs where there is one. The report was blunt about
+it: 人が別にやる意味ないから. The agent that just created the file is the one
+thing in the room that knows where it is.
+
+The reason this was not already possible is that connection *management* is a
+write surface, and the MCP surface is deliberately narrow. But the objection
+that matters is not the write — it is what a registration would carry. Most
+connection kinds are configured with a credential: a Postgres DSN's password
+rides in its authority, a Turso Cloud connection needs a token, D1 needs an API
+key. Sent to a tool, every one of those is in the transcript before any
+handling on our side begins, and no later redaction takes it back out.
+
+**Decision.** `add_connection` accepts exactly two kinds, and they are the two
+whose entire configuration is already non-secret:
+
+* `turso` — a SQLite/libSQL file on this machine, from a path.
+* `firestore` — the local emulator, which authenticates with a fixed
+  `Bearer owner` and so has no service account to store ([ADR-0093](#adr-0093--the-firestore-adapter-calls-rest-directly-signs-with-ring-and-overrides-query_read_only)). `base_url`
+  is required rather than optional here: it is what separates the emulator from
+  a real project, and a real project needs the credential this tool refuses.
+
+Everything else is refused permanently. The boundary is structural, not a
+check: `NewConnectionKind` cannot express a secret, so no string that arrives
+here can become a keyring entry. The alternative — accept a URL and inspect it
+— is a judgement about `postgres://user:@host`, percent-encoded passwords and
+`?password=` in a query string, and it only has to be wrong once.
+
+Three things are deliberately not parameters. `mcp_write` stays shut: a tool
+that granted its own write access would not be a gate (ADR-0087). `mcp_alias`
+is not offered, because the alias exists to hide a name *from* agents
+([ADR-0088](#adr-0088--the-mcp-surface-shows-an-alias-not-the-connections-real-id)) and one the agent chose hides nothing. And no UI command is sent.
+
+The refusal is stated in the tool description rather than left to an error.
+An agent that learns "no Postgres" from an error has already sent the password
+(the same reasoning as the `run_write` description).
+
+A taken id comes back as an invalid request, not an internal error — with the
+id in the message. Left as a config error it would reach the agent in the class
+that reads as "try again".
+
+**Consequences.**
+* The most common case is covered and the second most common is not. A local
+  SQLite file is what an agent creates for itself; a hosted Postgres is what
+  someone provisions in a browser, and provisioning it already involved a human
+  who can paste the DSN into the app.
+* A dbboard window that is open lists the new connection only after a refresh,
+  for the reason given in
+  [ADR-0133](#adr-0133--a-long-lived-connection-admin-re-reads-the-file-before-it-writes-2026-08-25).
+  A `RefreshConnections` UI command was considered and dropped: it answers
+  `UiNoResponse` when no window is watching, which would report a successful
+  write as a failure.
+* The kind vocabulary accepts `sqlite` and `libsql` alongside `turso`. `turso`
+  is what `list_connections` returns and what the description names, but an
+  agent naming a local file reaches for the other two first, and two match arms
+  are cheaper than a round-trip spent learning our words.
+
+**Not decided here.** Editing or deleting a connection over MCP. Registration
+is additive and the worst case is an entry nobody uses; the other two can
+destroy something the operator set up by hand, and no one has asked for them.
