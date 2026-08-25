@@ -5,6 +5,43 @@
 
 ## 最終更新
 
+- 日付: 2026-08-25 その5 (**#222 / #225 / #223 を merge して v0.12.0 を切った。
+  commit は `57afbfe` 1 本、タグは `v0.12.0`。push とタグ push は user。**
+
+  ### merge (user が実施・10:21–10:22Z)
+
+  3 本とも **squash ではなく `--merge`**。#225 は #222 の上に積んであったので、
+  #222 を squash すると #225 が乗っている履歴の方を書き換えることになり、
+  base の自動 retarget の後で衝突する。順番は #222 → #225 → #223。
+  merge 後の open PR はゼロ。`b00a871` の CI は success。
+
+  ### 0.12.0 のカット
+
+  `node scripts/release-cut.mjs` → CHANGELOG の見出し・workspace version・
+  manifest 2 つ → `cargo check --workspace` で `Cargo.lock` を動かす →
+  **`docs/roadmap.md` の枠表から v0.12 の行を削除** → commit → `git tag v0.12.0`。
+
+  枠表の行を消すのは飾りではない。`scripts/release-plan.test.mjs` は
+  「出したはずの版に枠がまだ残っている」を drift として落とす (7 本中 1 本が赤になる)。
+  出した後は CHANGELOG が「何が入ったか」に答えるので、同じ問いに答えが 2 つあると
+  計画の方が先に嘘をつき始める — v0.11 のときと同じ扱いにした。
+
+  中身は 11 件。並び替え / 絞り込み / 名前表示 / 色 + タグの目印 (#192)、
+  一覧から直に目印 (ADR-0130)、サイドバーの横区切り (ADR-0131)、
+  ダイアログの取り回し (ADR-0132)、外から書かれた接続の上書き修正 (ADR-0133)、
+  MCP からの接続登録 (ADR-0134)、止まった自動更新の告知 (ADR-0135)。
+
+  ### 検証
+
+  pre-commit の 4 コマンドすべて green (pii-scan clean / `fmt` / `clippy -D warnings` /
+  `check` / 直列テスト)。`--no-verify` なし。`release-plan.test.mjs` 7/7、
+  `release-due.mjs` は `nothing unreleased yet`。
+
+  **user 側に残っているもの**: `develop` の push と **タグ `v0.12.0` の push**
+  (打った瞬間がリリース・ADR-0121)。publish job は release object を自分で
+  view-or-create するので、タグ push だけで公開まで行く。公開後の exe の目視 PII チェックと、
+  7d/7e/7f/7g の画面確認は未実施のまま — §38 により催促はしない。)
+
 - 日付: 2026-08-25 その4 (**止まったアップデートを、次の起動で本人に伝えるようにした。
   ADR-0135。commit は 1 本、push は user。**
 
