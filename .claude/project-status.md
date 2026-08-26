@@ -5,7 +5,7 @@
 
 ## 最終更新
 
-- 日付: 2026-08-26 (**v0.13.0 を切った (`5022112` / タグ `v0.13.0`・未 push)。
+- 日付: 2026-08-26 (**v0.13.0 を切った (`5022112` / タグ `v0.13.0`)。公開済み。
   併せて、開発機がこの Windows PC から Mac mini へ移ることになったので引き継ぎを書いた。**
 
   ### v0.13.0
@@ -58,6 +58,22 @@
   - **Act**: **frontend のテストは CI でしか走らない** (pre-commit は cargo 側だけ) ので、
     フロントだけを触った版上げは手元が緑でも赤くなりうる。切る前に `pnpm test` を回す。
     なお `release.yml` はテストを走らせないので、**公開そのものは止まっていない**。
+
+  ### 公開の結果 (タグ `v0.13.0`)
+
+  `release` ワークフロー 17m25s で success。draft でも prerelease でもない。
+  資産 9 件：Windows NSIS `x64-setup.exe` + `.sig` / macOS universal `.dmg` /
+  `dbboard-desktop.app.tar.gz` + `.sig` / MCP バイナリ 2 本 (windows-x86_64 / macos-universal) /
+  `SHA256SUMS.txt` / `latest.json`。
+  `latest.json` は `version 0.13.0`、platforms は darwin-aarch64 / darwin-x86_64 /
+  windows-x86_64 の 3 つ。**既存の 0.12.0 からの自動更新がここを見る** —
+  ADR-0135 の「更新が止まっている」告知が実際に踏まれるのもこの世代から。
+
+  ダウンロードページは再デプロイ不要 (ADR-0047)。`site/` は読み込み時に
+  Releases API を引くデータ駆動なので、`pages` は `site/**` が変わったときしか走らない。
+
+  **残っているのは公開 exe の PII 目視だけ** (v0.11.0 / v0.12.0 / v0.13.0)。
+  これは AI がやれないし、公開リポなので催促もしない (ベースルール §38)。
 
   ### 引っ越し (この Windows PC → Mac mini)
 
