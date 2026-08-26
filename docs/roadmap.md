@@ -25,7 +25,6 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.13** | Knowing what changed, and letting an agent tidy up | The version screen says what this build brought, read from `CHANGELOG.md` rather than fetched. The MCP server gains the connection-list actions the app already has: set a mark, move a row |
 | **v0.14** | Speed, measured | Startup, connect-and-browse, large result sets. Measurement lands before any optimisation, so the numbers are comparable afterwards |
 | **v0.15** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 fixed or its workaround documented, the contract mirrored to `dbboard-web`, sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
