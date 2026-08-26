@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { flatten, parseChangelog, findRelease, releaseHistory } from './changelog';
 import { bundledReleases } from './bundled';
+import pkg from '../../../package.json';
 
 describe('flatten', () => {
   it('removes the markup a dialog has no renderer for', () => {
@@ -157,7 +158,12 @@ describe('the CHANGELOG.md this build bundles', () => {
   it('parses into every version the file has', () => {
     expect(releases.length).toBeGreaterThanOrEqual(14);
     expect(releases[0].version).toBe('Unreleased');
-    expect(releaseHistory(releases)[0].version).toBe('0.12.0');
+    // Not a literal: pinning the newest version here means every release breaks
+    // this test, and the fix would be to edit the expectation, which tests
+    // nothing. The invariant is that the newest *released* section is the
+    // version this build calls itself — that is what makes the dialog's "what
+    // changed" be about this build. `release-cut.mjs` moves both together.
+    expect(releaseHistory(releases)[0].version).toBe(pkg.version);
     expect(releaseHistory(releases).at(-1)?.version).toBe('0.1.0');
   });
 
