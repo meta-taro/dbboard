@@ -1266,3 +1266,86 @@ write 経路を伴うものは着手前に ADR。
   同じ場所へ移した。とくに **D-2 は「`kit.csp` を設定する必要がある」と書いていて、
   これは 08-22 の実装で誤りと判明している** (有効にすると `<meta>` で 2 枚目の
   ポリシーが出て壊れる)。残すと次に読んだ者が誤った方を実装するので消した。
+
+---
+
+### next-actions のリリース仕組み解説 (CLAUDE.md "Releases" と重複したので集約) (退避日 2026-08-26)
+
+**「で、何が出たの？」への答え**は CHANGELOG の見出しに入れる:
+
+```
+## [0.11.0] — Connection repair and duplication
+```
+
+push のたびに次の枠の見出しも出る:
+
+```
+[changelog] 3 unreleased entries — a release is due (0.11.0 -> 0.12.0: A connection list you can steer)
+```
+
+- 1 件以上 → 出してよい / **3 件以上 → 出すべき**
+- `### Added` か `### Changed` があれば minor、無ければ patch
+- **v0.11.0 は 2026-08-24、v0.12.0 は 2026-08-25 に切った。** #222 / #225 / #223 が
+  develop に入った直後、11 件で切っている。いまは `nothing unreleased yet`。
+- v1.0 だけは中身で決まらない (`docs/api-contract.md` の非互換変更 = major)。
+  条件は `.claude/issues/0021-v1-0-criteria.md`。**機能の数では上がらない**ので、
+  下の 28 件は 1 件も v1.0 の条件ではない。
+
+---
+
+### next-actions の最終更新 2026-08-25 その2 (退避日 2026-08-26)
+
+- 日付: 2026-08-25 その2 (**接続ダイアログの 2 件と、MCP からの接続登録**。
+  user から 3 件まとめて来たうちの 2 件を片付けた。
+
+  **(1) ダイアログ** (ADR-0132 / `4913cb6`)。「ほか触ると消える」「DnD で移動もできない」
+  「狭い画面で入力するとどうしても避けるときに入力欄が落ちるので永遠に登録できない」。
+  最後の一文が症状の全部で、**登録が完了できない**というのは苛立ちではなく機能不全。
+  背景クリックを無効化し、`Escape` は**まだ何も打っていないフォームからだけ**効かせた。
+  出口は ✕ と Cancel の 2 つだけに残す。移動は 7e と同じ手つき (掴んで動かす / W クリックで中央)。
+
+  **(2) MCP 登録** (ADR-0134 / `b1a4fcc`)。「ローカル DB 接続する場合とか、MCP 用意して
+  登録追加くらいさせたほうがいい。人が別にやる意味ないから」。**受けるのは鍵束に何も置かない
+  種類だけ** — SQLite/libSQL のファイルパスと Firestore エミュレータ。
+  ここを「URL を見てパスワードが入っているか判定する」にしなかったのが設計の本体で、
+  判定は一度間違えれば終わりだが、**型に秘密を表現する枝が無ければ間違えようがない**。
+  断り文句は tool の description 側に置いた (エラーで学ぶ頃には資格情報は送信済み)。
+
+  **(3) 前提として先に直した本物のバグ** (ADR-0133 / `a4090af`)。`ConnectionAdmin` が
+  `connections.toml` を丸ごと抱えて丸ごと書き戻すので、**dbboard を開いたまま外から足した接続が、
+  次の rename で黙って消えていた**。エラーも衝突も出ない。重複 id の番人も同じ盲点で、
+  ディスク上で埋まっている id を通していた。全 mutator の先頭で読み直す。
+  desktop 側 13 か所の呼び出しに任せなかったのは、**忘れるのは次に足される 1 か所**だから。
+
+  検証は 4 コマンドすべて green (`fmt` / `clippy -D warnings` / `check` / 直列テスト)。
+  `--no-verify` なし。**AI がやれていないこと**: 画面と実機での確認。→ **user 側**。)
+
+---
+
+### next-actions の「配布済 exe の使用シグナル確認 / 再配布」 (退避日 2026-08-26)
+
+### 参考: 配布済 exe の使用シグナル確認 / 再配布
+
+- **使用確認**: `gh release view v0.3.0 --json assets --jq
+  '.assets[].downloadCount'` (匿名 update-check の GET 自体は観測不可、
+  資産 DL 数のみ)。
+- **新版を配布したくなったら**: 次バージョンを bump → develop → main にマージ →
+  **タグ push だけ**。Release CI が Win (NSIS setup.exe + `.sig`) / macOS
+  (universal `.dmg` + `.app.tar.gz` + `.sig`) / MCP バイナリ / `latest.json` /
+  `SHA256SUMS.txt` を publish する。配布済 exe が起動時に検知する。
+  リリースオブジェクトも publish ジョブが自力で用意する (v0.5.0 以降)。
+  **タグ push の前に `target/release` を掴むプロセスを確認する** — 他セッションの
+  `dbboard-mcp.exe` が生きていると pre-push の release ビルドが `LNK1104` で落ちる
+  (v0.9.0 で実際に落ちて `--no-verify` になった。v0.10.0 では事前確認して回避した)。
+  公開後に exe を実接続名で目視スキャン。**バンドルは CI が作る**ので、ローカルで
+  MSI / `.dmg` を手作りする手順は要らない (要る場合は README が正本)。
+- secret 移送 = **推奨 (ADR-0038)**: 手元で 3 接続を Export → `.dbbx` を渡し
+  パスフレーズは別経路。担当機は Import 1 回。旧 cmdkey 手順は
+  `docs/collector-setup/README.md`。**secret は一切ファイルに書かない。**
+
+---
+
+### next-actions の user 側テーブル・完了済み push 行 (退避日 2026-08-26)
+
+| ~~`develop` の push と タグ `v0.12.0` の push~~ → **2026-08-25 に完了**。`origin/develop` = `c430d6b`、タグ = `57afbfe`。release workflow (run 32841019679) は 5 job すべて success、**v0.12.0 は 11:32Z に公開済** (draft でも pre-release でもない)。資産 9 点 — Windows setup.exe + .sig / macOS dmg + app.tar.gz + .sig / MCP 2 本 / `SHA256SUMS.txt` / `latest.json`。`latest.json` は 0.12.0 と `dbboard-desktop_0.12.0_x64-setup.exe` を指している (= ノート PC の v0.10 にも 0.12.0 が出る) | push は §6、タグ push は ADR-0121 で user のものだった |
+| ~~#216 / #221 / #224 の merge、`develop` と タグ `v0.11.0` と `feature/connection-order` の push~~ → **5 件とも 2026-08-24 に完了**。経緯は `.claude/archive/next-actions-2026-08.md` (退避日 2026-08-25) | push と merge は §6、タグ push は ADR-0121 で user のもの |

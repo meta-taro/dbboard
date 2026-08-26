@@ -5,6 +5,55 @@
 
 ---
 
+## 引っ越し: この Windows PC → Mac mini (2026-08-26 決定)
+
+**リポジトリは clone すれば済む。問題は git に入っていない 3 つ。**
+
+| | 何 | どこ | 誰が |
+|---|---|---|---|
+| **`develop` の push と タグ `v0.13.0` の push** (どちらもローカルにあるだけ・`5022112`) | push は §6、タグ push は ADR-0121。**タグを打つまで誰にも届いていない**。先に `target/release` を掴むプロセスを確認する (このマシンで動いている `dbboard-desktop.exe` は落としてある) |
+| **`.pii-denylist` を Mac 側で作る** | 中身が PII そのもの。無いと pre-commit の pii-scan が**黙って通る**方に落ちる。雛形は `.pii-denylist.example` |
+| **エージェントの memory 27 ファイルを Mac へコピー** | git 管理外なので**消したら復元できない** (§33)。うち 2 件はリポに書けない情報の唯一の写し |
+| a | **`.pii-denylist`** — 実名の遮断リスト | リポ直下・untracked (`.gitignore:58`) | **user** (中身が PII そのものなので AI は触らない) |
+| b | **エージェントの memory 27 ファイル (132KB)** | `<ホーム>/.claude/projects/C--claude-dbboard/memory/` | **user** (手でコピー) |
+| c | **git hooks** | clone 後に `sh scripts/install-hooks.sh` | どちらでも |
+
+**a を作り直さないと pii-scan は素通りする。** ルールファイル (`scripts/pii-scan.sh`) は tracked
+だが、遮断する語そのものは untracked 側にしか無い。`.pii-denylist.example` が雛形。
+CI 側の `PII_DENYLIST` secret は GitHub にあるので**引っ越しの影響を受けない** — 落ちるのは
+手元の pre-commit だけで、しかも**黙って通る**方に落ちる。
+
+**b は git 管理外なので、消したら復元できない** (baseline §33)。Mac ではプロジェクトキーが
+変わるため自動では引き継がれない。うち 2 件は**リポに書けない情報の唯一の写し**なので、
+コピーを忘れると復元手段が無い。
+
+### Mac で変わること
+
+**消える地雷** (どれも Windows 固有):
+libSQL の teardown segfault (`0xc0000005`) と `cargo-test-serialised.sh` の 1 回リトライ、
+Norton の隔離、`link.exe 1318` / `os error 112` (ディスク枯渇)、scrypt の 256MiB×並列、
+release exe が起動中でロックされて `cargo build --release` が落ちる件、GitHub Desktop の force push。
+**スクリプトと直列リストは消さない** — CI の windows runner が同じ道を通る。
+
+**効かなくなるルール**: `pii-scan.sh` の `windows-home-path` は Windows のホームパスだけを見ている。
+Mac の `/Users/<名前>` は素通りする。実ユーザー名は tracked file に書けないので、
+足すなら `.pii-denylist` 側 (= a と同じ扱い・user)。
+
+**できるようになること**: `.dmg` / universal build を手元で確認できる (いままで CI 任せ)。
+**できなくなること**: Windows の `.exe` を手元でビルドできない →
+**公開物の PII 目視確認は CI 成果物をダウンロードして**行う。
+
+### 引っ越し後の最初のセッションで通す順
+
+```sh
+git clone … && cd dbboard
+sh scripts/install-hooks.sh
+cp .pii-denylist.example .pii-denylist   # 中身は user が書く
+sh scripts/cargo-test-serialised.sh      # ここが緑なら足場は出来ている
+```
+
+---
+
 ## 順番 (これが「順次やる予定」の一覧・唯一の正)
 
 下の「候補」節は選択肢の並び (menu) で、順番ではなかった。**順番はここ。**
@@ -27,7 +76,7 @@
 |---|---|---|
 | ~~**v0.11**~~ | 接続の複製と修復 | **2026-08-24 に切った** (`28b3415` / タグ `v0.11.0`)。複製・修復 (#213)、webview CSP (#210)、Windows 検証クラッシュ修正、リリース判定の自動報告。`docs/roadmap.md` の枠表からは行ごと消した — 出した後は CHANGELOG が答えるので、同じ問いに答えが 2 つあると計画の方が嘘をつき始める |
 | ~~**v0.12**~~ | 接続一覧を操れるようにする | **2026-08-25 に切った** (`57afbfe` / タグ `v0.12.0`)。名前表示・掴み手で並び替え・絞り込み・色 + タグの目印 (#192)、一覧から直に目印 (ADR-0130)、サイドバーの横区切り (ADR-0131)、ダイアログの取り回し (ADR-0132)、MCP からの接続登録 (ADR-0133/0134)、止まった自動更新の告知 (ADR-0135) — CHANGELOG 11 件。`docs/roadmap.md` の枠表からは行ごと消した (v0.11 と同じ扱い) |
-| **v0.13** | 何が変わったかを知る・整理を任せる | **中身は済み・タグ待ち**。バージョン確認画面に更新内容 (ADR-0137)、MCP から目印と並び替え (ADR-0136)。どちらも 2026-08-25 の要望そのまま |
+| ~~**v0.13**~~ | 何が変わったかを知る・整理を任せる | **2026-08-26 に切った** (`5022112` / タグ `v0.13.0`)。バージョン確認画面に更新内容 (ADR-0137)、MCP から目印と並び替え (ADR-0136)。どちらも 2026-08-25 の要望そのまま。`docs/roadmap.md` の枠表からは行ごと消した (v0.11 / v0.12 と同じ扱い)。**push とタグ push は user** (ADR-0121) |
 | **v0.14** | 速度 (まず計測) | 起動 / 接続して見るまで / 大きな結果セット。**最適化の前に計測**を入れて後から比較できるようにする |
 | **v0.15** | 日々の作業 | JSON エクスポート、保存クエリ、スキーマ差分 (Phase 5 の残り) |
 | **v1.0** | HTTP contract の凍結 | 機能リリースではない。#161、`docs/api-contract.md` の dbboard-web への反映、検証シート 001–003 の人による実施 (ADR-0011)。9% 訳の 9 ロケール (#181) を同乗 |
@@ -53,25 +102,10 @@
 **日付は書かない。代わりに実測を置く**: v0.4.0 → v0.10.0 は **16 日で 7 リリース**
 (2026-08-04 → 08-20)。この速度なら近い枠は数日〜1 週間。約束ではなく観測値。
 
-**「で、何が出たの？」への答え**は CHANGELOG の見出しに入れる:
-
-```
-## [0.11.0] — Connection repair and duplication
-```
-
-push のたびに次の枠の見出しも出る:
-
-```
-[changelog] 3 unreleased entries — a release is due (0.11.0 -> 0.12.0: A connection list you can steer)
-```
-
-- 1 件以上 → 出してよい / **3 件以上 → 出すべき**
-- `### Added` か `### Changed` があれば minor、無ければ patch
-- **v0.11.0 は 2026-08-24、v0.12.0 は 2026-08-25 に切った。** #222 / #225 / #223 が
-  develop に入った直後、11 件で切っている。いまは `nothing unreleased yet`。
-- v1.0 だけは中身で決まらない (`docs/api-contract.md` の非互換変更 = major)。
-  条件は `.claude/issues/0021-v1-0-criteria.md`。**機能の数では上がらない**ので、
-  下の 28 件は 1 件も v1.0 の条件ではない。
+**仕組み (何件で出すか / minor か patch か / push のたびに出る行) は `CLAUDE.md` の "Releases" が正本。**
+同じ説明をここに 2 度置かない。事実だけ: **v0.11.0 = 08-24 / v0.12.0 = 08-25 / v0.13.0 = 08-26 に切った。**
+いまは `nothing unreleased yet`。v1.0 だけは中身で決まらず (`docs/api-contract.md` の非互換変更 = major)、
+条件は `.claude/issues/0021-v1-0-criteria.md`。**機能の数では上がらない**ので、下の 28 件は 1 件も v1.0 の条件ではない。
 
 **枠が埋まったら、次の枠の実装より先に出す。** 作っただけでは誰も使えない。
 待っているのは収集係と dbboard-web 側で、その人たちに届くのはタグを打った瞬間だけ。
@@ -179,9 +213,8 @@ Phase 1 の Adapter Capability API だけは他のどれを選んでも先に要
 
 | やること | なぜエージェントには無理か |
 |---|---|
-| ~~`develop` の push と タグ `v0.12.0` の push~~ → **2026-08-25 に完了**。`origin/develop` = `c430d6b`、タグ = `57afbfe`。release workflow (run 32841019679) は 5 job すべて success、**v0.12.0 は 11:32Z に公開済** (draft でも pre-release でもない)。資産 9 点 — Windows setup.exe + .sig / macOS dmg + app.tar.gz + .sig / MCP 2 本 / `SHA256SUMS.txt` / `latest.json`。`latest.json` は 0.12.0 と `dbboard-desktop_0.12.0_x64-setup.exe` を指している (= ノート PC の v0.10 にも 0.12.0 が出る) | push は §6、タグ push は ADR-0121 で user のものだった |
-| ~~#216 / #221 / #224 の merge、`develop` と タグ `v0.11.0` と `feature/connection-order` の push~~ → **5 件とも 2026-08-24 に完了**。経緯は `.claude/archive/next-actions-2026-08.md` (退避日 2026-08-25) | push と merge は §6、タグ push は ADR-0121 で user のもの |
-| **公開された exe を目視で PII チェック** (v0.11.0 と v0.12.0 のぶん・未実施) | `.pii-denylist` はこのマシンに無い (untracked・§55)。機械では見られないので、実店舗名が exe に混ざっていないかは人の目でしか確認できない |
+| ~~v0.11.0 / v0.12.0 の push とタグ push、#216–#225 の merge~~ → **すべて完了** (2026-08-24 / 08-25)。v0.12.0 は資産 9 点で公開済、`latest.json` も 0.12.0 を指している。全文は `.claude/archive/next-actions-2026-08.md` (退避日 2026-08-26) | push / merge は §6、タグ push は ADR-0121 で user のものだった |
+| **公開された exe を目視で PII チェック** (v0.11.0 / v0.12.0 / v0.13.0 のぶん・未実施) | 機械では見られないので、実店舗名が exe に混ざっていないかは人の目でしか確認できない。**Mac へ移ると Windows の `.exe` は手元でビルドできない**ので、以後は CI 成果物をダウンロードして見る |
 | ~~#222 `feature/connection-order` / #225 `feature/sidebar-panel-split` / #223 `chore/annotations-test-gaps` の merge~~ → **3 件とも 2026-08-25 に完了** (10:21–10:22Z)。**squash ではなく `--merge`** — #225 は #222 の上に積んであったので、squash すると #225 が乗っている履歴を書き換えてしまい、自動 retarget の後で衝突する。merge 後に develop で 0.12.0 を切った (`57afbfe`)。**画面確認は 7d 目印 / 7e 横区切り / 7f ダイアログ / 7g MCP 登録 のいずれも未実施のまま**。§38 により催促はしない — 見るなら「接続行を右クリックして色見本が出るか / 選んだ色が行頭に細い帯で出るか / 区切り線を上下に動かせるか・W クリックで戻るか / フォーム入力中に外側をクリックしても消えないか / ヘッダを掴んでダイアログを動かせるか」 | merge は §6 で user のもの。#219 / #220 は GitHub が閉じたので #222 / #223 で立て直した (ブランチも commit もそのまま) |
 | **#161 Run ボタンの 3 点観察** | 画面の観察。**v1.0 ゲートの 1 つ** |
 | #193 送信側マシンでの確認 | 手元に無い環境 |
@@ -197,30 +230,31 @@ Phase 1 の Adapter Capability API だけは他のどれを選んでも先に要
 
 ## 最終更新
 
-- 日付: 2026-08-25 その2 (**接続ダイアログの 2 件と、MCP からの接続登録**。
-  user から 3 件まとめて来たうちの 2 件を片付けた。
+- 日付: 2026-08-26 (**v0.13.0 を切った。そして開発機がこの Windows PC から Mac mini へ移る**。
 
-  **(1) ダイアログ** (ADR-0132 / `4913cb6`)。「ほか触ると消える」「DnD で移動もできない」
-  「狭い画面で入力するとどうしても避けるときに入力欄が落ちるので永遠に登録できない」。
-  最後の一文が症状の全部で、**登録が完了できない**というのは苛立ちではなく機能不全。
-  背景クリックを無効化し、`Escape` は**まだ何も打っていないフォームからだけ**効かせた。
-  出口は ✕ と Cancel の 2 つだけに残す。移動は 7e と同じ手つき (掴んで動かす / W クリックで中央)。
+  **(1) v0.13.0** (`5022112` / タグ `v0.13.0`)。見出しは
+  "Knowing what changed, and letting an agent tidy up" — 中身は 2026-08-25 に来た
+  2 件そのまま (バージョン確認画面の更新内容 = ADR-0137、MCP から目印と並び替え = ADR-0136)。
+  `release-cut.mjs` → `cargo check --workspace` → `docs/roadmap.md` の v0.13 行を削除 → commit → タグ。
+  検証は `release-plan.test.mjs` 7/7、`release-due.mjs` = `nothing unreleased yet`、
+  pre-commit 全 green・pii-scan clean・`--no-verify` なし。
+  **ここで切ったのは、ADR-0135 の「更新が止まっている」告知が 0.12 → 0.13 の更新でしか動かない**から。
+  0.12.0 で目印を書く側が出たので、読む側が動くのはこの版が初めてになる。
 
-  **(2) MCP 登録** (ADR-0134 / `b1a4fcc`)。「ローカル DB 接続する場合とか、MCP 用意して
-  登録追加くらいさせたほうがいい。人が別にやる意味ないから」。**受けるのは鍵束に何も置かない
-  種類だけ** — SQLite/libSQL のファイルパスと Firestore エミュレータ。
-  ここを「URL を見てパスワードが入っているか判定する」にしなかったのが設計の本体で、
-  判定は一度間違えれば終わりだが、**型に秘密を表現する枝が無ければ間違えようがない**。
-  断り文句は tool の description 側に置いた (エラーで学ぶ頃には資格情報は送信済み)。
+  **(2) 引っ越し**。詳細はこのファイル冒頭の「引っ越し」節。要点だけ:
+  git が運ばないのは `.pii-denylist` (untracked・中身が PII なので **user が書く**)、
+  エージェントの memory 27 ファイル (git 管理外・**消えたら復元不能**・user が手でコピー)、
+  git hooks (`sh scripts/install-hooks.sh`) の 3 つ。
+  Windows 固有の地雷 (libSQL teardown segfault / Norton / `link.exe 1318` / scrypt / exe ロック) は
+  手元からは消えるが、**スクリプトと直列リストは残す** — CI の windows runner が同じ道を通る。
+  `pii-scan.sh` の Windows ホームパス規則は Mac のパスを見ないので、足すなら `.pii-denylist` 側。
 
-  **(3) 前提として先に直した本物のバグ** (ADR-0133 / `a4090af`)。`ConnectionAdmin` が
-  `connections.toml` を丸ごと抱えて丸ごと書き戻すので、**dbboard を開いたまま外から足した接続が、
-  次の rename で黙って消えていた**。エラーも衝突も出ない。重複 id の番人も同じ盲点で、
-  ディスク上で埋まっている id を通していた。全 mutator の先頭で読み直す。
-  desktop 側 13 か所の呼び出しに任せなかったのは、**忘れるのは次に足される 1 か所**だから。
+  **AI がやれていないこと**: push (develop + タグ)、公開後の exe 目視スキャン、
+  memory と `.pii-denylist` の移送。→ すべて **user 側**。)
 
-  検証は 4 コマンドすべて green (`fmt` / `clippy -D warnings` / `check` / 直列テスト)。
-  `--no-verify` なし。**AI がやれていないこと**: 画面と実機での確認。→ **user 側**。)
+> 2026-08-25 その2 のセッションログ (ダイアログ / MCP 接続登録 / `ConnectionAdmin` のバグ) は、
+> 2026-08-26 に `.claude/archive/next-actions-2026-08.md` へ全文退避した。
+> セッションログの正本は `.claude/project-status.md` (とその退避先) 側。
 
 > 2026-08-25 (サイドバーの横区切り・ADR-0131) と 2026-08-24 その8 (v0.11.0 が `main` に
 > 着地した回) のログは、baseline §31 に基づき
@@ -236,7 +270,7 @@ Phase 1 の Adapter Capability API だけは他のどれを選んでも先に要
 **ロードマップ順ではなく摩擦順**に進めるフェーズ。**ロードマップは順序ではなく献立**で、
 実際に使って出た困りごとが常に優先する。
 
-**最新リリース = v0.11.0 (2026-08-24)。** CHANGELOG の `## [Unreleased]` は **8 件** — `release-due.mjs` の基準では**リリースが due**。切るかどうかとタグ push は user (ADR-0121)。 アダプタは 11 kind
+**最新リリース = v0.13.0 (2026-08-26 に切った・`5022112` / タグ `v0.13.0`)。** CHANGELOG の `## [Unreleased]` は空 (`release-due.mjs` = `nothing unreleased yet`)。**commit とタグはローカルにあるだけで、push は user** (ADR-0121)。 アダプタは 11 kind
 (ワイヤ id は 9 — `turso-remote` は `turso` として名乗るのでコントラクト非破壊)。
 v1.0 の定義は「機能が出揃うこと」ではなく **`docs/api-contract.md` を壊さない約束**
 (ADR-0011) なので、エンドポイントやフラグの追加は additive = 1.0 を妨げない。
@@ -333,24 +367,11 @@ MSI アンインストールは `%APPDATA%\dbboard\dbboard\` の設定と Window
 Group D-2 (ADR-0029 function-calling, `feature/adr-0029-function-calling` に
 planning ball)。実利用の摩擦順に着手。新 write 経路は着手前に ADR。
 
-### 参考: 配布済 exe の使用シグナル確認 / 再配布
+### 参考: 配布済 exe の使用シグナル確認 / 再配布 — **全文退避**
 
-- **使用確認**: `gh release view v0.3.0 --json assets --jq
-  '.assets[].downloadCount'` (匿名 update-check の GET 自体は観測不可、
-  資産 DL 数のみ)。
-- **新版を配布したくなったら**: 次バージョンを bump → develop → main にマージ →
-  **タグ push だけ**。Release CI が Win (NSIS setup.exe + `.sig`) / macOS
-  (universal `.dmg` + `.app.tar.gz` + `.sig`) / MCP バイナリ / `latest.json` /
-  `SHA256SUMS.txt` を publish する。配布済 exe が起動時に検知する。
-  リリースオブジェクトも publish ジョブが自力で用意する (v0.5.0 以降)。
-  **タグ push の前に `target/release` を掴むプロセスを確認する** — 他セッションの
-  `dbboard-mcp.exe` が生きていると pre-push の release ビルドが `LNK1104` で落ちる
-  (v0.9.0 で実際に落ちて `--no-verify` になった。v0.10.0 では事前確認して回避した)。
-  公開後に exe を実接続名で目視スキャン。**バンドルは CI が作る**ので、ローカルで
-  MSI / `.dmg` を手作りする手順は要らない (要る場合は README が正本)。
-- secret 移送 = **推奨 (ADR-0038)**: 手元で 3 接続を Export → `.dbbx` を渡し
-  パスフレーズは別経路。担当機は Import 1 回。旧 cmdkey 手順は
-  `docs/collector-setup/README.md`。**secret は一切ファイルに書かない。**
+`.claude/archive/next-actions-2026-08.md` (退避日 2026-08-26)。再配布はタグ push だけで
+Release CI が全部作る ([[project-release-ci-needs-release-object]])。**Windows の release exe を
+掴むプロセスの確認は Mac へ移ると不要になる** ([[env-release-binary-locked-on-push]] も同様)。
 
 ---
 
