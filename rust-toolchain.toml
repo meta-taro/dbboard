@@ -1,0 +1,14 @@
+# The toolchain every mandatory command runs under, pinned to an exact
+# version on purpose (ADR-0139).
+#
+# `cargo clippy -- -D warnings` makes the lint set part of the build, so an
+# unpinned toolchain means the GitHub runner image decides when the build
+# breaks. It did: the image picked up Rust 1.98, `unused_async_trait_impl`
+# came with it, and `develop` went red on a file no commit had touched in
+# two months.
+#
+# Bump this deliberately, with the lint fixes the bump requires in the same
+# commit. rustup installs it on first use, CI included.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]

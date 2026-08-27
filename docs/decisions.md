@@ -12837,3 +12837,69 @@ changing all three together.
   keyring, never the OS credential store.
 * `ai.rs` is 959 lines and was left alone. It is the next one, and splitting
   it is a separate change so that this one stays reviewable as a move.
+
+## ADR-0139 — The toolchain is pinned, so a new lint arrives as a commit rather than as a broken branch (2026-08-27)
+
+**Status.** Accepted. Constrains the "Mandatory Verification Commands" in
+`CLAUDE.md` and the `rust` job in [ADR-0104](#adr-0104--verification-runs-in-ci-not-only-in-a-git-hook).
+
+**Context.** On 2026-08-24 the `ci` workflow failed on a push to `develop`
+with two `clippy::unused_async_trait_impl` errors in
+`crates/dbboard-tunnel/src/tunnel.rs`. The push touched
+`apps/desktop/src-tauri/`, `.claude/` and `docs/decisions.md`; `tunnel.rs`
+had not been modified since 2026-08-06. The lint did not exist when that code
+was written. The GitHub runner image had moved to Rust 1.98, which introduced
+it, and `-D warnings` turned it into a build failure.
+
+Neither half of that is a mistake on its own. `-D warnings` is deliberate: a
+warning nobody has to act on is a warning everybody stops reading. Taking the
+runner's preinstalled Rust is the default, and the repository declared no
+toolchain — `rust-toolchain.toml` was absent and `ci.yml` had no rustup step.
+Together they hand the decision of *when this repository's build breaks* to a
+machine image on a schedule nobody here reads.
+
+The failure mode is specifically bad because it is misattributed. The red
+build carries the hash of whoever pushed last, in a crate they did not open,
+and the first move is to look for a regression that is not there.
+
+**Decision.** Pin the toolchain in `rust-toolchain.toml` to an exact
+`x.y.z` version, with the `clippy` and `rustfmt` components the mandatory
+commands need. rustup honours it on first use, so CI, the hooks and a fresh
+clone all run the same compiler with no workflow change.
+
+`crates/dbboard-config/tests/toolchain_pin_drift.rs` fails if the file goes
+missing, if the channel is anything but an exact three-part version, if a
+component is dropped, or if the pin falls below the `rust-version` the
+workspace declares.
+
+**Why an exact version and not `stable`.** `channel = "stable"` is a file
+that looks like a pin and floats anyway. It would have changed nothing about
+2026-08-24 while making the next reader believe the question was settled. The
+same argument rules out `1.98` without a patch level.
+
+**What this does not do.** It does not avoid the lint work. Both sites still
+had to be answered before this ADR was written: `check_server_key` in
+`tunnel.rs` became `fn … -> impl Future` returning `std::future::ready`, which
+also let the host-key decision move into a plain synchronous
+`VerifyHandler::verify` that two new tests exercise without an SSH session;
+and the `#[tool_handler]` site in `crates/dbboard-mcp/src/server.rs` took a
+targeted `#[allow]`, because the `async fn` there is emitted by a third-party
+macro and cannot be rewritten.
+
+What the pin changes is *when*. A bump is now a commit someone chose to make,
+carrying its lint fixes in the same diff, instead of an unrelated push
+discovering them on a branch that was green an hour earlier.
+
+**Consequences.**
+* New lints no longer arrive by themselves. Bumping the channel is a real task
+  with real work behind it, and putting it off means running an older compiler
+  on purpose — which is the trade, stated out loud.
+* The pin removes the reason to worry about `#[allow]` on a lint that older
+  clippy does not know: everyone runs the pinned version, so the name is always
+  recognised. Without a pin, the `dbboard-mcp` allow would itself have failed
+  `-D warnings` on the 1.92 the workspace declares as its minimum.
+* `rust-version = "1.92"` stays as declared. It says what the crates compile
+  with; the pin says what this repository's checks run under. They are
+  different claims and the test only requires the pin not to be lower.
+* First CI run after a bump pays a toolchain download. That is the price of
+  the bump being visible.
