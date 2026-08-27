@@ -724,6 +724,13 @@ struct UiCommandOutcome {
 // at the router stored on the struct. Without it the macro defaults to
 // `Self::tool_router()`, which rebuilds the router on every call and
 // leaves the field unread (a denied dead-code warning under our lints).
+// The macro emits `async fn call_tool`/`list_tools` to match the trait, and
+// our tool bodies are the only thing that awaits — a server with no async
+// tool would leave them awaitless. We cannot change generated code, and the
+// generated signature is correct, so the lint is silenced at the one site
+// that produces it (clippy::unused_async_trait_impl, clippy 1.98+; the
+// toolchain is pinned, so the lint name is always known here).
+#[allow(clippy::unused_async_trait_impl)]
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DbboardMcp {
     fn get_info(&self) -> ServerInfo {
