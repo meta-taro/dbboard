@@ -64,8 +64,8 @@ pub use annotations::{
     ColumnAnnotation, ConnectionAnnotations, TableAnnotations, ANNOTATIONS_VERSION,
 };
 pub use bundle::{
-    decrypt_bundle, encrypt_bundle, validate_passphrase, BundleError, BundlePayload,
-    BUNDLE_VERSION, MIN_PASSPHRASE_LEN,
+    decrypt_bundle, encrypt_bundle, generate_passphrase, validate_passphrase, BundleError,
+    BundlePayload, BUNDLE_VERSION, MIN_PASSPHRASE_LEN,
 };
 pub use dsn::{parse_dsn, with_password, DsnParts};
 pub use error::ConfigError;
@@ -74,7 +74,7 @@ pub use mark::{
 };
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{
-    default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind,
+    default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind, McpExport,
     SshTunnelToml, CONFIG_VERSION,
 };
 pub use ui_command::{

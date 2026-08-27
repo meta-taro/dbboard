@@ -34,6 +34,13 @@ Elasticsearch/OpenSearch, Oracle) hold no slot on purpose: each is additive
 and independent, so one ships in whichever release is open when it is
 finished. Demand decides the order, not this table.
 
+MCP verbs hold no slot either, for the same reason and with one condition
+attached: a verb is additive only while it opens nothing an operator had not
+already opened by hand. One that needs a new permission carries that
+permission's design with it ([ADR-0087](decisions.md),
+[ADR-0140](decisions.md)), and the design is what gets reviewed — not which
+release it lands in.
+
 ### Bands after 1.0 — several releases each
 
 The eight phases of the Database Workspace plan

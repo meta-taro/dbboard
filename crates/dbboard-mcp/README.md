@@ -34,19 +34,23 @@ desktop GUI: the `connections.toml` entry store plus the OS keychain
 adds no new place to keep credentials — it reads the ones dbboard already
 holds.
 
-Eighteen tools (ADR-0046 Decision 5, extended by
+Twenty-one tools (ADR-0046 Decision 5, extended by
 [ADR-0053](../../docs/decisions.md),
 [ADR-0054](../../docs/decisions.md),
 [ADR-0087](../../docs/decisions.md),
 [ADR-0107](../../docs/decisions.md),
 [ADR-0108](../../docs/decisions.md),
 [ADR-0109](../../docs/decisions.md),
-[ADR-0116](../../docs/decisions.md) and
-[ADR-0134](../../docs/decisions.md)). Seven read a database, one writes
+[ADR-0116](../../docs/decisions.md),
+[ADR-0134](../../docs/decisions.md),
+[ADR-0136](../../docs/decisions.md) and
+[ADR-0140](../../docs/decisions.md)). Seven read a database, one writes
 behind a per-connection flag, one takes a backup, seven reach no
 database at all — those seven read or work the running window — one
-reaches nothing whatever (it names the build that is answering), and one
-registers a connection without ever touching a database.
+reaches nothing whatever (it names the build that is answering), one
+registers a connection without ever touching a database, two tidy the
+connection list (its marks and its order), and one seals connections into
+an encrypted bundle behind a permission of its own.
 
 | Tool | What it returns |
 |---|---|
@@ -69,6 +73,7 @@ registers a connection without ever touching a database.
 | `add_connection` | Registers a new connection in `connections.toml` and returns it as `{ id, name, kind }`. Only the kinds that put **nothing** in the keychain: `turso` (a SQLite/libSQL file on this machine, from a `path`) and `firestore` (the local emulator, from a `project_id` and a `base_url` — it authenticates with a fixed token, so there is no service account to save, [ADR-0093](../../docs/decisions.md)). Every other kind is refused permanently, and the refusal is in the tool's *description* so an agent reads it before sending a password rather than after. The entry is created read-only — `mcp_write` stays off and no alias is set, since an alias the agent chose would hide nothing from it. A dbboard window that is already open lists the new connection after a refresh. See [ADR-0134](../../docs/decisions.md). |
 | `set_connection_mark` | Sets a connection's identity mark: a colour from dbboard's eight (`red`, `orange`, `yellow`, `green`, `teal`, `blue`, `purple`, `pink`) and a tag of at most 12 characters. Both halves are written together, so sending one clears the other and sending neither unmarks the connection — the same all-at-once edit the app's own picker makes, because a half-sent mark and a cleared one are indistinguishable in an agent-composed JSON object. Answers with the whole list in its new state. Reaches no database, so it is **not** behind `mcp_write`: that switch is about data (ADR-0087), and putting the sidebar's colours behind it would make an operator grant production write access to have their list tidied. See [ADR-0136](../../docs/decisions.md). |
 | `move_connection` | Moves a connection to a `position`, sliding the rest over. The list order is the order the sidebar renders (#192), and `position` counts from zero — it is the `position` field `list_connections` reports, not a row counted off by hand, because another window may have reordered the file since. Answers with the whole list in its new order, so a sort can be driven from the response rather than from a read that is one move stale. Reaches no database. See [ADR-0136](../../docs/decisions.md). |
+| `export_connections` | Seals the connections you name into one encrypted `.dbbx` bundle in a directory the operator chose, and returns `{ path, passphrase_ref, connection_count, warnings }`. **Not the passphrase** — dbboard generates one, files it in this machine's credential manager under `passphrase_ref`, and wipes its copy; a tool result is plaintext in an agent's transcript, so the bundle and its key must not travel together. Refused permanently unless `connections.toml` has an `[mcp_export]` table naming a directory, and refused if that directory is not there (it is never created). Name every connection: there is no form of this that exports everything. `warnings` counts entries whose secret lives in another machine's keyring rather than listing them, so an aliased connection stays hidden ([ADR-0088](../../docs/decisions.md)). See [ADR-0140](../../docs/decisions.md). |
 | `open_ai_settings` | Opens the AI provider settings, which live *inside* that panel — so it is refused while the panel is shut, and `open_ai_panel` comes first. The refusal is the point as much as the opening: there is no top-level route to these settings, and being told the verb has no owner is how an agent learns that. Says so when they were already open. |
 
 `run_read_query` has no write path at all. Any statement that is not a
@@ -130,6 +135,40 @@ Restore is closed too: its plan runs statements verbatim and covers
 `DROP`/`TRUNCATE`, which cannot be reconciled with an allowlist. A human
 restores, in the dbboard app.
 
+## The export permission (ADR-0140)
+
+`export_connections` is off, and the way it turns on is by naming a place
+for the files:
+
+```toml
+[mcp_export]
+dir = "C:/Users/you/dbboard-bundles"
+```
+
+No table, no export. The table lives in `connections.toml` and not in an
+environment variable on purpose: the MCP launcher's config is usually a file
+the agent itself can edit, and a permission a tool can grant itself is not a
+permission ([ADR-0087](../../docs/decisions.md)). Choosing the directory *is*
+the grant, so there is nothing left switched on afterwards — remove the table
+and the verb is closed again. A directory that does not exist is refused
+rather than created, because a stale path is a mistake and creating it would
+turn that mistake into a new place credentials get written.
+
+The passphrase never reaches the caller. It is generated here from the OS
+RNG, filed in this machine's credential manager under
+`dbboard.export.<file stem>`, and zeroized. **That entry is the only copy.**
+Clearing it before the bundle has been opened makes the bundle unopenable,
+and nothing in dbboard can recover it — which is the correct behaviour for a
+file full of credentials, and the reason it is said here rather than left to
+be discovered.
+
+Bundles are never overwritten (`create_new`, with `-2`, `-3` … when two land
+in the same second) and never pruned. Deleting the operator's encrypted
+backups is not something this server should be able to do.
+
+Importing a bundle is **not** exposed. Reading one back writes credentials, so
+it stays a human act in the dbboard app — the same line restore sits on.
+
 ## Security posture
 
 - **Secrets stay in the keychain.** The only connection metadata that
@@ -139,6 +178,10 @@ restores, in the dbboard app.
 - **Reading is engine-enforced read-only**, not advisory (see above).
 - **Writing is off until a human turns it on**, per connection, and the
   permanently-closed list holds regardless (see the write policy above).
+- **An export cannot choose where it lands.** `export_connections` writes
+  only into the directory an operator named in `connections.toml`, mints the
+  passphrase itself and keeps it (see the export permission above), and seals
+  only the connections it was given by name.
 - **Dumps never overwrite.** `dump_database` takes an absolute path whose
   parent already exists and whose file does not, created with
   `create_new` — so an agent cannot clobber a backup, including one it
@@ -443,6 +486,8 @@ receives Ctrl-C.
   `list_relationships` tool that extends it to seven.
 - [ADR-0134](../../docs/decisions.md) — `add_connection`, and why only the
   credential-free kinds can be registered by an agent.
+- [ADR-0140](../../docs/decisions.md) — `export_connections`, why the
+  directory is the permission, and why the passphrase stops here.
 - [ADR-0136](../../docs/decisions.md) — `set_connection_mark` and
   `move_connection`, and why the mark and the order are not behind
   `mcp_write`.

@@ -77,6 +77,17 @@ pub struct AddConnectionParams {
     pub base_url: Option<String>,
 }
 
+/// Parameters for [`DbboardMcp::export_connections`] (ADR-0140).
+///
+/// One field, and it is required. There is no "all" flag and no filter: the
+/// list an agent sends is the record of what left the machine, and a filter
+/// evaluated later is not that record.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExportConnectionsParams {
+    /// The connection ids to seal, as `list_connections` returns them.
+    pub connection_ids: Vec<String>,
+}
+
 /// Parameters for [`DbboardMcp::set_connection_mark`] (ADR-0136).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetConnectionMarkParams {
@@ -283,6 +294,39 @@ impl DbboardMcp {
             .resolve_agent_handle(handle)
             .await
             .map_err(|e| to_mcp(&e))
+    }
+
+    // The description has one job the error cannot do: an agent that expects
+    // a passphrase back will design its whole handover around getting one,
+    // and by the time the answer arrives it has already promised a colleague
+    // something it cannot deliver. So say it here, before the call.
+    #[tool(
+        description = "Seal the named connections into one encrypted dbboard bundle file, for handing to a colleague or moving to another machine.
+
+You will NOT get the passphrase. dbboard generates one, files it in this machine's credential manager, and tells you only the slot name. What comes back is the bundle's path plus that slot name, so the file you are holding is one you cannot open — ask the operator to read the passphrase out of their credential manager and send it to the recipient separately.
+
+Off unless the operator has already chosen a directory for this: without an [mcp_export] table in connections.toml the call is refused permanently, and no retry or rephrasing opens it. Say so and ask them to set it.
+
+Name every connection you mean; there is no form of this that exports everything."
+    )]
+    async fn export_connections(
+        &self,
+        Parameters(ExportConnectionsParams { connection_ids }): Parameters<ExportConnectionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Resolved one at a time through the same path every other tool uses,
+        // so an alias works here and a real id an alias is hiding does not
+        // (ADR-0088). Doing it before the export also means a typo is
+        // reported as a typo rather than as a half-finished bundle.
+        let mut ids = Vec::with_capacity(connection_ids.len());
+        for handle in &connection_ids {
+            ids.push(self.resolve(handle).await?);
+        }
+        let outcome = self
+            .service
+            .export_connections(ids)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&outcome)
     }
 
     #[tool(
@@ -853,6 +897,14 @@ fn to_mcp(err: &ServiceError) -> McpError {
         | ServiceError::NotRestorable(_)
         | ServiceError::WriteNotEnabled(_)
         | ServiceError::WriteRefused(_)
+        // The export gates (ADR-0140) follow `WriteNotEnabled`: an absent
+        // `[mcp_export]`, or a directory that is not there, is not something
+        // the agent can fix, and retrying either loops forever. `Export` also
+        // covers a failed write, which *might* succeed on a second attempt —
+        // but an agent that reports a full disk to its operator is a better
+        // outcome than one that spins on it.
+        | ServiceError::ExportNotEnabled
+        | ServiceError::Export(_)
         // Same reasoning as `capture_window`'s "not running" (ADR-0108): a
         // closed app stays closed until a human opens it, and `internal_error`
         // is the code that reads as "try again". A refusal from the window is
@@ -989,10 +1041,15 @@ mod tests {
     ///
     /// Checked against the source text rather than by calling the tools,
     /// because the failure this guards against is a *new* tool added without
-    /// the line — which no test of the existing eight would catch. A tool that
-    /// forgets it rejects the alias the agent was given and accepts the real
-    /// id the operator hid, and both look like ordinary behaviour until
+    /// the line — which no test of the tools already here would catch. A tool
+    /// that forgets it rejects the alias the agent was given and accepts the
+    /// real id the operator hid, and both look like ordinary behaviour until
     /// someone reads a transcript.
+    ///
+    /// Two shapes count. Most tools take one `connection_id` and resolve it
+    /// outright; `export_connections` takes a list and resolves each element
+    /// in a loop. Both are spelled exactly, so a third shape has to be added
+    /// here on purpose rather than by resembling one of these.
     #[test]
     fn every_tool_taking_a_connection_id_resolves_it_first() {
         let source = include_str!("server.rs");
@@ -1007,8 +1064,10 @@ mod tests {
                 .nth(1)
                 .and_then(|rest| rest.split('(').next())
                 .unwrap_or("<unknown>");
+            let resolved = body.contains("self.resolve(&connection_id).await?")
+                || body.contains("self.resolve(handle).await?");
             assert!(
-                body.contains("self.resolve(&connection_id).await?"),
+                resolved,
                 "tool `{name}` uses the agent's connection_id without resolving it"
             );
         }

@@ -29,6 +29,9 @@ schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Timestamps for the names of the bundles the export verb writes
+# (ADR-0140). `formatting` + `macros` come from the workspace entry.
+time = { workspace = true }
 # `sync` for the adapter-cache Mutex, `io-std` for the stdio transport,
 # `rt-multi-thread` + `macros` for the runtime, `signal` so a Ctrl-C
 # shuts the server down cleanly alongside peer-disconnect.

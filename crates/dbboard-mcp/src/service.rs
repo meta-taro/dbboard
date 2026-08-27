@@ -47,6 +47,8 @@ use dbboard_config::{
     SecretStore, CONNECTION_COLORS,
 };
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
+
+use crate::export::{self, ExportOutcome};
 use dbboard_core::{
     build_update_sql, classify_write, dialect_for_adapter_id, plan_dump as core_plan_dump,
     plan_restore as core_plan_restore, run_dump as core_run_dump, run_restore as core_run_restore,
@@ -57,6 +59,7 @@ use dbboard_core::{
 };
 use serde::Serialize;
 use thiserror::Error;
+use time::OffsetDateTime;
 use tokio::sync::Mutex;
 
 /// Default number of rows returned when the caller does not specify
@@ -494,6 +497,23 @@ pub enum ServiceError {
          a human must set mcp_write = true on it in connections.toml"
     )]
     WriteNotEnabled(String),
+
+    /// No `[mcp_export]` permission is set, so this server may not write
+    /// bundles anywhere (ADR-0140). The absent state is the default, and an
+    /// agent cannot leave it: `ConnectionAdmin` writes `[[connections]]`
+    /// entries and no top-level key, so the only way in is a human editing
+    /// the file.
+    #[error(
+        "exporting connections over MCP is not enabled; a human must add an          [mcp_export] table naming a directory to connections.toml"
+    )]
+    ExportNotEnabled,
+
+    /// The export was permitted but could not be completed — the configured
+    /// directory is missing, or the bundle could not be written. Separate
+    /// from [`ServiceError::Config`] because none of these are the store
+    /// being unreadable.
+    #[error("{0}")]
+    Export(String),
 
     /// The write policy refused the statement (ADR-0087). Carries
     /// [`WritePolicyViolation::is_permanent`], which tells an agent whether
@@ -1013,6 +1033,45 @@ impl McpService {
             }
             other => ServiceError::Config(other),
         })
+    }
+
+    /// Seal the named connections into an encrypted bundle on disk, under a
+    /// passphrase this server mints and files in the OS credential store
+    /// (ADR-0140).
+    ///
+    /// The answer carries the bundle's path and the *name* of the credential
+    /// slot — never the passphrase. An agent that collects three connections
+    /// for a colleague therefore ends up holding a file it cannot open, and
+    /// the colleague gets the passphrase from the operator, out of band.
+    ///
+    /// Off unless the operator has added an `[mcp_export]` table to
+    /// `connections.toml` naming a directory to write into. See
+    /// [`crate::export`] for why the permission lives there and not in the
+    /// environment.
+    ///
+    /// The admin is opened per call inside the blocking pool, for the same
+    /// reason [`add_connection`](Self::add_connection) does it: the file may
+    /// have moved under us, and the crypto is deliberately slow (scrypt).
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ExportNotEnabled`] when the operator has granted no
+    /// permission, [`ServiceError::Export`] for a missing destination or a
+    /// failed write, [`ServiceError::InvalidRequest`] for an empty selection,
+    /// and [`ServiceError::Config`] when the store or a secret cannot be
+    /// read.
+    pub async fn export_connections(
+        &self,
+        ids: Vec<String>,
+    ) -> Result<ExportOutcome, ServiceError> {
+        let path = self.config_path.clone();
+        let secrets = Arc::clone(&self.secrets);
+        // Read once, here, so every name in one export shares a timestamp
+        // even if the blocking pool makes it wait.
+        let now = OffsetDateTime::now_utc();
+        tokio::task::spawn_blocking(move || export::export_named(&path, &secrets, &ids, now))
+            .await
+            .map_err(|e| ServiceError::Task(e.to_string()))?
     }
 
     /// Set a connection's identity mark — its colour, its short tag, or

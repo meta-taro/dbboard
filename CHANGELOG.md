@@ -7,7 +7,32 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Speed, measured
+
+### Added
+
+- **An agent can pack connections for another machine, without ever holding
+  the key.** Moving a set-up to a new laptop has been a bundle file since
+  0.4.0, but making one is five steps by hand: pick the connections, pick a
+  directory, invent a passphrase, save, and put the passphrase somewhere it
+  survives the trip. `dbboard-mcp` gains `export_connections`, which does the
+  first four. It seals only the connections you name — there is no form of it
+  that exports everything — and answers with the file path, a count, and the
+  **name of a credential-manager slot**. Not the passphrase: dbboard generates
+  one, files it under `dbboard.export.<name>` on this machine, and wipes its
+  copy. A tool result is plaintext in an agent's transcript, so a bundle and
+  the key to it must not travel together.
+
+  The switch is a directory, not a flag. Without an `[mcp_export]` table in
+  `connections.toml` naming one, the call is refused permanently — and that
+  table is in the connection store rather than in an environment variable
+  because an agent usually owns the file its own MCP server is launched from,
+  and a permission it can grant itself is not a permission. Choosing the
+  directory *is* the grant, so there is no "on" left switched on after the
+  laptop is provisioned. A directory that is not there is refused rather than
+  created. The result reports how many entries carried a secret this machine
+  cannot read, but not which ones, so a connection hidden behind an alias
+  stays hidden. See [ADR-0140](docs/decisions.md).
 
 ## [0.13.0] — 2026-08-26 — Knowing what changed, and letting an agent tidy up
 
