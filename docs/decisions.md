@@ -12903,3 +12903,107 @@ discovering them on a branch that was green an hour earlier.
   different claims and the test only requires the pin not to be lower.
 * First CI run after a bump pays a toolchain download. That is the price of
   the bump being visible.
+
+## ADR-0140 — An agent may seal connections into a bundle, and never learns the passphrase that opens it (2026-08-27)
+
+**Status.** Accepted. Extends
+[ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list)
+to a third gate, and is constrained by
+[ADR-0038](#adr-0038--passphrase-encrypted-connection-bundle-exportimport)
+(bundle format), [ADR-0105](#adr-0105--export-names-its-connections-import-overwrites-only-what-the-user-asks-it-to)
+(selective export) and
+[ADR-0088](#adr-0088--the-mcp-surface-shows-an-alias-not-the-connections-real-id).
+
+**Context.** Moving connections between machines has been a bundle file since
+0.4.0: `age` with an scrypt KDF, one `.dbbx` holding the entries and their
+secrets, opened by a passphrase the operator types. Making it is a five-step
+job in the app — pick the connections, pick a directory, invent a passphrase,
+save the file, put the passphrase somewhere it will survive the trip. Issue
+#196 asks for the shape of that job that suits an agent: the operator says
+"pack the three staging connections for the new laptop" and the agent does the
+picking and the filing.
+
+The obvious version of this is a mistake in three separate ways, and each one
+has to be closed before the verb is safe to expose.
+
+First, the passphrase. A tool that returns the passphrase has published it:
+the value lands in the calling agent's transcript, which is a plaintext file
+on disk, is sent to a model provider, and is quoted back into whatever the
+agent writes next. The bundle and the key to it then travel together, which
+is the one arrangement encryption cannot survive.
+
+Second, the permission. `mcp_write` is about the data inside a database and
+does not fit — an operator should not have to grant production write access to
+have a laptop provisioned. So this needs a switch of its own, and the tempting
+place to put it is an environment variable on the MCP server. That is not a
+gate. The MCP launcher's config is a file the agent usually owns and edits;
+ADR-0087 already settled that a tool able to grant its own access has not been
+gated, it has been asked nicely.
+
+Third, the scope. An export that defaults to everything hands over every
+credential on the machine on one under-specified sentence, and the operator
+finds out afterwards, from a file listing.
+
+**Decision.** One verb, `export_connections`, gated three ways.
+
+*The directory is the switch.* `connections.toml` grows an `[mcp_export]`
+table with a single `dir` key. No table, no export — refused permanently, with
+a message saying a human has to add one. The table lives in the connection
+store because no MCP tool writes a top-level key there; `ConnectionAdmin`
+exposes `mcp_export()` as a read and nothing else. Naming a directory *is* the
+permission, so the operator's grant and its blast radius are the same act:
+there is no separate "on" to leave on after choosing where the files go. A
+configured directory that does not exist is refused rather than created — a
+missing directory usually means a stale config or a typo, and silently making
+one turns a mistake into a place credentials get written.
+
+*The passphrase is minted here and stays here.* `generate_passphrase()` draws
+from the OS RNG over a 32-character alphabet with the ambiguous glyphs removed
+(no `l`, `o`, `0`, `1`), masked rather than reduced modulo so the distribution
+is flat, and formats it as six groups of five for reading aloud. It is stored
+in this machine's credential manager under `dbboard.export.<stem>` and
+**zeroized**. The tool result carries the file path, the reference name, how
+many connections were sealed, and any warnings — never the value. A test
+serializes the result and asserts the passphrase appears nowhere in it, then
+opens the file with the stored copy to prove the two match.
+
+*Every connection is named.* There is no "export all" form, and an empty
+selection is refused before the store is read. The list of ids in the
+transcript is the record of what left the machine.
+
+**Ordering, because a failure has to leave something recoverable.** The
+ciphertext is built first, then the filename is reserved with an atomic
+`create_new` (`dbboard-export-<stamp>Z.dbbx`, and `-2`, `-3` … when two
+exports land in the same second), then the passphrase goes into the keyring,
+then the bytes are written and synced. Each step removes the reserved file if
+it fails. The asymmetry is deliberate: a keyring entry with no file is litter
+someone can ignore, while a sealed file with no passphrase is a thing nobody
+can open and nobody can be sure is safe to delete.
+
+**What the result may say.** ADR-0088 lets an operator hide a connection from
+an agent behind a neutral alias, which the export result must not undo. So it
+reports a `connection_count` rather than the ids it sealed, and the
+foreign-reference warning — an entry whose secret belongs to another machine's
+keyring, which will arrive empty — is a **count**, not a list of names. The
+cloud-sync warning (`is_likely_cloud_synced_path`) names the directory the
+operator chose, which they already knew.
+
+**Error class.** `ExportNotEnabled` and every filesystem failure map to
+`invalid_params`, not `internal_error`. To an agent `internal_error` reads as
+"retry"; `invalid_params` reads as "say so and ask a human". Neither a missing
+`[mcp_export]` table nor a full disk is fixable by trying again, and an agent
+that reports the problem is worth more than one that spins on it.
+
+**Consequences.**
+* The operator's recovery path is `dbboard.export.<stem>` in the OS credential
+  manager. If they clear it before the bundle is opened, the bundle is gone —
+  which is the correct behaviour for a file full of credentials and has to be
+  said out loud in the docs rather than discovered.
+* Bundles accumulate in the chosen directory. Nothing prunes them, on purpose:
+  deleting the operator's encrypted backups is not a thing this server should
+  be able to do.
+* Exporting is not importing. Reading a bundle back stays a human act in the
+  app, for the same reason restore does (ADR-0087): it writes credentials.
+* The new logic went into `crates/dbboard-mcp/src/export.rs` rather than into
+  `service.rs`, which is already ~3,900 lines and on the list of files over
+  the 800-line limit. A new gate is not a reason to make that worse.

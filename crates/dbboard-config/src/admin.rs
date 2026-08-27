@@ -38,7 +38,8 @@ use crate::error::ConfigError;
 use crate::mark::{is_connection_color, is_connection_tag, CONNECTION_TAG_MAX_CHARS};
 use crate::secrets::{SecretError, SecretStore};
 use crate::store::{
-    load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind, SshTunnelToml,
+    load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind, McpExport,
+    SshTunnelToml,
 };
 
 mod repair;
@@ -529,6 +530,18 @@ impl ConnectionAdmin {
     #[must_use]
     pub fn entries(&self) -> &[ConnectionEntry] {
         &self.file.connections
+    }
+
+    /// The operator's standing permission for `dbboard-mcp` to export
+    /// bundles, if they have granted one (ADR-0140). `None` means they have
+    /// not, which is the state of every store nobody has edited by hand.
+    ///
+    /// Read-only on purpose: this type writes `[[connections]]` entries and
+    /// nothing else, so the permission cannot be granted through any path an
+    /// agent can reach.
+    #[must_use]
+    pub fn mcp_export(&self) -> Option<&McpExport> {
+        self.file.mcp_export.as_ref()
     }
 
     /// The non-secret parts of the DSN stored for `id`, for prefilling the
@@ -2251,6 +2264,7 @@ mod tests {
         let secret_ref = format!("dbboard.{id}.secret_key");
         secrets.set(&secret_ref, secret).expect("seed secret");
         let file = ConnectionFile {
+            mcp_export: None,
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
                 mcp_alias: None,
@@ -2926,6 +2940,7 @@ mod tests {
             .set("dbboard.dsql-iam.secret_key", "AWS_SECRET")
             .expect("seed secret");
         let file = ConnectionFile {
+            mcp_export: None,
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
                 mcp_alias: None,
@@ -6018,6 +6033,7 @@ mod tests {
             .expect("add on-disk");
 
         let file = ConnectionFile {
+            mcp_export: None,
             version: crate::store::CONFIG_VERSION,
             connections: Vec::new(),
         };

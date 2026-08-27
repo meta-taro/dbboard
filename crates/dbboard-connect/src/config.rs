@@ -741,6 +741,7 @@ mod tests {
 
     fn file_with(entries: Vec<ConnectionEntry>) -> ConnectionFile {
         ConnectionFile {
+            mcp_export: None,
             version: CONFIG_VERSION,
             connections: entries,
         }

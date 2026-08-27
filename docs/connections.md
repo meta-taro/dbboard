@@ -81,6 +81,13 @@ flavored vars at once is unusual but the precedence is fully defined.
 ```toml
 version = 1
 
+# Optional. Present only if you have decided to let an AI agent pack
+# connections for another machine; the directory you name here is the
+# permission itself. Absent means the MCP export verb is closed. See
+# ADR-0140 and "Letting an agent make the bundle" below.
+# [mcp_export]
+# dir = "C:/Users/you/dbboard-bundles"
+
 [[connections]]
 id   = "local-libsql"
 name = "Local libSQL"
@@ -208,6 +215,11 @@ database        = "orders"
 
 - `version` — currently `1`. dbboard refuses any other value rather
   than guessing at a forward- or backward-incompatible shape.
+- `[mcp_export]` — optional top-level table, absent by default. Its one
+  key, `dir`, names an existing directory. Naming one lets `dbboard-mcp`
+  seal connections into a bundle there and *is* the permission to do so;
+  removing the table closes the verb again. Nothing dbboard writes to this
+  file ever adds it — a human does. See below.
 - `id` — primary key referenced by `DBBOARD_CONNECTION`. Duplicate ids
   are a hard error at load time.
 - `name` — display label for the (future) connection picker.
@@ -488,8 +500,9 @@ it references, sealed with a passphrase you deliver out-of-band. See
 - **Export.** In the connection window, click **Export**, enter a passphrase
   (minimum 8 characters) and confirm it, then choose where to write the
   `.dbbx`. The bundle contains **all** saved connections plus every secret
-  they reference, resolved from the keychain at export time. (Per-connection
-  selection is a later refinement; v1 exports everything.)
+  they reference, resolved from the keychain at export time. Since 0.11.0
+  the connection list in that dialog has checkboxes, so a bundle can carry
+  one connection rather than the whole store ([ADR-0105](decisions.md)).
 
 - **Import.** Click **Import**, pick a `.dbbx` file, and enter its
   passphrase. dbboard decrypts the bundle, adds each connection, and seeds
@@ -507,6 +520,50 @@ it references, sealed with a passphrase you deliver out-of-band. See
 The passphrase material and the decrypted plaintext (which briefly holds
 every secret in the clear) are zeroized after use; the plaintext is never
 written to disk unencrypted.
+
+### Letting an agent make the bundle (`[mcp_export]`)
+
+The five steps above — pick the connections, pick a directory, invent a
+passphrase, save, keep the passphrase — are the right shape of work for an
+agent and a tedious one by hand. `dbboard-mcp`'s `export_connections` does
+the first four, and it is **off** until you name a directory for it:
+
+```toml
+version = 1
+
+[mcp_export]
+dir = "C:/Users/you/dbboard-bundles"
+```
+
+Three things to know before you add that table.
+
+- **Naming the directory is the whole permission.** There is no separate
+  switch to leave on afterwards; delete the table and the verb is closed.
+  It lives here, in `connections.toml`, rather than in an environment
+  variable on the MCP server, because that server's launcher config is
+  usually a file the agent itself can edit — and a permission a tool can
+  grant itself is not one ([ADR-0087](decisions.md)).
+
+- **You never see the passphrase, and neither does the agent.** dbboard
+  generates one, files it in this machine's keychain under
+  `dbboard.export.<file stem>`, and reports only that name. **That entry is
+  the only copy**: clear it before the bundle has been opened and the bundle
+  is unopenable. The reason it works this way is that a tool result is
+  plaintext in the agent's transcript, and a bundle that travels with its own
+  key is not encrypted in any useful sense.
+
+- **The agent names every connection it seals.** There is no export-everything
+  form of this verb, so the request in the transcript is the record of what
+  left the machine.
+
+dbboard never creates the directory — a path that is not there is refused, on
+the grounds that it usually means a typo and the wrong response to a typo is
+a new folder full of credentials. Bundles are not overwritten and not pruned.
+See [ADR-0140](decisions.md).
+
+Importing is not exposed to agents at all. Reading a bundle back writes
+credentials into this machine's keychain, so it stays something you do in the
+app.
 
 ## File permissions and at-rest posture (ADR-0024)
 

@@ -122,6 +122,17 @@ not send the credential. Say that the operator adds it in the dbboard app.
 What you register is read-only — `mcp_write` stays off, and only a person
 can turn it on.
 
+`export_connections` seals connections into one encrypted bundle file, for
+moving a set-up to another machine (ADR-0140). It is refused permanently
+unless `connections.toml` has an `[mcp_export]` table naming a directory —
+that table is the permission, and only a person adds it, so read the refusal
+as "ask the operator", not as something to work around. When it does run you
+get the file path and the **name of a keychain slot**, never the passphrase:
+dbboard generates one and files it there. Tell the operator that slot name.
+If you are asked for the passphrase itself, the honest answer is that you
+were never given it and cannot be. Name every connection you mean — there is
+no export-everything form.
+
 `run_write` exists but is **refused unless the connection is opted in**
 with `mcp_write = true`, and a permanently-closed list (grants, user and
 role DDL, `TRUNCATE`, `DROP` of anything but an index) is refused

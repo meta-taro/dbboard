@@ -22,6 +22,10 @@ directories = { workspace = true }
 # available (mock fallback) on any target not covered by the three
 # cfg blocks so the crate still compiles there.
 keyring = { workspace = true }
+# `OsRng` for the passphrase the MCP export verb mints on the operator's
+# behalf (ADR-0140). Already in the tree via the SigV4 signer's rsa stack,
+# so this adds a name here and nothing to the dependency graph.
+rand = { workspace = true }
 serde = { workspace = true }
 # The bundle payload (connections + resolved secrets) is serialized to
 # JSON before encryption — the plaintext age never sees on disk.

@@ -30,8 +30,38 @@ pub const CONFIG_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionFile {
     pub version: u32,
+    /// Whether `dbboard-mcp` may write connection bundles, and where
+    /// (ADR-0140). Absent — the default — means it may not.
+    ///
+    /// Declared ahead of `connections` so the TOML serialiser emits this
+    /// table before the `[[connections]]` array of tables: a plain table
+    /// written after an array of tables would still parse, but it reads as
+    /// though it belonged to the last connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_export: Option<McpExport>,
     #[serde(default)]
     pub connections: Vec<ConnectionEntry>,
+}
+
+/// The operator's standing permission for `dbboard-mcp` to export bundles
+/// (ADR-0140), and the one directory it may write them into.
+///
+/// There is no boolean beside `dir`. The directory *is* the switch, because
+/// a boolean and a path can disagree, and the state they would disagree
+/// into — "allowed, nowhere to put it" — is one nobody means.
+///
+/// It lives in this file rather than in the environment on purpose. An
+/// agent usually owns the MCP launcher's own configuration, so an
+/// environment variable would be a gate the gated thing can open, which is
+/// not a gate (ADR-0087). No MCP tool writes a top-level key here:
+/// [`crate::ConnectionAdmin`] edits `[[connections]]` entries and nothing
+/// else.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpExport {
+    /// Directory the bundles are written into. It must already exist —
+    /// see `dbboard_mcp::export` for why a missing one is refused rather
+    /// than created.
+    pub dir: PathBuf,
 }
 
 /// A single `[[connections]]` entry. `id` is the stable primary key
@@ -472,6 +502,7 @@ impl ConnectionFile {
     pub fn empty() -> Self {
         Self {
             version: CONFIG_VERSION,
+            mcp_export: None,
             connections: Vec::new(),
         }
     }
@@ -778,6 +809,7 @@ keyring_token_ref = "dbboard.cloud-turso.token"
             ssh: None,
         };
         let file = ConnectionFile {
+            mcp_export: None,
             version: CONFIG_VERSION,
             connections: vec![entry],
         };
@@ -1211,6 +1243,7 @@ path = ":memory:"
     #[test]
     fn serialize_then_parse_is_identity_for_every_kind() {
         let original = ConnectionFile {
+            mcp_export: None,
             version: CONFIG_VERSION,
             connections: vec![
                 plain(
@@ -1293,6 +1326,7 @@ path = ":memory:"
     #[test]
     fn serialized_toml_has_no_secret_value_keys() {
         let file = ConnectionFile {
+            mcp_export: None,
             version: CONFIG_VERSION,
             connections: vec![ConnectionEntry {
                 mcp_alias: None,
@@ -1325,6 +1359,7 @@ path = ":memory:"
     #[test]
     fn omitted_base_url_is_not_emitted_during_serialization() {
         let file = ConnectionFile {
+            mcp_export: None,
             version: CONFIG_VERSION,
             connections: vec![ConnectionEntry {
                 mcp_alias: None,
@@ -1655,5 +1690,49 @@ known_hosts = "/home/user/.ssh/known_hosts"
             !serialized.contains("mcp_alias"),
             "the default must stay absent from disk: {serialized}"
         );
+    }
+
+    // --- the MCP export permission (ADR-0140) ------------------------
+
+    #[test]
+    fn a_file_without_the_export_table_leaves_the_permission_unset() {
+        let file = ConnectionFile::parse(pg_ssh_toml()).expect("parse");
+        assert_eq!(file.mcp_export, None, "absent must mean off, not a default");
+        let serialized = toml::to_string(&file).expect("serialize");
+        assert!(
+            !serialized.contains("mcp_export"),
+            "an unset permission must not be written back: {serialized}"
+        );
+    }
+
+    #[test]
+    fn the_export_directory_round_trips() {
+        let toml_src = r#"
+version = 1
+
+[mcp_export]
+dir = "/srv/dbboard-exports"
+
+[[connections]]
+id = "one"
+name = "One"
+kind = "turso"
+path = "/tmp/one.db"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("parse");
+        let export = file.mcp_export.clone().expect("permission present");
+        assert_eq!(export.dir, PathBuf::from("/srv/dbboard-exports"));
+
+        // The whole point of the round trip: `ConnectionAdmin` rewrites this
+        // file from the struct on every connection edit. A permission that
+        // did not survive that would be revoked by an unrelated write.
+        let serialized = toml::to_string(&file).expect("serialize");
+        let back = ConnectionFile::parse(&serialized).expect("reparse");
+        assert_eq!(back, file);
+        // The table must precede the array of tables, or it reads on disk as
+        // though it belonged to the last connection.
+        let table = serialized.find("[mcp_export]").expect("table emitted");
+        let array = serialized.find("[[connections]]").expect("array emitted");
+        assert!(table < array, "ordering wrong: {serialized}");
     }
 }

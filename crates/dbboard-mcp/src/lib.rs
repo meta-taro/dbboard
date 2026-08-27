@@ -39,6 +39,7 @@
 //! stderr.
 
 pub mod capture;
+pub mod export;
 pub mod server;
 pub mod service;
 

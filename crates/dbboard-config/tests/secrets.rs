@@ -15,6 +15,7 @@ use dbboard_config::{ConnectionEntry, ConnectionFile, ConnectionKind, CONFIG_VER
 #[test]
 fn toml_round_trip_never_carries_a_secret_token() {
     let file = ConnectionFile {
+        mcp_export: None,
         version: CONFIG_VERSION,
         connections: vec![ConnectionEntry {
             mcp_alias: None,
@@ -48,6 +49,7 @@ fn toml_round_trip_never_carries_a_secret_token() {
 #[test]
 fn toml_round_trip_never_carries_a_postgres_url() {
     let file = ConnectionFile {
+        mcp_export: None,
         version: CONFIG_VERSION,
         connections: vec![ConnectionEntry {
             mcp_alias: None,
