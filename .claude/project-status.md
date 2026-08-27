@@ -45,6 +45,14 @@
     `sh scripts/cargo-test-serialised.sh --release` exit 0 (`test result: ok` 48 件)。
     commit は `cbdac48` (lint) と `c7bd627` (固定)。pre-commit 全 green・pii-scan clean・
     **`--no-verify` は使っていない**。
+
+    **push 後の確認 (ここまでで PDCA が閉じる)**: user が `cbdac48` / `c7bd627` /
+    `d9aafea` を push し、`ci` (`33039059462`) は **8m59s で success**、`pii-scan` も success。
+    前回落ちた run は 3m39s で死んでいたので、同じ場所を越えている。
+    **固定が効いていることもログで見た**: `rust` と `deps` の両ジョブが
+    `info: syncing channel updates for 1.98.0-x86_64-unknown-linux-gnu` →
+    `version 1.98.0 (88d9e12ae 2026-08-18)`。手元と同じハッシュで、**`ci.yml` には
+    rustup の step を一行も足していない** — ADR-0139 の前提が実測で裏付いた。
   - **Act**: 固定した以上、**版上げは仕事として立つ**。放っておくと古い compiler を
     意図的に使い続けることになる、という取引をそのまま ADR に書いた。
 

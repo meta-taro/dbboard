@@ -229,7 +229,7 @@ Phase 1 の Adapter Capability API だけは他のどれを選んでも先に要
 
 ## 最終更新
 
-- 日付: 2026-08-27 その2 (**push 待ち 2 件。CI の赤を直して、toolchain を固定した。**
+- 日付: 2026-08-27 その2 (**CI の赤を直して toolchain を固定。push 済・`ci` 緑。ボールなし。**
 
   7b を push した直後の `ci` (`33035411842`) が clippy 2 件で落ちた。
   **落ちた場所は push した diff の外** — runner が Rust 1.98 に上がり、
@@ -238,10 +238,12 @@ Phase 1 の Adapter Capability API だけは他のどれを選んでも先に要
   固定は lint の対応を消さない。決めるのは**いつ来るか**で、
   版上げが「誰かが選んだ commit」になる。詳細は `.claude/project-status.md` の §23 PDCA。
 
-  **user のボール = push**。`cbdac48` (lint 対応) と `c7bd627` (固定 + ADR-0139 + テスト 3 本)。
-  必須 4 コマンドと push 前の 2 本 (`cargo build --release` / `--release` テスト) は
-  すべて手元で緑・`--no-verify` なし。push 後に `gh run list --limit 3` で
-  `ci` が緑に戻ったかまで見て、§23 の PDCA を閉じる。
+  **PDCA は閉じた**。`cbdac48` (lint 対応) / `c7bd627` (固定 + ADR-0139 + テスト 3 本) /
+  `d9aafea` (記録 + §31 退避) を user が push し、`ci` (`33039059462`) は **8m59s で success**。
+  `pii-scan` も success。**固定が実際に効いているのもログで確認済**で、
+  `rust` と `deps` の両ジョブが `syncing channel updates for 1.98.0` →
+  `version 1.98.0 (88d9e12ae 2026-08-18)` = 手元と同じハッシュ。workflow には一行も
+  足していない。必須 4 コマンドと push 前の 2 本も手元で緑・`--no-verify` なし。
 
   **Mac へ移るときに効く**: `rust-toolchain.toml` は tracked なので**一緒に運ばれる**。
   clone した Mac 側でも rustup が 1.98.0 を勝手に入れる (初回だけダウンロードが要る)。)
