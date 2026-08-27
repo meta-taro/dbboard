@@ -229,33 +229,25 @@ Phase 1 の Adapter Capability API だけは他のどれを選んでも先に要
 
 ## 最終更新
 
-- 日付: 2026-08-26 (**v0.13.0 を切った。そして開発機がこの Windows PC から Mac mini へ移る**。
+- 日付: 2026-08-27 その2 (**push 待ち 2 件。CI の赤を直して、toolchain を固定した。**
 
-  **(1) v0.13.0** (`5022112` / タグ `v0.13.0`)。見出しは
-  "Knowing what changed, and letting an agent tidy up" — 中身は 2026-08-25 に来た
-  2 件そのまま (バージョン確認画面の更新内容 = ADR-0137、MCP から目印と並び替え = ADR-0136)。
-  `release-cut.mjs` → `cargo check --workspace` → `docs/roadmap.md` の v0.13 行を削除 → commit → タグ。
-  検証は `release-plan.test.mjs` 7/7、`release-due.mjs` = `nothing unreleased yet`、
-  pre-commit 全 green・pii-scan clean・`--no-verify` なし。
-  **ここで切ったのは、ADR-0135 の「更新が止まっている」告知が 0.12 → 0.13 の更新でしか動かない**から。
-  0.12.0 で目印を書く側が出たので、読む側が動くのはこの版が初めてになる。
+  7b を push した直後の `ci` (`33035411842`) が clippy 2 件で落ちた。
+  **落ちた場所は push した diff の外** — runner が Rust 1.98 に上がり、
+  そこで足された `unused_async_trait_impl` が `-D warnings` でエラーになっただけ。
+  直したうえで、`rust-toolchain.toml` で **1.98.0 に固定**した (ADR-0139)。
+  固定は lint の対応を消さない。決めるのは**いつ来るか**で、
+  版上げが「誰かが選んだ commit」になる。詳細は `.claude/project-status.md` の §23 PDCA。
 
-  push とタグ push は同日中に user が実施し、`release` は 17m25s で success。
-  ただし直前の docs commit で `ci` が赤くなった (バンドル CHANGELOG のテストが最新版を直書きしていた・`87a976b` で修正)。
-  経緯は `.claude/project-status.md` の §23 PDCA。
+  **user のボール = push**。`cbdac48` (lint 対応) と `c7bd627` (固定 + ADR-0139 + テスト 3 本)。
+  必須 4 コマンドと push 前の 2 本 (`cargo build --release` / `--release` テスト) は
+  すべて手元で緑・`--no-verify` なし。push 後に `gh run list --limit 3` で
+  `ci` が緑に戻ったかまで見て、§23 の PDCA を閉じる。
 
-  **(2) 引っ越し**。詳細はこのファイル冒頭の「引っ越し」節。要点だけ:
-  git が運ばないのは `.pii-denylist` (untracked・中身が PII なので **user が書く**)、
-  エージェントの memory 27 ファイル (git 管理外・**消えたら復元不能**・user が手でコピー)、
-  git hooks (`sh scripts/install-hooks.sh`) の 3 つ。
-  Windows 固有の地雷 (libSQL teardown segfault / Norton / `link.exe 1318` / scrypt / exe ロック) は
-  手元からは消えるが、**スクリプトと直列リストは残す** — CI の windows runner が同じ道を通る。
-  `pii-scan.sh` の Windows ホームパス規則は Mac のパスを見ないので、足すなら `.pii-denylist` 側。
+  **Mac へ移るときに効く**: `rust-toolchain.toml` は tracked なので**一緒に運ばれる**。
+  clone した Mac 側でも rustup が 1.98.0 を勝手に入れる (初回だけダウンロードが要る)。)
 
-  **AI がやれていないこと**: push (develop + タグ)、公開後の exe 目視スキャン、
-  memory と `.pii-denylist` の移送。→ すべて **user 側**。)
-
-> 2026-08-25 その2 (ダイアログ / MCP 接続登録 / `ConnectionAdmin`)、2026-08-25 (サイドバーの
+> 2026-08-26 (v0.13.0 を切った回と引っ越し決定)、2026-08-25 その2 (ダイアログ /
+> MCP 接続登録 / `ConnectionAdmin`)、2026-08-25 (サイドバーの
 > 横区切り・ADR-0131)、2026-08-24 その8 (v0.11.0 が `main` に着地した回) のログは、baseline §31 に
 > 基づき [`.claude/archive/next-actions-2026-08.md`](archive/next-actions-2026-08.md) へ全文退避した
 > (要約していない)。セッションログの正本は `.claude/project-status.md` (とその退避先) 側。

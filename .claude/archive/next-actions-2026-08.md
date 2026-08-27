@@ -46,6 +46,13 @@ baseline §31 に基づく退避。いずれも全文で、要約していない
   なっていたので、表を正本にしてこちらを移した。サニタイズ節も同じで、生きているのは
   `refs/pull/` の削除依頼 1 件だけで、それは「user 側でないと進まないもの」の表にある。
 
+- **退避日 2026-08-27**: Rust 1.98 の新しい lint で赤くなった `ci` を直し、
+  toolchain を固定した経緯 (ADR-0139) を書き足して 416 行になり、400 行トリガーを
+  踏んだため、**2026-08-26** (v0.13.0 を切った回と、開発機が Mac mini へ移る決定) の
+  日付エントリを退避。ファイル末尾の見出し「退避日 2026-08-27」以降がそれ。
+  引っ越しの中身は `next-actions.md` 冒頭の「引っ越し」節が生きているので、
+  ここへ移しても手順は失われない。
+
 これより古いものは `.claude/archive/next-actions-2026-07.md`。
 
 ---
@@ -1349,3 +1356,33 @@ push のたびに次の枠の見出しも出る:
 
 | ~~`develop` の push と タグ `v0.12.0` の push~~ → **2026-08-25 に完了**。`origin/develop` = `c430d6b`、タグ = `57afbfe`。release workflow (run 32841019679) は 5 job すべて success、**v0.12.0 は 11:32Z に公開済** (draft でも pre-release でもない)。資産 9 点 — Windows setup.exe + .sig / macOS dmg + app.tar.gz + .sig / MCP 2 本 / `SHA256SUMS.txt` / `latest.json`。`latest.json` は 0.12.0 と `dbboard-desktop_0.12.0_x64-setup.exe` を指している (= ノート PC の v0.10 にも 0.12.0 が出る) | push は §6、タグ push は ADR-0121 で user のものだった |
 | ~~#216 / #221 / #224 の merge、`develop` と タグ `v0.11.0` と `feature/connection-order` の push~~ → **5 件とも 2026-08-24 に完了**。経緯は `.claude/archive/next-actions-2026-08.md` (退避日 2026-08-25) | push と merge は §6、タグ push は ADR-0121 で user のもの |
+
+---
+
+## 退避日 2026-08-27 (2026-08-26 — v0.13.0 と引っ越し決定)
+
+- 日付: 2026-08-26 (**v0.13.0 を切った。そして開発機がこの Windows PC から Mac mini へ移る**。
+
+  **(1) v0.13.0** (`5022112` / タグ `v0.13.0`)。見出しは
+  "Knowing what changed, and letting an agent tidy up" — 中身は 2026-08-25 に来た
+  2 件そのまま (バージョン確認画面の更新内容 = ADR-0137、MCP から目印と並び替え = ADR-0136)。
+  `release-cut.mjs` → `cargo check --workspace` → `docs/roadmap.md` の v0.13 行を削除 → commit → タグ。
+  検証は `release-plan.test.mjs` 7/7、`release-due.mjs` = `nothing unreleased yet`、
+  pre-commit 全 green・pii-scan clean・`--no-verify` なし。
+  **ここで切ったのは、ADR-0135 の「更新が止まっている」告知が 0.12 → 0.13 の更新でしか動かない**から。
+  0.12.0 で目印を書く側が出たので、読む側が動くのはこの版が初めてになる。
+
+  push とタグ push は同日中に user が実施し、`release` は 17m25s で success。
+  ただし直前の docs commit で `ci` が赤くなった (バンドル CHANGELOG のテストが最新版を直書きしていた・`87a976b` で修正)。
+  経緯は `.claude/project-status.md` の §23 PDCA。
+
+  **(2) 引っ越し**。詳細はこのファイル冒頭の「引っ越し」節。要点だけ:
+  git が運ばないのは `.pii-denylist` (untracked・中身が PII なので **user が書く**)、
+  エージェントの memory 27 ファイル (git 管理外・**消えたら復元不能**・user が手でコピー)、
+  git hooks (`sh scripts/install-hooks.sh`) の 3 つ。
+  Windows 固有の地雷 (libSQL teardown segfault / Norton / `link.exe 1318` / scrypt / exe ロック) は
+  手元からは消えるが、**スクリプトと直列リストは残す** — CI の windows runner が同じ道を通る。
+  `pii-scan.sh` の Windows ホームパス規則は Mac のパスを見ないので、足すなら `.pii-denylist` 側。
+
+  **AI がやれていないこと**: push (develop + タグ)、公開後の exe 目視スキャン、
+  memory と `.pii-denylist` の移送。→ すべて **user 側**。)

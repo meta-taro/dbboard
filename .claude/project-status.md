@@ -5,6 +5,67 @@
 
 ## 最終更新
 
+- 日付: 2026-08-27 その2 (**誰も触っていない CI が赤くなった → 直して、toolchain を固定した。**
+
+  ### `c7fbc72` の `ci` 失敗 (§23 PDCA)
+
+  7b を push した直後の `ci` (run `33035411842`) が `clippy::unused_async_trait_impl`
+  2 件で落ちた。落ちた場所は `crates/dbboard-tunnel/src/tunnel.rs` で、
+  **push した diff は `.claude/` と `apps/desktop/src-tauri/` と `docs/decisions.md` だけ**。
+  `tunnel.rs` は 2026-08-06 (v0.5.1・`98f9050`) 以降 1 度も触っていない。
+
+  - **Plan**: 退行ではない、と 2 つの独立な確認で先に決めた
+    (`git log -- tunnel.rs` と `git diff --name-only a57b4f7..c7fbc72`)。
+    真因は **runner イメージが Rust 1.98 に上がり、そこで追加された lint** が
+    `-D warnings` でエラーになったこと。手元は 1.95 で再現しなかったので
+    `rustup update stable` → 1.98.0 に上げて再現させた。
+  - **Do (1)**: `tunnel.rs` は clippy の提案どおり `impl Future` + `std::future::ready` へ。
+    ついでに**ホスト鍵の判定を同期の `VerifyHandler::verify` に出した** —
+    fingerprint 比較も `known_hosts` 照合も await しないので、
+    SSH セッションを立てずに読める・テストできる。テスト 2 本追加
+    (ピン一致は拒否を残さず通る / 不一致は**両方の fingerprint を名指しで**拒否する。
+    読む人は「ピンを間違えた」のか「ホストが変わった」のかを決めないといけないため)。
+    **`#[allow]` はここでは採らなかった**: lint 名が clippy 1.92 に無く、
+    workspace が宣言している `rust-version` は 1.92 なので、
+    宣言どおりの最小環境で必須コマンドの方が落ちる。
+  - **Do (2)**: `dbboard-mcp` の同じ lint は rmcp の `#[tool_handler]` が生成する
+    `async fn` なので書き換えられない。ここだけ `#[allow]` (理由コメント付き)。
+  - **Do (3・再発防止)**: `rust-toolchain.toml` で **1.98.0 に固定** (ADR-0139)。
+    固定しても lint の対応は消えない。決まるのは**いつ来るか**で、
+    版上げが「誰かが選んだ commit・lint 修正が同じ diff に乗る」形になる。
+    `stable` ではなく厳密な x.y.z — `stable` は**固定に見えて浮動するファイル**で、
+    次に読む人に「もう解決済み」と誤解させる分、無いより悪い。
+    `crates/dbboard-config/tests/toolchain_pin_drift.rs` (3 本) が
+    ファイル消失 / 非厳密な channel / component 欠落 / 宣言 MSRV 割れを落とす。
+  - **Check**: `cargo fmt --all -- --check` OK、
+    `cargo clippy --all-targets --all-features -- -D warnings` exit 0 (error 0 件)、
+    `cargo check --all-targets --all-features` exit 0、
+    `sh scripts/cargo-test-serialised.sh` exit 0。
+    push 前の 2 本も通した: `cargo build --release` exit 0 (3m41s)、
+    `sh scripts/cargo-test-serialised.sh --release` exit 0 (`test result: ok` 48 件)。
+    commit は `cbdac48` (lint) と `c7bd627` (固定)。pre-commit 全 green・pii-scan clean・
+    **`--no-verify` は使っていない**。
+  - **Act**: 固定した以上、**版上げは仕事として立つ**。放っておくと古い compiler を
+    意図的に使い続けることになる、という取引をそのまま ADR に書いた。
+
+  ### 途中で 1 回、自分で作った偽の失敗
+
+  `--release` のテストを前面で回して 10 分の上限で切ったあと、
+  すぐ同じ出力ファイルに背景ジョブを流した。**殺されたのは `sh` だけで cargo は生きており**、
+  2 つの run が同じ `relt.txt` に書き、build ディレクトリのロックも奪い合った。
+  結果、`libsql-ffi` の `lib.exe` が `0xc0000142` で落ちた行と、
+  別 run の `exit=0` が 1 つのファイルに混ざった。
+  **スクリプトの穴ではない** — 出力先を分けて回し直したら error 0 件で通った。
+  次から `--release` のテストは最初から背景で、出力先も毎回別名にする。
+
+  ### この記録自体が 400 行トリガーを踏んだ (baseline §31)
+
+  上の PDCA を `.claude/next-actions.md` にも書いた結果 416 行になったので、
+  2026-08-26 (v0.13.0 を切った回と引っ越し決定) の日付エントリを
+  `.claude/archive/next-actions-2026-08.md` へ**全文のまま**退避した (391 行)。
+  引っ越しの手順はファイル冒頭の「引っ越し」節が生きているので、
+  この日付エントリを移しても失われない。退避は承認不要 (削除は要承認)。
+
 - 日付: 2026-08-27 (**Tauri コマンド面の分割。以下 2026-08-26 まで。**)
 
 - 日付: 2026-08-26 (**v0.13.0 を切った (`5022112` / タグ `v0.13.0`)。公開済み。
