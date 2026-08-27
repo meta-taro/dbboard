@@ -153,7 +153,10 @@ and dependency rules.
 
 ## Requirements
 
-- Rust stable (latest)
+- Rust 1.98.0. The version is pinned in `rust-toolchain.toml`, so `rustup`
+  installs it for you inside this checkout; a machine set up by hand needs the
+  same one. It is bumped deliberately rather than tracking stable, because
+  `clippy -D warnings` makes the lint set part of the build (ADR-0139).
 - `cargo` (bundled with Rust)
 - A C/C++ toolchain for `libsql` native deps:
   - Windows: MSVC Build Tools
@@ -163,9 +166,9 @@ and dependency rules.
 ## Setup
 
 ```sh
-git clone https://github.com/<your-org>/dbboard.git
+git clone https://github.com/meta-taro/dbboard.git
 cd dbboard
-cargo test
+sh scripts/cargo-test-serialised.sh
 ```
 
 Then install the git hooks (pre-commit, commit-msg, pre-push):

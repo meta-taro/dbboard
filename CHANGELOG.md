@@ -34,6 +34,21 @@ public API is the HTTP contract in
   cannot read, but not which ones, so a connection hidden behind an alias
   stays hidden. See [ADR-0140](docs/decisions.md).
 
+### Fixed
+
+- The setup instructions built a different machine than the one CI builds.
+  ADR-0139 pinned the toolchain to an exact version because `clippy
+  -D warnings` makes the lint set part of the build, but Requirements went on
+  asking for "Rust stable (latest)" — and `rustup` reads
+  `rust-toolchain.toml` regardless, so anyone following the README by hand
+  installed a compiler nothing ever mentioned. The clone URL was still
+  `<your-org>`, and the smoke test was `cargo test`, which on Windows tears
+  down two in-memory libSQL databases at once and crashes after every
+  assertion has passed; `scripts/cargo-test-serialised.sh` exists precisely
+  to avoid that and is what the mandatory commands use. A fourth test in
+  `toolchain_pin_drift.rs` now reads the pin and fails when the README does
+  not name it.
+
 ## [0.13.0] — 2026-08-26 — Knowing what changed, and letting an agent tidy up
 
 ### Added

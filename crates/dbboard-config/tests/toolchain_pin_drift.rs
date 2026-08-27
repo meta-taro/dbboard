@@ -98,3 +98,28 @@ fn the_pin_is_not_below_the_declared_minimum() {
         "pinned {channel} is below the declared minimum {msrv}; one of the two is wrong"
     );
 }
+
+/// The README is the one place that can contradict the pin without anything
+/// failing. `rustup` reads `rust-toolchain.toml` and installs the right
+/// compiler either way, so a reader who follows the README by hand installs a
+/// different one and nothing says so. ADR-0139 pinned the toolchain; the
+/// Requirements section went on asking for "Rust stable (latest)", which is
+/// the version a new machine would have been set up with.
+#[test]
+fn the_readme_states_the_pinned_version_rather_than_a_floating_one() {
+    let root = workspace_root();
+    let channel = string_value(&read(&root.join("rust-toolchain.toml")), "channel")
+        .expect("rust-toolchain.toml declares a `channel`");
+    let readme = read(&root.join("README.md"));
+
+    assert!(
+        readme.contains(&channel),
+        "README.md does not name the pinned toolchain {channel}; someone setting \
+         a machine up by hand has nothing to match against"
+    );
+    assert!(
+        !readme.contains("Rust stable (latest)"),
+        "README.md still asks for a floating toolchain; rust-toolchain.toml \
+         decides the version (ADR-0139)"
+    );
+}
