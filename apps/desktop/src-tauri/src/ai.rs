@@ -44,7 +44,8 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::{lock_poisoned, none_if_blank, secret_field, AppState};
+use crate::connections::input::secret_field;
+use crate::{lock_poisoned, none_if_blank, AppState};
 
 /// The live provider handle every streaming command clones out of. A plain
 /// `std` `RwLock` (not tokio's) because we only ever hold it long enough to

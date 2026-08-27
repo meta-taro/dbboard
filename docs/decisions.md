@@ -12784,3 +12784,56 @@ running, with every earlier version reachable from the same place.
 * Wanting Japanese release notes remains a live question. It is a decision
   about how much writing every release carries, not a bug in this one, and
   it is deliberately not settled here.
+
+## ADR-0138 — The Tauri command surface is split by what the command does, not by how it is invoked (2026-08-27)
+
+**Status.** Accepted. Extends [ADR-0046](#adr-0046--the-desktop-client-and-the-mcp-server-share-one-read-only-service).
+
+**Context.** `apps/desktop/src-tauri/src/lib.rs` had grown to 2,938 lines —
+almost four times the hard limit this repository sets for a file. It was not
+one thing that got long: it held the UI-locale watcher, the read-side browse
+DTOs, the whole connection write path with its form DTOs, the SSH tunnel
+fields, the encrypted-bundle transfer commands, and the update breadcrumb, all
+under one `mod tests` of 41 cases. Nothing in it was wrong; there was simply
+no reason for any of it to be in the same file, and the file had become the
+place new commands went by default because that is where the last one went.
+
+**Decision.** Split it into modules named for the concern, not for the
+mechanism:
+
+* `ui_state` — locale and the UI-command file (ADR-0041, ADR-0109).
+* `browse` — the read path's DTOs and commands.
+* `connections/` — the write path (ADR-0062), further divided:
+  `input` (what the form submits), `ssh` (tunnel fields, both directions,
+  ADR-0069), `graft` (keeping the stored password, ADR-0080), `fields` (what
+  the edit form prefills, ADR-0016), `transfer` (encrypted bundles,
+  ADR-0038/0105).
+* The crate root keeps `AppState`, `run()`, the update breadcrumb, and the two
+  helpers every module needs.
+
+Tests moved with the code they cover. The count is unchanged at 41.
+
+**Why by concern and not by mechanism.** The obvious alternative — one file
+for commands, one for DTOs — puts the request type and the function that
+consumes it in different files for no gain, and leaves the same "where does a
+new command go?" question unanswered. Naming a module after the concern
+answers it: the SSH tunnel's request DTO, its response projection and its
+mapping helpers are one file because changing the tunnel contract means
+changing all three together.
+
+**Consequences.**
+* `generate_handler!` entries must name the real module path
+  (`connections::transfer::export_connections`). A `pub(crate) use` re-export
+  of the function does *not* re-export the `__cmd__` macro the macro expands
+  to, so the convenient-looking flat list is not available; the long paths are
+  load-bearing and should not be "tidied" into re-exports.
+* `#[tauri::command]` on a `pub(crate) fn` drags its parameter types — and
+  their fields — up to the same visibility. Several form DTOs became
+  `pub(crate)` for no reason other than crossing a module boundary.
+* Test fixtures that two sibling modules share now need a home. The
+  `ConnectionAdmin`-over-a-tempdir helper lives in
+  `connections::testing`, `#[cfg(test)]`, so both `connections` and
+  `connections::transfer` agree on what a throwaway store is — an in-memory
+  keyring, never the OS credential store.
+* `ai.rs` is 959 lines and was left alone. It is the next one, and splitting
+  it is a separate change so that this one stays reviewable as a move.
