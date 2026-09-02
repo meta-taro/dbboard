@@ -13007,3 +13007,104 @@ that reports the problem is worth more than one that spins on it.
 * The new logic went into `crates/dbboard-mcp/src/export.rs` rather than into
   `service.rs`, which is already ~3,900 lines and on the list of files over
   the 800-line limit. A new gate is not a reason to make that worse.
+
+---
+
+## ADR-0141 — The speed slot buys a measurement, not a benchmark framework (2026-09-02)
+
+**Status.** Accepted. Constrained by
+[ADR-0139](#adr-0139--the-toolchain-is-pinned-so-a-new-lint-arrives-as-a-commit-rather-than-as-a-broken-branch-2026-08-27) (the
+toolchain is pinned, so `--all-targets` compiles whatever is added here on
+every push) and by
+[ADR-0125](#adr-0125--the-libsql-teardown-crash-is-retried-once-because-serialising-made-it-rare-and-not-impossible-2026-08-22) (this
+project has already paid for one rare intermittent failure).
+
+**Context.** `docs/roadmap.md` reserves v0.14 for "startup, connect-and-browse,
+large result sets", with a condition: *measurement lands before any
+optimisation, so the numbers are comparable afterwards*. The order is the
+whole content of the slot. Optimising first produces a release note nobody can
+check and leaves the next regression with nothing to be a regression against.
+
+There were no benchmarks in the workspace at all — no `benches/`, no
+criterion, no divan, nothing. Meanwhile the README opened with "A
+high-performance desktop database client", a claim with not one recorded
+number behind it.
+
+The obvious move is to reach for criterion, and it is the wrong one here for
+reasons that are specific rather than aesthetic. The dev-dependencies in this
+workspace are `tokio`, `tempfile`, `wiremock`, `serde_json` and `tower` —
+there is no proptest, no insta, no test framework of any kind. Criterion
+brings plotters, rayon and tinytemplate, and because the mandatory commands
+run `cargo clippy --all-targets --all-features -- -D warnings`, all of that
+compiles on every push and every pull request. It also brings HTML reports
+nobody would open and a statistical apparatus sized for questions finer than
+the ones being asked. The questions here are coarse: is startup 20 ms or 2 s;
+does a 10,000-row result serialise in 5 ms or 500 ms. A median and a p95
+answer those.
+
+The second question is what to do with the numbers once they exist. Asserting
+them is the tempting answer and a trap: a threshold on a timing fails on a
+busy CI runner rather than on a regression, and the cost of a rare
+intermittent failure in this repo is already documented. But recording numbers
+in a file that nothing checks is the failure mode ADR-0117 describes — a
+control that has quietly stopped controlling anything.
+
+**Decision.** Five parts.
+
+*A harness this repo owns.* `crates/dbboard-bench`, `publish = false`, nothing
+links it. `std::time::Instant`, five discarded warm-up iterations, fifty timed
+ones, and a median and p95 by nearest rank — the value at `ceil(q · n)` in the
+sorted set, so every statistic reported is a duration that actually occurred
+rather than an interpolation between two that did.
+
+*Integer arithmetic in the formatter.* `Duration::as_secs_f64` builds its
+value as `secs + nanos / 1e9`, which for 2345 ms lands on 2.3449999999999998 —
+a different double from the one the literal `2.345` parses to, and one that
+renders as "2.34 s". The rendered numbers go into a file people diff between
+releases, so the last digit has to be the same digit on every platform. The
+test that caught this is kept.
+
+*The numbers live in a generated document.* `docs/performance-baseline.md`,
+written by `cargo run --release -p dbboard-bench -- --write`, carrying the
+machine, the pinned toolchain and the date, and saying in its own text that
+its numbers describe one machine and do not travel.
+
+*Nothing asserts a number; a test asserts the set of points.* The measurement
+points are declared as data in `points.rs`, separately from the code that
+measures them, so `tests/baseline_drift.rs` can read the catalogue without
+running a benchmark and fail when the document and the catalogue disagree.
+This is the part that matters: without it, deleting a measurement looks
+exactly like the thing it measured getting faster — the row stops being there
+and the file still renders. Same shape as `toolchain_pin_drift.rs`,
+`hook_install_drift.rs` and `release-plan.test.mjs`.
+
+*Fixtures are synthetic, local, and secret-free.* Connections and annotations
+are built in a temporary directory through the real writer, never read from
+the operator's `connections.toml` — the size of that file is a property of one
+machine, and a tool that prints tables should not be pointed at a file full of
+connection names. The secret store is `InMemorySecretStore`: a benchmark that
+pops a keychain dialog is timing how fast someone clicks. Databases are
+in-memory libSQL, because a hosted endpoint's numbers describe somebody's link
+on the day.
+
+**Consequences.**
+
+- `dbboard-bench` can reach `dbboard-turso`, so it joins
+  `scripts/libsql-serialised-crates.txt`. The hazard travels with the
+  dependency; `serialised_teardown.rs` derived the addition rather than
+  anyone remembering it.
+- There is no performance gate in CI, and there is deliberately not going to
+  be one. A regression is caught by a person re-running the harness on the
+  same machine across a change, which is the only comparison the numbers
+  support.
+- What the platform keychain costs at startup is still unknown. It is real,
+  it is probably the largest single item in the startup path, and it is not
+  measurable without either prompting the operator or mocking the thing whose
+  cost is the question. Recorded as an open gap rather than answered badly.
+- Startup is measured one layer below where the operator feels it: the
+  config work `run()` does is timed, the Tauri window is not. A number for
+  "time to first pixel" needs the app instrumented from inside, which is a
+  larger change than this slot.
+- If the coarse harness turns out not to answer a question that matters,
+  criterion is still there and this entry is the thing to supersede. The cost
+  of having started here is one small crate, not a migration.

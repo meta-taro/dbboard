@@ -11,6 +11,33 @@ public API is the HTTP contract in
 
 ### Added
 
+- **The speed the slot is named after now has numbers behind it.** There were
+  no benchmarks in this workspace at all — no `benches/`, no criterion,
+  nothing — while the README opened by calling dbboard "high-performance".
+  `crates/dbboard-bench` measures the three areas `docs/roadmap.md` reserved
+  this slot for and writes
+  [`docs/performance-baseline.md`](docs/performance-baseline.md): the config
+  work that happens before a window appears, opening a database and reading
+  enough of it to show a table, and carrying a 10,000-row result to the
+  frontend. Measurement first, on purpose — optimising before it means the
+  next regression has nothing to be a regression against.
+
+  The first run says the in-process work is not where the time goes. Every
+  browse operation is single-digit microseconds; a full 10,000-row result
+  serialises for the Tauri IPC boundary in under a millisecond, while pulling
+  the same rows out of the driver costs 4.4 ms — so the JSON hop that looked
+  like the obvious suspect is the cheaper half. Two things did stand out:
+  `truncate_rows` spends 570 µs discarding 9,900 rows, over half what
+  serialising all of them costs, and parsing `annotations.toml` runs six times
+  slower than `connections.toml` for the same twenty connections.
+
+  No number here is asserted by a test. A threshold on a timing fails on a busy
+  runner rather than on a regression, and this project has already paid for one
+  rare intermittent failure (ADR-0125). What is asserted is the *set* of
+  measurement points, because deleting one otherwise looks exactly like the
+  thing it measured getting faster. See
+  [ADR-0141](docs/decisions.md).
+
 - **An agent can pack connections for another machine, without ever holding
   the key.** Moving a set-up to a new laptop has been a bundle file since
   0.4.0, but making one is five steps by hand: pick the connections, pick a

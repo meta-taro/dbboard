@@ -1486,6 +1486,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbboard-bench"
+version = "0.13.0"
+dependencies = [
+ "dbboard-config",
+ "dbboard-core",
+ "dbboard-turso",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "dbboard-config"
 version = "0.13.0"
 dependencies = [
