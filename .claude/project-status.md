@@ -5,6 +5,92 @@
 
 ## 最終更新
 
+- 日付: 2026-09-02 (**v0.14「Speed, measured」の計測基盤。issue 0028 / ADR-0141。**
+
+  ### なぜ最初にこれなのか
+
+  roadmap の v0.14 枠は「startup, connect-and-browse, large result sets」に
+  条件が付いている — *measurement lands before any optimisation, so the numbers
+  are comparable afterwards*。**順序が枠の中身そのもの**で、先に速くしてしまうと
+  検証できないリリースノートが出て、次の劣化は比較対象を持たない。
+
+  着手前の状態: ワークスペースにベンチマークが**一つも無い**。`benches/` も
+  criterion も divan も無い。その一方で README は "A high-performance desktop
+  database client" で始まっていた。裏づけの数字はゼロ。
+
+  ### criterion を入れなかった (ADR-0141)
+
+  既存の dev-dependencies は tokio / tempfile / wiremock / serde_json / tower だけ。
+  proptest も insta も無い。criterion は plotters / rayon / tinytemplate を連れてきて、
+  必須コマンドが `cargo clippy --all-targets` である以上 **push のたびに全部コンパイル
+  される**。問われているのは「起動は 20ms か 2s か」「10,000 行の直列化は 5ms か 500ms か」
+  という粗い問いで、中央値と p95 で足りる。`release-*.mjs` を自前で持っている先例もある。
+
+  自前ハーネス: `crates/dbboard-bench` (`publish = false`、何もリンクしない)。
+  warmup 5 回捨てて 50 回計測、中央値と p95 は**最近接順位**
+  (ソート済みの `ceil(q·n)` 番目) — 補間しないので、報告される値は必ず**実際に起きた所要時間**。
+
+  ### テストが実装のバグを捕まえた
+
+  `Duration::as_secs_f64` は `secs + nanos / 1e9` で値を組み立てるので、2345ms は
+  **2.3449999999999998** になる。リテラル `2.345` がパースされる double とは別の値で、
+  `{:.2}` で "2.34 s" になる。この数字はリリース間で diff される文書に入るので、
+  最下位桁がプラットフォーム間で揺れては困る。**浮動小数点をやめて整数演算**に書き換えた。
+  捕まえたテストはそのまま残してある。
+
+  ### 数字にはテストを掛けない。計測点の集合に掛ける
+
+  タイミングに閾値を置けば、劣化ではなく**混んだランナー**で落ちる。
+  この repo は稀な間欠失敗に既に ADR 一本 (ADR-0125) を払っている。
+  一方、何も検査しないファイルに数字を置くのは ADR-0117 の失敗形
+  (「制御しているつもりで何も制御していない control」)。
+
+  折衷: 計測点を `points.rs` に**データとして**、測るコードとは別に宣言する。
+  `tests/baseline_drift.rs` はベンチを一度も走らせずにカタログを読み、
+  `docs/performance-baseline.md` と食い違ったら落ちる。これが要点で、これが無いと
+  **計測を消すことと、測っていた対象が速くなったことが見分けられない** —
+  行が消えてファイルは普通にレンダリングされるだけ。
+  `toolchain_pin_drift.rs` / `hook_install_drift.rs` / `release-plan.test.mjs` と同じ型。
+
+  ### 初回計測で分かったこと (Mac mini M1 / 16GB / 1.98.0)
+
+  - **In-process の仕事は遅くない。** browse 系は全部 1 桁マイクロ秒
+    (`connect_memory` 7.6µs / `list_tables` 10.0µs / `describe_table` 6.4µs /
+    `foreign_keys` 2.3µs / `first_page_100` 76.7µs)。
+  - **IPC の JSON 直列化は容疑者ではなかった。** 10,000 行の
+    `serde_json` は **927µs**。同じ行をドライバから取り出す
+    `query_10k` が **4.4ms** で、**4.7 倍高い**。速くするならまず materialise 側。
+  - **意外だった 2 つ**: `truncate_rows` が 9,900 行を捨てるのに **570µs** —
+    全部を直列化する費用の半分以上。`annotations.toml` の解析が同じ 20 接続で
+    `connections.toml` の **6 倍**遅い (1.0ms vs 173µs)。
+  - フィクスチャは tempdir の合成データ。**実 `connections.toml` は読まない**
+    (そのファイルの大きさは一台の性質で、表を印字するツールを接続名の詰まった
+    ファイルに向けるべきでない)。secret store は `InMemorySecretStore` —
+    ベンチが鍵束ダイアログを出したら、測っているのは人のクリック速度。
+
+  ### 残っている穴 (ADR-0141 に明記した)
+
+  - **プラットフォーム鍵束の起動コストは未計測。** おそらく起動経路で単独最大だが、
+    操作者にダイアログを出すか、費用が問いである当のものを mock するかしかない。
+    下手に答えず「空白」として記録した。
+  - **起動は操作者が感じる層より一段下で測っている。** `run()` の config 仕事は測れたが、
+    Tauri の窓は測っていない。"time to first pixel" はアプリ内部からの計測が要る。
+
+  ### この環境について (新しい Mac の初回)
+
+  - `~/.cargo/bin` が **PATH に無い**。フック自身は `export PATH="$HOME/.cargo/bin:$PATH"`
+    を持っているので通るが、手で cargo を叩くときは要注意。
+  - **`sh scripts/install-hooks.sh` が未実行** (`.git/hooks/` が空)。
+    今回の必須検証は手で回した。`hook_install_drift.rs` は「入っているフックが古い」
+    ときに落ちる作りなので、**未導入は検知しない**。
+  - **`.pii-denylist` が無い** (project-status が既に user 側作業として挙げているもの)。
+
+  ### AI がやれていないこと → user 側
+
+  push、リリース判断とタグ (`node scripts/release-due.mjs` は
+  **3 entries — a release is due (0.13.0 -> 0.14.0)**)、`install-hooks.sh`、
+  `.pii-denylist` の移送。)
+
 - 日付: 2026-08-27 その3 (**#196 — MCP から接続を束ねる。PR #226 merged。**
 
   ### 何を作ったか
