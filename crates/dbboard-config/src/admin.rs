@@ -35,9 +35,11 @@ use zeroize::Zeroize;
 use crate::bundle::{decrypt_bundle, encrypt_bundle, validate_passphrase, BundlePayload};
 use crate::dsn::{parse_dsn, with_password, DsnParts};
 use crate::error::ConfigError;
+use crate::mark::{is_connection_color, is_connection_tag, CONNECTION_TAG_MAX_CHARS};
 use crate::secrets::{SecretError, SecretStore};
 use crate::store::{
-    load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind, SshTunnelToml,
+    load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind, McpExport,
+    SshTunnelToml,
 };
 
 mod repair;
@@ -67,6 +69,18 @@ pub struct ConnectionDraft {
     /// `dbboard-mcp` (ADR-0088). `None` — the default — keeps both as they are.
     /// Trimmed, and a blank string is treated as `None`.
     pub mcp_alias: Option<String>,
+    /// Optional identity colour, as a palette name (issue #192). `None` — the
+    /// default — leaves the connection unmarked. Trimmed, and a blank string
+    /// is treated as `None`; anything else must be in
+    /// [`CONNECTION_COLORS`](crate::CONNECTION_COLORS) or
+    /// [`ConnectionAdmin::add`] refuses the whole draft.
+    pub color: Option<String>,
+    /// Optional identity tag — the non-chromatic half of the mark (ADR-0126).
+    /// `None` — the default — leaves the connection untagged. Trimmed, and a
+    /// blank string is treated as `None`; anything longer than
+    /// [`CONNECTION_TAG_MAX_CHARS`](crate::CONNECTION_TAG_MAX_CHARS) makes
+    /// [`ConnectionAdmin::add`] refuse the whole draft.
+    pub tag: Option<String>,
 }
 
 /// Add-time SSH tunnel draft: bastion coordinates plus **inline** secrets (the
@@ -197,6 +211,15 @@ pub struct ConnectionEditDraft {
     /// blank or whitespace-only string, which is what an emptied text input
     /// sends — clears it.
     pub mcp_alias: Option<String>,
+    /// How the update should treat the identity colour (issue #192). The same
+    /// three states as `mcp_alias`: `None` keeps the stored mark — so a rename
+    /// from a form with no picker cannot unmark a connection — `Some(name)`
+    /// sets it, and `Some("")` clears it.
+    pub color: Option<String>,
+    /// How the update should treat the identity tag (ADR-0126). The same three
+    /// states again, and refused rather than truncated when it is too long, so
+    /// a rejected edit leaves the stored tag whole.
+    pub tag: Option<String>,
 }
 
 /// Top-level SSH edit intent. Distinct from a plain `Option` so a caller that
@@ -440,6 +463,10 @@ pub struct ConnectionAdmin {
     path: PathBuf,
     secrets: Arc<dyn SecretStore>,
     file: ConnectionFile,
+    /// Whether `path` is the authority for `file`, and so worth re-reading
+    /// before a write (ADR-0133). False for [`ConnectionAdmin::new_with_file`],
+    /// whose caller supplied the entries and has no disk to be behind.
+    tracks_disk: bool,
 }
 
 impl ConnectionAdmin {
@@ -456,6 +483,7 @@ impl ConnectionAdmin {
             path,
             secrets,
             file,
+            tracks_disk: true,
         })
     }
 
@@ -472,7 +500,29 @@ impl ConnectionAdmin {
             path,
             secrets,
             file,
+            tracks_disk: false,
         }
+    }
+
+    /// Re-read `connections.toml` so this admin is writing on top of what is
+    /// actually there.
+    ///
+    /// Every mutator saves the whole file, so an entry written by another
+    /// process — the MCP server, or the operator with a text editor — would be
+    /// erased by the next change made through a long-lived admin (ADR-0133).
+    /// Called at the top of each mutator rather than left to the caller: the
+    /// desktop locks this admin from thirteen places, and a rule that has to be
+    /// remembered at each of them is a rule that will be missed at one.
+    ///
+    /// # Errors
+    ///
+    /// Any error from [`load_or_empty`]. A mutator that cannot read the current
+    /// file refuses rather than overwriting it with a stale one.
+    fn sync(&mut self) -> Result<(), ConfigError> {
+        if self.tracks_disk {
+            self.file = load_or_empty(&self.path)?;
+        }
+        Ok(())
     }
 
     /// Borrow the current entries. The UI uses this to render the
@@ -480,6 +530,18 @@ impl ConnectionAdmin {
     #[must_use]
     pub fn entries(&self) -> &[ConnectionEntry] {
         &self.file.connections
+    }
+
+    /// The operator's standing permission for `dbboard-mcp` to export
+    /// bundles, if they have granted one (ADR-0140). `None` means they have
+    /// not, which is the state of every store nobody has edited by hand.
+    ///
+    /// Read-only on purpose: this type writes `[[connections]]` entries and
+    /// nothing else, so the permission cannot be granted through any path an
+    /// agent can reach.
+    #[must_use]
+    pub fn mcp_export(&self) -> Option<&McpExport> {
+        self.file.mcp_export.as_ref()
     }
 
     /// The non-secret parts of the DSN stored for `id`, for prefilling the
@@ -576,6 +638,7 @@ impl ConnectionAdmin {
     /// the in-memory file via `last()`. A panic here would imply a bug
     /// in `Vec::push` itself.
     pub fn add(&mut self, draft: ConnectionDraft) -> Result<&ConnectionEntry, ConfigError> {
+        self.sync()?;
         if self.find_index(&draft.id).is_some() {
             return Err(ConfigError::DuplicateId(draft.id));
         }
@@ -588,6 +651,12 @@ impl ConnectionAdmin {
         if let Some(alias) = mcp_alias.as_deref() {
             self.ensure_handle_is_free(alias, &draft.id)?;
         }
+
+        // Checked here, in the same window as the handles: a colour with no
+        // token would otherwise be written to the file and then render as
+        // nothing (issue #192).
+        let color = normalize_color(draft.color)?;
+        let tag = normalize_tag(draft.tag)?;
 
         let (kind, mut secret_writes) = build_kind_for_add(&draft.id, draft.kind);
 
@@ -625,6 +694,8 @@ impl ConnectionAdmin {
         let new_entry = ConnectionEntry {
             mcp_write: draft.mcp_write,
             mcp_alias,
+            color,
+            tag,
             ssh,
             id: draft.id,
             name: draft.name,
@@ -673,6 +744,7 @@ impl ConnectionAdmin {
         id: &str,
         draft: ConnectionEditDraft,
     ) -> Result<&ConnectionEntry, ConfigError> {
+        self.sync()?;
         let idx = self
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
@@ -689,6 +761,17 @@ impl ConnectionAdmin {
         if let Some(alias) = mcp_alias.as_deref() {
             self.ensure_handle_is_free(alias, id)?;
         }
+
+        // Same three states as the alias, and refused before any keyring write
+        // so a typo leaves the entry exactly as it was (issue #192).
+        let color = match draft.color {
+            None => existing.color.clone(),
+            Some(raw) => normalize_color(Some(raw))?,
+        };
+        let tag = match draft.tag {
+            None => existing.tag.clone(),
+            Some(raw) => normalize_tag(Some(raw))?,
+        };
 
         let (new_kind, mut applied_writes) =
             self.apply_update_kind(id, &existing.kind, draft.kind)?;
@@ -721,6 +804,8 @@ impl ConnectionAdmin {
         let new_entry = ConnectionEntry {
             mcp_write: draft.mcp_write.unwrap_or(existing.mcp_write),
             mcp_alias,
+            color,
+            tag,
             ssh: new_ssh,
             id: id.to_string(),
             name: draft.name,
@@ -761,6 +846,7 @@ impl ConnectionAdmin {
     /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML
     ///   write.
     pub fn delete(&mut self, id: &str) -> Result<(), ConfigError> {
+        self.sync()?;
         let idx = self
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
@@ -777,6 +863,117 @@ impl ConnectionAdmin {
         for key_ref in entry_keyring_refs(&removed) {
             let _ = self.secrets.delete(&key_ref);
         }
+
+        Ok(())
+    }
+
+    /// Move the entry with id `id` so that it sits at position `index`
+    /// in the list, sliding the entries in between over by one.
+    ///
+    /// The order of `[[connections]]` in the TOML *is* the order the
+    /// sidebar and the manager list render (issue #192, criterion 1), so
+    /// reordering needs no schema change and no new field: the array of
+    /// tables already carries it, and a `.dbbx` bundle carries it too.
+    /// Nothing touches the keyring — only the sequence changes.
+    ///
+    /// `index` is a position in the resulting list, which is what the ▲/▼
+    /// buttons ask for: one row up from `i` is `move_to(id, i - 1)`.
+    /// Moving an entry to the index it already has is not an error and
+    /// does not rewrite the file.
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::NotFound`] if no entry has id `id`.
+    /// - [`ConfigError::IndexOutOfRange`] if `index` is not a position in
+    ///   the list. Both mean the caller is working from a stale view of
+    ///   the entries (ADR-0016).
+    /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML
+    ///   write. The in-memory order is only adopted once the file is on
+    ///   disk, so a failed save leaves the store as it was.
+    pub fn move_to(&mut self, id: &str, index: usize) -> Result<(), ConfigError> {
+        self.sync()?;
+        let from = self
+            .find_index(id)
+            .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
+
+        let len = self.file.connections.len();
+        if index >= len {
+            return Err(ConfigError::IndexOutOfRange { index, len });
+        }
+        if from == index {
+            return Ok(());
+        }
+
+        let mut new_file = self.file.clone();
+        let entry = new_file.connections.remove(from);
+        new_file.connections.insert(index, entry);
+
+        save_atomic(&self.path, &new_file)?;
+        self.file = new_file;
+
+        Ok(())
+    }
+
+    /// Set the identity mark of `id` — its colour, its tag, or neither —
+    /// without touching anything else about the connection (ADR-0130).
+    ///
+    /// [`ConnectionAdmin::update`] can already write a mark, but only as part
+    /// of a whole connection: the caller must hand back the kind, the tunnel
+    /// and the MCP permissions, which means the edit form has to be open. The
+    /// mark is the one field an operator changes while *looking at the list*,
+    /// so it gets a mutation of its own.
+    ///
+    /// A colour with no tag is accepted here, which the form refuses. The rule
+    /// in ADR-0126 was aimed at a chip that shows a bare swatch and says
+    /// nothing; the sidebar paints this colour as a stripe down the edge of a
+    /// row that already carries the connection's name, so the meaning is
+    /// beside it either way (ADR-0130).
+    ///
+    /// Blank and whitespace read as "unmarked" for both halves, the same way
+    /// [`ConnectionAdmin::add`] and [`ConnectionAdmin::update`] read them, so
+    /// the picker clears a mark by sending empty strings.
+    ///
+    /// Setting the mark an entry already carries is not an error and does not
+    /// rewrite the file — reopening the picker and clicking the current swatch
+    /// is a normal thing to do.
+    ///
+    /// # Errors
+    ///
+    /// - [`ConfigError::NotFound`] if no entry has id `id`.
+    /// - [`ConfigError::UnknownColor`] for a colour outside
+    ///   [`CONNECTION_COLORS`](crate::CONNECTION_COLORS).
+    /// - [`ConfigError::TagTooLong`] for a tag past
+    ///   [`CONNECTION_TAG_MAX_CHARS`].
+    /// - [`ConfigError::Io`] / [`ConfigError::Serialize`] from the TOML write.
+    ///   The in-memory mark is only adopted once the file is on disk, so a
+    ///   failed save leaves the store as it was.
+    pub fn set_mark(
+        &mut self,
+        id: &str,
+        color: Option<String>,
+        tag: Option<String>,
+    ) -> Result<(), ConfigError> {
+        self.sync()?;
+        let index = self
+            .find_index(id)
+            .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
+
+        // Both validated before either is written: a bad tag must not leave a
+        // half-applied mark behind, and neither is worth a partial save.
+        let color = normalize_color(color)?;
+        let tag = normalize_tag(tag)?;
+
+        let entry = &self.file.connections[index];
+        if entry.color == color && entry.tag == tag {
+            return Ok(());
+        }
+
+        let mut new_file = self.file.clone();
+        new_file.connections[index].color = color;
+        new_file.connections[index].tag = tag;
+
+        save_atomic(&self.path, &new_file)?;
+        self.file = new_file;
 
         Ok(())
     }
@@ -977,6 +1174,7 @@ impl ConnectionAdmin {
         passphrase: &str,
         mode: ImportMode,
     ) -> Result<ImportReport, ConfigError> {
+        self.sync()?;
         let mut payload = decrypt_bundle(blob, passphrase)?;
         // Take the incoming entries out of the payload so we can iterate
         // them by value while still borrowing `payload.secrets` below.
@@ -1554,6 +1752,42 @@ fn normalize_alias(raw: Option<String>) -> Option<String> {
         .filter(|alias| !alias.is_empty())
 }
 
+/// Trim a drafted identity colour, read a blank one as "unmarked", and refuse
+/// anything the palette does not contain.
+///
+/// # Errors
+///
+/// [`ConfigError::UnknownColor`] for a non-blank name outside
+/// [`CONNECTION_COLORS`].
+fn normalize_color(raw: Option<String>) -> Result<Option<String>, ConfigError> {
+    let Some(name) = raw.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()) else {
+        return Ok(None);
+    };
+    if !is_connection_color(&name) {
+        return Err(ConfigError::UnknownColor { name });
+    }
+    Ok(Some(name))
+}
+
+/// Trim an identity tag, treat blank as unmarked, and refuse one too long to
+/// sit on a row.
+///
+/// Refuses rather than truncates. A tag cut to fit is a different word, and the
+/// operator would have no way to tell that the thing labelling their production
+/// connection is not what they typed.
+fn normalize_tag(raw: Option<String>) -> Result<Option<String>, ConfigError> {
+    let Some(tag) = raw.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    if !is_connection_tag(&tag) {
+        return Err(ConfigError::TagTooLong {
+            tag,
+            max: CONNECTION_TAG_MAX_CHARS,
+        });
+    }
+    Ok(Some(tag))
+}
+
 /// Compute the keyring ref for a given connection id and field.
 fn keyring_ref(id: &str, field: &str) -> String {
     format!("dbboard.{id}.{field}")
@@ -1856,6 +2090,8 @@ mod tests {
     pub(super) fn turso_draft(id: &str, name: &str, path: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1869,6 +2105,8 @@ mod tests {
     pub(super) fn remote_turso_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1883,6 +2121,8 @@ mod tests {
     pub(super) fn d1_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1899,6 +2139,8 @@ mod tests {
     pub(super) fn pg_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1912,6 +2154,8 @@ mod tests {
     pub(super) fn mysql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1925,6 +2169,8 @@ mod tests {
     pub(super) fn neon_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1938,6 +2184,8 @@ mod tests {
     pub(super) fn supabase_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1951,6 +2199,8 @@ mod tests {
     pub(super) fn aurora_dsql_draft(id: &str, url: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1964,6 +2214,8 @@ mod tests {
     pub(super) fn aurora_dsql_iam_draft(id: &str, secret_access_key: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -1985,6 +2237,8 @@ mod tests {
     fn aurora_dsql_iam_edit(name: &str, secret_access_key: SecretField) -> ConnectionEditDraft {
         ConnectionEditDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: None,
             ssh: SshEditField::Keep,
             name: name.to_string(),
@@ -2010,9 +2264,12 @@ mod tests {
         let secret_ref = format!("dbboard.{id}.secret_key");
         secrets.set(&secret_ref, secret).expect("seed secret");
         let file = ConnectionFile {
+            mcp_export: None,
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: id.to_string(),
@@ -2036,6 +2293,8 @@ mod tests {
     pub(super) fn firestore_draft(id: &str, service_account: Option<&str>) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -2064,6 +2323,8 @@ mod tests {
             ssh: SshEditField::Keep,
             mcp_write: None,
             mcp_alias: None,
+            color: None,
+            tag: None,
         }
     }
 
@@ -2080,6 +2341,8 @@ mod tests {
     pub(super) fn mongodb_draft(id: &str, uri: &str, database: Option<&str>) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: id.to_string(),
@@ -2152,6 +2415,8 @@ mod tests {
                     ssh: SshEditField::Keep,
                     mcp_write: None,
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                 },
             )
             .expect("update mongodb");
@@ -2187,6 +2452,8 @@ mod tests {
                     ssh: SshEditField::Keep,
                     mcp_write: None,
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                 },
             )
             .expect("update mongodb");
@@ -2400,6 +2667,8 @@ mod tests {
                 "cloud",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Turso Cloud".to_string(),
@@ -2550,6 +2819,8 @@ mod tests {
                 "dsql",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Aurora DSQL dsql".to_string(),
@@ -2584,6 +2855,8 @@ mod tests {
                 "dsql",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Aurora DSQL".to_string(),
@@ -2615,6 +2888,8 @@ mod tests {
                 "pg",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
@@ -2665,9 +2940,12 @@ mod tests {
             .set("dbboard.dsql-iam.secret_key", "AWS_SECRET")
             .expect("seed secret");
         let file = ConnectionFile {
+            mcp_export: None,
             version: crate::store::CONFIG_VERSION,
             connections: vec![ConnectionEntry {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: "dsql-iam".to_string(),
@@ -2707,6 +2985,8 @@ mod tests {
                 "dsql-iam",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "renamed".to_string(),
@@ -2830,6 +3110,8 @@ mod tests {
                 "supabase",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Supabase supabase".to_string(),
@@ -2863,6 +3145,8 @@ mod tests {
                 "supabase",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Supabase".to_string(),
@@ -2895,6 +3179,8 @@ mod tests {
                 "pg",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
@@ -2945,6 +3231,8 @@ mod tests {
                 "neon",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Neon neon".to_string(),
@@ -2973,6 +3261,8 @@ mod tests {
                 "neon",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed Neon".to_string(),
@@ -3004,6 +3294,8 @@ mod tests {
                 "pg",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "pg".to_string(),
@@ -3087,6 +3379,9 @@ mod tests {
             path,
             secrets: secrets.clone() as Arc<dyn SecretStore>,
             file: ConnectionFile::empty(),
+            // The subject here is the save, not the read: re-reading a path
+            // whose parent is a file would fail first and prove nothing.
+            tracks_disk: false,
         };
 
         let err = admin
@@ -3117,6 +3412,8 @@ mod tests {
                 "local",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "New".to_string(),
@@ -3180,6 +3477,8 @@ mod tests {
                 "local",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "New".to_string(),
@@ -3202,6 +3501,8 @@ mod tests {
 
         let edit = |gate: Option<bool>| ConnectionEditDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: gate,
             ssh: SshEditField::Keep,
             name: "Local".to_string(),
@@ -3225,6 +3526,8 @@ mod tests {
     fn alias_edit(alias: Option<String>) -> ConnectionEditDraft {
         ConnectionEditDraft {
             mcp_alias: alias,
+            color: None,
+            tag: None,
             mcp_write: None,
             ssh: SshEditField::Keep,
             name: "Local".to_string(),
@@ -3249,6 +3552,8 @@ mod tests {
         let entry = admin
             .add(ConnectionDraft {
                 mcp_alias: Some("shop-db".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("app@db.internal", "Local", ":memory:")
             })
             .expect("add");
@@ -3261,6 +3566,8 @@ mod tests {
         admin
             .add(ConnectionDraft {
                 mcp_alias: Some("shop-db".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("local", "Old", ":memory:")
             })
             .expect("add");
@@ -3299,6 +3606,8 @@ mod tests {
         let entry = admin
             .add(ConnectionDraft {
                 mcp_alias: Some("  shop-db \n".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("local", "Local", ":memory:")
             })
             .expect("add");
@@ -3311,6 +3620,8 @@ mod tests {
         admin
             .add(ConnectionDraft {
                 mcp_alias: Some("shop-db".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("one", "One", ":memory:")
             })
             .expect("add");
@@ -3318,6 +3629,8 @@ mod tests {
         let err = admin
             .add(ConnectionDraft {
                 mcp_alias: Some("shop-db".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("two", "Two", ":memory:")
             })
             .expect_err("a duplicate alias is ambiguous as a handle");
@@ -3341,6 +3654,8 @@ mod tests {
         let err = admin
             .add(ConnectionDraft {
                 mcp_alias: Some("staging".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("prod", "Prod", ":memory:")
             })
             .expect_err("an alias that shadows another id is ambiguous");
@@ -3358,6 +3673,8 @@ mod tests {
         let entry = admin
             .add(ConnectionDraft {
                 mcp_alias: Some("local".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("local", "Local", ":memory:")
             })
             .expect("add");
@@ -3373,6 +3690,8 @@ mod tests {
         admin
             .add(ConnectionDraft {
                 mcp_alias: Some("shop-db".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("one", "One", ":memory:")
             })
             .expect("add");
@@ -3392,6 +3711,8 @@ mod tests {
         admin
             .add(ConnectionDraft {
                 mcp_alias: Some("shop-db".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("one", "One", ":memory:")
             })
             .expect("add");
@@ -3416,6 +3737,8 @@ mod tests {
         admin
             .add(ConnectionDraft {
                 mcp_alias: Some("shop-db".to_string()),
+                color: None,
+                tag: None,
                 ..turso_draft("local", "Local", ":memory:")
             })
             .expect("add");
@@ -3424,6 +3747,285 @@ mod tests {
             .update("local", alias_edit(Some("shop-db".to_string())))
             .expect("same alias is not a duplicate");
         assert_eq!(admin.entries()[0].mcp_alias.as_deref(), Some("shop-db"));
+    }
+
+    // The identity colour (issue #192). Cosmetic, but it is a property of the
+    // connection rather than of this machine: what it distinguishes —
+    // production from a copy of it — is the same distinction on every screen
+    // the connection is exported to.
+
+    fn color_edit(color: Option<String>) -> ConnectionEditDraft {
+        ConnectionEditDraft {
+            color,
+            tag: None,
+            mcp_alias: None,
+            mcp_write: None,
+            ssh: SshEditField::Keep,
+            name: "Local".to_string(),
+            kind: ConnectionKindEditDraft::Turso {
+                path: ":memory:".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn add_defaults_to_no_colour() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+        assert_eq!(entry.color, None);
+    }
+
+    #[test]
+    fn add_can_mark_a_connection_with_a_colour() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(ConnectionDraft {
+                color: Some("blue".to_string()),
+                tag: None,
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+        assert_eq!(entry.color.as_deref(), Some("blue"));
+    }
+
+    #[test]
+    fn add_refuses_a_colour_outside_the_palette() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let err = admin
+            .add(ConnectionDraft {
+                color: Some("chartreuse".to_string()),
+                tag: None,
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect_err("no stylesheet has a token for it");
+        assert!(
+            matches!(&err, ConfigError::UnknownColor { name } if name == "chartreuse"),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            admin.entries().is_empty(),
+            "a rejected add must not leave the connection behind"
+        );
+    }
+
+    #[test]
+    fn update_without_an_opinion_keeps_the_colour() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                color: Some("red".to_string()),
+                tag: None,
+                ..turso_draft("local", "Old", ":memory:")
+            })
+            .expect("add");
+
+        admin.update("local", color_edit(None)).expect("update");
+
+        assert_eq!(
+            admin.entries()[0].color.as_deref(),
+            Some("red"),
+            "a rename must not unmark the connection"
+        );
+    }
+
+    #[test]
+    fn update_can_set_and_clear_the_colour() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+
+        admin
+            .update("local", color_edit(Some("green".to_string())))
+            .expect("set");
+        assert_eq!(admin.entries()[0].color.as_deref(), Some("green"));
+
+        // Blank is how the picker says "no colour" — the same convention the
+        // alias uses, for the same reason: a form has no other way to say it.
+        admin
+            .update("local", color_edit(Some(String::new())))
+            .expect("clear");
+        assert_eq!(admin.entries()[0].color, None);
+    }
+
+    #[test]
+    fn update_refuses_a_colour_outside_the_palette() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                color: Some("teal".to_string()),
+                tag: None,
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+
+        let err = admin
+            .update("local", color_edit(Some("#1a73e8".to_string())))
+            .expect_err("a hex string is not a palette name");
+        assert!(
+            matches!(&err, ConfigError::UnknownColor { name } if name == "#1a73e8"),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(
+            admin.entries()[0].color.as_deref(),
+            Some("teal"),
+            "the stored mark survives a rejected edit"
+        );
+    }
+
+    // The tag: the half of the mark that survives a greyscale screenshot and a
+    // colour-blind reader (ADR-0126). Free text, because the words a team uses
+    // for its own servers are not ones this crate can enumerate.
+
+    fn tag_edit(tag: Option<String>) -> ConnectionEditDraft {
+        ConnectionEditDraft {
+            tag,
+            color: None,
+            mcp_alias: None,
+            mcp_write: None,
+            ssh: SshEditField::Keep,
+            name: "Local".to_string(),
+            kind: ConnectionKindEditDraft::Turso {
+                path: ":memory:".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn add_defaults_to_no_tag() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+        assert_eq!(entry.tag, None);
+    }
+
+    #[test]
+    fn add_can_tag_a_connection() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(ConnectionDraft {
+                tag: Some("prod".to_string()),
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+        assert_eq!(entry.tag.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn a_tag_is_trimmed_before_it_is_stored() {
+        // A pasted tag arrives with whitespace more often than not, and a
+        // trailing space is invisible in the row it is meant to label.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(ConnectionDraft {
+                tag: Some("  prod  ".to_string()),
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+        assert_eq!(entry.tag.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn add_refuses_a_tag_that_will_not_fit_on_a_row() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let long = "p".repeat(CONNECTION_TAG_MAX_CHARS + 1);
+        let err = admin
+            .add(ConnectionDraft {
+                tag: Some(long.clone()),
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect_err("the row has no width for it");
+        assert!(
+            matches!(&err, ConfigError::TagTooLong { tag, max } if tag == &long && *max == CONNECTION_TAG_MAX_CHARS),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            admin.entries().is_empty(),
+            "a rejected add must not leave the connection behind"
+        );
+    }
+
+    #[test]
+    fn a_tag_is_measured_in_characters_so_a_japanese_one_fits() {
+        // Twelve kanji are thirty-six bytes and narrower on the row than twelve
+        // latin letters. A byte limit would reject the shorter label of the two.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let entry = admin
+            .add(ConnectionDraft {
+                tag: Some("本番".to_string()),
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+        assert_eq!(entry.tag.as_deref(), Some("本番"));
+    }
+
+    #[test]
+    fn update_without_an_opinion_keeps_the_tag() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                tag: Some("prod".to_string()),
+                ..turso_draft("local", "Old", ":memory:")
+            })
+            .expect("add");
+
+        admin.update("local", tag_edit(None)).expect("update");
+
+        assert_eq!(
+            admin.entries()[0].tag.as_deref(),
+            Some("prod"),
+            "a rename must not unmark the connection"
+        );
+    }
+
+    #[test]
+    fn update_can_set_and_clear_the_tag() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(turso_draft("local", "Local", ":memory:"))
+            .expect("add");
+
+        admin
+            .update("local", tag_edit(Some("staging".to_string())))
+            .expect("set");
+        assert_eq!(admin.entries()[0].tag.as_deref(), Some("staging"));
+
+        // Blank is how the input says "no tag" — the same convention the alias
+        // and the colour use, for the same reason: a form has no other way.
+        admin
+            .update("local", tag_edit(Some(String::new())))
+            .expect("clear");
+        assert_eq!(admin.entries()[0].tag, None);
+    }
+
+    #[test]
+    fn update_refuses_a_tag_that_will_not_fit_on_a_row() {
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        admin
+            .add(ConnectionDraft {
+                tag: Some("prod".to_string()),
+                ..turso_draft("local", "Local", ":memory:")
+            })
+            .expect("add");
+
+        let err = admin
+            .update(
+                "local",
+                tag_edit(Some("x".repeat(CONNECTION_TAG_MAX_CHARS + 1))),
+            )
+            .expect_err("too long to sit on the row");
+        assert!(
+            matches!(&err, ConfigError::TagTooLong { max, .. } if *max == CONNECTION_TAG_MAX_CHARS),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(
+            admin.entries()[0].tag.as_deref(),
+            Some("prod"),
+            "the stored mark survives a rejected edit"
+        );
     }
 
     #[test]
@@ -3437,6 +4039,8 @@ mod tests {
                 "prod",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
@@ -3472,6 +4076,8 @@ mod tests {
                 "prod",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "D1 prod".to_string(),
@@ -3499,6 +4105,8 @@ mod tests {
                 "missing",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "X".to_string(),
@@ -3525,6 +4133,8 @@ mod tests {
                 "local",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "L".to_string(),
@@ -3560,12 +4170,18 @@ mod tests {
         let blocker = dir.path().join("blocker");
         std::fs::write(&blocker, b"file-not-dir").expect("seed blocker");
         admin.path = blocker.join("connections.toml");
+        // The subject is the failing save, not the read: a re-pointed admin
+        // whose new path holds nothing would otherwise sync itself empty
+        // before it got there (ADR-0133).
+        admin.tracks_disk = false;
 
         let err = admin
             .update(
                 "prod",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
@@ -3637,6 +4253,291 @@ mod tests {
         assert!(admin.entries().is_empty());
     }
 
+    // --- Reorder (issue #192, criterion 1) ----------------------------
+
+    /// Seed three connections in a known order so a reorder is visible.
+    fn three_in_order() -> (tempfile::TempDir, ConnectionAdmin) {
+        let (dir, _secrets, mut admin) = fresh_admin();
+        admin.add(turso_draft("a", "A", ":memory:")).expect("add a");
+        admin.add(turso_draft("b", "B", ":memory:")).expect("add b");
+        admin.add(turso_draft("c", "C", ":memory:")).expect("add c");
+        (dir, admin)
+    }
+
+    fn ids(admin: &ConnectionAdmin) -> Vec<&str> {
+        admin.entries().iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn move_to_puts_the_entry_at_the_index_asked_for() {
+        let (_dir, mut admin) = three_in_order();
+
+        admin.move_to("c", 0).expect("move c to the front");
+        assert_eq!(ids(&admin), ["c", "a", "b"]);
+
+        admin.move_to("c", 2).expect("move c to the back");
+        assert_eq!(ids(&admin), ["a", "b", "c"]);
+
+        // One step up, which is what the ▲ button asks for.
+        admin.move_to("c", 1).expect("move c up one");
+        assert_eq!(ids(&admin), ["a", "c", "b"]);
+    }
+
+    #[test]
+    fn move_to_persists_so_reopen_reads_the_new_order() {
+        let (dir, mut admin) = three_in_order();
+        admin.move_to("c", 0).expect("move");
+
+        let path = dir.path().join("connections.toml");
+        let reopen_secrets = Arc::new(InMemorySecretStore::new());
+        let reopened =
+            ConnectionAdmin::open(path, reopen_secrets as Arc<dyn SecretStore>).expect("reopen");
+        assert_eq!(ids(&reopened), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn move_to_unknown_id_returns_not_found() {
+        let (_dir, mut admin) = three_in_order();
+        let err = admin
+            .move_to("missing", 0)
+            .expect_err("missing id must error");
+        match &err {
+            ConfigError::NotFound(id) => assert_eq!(id, "missing"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+        assert_eq!(
+            ids(&admin),
+            ["a", "b", "c"],
+            "a refused move changes nothing"
+        );
+    }
+
+    #[test]
+    fn move_to_an_index_past_the_end_is_refused() {
+        let (_dir, mut admin) = three_in_order();
+        let err = admin.move_to("a", 3).expect_err("index 3 of 3 must error");
+        match &err {
+            ConfigError::IndexOutOfRange { index, len } => {
+                assert_eq!((*index, *len), (3, 3));
+            }
+            other => panic!("expected IndexOutOfRange, got {other:?}"),
+        }
+        assert_eq!(
+            ids(&admin),
+            ["a", "b", "c"],
+            "a refused move changes nothing"
+        );
+    }
+
+    #[test]
+    fn move_to_the_index_it_already_has_does_not_rewrite_the_file() {
+        let (dir, mut admin) = three_in_order();
+        let path = dir.path().join("connections.toml");
+        // A comment is how we observe a write that should not happen: the
+        // serialiser does not emit one, so a save loses it and a no-op keeps
+        // it. Deleting the file would not do — a mutator re-reads it first
+        // (ADR-0133), so an absent file reads as an empty one.
+        let sentinel = "
+# a no-op must not rewrite this file
+";
+        let seeded = std::fs::read_to_string(&path).expect("read") + sentinel;
+        std::fs::write(&path, &seeded).expect("seed sentinel");
+
+        admin
+            .move_to("b", 1)
+            .expect("moving where it already is is not an error");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            seeded,
+            "a no-op move must not touch the file"
+        );
+        assert_eq!(ids(&admin), ["a", "b", "c"]);
+    }
+
+    // --- Identity mark, set on its own (ADR-0130) ---------------------
+
+    /// The mark of one entry, as `(color, tag)`, for terse assertions.
+    fn mark_of<'a>(admin: &'a ConnectionAdmin, id: &str) -> (Option<&'a str>, Option<&'a str>) {
+        let e = admin
+            .entries()
+            .iter()
+            .find(|e| e.id == id)
+            .expect("entry exists");
+        (e.color.as_deref(), e.tag.as_deref())
+    }
+
+    #[test]
+    fn set_mark_writes_both_halves() {
+        let (_dir, mut admin) = three_in_order();
+
+        admin
+            .set_mark("b", Some("red".into()), Some("prod".into()))
+            .expect("set a mark");
+
+        assert_eq!(mark_of(&admin, "b"), (Some("red"), Some("prod")));
+    }
+
+    /// The point of the sidebar picker: one click paints the row, with no tag
+    /// typed. The row's own name carries the meaning a bare chip could not
+    /// (ADR-0130 amending ADR-0126).
+    #[test]
+    fn set_mark_accepts_a_colour_with_no_tag() {
+        let (_dir, mut admin) = three_in_order();
+
+        admin
+            .set_mark("a", Some("teal".into()), None)
+            .expect("colour alone is a mark");
+
+        assert_eq!(mark_of(&admin, "a"), (Some("teal"), None));
+    }
+
+    #[test]
+    fn set_mark_with_both_blank_clears_the_mark() {
+        let (_dir, mut admin) = three_in_order();
+        admin
+            .set_mark("a", Some("teal".into()), Some("prod".into()))
+            .expect("mark it");
+
+        admin.set_mark("a", None, None).expect("clear it");
+
+        assert_eq!(mark_of(&admin, "a"), (None, None));
+    }
+
+    /// Blank and whitespace mean "unmarked", the same reading `add` and
+    /// `update` give them — the picker sends `""` for "no colour".
+    #[test]
+    fn set_mark_reads_blanks_as_unmarked() {
+        let (_dir, mut admin) = three_in_order();
+        admin
+            .set_mark("a", Some("teal".into()), Some("prod".into()))
+            .expect("mark it");
+
+        admin
+            .set_mark("a", Some("   ".into()), Some(String::new()))
+            .expect("blank clears");
+
+        assert_eq!(mark_of(&admin, "a"), (None, None));
+    }
+
+    #[test]
+    fn set_mark_persists_so_reopen_reads_it() {
+        let (dir, mut admin) = three_in_order();
+        admin
+            .set_mark("c", Some("purple".into()), Some("staging".into()))
+            .expect("set");
+
+        let path = dir.path().join("connections.toml");
+        let reopen_secrets = Arc::new(InMemorySecretStore::new());
+        let reopened =
+            ConnectionAdmin::open(path, reopen_secrets as Arc<dyn SecretStore>).expect("reopen");
+        assert_eq!(mark_of(&reopened, "c"), (Some("purple"), Some("staging")));
+    }
+
+    #[test]
+    fn set_mark_unknown_id_returns_not_found() {
+        let (_dir, mut admin) = three_in_order();
+        let err = admin
+            .set_mark("missing", Some("red".into()), None)
+            .expect_err("missing id must error");
+        match &err {
+            ConfigError::NotFound(id) => assert_eq!(id, "missing"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    /// A colour outside the palette is refused rather than stored, exactly as
+    /// on `add`: a `--conn-<unknown>` custom property paints nothing, and an
+    /// invisible mark is worse than a refused one.
+    #[test]
+    fn set_mark_refuses_a_colour_outside_the_palette() {
+        let (_dir, mut admin) = three_in_order();
+        let err = admin
+            .set_mark("a", Some("chartreuse".into()), None)
+            .expect_err("unknown colour must error");
+        match &err {
+            ConfigError::UnknownColor { name } => assert_eq!(name, "chartreuse"),
+            other => panic!("expected UnknownColor, got {other:?}"),
+        }
+        assert_eq!(mark_of(&admin, "a"), (None, None), "nothing was written");
+    }
+
+    #[test]
+    fn set_mark_refuses_an_over_long_tag() {
+        let (_dir, mut admin) = three_in_order();
+        let long = "x".repeat(CONNECTION_TAG_MAX_CHARS + 1);
+        let err = admin
+            .set_mark("a", None, Some(long.clone()))
+            .expect_err("over-long tag must error");
+        match &err {
+            ConfigError::TagTooLong { tag, max } => {
+                assert_eq!(
+                    (tag.as_str(), *max),
+                    (long.as_str(), CONNECTION_TAG_MAX_CHARS)
+                );
+            }
+            other => panic!("expected TagTooLong, got {other:?}"),
+        }
+        assert_eq!(mark_of(&admin, "a"), (None, None), "nothing was written");
+    }
+
+    /// Setting the mark an entry already carries must not rewrite the file:
+    /// the picker re-sends the current colour whenever the operator reopens it
+    /// and clicks the same swatch.
+    #[test]
+    fn set_mark_to_what_it_already_is_does_not_rewrite_the_file() {
+        let (dir, mut admin) = three_in_order();
+        admin
+            .set_mark("b", Some("red".into()), Some("prod".into()))
+            .expect("set");
+
+        let path = dir.path().join("connections.toml");
+        // Same sentinel as the no-op move above, and for the same reason.
+        let sentinel = "
+# a no-op must not rewrite this file
+";
+        let seeded = std::fs::read_to_string(&path).expect("read") + sentinel;
+        std::fs::write(&path, &seeded).expect("seed sentinel");
+
+        admin
+            .set_mark("b", Some("red".into()), Some("prod".into()))
+            .expect("re-setting the same mark is not an error");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            seeded,
+            "a no-op set must not touch the file"
+        );
+    }
+
+    /// The mark is the only thing that moves. Nothing about the connection
+    /// itself — least of all its keyring refs — is touched.
+    #[test]
+    fn set_mark_leaves_the_rest_of_the_entry_alone() {
+        let (_dir, mut admin) = three_in_order();
+        let before = admin
+            .entries()
+            .iter()
+            .find(|e| e.id == "b")
+            .expect("entry")
+            .clone();
+
+        admin
+            .set_mark("b", Some("green".into()), Some("dev".into()))
+            .expect("set");
+
+        let after = admin
+            .entries()
+            .iter()
+            .find(|e| e.id == "b")
+            .expect("entry")
+            .clone();
+
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.kind, before.kind);
+        assert_eq!(ids(&admin), ["a", "b", "c"], "order is untouched");
+    }
+
     // --- Bundle export / import (ADR-0038 slice b) --------------------
 
     const BUNDLE_PASS: &str = "correct horse battery";
@@ -3695,6 +4596,8 @@ mod tests {
         target
             .add(ConnectionDraft {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: "store-a".to_string(),
@@ -3782,6 +4685,8 @@ mod tests {
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "attacker".to_string(),
@@ -3963,6 +4868,8 @@ mod tests {
         for id in ["alpha", "beta"] {
             file.connections.push(ConnectionEntry {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: id.to_string(),
@@ -4010,6 +4917,8 @@ mod tests {
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "beta".to_string(),
@@ -4044,6 +4953,8 @@ mod tests {
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "beta".to_string(),
@@ -4112,6 +5023,8 @@ mod tests {
         target
             .add(ConnectionDraft {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: "store-a".to_string(),
@@ -4195,6 +5108,8 @@ mod tests {
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "attacker".to_string(),
@@ -4241,6 +5156,8 @@ mod tests {
         target
             .add(ConnectionDraft {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: "store-a".to_string(),
@@ -4257,6 +5174,10 @@ mod tests {
         let blocker = dir.path().join("blocker");
         std::fs::write(&blocker, b"file-not-dir").expect("seed blocker");
         target.path = blocker.join("connections.toml");
+        // The subject is the failing save, not the read: a re-pointed admin
+        // whose new path holds nothing would otherwise sync itself empty
+        // before it got there (ADR-0133).
+        target.tracks_disk = false;
 
         let err = target
             .import_bundle(&blob, BUNDLE_PASS, ImportMode::Overwrite)
@@ -4301,6 +5222,8 @@ mod tests {
         //     from the target's, to show the check is on the id alone.
         file.connections.push(ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "store-a".to_string(),
@@ -4312,6 +5235,8 @@ mod tests {
         // (b) A brand-new id whose ref aims at another connection's slot.
         file.connections.push(ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "attacker".to_string(),
@@ -4324,6 +5249,8 @@ mod tests {
         for name in ["Fresh", "Fresh again"] {
             file.connections.push(ConnectionEntry {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: "fresh".to_string(),
@@ -4424,6 +5351,8 @@ mod tests {
     fn pg_ssh_key_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: Some(SshTunnelDraft {
                 host: "bastion.example".to_string(),
@@ -4446,6 +5375,8 @@ mod tests {
     fn pg_ssh_password_draft(id: &str) -> ConnectionDraft {
         ConnectionDraft {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: Some(SshTunnelDraft {
                 host: "bastion.example".to_string(),
@@ -4568,6 +5499,8 @@ mod tests {
                 "work",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -4598,6 +5531,8 @@ mod tests {
                 "work",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -4640,6 +5575,8 @@ mod tests {
                 "work",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Keep,
                     name: "Renamed".to_string(),
@@ -4671,6 +5608,8 @@ mod tests {
                 "work",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Disable,
                     name: "PG work".to_string(),
@@ -4698,6 +5637,8 @@ mod tests {
                 "work",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -4746,6 +5687,8 @@ mod tests {
                 "work",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -4783,6 +5726,8 @@ mod tests {
                 "work",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -4820,6 +5765,8 @@ mod tests {
                 "work",
                 ConnectionEditDraft {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: None,
                     ssh: SshEditField::Set(SshTunnelEditDraft {
                         host: "bastion.example".to_string(),
@@ -5001,5 +5948,101 @@ mod tests {
             admin.dsn_with_stored_password("local", "mysql://app@db:3306/shop"),
             Err(ConfigError::NotFound(id)) if id == "local"
         ));
+    }
+
+    /// Another process — the MCP server, or a text editor — may add a
+    /// connection while a long-lived admin is open. The admin writes the whole
+    /// file back on every change, so anything it has not seen is overwritten
+    /// (ADR-0133).
+    #[test]
+    fn add_keeps_an_entry_another_process_wrote() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new()) as Arc<dyn SecretStore>;
+        let mut held = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("open");
+        held.add(turso_draft("first", "First", "/tmp/first.db"))
+            .expect("add first");
+
+        let mut other = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("reopen");
+        other
+            .add(turso_draft("outside", "Outside", "/tmp/outside.db"))
+            .expect("add outside");
+
+        held.add(turso_draft("second", "Second", "/tmp/second.db"))
+            .expect("add second");
+
+        let on_disk = load_or_empty(&path).expect("reload");
+        let ids: Vec<&str> = on_disk.connections.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["first", "outside", "second"]);
+    }
+
+    /// The same staleness makes a duplicate id slip through: the guard only
+    /// sees the entries this admin knows about.
+    #[test]
+    fn add_rejects_a_duplicate_of_an_entry_another_process_wrote() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new()) as Arc<dyn SecretStore>;
+        let mut held = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("open");
+
+        let mut other = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("reopen");
+        other
+            .add(turso_draft("shared", "Outside", "/tmp/outside.db"))
+            .expect("add outside");
+
+        assert!(matches!(
+            held.add(turso_draft("shared", "Mine", "/tmp/mine.db")),
+            Err(ConfigError::DuplicateId(id)) if id == "shared"
+        ));
+    }
+
+    /// Deleting an entry must not resurrect the ones it never saw either.
+    #[test]
+    fn delete_keeps_an_entry_another_process_wrote() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new()) as Arc<dyn SecretStore>;
+        let mut held = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("open");
+        held.add(turso_draft("first", "First", "/tmp/first.db"))
+            .expect("add first");
+        held.add(turso_draft("doomed", "Doomed", "/tmp/doomed.db"))
+            .expect("add doomed");
+
+        let mut other = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("reopen");
+        other
+            .add(turso_draft("outside", "Outside", "/tmp/outside.db"))
+            .expect("add outside");
+
+        held.delete("doomed").expect("delete");
+
+        let on_disk = load_or_empty(&path).expect("reload");
+        let ids: Vec<&str> = on_disk.connections.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["first", "outside"]);
+    }
+
+    /// An admin built from an explicit in-memory file has no disk to trust:
+    /// re-reading would throw the fixture away.
+    #[test]
+    fn an_in_memory_admin_does_not_re_read_the_disk() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("connections.toml");
+        let secrets = Arc::new(InMemorySecretStore::new()) as Arc<dyn SecretStore>;
+        let mut other = ConnectionAdmin::open(path.clone(), secrets.clone()).expect("open");
+        other
+            .add(turso_draft("on-disk", "On disk", "/tmp/on-disk.db"))
+            .expect("add on-disk");
+
+        let file = ConnectionFile {
+            mcp_export: None,
+            version: crate::store::CONFIG_VERSION,
+            connections: Vec::new(),
+        };
+        let mut held = ConnectionAdmin::new_with_file(path.clone(), secrets.clone(), file);
+        held.add(turso_draft("in-memory", "In memory", "/tmp/in-memory.db"))
+            .expect("add in-memory");
+
+        let on_disk = load_or_empty(&path).expect("reload");
+        let ids: Vec<&str> = on_disk.connections.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["in-memory"]);
     }
 }

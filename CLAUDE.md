@@ -28,6 +28,11 @@ and documentation policies. Read this file before making any change.
 ## Tech Selection Principles
 
 - Prefer the current Rust stable edition.
+- The compiler itself is pinned in `rust-toolchain.toml` to an exact version.
+  Because `clippy -D warnings` makes the lint set part of the build, an
+  unpinned toolchain lets a runner-image update break a branch nobody touched
+  (ADR-0139). Bump it deliberately, with the lint fixes the bump requires in
+  the same commit.
 - Avoid crates with frequent breaking changes unless the value is clear.
 - Confirm the latest stable version of major libraries (tauri, tokio, sqlx,
   libsql, etc.) before pinning.

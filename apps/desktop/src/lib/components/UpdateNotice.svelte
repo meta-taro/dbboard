@@ -9,21 +9,40 @@
     emptyDownload,
     foldDownload,
     downloadPercent,
+    DOWNLOAD_PAGE_URL,
     type AvailableUpdate,
     type DownloadState,
+    type StalledUpdate,
   } from '$lib/update/notice';
 
   interface Props {
-    update: AvailableUpdate;
+    /** The newer release on offer, or null when the only thing to report
+     *  is that the last attempt did not land. */
+    update: AvailableUpdate | null;
+    /** An update started on a previous run that never completed. */
+    stalled: StalledUpdate | null;
     onDismiss: () => void;
   }
-  let { update, onDismiss }: Props = $props();
+  let { update, stalled, onDismiss }: Props = $props();
 
   type Phase = 'available' | 'downloading' | 'installing' | 'restarting' | 'failed';
   let phase = $state<Phase>('available');
   let download = $state<DownloadState>(emptyDownload());
 
   const percent = $derived(downloadPercent(download));
+
+  // Without an offer on the table the card exists only to explain the failed
+  // attempt, so it says that instead of announcing an update.
+  const title = $derived(
+    update ? i18n.t('update-available-title') : i18n.t('update-stalled-title'),
+  );
+
+  let copied = $state(false);
+
+  async function copyDownloadLink() {
+    await navigator.clipboard.writeText(DOWNLOAD_PAGE_URL);
+    copied = true;
+  }
 
   async function install() {
     phase = 'downloading';
@@ -45,60 +64,82 @@
   }
 </script>
 
-<div class="notice" role="dialog" aria-label={i18n.t('update-available-title')}>
+<div class="notice" role="dialog" aria-label={title}>
   <header class="head">
-    <span class="dot" aria-hidden="true"></span>
-    <h2 class="title">{i18n.t('update-available-title')}</h2>
+    <span class="dot" class:warn={update === null} aria-hidden="true"></span>
+    <h2 class="title">{title}</h2>
   </header>
 
-  <p class="body">
-    {i18n.t('update-available-body', {
-      version: update.version,
-      current: update.currentVersion,
-    })}
-  </p>
-
-  {#if update.notes.trim().length > 0}
-    <section class="notes">
-      <h3 class="notes-heading">{i18n.t('update-notes-heading')}</h3>
-      <div class="notes-body">{update.notes}</div>
+  <!-- Shown before the offer, because it is the reason the same version may
+       be on the table again: the last attempt downloaded and then the app
+       came back as the old build. -->
+  {#if stalled}
+    <section class="stalled">
+      <p class="stalled-body">
+        {i18n.t('update-stalled-body', {
+          version: stalled.to,
+          current: stalled.from,
+        })}
+      </p>
+      <p class="stalled-link">{DOWNLOAD_PAGE_URL}</p>
+      <button type="button" class="ghost small" onclick={copyDownloadLink}>
+        {copied ? i18n.t('update-stalled-copied') : i18n.t('update-stalled-copy')}
+      </button>
     </section>
   {/if}
 
-  {#if phase === 'downloading'}
-    {#if percent === null}
-      <div class="progress indeterminate" aria-label={i18n.t('update-downloading-wait')}>
-        <span class="bar"></span>
-      </div>
-      <p class="status">{i18n.t('update-downloading-wait')}</p>
-    {:else}
-      <div
-        class="progress"
-        role="progressbar"
-        aria-valuemin="0"
-        aria-valuemax="100"
-        aria-valuenow={percent}
-      >
-        <span class="bar" style="width: {percent}%"></span>
-      </div>
-      <p class="status">{i18n.t('update-downloading', { percent })}</p>
+  {#if update}
+    <p class="body">
+      {i18n.t('update-available-body', {
+        version: update.version,
+        current: update.currentVersion,
+      })}
+    </p>
+
+    {#if update.notes.trim().length > 0}
+      <section class="notes">
+        <h3 class="notes-heading">{i18n.t('update-notes-heading')}</h3>
+        <div class="notes-body">{update.notes}</div>
+      </section>
     {/if}
-  {:else if phase === 'installing'}
-    <p class="status">{i18n.t('update-installing')}</p>
-  {:else if phase === 'restarting'}
-    <p class="status">{i18n.t('update-restarting')}</p>
-  {:else if phase === 'failed'}
-    <p class="status failed">{i18n.t('update-failed')}</p>
+
+    {#if phase === 'downloading'}
+      {#if percent === null}
+        <div class="progress indeterminate" aria-label={i18n.t('update-downloading-wait')}>
+          <span class="bar"></span>
+        </div>
+        <p class="status">{i18n.t('update-downloading-wait')}</p>
+      {:else}
+        <div
+          class="progress"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={percent}
+        >
+          <span class="bar" style="width: {percent}%"></span>
+        </div>
+        <p class="status">{i18n.t('update-downloading', { percent })}</p>
+      {/if}
+    {:else if phase === 'installing'}
+      <p class="status">{i18n.t('update-installing')}</p>
+    {:else if phase === 'restarting'}
+      <p class="status">{i18n.t('update-restarting')}</p>
+    {:else if phase === 'failed'}
+      <p class="status failed">{i18n.t('update-failed')}</p>
+    {/if}
   {/if}
 
   {#if phase === 'available' || phase === 'failed'}
     <div class="actions">
       <button type="button" class="ghost" onclick={onDismiss}>
-        {i18n.t('update-later')}
+        {update ? i18n.t('update-later') : i18n.t('update-stalled-close')}
       </button>
-      <button type="button" class="primary" onclick={install}>
-        {i18n.t('update-install')}
-      </button>
+      {#if update}
+        <button type="button" class="primary" onclick={install}>
+          {i18n.t('update-install')}
+        </button>
+      {/if}
     </div>
   {/if}
 </div>
@@ -215,6 +256,39 @@
   }
   .status.failed {
     color: var(--danger, #dc2626);
+  }
+
+  .dot.warn {
+    background: var(--warning, #d97706);
+  }
+  .stalled {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: var(--bg-surface-alt);
+    border: 1px solid var(--warning, #d97706);
+    border-radius: var(--radius-widget);
+  }
+  .stalled-body {
+    margin: 0;
+    color: var(--text);
+    font-size: var(--text-small);
+    line-height: 1.5;
+  }
+  .stalled-link {
+    margin: 0;
+    /* Selectable: there is no external-browser plugin, so the address itself
+       is the affordance and the copy button is the shortcut. */
+    user-select: text;
+    font-size: var(--text-hint);
+    color: var(--text-muted);
+    word-break: break-all;
+  }
+  .ghost.small {
+    padding: 4px 10px;
+    font-size: var(--text-hint);
   }
 
   .actions {

@@ -20,6 +20,7 @@
 # when that test tells you to; do not add one speculatively.
 #
 # Read by .cargo-husky/hooks/pre-commit and .cargo-husky/hooks/pre-push.
+dbboard-bench
 dbboard-connect
 dbboard-desktop
 dbboard-mcp

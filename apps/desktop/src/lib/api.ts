@@ -24,7 +24,11 @@ import type {
   AiOutcome,
   AiProviderView,
 } from '$lib/ai/panel';
-import type { AvailableUpdate, DownloadEvent } from '$lib/update/notice';
+import type {
+  AvailableUpdate,
+  DownloadEvent,
+  StalledUpdate,
+} from '$lib/update/notice';
 
 export interface ConnectionView {
   id: string;
@@ -330,6 +334,37 @@ export const onRestoreProgress = (
 export const connectionEditFields = (id: string): Promise<EditFields> =>
   invoke('connection_edit_fields', { id });
 
+// The identity mark of every marked connection, keyed by id (ADR-0126). Both
+// halves in one call because they are rendered together — a swatch with no tag
+// beside it is the failure mode the tag exists to prevent.
+//
+// Unmarked connections are absent, so a lookup returns `undefined` rather than
+// a pair of nulls. A connection with only one half set is still marked and does
+// appear. Separate from `listConnections` because that projection is the
+// agent's view of a connection and a mark is for a human eye.
+export interface ConnectionMark {
+  color: string | null;
+  tag: string | null;
+}
+
+export const connectionMarks = (): Promise<Record<string, ConnectionMark>> =>
+  invoke('connection_marks');
+
+// Set one connection's identity mark from the list, with no edit form
+// (ADR-0130). `updateConnection` can write a mark too, but only alongside the
+// whole connection, which means the form has to be open and every secret
+// decision re-made; marking is what an operator does while looking at the
+// sidebar.
+//
+// Blank clears: `color: ''` is "no colour", `tag: ''` is "no tag". Unlike the
+// form, a colour with no tag is accepted — the sidebar paints it as a stripe
+// on a row that already carries the connection's name (ADR-0130).
+export const setConnectionMark = (
+  id: string,
+  color: string,
+  tag: string,
+): Promise<void> => invoke('set_connection_mark', { id, color, tag });
+
 // Ask the SSH server for its host-key fingerprint (`SHA256:…`) so the form can
 // offer it for pinning. Opens a connection to `host`, but never authenticates —
 // see the command's doc comment.
@@ -343,6 +378,12 @@ export const probeSshHostKey = (host: string, port: number): Promise<string> =>
 // `mcpWrite` is the MCP write gate (ADR-0087) — a permission, not a secret, so
 // it rides in plain and comes back out on edit. `mcpAlias` is the agent-facing
 // name (ADR-0088); blank means none, and the backend trims it.
+//
+// `color` and `tag` are the identity mark (ADR-0126): a name from
+// `CONNECTION_COLORS`, and up to `CONNECTION_TAG_MAX_CHARS` characters the
+// operator writes. Blank means no mark on either — that is what an emptied
+// picker and an emptied input send, so on edit each clears rather than keeps,
+// the same three states as `mcpAlias`.
 export const addConnection = (
   id: string,
   name: string,
@@ -350,8 +391,19 @@ export const addConnection = (
   ssh: Record<string, unknown> | null,
   mcpWrite: boolean,
   mcpAlias: string,
+  color: string,
+  tag: string,
 ): Promise<void> =>
-  invoke('add_connection', { id, name, kind, ssh, mcpWrite, mcpAlias });
+  invoke('add_connection', {
+    id,
+    name,
+    kind,
+    ssh,
+    mcpWrite,
+    mcpAlias,
+    color,
+    tag,
+  });
 
 // `keepPassword` is the structured-input counterpart of a blank secret: the
 // form rebuilt the DSN from the parts it was shown, which never included the
@@ -364,6 +416,8 @@ export const updateConnection = (
   keepPassword: boolean,
   mcpWrite: boolean,
   mcpAlias: string,
+  color: string,
+  tag: string,
 ): Promise<void> =>
   invoke('update_connection', {
     id,
@@ -373,6 +427,8 @@ export const updateConnection = (
     keepPassword,
     mcpWrite,
     mcpAlias,
+    color,
+    tag,
   });
 
 // Copy a connection into a new one that owns its own keychain slots, seeded
@@ -409,6 +465,13 @@ export const foreignConnectionRefs = (): Promise<ForeignRef[]> =>
 
 export const deleteConnection = (id: string): Promise<void> =>
   invoke('delete_connection', { id });
+
+// Move a connection to position `index` in the stored order (issue #192).
+// `index` is a position in the resulting list, so one row up from `i` is
+// `moveConnection(id, i - 1)`. The order lives in the connections file
+// itself, so it survives a restart and travels inside a `.dbbx` bundle.
+export const moveConnection = (id: string, index: number): Promise<void> =>
+  invoke('move_connection', { id, index });
 
 // Drop the cached adapter and dial again. The backend already re-checks an
 // idle adapter before handing it out, so this is not needed to *recover* — it
@@ -647,6 +710,14 @@ let pendingUpdate: Update | null = null;
 // parity with the egui client, ADR-0040). Cheap; call once before checking.
 export const updateOptOut = (): Promise<boolean> => invoke('update_opt_out');
 
+// Report an update that was started on a previous run and never landed, and
+// clear the record so it is said once rather than on every launch after.
+export const takeStalledUpdate = (): Promise<StalledUpdate | null> =>
+  invoke('take_stalled_update');
+
+const recordUpdateAttempt = (to: string): Promise<void> =>
+  invoke('record_update_attempt', { to });
+
 // Check the release endpoint for a newer signed bundle. Resolves to the mapped
 // update (version + notes) or null when already current. Applies the same
 // strictly-newer guard the egui client uses, so a same/older endpoint entry
@@ -678,6 +749,16 @@ export const installUpdate = async (
   onEvent: (event: DownloadEvent) => void,
 ): Promise<void> => {
   if (!pendingUpdate) throw new Error('no pending update to install');
+  // Written down before control leaves this process. The installer replaces
+  // the binary and relaunches it (ADR-0067); when that relaunch never comes
+  // there is nothing left running to note it afterwards. A failure here is
+  // not worth cancelling the update over: it costs the diagnostic, not the
+  // install.
+  try {
+    await recordUpdateAttempt(pendingUpdate.version);
+  } catch {
+    /* best effort */
+  }
   await pendingUpdate.downloadAndInstall((event) =>
     onEvent(event as DownloadEvent),
   );

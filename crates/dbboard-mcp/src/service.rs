@@ -42,8 +42,13 @@ use std::time::{Duration, Instant};
 use dbboard_config::annotations::{self, AnnotationsError, TableAnnotations};
 use dbboard_config::store::{self, ConnectionKind};
 pub use dbboard_config::UiCommand;
-use dbboard_config::{ui_command, ui_settings, ConfigError, SecretStore};
+use dbboard_config::{
+    ui_command, ui_settings, ConfigError, ConnectionAdmin, ConnectionDraft, ConnectionKindDraft,
+    SecretStore, CONNECTION_COLORS,
+};
 use dbboard_connect::{backend_config_for_entry, connect_adapter};
+
+use crate::export::{self, ExportOutcome};
 use dbboard_core::{
     build_update_sql, classify_write, dialect_for_adapter_id, plan_dump as core_plan_dump,
     plan_restore as core_plan_restore, run_dump as core_run_dump, run_restore as core_run_restore,
@@ -54,6 +59,7 @@ use dbboard_core::{
 };
 use serde::Serialize;
 use thiserror::Error;
+use time::OffsetDateTime;
 use tokio::sync::Mutex;
 
 /// Default number of rows returned when the caller does not specify
@@ -89,6 +95,60 @@ pub struct ConnectionView {
     pub id: String,
     pub name: String,
     pub kind: String,
+    /// Where this entry sits in the list, counting from zero. The order of
+    /// `[[connections]]` in the file *is* the order the sidebar renders
+    /// (issue #192), and it is what [`McpService::move_connection`] is
+    /// addressed by — so it is reported rather than left to be counted off
+    /// the array, which is how a caller ends up acting on a stale view
+    /// (ADR-0016).
+    pub position: usize,
+    /// The identity mark's colour, one of
+    /// [`CONNECTION_COLORS`](dbboard_config::CONNECTION_COLORS), or absent
+    /// when the connection is unmarked (ADR-0130).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// The identity mark's short label, or absent when unmarked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+/// A connection an agent asks dbboard to register (ADR-0134).
+///
+/// Deliberately far narrower than [`ConnectionDraft`], which every other
+/// caller uses: the two variants below are the only connection kinds that
+/// store **nothing** in the keychain. That is the whole boundary. An agent
+/// can register the databases whose entire configuration is already
+/// non-secret — a file on this disk, an emulator on loopback — and cannot
+/// register anything whose configuration includes a password or a token.
+///
+/// The invariant is deliberately structural rather than a check: no string
+/// that arrives here can become a keyring entry, so there is no inspection
+/// of a URL to get subtly wrong (`postgres://user:@host`, percent-encoded
+/// passwords, `?password=` in the query) and no transcript that ends up
+/// holding a credential.
+#[derive(Debug, Clone)]
+pub struct NewConnection {
+    pub id: String,
+    pub name: String,
+    pub kind: NewConnectionKind,
+}
+
+/// The credential-free half of [`ConnectionKindDraft`].
+#[derive(Debug, Clone)]
+pub enum NewConnectionKind {
+    /// A SQLite/libSQL file on this machine. Stored as
+    /// [`ConnectionKindDraft::Turso`], which is what a local file is here.
+    Sqlite { path: String },
+    /// The Firestore emulator, which authenticates with a fixed
+    /// `Bearer owner` and so has no service account to store (ADR-0093).
+    /// `base_url` is required rather than optional: it is what distinguishes
+    /// the emulator from the real project, and the real project needs a
+    /// credential this tool will not accept.
+    FirestoreEmulator {
+        project_id: String,
+        database_id: Option<String>,
+        base_url: String,
+    },
 }
 
 /// Result of [`McpService::ui_locale`]: what the UI language is set to, and
@@ -204,6 +264,91 @@ impl DumpControl for UnattendedDump {
 
     fn is_cancelled(&self) -> bool {
         false
+    }
+}
+
+/// Route a mark or reorder failure to the error class that tells the caller
+/// whether it can fix the request itself.
+///
+/// Left as [`ServiceError::Config`], all four of these reach an agent as an
+/// internal error — the one shape it is most likely to retry unchanged. Each
+/// message therefore says what would have been accepted, because an agent
+/// cannot see the palette or the length of the list.
+fn list_write_error(err: ConfigError) -> ServiceError {
+    match err {
+        ConfigError::NotFound(id) => ServiceError::ConnectionNotFound(id),
+        ConfigError::UnknownColor { name } => ServiceError::InvalidRequest(format!(
+            "{name:?} is not one of dbboard's connection colours; use one of: {}",
+            CONNECTION_COLORS.join(", ")
+        )),
+        ConfigError::TagTooLong { tag, max } => ServiceError::InvalidRequest(format!(
+            "the tag {tag:?} is longer than the {max}-character limit; shorten it"
+        )),
+        ConfigError::IndexOutOfRange { index, len } => ServiceError::InvalidRequest(format!(
+            "there is no position {index} in a list of {len} connections; \
+             positions count from 0, so the last one is {}",
+            len.saturating_sub(1)
+        )),
+        other => ServiceError::Config(other),
+    }
+}
+
+// Trim a required field, or say which one was blank.
+fn required(label: &str, value: &str) -> Result<String, ServiceError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ServiceError::InvalidRequest(format!(
+            "{label} must not be blank"
+        )));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Trim an optional field, treating a blank string as absent — an agent
+/// filling a schema tends to send `""` where it means "not set".
+fn optional(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
+/// Build the store's draft from what an agent sent, refusing anything that
+/// would put a secret in the keychain (ADR-0134).
+fn draft_kind(kind: NewConnectionKind) -> Result<ConnectionKindDraft, ServiceError> {
+    match kind {
+        NewConnectionKind::Sqlite { path } => {
+            let path = required("path", &path)?;
+            // A URL here is not a typo to correct — it is the one shape this
+            // tool exists to keep out. Every remote libSQL endpoint comes with
+            // a token, and the message has to name where that can be done
+            // instead, or the agent will simply try again.
+            if path.contains("://") {
+                return Err(ServiceError::InvalidRequest(format!(
+                    "path must be a local file, not a URL like {path:?}.                      A remote database needs a token or a password, and those                      are added by the operator in the dbboard app — never sent                      to a tool"
+                )));
+            }
+            Ok(ConnectionKindDraft::Turso { path })
+        }
+        NewConnectionKind::FirestoreEmulator {
+            project_id,
+            database_id,
+            base_url,
+        } => {
+            let project_id = required("project_id", &project_id)?;
+            let base_url = required("base_url", &base_url)?;
+            if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+                return Err(ServiceError::InvalidRequest(format!(
+                    "base_url must be the emulator's HTTP address, got {base_url:?}"
+                )));
+            }
+            Ok(ConnectionKindDraft::Firestore {
+                project_id,
+                database_id: optional(database_id),
+                base_url: Some(base_url),
+                // The line this tool does not cross: a real Firestore project
+                // needs a service account, so only the emulator can be
+                // registered this way.
+                service_account: None,
+            })
+        }
     }
 }
 
@@ -352,6 +497,23 @@ pub enum ServiceError {
          a human must set mcp_write = true on it in connections.toml"
     )]
     WriteNotEnabled(String),
+
+    /// No `[mcp_export]` permission is set, so this server may not write
+    /// bundles anywhere (ADR-0140). The absent state is the default, and an
+    /// agent cannot leave it: `ConnectionAdmin` writes `[[connections]]`
+    /// entries and no top-level key, so the only way in is a human editing
+    /// the file.
+    #[error(
+        "exporting connections over MCP is not enabled; a human must add an          [mcp_export] table naming a directory to connections.toml"
+    )]
+    ExportNotEnabled,
+
+    /// The export was permitted but could not be completed — the configured
+    /// directory is missing, or the bundle could not be written. Separate
+    /// from [`ServiceError::Config`] because none of these are the store
+    /// being unreadable.
+    #[error("{0}")]
+    Export(String),
 
     /// The write policy refused the statement (ADR-0087). Carries
     /// [`WritePolicyViolation::is_permanent`], which tells an agent whether
@@ -734,10 +896,14 @@ impl McpService {
         Ok(file
             .connections
             .iter()
-            .map(|entry| ConnectionView {
+            .enumerate()
+            .map(|(position, entry)| ConnectionView {
                 id: entry.id.clone(),
                 name: entry.name.clone(),
                 kind: kind_label(&entry.kind).to_string(),
+                position,
+                color: entry.color.clone(),
+                tag: entry.tag.clone(),
             })
             .collect())
     }
@@ -760,7 +926,8 @@ impl McpService {
         Ok(file
             .connections
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(position, entry)| {
                 let handle = entry.mcp_alias.as_deref().unwrap_or(&entry.id);
                 ConnectionView {
                     id: handle.to_string(),
@@ -770,9 +937,220 @@ impl McpService {
                         .unwrap_or(&entry.name)
                         .to_string(),
                     kind: kind_label(&entry.kind).to_string(),
+                    position,
+                    // The mark is the operator's own shorthand, not an
+                    // identifier: an alias hides the store's name, and a
+                    // colour called `red` reveals nothing further.
+                    color: entry.color.clone(),
+                    tag: entry.tag.clone(),
                 }
             })
             .collect())
+    }
+
+    /// Register a new connection in `connections.toml` (ADR-0134).
+    ///
+    /// The point is to remove a pointless handover: setting up a local
+    /// database and then asking a person to retype its path into a dialog is
+    /// two jobs where there is one. Only kinds that store no secret can be
+    /// registered — see [`NewConnection`] for why that is the boundary rather
+    /// than an inspection of what was sent.
+    ///
+    /// Three things are deliberately *not* parameters:
+    ///
+    /// - `mcp_write`, which stays shut. A tool that granted its own write
+    ///   access would not be a gate (ADR-0087); enabling it stays an act of
+    ///   the operator's, in the app or in the file.
+    /// - `mcp_alias`, because the alias exists to hide a name *from* agents
+    ///   (ADR-0088). One chosen by the agent hides nothing.
+    /// - Any refresh of a running window. A dbboard that happens to be open
+    ///   lists what it read at startup, so the new entry appears there after
+    ///   a refresh. Reporting that as a failure of the write — which is what
+    ///   a UI command that nothing answers would do — would be worse than
+    ///   the delay.
+    ///
+    /// The admin is opened per call rather than held: another process may
+    /// have written the file since the last one, and a long-lived admin
+    /// rewrites the whole file from what it last read (ADR-0133).
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::InvalidRequest`] for a blank field, a URL where a
+    /// local path belongs, an emulator address that is not HTTP, or an id
+    /// another connection already answers to. [`ServiceError::Config`] when
+    /// the file cannot be read or written.
+    pub async fn add_connection(
+        &self,
+        request: NewConnection,
+    ) -> Result<ConnectionView, ServiceError> {
+        let draft = ConnectionDraft {
+            id: required("id", &request.id)?,
+            name: required("name", &request.name)?,
+            kind: draft_kind(request.kind)?,
+            ssh: None,
+            mcp_write: false,
+            mcp_alias: None,
+            color: None,
+            tag: None,
+        };
+
+        let path = self.config_path.clone();
+        let secrets = Arc::clone(&self.secrets);
+        tokio::task::spawn_blocking(move || -> Result<ConnectionView, ConfigError> {
+            let mut admin = ConnectionAdmin::open(path, secrets)?;
+            let view_id = draft.id.clone();
+            let entry = admin.add(draft)?;
+            let view = ConnectionView {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                kind: kind_label(&entry.kind).to_string(),
+                // Read back rather than assumed to be last: where `add`
+                // puts an entry is `add`'s business, and a position the
+                // caller then moves by would be wrong by one.
+                position: admin
+                    .entries()
+                    .iter()
+                    .position(|e| e.id == view_id)
+                    .unwrap_or(0),
+                // A new connection is registered unmarked; the agent can
+                // mark it with `set_connection_mark` if it has a reason to.
+                color: None,
+                tag: None,
+            };
+            Ok(view)
+        })
+        .await
+        .map_err(|e| ServiceError::Task(e.to_string()))?
+        // A taken handle is something the caller sent, not a fault of this
+        // machine, and the two are routed to different MCP error classes. Left
+        // as `Config` it would reach the agent as an internal error — the one
+        // shape it is most likely to retry unchanged.
+        .map_err(|err| match err {
+            ConfigError::DuplicateId(id) | ConfigError::DuplicateAlias(id) => {
+                ServiceError::InvalidRequest(format!(
+                    "the handle {id:?} is already taken by another connection; choose another id"
+                ))
+            }
+            other => ServiceError::Config(other),
+        })
+    }
+
+    /// Seal the named connections into an encrypted bundle on disk, under a
+    /// passphrase this server mints and files in the OS credential store
+    /// (ADR-0140).
+    ///
+    /// The answer carries the bundle's path and the *name* of the credential
+    /// slot — never the passphrase. An agent that collects three connections
+    /// for a colleague therefore ends up holding a file it cannot open, and
+    /// the colleague gets the passphrase from the operator, out of band.
+    ///
+    /// Off unless the operator has added an `[mcp_export]` table to
+    /// `connections.toml` naming a directory to write into. See
+    /// [`crate::export`] for why the permission lives there and not in the
+    /// environment.
+    ///
+    /// The admin is opened per call inside the blocking pool, for the same
+    /// reason [`add_connection`](Self::add_connection) does it: the file may
+    /// have moved under us, and the crypto is deliberately slow (scrypt).
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ExportNotEnabled`] when the operator has granted no
+    /// permission, [`ServiceError::Export`] for a missing destination or a
+    /// failed write, [`ServiceError::InvalidRequest`] for an empty selection,
+    /// and [`ServiceError::Config`] when the store or a secret cannot be
+    /// read.
+    pub async fn export_connections(
+        &self,
+        ids: Vec<String>,
+    ) -> Result<ExportOutcome, ServiceError> {
+        let path = self.config_path.clone();
+        let secrets = Arc::clone(&self.secrets);
+        // Read once, here, so every name in one export shares a timestamp
+        // even if the blocking pool makes it wait.
+        let now = OffsetDateTime::now_utc();
+        tokio::task::spawn_blocking(move || export::export_named(&path, &secrets, &ids, now))
+            .await
+            .map_err(|e| ServiceError::Task(e.to_string()))?
+    }
+
+    /// Set a connection's identity mark — its colour, its short tag, or
+    /// neither (ADR-0130; reachable by an agent since ADR-0136).
+    ///
+    /// The mark is set as a whole, the way the picker in the app sets it:
+    /// a `None` half clears that half rather than leaving it. The
+    /// alternative needs "absent" and "empty" to mean different things in
+    /// a JSON object an agent composes by hand, and that difference goes
+    /// wrong without announcing itself.
+    ///
+    /// `mcp_write` deliberately does not gate this. That switch decides
+    /// whether an agent may change what is *in* a database (ADR-0087);
+    /// a colour and a twelve-character label are dbboard's own view of the
+    /// list, and nothing about them reaches the server on the other end.
+    /// Gating them behind the data switch would mean an operator has to
+    /// grant write access to a production database in order to let an
+    /// agent tidy the sidebar.
+    ///
+    /// The admin is opened per call rather than held (ADR-0133).
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] if no entry has that id,
+    /// [`ServiceError::InvalidRequest`] for a colour outside the palette or
+    /// a tag past the length limit, and [`ServiceError::Config`] when the
+    /// file cannot be read or written.
+    pub async fn set_connection_mark(
+        &self,
+        connection_id: &str,
+        color: Option<String>,
+        tag: Option<String>,
+    ) -> Result<(), ServiceError> {
+        let path = self.config_path.clone();
+        let secrets = Arc::clone(&self.secrets);
+        let id = connection_id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), ConfigError> {
+            let mut admin = ConnectionAdmin::open(path, secrets)?;
+            admin.set_mark(&id, color, tag)
+        })
+        .await
+        .map_err(|e| ServiceError::Task(e.to_string()))?
+        .map_err(list_write_error)
+    }
+
+    /// Move a connection to `position` in the list, sliding the entries in
+    /// between over by one (issue #192; reachable by an agent since
+    /// ADR-0136).
+    ///
+    /// `position` counts from zero and is a position in the *resulting*
+    /// list — the same number [`ConnectionView::position`] reports, so a
+    /// plan made from one read applies without arithmetic. Moving an entry
+    /// to the position it already holds is not an error.
+    ///
+    /// Nothing about the databases changes: the order of `[[connections]]`
+    /// in the file is the order the sidebar renders, so this rewrites a
+    /// sequence and touches no keyring entry.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] if no entry has that id,
+    /// [`ServiceError::InvalidRequest`] if `position` is past the end of
+    /// the list, and [`ServiceError::Config`] when the file cannot be read
+    /// or written.
+    pub async fn move_connection(
+        &self,
+        connection_id: &str,
+        position: usize,
+    ) -> Result<(), ServiceError> {
+        let path = self.config_path.clone();
+        let secrets = Arc::clone(&self.secrets);
+        let id = connection_id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<(), ConfigError> {
+            let mut admin = ConnectionAdmin::open(path, secrets)?;
+            admin.move_to(&id, position)
+        })
+        .await
+        .map_err(|e| ServiceError::Task(e.to_string()))?
+        .map_err(list_write_error)
     }
 
     /// Translate a handle an agent supplied back into the real connection id
@@ -1684,6 +2062,224 @@ path = ":memory:"
         let views = fx.service.list_connections().await.expect("after write");
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].id, "a");
+    }
+
+    // Marks and order over MCP (ADR-0136). Neither write is new — the app
+    // has had both since 0.12.0 — so what these cover is the reach: an agent
+    // asked to tidy the list needs to see the current mark and position
+    // before it can decide what to change, and the two writes have to fail
+    // as *the caller's* mistake rather than as a fault of this machine.
+
+    const THREE_MARKED: &str = r#"
+version = 1
+
+[[connections]]
+id    = "alpha"
+name  = "Alpha"
+kind  = "turso"
+path  = ":memory:"
+color = "red"
+tag   = "prod"
+
+[[connections]]
+id   = "beta"
+name = "Beta"
+kind = "turso"
+path = ":memory:"
+
+[[connections]]
+id   = "gamma"
+name = "Gamma"
+kind = "turso"
+path = ":memory:"
+"#;
+
+    /// The position is what `move_connection` is addressed by, so it has to
+    /// come from the same read the agent plans against rather than be counted
+    /// off the array by the caller — which is the stale-view mistake
+    /// ADR-0016 describes.
+    #[tokio::test]
+    async fn connection_views_carry_the_mark_and_the_position() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let views = fx
+            .service
+            .list_agent_connections()
+            .await
+            .expect("agent list");
+        assert_eq!(views[0].color.as_deref(), Some("red"));
+        assert_eq!(views[0].tag.as_deref(), Some("prod"));
+        assert_eq!(views[0].position, 0);
+
+        assert_eq!(views[1].color, None, "an unmarked entry reports no colour");
+        assert_eq!(views[1].tag, None);
+        assert_eq!(views[1].position, 1);
+        assert_eq!(views[2].position, 2);
+    }
+
+    #[tokio::test]
+    async fn set_connection_mark_writes_both_halves() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        fx.service
+            .set_connection_mark("beta", Some("blue".into()), Some("staging".into()))
+            .await
+            .expect("mark");
+
+        let views = fx.service.list_connections().await.expect("list");
+        assert_eq!(views[1].color.as_deref(), Some("blue"));
+        assert_eq!(views[1].tag.as_deref(), Some("staging"));
+        assert_eq!(views[0].color.as_deref(), Some("red"), "left alone");
+    }
+
+    /// The mark is set as a whole, the way the picker sets it: omitting a
+    /// half clears it rather than leaving it. Anything else needs a
+    /// distinction between "absent" and "empty" in a JSON payload an agent
+    /// writes by hand, and that is the kind of difference that goes wrong
+    /// without saying so.
+    #[tokio::test]
+    async fn set_connection_mark_with_neither_half_clears_the_mark() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        fx.service
+            .set_connection_mark("alpha", None, None)
+            .await
+            .expect("clear");
+
+        let views = fx.service.list_connections().await.expect("list");
+        assert_eq!(views[0].color, None);
+        assert_eq!(views[0].tag, None);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_colour_is_the_callers_mistake_not_a_config_fault() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let err = fx
+            .service
+            .set_connection_mark("beta", Some("chartreuse".into()), None)
+            .await
+            .expect_err("not a palette colour");
+        assert!(
+            matches!(err, ServiceError::InvalidRequest(_)),
+            "unexpected error: {err:?}"
+        );
+        // The palette has to be in the message: an agent that cannot see the
+        // eight names will guess a ninth.
+        assert!(
+            err.to_string().contains("red"),
+            "the error does not name the palette: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_over_long_tag_is_the_callers_mistake() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let err = fx
+            .service
+            .set_connection_mark("beta", None, Some("thirteen chars".into()))
+            .await
+            .expect_err("too long");
+        assert!(
+            matches!(err, ServiceError::InvalidRequest(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_connection_puts_the_entry_at_that_index() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        fx.service.move_connection("gamma", 0).await.expect("move");
+
+        let views = fx.service.list_connections().await.expect("list");
+        let ids: Vec<&str> = views.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, ["gamma", "alpha", "beta"]);
+        assert_eq!(views[0].position, 0, "the reported position moved with it");
+        assert_eq!(views[1].position, 1);
+    }
+
+    #[tokio::test]
+    async fn moving_past_the_end_is_the_callers_mistake() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let err = fx
+            .service
+            .move_connection("alpha", 3)
+            .await
+            .expect_err("no position 3 in a list of three");
+        assert!(
+            matches!(err, ServiceError::InvalidRequest(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn marking_or_moving_an_unknown_connection_is_a_clean_not_found() {
+        let fx = fixture();
+        write(&fx.config_path, THREE_MARKED);
+
+        let marked = fx
+            .service
+            .set_connection_mark("nope", Some("red".into()), None)
+            .await
+            .expect_err("unknown");
+        assert!(
+            matches!(&marked, ServiceError::ConnectionNotFound(id) if id == "nope"),
+            "unexpected error: {marked:?}"
+        );
+
+        let moved = fx
+            .service
+            .move_connection("nope", 0)
+            .await
+            .expect_err("unknown");
+        assert!(
+            matches!(&moved, ServiceError::ConnectionNotFound(id) if id == "nope"),
+            "unexpected error: {moved:?}"
+        );
+    }
+
+    /// Marking must not become a way to read back the name an alias hides:
+    /// what an agent sees after a write is the same projection it gets from
+    /// `list_connections` (ADR-0088).
+    #[tokio::test]
+    async fn marking_an_aliased_connection_still_reports_only_the_alias() {
+        let fx = fixture();
+        write(&fx.config_path, ALIASED);
+
+        let id = fx
+            .service
+            .resolve_agent_handle("store-a")
+            .await
+            .expect("resolve");
+        fx.service
+            .set_connection_mark(&id, Some("purple".into()), Some("live".into()))
+            .await
+            .expect("mark");
+
+        let views = fx
+            .service
+            .list_agent_connections()
+            .await
+            .expect("agent list");
+        assert_eq!(views[0].id, "store-a");
+        assert_eq!(views[0].name, "store-a");
+        assert_eq!(views[0].color.as_deref(), Some("purple"));
+
+        let json = serde_json::to_string(&views).expect("serialize");
+        assert!(
+            !json.contains("Store A") && !json.contains("db.internal"),
+            "the write leaked what the alias hides: {json}"
+        );
     }
 
     #[tokio::test]
@@ -3166,5 +3762,183 @@ path = ":memory:"
                 expected
             );
         }
+    }
+
+    // --- Registering a connection over MCP (ADR-0134) ------------------
+
+    /// Read the connection file back as text. The assertions below are about
+    /// what was written, not about what the service remembers.
+    fn written(fx: &Fixture) -> String {
+        std::fs::read_to_string(&fx.config_path).expect("read connections.toml")
+    }
+
+    fn sqlite_request(id: &str, path: &str) -> NewConnection {
+        NewConnection {
+            id: id.to_string(),
+            name: format!("{id} (local)"),
+            kind: NewConnectionKind::Sqlite {
+                path: path.to_string(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn add_connection_registers_a_local_sqlite_file() {
+        let fx = fixture();
+        let view = fx
+            .service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("add");
+
+        assert_eq!(view.id, "scratch");
+        assert_eq!(view.kind, "turso");
+
+        let listed = fx
+            .service
+            .list_agent_connections()
+            .await
+            .expect("list after add");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "scratch");
+    }
+
+    /// The whole reason this tool can exist: nothing it accepts becomes a
+    /// keyring entry, so no credential travels through the transcript.
+    #[tokio::test]
+    async fn add_connection_stores_no_secret() {
+        let fx = fixture();
+        fx.service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("add");
+        assert!(
+            !written(&fx).contains("keyring"),
+            "a connection an agent registered must reference no secret:
+{}",
+            written(&fx)
+        );
+    }
+
+    /// A tool that granted its own write access would not be a gate
+    /// (ADR-0087), so the flag is not a parameter and stays shut. Read back
+    /// from the store rather than the text: `mcp_write = false` is the
+    /// default and is not emitted, so its absence is the assertion.
+    #[tokio::test]
+    async fn add_connection_leaves_the_write_gate_shut() {
+        let fx = fixture();
+        fx.service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("add");
+
+        let file = store::load_or_empty(&fx.config_path).expect("reload");
+        assert!(!file.connections[0].mcp_write, "{}", written(&fx));
+        // The alias hides a name from agents, so one an agent chose would
+        // hide nothing (ADR-0088) — it is not a parameter either.
+        assert!(file.connections[0].mcp_alias.is_none(), "{}", written(&fx));
+    }
+
+    /// The emulator is the other kind with nothing to keep secret: no
+    /// service account exists to store.
+    #[tokio::test]
+    async fn add_connection_registers_the_firestore_emulator() {
+        let fx = fixture();
+        let view = fx
+            .service
+            .add_connection(NewConnection {
+                id: "emulator".to_string(),
+                name: "Firestore emulator".to_string(),
+                kind: NewConnectionKind::FirestoreEmulator {
+                    project_id: "demo-project".to_string(),
+                    database_id: None,
+                    base_url: "http://127.0.0.1:8080".to_string(),
+                },
+            })
+            .await
+            .expect("add");
+
+        assert_eq!(view.kind, "firestore");
+        assert!(!written(&fx).contains("keyring"), "{}", written(&fx));
+    }
+
+    /// A remote libSQL URL is not a file path, and the token that goes with
+    /// it is exactly what must not be sent here.
+    #[tokio::test]
+    async fn add_connection_refuses_a_url_where_a_path_belongs() {
+        let fx = fixture();
+        let err = fx
+            .service
+            .add_connection(sqlite_request("remote", "libsql://db.turso.io"))
+            .await
+            .expect_err("a URL is not a local file");
+        assert!(
+            matches!(&err, ServiceError::InvalidRequest(m) if m.contains("dbboard app")),
+            "the refusal must say where it can be done instead, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_connection_refuses_a_blank_path() {
+        let fx = fixture();
+        assert!(matches!(
+            fx.service
+                .add_connection(sqlite_request("blank", "   "))
+                .await,
+            Err(ServiceError::InvalidRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn add_connection_refuses_a_blank_id() {
+        let fx = fixture();
+        assert!(matches!(
+            fx.service
+                .add_connection(sqlite_request("  ", "/tmp/x.db"))
+                .await,
+            Err(ServiceError::InvalidRequest(_))
+        ));
+    }
+
+    /// The store, not this method, owns uniqueness — but an agent that gets
+    /// a bare "duplicate" with no id cannot tell which handle it clashed on.
+    #[tokio::test]
+    async fn add_connection_refuses_an_id_that_is_taken() {
+        let fx = fixture();
+        fx.service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("first");
+        let err = fx
+            .service
+            .add_connection(sqlite_request("scratch", "/tmp/other.db"))
+            .await
+            .expect_err("second");
+        assert!(err.to_string().contains("scratch"), "got {err:?}");
+    }
+
+    /// An entry the operator added in the app must survive a registration
+    /// that arrives while the file is already populated.
+    #[tokio::test]
+    async fn add_connection_keeps_the_entries_already_there() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            r#"version = 1
+[[connections]]
+id = "existing"
+name = "Existing"
+kind = "turso"
+path = "/tmp/existing.db"
+"#,
+        );
+        fx.service
+            .add_connection(sqlite_request("scratch", "/tmp/scratch.db"))
+            .await
+            .expect("add");
+
+        let listed = fx.service.list_agent_connections().await.expect("list");
+        let ids: Vec<&str> = listed.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["existing", "scratch"]);
     }
 }

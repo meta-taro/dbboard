@@ -14,6 +14,7 @@
   import {
     updateOptOut,
     checkForUpdate,
+    takeStalledUpdate,
     onUiCommand,
     reportUiCommandResult,
   } from '$lib/api';
@@ -145,6 +146,15 @@
   // DBBOARD_NO_UPDATE_CHECK opt-out as the egui client, and swallows every
   // failure: an update check must never be able to break the app's launch.
   async function maybeCheckForUpdate() {
+    // Asked for first and separately from the check: a stalled update is
+    // local knowledge, and it is exactly when the network is unreachable
+    // that the person most needs to be told why they are still on the old
+    // build. The opt-out silences the check, not this.
+    try {
+      updateState.setStalled(await takeStalledUpdate());
+    } catch {
+      updateState.setStalled(null);
+    }
     try {
       if (await updateOptOut()) return;
       updateState.set(await checkForUpdate());
@@ -303,9 +313,10 @@
   />
 {/if}
 
-{#if updateState.showNotice && updateState.available}
+{#if updateState.showNotice}
   <UpdateNotice
     update={updateState.available}
+    stalled={updateState.stalled}
     onDismiss={() => updateState.dismiss()}
   />
 {/if}

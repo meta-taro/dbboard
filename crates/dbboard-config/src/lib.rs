@@ -37,11 +37,13 @@ pub mod annotations;
 pub mod bundle;
 pub mod dsn;
 pub mod error;
+pub mod mark;
 pub mod secrets;
 pub mod secure_fs;
 pub mod store;
 pub mod ui_command;
 pub mod ui_settings;
+pub mod update_attempt;
 
 pub use admin::{
     ConnectionAdmin, ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft,
@@ -62,14 +64,17 @@ pub use annotations::{
     ColumnAnnotation, ConnectionAnnotations, TableAnnotations, ANNOTATIONS_VERSION,
 };
 pub use bundle::{
-    decrypt_bundle, encrypt_bundle, validate_passphrase, BundleError, BundlePayload,
-    BUNDLE_VERSION, MIN_PASSPHRASE_LEN,
+    decrypt_bundle, encrypt_bundle, generate_passphrase, validate_passphrase, BundleError,
+    BundlePayload, BUNDLE_VERSION, MIN_PASSPHRASE_LEN,
 };
 pub use dsn::{parse_dsn, with_password, DsnParts};
 pub use error::ConfigError;
+pub use mark::{
+    is_connection_color, is_connection_tag, CONNECTION_COLORS, CONNECTION_TAG_MAX_CHARS,
+};
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{
-    default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind,
+    default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind, McpExport,
     SshTunnelToml, CONFIG_VERSION,
 };
 pub use ui_command::{

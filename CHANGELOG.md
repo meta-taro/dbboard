@@ -9,6 +9,220 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-02 — Speed, measured
+
+### Added
+
+- **The speed the slot is named after now has numbers behind it.** There were
+  no benchmarks in this workspace at all — no `benches/`, no criterion,
+  nothing — while the README opened by calling dbboard "high-performance".
+  `crates/dbboard-bench` measures the three areas `docs/roadmap.md` reserved
+  this slot for and writes
+  [`docs/performance-baseline.md`](docs/performance-baseline.md): the config
+  work that happens before a window appears, opening a database and reading
+  enough of it to show a table, and carrying a 10,000-row result to the
+  frontend. Measurement first, on purpose — optimising before it means the
+  next regression has nothing to be a regression against.
+
+  The first run says the in-process work is not where the time goes. Every
+  browse operation is single-digit microseconds; a full 10,000-row result
+  serialises for the Tauri IPC boundary in under a millisecond, while pulling
+  the same rows out of the driver costs 4.4 ms — so the JSON hop that looked
+  like the obvious suspect is the cheaper half. Two things did stand out:
+  `truncate_rows` spends 570 µs discarding 9,900 rows, over half what
+  serialising all of them costs, and parsing `annotations.toml` runs six times
+  slower than `connections.toml` for the same twenty connections.
+
+  No number here is asserted by a test. A threshold on a timing fails on a busy
+  runner rather than on a regression, and this project has already paid for one
+  rare intermittent failure (ADR-0125). What is asserted is the *set* of
+  measurement points, because deleting one otherwise looks exactly like the
+  thing it measured getting faster. See
+  [ADR-0141](docs/decisions.md).
+
+- **An agent can pack connections for another machine, without ever holding
+  the key.** Moving a set-up to a new laptop has been a bundle file since
+  0.4.0, but making one is five steps by hand: pick the connections, pick a
+  directory, invent a passphrase, save, and put the passphrase somewhere it
+  survives the trip. `dbboard-mcp` gains `export_connections`, which does the
+  first four. It seals only the connections you name — there is no form of it
+  that exports everything — and answers with the file path, a count, and the
+  **name of a credential-manager slot**. Not the passphrase: dbboard generates
+  one, files it under `dbboard.export.<name>` on this machine, and wipes its
+  copy. A tool result is plaintext in an agent's transcript, so a bundle and
+  the key to it must not travel together.
+
+  The switch is a directory, not a flag. Without an `[mcp_export]` table in
+  `connections.toml` naming one, the call is refused permanently — and that
+  table is in the connection store rather than in an environment variable
+  because an agent usually owns the file its own MCP server is launched from,
+  and a permission it can grant itself is not a permission. Choosing the
+  directory *is* the grant, so there is no "on" left switched on after the
+  laptop is provisioned. A directory that is not there is refused rather than
+  created. The result reports how many entries carried a secret this machine
+  cannot read, but not which ones, so a connection hidden behind an alias
+  stays hidden. See [ADR-0140](docs/decisions.md).
+
+### Fixed
+
+- The setup instructions built a different machine than the one CI builds.
+  ADR-0139 pinned the toolchain to an exact version because `clippy
+  -D warnings` makes the lint set part of the build, but Requirements went on
+  asking for "Rust stable (latest)" — and `rustup` reads
+  `rust-toolchain.toml` regardless, so anyone following the README by hand
+  installed a compiler nothing ever mentioned. The clone URL was still
+  `<your-org>`, and the smoke test was `cargo test`, which on Windows tears
+  down two in-memory libSQL databases at once and crashes after every
+  assertion has passed; `scripts/cargo-test-serialised.sh` exists precisely
+  to avoid that and is what the mandatory commands use. A fourth test in
+  `toolchain_pin_drift.rs` now reads the pin and fails when the README does
+  not name it.
+
+## [0.13.0] — 2026-08-26 — Knowing what changed, and letting an agent tidy up
+
+### Added
+
+- **An agent can tidy the connection list.** The mark and the order that
+  arrived in 0.12.0 were editable only by hand, one row at a time — which is
+  the wrong shape of work for a person and the right shape for an agent, and
+  the operator who most needs twenty connections sorted is the one who has
+  twenty. `dbboard-mcp` gains `set_connection_mark` and `move_connection`,
+  and `list_connections` now reports each entry's `position` alongside its
+  `color` and `tag` so a sort is aimed at the list that exists rather than at
+  one read a move ago. Neither tool is behind `mcp_write`: that switch is
+  about the data in a database, and putting a sidebar colour behind it would
+  mean granting production write access to have a list sorted. See
+  [ADR-0136](docs/decisions.md).
+- **The About dialog says what each version changed.** The version number was
+  all it showed, and the only description a release ever gave came from the
+  update dialog — once, at the moment the update was offered. Anyone who took
+  an update without reading it, or who skipped a version because two arrived
+  as one step, had no way back to the text. About now shows the notes for the
+  version it is running, with every earlier version reachable from the same
+  picker. They are read from the `CHANGELOG.md` the build was cut from, so
+  there is no second list to keep current, and the file travels inside the
+  binary rather than being fetched — the dialog works with no network and
+  cannot describe a release you are not running. The notes are in English,
+  and a line under them says so where the interface is not. See
+  [ADR-0137](docs/decisions.md).
+
+## [0.12.0] — 2026-08-25 — A connection list you can steer
+
+### Added
+
+- **The connection list keeps the order you put it in.** Entries were
+  rendered in the order they happened to be added, so the ones opened every
+  day sat wherever they had landed. A row is now moved by dragging its handle, or
+  by focusing the handle and pressing `↑`/`↓`. The order is the order of
+  `[[connections]]` in the file: no new key, older builds read it unchanged,
+  and it travels inside a `.dbbx` bundle for free. The handle is disabled
+  while a filter is hiding rows — "below the next visible row" is a different
+  feature, and moving a connection past something the operator cannot see is
+  a silent wrong answer. The drag is built on pointer events rather than the
+  browser's own drag-and-drop, so the window keeps the OS-level drop that
+  dropping a bundle onto it will need. See
+  [ADR-0127](docs/decisions.md) and [ADR-0128](docs/decisions.md).
+- **A connection can be found by typing instead of by scanning.** The
+  manager's list had no way in but the eye, and the app's only search box
+  filters tables and columns, one panel below. Name and id are matched, every
+  typed word having to match, so a second word narrows. The kind is
+  deliberately not matched: typing `my` to reach "my shop" would otherwise
+  return every MySQL row, which is the opposite of narrowing. The id is
+  matched because it is the one handle that can be pasted in from a log.
+  Nothing is persisted — this is a way of finding one row, not a saved view.
+- **A connection can be marked with a colour and a short tag.** "Which server
+  am I about to run this against?" had only the connection's name to answer
+  it, and names are chosen to be descriptive rather than distinguishable at a
+  glance: a production store and the copy made to repair it read as the same
+  thing when you are already looking at a result grid. The mark is two halves
+  and both are required together — a colour from a fixed palette of eight,
+  with a value in every theme, and a tag of at most twelve characters that
+  the operator writes (`prod`, `本番`, `検証環境`). The tag is the half that
+  carries the meaning: colour alone is lost by a colour-blind reader, by a
+  greyscale screenshot pasted into an issue, and by a screen reader alike. A
+  duplicate inherits neither half, because the mark exists to tell production
+  from a copy of it. See [ADR-0126](docs/decisions.md).
+- **A mark can be set from the list, and the colour now sits at the head of
+  the row.** Marking was only reachable from the edit form, which also holds
+  the DSN, the tunnel and the AI-agent permissions: recolouring six
+  connections meant six whole-connection saves for a decision about nothing
+  but appearance. Right-clicking a row in the sidebar now opens a swatch
+  grid — one click paints the row, and the tag is typed beside it. The
+  colour renders as a bar at the left edge rather than as a pill after the
+  name, because down a list the left edge is the one column the eye can scan
+  without reading; the bar holds its width on unmarked rows so that marking
+  one does not shift its name sideways. A colour with no tag is accepted
+  here, unlike in the form, since the bar sits on a row that already carries
+  the connection's name. See [ADR-0130](docs/decisions.md).
+- **The line between the connections and the tables can be moved.** It was
+  fixed, and the connection list above it had no height of its own: three
+  connections left a boundary sitting near the top of the sidebar, and twenty
+  pushed the table list off the bottom of the window with no way to bring it
+  back. The line is now dragged up and down, and double-clicking it hands the
+  split back to the number of connections registered — which is what "back to
+  where it belongs" means when the number of rows is not fixed. Until the line
+  is dragged for the first time it keeps following that count on its own, so
+  adding a connection makes room for itself. The connection list scrolls once
+  it reaches its ceiling instead of growing without limit. Arrow keys move the
+  line and `Home` resets it. See [ADR-0131](docs/decisions.md).
+
+- **An AI agent can register a local database itself.** Setting up a SQLite
+  file and then asking a person to retype its path into a dialog is two jobs
+  where there is one. The MCP server gains `add_connection`, which writes the
+  entry into `connections.toml` directly. Only the kinds that store *nothing*
+  in the keychain can be registered this way — a SQLite/libSQL file on this
+  machine, and the local Firestore emulator, which authenticates with a fixed
+  token and so has no service account to save. Everything that needs a
+  password, a token or a key is refused, and the refusal is in the tool's own
+  description rather than in an error, so an agent learns it before sending
+  the credential rather than after. The new connection is created read-only:
+  agent writes stay off, and only a person can turn them on. See
+  [ADR-0134](docs/decisions.md).
+
+### Fixed
+
+- **A half-typed connection is no longer thrown away by a stray click.**
+  While the add or edit form was open, clicking anywhere outside the dialog
+  closed it and discarded every field, and `Escape` did the same from the
+  keyboard the fields were being typed on. On a small window — where the panel
+  covers most of what is behind it — reaching past it to see the details being
+  copied was the same gesture as deleting the work, so registration could not
+  be completed at all. The backdrop now does nothing while any panel is open,
+  and `Escape` steps back to the list only from a form that has not been typed
+  into. Leaving is unchanged and still one deliberate click: the ✕ in the
+  header, or Cancel in the form. Import, export, duplicate and repair are
+  covered on the same terms. See [ADR-0132](docs/decisions.md).
+- **The connection dialog can be moved off whatever it is covering.** It was
+  fixed in the centre of the window with no way to reposition it, so on a
+  laptop screen there was no way to read what was behind it. Drag its header
+  to move it, double-click the header to put it back in the centre — the same
+  gesture the sidebar divider already uses. It cannot be dragged out of reach:
+  a strip stays on screen sideways, the header never passes the top or bottom
+  edge, and shrinking the window pulls a moved dialog back into view. See
+  [ADR-0132](docs/decisions.md).
+- **The reorder handle no longer offers a drag it will refuse.** While a
+  filter was hiding rows the handle correctly declined to move anything, but
+  still brightened under the pointer and answered a press with a closed-fist
+  cursor. Both were single-class CSS rules that outranked the disabled state.
+
+- **A connection added outside a running dbboard is no longer erased by it.**
+  The window read `connections.toml` once at startup and wrote the whole file
+  back on every change, so an entry added by hand — or, now, by an agent —
+  while dbboard was open disappeared at the next rename, with no error and no
+  conflict. The duplicate-id guard had the same blind spot and let an id
+  already taken on disk through. Every write now re-reads the file first. See
+  [ADR-0133](docs/decisions.md).
+- **An update that does not install now says so on the next launch.** On one
+  laptop the 0.10.0 → 0.11.0 update downloaded, dbboard quit, and nothing came
+  back; started again by hand it was 0.10.0 with no sign anything had been
+  attempted, and the same update was offered again. The attempt is now written
+  down before the installer is handed control, and read back at startup: if the
+  running build is still the one being replaced, the notice says the last update
+  did not finish and offers the download page to install by hand. It reports
+  once, is read before the update check so it still appears with no network, and
+  says nothing when the update did land. Why that install stalls is a separate
+  question and is not answered here. See [ADR-0135](docs/decisions.md).
+
 ## [0.11.0] — 2026-08-24 — Connection repair and duplication
 
 ### Added

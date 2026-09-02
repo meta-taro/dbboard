@@ -25,15 +25,20 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.12** | A connection list you can steer | Operator-controlled order, search, names instead of ids, colour marks (#192). Its prerequisite is done: `ConnectionManager.svelte` is 662 lines, from 1,617 |
-| **v0.13** | Speed, measured | Startup, connect-and-browse, large result sets. Measurement lands before any optimisation, so the numbers are comparable afterwards |
-| **v0.14** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder |
+| **v0.15** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder. Carries the half of v0.14 that did not ship: the optimisation itself, now that [`performance-baseline.md`](performance-baseline.md) says where the time goes |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 fixed or its workaround documented, the contract mirrored to `dbboard-web`, sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
 Elasticsearch/OpenSearch, Oracle) hold no slot on purpose: each is additive
 and independent, so one ships in whichever release is open when it is
 finished. Demand decides the order, not this table.
+
+MCP verbs hold no slot either, for the same reason and with one condition
+attached: a verb is additive only while it opens nothing an operator had not
+already opened by hand. One that needs a new permission carries that
+permission's design with it ([ADR-0087](decisions.md),
+[ADR-0140](decisions.md)), and the design is what gets reviewed — not which
+release it lands in.
 
 ### Bands after 1.0 — several releases each
 

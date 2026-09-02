@@ -26,9 +26,12 @@ fn save_then_load_round_trips_through_disk() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let path = dir.path().join("connections.toml");
     let original = ConnectionFile {
+        mcp_export: None,
         version: dbboard_config::CONFIG_VERSION,
         connections: vec![ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "local-turso".to_string(),
@@ -57,9 +60,12 @@ fn save_overwrites_an_existing_file_atomically() {
     let path = dir.path().join("connections.toml");
 
     let first = ConnectionFile {
+        mcp_export: None,
         version: dbboard_config::CONFIG_VERSION,
         connections: vec![ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "old".to_string(),
@@ -72,9 +78,12 @@ fn save_overwrites_an_existing_file_atomically() {
     save_atomic(&path, &first).expect("first save");
 
     let second = ConnectionFile {
+        mcp_export: None,
         version: dbboard_config::CONFIG_VERSION,
         connections: vec![ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "new".to_string(),

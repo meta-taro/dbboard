@@ -57,7 +57,7 @@ connections.toml
 # .pii-denylist.example (format only, no real names).
 .pii-denylist
 
-# 司令塔のベースルール正本と共通雛形（個人名を含むため OSS 上流に出さない）。
-# 実体は司令塔リポから配布される。
+# 運用ルールの正本と共通雛形（内部向けの記述を含むため公開側では追跡しない）。
+# 実体はメンテナ側から同期される。
 /.claude/rules/
 /.claude/templates/

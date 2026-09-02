@@ -12056,3 +12056,1055 @@ the next reader it never happens, which is the belief being corrected here.
 teardown, and reproducing it on demand has failed twice now — 30 runs when
 ADR-0119 was written, 35 here. Retrying a rare crash is a workaround; it is
 recorded as one.
+
+## ADR-0126 — A connection is marked by a colour *and* a tag, and the tag is what carries the meaning (2026-08-24)
+
+**Status.** Accepted.
+
+**Context.** Several rows in the connection list read alike, and the one that
+matters is the one that must not be mistaken for the others: production, sitting
+next to a copy of it made for a repair. That is what the request was —
+「開発本番のタグとかカラーを付ける」「接続するサーバの見分け方として」 — and it is
+what plan `.claude/issues/0026`, section D, had already reserved a slot for.
+
+Section D settled two of the three questions and left the third as a constraint
+rather than a choice:
+
+- Storage is a **scalar on `ConnectionEntry`**, not a sidecar keyed by id. It
+  travels with an export and appears wherever the connection does, at the price
+  of fact 2 in that plan: an older build reads an unknown key without complaint
+  and drops it on its next save. Losing a colour is not losing a credential.
+- The palette is a **closed set of eight names**, decided by the maintainer, not
+  a colour picker and not a hex field.
+- **Colour alone is not a mark.** It fails for a colour-blind operator and in a
+  greyscale screenshot.
+
+The third of those is what this ADR answers. The obvious cheap discharge — render
+the colour's *name* beside the swatch — satisfies the letter of it and none of
+the purpose. "red" tells a reader that the row is red. It does not tell them the
+row is production, which is the entire question being asked at the moment someone
+looks.
+
+**Decision.** A connection carries two optional scalars, and the pair is the
+mark.
+
+1. `color`, one of `CONNECTION_COLORS` — eight names, stored as the **name**, not
+   a value. `dbboard-config` rejects anything else with `ConfigError::UnknownColor`
+   rather than storing it and hoping the frontend copes. The eight get a light and
+   a dark value in `tokens.css` and a third axis in `DESIGN.md`, deliberately
+   separate from `--accent` and from the semantic `--danger` / `--warning` /
+   `--success`: identity colours carry no meaning of their own, so nothing here may
+   be reused to say "this went wrong".
+2. `tag`, **free text the operator writes**, capped at twelve characters. This is
+   the non-chromatic half, and the half a reader actually reads: `prod`, `本番`,
+   `staging`, `検証環境`.
+
+The tag is free text rather than a second closed set because the words a team
+uses for its own servers are not ones this crate can enumerate. A fixed
+`Production | Staging | Development` would be wrong for the first operator who
+runs four environments, or names them in their own language, and the failure mode
+of guessing wrong here is that the mark goes unused.
+
+Twelve characters, counted in **`chars()` and not bytes**. The limit exists
+because the same plan's section C records that the connection *name* is what
+loses the width fight on a row; an unbounded tag would make that worse in exactly
+the place the mark is supposed to help. Counting bytes would reject twelve kanji
+(thirty-six bytes) while accepting twelve latin letters, which is backwards —
+the kanji are the narrower label of the two. The frontend counts with the string
+iterator rather than `.length`, so an emoji costs one and not two.
+
+**Consequences.**
+
+- `dbboard-config` gains `mark.rs` — named for what it holds, since a module
+  called `color.rs` would be the wrong home for the half of the mark that has no
+  colour in it. It owns `CONNECTION_COLORS`, `is_connection_color`,
+  `CONNECTION_TAG_MAX_CHARS` and `is_connection_tag`, and nothing else knows the
+  eight names or the twelve.
+- Both fields follow `mcp_alias` (ADR-0088) exactly: `Option<String>`,
+  `skip_serializing_if = "Option::is_none"`, declared **before** `ssh` because TOML
+  wants values ahead of tables, and three edit states through one `Option` —
+  `None` keeps, `Some(v)` sets, `Some("")` clears.
+- The frontend keeps its own copy of both the palette and the limit, because a
+  form that cannot stop the operator at the limit lets them type past it and lose
+  the tail on save. `tests/mark_drift.rs` reads `marks.ts` and `tokens.css` from
+  the workspace and fails when the two sides disagree — on the names, on their
+  order, on a colour missing a value in any of the four theme blocks, or on the
+  number twelve. Same shape as `locale_drift.rs`.
+- **`duplicate()` drops both.** A copy inherits the credentials it needs and none
+  of the identity: the mark exists to tell production from a copy of it, so a copy
+  that arrives already wearing production's mark defeats it at the one moment it
+  is load-bearing. Covered by a test in `admin/repair.rs`.
+- The swatch and the tag travel together in every surface that renders them. A row
+  showing the swatch alone is a bug and not a compact variant — that is the
+  accessibility constraint, restated as something reviewable.
+
+**Not decided here.** Whether `dbboard-mcp` sees either field. Plan 0026 leaves
+the agent surface out on purpose: a colour is for a human eye and a tag is for a
+human reading a list. Neither has a use on the agent side yet, and a field the
+agent can read is a field the agent can be confused by.
+
+## ADR-0127 — Drag-to-reorder uses pointer events, so the window keeps its OS drop (2026-08-24)
+
+**Status.** Accepted.
+
+**Context.** ▲▼ reorder the connection list ([#192](https://github.com/meta-taro/dbboard/issues/192) criterion 1, shipped 2026-08-24). Plan
+`.claude/issues/0026` deferred drag-and-drop behind a condition — "worth doing
+only if ▲▼ turns out to be tedious in practice" — and that condition was met
+the first time the feature was used with a real list.
+
+Two ways to do it in a Tauri webview:
+
+* **HTML5 drag-and-drop.** Less code — the browser supplies the drag image, the
+  hit-testing and the cursor. But Tauri intercepts the OS-level drag-drop at the
+  window before the webview sees it, so `dragstart`/`drop` only fire with
+  `app.windows[].dragDropEnabled: false`.
+* **Pointer events.** More code: the drop position has to be computed from the
+  rows' own geometry, and the pointer has to be captured so the drag survives
+  leaving the handle.
+
+**Decision.** Pointer events.
+
+`dragDropEnabled` is a window-wide switch, and the thing it disables is the only
+way a file dropped onto the window can ever be noticed. dbboard does not use it
+today — there is no `onDragDrop` anywhere in the tree — but it already imports
+and exports `.dbbx` bundles through a file picker, and "drop the bundle on the
+window" is the obvious next form of that. Turning the switch off to save code in
+the connection list spends something that belongs to a different feature.
+
+The extra code is also where the correctness lives, and it is testable in a way
+the browser's version would not have been. `$lib/connections/reorder.ts` holds
+both halves: `gapForPointer` decides which gap the pointer is over, and
+`dropTarget` converts that gap into the absolute position `move_to` takes. The
+off-by-one — a gap below the dragged row is one too high, because lifting the
+row out closes the gaps past it — is a unit test rather than something found by
+dragging.
+
+**Consequences.**
+
+* Rows do not move while a drag is in flight; only an inset line moves. Opening
+  a gap between rows would shift the midpoints `gapForPointer` reads, and the
+  answer would oscillate wherever two rows meet.
+* ▲▼ stay. They are the keyboard path, which is what makes drag an addition
+  rather than a replacement, and they are what a filtered list falls back to —
+  both are disabled while the filter hides rows, for the reason recorded with
+  the arrows.
+* No autoscroll at the list edges yet. The list has to be longer than the dialog
+  before that is reachable at all, and the dialog is tall enough that it is not
+  the next thing anyone will hit.
+* `dragDropEnabled` stays at its default. A later `.dbbx`-onto-the-window import
+  does not have to undo this one.
+
+## ADR-0128 — The handle is the only reorder control, and it takes ↑↓ (2026-08-24)
+
+**Status.** Accepted. Amends [ADR-0127](#adr-0127) the same day it was written.
+
+**Context.** ADR-0127 kept ▲▼ beside the new drag handle, on the reasoning that
+the arrows were the keyboard path and drag was therefore an addition rather
+than a replacement. That is true of the *capability* and false of the *row*:
+with drag working, every row carried five controls — ▲, ▼, Edit, Duplicate,
+Delete — and two of them now said what the handle said. The first look at the
+list with real connections in it made that the visible problem, not the win.
+
+**Decision.** Remove ▲▼. Focus the handle instead: it is a real tab stop with
+an accessible name, it shows itself on focus as well as on hover, and `↑`/`↓`
+while it is focused call the same `move_to` the arrows called.
+
+The keyboard path is not weakened by this. It is the same two keys, on a
+control the operator reaches by tabbing to the row rather than by tabbing past
+three buttons to find a pair of glyphs. What is lost is the *discoverability*
+of a visible arrow, which is real — mitigated by the handle's tooltip naming
+both ways, and by the handle appearing on focus.
+
+**Consequences.**
+
+* `moveTarget` (`$lib/connections/order.ts`) and its tests stay. The arithmetic
+  is still exactly what a key press needs; only the thing that calls it moved.
+* `conn-move-up` / `conn-move-down` are gone from both locales.
+  `conn-move-filtered` stays: the handle is disabled while the filter hides
+  rows, for the reason the arrows were.
+* Rows now hold one non-word control. That is why `.row-main` had to take
+  `flex: 1` — with three children under `space-between`, the leftover width
+  fell either side of the middle one and each name landed at an indent decided
+  by its own length. The names had been ragged since the handle was added a
+  commit earlier, and nothing in `svelte-check` or the unit tests could have
+  said so.
+
+**Not decided here.** Whether a row should be draggable by its whole surface
+rather than by a handle. That trades a discoverable grab area for the ability
+to select text in the row, and no one has asked for either yet.
+
+## ADR-0129 — A stacked pull request runs CI too (2026-08-24)
+
+**Status.** Accepted. Amends [ADR-0104](#adr-0104).
+
+**Context.** ADR-0104 put the mandatory verification commands into CI so that a
+pull request would carry its own evidence rather than depend on whether the
+author had the hooks installed. It listed the branches to watch as `develop`
+and `main`, on both triggers, which reads as "the integration branches" and is
+correct for `push`.
+
+It is not correct for `pull_request`. That filter matches the **base** branch,
+not the head. A branch stacked on another feature branch — #221 onto #219 onto
+#216 — has a base of `feature/…`, matches neither trigger, and merges with no
+run at all. Three did. The gap was found by reading a `gh run list` result
+carefully enough to notice the SHA was two days old, after it had already been
+reported as green once.
+
+Nothing unverified reached `develop`: the eventual PR into `develop` runs the
+full suite over the accumulated result, and the local hooks had run on every
+commit. What was lost is *when* the answer arrives — after the last merge in
+the stack instead of before the first — and, worse, the appearance of an answer
+where there was none. A stale green is more dangerous than a missing one,
+because nobody goes looking for it.
+
+**Decision.** Add `'feature/**'` to the `pull_request` branch list. Leave
+`push` on the integration branches: a feature branch with no PR open on it has
+nobody waiting on the answer, and CI on every push to every branch is a cost
+paid for no reader.
+
+**Consequences.**
+* Each stacked PR now runs rust / frontend / site on open and on every push to
+  its head. The stack pays for the same commits more than once — #221's commits
+  are verified again when #219 goes to `develop`. That is the price of the
+  answer arriving at the review rather than after it.
+* `concurrency: ci-${{ github.ref }}` already cancels superseded runs per ref,
+  so a burst of pushes to one stacked branch costs one run, not one per push.
+* `pii-scan.yml` is unaffected: it runs on a schedule and on the integration
+  branches, and the pre-commit hook is what blocks a leak at the source.
+
+**Not decided here.** Whether a stacked PR should be *required* to be green
+before merge, via branch protection. Protection rules are repository settings
+rather than tree contents, and this repo has none today; adding the first one
+is a larger decision than closing this hole.
+
+## ADR-0130 — The mark is set from the list, and the colour rides at the head of the row (2026-08-25)
+
+**Status.** Accepted. Amends [ADR-0126](#adr-0126--a-connection-is-marked-by-a-colour-and-a-tag-and-the-tag-is-what-carries-the-meaning-2026-08-24).
+
+**Context.** ADR-0126 gave a connection an identity mark — a colour and a
+short tag — so that "which server am I about to run this on" is answerable
+without reading a hostname. It shipped in v0.11.0 with two properties that
+the first day of use pushed back on.
+
+The mark could only be set from the connection edit form. Changing a colour
+therefore meant opening a dialog that also holds the DSN, the tunnel and the
+MCP permissions, saving it, and closing it — a whole-connection write for a
+decision that is about nothing but appearance. Recolouring a list of six to
+make it scannable is six of those.
+
+And the mark rendered at the *end* of the row, as a pill after the name. A
+pill answers "what is this row" once you are already looking at it. It does
+not help the eye run down a column, because it does not sit in a column: it
+starts wherever the name happens to end.
+
+**Decision.** Two changes, and one consequence for ADR-0126's rule.
+
+* A `set_mark` on `ConnectionAdmin`, reached from a swatch picker opened by
+  right-clicking the row. It writes the colour and the tag, and nothing else.
+  Both halves are validated before either is written, and a mark that already
+  says what it is asked to say does not rewrite the file.
+* The colour renders as a 3px bar at the head of the row. It occupies its
+  width whether or not the row is marked, so marking one does not indent its
+  name relative to its neighbours.
+* `set_mark` accepts a colour with no tag, though the edit form still refuses
+  one (`markNeedsTag`). ADR-0126 forbade the bare swatch because it says
+  nothing to a colour-blind reader or a greyscale screenshot. At the head of a
+  row that already carries the connection's *name*, the meaning is present;
+  the stripe is a second, faster way to find a row that is legible without it.
+  `markFor` is unchanged, so a colour with no tag still shows the colour name
+  where the tag would go, which reads as an invitation to type one.
+
+**Consequences.**
+* The picker is a right-click, which is undiscoverable. It is the same gesture
+  this sidebar already uses for tables, and the edit form still works, so the
+  cost is that the faster path is found rather than announced. A visible
+  affordance would mean an interactive element inside `.nav-row`, which is a
+  `<button>` — invalid, and a larger change to the row than this earns.
+* `ConnectionMark` grew a `dot` flag so the sidebar can drop the swatch inside
+  the pill. Two swatches on one line is not what ADR-0126's invariant was
+  protecting. The connection manager, which has no head-of-row bar, keeps it.
+* The tag input commits on Enter or on dismissal, not per keystroke: every
+  character would otherwise be an atomic file write.
+* Marking is now cheap enough to be casual, so more connections will carry a
+  colour and fewer a considered tag. That is the trade the first property was
+  making in the other direction, and it is the right way round — an unlabelled
+  colour set in one click beats a labelled one nobody sets.
+
+**Not decided here.** Whether the mark should also reach the tab strip and the
+query editor's chrome, where "which server is this" is asked with more at
+stake than in a list. That wants a look at the whole running-query surface,
+not one more render site.
+
+## ADR-0131 — The sidebar's two lists are split by a divider whose home position follows the connection count (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0083](#adr-0083--the-sidebar-splits-and-popovers-place-themselves).
+
+**Context.** The sidebar holds two lists: the connections above, the tables
+below, separated by a static border. The connections section had no height and
+no scroll, so it was simply as tall as its contents — three connections left
+the boundary near the top, and twenty pushed the table list off the bottom of
+the window with no way to get it back. The right boundary is not a constant.
+It depends on how many connections are registered, and on which of the two
+lists is being used that day.
+
+**Decision.** A horizontal divider between the sections, working exactly like
+the window splitter of ADR-0083 turned on its side: drag to move, double-click
+to reset, arrow keys to nudge, `Home` to reset from the keyboard. The pure
+sizing rules live in `lib/layout/panel-split.ts` with the component owning only
+the pointer plumbing, which is the same division of labour as `splitter.ts`.
+
+Two things differ from the width, and both come from the count.
+
+* The stored value is `number | null`, and `null` — never dragged — is the
+  default state rather than a stored constant. While it holds, the list sizes
+  itself to the number of connections, so registering a fourth one makes room
+  for itself. The first drag replaces the null and the following stops.
+* Double-click therefore does not restore a fixed height. It clears the stored
+  value, handing the pane back to the count, which is what "定位置" means when
+  the number of rows is not fixed.
+
+The numbers: 30px per row, a floor of 60px (two rows — below that there is no
+room to tell a scroll from a stutter), a ceiling of 420px (fourteen rows, past
+which a connection list is being scrolled rather than scanned), and never more
+than half the sidebar's own height, because the table list is the one being
+scrolled all day.
+
+**Consequences.**
+* The connection list scrolls now. It never did, and a long one used to hide
+  the tables entirely; that is the bug this fixes, and the divider is how it
+  gets fixed without picking a height for everyone.
+* A second layout key in `localStorage` (`dbboard.connectionsHeight`), stored
+  and read on the same terms as the width: clamped on the way in and out, and
+  silently ignored when the webview refuses storage.
+* A remembered height is clamped against the sidebar's current height on every
+  render, so shrinking the window squeezes the pane and widening it again
+  restores what was chosen — the same rule the width already follows.
+* The sections no longer draw a shared border. The divider draws it, as a
+  hairline inside 7px of grab area, so the visible gap between the lists is
+  unchanged while the target is large enough to hit.
+
+**Not decided here.** Whether the table list wants the same treatment. It is
+the last pane, so there is nothing below it to trade against; the question only
+arrives with a third pane, and the shape of that pane should decide it.
+
+## ADR-0132 — A dismissal gesture may not throw away a half-typed connection, and the dialog can be moved off what it covers (2026-08-25)
+
+**Status.** Accepted. Refines [ADR-0083](#adr-0083--the-sidebar-splits-and-popovers-place-themselves) and [ADR-0131](#adr-0131--the-sidebars-two-lists-are-split-by-a-divider-whose-home-position-follows-the-connection-count).
+
+**Context.** Reported from a laptop: registering a connection was impossible,
+not difficult. The connection dialog is a fixed, flex-centred panel of
+`min(560px, 94vw)` by `max-height: 86vh`. On a small window it covers most of
+what is behind it, including whatever the connection details are being copied
+from. There was no way to move it — no drag, no reposition of any kind — so the
+only way to see behind it was to reach past it, and a click on the backdrop
+closed the dialog unconditionally, taking every typed field with it. Reopening
+started from an empty form. That is a loop with no exit: the report's word for
+it was 永遠に.
+
+Two separate faults met here. Neither is fatal alone. A modal that discards
+work is merely irritating if you can see around it; an immovable modal is
+merely cramped if reaching past it is safe.
+
+**Decision.** Both are fixed, and the rules for both live in
+`lib/layout/dialog-move.ts` — pure, tested, with the component owning only the
+pointer plumbing. Same division of labour as `splitter.ts` and
+`panel-split.ts`.
+
+*What a stray dismissal does.* `dismissAction(source, mode, formDirty)` answers
+`close`, `back`, or `ignore`.
+
+* From the connection list, both the backdrop and `Escape` still close the
+  manager. Nothing is being assembled, so the gesture keeps its usual meaning.
+* From any other panel, a backdrop click does nothing at all. Not only the
+  form: import holds a chosen file, repair holds a half-answered prompt, and
+  none of those is cheaper to lose than a typed field.
+* `Escape` from an untouched form steps back to the list — it costs nothing and
+  it is the fastest way out. `Escape` from a form that has been typed into does
+  nothing. `Escape` shares a keyboard with the fields being filled in, and a
+  mis-hit is exactly the reported failure.
+
+Dirtiness is a comparison against a JSON snapshot taken when the panel opens,
+so it stays a pure function of state rather than a flag that has to be cleared
+correctly on every path.
+
+Leaving is never blocked, only made deliberate: the ✕ in the header and Cancel
+in the form act immediately, as they always did. What changes is that the exit
+must be aimed at.
+
+*Moving the dialog.* The header is the grip — the gesture the OS gives every
+window. Drag to move; double-click to re-centre, which is the same
+"double-click the handle for its home position" already established by
+ADR-0083 and ADR-0131. The offset is applied as a `translate`, so nothing about
+the centred layout has to change to support being moved.
+
+`clampDialogOffset` keeps the dialog reachable. Sideways it may leave all but a
+120px strip; that strip is what you grab to bring it back. Vertically the
+header is the constraint in both directions: it may never pass above the top
+edge, because above it there is nothing left to drag, and never below the
+bottom edge, for the same reason. The clamp is re-applied on window resize, so
+a window shrunk after the dialog was dropped cannot strand it.
+
+The offset is not persisted. Centred is the right default every time the dialog
+opens; a remembered position would carry one window's cramping into the next.
+
+**Consequences.**
+* The backdrop is no longer a close button while any panel is open. It looks
+  the same, which is the cost: a dead click is a small confusion, and the ✕ is
+  a hand's width away. Losing a filled form is the larger one.
+* Moving is pointer-only. The keyboard equivalent is not needed for the same
+  reason the drag exists: the centred position is fully usable by keyboard, and
+  moving is for seeing past the dialog, which a keyboard user is not doing.
+* `preventDefault` is deliberately absent from the header's `pointerdown`,
+  unlike the row-reorder handle of ADR-0128. Cancelling `pointerdown` costs the
+  compatibility mouse events that `dblclick` is built from, and `dblclick` is
+  the way back to centre. `user-select: none` on the header does the only work
+  `preventDefault` would have done there.
+* The add and edit forms are one panel with one `editorMode`, so both are
+  covered by construction — the rule that a change to one must reach the other
+  is satisfied by there being only one.
+
+**Not decided here.** Whether a confirmation belongs on the explicit exits (✕
+and Cancel) when the form is dirty. It would be a second, louder mechanism for
+the same worry, and this one has not been in front of anyone yet; if a
+deliberate click turns out to lose work too, that is the evidence for adding
+it.
+
+## ADR-0133 — A long-lived connection admin re-reads the file before it writes (2026-08-25)
+
+**Status.** Accepted. Refines [ADR-0013](#adr-0013--local-toml-connection-store-with-os-keychain-for-secrets).
+
+**Context.** `ConnectionAdmin` holds the whole of `connections.toml` in memory
+and every mutator saves the whole file back. That is correct for a process
+that is the only writer, and the desktop was written as if it were: the shell
+opens one admin at startup and locks it from thirteen call sites for the rest
+of the run.
+
+It is not the only writer. `connections.toml` is an ordinary file the operator
+is invited to edit — the MCP write gate is documented as something "a human
+must enable in connections.toml" — and now the MCP server writes it too
+([ADR-0134](#adr-0134--an-agent-may-register-only-the-connections-that-carry-no-credential-2026-08-25)).
+Anything written beside a running dbboard was erased by that window's next
+change, silently and completely: not a merge conflict, not an error, just an
+entry that was there before a rename and gone after it. The duplicate-id guard
+had the same blind spot — it consulted the in-memory copy, so an id already
+taken on disk passed.
+
+Nothing about the failure is visible from the call site. A rename is a rename;
+the loss is in what the save carried with it.
+
+**Decision.** Every mutator begins with `self.sync()`, which re-reads the file
+from disk. Six in `admin.rs` (`add`, `update`, `delete`, `move_to`, `set_mark`,
+`import_bundle`) and two in `admin/repair.rs` (`duplicate`,
+`repair_foreign_ref`). A mutator that cannot read the current file refuses
+rather than writing a stale one over it.
+
+Put inside the mutators rather than left to the caller. Thirteen lock sites,
+each of which would have to remember, is a rule that will be missed at one —
+and the one it is missed at will be whichever is added next, by someone who
+never read this.
+
+A `tracks_disk` flag distinguishes the two constructors.
+`ConnectionAdmin::open` reads from a path and sets it; `new_with_file` is
+handed its entries by a caller who has no disk to be behind, and does not.
+
+**Consequences.**
+* Every mutation now costs one file read. It is a few kilobytes of TOML on a
+  path already doing an atomic write; the read is not the expensive half.
+* Last-write-wins is unchanged for a *field* edited in two places at once. What
+  is fixed is losing entries nobody touched, which is the difference between a
+  conflict and a deletion.
+* Two no-op tests had to change technique. They observed "did not save" by
+  deleting the file and asserting it stayed gone, and an absent file now reads
+  as an empty one. They seed a comment instead: the serialiser never emits
+  comments, so a save loses it and a no-op keeps it. Stricter than what it
+  replaced.
+* Two rollback tests set `tracks_disk = false` by hand. Both re-point `path` at
+  an unwritable location while holding entries in memory, and the subject there
+  is the failing save, not the read.
+
+**Not decided here.** Watching the file. A running window still lists what it
+last read, so an entry added elsewhere appears after a refresh. That is a
+frontend concern and a different mechanism; this ADR is only about not
+destroying it.
+
+## ADR-0134 — An agent may register only the connections that carry no credential (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0046](#adr-0046--dbboard-mcp-expose-dbboard-as-a-read-only-mcp-server) and constrained by [ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list).
+
+**Context.** Setting up a local database and then asking a person to retype its
+path into a dialog is two jobs where there is one. The report was blunt about
+it: 人が別にやる意味ないから. The agent that just created the file is the one
+thing in the room that knows where it is.
+
+The reason this was not already possible is that connection *management* is a
+write surface, and the MCP surface is deliberately narrow. But the objection
+that matters is not the write — it is what a registration would carry. Most
+connection kinds are configured with a credential: a Postgres DSN's password
+rides in its authority, a Turso Cloud connection needs a token, D1 needs an API
+key. Sent to a tool, every one of those is in the transcript before any
+handling on our side begins, and no later redaction takes it back out.
+
+**Decision.** `add_connection` accepts exactly two kinds, and they are the two
+whose entire configuration is already non-secret:
+
+* `turso` — a SQLite/libSQL file on this machine, from a path.
+* `firestore` — the local emulator, which authenticates with a fixed
+  `Bearer owner` and so has no service account to store ([ADR-0093](#adr-0093--the-firestore-adapter-calls-rest-directly-signs-with-ring-and-overrides-query_read_only)). `base_url`
+  is required rather than optional here: it is what separates the emulator from
+  a real project, and a real project needs the credential this tool refuses.
+
+Everything else is refused permanently. The boundary is structural, not a
+check: `NewConnectionKind` cannot express a secret, so no string that arrives
+here can become a keyring entry. The alternative — accept a URL and inspect it
+— is a judgement about `postgres://user:@host`, percent-encoded passwords and
+`?password=` in a query string, and it only has to be wrong once.
+
+Three things are deliberately not parameters. `mcp_write` stays shut: a tool
+that granted its own write access would not be a gate (ADR-0087). `mcp_alias`
+is not offered, because the alias exists to hide a name *from* agents
+([ADR-0088](#adr-0088--the-mcp-surface-shows-an-alias-not-the-connections-real-id)) and one the agent chose hides nothing. And no UI command is sent.
+
+The refusal is stated in the tool description rather than left to an error.
+An agent that learns "no Postgres" from an error has already sent the password
+(the same reasoning as the `run_write` description).
+
+A taken id comes back as an invalid request, not an internal error — with the
+id in the message. Left as a config error it would reach the agent in the class
+that reads as "try again".
+
+**Consequences.**
+* The most common case is covered and the second most common is not. A local
+  SQLite file is what an agent creates for itself; a hosted Postgres is what
+  someone provisions in a browser, and provisioning it already involved a human
+  who can paste the DSN into the app.
+* A dbboard window that is open lists the new connection only after a refresh,
+  for the reason given in
+  [ADR-0133](#adr-0133--a-long-lived-connection-admin-re-reads-the-file-before-it-writes-2026-08-25).
+  A `RefreshConnections` UI command was considered and dropped: it answers
+  `UiNoResponse` when no window is watching, which would report a successful
+  write as a failure.
+* The kind vocabulary accepts `sqlite` and `libsql` alongside `turso`. `turso`
+  is what `list_connections` returns and what the description names, but an
+  agent naming a local file reaches for the other two first, and two match arms
+  are cheaper than a round-trip spent learning our words.
+
+**Not decided here.** Editing or deleting a connection over MCP. Registration
+is additive and the worst case is an entry nobody uses; the other two can
+destroy something the operator set up by hand, and no one has asked for them.
+
+## ADR-0135 — An update that starts is written down, so the launch after a failed one can say why (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0067](#adr-0067--desktop-auto-update-tauri-plugin-updater--a-ci-assembled-latestjson-v040).
+
+**Context.** A laptop on 0.10.0 took the update to 0.11.0. The download ran,
+dbboard quit, and nothing came back. Launched by hand it was 0.10.0 again,
+with no mention anywhere that an update had been attempted at all — and the
+notice offering 0.11.0 was waiting again, unchanged, as if nothing had
+happened.
+
+That silence is the defect, not the failed install. ADR-0067 hands control to
+an installer that replaces the binary and relaunches it; when the relaunch
+does not happen, the process that knew an update was in flight is gone. From
+the outside a stalled update and an update that was never started look
+identical, and the only move the app offers is the one that just failed.
+
+Why the install itself failed is not settled and is not settled here. On
+Windows the plausible causes (an installer waiting on a UAC prompt nobody saw,
+an antivirus holding the new binary, a running process pinning the old one)
+are all outside this app and mostly outside our reach. What is inside our
+reach is whether the person is told.
+
+**Decision.** Write the attempt down before handing over, read it back on the
+next launch, and say so when the running build is still the one we were
+updating away from.
+
+`crates/dbboard-config/src/update_attempt.rs` holds a one-line TOML file next
+to the other config, written by `record` and consumed by `take`. The frontend
+calls `record` immediately before `downloadAndInstall`, because after that
+call there may be no line left to run, and calls `take` at startup ahead of
+the update check.
+
+Three choices in `take` are deliberate:
+
+* **Only the version we left proves nothing landed.** If the running build is
+  the target, the update worked. If it is neither — the person installed
+  something else in between — *something* landed, and claiming a failure would
+  be an accusation they cannot check. Both stay quiet.
+* **The record is consumed whether or not it reports.** A notice that repeats
+  on every launch is noise, and the fact it describes is a single past event.
+* **An unreadable or unknown-version file is dropped, not raised.** It will
+  not become readable later, and a breadcrumb is never worth failing a launch
+  over — the same posture `ui-settings.toml` takes.
+
+The notice carries the download page rather than a release tag, and offers it
+as selectable text plus a copy button. There is no external-browser plugin in
+this app, and adding one to open a link is a dependency and a new surface for
+a job the clipboard already does.
+
+**Consequences.**
+* The failure is still a failure. This does not install anything the installer
+  could not; it replaces silence with a sentence and an address.
+* The report arrives one launch late, which is the earliest it can arrive: the
+  only run that knows the update stalled is the one after it.
+* A person who takes the manual installer gets no notice on the next launch,
+  because the build moved. That is correct — they already fixed it.
+* Recording is best-effort. If the file cannot be written the update still
+  proceeds; losing the diagnostic is cheaper than refusing the install.
+* Nothing is reported home. The file is local, holds two version strings, and
+  is deleted as it is read.
+
+**Not decided here.** Why the install stalls on that laptop. Two facts would
+narrow it — whether the updater's temp directory survives, and whether the
+antivirus quarantine names dbboard — and neither is available from inside the
+app.
+
+## ADR-0136 — An agent may tidy the connection list, and the database write gate does not stand in its way (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0130](#adr-0130--the-mark-is-set-from-the-list-and-the-colour-rides-at-the-head-of-the-row-2026-08-25) and #192; sits beside [ADR-0134](#adr-0134--an-agent-may-register-only-the-connections-that-carry-no-credential-2026-08-25).
+
+**Context.** v0.12.0 gave the connection list a shape a person maintains: an
+identity mark (a colour and a short tag) and an order that is the order rows
+render in. Both are edited one row at a time, from the app, by hand.
+
+That is the wrong shape of work for a person and the right shape for an
+agent. Twenty connections that accumulated in the order they were first
+needed do not sort themselves, and the operator who most needs them sorted is
+the one who has twenty. The request that prompted this said so plainly:
+someone would be helped if the tidying were done for them.
+
+Nothing new is needed underneath. `ConnectionAdmin::set_mark` and
+`move_to` already exist, already validate, and are already what the app
+calls. What was missing was a way in from outside the window.
+
+**Decision.** Two MCP tools, `set_connection_mark` and `move_connection`,
+over the existing admin API. Four things about them are decided rather than
+inherited:
+
+* **`mcp_write` does not gate them.** That switch is about the data in a
+  database (ADR-0087) — it is the difference between reading a production
+  table and changing it. A colour in a sidebar is not that. Gating the two
+  together would mean an operator who wants their list sorted has to grant
+  write access to the database to get it, which trades a real permission for
+  a cosmetic one. The tools say in their own descriptions that they reach no
+  database, because an agent that assumes otherwise will not try.
+* **A mark is set whole.** Sending one half clears the other; sending
+  neither unmarks the connection. This matches the app's picker, and it is
+  the only reading that survives an agent composing JSON: "the key is
+  absent" and "the key is empty" are not reliably different at the far end
+  of a model, and the failure of guessing is silent.
+* **`position` is reported, never counted.** Every view carries the index it
+  sits at, and the description says to take the number from there. A
+  position counted off an array the agent read earlier is a stale view
+  (ADR-0016) — and unlike a stale query it fails quietly, by moving the row
+  next to the intended one.
+* **Both tools answer with the whole list, as the agent is allowed to see
+  it.** A sort is a run of moves, and each one shifts the indexes of the
+  rows it passed; answering with the new list lets the next move be aimed at
+  what now exists rather than at what was read before the first one. The
+  answer goes through the same alias projection as `list_connections`
+  (ADR-0088), so a write is not a side door onto a real id.
+
+**Consequences.**
+* An operator can ask an agent to sort and colour-code a list they would not
+  have sorted by hand, which is the point.
+* An agent can also recolour a list nobody asked it to touch. The mitigation
+  is the description — it says an existing mark was chosen by a person and
+  should be left alone unless changing it was the request — and the fact
+  that a mark is cosmetic and reversible. This is a weaker guarantee than a
+  gate, and it is accepted knowingly: the alternative gate is the wrong one.
+* A dbboard window already open shows the old marks and the old order until
+  it refreshes, the same as after `add_connection` (ADR-0134).
+* Every call opens its own `ConnectionAdmin` (ADR-0133), so a sort driven by
+  an agent interleaves safely with edits made in the window.
+
+## ADR-0137 — The About dialog shows what the running build changed, from the changelog it was cut from (2026-08-25)
+
+**Status.** Accepted. Extends [ADR-0121](#adr-0121--the-release-trigger-reports-itself-because-a-rule-nobody-can-see-is-not-a-rule) and [ADR-0124](#adr-0124--cutting-a-release-is-one-command-and-it-stops-before-the-tag-2026-08-22).
+
+**Context.** Until now the only place a release described itself to a user was
+the update dialog, and it says its piece once: at the moment the update is
+offered. Anyone who took the update without reading it, or who was handed an
+installed copy by someone else, had no way back to the text. The About dialog
+knew the version number and nothing about what that number contained.
+
+The gap is not hypothetical. The report that prompted this came from an
+operator who went from 0.10.0 to 0.12.0 in one step — 0.11.0 was never
+offered, so nothing ever described it, and the version they now run is two
+releases past the last one they saw explained. "Which of these things do I
+have?" had no answer inside the app.
+
+**Decision.** The About dialog shows the release notes for the version it is
+running, with every earlier version reachable from the same place.
+
+* **The notes come from `CHANGELOG.md`, not from a second list.** It is
+  already the file `scripts/release-notes.mjs` reads for the update dialog and
+  the file `scripts/release-plan.test.mjs` holds against the plan. A separate
+  in-app list would be a third copy, and the copy nobody is cutting a release
+  from is the one that goes stale.
+* **It is inlined at build time (`?raw`), not read from disk and not
+  fetched.** An installed copy has no repository beside it, so there is no
+  file to read; and fetching from GitHub would describe whatever is on
+  `develop` rather than what this binary is, in a dialog that has to work
+  with no network. Inlining makes the notes and the binary one artefact —
+  they are cut together and cannot drift apart.
+* **Every shipped version is in the picker; `[Unreleased]` is not.** No build
+  is ever running the unreleased section, and showing it would tell an
+  operator they have something they do not. Skipped versions are the reason
+  the picker exists at all.
+* **A version the changelog does not describe shows nothing, not the newest
+  one.** A locally built binary, or one from a tag whose section was never
+  written, leaves the notes empty and says so. Falling back to the latest
+  release would be the one failure mode worse than silence: confidently
+  wrong about what the reader is running.
+* **The parser flattens markdown by the same rules as
+  `scripts/release-notes.mjs`.** Both readers strip links, emphasis and code
+  spans identically, so a bullet cannot read one way in the update dialog and
+  another in About. The About dialog keeps the group headings and the bullets
+  where the update notice keeps only a summary line, because a dialog opened
+  on purpose has room that a notice interrupting an update does not.
+* **The notes stay English, and non-English locales are told so.** Every
+  other string in the app is translated; the changelog is not, and
+  translating it would double the writing at every release. A line under the
+  notes says they are in English rather than leaving a Japanese reader to
+  wonder whether the localisation broke.
+
+**Consequences.**
+* `CHANGELOG.md` now ships inside the binary. It is public and already
+  covered by the PII scan (ADR-0055), so this exposes nothing new, but it
+  does mean the file is a shipped artefact and not only a repository
+  document.
+* A release cut without writing its section is now visible to the people
+  running it, not only to the maintainer reading the diff. That pressure is
+  wanted.
+* The file sits outside the frontend's workspace root, so the dev server
+  needs `server.fs.allow` to serve it. A production build inlines it either
+  way, which is exactly the arrangement that hides the mistake: the failure
+  is dev-only, and the comment in `vite.config.ts` says why the line is
+  there.
+* Wanting Japanese release notes remains a live question. It is a decision
+  about how much writing every release carries, not a bug in this one, and
+  it is deliberately not settled here.
+
+## ADR-0138 — The Tauri command surface is split by what the command does, not by how it is invoked (2026-08-27)
+
+**Status.** Accepted. Extends [ADR-0046](#adr-0046--the-desktop-client-and-the-mcp-server-share-one-read-only-service).
+
+**Context.** `apps/desktop/src-tauri/src/lib.rs` had grown to 2,938 lines —
+almost four times the hard limit this repository sets for a file. It was not
+one thing that got long: it held the UI-locale watcher, the read-side browse
+DTOs, the whole connection write path with its form DTOs, the SSH tunnel
+fields, the encrypted-bundle transfer commands, and the update breadcrumb, all
+under one `mod tests` of 41 cases. Nothing in it was wrong; there was simply
+no reason for any of it to be in the same file, and the file had become the
+place new commands went by default because that is where the last one went.
+
+**Decision.** Split it into modules named for the concern, not for the
+mechanism:
+
+* `ui_state` — locale and the UI-command file (ADR-0041, ADR-0109).
+* `browse` — the read path's DTOs and commands.
+* `connections/` — the write path (ADR-0062), further divided:
+  `input` (what the form submits), `ssh` (tunnel fields, both directions,
+  ADR-0069), `graft` (keeping the stored password, ADR-0080), `fields` (what
+  the edit form prefills, ADR-0016), `transfer` (encrypted bundles,
+  ADR-0038/0105).
+* The crate root keeps `AppState`, `run()`, the update breadcrumb, and the two
+  helpers every module needs.
+
+Tests moved with the code they cover. The count is unchanged at 41.
+
+**Why by concern and not by mechanism.** The obvious alternative — one file
+for commands, one for DTOs — puts the request type and the function that
+consumes it in different files for no gain, and leaves the same "where does a
+new command go?" question unanswered. Naming a module after the concern
+answers it: the SSH tunnel's request DTO, its response projection and its
+mapping helpers are one file because changing the tunnel contract means
+changing all three together.
+
+**Consequences.**
+* `generate_handler!` entries must name the real module path
+  (`connections::transfer::export_connections`). A `pub(crate) use` re-export
+  of the function does *not* re-export the `__cmd__` macro the macro expands
+  to, so the convenient-looking flat list is not available; the long paths are
+  load-bearing and should not be "tidied" into re-exports.
+* `#[tauri::command]` on a `pub(crate) fn` drags its parameter types — and
+  their fields — up to the same visibility. Several form DTOs became
+  `pub(crate)` for no reason other than crossing a module boundary.
+* Test fixtures that two sibling modules share now need a home. The
+  `ConnectionAdmin`-over-a-tempdir helper lives in
+  `connections::testing`, `#[cfg(test)]`, so both `connections` and
+  `connections::transfer` agree on what a throwaway store is — an in-memory
+  keyring, never the OS credential store.
+* `ai.rs` is 959 lines and was left alone. It is the next one, and splitting
+  it is a separate change so that this one stays reviewable as a move.
+
+## ADR-0139 — The toolchain is pinned, so a new lint arrives as a commit rather than as a broken branch (2026-08-27)
+
+**Status.** Accepted. Constrains the "Mandatory Verification Commands" in
+`CLAUDE.md` and the `rust` job in [ADR-0104](#adr-0104--verification-runs-in-ci-not-only-in-a-git-hook).
+
+**Context.** On 2026-08-24 the `ci` workflow failed on a push to `develop`
+with two `clippy::unused_async_trait_impl` errors in
+`crates/dbboard-tunnel/src/tunnel.rs`. The push touched
+`apps/desktop/src-tauri/`, `.claude/` and `docs/decisions.md`; `tunnel.rs`
+had not been modified since 2026-08-06. The lint did not exist when that code
+was written. The GitHub runner image had moved to Rust 1.98, which introduced
+it, and `-D warnings` turned it into a build failure.
+
+Neither half of that is a mistake on its own. `-D warnings` is deliberate: a
+warning nobody has to act on is a warning everybody stops reading. Taking the
+runner's preinstalled Rust is the default, and the repository declared no
+toolchain — `rust-toolchain.toml` was absent and `ci.yml` had no rustup step.
+Together they hand the decision of *when this repository's build breaks* to a
+machine image on a schedule nobody here reads.
+
+The failure mode is specifically bad because it is misattributed. The red
+build carries the hash of whoever pushed last, in a crate they did not open,
+and the first move is to look for a regression that is not there.
+
+**Decision.** Pin the toolchain in `rust-toolchain.toml` to an exact
+`x.y.z` version, with the `clippy` and `rustfmt` components the mandatory
+commands need. rustup honours it on first use, so CI, the hooks and a fresh
+clone all run the same compiler with no workflow change.
+
+`crates/dbboard-config/tests/toolchain_pin_drift.rs` fails if the file goes
+missing, if the channel is anything but an exact three-part version, if a
+component is dropped, or if the pin falls below the `rust-version` the
+workspace declares.
+
+**Why an exact version and not `stable`.** `channel = "stable"` is a file
+that looks like a pin and floats anyway. It would have changed nothing about
+2026-08-24 while making the next reader believe the question was settled. The
+same argument rules out `1.98` without a patch level.
+
+**What this does not do.** It does not avoid the lint work. Both sites still
+had to be answered before this ADR was written: `check_server_key` in
+`tunnel.rs` became `fn … -> impl Future` returning `std::future::ready`, which
+also let the host-key decision move into a plain synchronous
+`VerifyHandler::verify` that two new tests exercise without an SSH session;
+and the `#[tool_handler]` site in `crates/dbboard-mcp/src/server.rs` took a
+targeted `#[allow]`, because the `async fn` there is emitted by a third-party
+macro and cannot be rewritten.
+
+What the pin changes is *when*. A bump is now a commit someone chose to make,
+carrying its lint fixes in the same diff, instead of an unrelated push
+discovering them on a branch that was green an hour earlier.
+
+**Consequences.**
+* New lints no longer arrive by themselves. Bumping the channel is a real task
+  with real work behind it, and putting it off means running an older compiler
+  on purpose — which is the trade, stated out loud.
+* The pin removes the reason to worry about `#[allow]` on a lint that older
+  clippy does not know: everyone runs the pinned version, so the name is always
+  recognised. Without a pin, the `dbboard-mcp` allow would itself have failed
+  `-D warnings` on the 1.92 the workspace declares as its minimum.
+* `rust-version = "1.92"` stays as declared. It says what the crates compile
+  with; the pin says what this repository's checks run under. They are
+  different claims and the test only requires the pin not to be lower.
+* First CI run after a bump pays a toolchain download. That is the price of
+  the bump being visible.
+
+## ADR-0140 — An agent may seal connections into a bundle, and never learns the passphrase that opens it (2026-08-27)
+
+**Status.** Accepted. Extends
+[ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list)
+to a third gate, and is constrained by
+[ADR-0038](#adr-0038--passphrase-encrypted-connection-bundle-exportimport)
+(bundle format), [ADR-0105](#adr-0105--export-names-its-connections-import-overwrites-only-what-the-user-asks-it-to)
+(selective export) and
+[ADR-0088](#adr-0088--the-mcp-surface-shows-an-alias-not-the-connections-real-id).
+
+**Context.** Moving connections between machines has been a bundle file since
+0.4.0: `age` with an scrypt KDF, one `.dbbx` holding the entries and their
+secrets, opened by a passphrase the operator types. Making it is a five-step
+job in the app — pick the connections, pick a directory, invent a passphrase,
+save the file, put the passphrase somewhere it will survive the trip. Issue
+#196 asks for the shape of that job that suits an agent: the operator says
+"pack the three staging connections for the new laptop" and the agent does the
+picking and the filing.
+
+The obvious version of this is a mistake in three separate ways, and each one
+has to be closed before the verb is safe to expose.
+
+First, the passphrase. A tool that returns the passphrase has published it:
+the value lands in the calling agent's transcript, which is a plaintext file
+on disk, is sent to a model provider, and is quoted back into whatever the
+agent writes next. The bundle and the key to it then travel together, which
+is the one arrangement encryption cannot survive.
+
+Second, the permission. `mcp_write` is about the data inside a database and
+does not fit — an operator should not have to grant production write access to
+have a laptop provisioned. So this needs a switch of its own, and the tempting
+place to put it is an environment variable on the MCP server. That is not a
+gate. The MCP launcher's config is a file the agent usually owns and edits;
+ADR-0087 already settled that a tool able to grant its own access has not been
+gated, it has been asked nicely.
+
+Third, the scope. An export that defaults to everything hands over every
+credential on the machine on one under-specified sentence, and the operator
+finds out afterwards, from a file listing.
+
+**Decision.** One verb, `export_connections`, gated three ways.
+
+*The directory is the switch.* `connections.toml` grows an `[mcp_export]`
+table with a single `dir` key. No table, no export — refused permanently, with
+a message saying a human has to add one. The table lives in the connection
+store because no MCP tool writes a top-level key there; `ConnectionAdmin`
+exposes `mcp_export()` as a read and nothing else. Naming a directory *is* the
+permission, so the operator's grant and its blast radius are the same act:
+there is no separate "on" to leave on after choosing where the files go. A
+configured directory that does not exist is refused rather than created — a
+missing directory usually means a stale config or a typo, and silently making
+one turns a mistake into a place credentials get written.
+
+*The passphrase is minted here and stays here.* `generate_passphrase()` draws
+from the OS RNG over a 32-character alphabet with the ambiguous glyphs removed
+(no `l`, `o`, `0`, `1`), masked rather than reduced modulo so the distribution
+is flat, and formats it as six groups of five for reading aloud. It is stored
+in this machine's credential manager under `dbboard.export.<stem>` and
+**zeroized**. The tool result carries the file path, the reference name, how
+many connections were sealed, and any warnings — never the value. A test
+serializes the result and asserts the passphrase appears nowhere in it, then
+opens the file with the stored copy to prove the two match.
+
+*Every connection is named.* There is no "export all" form, and an empty
+selection is refused before the store is read. The list of ids in the
+transcript is the record of what left the machine.
+
+**Ordering, because a failure has to leave something recoverable.** The
+ciphertext is built first, then the filename is reserved with an atomic
+`create_new` (`dbboard-export-<stamp>Z.dbbx`, and `-2`, `-3` … when two
+exports land in the same second), then the passphrase goes into the keyring,
+then the bytes are written and synced. Each step removes the reserved file if
+it fails. The asymmetry is deliberate: a keyring entry with no file is litter
+someone can ignore, while a sealed file with no passphrase is a thing nobody
+can open and nobody can be sure is safe to delete.
+
+**What the result may say.** ADR-0088 lets an operator hide a connection from
+an agent behind a neutral alias, which the export result must not undo. So it
+reports a `connection_count` rather than the ids it sealed, and the
+foreign-reference warning — an entry whose secret belongs to another machine's
+keyring, which will arrive empty — is a **count**, not a list of names. The
+cloud-sync warning (`is_likely_cloud_synced_path`) names the directory the
+operator chose, which they already knew.
+
+**Error class.** `ExportNotEnabled` and every filesystem failure map to
+`invalid_params`, not `internal_error`. To an agent `internal_error` reads as
+"retry"; `invalid_params` reads as "say so and ask a human". Neither a missing
+`[mcp_export]` table nor a full disk is fixable by trying again, and an agent
+that reports the problem is worth more than one that spins on it.
+
+**Consequences.**
+* The operator's recovery path is `dbboard.export.<stem>` in the OS credential
+  manager. If they clear it before the bundle is opened, the bundle is gone —
+  which is the correct behaviour for a file full of credentials and has to be
+  said out loud in the docs rather than discovered.
+* Bundles accumulate in the chosen directory. Nothing prunes them, on purpose:
+  deleting the operator's encrypted backups is not a thing this server should
+  be able to do.
+* Exporting is not importing. Reading a bundle back stays a human act in the
+  app, for the same reason restore does (ADR-0087): it writes credentials.
+* The new logic went into `crates/dbboard-mcp/src/export.rs` rather than into
+  `service.rs`, which is already ~3,900 lines and on the list of files over
+  the 800-line limit. A new gate is not a reason to make that worse.
+
+---
+
+## ADR-0141 — The speed slot buys a measurement, not a benchmark framework (2026-09-02)
+
+**Status.** Accepted. Constrained by
+[ADR-0139](#adr-0139--the-toolchain-is-pinned-so-a-new-lint-arrives-as-a-commit-rather-than-as-a-broken-branch-2026-08-27) (the
+toolchain is pinned, so `--all-targets` compiles whatever is added here on
+every push) and by
+[ADR-0125](#adr-0125--the-libsql-teardown-crash-is-retried-once-because-serialising-made-it-rare-and-not-impossible-2026-08-22) (this
+project has already paid for one rare intermittent failure).
+
+**Context.** `docs/roadmap.md` reserves v0.14 for "startup, connect-and-browse,
+large result sets", with a condition: *measurement lands before any
+optimisation, so the numbers are comparable afterwards*. The order is the
+whole content of the slot. Optimising first produces a release note nobody can
+check and leaves the next regression with nothing to be a regression against.
+
+There were no benchmarks in the workspace at all — no `benches/`, no
+criterion, no divan, nothing. Meanwhile the README opened with "A
+high-performance desktop database client", a claim with not one recorded
+number behind it.
+
+The obvious move is to reach for criterion, and it is the wrong one here for
+reasons that are specific rather than aesthetic. The dev-dependencies in this
+workspace are `tokio`, `tempfile`, `wiremock`, `serde_json` and `tower` —
+there is no proptest, no insta, no test framework of any kind. Criterion
+brings plotters, rayon and tinytemplate, and because the mandatory commands
+run `cargo clippy --all-targets --all-features -- -D warnings`, all of that
+compiles on every push and every pull request. It also brings HTML reports
+nobody would open and a statistical apparatus sized for questions finer than
+the ones being asked. The questions here are coarse: is startup 20 ms or 2 s;
+does a 10,000-row result serialise in 5 ms or 500 ms. A median and a p95
+answer those.
+
+The second question is what to do with the numbers once they exist. Asserting
+them is the tempting answer and a trap: a threshold on a timing fails on a
+busy CI runner rather than on a regression, and the cost of a rare
+intermittent failure in this repo is already documented. But recording numbers
+in a file that nothing checks is the failure mode ADR-0117 describes — a
+control that has quietly stopped controlling anything.
+
+**Decision.** Five parts.
+
+*A harness this repo owns.* `crates/dbboard-bench`, `publish = false`, nothing
+links it. `std::time::Instant`, five discarded warm-up iterations, fifty timed
+ones, and a median and p95 by nearest rank — the value at `ceil(q · n)` in the
+sorted set, so every statistic reported is a duration that actually occurred
+rather than an interpolation between two that did.
+
+*Integer arithmetic in the formatter.* `Duration::as_secs_f64` builds its
+value as `secs + nanos / 1e9`, which for 2345 ms lands on 2.3449999999999998 —
+a different double from the one the literal `2.345` parses to, and one that
+renders as "2.34 s". The rendered numbers go into a file people diff between
+releases, so the last digit has to be the same digit on every platform. The
+test that caught this is kept.
+
+*The numbers live in a generated document.* `docs/performance-baseline.md`,
+written by `cargo run --release -p dbboard-bench -- --write`, carrying the
+machine, the pinned toolchain and the date, and saying in its own text that
+its numbers describe one machine and do not travel.
+
+*Nothing asserts a number; a test asserts the set of points.* The measurement
+points are declared as data in `points.rs`, separately from the code that
+measures them, so `tests/baseline_drift.rs` can read the catalogue without
+running a benchmark and fail when the document and the catalogue disagree.
+This is the part that matters: without it, deleting a measurement looks
+exactly like the thing it measured getting faster — the row stops being there
+and the file still renders. Same shape as `toolchain_pin_drift.rs`,
+`hook_install_drift.rs` and `release-plan.test.mjs`.
+
+*Fixtures are synthetic, local, and secret-free.* Connections and annotations
+are built in a temporary directory through the real writer, never read from
+the operator's `connections.toml` — the size of that file is a property of one
+machine, and a tool that prints tables should not be pointed at a file full of
+connection names. The secret store is `InMemorySecretStore`: a benchmark that
+pops a keychain dialog is timing how fast someone clicks. Databases are
+in-memory libSQL, because a hosted endpoint's numbers describe somebody's link
+on the day.
+
+**Consequences.**
+
+- `dbboard-bench` can reach `dbboard-turso`, so it joins
+  `scripts/libsql-serialised-crates.txt`. The hazard travels with the
+  dependency; `serialised_teardown.rs` derived the addition rather than
+  anyone remembering it.
+- There is no performance gate in CI, and there is deliberately not going to
+  be one. A regression is caught by a person re-running the harness on the
+  same machine across a change, which is the only comparison the numbers
+  support.
+- What the platform keychain costs at startup is still unknown. It is real,
+  it is probably the largest single item in the startup path, and it is not
+  measurable without either prompting the operator or mocking the thing whose
+  cost is the question. Recorded as an open gap rather than answered badly.
+- Startup is measured one layer below where the operator feels it: the
+  config work `run()` does is timed, the Tauri window is not. A number for
+  "time to first pixel" needs the app instrumented from inside, which is a
+  larger change than this slot.
+- If the coarse harness turns out not to answer a question that matters,
+  criterion is still there and this entry is the thing to supersede. The cost
+  of having started here is one small crate, not a migration.

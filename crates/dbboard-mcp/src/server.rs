@@ -11,11 +11,14 @@
 //! The tool set: `list_connections`, `list_tables`, `describe_table`,
 //! `run_read_query`, `get_annotations` (ADR-0046 Decision 5), plus
 //! `search_schema` (ADR-0053), `list_relationships` (ADR-0054),
-//! `run_write` + `dump_database` (ADR-0087), the `get_ui_locale` /
-//! `set_ui_locale` pair, `capture_window` (ADR-0108), and the four that
-//! work the window — `set_editor_sql`, `run_query`, `open_ai_panel`,
-//! `open_ai_settings` (ADR-0109). Those last seven reach no database at
-//! all, and `get_server_info` (#195) reaches nothing whatever: it names
+//! `run_write` + `dump_database` (ADR-0087), `add_connection` (ADR-0134),
+//! `set_connection_mark` + `move_connection` (ADR-0136), the
+//! `get_ui_locale` / `set_ui_locale` pair, `capture_window` (ADR-0108),
+//! and the four that work the window — `set_editor_sql`, `run_query`,
+//! `open_ai_panel`, `open_ai_settings` (ADR-0109). The seven from
+//! `get_ui_locale` onwards reach no database at all, and neither does the
+//! mark-and-move pair: it rearranges dbboard's own list of connections.
+//! `get_server_info` (#195) reaches nothing whatever: it names
 //! the build, because this binary is installed by hand and a stale one
 //! is otherwise indistinguishable from a broken one.
 //!
@@ -39,7 +42,74 @@ use dbboard_config::UiCommand;
 use dbboard_core::DbError;
 
 use crate::capture::{self, CaptureError};
-use crate::service::{McpService, ServiceError};
+use crate::service::{McpService, NewConnection, NewConnectionKind, ServiceError};
+
+/// Parameters for [`DbboardMcp::add_connection`] (ADR-0134).
+///
+/// Flat rather than one shape per kind: the fields that matter differ
+/// between the two kinds, but an agent filling a `oneOf` schema has to pick
+/// a branch before it knows the vocabulary. A `kind` string it has already
+/// seen in `list_connections` output, plus optional fields, is the same
+/// information in a form it can fill incrementally.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddConnectionParams {
+    /// The handle this connection will answer to in every other tool.
+    /// Lowercase and hyphenated by convention (`local-scratch`).
+    pub id: String,
+    /// The display name the operator will see in the app's sidebar.
+    pub name: String,
+    /// `turso` for a SQLite/libSQL file on this machine, `firestore` for the
+    /// Firestore emulator. No other kind can be registered here.
+    pub kind: String,
+    /// For `turso`: the absolute path to the database file. Not a URL.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// For `firestore`: the emulator's project id (e.g. `demo-project`).
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// For `firestore`: the database id. Omit for `(default)`.
+    #[serde(default)]
+    pub database_id: Option<String>,
+    /// For `firestore`: the emulator's HTTP address, e.g.
+    /// `http://127.0.0.1:8080`. Required — it is what distinguishes the
+    /// emulator from a real project.
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
+/// Parameters for [`DbboardMcp::export_connections`] (ADR-0140).
+///
+/// One field, and it is required. There is no "all" flag and no filter: the
+/// list an agent sends is the record of what left the machine, and a filter
+/// evaluated later is not that record.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExportConnectionsParams {
+    /// The connection ids to seal, as `list_connections` returns them.
+    pub connection_ids: Vec<String>,
+}
+
+/// Parameters for [`DbboardMcp::set_connection_mark`] (ADR-0136).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetConnectionMarkParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// One of dbboard's eight connection colours. Omit to clear the colour.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// A label of at most 12 characters (`prod`, `staging`). Omit to clear
+    /// the tag.
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+/// Parameters for [`DbboardMcp::move_connection`] (ADR-0136).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MoveConnectionParams {
+    /// The connection id from `list_connections`.
+    pub connection_id: String,
+    /// The destination position in the resulting list, counting from 0.
+    pub position: usize,
+}
 
 /// Parameters for [`DbboardMcp::list_tables`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -226,16 +296,165 @@ impl DbboardMcp {
             .map_err(|e| to_mcp(&e))
     }
 
+    // The description has one job the error cannot do: an agent that expects
+    // a passphrase back will design its whole handover around getting one,
+    // and by the time the answer arrives it has already promised a colleague
+    // something it cannot deliver. So say it here, before the call.
     #[tool(
-        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, turso-remote, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb). `turso` is a local SQLite/libSQL file and `turso-remote` is a Turso Cloud database reached over the network; both take the same SQL, so the distinction matters for latency and for where the data lives, not for what you send. Check the kind before you write a query: every kind above except firestore and mongodb takes SQL, firestore takes a Firestore StructuredQuery as JSON, and mongodb takes a MongoDB command document as JSON. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
+        description = "Seal the named connections into one encrypted dbboard bundle file, for handing to a colleague or moving to another machine.
+
+You will NOT get the passphrase. dbboard generates one, files it in this machine's credential manager, and tells you only the slot name. What comes back is the bundle's path plus that slot name, so the file you are holding is one you cannot open — ask the operator to read the passphrase out of their credential manager and send it to the recipient separately.
+
+Off unless the operator has already chosen a directory for this: without an [mcp_export] table in connections.toml the call is refused permanently, and no retry or rephrasing opens it. Say so and ask them to set it.
+
+Name every connection you mean; there is no form of this that exports everything."
+    )]
+    async fn export_connections(
+        &self,
+        Parameters(ExportConnectionsParams { connection_ids }): Parameters<ExportConnectionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Resolved one at a time through the same path every other tool uses,
+        // so an alias works here and a real id an alias is hiding does not
+        // (ADR-0088). Doing it before the export also means a typo is
+        // reported as a typo rather than as a half-finished bundle.
+        let mut ids = Vec::with_capacity(connection_ids.len());
+        for handle in &connection_ids {
+            ids.push(self.resolve(handle).await?);
+        }
+        let outcome = self
+            .service
+            .export_connections(ids)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&outcome)
+    }
+
+    #[tool(
+        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, turso-remote, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb). `turso` is a local SQLite/libSQL file and `turso-remote` is a Turso Cloud database reached over the network; both take the same SQL, so the distinction matters for latency and for where the data lives, not for what you send. Check the kind before you write a query: every kind above except firestore and mongodb takes SQL, firestore takes a Firestore StructuredQuery as JSON, and mongodb takes a MongoDB command document as JSON. Each entry also carries its position in the list, counting from zero, and the identity mark a person gave it (a color and a short tag) when it has one — position is what move_connection takes, and the mark is the operator's own shorthand rather than anything the database knows. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
     )]
     async fn list_connections(&self) -> Result<CallToolResult, McpError> {
+        self.connection_list().await
+    }
+
+    /// The connection list as the agent is allowed to see it (ADR-0088).
+    ///
+    /// The tools that change the list answer with this rather than with
+    /// nothing, so that the positions an agent sorts by are the ones the
+    /// write just produced. Reordering from a list read before the move is
+    /// how the second move lands on the wrong row.
+    async fn connection_list(&self) -> Result<CallToolResult, McpError> {
         let views = self
             .service
             .list_agent_connections()
             .await
             .map_err(|e| to_mcp(&e))?;
         json_block(&views)
+    }
+
+    // Two things the description has to establish before the agent tries: the
+    // closed list of kinds, and that the refusal for everything else is
+    // permanent. An agent that reads "add a connection" and sends a Postgres
+    // URL has already put a password in the transcript by the time the error
+    // arrives, so the boundary is stated first and as a rule about
+    // credentials, not as a list of unsupported names.
+    #[tool(
+        description = "Register a new database connection in dbboard, so a database you just set up is usable straight away without asking a person to retype its path.         
+
+Only connections that need NO credential can be registered: `turso` (a SQLite/libSQL file on this machine — pass `path`) and `firestore` (the local Firestore emulator — pass `project_id` and `base_url`). Everything else — Postgres, MySQL, Neon, Supabase, Aurora DSQL, D1, MongoDB, Turso Cloud — needs a password, token, or key, and is refused permanently: no setting enables it, so do not rephrase or retry. Say the operator must add it in the dbboard app, and do not send the credential here.         
+
+The connection is created read-only: `mcp_write` stays off and only a human can turn it on. A dbboard window that is already open lists it after a refresh."
+    )]
+    async fn add_connection(
+        &self,
+        Parameters(AddConnectionParams {
+            id,
+            name,
+            kind,
+            path,
+            project_id,
+            database_id,
+            base_url,
+        }): Parameters<AddConnectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let kind = match kind.trim().to_ascii_lowercase().as_str() {
+            // `sqlite` and `libsql` are not the label `list_connections`
+            // returns, but they are what an agent naming a local file reaches
+            // for first. Accepting them costs two match arms and saves a
+            // round-trip spent learning our vocabulary.
+            "turso" | "sqlite" | "libsql" => NewConnectionKind::Sqlite {
+                path: path.unwrap_or_default(),
+            },
+            "firestore" | "firestore-emulator" => NewConnectionKind::FirestoreEmulator {
+                project_id: project_id.unwrap_or_default(),
+                database_id,
+                base_url: base_url.unwrap_or_default(),
+            },
+            other => {
+                return Err(to_mcp(&ServiceError::InvalidRequest(format!(
+                    "kind {other:?} cannot be registered here: only \"turso\" (a local                      SQLite/libSQL file) and \"firestore\" (the local emulator) need no                      credential. Everything else must be added by the operator in the                      dbboard app"
+                ))))
+            }
+        };
+
+        let view = self
+            .service
+            .add_connection(NewConnection { id, name, kind })
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        json_block(&view)
+    }
+
+    // Two tools that change dbboard's own view of its connection list and
+    // reach no database at all (ADR-0136). Tidying a list of twenty
+    // connections is a chore a person does badly and an agent does well,
+    // and it was previously reachable only by hand.
+    #[tool(
+        description = "Set a connection's identity mark: a colour, a short tag, or neither. The mark is dbboard's own labelling of its connection list — a coloured stripe and a small chip beside the connection's name — so this changes nothing in the database and needs no write access to it.
+
+Both halves are set together: send the ones you want and omit the ones you want cleared, so sending only a color clears the tag. Send neither to unmark the connection entirely.
+
+color must be one of red, orange, yellow, green, teal, blue, purple, pink. tag is at most 12 characters — a label like prod or staging, not a description. Either may be sent alone.
+
+An existing mark was chosen by a person and usually means something to them; add marks to unmarked connections freely, but leave a mark that is already set unless you were asked to change it. Returns the whole list as it now stands."
+    )]
+    async fn set_connection_mark(
+        &self,
+        Parameters(SetConnectionMarkParams {
+            connection_id,
+            color,
+            tag,
+        }): Parameters<SetConnectionMarkParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
+        self.service
+            .set_connection_mark(&connection_id, color, tag)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        self.connection_list().await
+    }
+
+    #[tool(
+        description = "Move a connection to a position in the list, sliding the ones in between over by one. The list order is the order the app's sidebar and connection manager render, so this rearranges what a person sees and changes nothing in any database.
+
+position counts from 0 and is a position in the resulting list. Take it from the position field list_connections returns rather than counting rows yourself: another window may have reordered the file since you last read it, and a number counted off a stale list moves the wrong connection.
+
+To sort the whole list, move one at a time from the front: the connection that should come first to 0, then the one that should come second to 1, and so on. Returns the whole list in its new order.
+
+A dbboard window that is already open shows the old order until it is refreshed."
+    )]
+    async fn move_connection(
+        &self,
+        Parameters(MoveConnectionParams {
+            connection_id,
+            position,
+        }): Parameters<MoveConnectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let connection_id = self.resolve(&connection_id).await?;
+        self.service
+            .move_connection(&connection_id, position)
+            .await
+            .map_err(|e| to_mcp(&e))?;
+        self.connection_list().await
     }
 
     #[tool(
@@ -549,6 +768,13 @@ struct UiCommandOutcome {
 // at the router stored on the struct. Without it the macro defaults to
 // `Self::tool_router()`, which rebuilds the router on every call and
 // leaves the field unread (a denied dead-code warning under our lints).
+// The macro emits `async fn call_tool`/`list_tools` to match the trait, and
+// our tool bodies are the only thing that awaits — a server with no async
+// tool would leave them awaitless. We cannot change generated code, and the
+// generated signature is correct, so the lint is silenced at the one site
+// that produces it (clippy::unused_async_trait_impl, clippy 1.98+; the
+// toolchain is pinned, so the lint name is always known here).
+#[allow(clippy::unused_async_trait_impl)]
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DbboardMcp {
     fn get_info(&self) -> ServerInfo {
@@ -592,8 +818,15 @@ const GUIDE: &str = "Read-only access to the databases dbboard is configured wit
                  has set mcp_write = true on — it is off by default. Privilege and \
                  role changes, TRUNCATE and DROP are refused on every connection and \
                  no setting enables them. \
-                 \n\nSeven tools are the exception to all of the above: they reach \
-                 no database and instead work the dbboard window itself. \
+                 \n\nThe connection list has a shape of its own, and a person \
+                 maintains it by hand: set_connection_mark gives a connection a \
+                 colour and a short tag, move_connection changes the order they \
+                 are listed in. Both write dbboard's own configuration and touch \
+                 no database, so neither is behind mcp_write. Offer to tidy the \
+                 list when it has grown long enough that its order stopped saying \
+                 anything. \
+                 \n\nSeven further tools reach no database either, and instead \
+                 work the dbboard window itself. \
                  get_ui_locale / set_ui_locale change the app's display language \
                  — use them only when the user asks. capture_window photographs \
                  the app's own window, which is how you check what it actually \
@@ -664,6 +897,14 @@ fn to_mcp(err: &ServiceError) -> McpError {
         | ServiceError::NotRestorable(_)
         | ServiceError::WriteNotEnabled(_)
         | ServiceError::WriteRefused(_)
+        // The export gates (ADR-0140) follow `WriteNotEnabled`: an absent
+        // `[mcp_export]`, or a directory that is not there, is not something
+        // the agent can fix, and retrying either loops forever. `Export` also
+        // covers a failed write, which *might* succeed on a second attempt —
+        // but an agent that reports a full disk to its operator is a better
+        // outcome than one that spins on it.
+        | ServiceError::ExportNotEnabled
+        | ServiceError::Export(_)
         // Same reasoning as `capture_window`'s "not running" (ADR-0108): a
         // closed app stays closed until a human opens it, and `internal_error`
         // is the code that reads as "try again". A refusal from the window is
@@ -800,10 +1041,15 @@ mod tests {
     ///
     /// Checked against the source text rather than by calling the tools,
     /// because the failure this guards against is a *new* tool added without
-    /// the line — which no test of the existing eight would catch. A tool that
-    /// forgets it rejects the alias the agent was given and accepts the real
-    /// id the operator hid, and both look like ordinary behaviour until
+    /// the line — which no test of the tools already here would catch. A tool
+    /// that forgets it rejects the alias the agent was given and accepts the
+    /// real id the operator hid, and both look like ordinary behaviour until
     /// someone reads a transcript.
+    ///
+    /// Two shapes count. Most tools take one `connection_id` and resolve it
+    /// outright; `export_connections` takes a list and resolves each element
+    /// in a loop. Both are spelled exactly, so a third shape has to be added
+    /// here on purpose rather than by resembling one of these.
     #[test]
     fn every_tool_taking_a_connection_id_resolves_it_first() {
         let source = include_str!("server.rs");
@@ -818,11 +1064,60 @@ mod tests {
                 .nth(1)
                 .and_then(|rest| rest.split('(').next())
                 .unwrap_or("<unknown>");
+            let resolved = body.contains("self.resolve(&connection_id).await?")
+                || body.contains("self.resolve(handle).await?");
             assert!(
-                body.contains("self.resolve(&connection_id).await?"),
+                resolved,
                 "tool `{name}` uses the agent's connection_id without resolving it"
             );
         }
+    }
+
+    /// The palette and the tag limit are enforced in `dbboard-config`, and an
+    /// agent cannot see either one. If the description does not carry them,
+    /// the first thing it learns about the eight colours is that its ninth
+    /// was rejected — and the same goes for a thirteenth character.
+    ///
+    /// Checked against the constants rather than a copy of them, so growing
+    /// the palette fails here instead of quietly leaving a colour that works
+    /// but is never offered.
+    #[test]
+    fn the_mark_tool_states_the_palette_and_the_tag_limit() {
+        let source = include_str!("server.rs");
+        let description = source
+            .split("description = \"Set a connection's identity mark")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the set_connection_mark description has moved");
+
+        for colour in dbboard_config::CONNECTION_COLORS {
+            assert!(
+                description.contains(colour),
+                "colour `{colour}` is missing from the set_connection_mark description"
+            );
+        }
+        assert!(
+            description.contains(&dbboard_config::CONNECTION_TAG_MAX_CHARS.to_string()),
+            "the tag length limit is missing from the set_connection_mark description"
+        );
+    }
+
+    /// `position` is only usable if the agent knows where the number comes
+    /// from. Counted off its own transcript it drifts the moment anything
+    /// else writes the file, which is the stale-view failure ADR-0016 is
+    /// about — so the description has to point back at the read.
+    #[test]
+    fn the_reorder_tool_points_at_the_read_the_position_comes_from() {
+        let source = include_str!("server.rs");
+        let description = source
+            .split("description = \"Move a connection")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the move_connection description has moved");
+        assert!(
+            description.contains("list_connections"),
+            "the move_connection description does not say where `position` comes from"
+        );
     }
 
     /// Extract the kind labels `service::kind_label` can return, from its
@@ -970,6 +1265,31 @@ mod tests {
             .next()
             .and_then(|rest| rest.split('"').next())
             .unwrap_or_else(|| panic!("the {name} description has moved"))
+    }
+
+    // The refusal has to arrive before the credential does. An agent that
+    // learns "no Postgres" from an error has already put the password in the
+    // transcript, and no later redaction takes it back out (ADR-0134).
+    #[test]
+    fn add_connection_refuses_credentials_up_front() {
+        let description = description_above("add_connection");
+
+        assert!(
+            description.contains("NO credential"),
+            "add_connection does not state the boundary before the agent sends one"
+        );
+        assert!(
+            description.contains("refused permanently"),
+            "add_connection does not say the refusal is not worth rephrasing"
+        );
+        assert!(
+            description.contains("dbboard app"),
+            "add_connection does not say where a credentialed connection is added instead"
+        );
+        assert!(
+            description.contains("mcp_write"),
+            "add_connection does not say the new connection cannot be written to"
+        );
     }
 
     // A window that is not open does not open by itself. An agent told only

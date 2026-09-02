@@ -7,6 +7,7 @@
     addConnection,
     updateConnection,
     deleteConnection,
+    moveConnection,
     foreignConnectionRefs,
     connectionEditFields,
     configPath,
@@ -46,6 +47,18 @@
     type PathField,
   } from '$lib/connections/file-picker';
   import { foreignRefFor } from '$lib/connections/repair';
+  import { moveTarget } from '$lib/connections/order';
+  import { dropTarget, gapForPointer } from '$lib/connections/reorder';
+  import { filterConnections } from '$lib/connections/filter';
+  import {
+    CONNECTION_COLORS,
+    CONNECTION_TAG_MAX_CHARS,
+    colorVar,
+    isConnectionColor,
+    markFor,
+    markNeedsTag,
+    type ConnectionColor,
+  } from '$lib/connections/marks';
   import { refreshConnectionList } from '$lib/connections/refresh';
   import DsnFieldset from './DsnFieldset.svelte';
   import SshFieldset from './SshFieldset.svelte';
@@ -53,6 +66,13 @@
   import ImportPanel from './ImportPanel.svelte';
   import DuplicatePanel from './DuplicatePanel.svelte';
   import RepairPanel from './RepairPanel.svelte';
+  import ConnectionMark from './ConnectionMark.svelte';
+  import {
+    dismissAction,
+    clampDialogOffset,
+    centredOffset,
+    type DialogOffset,
+  } from '$lib/layout/dialog-move';
   import '$lib/styles/connection-dialog.css';
 
   interface Props {
@@ -67,9 +87,168 @@
   let invalid = $state<FormField[]>([]);
   let invalidSsh = $state<SshFormField[]>([]);
   let invalidDsn = $state<DsnField[]>([]);
+  // The one mark combination the form will not save: a colour with no tag
+  // (ADR-0126). A boolean rather than a field list — there is only one field
+  // it can be about.
+  let invalidMark = $state(false);
   let busy = $state(false);
   let error = $state('');
   let info = $state('');
+
+  // Narrow the list by typing (issue #192, criterion 2). Not persisted: it is
+  // a way of finding one row, not a saved view — the order below *is* saved.
+  let filter = $state('');
+  const visible = $derived(filterConnections(workspace.connections, filter));
+  // ▲▼ move an entry within the stored list, so while rows are hidden the
+  // buttons would move a connection past something the operator cannot see.
+  // Disabled rather than remapped: "below the next visible row" is a different
+  // feature, and a silent wrong answer is worse than a disabled button.
+  const filtering = $derived(visible.length !== workspace.connections.length);
+
+  // Drag to reorder (issue #192, criterion 1). ▲▼ came first and were removed
+  // the same day drag landed (ADR-0128); the keyboard path moved onto this
+  // handle, which takes ↑↓ when focused.
+  //
+  // Pointer events rather than HTML5 drag-and-drop. Tauri hands the OS-level
+  // drag-drop to the window before the webview sees it, so the HTML5 events
+  // only arrive with `dragDropEnabled: false` — and that is the same switch a
+  // later "drop a .dbbx onto the window" would need left on. Nothing uses it
+  // today, but turning it off to save code here would spend it.
+  let dragFrom = $state<number | null>(null);
+  let dragGap = $state<number | null>(null);
+  let listEl: HTMLDivElement | undefined = $state();
+
+  // Rows do not move while a drag is in flight — only the insertion line does.
+  // Reordering under the pointer would move the midpoints this reads, and the
+  // gap would oscillate wherever two rows meet.
+  function rowMidpoints(): number[] {
+    if (!listEl) return [];
+    return [...listEl.querySelectorAll('.row')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return r.top + r.height / 2;
+    });
+  }
+
+  function beginDrag(e: PointerEvent, index: number) {
+    if (busy || filtering) return;
+    // Capture so the drag survives the pointer leaving the handle, which it
+    // does immediately — the handle is a few pixels tall.
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+    dragFrom = index;
+    dragGap = index;
+  }
+
+  function trackDrag(e: PointerEvent) {
+    if (dragFrom === null) return;
+    dragGap = gapForPointer(e.clientY, rowMidpoints());
+  }
+
+  async function finishDrag() {
+    const from = dragFrom;
+    const gap = dragGap;
+    dragFrom = null;
+    dragGap = null;
+    if (from === null || gap === null) return;
+    const target = dropTarget(from, gap, workspace.connections.length);
+    if (target === null) return;
+    const c = workspace.connections[from];
+    busy = true;
+    error = '';
+    try {
+      await moveConnection(c.id, target);
+      await refreshAll();
+    } catch (err) {
+      error = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function cancelDrag() {
+    dragFrom = null;
+    dragGap = null;
+  }
+
+  // What the form held when it opened. A stray backdrop click or Escape
+  // used to close the dialog and take a half-typed connection with it
+  // (ADR-0132); comparing against this is how we know there was one.
+  let formOpenedAs = $state('');
+  const formDirty = $derived(mode === 'form' && JSON.stringify(form) !== formOpenedAs);
+
+  function dismiss(source: 'backdrop' | 'escape') {
+    const action = dismissAction(source, mode, formDirty);
+    if (action === 'close') onClose();
+    else if (action === 'back') goList();
+  }
+
+  // Dragging the dialog itself, by its header. The centred position is a
+  // good default and a bad prison: on a short window the panel covers the
+  // very thing being copied from, and reaching past it used to close it.
+  let offset = $state<DialogOffset>(centredOffset());
+  let dialogEl: HTMLDivElement | undefined = $state();
+  let moveFrom: { x: number; y: number; dx: number; dy: number } | null = null;
+
+  function geometry() {
+    const r = dialogEl?.getBoundingClientRect();
+    return {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      dialogWidth: r?.width ?? 0,
+      dialogHeight: r?.height ?? 0,
+    };
+  }
+
+  function beginMove(e: PointerEvent) {
+    // The header also holds the close button and the title text; only bare
+    // header space starts a move, so ✕ stays a single click.
+    if ((e.target as HTMLElement).closest('button')) return;
+    // No preventDefault here, unlike the row handle: cancelling pointerdown
+    // costs the compatibility mouse events, and the double-click that
+    // re-centres is built out of them. `user-select: none` on .head does
+    // the only job preventDefault would have done.
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    moveFrom = { x: e.clientX, y: e.clientY, dx: offset.dx, dy: offset.dy };
+  }
+
+  function trackMove(e: PointerEvent) {
+    if (!moveFrom) return;
+    offset = clampDialogOffset(
+      {
+        dx: moveFrom.dx + (e.clientX - moveFrom.x),
+        dy: moveFrom.dy + (e.clientY - moveFrom.y),
+      },
+      geometry(),
+    );
+  }
+
+  function endMove() {
+    moveFrom = null;
+  }
+
+  // Same gesture as the sidebar divider and the sidebar split: double-click
+  // the handle to put it back where it started (ADR-0083, ADR-0131).
+  function recentre(e: MouseEvent) {
+    if ((e.target as HTMLElement).closest('button')) return;
+    offset = centredOffset();
+  }
+
+  // A window resized smaller can strand a dialog that was legal when it was
+  // dropped, so the clamp is re-applied rather than only checked on drag.
+  function onResize() {
+    if (offset.dx === 0 && offset.dy === 0) return;
+    offset = clampDialogOffset(offset, geometry());
+  }
+
+  // The handle is also the keyboard path. ▲▼ used to be that, one pair per
+  // row; with drag in place they were a second control saying the same thing,
+  // and three buttons plus two arrows is what made the row wide enough to
+  // notice. The arrows the operator presses are now the ones on the keyboard.
+  function gripKeydown(e: KeyboardEvent, index: number) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    void move(index, e.key === 'ArrowUp' ? -1 : 1);
+  }
 
   // Entries whose saved-secret slot was minted for a *different* connection
   // (issue #213). dbboard never writes that state itself, so this is only ever
@@ -91,6 +270,19 @@
     aurora_dsql_iam: 'conn-kind-aurora_dsql_iam',
     firestore: 'conn-kind-firestore',
     mongodb: 'conn-kind-mongodb',
+  };
+
+  // Spelled out rather than built from the colour name, so that adding a
+  // colour without naming it fails to compile instead of showing a raw key.
+  const COLOR_LABEL: Record<ConnectionColor, MessageKey> = {
+    red: 'conn-color-red',
+    orange: 'conn-color-orange',
+    yellow: 'conn-color-yellow',
+    green: 'conn-color-green',
+    teal: 'conn-color-teal',
+    blue: 'conn-color-blue',
+    purple: 'conn-color-purple',
+    pink: 'conn-color-pink',
   };
 
   const FIELD_LABEL: Record<FormField, MessageKey> = {
@@ -181,6 +373,7 @@
     invalid = [];
     invalidSsh = [];
     invalidDsn = [];
+    invalidMark = false;
     // The host-key probe's error is not listed: it lives in SshFieldset,
     // which is unmounted at every point this runs — each of the seven
     // callers is either leaving the form or entering it from the list.
@@ -217,6 +410,7 @@
   function startAdd() {
     resetTransient();
     form = emptyForm();
+    formOpenedAs = JSON.stringify(form);
     editorMode = 'add';
     mode = 'form';
   }
@@ -227,6 +421,7 @@
     try {
       const fields = await connectionEditFields(c.id);
       form = formForEdit(c.id, c.name, fields);
+      formOpenedAs = JSON.stringify(form);
       editorMode = 'edit';
       mode = 'form';
     } catch (e) {
@@ -257,7 +452,14 @@
     invalid = validate(form, editorMode);
     invalidSsh = validateSsh(form, editorMode);
     invalidDsn = validateDsnFields(form);
-    if (invalid.length > 0 || invalidSsh.length > 0 || invalidDsn.length > 0) return;
+    invalidMark = markNeedsTag(form.color, form.tag);
+    if (
+      invalid.length > 0 ||
+      invalidSsh.length > 0 ||
+      invalidDsn.length > 0 ||
+      invalidMark
+    )
+      return;
     busy = true;
     error = '';
     try {
@@ -269,6 +471,8 @@
           buildSshInput(form),
           form.mcp_write,
           form.mcp_alias,
+          form.color,
+          form.tag,
         );
       } else {
         await updateConnection(
@@ -279,6 +483,8 @@
           keepStoredPassword(form, editorMode),
           form.mcp_write,
           form.mcp_alias,
+          form.color,
+          form.tag,
         );
       }
       await refreshAll();
@@ -296,6 +502,25 @@
     error = '';
     try {
       await deleteConnection(c.id);
+      await refreshAll();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Reorder the list the sidebar renders (issue #192). The order lives in the
+  // connections file, so this is not a view preference: it is saved, and it
+  // travels inside a `.dbbx` bundle.
+  async function move(index: number, delta: number) {
+    const target = moveTarget(index, delta, workspace.connections.length);
+    if (target === null) return;
+    const c = workspace.connections[index];
+    busy = true;
+    error = '';
+    try {
+      await moveConnection(c.id, target);
       await refreshAll();
     } catch (e) {
       error = String(e);
@@ -330,28 +555,41 @@
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
-      if (mode === 'list') onClose();
-      else goList();
+      // A drag with no way out would make Escape close the dialog mid-move,
+      // which is the one moment the operator most wants to take it back.
+      if (dragFrom !== null) cancelDrag();
+      else dismiss('escape');
     }
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onresize={onResize} />
 
 <div
   class="backdrop conn-dialog"
   onclick={(e) => {
-    if (e.target === e.currentTarget) onClose();
+    if (e.target === e.currentTarget) dismiss('backdrop');
   }}
   role="presentation"
 >
   <div
     class="dialog"
+    style:translate="{offset.dx}px {offset.dy}px"
+    bind:this={dialogEl}
     role="dialog"
     aria-modal="true"
     aria-label={i18n.t('conn-manager-title')}
   >
-    <header class="head">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <header
+      class="head"
+      title={i18n.t('conn-move-hint')}
+      onpointerdown={beginMove}
+      onpointermove={trackMove}
+      onpointerup={endMove}
+      onpointercancel={endMove}
+      ondblclick={recentre}
+    >
       <h2 class="title">{i18n.t('conn-manager-title')}</h2>
       <button type="button" class="icon-btn" onclick={onClose} title={i18n.t('conn-close')}>
         ✕
@@ -362,14 +600,51 @@
     {#if info && mode === 'list'}<p class="banner info">{info}</p>{/if}
 
     {#if mode === 'list'}
-      <div class="list">
+      {#if workspace.connections.length > 0}
+        <input
+          class="filter"
+          type="search"
+          bind:value={filter}
+          placeholder={i18n.t('conn-filter-placeholder')}
+          aria-label={i18n.t('conn-filter-placeholder')}
+        />
+      {/if}
+      <div class="list" bind:this={listEl}>
         {#if workspace.connections.length === 0}
           <p class="empty">{i18n.t('conn-empty')}</p>
+        {:else if visible.length === 0}
+          <p class="empty">{i18n.t('conn-filter-none')}</p>
         {:else}
-          {#each workspace.connections as c (c.id)}
-            <div class="row">
+          {#each visible as c (c.id)}
+            {@const i = workspace.connections.indexOf(c)}
+            {@const mark = markFor(workspace.marks, c.id)}
+            <div
+              class="row"
+              class:dragging={dragFrom === i}
+              class:drop-before={dragGap === i && dragFrom !== null}
+              class:drop-after={dragGap === workspace.connections.length &&
+                i === workspace.connections.length - 1 &&
+                dragFrom !== null}
+            >
+              <button
+                type="button"
+                class="grip"
+                disabled={busy || filtering}
+                title={filtering ? i18n.t('conn-move-filtered') : i18n.t('conn-drag-handle')}
+                aria-label={i18n.t('conn-drag-handle')}
+                onpointerdown={(e) => beginDrag(e, i)}
+                onpointermove={trackDrag}
+                onpointerup={finishDrag}
+                onpointercancel={cancelDrag}
+                onkeydown={(e) => gripKeydown(e, i)}
+              >
+                ⠿
+              </button>
               <div class="row-main">
-                <span class="row-name">{c.name}</span>
+                <span class="row-name-line">
+                  <span class="row-name">{c.name}</span>
+                  {#if mark}<ConnectionMark {mark} />{/if}
+                </span>
                 <span class="row-meta">{c.kind} · {c.id}</span>
                 {#if foreignRefFor(foreignRefs, c.id)}
                   {@const fr = foreignRefFor(foreignRefs, c.id)}
@@ -586,6 +861,64 @@
             clearInvalid={(f) => (invalidSsh = invalidSsh.filter((x) => x !== f))}
           />
         {/if}
+
+        <!-- The identity mark (ADR-0126). Above the agent section on
+             purpose: this one is about the human sitting here, and it is the
+             thing they will come back to change. -->
+        <fieldset class="ssh">
+          <legend>{i18n.t('conn-mark-section')}</legend>
+          <p class="note">{i18n.t('conn-mark-lead')}</p>
+          <div class="mark-row">
+            <label class="field">
+              <span class="label">{i18n.t('conn-mark-color')}</span>
+              <select
+                class="mark-color"
+                style={isConnectionColor(form.color)
+                  ? `--mark: ${colorVar(form.color)}`
+                  : undefined}
+                value={form.color}
+                onchange={(e) => {
+                  form.color = e.currentTarget.value;
+                  invalidMark = false;
+                }}
+              >
+                <option value="">{i18n.t('conn-mark-color-none')}</option>
+                {#each CONNECTION_COLORS as name (name)}
+                  <option value={name}>{i18n.t(COLOR_LABEL[name])}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">{i18n.t('conn-mark-tag')}</span>
+              <input
+                class:bad={invalidMark}
+                value={form.tag}
+                maxlength={CONNECTION_TAG_MAX_CHARS}
+                oninput={(e) => {
+                  form.tag = e.currentTarget.value;
+                  invalidMark = false;
+                }}
+                placeholder={i18n.t('conn-mark-tag-placeholder')}
+                spellcheck="false"
+              />
+            </label>
+            <!-- Only once there is a tag. A colour with no tag previews as
+                 the colour's own name, which is what a hand-edited config
+                 renders as but not what this form will save — showing it
+                 would advertise a state the save then refuses. -->
+            {#if form.tag.trim()}
+              {@const preview = markFor({ p: { color: form.color, tag: form.tag } }, 'p')}
+              {#if preview}
+                <span class="mark-preview"><ConnectionMark mark={preview} /></span>
+              {/if}
+            {/if}
+          </div>
+          <span class="hint" class:bad-text={invalidMark}>
+            {invalidMark
+              ? i18n.t('conn-mark-tag-required')
+              : i18n.t('conn-mark-tag-hint', { max: String(CONNECTION_TAG_MAX_CHARS) })}
+          </span>
+        </fieldset>
 
         <!-- Rendered in both modes on purpose: an edit form without this
              toggle would send no opinion and the gate would look absent,

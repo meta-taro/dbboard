@@ -52,6 +52,11 @@ export const en = {
   "update-installing": "Installing…",
   "update-restarting": "Restarting…",
   "update-failed": "Update failed — please try again later.",
+  "update-stalled-title": "Last update did not finish",
+  "update-stalled-body": "dbboard { $version } was downloaded, but the app came back as { $current }. If installing again does not help, download the installer by hand:",
+  "update-stalled-copy": "Copy download link",
+  "update-stalled-copied": "Copied",
+  "update-stalled-close": "Close",
   "connections-window-title": "Connections",
   "connections-list-empty": "(no connections configured)",
   "tab-query": "Query",
@@ -63,6 +68,7 @@ export const en = {
   "sidebar-no-matches": "No matches",
   "sidebar-searching": "Searching…",
   "sidebar-resize": "Drag to resize · double-click to reset",
+  "sidebar-split-resize": "Drag to resize the connection list · double-click to fit it to the connections",
   "menu-open-structure": "Open structure",
   "menu-select-top": "Select top { $n }",
   "menu-count-rows": "Count rows",
@@ -119,6 +125,10 @@ export const en = {
   "about-title": "About dbboard",
   "about-version": "Version",
   "about-close": "Close",
+  "about-changes-title": "What changed",
+  "about-changes-release": "Release",
+  "about-changes-none": "This build is not described in the changelog.",
+  "about-changes-english": "Release notes are written in English.",
   "status-query-idle": "No query run yet",
   "status-query-running": "Running…",
   "status-query-done": "Last query",
@@ -144,10 +154,19 @@ export const en = {
   "conn-delete": "Delete",
   "conn-delete-confirm": "Delete “{ $name }”? Its stored secret is removed too.",
   "conn-empty": "No connections yet — add one to get started.",
+  // Reordering the list (issue #192). The order is saved in the connections
+  // file, so it is the order the sidebar shows on every later run too.
+  // Narrowing the list (issue #192). While rows are hidden the ▲▼ buttons are
+  // disabled: they move an entry within the stored list, not within the view.
+  "conn-filter-placeholder": "Filter by name or id",
+  "conn-filter-none": "No connection matches that.",
+  "conn-move-filtered": "Clear the filter to change the order",
+  "conn-drag-handle": "Drag to reorder, or ↑↓ when focused",
   "conn-save": "Save",
   "conn-browse": "Browse…",
   "conn-cancel": "Cancel",
   "conn-close": "Close",
+  "conn-move-hint": "Drag to move · double-click to re-centre",
   "conn-field-id": "ID",
   "conn-field-id-hint":
     "A stable identifier — it cannot be changed later. An AI agent sees it, so avoid host names and customer names here; if one is already in use, set an alias under AI agent access.",
@@ -263,6 +282,30 @@ export const en = {
   "conn-mcp-alias-placeholder": "e.g. store-a",
   "conn-mcp-alias-hint":
     "Optional. When set, an agent sees this name in place of both the id and the display name above, and the real id stops working as a handle — so a host or customer name you already used as an id no longer reaches the agent's transcript. Leave blank to show the real ones.",
+  // Identity mark: which server this is (ADR-0126)
+  "conn-mark-section": "How this connection is marked",
+  "conn-mark-lead":
+    "Shown on this connection everywhere it appears, so the one you are about to run a statement against is the one you meant.",
+  "conn-mark-color": "Colour",
+  "conn-mark-color-none": "No colour",
+  // The eight identity colours, in the order the picker lists them. Named
+  // rather than shown as swatches alone: the name is what a screen reader
+  // reads out, and what the row falls back to when a config carries a colour
+  // with no tag.
+  "conn-color-red": "Red",
+  "conn-color-orange": "Orange",
+  "conn-color-yellow": "Yellow",
+  "conn-color-green": "Green",
+  "conn-color-teal": "Teal",
+  "conn-color-blue": "Blue",
+  "conn-color-purple": "Purple",
+  "conn-color-pink": "Pink",
+  "mark-picker-title": "Mark { $name }",
+  "conn-mark-tag": "Tag",
+  "conn-mark-tag-placeholder": "e.g. prod",
+  "conn-mark-tag-hint":
+    "Up to { $max } characters. The colour alone is invisible to a colour-blind reader and in a greyscale screenshot, so a colour is only saved with a tag beside it. A tag on its own is fine.",
+  "conn-mark-tag-required": "Write a tag, or clear the colour.",
   // Duplicating a connection, and repairing one whose saved-secret slot was
   // minted for a different connection (issue #213)
   "conn-duplicate": "Duplicate",
@@ -459,6 +502,11 @@ const ja: Partial<Record<MessageKey, string>> = {
   "update-installing": "インストール中…",
   "update-restarting": "再起動中…",
   "update-failed": "アップデートに失敗しました。しばらくしてからもう一度お試しください。",
+  "update-stalled-title": "前回のアップデートが完了していません",
+  "update-stalled-body": "dbboard { $version } のダウンロードは終わりましたが、起動し直しても { $current } のままです。もう一度試しても同じなら、下記からインストーラーを手動でダウンロードしてください。",
+  "update-stalled-copy": "ダウンロード先をコピー",
+  "update-stalled-copied": "コピーしました",
+  "update-stalled-close": "閉じる",
   "connections-window-title": "接続",
   "connections-list-empty": "（接続が登録されていません）",
   "tab-query": "クエリ",
@@ -470,6 +518,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "sidebar-no-matches": "一致なし",
   "sidebar-searching": "検索中…",
   "sidebar-resize": "ドラッグで幅を変更・ダブルクリックで既定に戻す",
+  "sidebar-split-resize": "ドラッグで接続一覧の高さを変更・ダブルクリックで登録数に合わせる",
   "menu-open-structure": "構造を開く",
   "menu-select-top": "先頭 { $n } 行を SELECT",
   "menu-count-rows": "行数をカウント",
@@ -538,6 +587,12 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-delete": "削除",
   "conn-delete-confirm": "「{ $name }」を削除しますか？保存されたシークレットも削除されます。",
   "conn-empty": "接続がまだありません。追加して始めましょう。",
+  // 並び替え (issue #192)
+  // 絞り込み (issue #192)
+  "conn-filter-placeholder": "名前または id で絞り込む",
+  "conn-filter-none": "一致する接続がありません。",
+  "conn-move-filtered": "並び替えるには絞り込みを解除してください",
+  "conn-drag-handle": "ドラッグ、またはフォーカス中に ↑↓ で並び替え",
   // 接続の複製と、他の接続のシークレット枠を指している接続の修復 (issue #213)
   "conn-duplicate": "複製",
   "conn-duplicate-title": "接続を複製",
@@ -568,6 +623,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-browse": "参照…",
   "conn-cancel": "キャンセル",
   "conn-close": "閉じる",
+  "conn-move-hint": "ドラッグで移動・ダブルクリックで中央に戻す",
   "conn-field-id": "ID",
   "conn-field-id-hint":
     "安定した識別子です。後から変更できません。AI エージェントにも見えるため、ホスト名や実店舗名は避けてください。すでに使っている場合は「AI エージェントからの操作」で別名を設定してください。",
@@ -680,6 +736,26 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-mcp-alias-placeholder": "例: store-a",
   "conn-mcp-alias-hint":
     "任意です。設定すると、エージェントには上の ID と表示名の代わりにこの名前だけが見え、実の ID は接続先として使えなくなります。すでに ID にホスト名や店舗名を使っていても、エージェントの履歴には残りません。空の場合は実の ID と表示名が見えます。",
+  // 接続の目印: どのサーバーなのか (ADR-0126)
+  "conn-mark-section": "この接続の目印",
+  "conn-mark-lead":
+    "この接続が表示される場所すべてに出ます。これから実行しようとしている相手が、意図したサーバーかどうかがひと目で分かります。",
+  "conn-mark-color": "色",
+  "conn-mark-color-none": "色なし",
+  "conn-color-red": "赤",
+  "conn-color-orange": "橙",
+  "conn-color-yellow": "黄",
+  "conn-color-green": "緑",
+  "conn-color-teal": "青緑",
+  "conn-color-blue": "青",
+  "conn-color-purple": "紫",
+  "conn-color-pink": "桃",
+  "mark-picker-title": "{ $name } の目印",
+  "conn-mark-tag": "ラベル",
+  "conn-mark-tag-placeholder": "例: 本番",
+  "conn-mark-tag-hint":
+    "{ $max } 文字までです。色だけでは、色覚特性のある方やグレースケールのスクリーンショットでは判別できません。そのため色はラベルと一緒でなければ保存しません。ラベルだけなら問題ありません。",
+  "conn-mark-tag-required": "ラベルを入力するか、色を外してください。",
   // 接続バンドルのインポート/エクスポート (ADR-0038)
   "conn-export": "エクスポート…",
   "conn-import": "インポート…",
@@ -805,6 +881,10 @@ const ja: Partial<Record<MessageKey, string>> = {
   "about-title": "dbboard について",
   "about-version": "バージョン",
   "about-close": "閉じる",
+  "about-changes-title": "更新内容",
+  "about-changes-release": "リリース",
+  "about-changes-none": "この版に対応する変更履歴の記載がありません。",
+  "about-changes-english": "変更履歴は英語で書かれています。",
   "status-query-idle": "クエリ未実行",
   "status-query-running": "実行中…",
   "status-query-done": "直前のクエリ",

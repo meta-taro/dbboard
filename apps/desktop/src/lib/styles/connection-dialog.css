@@ -38,6 +38,22 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* The header is the grip. The dialog is centred by default, which on a
+     short window puts it over whatever is being copied from (ADR-0132);
+     dragging the title bar is the gesture the OS gives a window. */
+  cursor: grab;
+  /* Otherwise a drag selects the title, and the double-click that
+     re-centres highlights it instead. */
+  user-select: none;
+}
+
+.conn-dialog .head:active {
+  cursor: grabbing;
+}
+
+/* The close button keeps its own pointer — it is not part of the grip. */
+.conn-dialog .head .icon-btn {
+  cursor: pointer;
 }
 .conn-dialog .title {
   margin: 0;
@@ -76,6 +92,23 @@
   color: var(--text-accent);
 }
 
+/* The list's own filter (issue #192). It sits outside `.field`, so it does not
+   inherit the form-input rules and states them itself. `type="search"` gets a
+   clear button in WebKit; the padding leaves room for it. */
+.conn-dialog .filter {
+  flex: none;
+  background: var(--bg-surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-widget);
+  padding: 7px 10px;
+  font-size: var(--text-body);
+}
+.conn-dialog .filter:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .conn-dialog .list {
   display: flex;
   flex-direction: column;
@@ -101,10 +134,74 @@
 .conn-dialog .row:hover {
   background: var(--bg-surface-alt);
 }
+
+/* Drag to reorder (issue #192). The handle is only offered on hover, and on
+   focus, because it is the only control on the row that is not a word: a
+   permanent glyph at the left of every row reads as status rather than as
+   something to press. Focus has to show it too — it is the keyboard path now
+   that ▲▼ are gone (ADR-0128), and a control you can tab to but cannot see
+   is worse than no control. */
+.conn-dialog .grip {
+  flex: none;
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  color: var(--text-muted);
+  cursor: grab;
+  line-height: 1;
+  opacity: 0;
+  touch-action: none;
+}
+/* Both of these exclude the disabled handle by hand. `:disabled` below is a
+   single class-level selector, so `.row:hover .grip` outranks it and
+   `:active` ties it and wins on order — on a filtered list the handle would
+   otherwise light up on hover and answer a press with a closed fist,
+   offering a drag that `beginDrag` then refuses. */
+.conn-dialog .row:hover .grip:not(:disabled),
+.conn-dialog .grip:focus-visible:not(:disabled) {
+  opacity: 1;
+}
+.conn-dialog .grip:disabled {
+  cursor: default;
+  opacity: 0;
+}
+.conn-dialog .grip:not(:disabled):active {
+  cursor: grabbing;
+}
+.conn-dialog .row.dragging {
+  background: var(--accent-weak);
+}
+.conn-dialog .row.dragging .grip {
+  opacity: 1;
+}
+/* An inset line rather than a gap opened between rows: opening a gap would
+   move every row below it, and the drop position is read from where the rows
+   are. */
+.conn-dialog .row.drop-before {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+.conn-dialog .row.drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+/* `flex: 1` is what keeps the names on one left edge. Without it the row's
+   three children are laid out `space-between`, and the leftover width falls
+   either side of the middle child — so every name sits at a different
+   indent, decided by how long it happens to be. */
 .conn-dialog .row-main {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+}
+/* The name and its identity mark share one line so the mark reads as part of
+   the name rather than as another line of metadata. `min-width: 0` is what
+   lets the name keep ellipsing while the mark holds its width — without it
+   the mark is the part that gets squeezed off, which is backwards. */
+.conn-dialog .row-name-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   min-width: 0;
 }
 .conn-dialog .row-name {
@@ -222,6 +319,35 @@
 .conn-dialog .field textarea.bad {
   border-color: var(--danger);
 }
+/* The identity mark's two halves and its preview on one line (ADR-0126).
+   Wraps rather than shrinking, because a tag input narrower than the tag it
+   accepts hides the end of what was typed. */
+.conn-dialog .mark-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.conn-dialog .mark-row .field:first-child {
+  flex: 0 0 auto;
+  min-width: 9rem;
+}
+.conn-dialog .mark-row .field:nth-child(2) {
+  flex: 1 1 8rem;
+}
+/* `--mark` is set inline only while a colour is chosen, so both fallbacks
+   are the uncoloured state — no separate rule for "no colour". */
+.conn-dialog .field select.mark-color {
+  border-color: var(--mark, var(--border));
+  box-shadow: inset 3px 0 0 var(--mark, transparent);
+}
+/* Sits on the controls' baseline, not the labels' — the padding is the
+   height of the label line above each input. */
+.conn-dialog .mark-preview {
+  flex: none;
+  padding-bottom: 8px;
+}
+
 /* JSON, so monospace — a stray character in a pasted key is only findable
    when the columns line up. */
 .conn-dialog .field textarea {

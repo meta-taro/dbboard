@@ -1,20 +1,119 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { workspace } from '$lib/state/workspace.svelte';
   import { searchSchema, type SchemaMatch, type TableInfo } from '$lib/api';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import ConnectionManager from './ConnectionManager.svelte';
+  import ConnectionMark from './ConnectionMark.svelte';
+  import MarkPicker from './MarkPicker.svelte';
   import { tableMenuActions } from '$lib/sidebar/menu';
   import { connectionTooltip } from '$lib/connections/label';
+  import { markFor, isConnectionColor, colorVar } from '$lib/connections/marks';
+  import {
+    resolveConnectionsHeight,
+    clampConnectionsHeight,
+    loadConnectionsHeight,
+    saveConnectionsHeight,
+    resetConnectionsHeight,
+  } from '$lib/layout/panel-split';
 
   let query = $state('');
+  // The horizontal split inside the sidebar (ADR-0131). null means the divider
+  // has never been dragged, so the connection list keeps sizing itself to the
+  // number of connections; a number is the height the user asked for.
+  let chosenHeight = $state<number | null>(null);
+  let sidebarHeight = $state(Number.POSITIVE_INFINITY);
+  let splitting = $state(false);
+  let sidebarEl = $state<HTMLElement | null>(null);
+  let listEl = $state<HTMLElement | null>(null);
   let managerOpen = $state(false);
   let menu = $state<{ x: number; y: number; table: TableInfo } | null>(null);
+  // The mark picker, opened on a connection row rather than a table row.
+  let markMenu = $state<{ x: number; y: number; id: string; name: string } | null>(
+    null,
+  );
   // null = not searching (show the full table list); an array = search results.
   let matches = $state<SchemaMatch[] | null>(null);
   let searching = $state(false);
   let searchError = $state('');
   let seq = 0;
+
+  const connectionsHeight = $derived(
+    resolveConnectionsHeight(
+      chosenHeight,
+      workspace.connections.length,
+      sidebarHeight,
+    ),
+  );
+
+  /** How far one arrow-key press moves the divider. */
+  const NUDGE = 16;
+
+  onMount(() => {
+    chosenHeight = loadConnectionsHeight();
+    if (!sidebarEl) return;
+    // The ceiling is a share of the sidebar's own height, so it has to be
+    // remeasured whenever the window changes shape, not just at startup.
+    sidebarHeight = sidebarEl.getBoundingClientRect().height;
+    const ro = new ResizeObserver(([entry]) => {
+      sidebarHeight = entry.contentRect.height;
+    });
+    ro.observe(sidebarEl);
+    return () => ro.disconnect();
+  });
+
+  /** The height the list would have if the divider were dropped here. Measured
+   *  from the list's own top, not the sidebar's, so the section heading above
+   *  it does not have to be subtracted by hand. */
+  function heightAt(clientY: number): number {
+    const top = listEl?.getBoundingClientRect().top ?? 0;
+    return clampConnectionsHeight(clientY - top, sidebarHeight);
+  }
+
+  function startSplit(e: PointerEvent) {
+    if (e.button !== 0) return;
+    splitting = true;
+    // Capture keeps the drag alive when the pointer outruns the handle, which
+    // it always does.
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+
+  function onSplit(e: PointerEvent) {
+    if (!splitting) return;
+    chosenHeight = heightAt(e.clientY);
+  }
+
+  function endSplit(e: PointerEvent) {
+    if (!splitting) return;
+    splitting = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    if (chosenHeight !== null) saveConnectionsHeight(chosenHeight);
+  }
+
+  /** Double-click hands the pane back to the connection count, rather than to
+   *  a fixed number: with three connections and with thirty, "the right size"
+   *  is not the same height (ADR-0131). */
+  function resetSplit() {
+    resetConnectionsHeight();
+    chosenHeight = null;
+  }
+
+  function onSplitKeydown(e: KeyboardEvent) {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      chosenHeight = clampConnectionsHeight(
+        connectionsHeight + (e.key === 'ArrowUp' ? -NUDGE : NUDGE),
+        sidebarHeight,
+      );
+      saveConnectionsHeight(chosenHeight);
+    } else if (e.key === 'Home') {
+      resetSplit();
+    } else {
+      return;
+    }
+    e.preventDefault();
+  }
 
   async function selectConnection(id: string) {
     if (id === workspace.connectionId) return;
@@ -57,6 +156,33 @@
       !!workspace.selectedTable &&
       workspace.key(workspace.selectedTable) === workspace.key(t)
     );
+  }
+
+  function openMarkPicker(e: MouseEvent, id: string, name: string) {
+    e.preventDefault();
+    markMenu = { x: e.clientX, y: e.clientY, id, name };
+  }
+
+  /** The colour currently stored for `id`, or null. Read raw rather than
+   *  through `markFor`, which substitutes the colour name for a missing tag —
+   *  useful for rendering, wrong for a picker that has to show what is set. */
+  function markColor(id: string) {
+    const c = workspace.marks[id]?.color ?? '';
+    return isConnectionColor(c) ? c : null;
+  }
+
+  function markTag(id: string): string {
+    return workspace.marks[id]?.tag ?? '';
+  }
+
+  // Lets the failure through rather than swallowing it: the operator just
+  // clicked a colour, so a mark that did not stick has to say so.
+  async function applyMark(id: string, color: string, tag: string) {
+    try {
+      await workspace.setMark(id, color, tag);
+    } catch (e) {
+      workspace.error = String(e);
+    }
   }
 
   function openMenu(e: MouseEvent, table: TableInfo) {
@@ -112,7 +238,7 @@
   </svg>
 {/snippet}
 
-<aside class="sidebar">
+<aside class="sidebar" bind:this={sidebarEl}>
   <div class="section">
     <div class="section-head">
       <div class="eyebrow">{i18n.t('connections-window-title')}</div>
@@ -120,26 +246,77 @@
         {i18n.t('conn-manage')}
       </button>
     </div>
-    <nav class="nav-list" aria-label={i18n.t('connections-window-title')}>
+    <nav
+      class="nav-list"
+      bind:this={listEl}
+      style="height: {connectionsHeight}px"
+      aria-label={i18n.t('connections-window-title')}
+    >
       {#if workspace.connections.length === 0}
         <p class="hint">{i18n.t('sidebar-connections-empty')}</p>
       {:else}
         {#each workspace.connections as c (c.id)}
+          {@const mark = markFor(workspace.marks, c.id)}
           <button
             type="button"
             class="nav-row conn"
             class:active={workspace.connectionId === c.id}
             onclick={() => selectConnection(c.id)}
+            oncontextmenu={(e) => openMarkPicker(e, c.id, c.name)}
             title={connectionTooltip(c)}
           >
+            <!-- The colour rides at the head of the row, not beside the name:
+                 down a list of connections the left edge is the one column
+                 the eye can scan without reading (ADR-0130). The bar is
+                 rendered even when unmarked, transparent, so marking a row
+                 does not shift its name sideways. -->
+            <span
+              class="mark-bar"
+              class:on={!!markColor(c.id)}
+              style={markColor(c.id)
+                ? `--mark: ${colorVar(markColor(c.id)!)}`
+                : undefined}
+              aria-hidden="true"
+            ></span>
             {@render dbIcon()}
             <span class="nav-name">{c.name}</span>
-            <span class="nav-meta">{c.kind}</span>
+            <!-- The mark takes the kind's place rather than sitting beside
+                 it: the row is one line wide, and "which server is this" is
+                 the question being answered here. The kind is still in the
+                 tooltip. -->
+            {#if mark}
+              <!-- The head of the row is the swatch now. -->
+              <ConnectionMark {mark} dot={false} />
+            {:else}
+              <span class="nav-meta">{c.kind}</span>
+            {/if}
           </button>
         {/each}
       {/if}
     </nav>
   </div>
+
+  <!-- The same ARIA-sanctioned separator as the window splitter (ADR-0083),
+       turned on its side: role=separator takes aria-valuenow and arrow keys,
+       and the linter only knows the static, non-interactive kind. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="split"
+    class:dragging={splitting}
+    role="separator"
+    aria-orientation="horizontal"
+    aria-label={i18n.t('sidebar-split-resize')}
+    aria-valuenow={connectionsHeight}
+    title={i18n.t('sidebar-split-resize')}
+    tabindex="0"
+    onpointerdown={startSplit}
+    onpointermove={onSplit}
+    onpointerup={endSplit}
+    onpointercancel={endSplit}
+    ondblclick={resetSplit}
+    onkeydown={onSplitKeydown}
+  ></div>
 
   <div class="section tables">
     <div class="search">
@@ -239,6 +416,18 @@
   />
 {/if}
 
+{#if markMenu}
+  <MarkPicker
+    x={markMenu.x}
+    y={markMenu.y}
+    name={markMenu.name}
+    color={markColor(markMenu.id)}
+    tag={markTag(markMenu.id)}
+    onApply={(color, tag) => applyMark(markMenu!.id, color, tag)}
+    onClose={() => (markMenu = null)}
+  />
+{/if}
+
 {#if managerOpen}
   <ConnectionManager onClose={() => (managerOpen = false)} />
 {/if}
@@ -258,9 +447,9 @@
 
   .section {
     padding: var(--space-3);
-  }
-  .section + .section {
-    border-top: 1px solid var(--border);
+    /* The connections keep the height the divider gave them; the tables below
+       take whatever is left (ADR-0131). */
+    flex: none;
   }
   .tables {
     flex: 1;
@@ -324,11 +513,47 @@
     margin-bottom: var(--space-3);
   }
 
+  /* Height comes from the divider, inline (ADR-0131) — a long connection list
+     scrolls here rather than pushing the tables off the bottom of the window,
+     which is what it used to do. */
   .nav-list {
     display: flex;
     flex-direction: column;
     gap: 1px;
     margin-top: var(--space-2);
+    overflow-y: auto;
+  }
+
+  /* The horizontal twin of the window splitter (ADR-0083): 7px of grab area
+     straddling the section boundary, drawn as a hairline. */
+  .split {
+    position: relative;
+    flex: none;
+    height: 7px;
+    /* Negative margins keep the two lists as close together as the plain
+       border used to, while the strip itself stays thick enough to hit. */
+    margin: -3px 0;
+    z-index: 3;
+    cursor: row-resize;
+    background: transparent;
+    touch-action: none;
+  }
+  /* The line the sections used to share as a border. Drawn on a child layer so
+     the grab area around it can stay invisible. */
+  .split::after {
+    content: '';
+    position: absolute;
+    inset: 3px 0;
+    background: var(--border);
+  }
+  .split:hover::after,
+  .split:focus-visible::after,
+  .split.dragging::after {
+    inset: 2px 0;
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .split:focus-visible {
+    outline: none;
   }
 
   .heading {
@@ -381,6 +606,23 @@
     background: var(--accent-weak);
     color: var(--text-accent);
     box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  /* The identity colour, at the head of the row (ADR-0130).
+     Always occupies its 3px, coloured or not: a bar that appears only on
+     marked rows would indent their names relative to the rest and make the
+     list look ragged. The row's own selected-state bar sits further left, at
+     the very edge, as an inset shadow — this one starts inside the padding so
+     the two never overlap. */
+  .mark-bar {
+    flex: none;
+    width: 3px;
+    height: 15px;
+    border-radius: 2px;
+    background: transparent;
+  }
+  .mark-bar.on {
+    background: var(--mark);
   }
 
   .icon {

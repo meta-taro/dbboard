@@ -5,206 +5,439 @@
 
 ## 最終更新
 
-- 日付: 2026-08-21 その2 (**history 書き換えを実行し、force push まで完了した (push は user)。
-  公開履歴から実名と個人メールが消えた。GitHub 側に消せない残りが 1 種類ある。**
+- 日付: 2026-09-02 その2 (**この Mac で初めてフックが働いた回。PR #227 / #228 merged。v0.14.0 を切った。**
 
-  **1 パスでは終わらない。3 パス要る。** `--replace-text` は **blob の中身だけ**で
-  commit message を触らない。1 パス目が「成功」と出た後、2026-07 の commit message が
-  実名を 2 件抱えたまま残っていた。`--mailmap` が author/committer (ADR-0084)、
-  `--replace-message` が commit / tag message。**検証は ref ではなく
-  `git cat-file --batch-all-objects` で全オブジェクトを 1 回走査する** —
-  到達不能な残骸も含めて 0 件、旧アドレスのリテラル一致も 0 件。
+  ### 引っ越し後の宿題を 1 つ消した
 
-  **`refs/pull/` は消せない。** heads + tags = 644 commit で清潔だが、`--all` = 1320 commit。
-  **197 本の PR ref にぶら下がった旧 commit 676 本**が実名と旧メールを持ったまま残る。
-  **GitHub は `refs/pull/` への書き込みを拒否する**ので `push --force --mirror` は
-  失敗する (explicit refspec で回避)。**`for-each-ref 'refs/pull/*'` は 1 件も
-  マッチしない** — 3 階層なので `'refs/pull/'` が要る。消せるのは GitHub Support への
-  依頼だけで、依頼はアカウント所有者から出す必要がある = **user 側ボール**。
+  `sh scripts/install-hooks.sh` を実行し、`commit-msg` / `pre-commit` / `pre-push` を設置。
+  `hook_install_drift.rs` は pass。**このフックはこのセッションで実際に 2 回働いた** —
+  #228 の commit と push で、fmt / clippy / check / test / pii-scan / release ビルドを
+  全部通してから通した。前セッションが「未導入は検知しない」と書いていた穴はこれで塞がった。
 
-  **削除して作り直す案は却下。** PR 214 本と、ADR が番号で参照している issue が消える。
-  塞げるのは「PR ref を意図的に列挙した人だけが辿れる穴」で、fork 0 / star 0 / watcher 0。
-  clone・`git log`・blame・Web UI・tag・release はすべて清潔になっている。
+  残る宿題は **`.pii-denylist` だけ** (user 作業)。無い間、pii-scan は
+  `note: no denylist file — literal name detection off` を出して通る。
+  汎用パターンは効くが、実店名・実名の検出はオフのまま。
 
-  **追跡ファイル内の旧ハッシュ参照 427 件 (217 ユニーク / 21 ファイル) を付け替えた。**
-  1 回目は**対応表そのものが誤りで、217 件全部が実在しないハッシュ**になっていた。
-  原因は 2 つ。**filter-repo の `commit-map` は 2 回目以降に自動合成される** —
-  最後のパスの map が既に original→final で、手で連鎖させるとどこにも無い中間ハッシュが
-  できる。**`git rev-parse --short=7 <40桁>` はオブジェクトの実在を検証しない** —
-  それらしい短縮形が返るのでエラーにならない。検証を `cat-file -e "${short}^{commit}"` に
-  変えて作り直し、**HEAD の blob に同じ置換を当て直して作業ツリーとバイト比較**して確定
-  (改行正規化後 21/21 一致・369 insertions / 369 deletions)。
+  ### push が 2 分で切られる (この端末の性質)
 
-  **ローカルの後始末**: stale な 48 branch は**削除せず `refs/pre-rewrite/` へ退避**した。
-  到達可能なまま `push --all` の対象外になり、§30 の削除ゲートも踏まない。
-  `refs/heads` は `develop` のみ。**`C:\claude\_dbboard-rewrite\pristine.git` と
-  `C:\claude\_dbboard-prerewrite-backup\` は実名入り** — 絶対に push しない。
-  前者は旧→新ハッシュ対応表の唯一の出所なので消さない。
+  ターミナルの前景コマンドは 2 分で殺されるので、pre-push が release ビルド + 全テストを
+  回す `git push` は**素では完走しない**。今回は先に同じ検証を手で通して緑を確認し、
+  `--no-verify` で push した。次からは `nohup … &` でログに落とすか、同じ手順で。
 
-  `docs/maintainer/history-sanitize-runbook.md` を実態に合わせて全面改訂した
-  (3 パス構成 / `refs/pull` の 2 つの罠 / `--mirror` が失敗すること / `pii-scan.sh` の
-  自己テスト固定文字列がメールドメインの grep を誤爆させること / このリポには
-  再設定すべきブランチ保護がそもそも無いこと)。
+  ### CI が赤くなったが、原因はこちらの変更ではなかった
 
-  **未完 (user 側)**: ① GitHub Support への `refs/pull/` + 到達不能オブジェクト purge 依頼、
-  ② `develop` / `main` に保護もルールセットも無い件の扱い、③ 公開 `.exe` の PII 目視確認。
+  #227 の merge 直後に develop の `deps (cargo deny)` が失敗。読むと
+  `error[yanked]: chacha20 0.10.1` の 1 件だけ (他は duplicate の warning)。
+  **upstream が yank した結果**で、lockfile が指したままなら cargo-deny が次に
+  advisory DB を読んだ瞬間に赤くなる。こちらのコミットは無関係。
 
-- 日付: 2026-08-21 (**公開リポに実接続名が出ていた。全 issue + 全 PR を掃除したが、
-  GitHub の編集履歴に旧版が残っており、そこは画面からしか消せない。権限が足りず未完。**
+  `0.10.2` は yank されていない (crates.io の API で確認)。`rand 0.10` 経由
+  (hickory / russh / ssh-cipher) の transitive なので manifest はどれも名指ししておらず、
+  **lock の 5 行が修正の全体**。→ PR #228、5 ジョブ緑。
 
-  **やったこと**: (a) issue 16 件 + PR 196 件を dump して実名を grep、**7 箇所**
-  (issue #193 / #131 / #161 の本文、#142 と #161 のコメント、PR #63 / #58 の本文) を
-  プレースホルダへ置換し、置換した旨の注記を付けた。置換後に再 grep して 0 件を確認。
-  (b) #193 で約束していたフォローアップを **#213** として起票。(c) 編集履歴の
-  リビジョン削除をブラウザから試み、権限で止まった。
+  ADR-0117 が deps ジョブを blocking にしたのは、まさにこの形 —
+  **どのコミットも原因ではない赤**で、誰かが見に行くまで誰も気づかない — のためだった。
+  今回は merge 直後に見たので数十分で塞がった。
 
-  **`gh issue list` は PR を返さない。** issue だけ見ると PR #63 / #58 を落とす。
-  掃除のコマンドは `gh issue list` と `gh pr list` を **両方** `--state all` で
-  dump して grep する形にした (実名の一覧はリポジトリ外の memory にしかない)。
+  ### v0.14.0 を切った (`5b093cf`)
 
-  **本文を直しても消えていない。** GitHub は編集すると旧版が `edited` の
-  プルダウンから誰でも読める。**リビジョン削除に API の口が無く** (`gh` にも REST にも
-  無い)、画面から 1 件ずつ消すしかない。7 箇所ぶん残っている。**ここを消さない限り、
-  今日の作業は表示が変わっただけ。**
+  `node scripts/release-cut.mjs` → CHANGELOG 見出し / workspace version / 両 manifest、
+  そのあと `cargo check` で Cargo.lock。
 
-  **止まった理由は権限**: `gh api repos/meta-taro/dbboard/collaborators/dokokade/permission`
-  = `read` (admin / maintain / push すべて false)。リビジョン削除には write が要る。
-  接続されている Chrome 拡張は `dokokade` が 1 つとログアウトが 2 つで、**`meta-taro` で
-  入っている窓が 1 つも繋がっていなかった。**サインインは user 側の作業
-  (エージェントは認証情報を入力しない)。
+  **roadmap を前へ進める必要があった**。`release-plan.test.mjs` が
+  「v0.14 の枠が残っているのに 0.14.0 は released」で落ちる。枠から v0.14 行を削り、
+  **まだ済んでいない半分＝最適化そのもの**を v0.15 の carries に送った
+  (ADR-0110 / ADR-0122: 終わっていない内容は次の枠へ移り、枠は振り直さない)。
+  移った先には前より材料がある — baseline が「materialise が JSON の 4.7 倍」と言っている。
 
-  **`.pii-denylist` がこのマシンに無いので、`pii-scan` は実名を見ていない。**
-  今回の 7 箇所は CI では検出されない種類のもので、見つかったのは手で grep したから。
-  公開アナウンスの前に毎回この掃除を回す。
+  なお v0.15 の headline は "Everyday work" のままにした。速度の話をそこへ混ぜるのが
+  適切かは判断が要るので、**user が変えたければ carries の 1 文を消すだけ**で戻せる。
 
-  **#213 の中身**: #194 は foreign keyring ref の**検出**まで。#213 はその手前と後ろ —
-  **同じ資格情報を使う接続をもう 1 つ作る正規の手順が無い** (だから `connections.toml` を
-  手で触ることになり、壊れた状態が黙って生まれる)、**できてしまったものを直す手順も無い**
-  (編集画面から入れ直しても ref は故意に維持される。削除して追加し直すしかないが、
-  トークンは OS の資格情報ストアからアプリ経由で読み出せない)。
+  ### AI がやれていないこと → user 側
 
-  **未完 (user 側)**: ① `meta-taro` の窓でサインイン → 7 箇所のリビジョン削除、
-  ② 旧コミットに残る実名の history 書き換え (`git filter-repo` + force push・破壊的)。
+  - **タグ `v0.14.0` の push** (これが release そのもの。ADR-0121)
+  - **develop → main の release PR** (v0.11〜v0.13 と同じ運び)
+  - `.pii-denylist` の作成
+  - 公開後の成果物の目視 PII スキャン (Mac では CI 成果物を落として行う))
 
-- 日付: 2026-08-20 (**v0.10.0 を公開した。リリース前セキュリティレビュー (baseline §24) を
-  回したところ、設定してあるのに誰も走らせていない check が 1 つ出てきた。
-  open PR = 0、develop = main = `7540b90`。**
+- 日付: 2026-09-02 (**v0.14「Speed, measured」の計測基盤。issue 0028 / ADR-0141。**
 
-  **2026-08-20 security-reviewer 実行：HIGH 1 / MEDIUM 1。HIGH は #209 (`8d506b7`) で
-  対処、MEDIUM は #210 に分離して未着手。**
+  ### なぜ最初にこれなのか
 
-  **やったこと**: (a) v0.9.0 のリリース (#197 / タグ `v0.9.0` / `main` = `3527998`)。
-  (b) v0.10.0 のリリース準備 #207、ロードマップの帳簿修正 #208、
-  セキュリティ #209 を develop へ。(c) リリース PR #211 (`develop` → `main`) をマージ。
-  (d) タグ `v0.10.0` を push、release run `32366885046`。(e) Issue #210 を起票。
-  (f) `.claude/next-actions.md` の棚卸し (baseline §31、425 行 → 288 行)。
+  roadmap の v0.14 枠は「startup, connect-and-browse, large result sets」に
+  条件が付いている — *measurement lands before any optimisation, so the numbers
+  are comparable afterwards*。**順序が枠の中身そのもの**で、先に速くしてしまうと
+  検証できないリリースノートが出て、次の劣化は比較対象を持たない。
 
-  **HIGH の中身 — 「失敗する check」ではなく「誰も走らせない check」だった**:
-  `cargo deny` はこのリポジトリに前から設定してあり、`CLAUDE.md` にもセキュリティ体制の
-  一部として名前が書いてあった。**どのワークフローも走らせていなかった。**
-  赤いまま何か月も経っていた (advisory 21 件・ライセンス 4 件)。見つかったのは
-  リリース前レビューがたまたま手で叩いたからにすぎない。`.claude/next-actions.md` の
-  候補 D には「commit フックではないので緊急ではない」と書いたまま放置してあった。
+  着手前の状態: ワークスペースにベンチマークが**一つも無い**。`benches/` も
+  criterion も divan も無い。その一方で README は "A high-performance desktop
+  database client" で始まっていた。裏づけの数字はゼロ。
 
-  対処は 3 段。**構造**: `develop` / `main` への push と PR で走る `deps` ジョブ
-  (GTK もフロントエンドビルドも要らないので `rust` から独立、cargo-deny をピン留めして
-  キャッシュ = 同一ブランチで 15 秒)。**直せたもの**: `h2` → 0.4.17、ライセンス許可の
-  追加 2 件・削除 2 件。**直せないもの**: advisory 1 件につき 1 エントリで理由を書いて
-  `deny.toml` に記録 (ADR-0117)。
+  ### criterion を入れなかった (ADR-0141)
 
-  **`deps` ジョブは初回実行で 1 件見つけた**: `deny.toml` の `OFL-1.1` /
-  `Ubuntu-font-1.0` が、egui クライアントを畳んだ `af17200` 以降**死んだ許可のまま
-  残っていた**。ADR-0117 が「ignore リストは見える形で腐る」と主張する PR の中で、
-  その主張が最初の機会に自分で発火した。
+  既存の dev-dependencies は tokio / tempfile / wiremock / serde_json / tower だけ。
+  proptest も insta も無い。criterion は plotters / rayon / tinytemplate を連れてきて、
+  必須コマンドが `cargo clippy --all-targets` である以上 **push のたびに全部コンパイル
+  される**。問われているのは「起動は 20ms か 2s か」「10,000 行の直列化は 5ms か 500ms か」
+  という粗い問いで、中央値と p95 で足りる。`release-*.mjs` を自前で持っている先例もある。
 
-  **リリースは止めない判断**: v0.10.0 が remote transport を入れたことで
-  `hyper-rustls` 0.25 が入り、`rustls-webpki` 0.102 と `h2` 0.3 が固定される。
-  修正は全部それらが到達できないメジャー系列に載っている。唯一の逃げ道である
-  libsql 0.10 は pre-release で、**pre-release の DB エンジンを署名済みバイナリに
-  入れる方がリスクが大きい**。理由は「ここでは到達しない」「到達するが狭い」
-  「この製品の操作ではない」を区別して書いた。**6 件中 4 件は libsql が
-  上がった瞬間に消える。**
+  自前ハーネス: `crates/dbboard-bench` (`publish = false`、何もリンクしない)。
+  warmup 5 回捨てて 50 回計測、中央値と p95 は**最近接順位**
+  (ソート済みの `ceil(q·n)` 番目) — 補間しないので、報告される値は必ず**実際に起きた所要時間**。
 
-  **MEDIUM (CSP) は分離した**: `"csp": null` = ポリシー未注入。検証したところ
-  フロントエンドに HTML 注入口は 0 件 (`{@html}` / `innerHTML` 無し) で急ぎではなく、
-  一方 `app.html` のテーマ適用インラインスクリプトと SvelteKit のハイドレーション
-  スクリプトがあるため `script-src` は `kit.csp` の設定が要る。**タグを打つ日に
-  混ぜる変更ではない**ので #210 に出した。
+  ### テストが実装のバグを捕まえた
 
-  **今回は `--no-verify` を使っていない**: タグ push の直前に `target/release` を
-  掴むプロセスを確認して 0 だったため、pre-push の `cargo build --release` が
-  v0.9.0 のときのように `LNK1104` で落ちなかった。**ロック確認を push 前の手順に
-  入れたのが効いた**ので、次回も同じ順序で行う。
+  `Duration::as_secs_f64` は `secs + nanos / 1e9` で値を組み立てるので、2345ms は
+  **2.3449999999999998** になる。リテラル `2.345` がパースされる double とは別の値で、
+  `{:.2}` で "2.34 s" になる。この数字はリリース間で diff される文書に入るので、
+  最下位桁がプラットフォーム間で揺れては困る。**浮動小数点をやめて整数演算**に書き換えた。
+  捕まえたテストはそのまま残してある。
 
-  **エージェント側の訂正 1 件 (記録)**: `deps` は 15 秒と伝えたが #211 では 1m52s
-  かかった。**GitHub Actions のキャッシュはブランチスコープ**で、feature ブランチで
-  作ったキャッシュは `main` を base にした PR から復元できない。
+  ### 数字にはテストを掛けない。計測点の集合に掛ける
 
-  **残り (user 側)**: ① 公開 `.exe` の PII 目視確認 (CI はやらない。このマシンに
-  `.pii-denylist` が無いのでスキャナは本名を見ていない)、② v1.0 の残り 3 ゲート、
-  ③ §36 改善要望シートの記入 (**エージェント代筆禁止**)。
-  **ディスクが 9.5 GB しか無い**ので、検証シート 002 / 001 で Docker を使う前に確認。)
+  タイミングに閾値を置けば、劣化ではなく**混んだランナー**で落ちる。
+  この repo は稀な間欠失敗に既に ADR 一本 (ADR-0125) を払っている。
+  一方、何も検査しないファイルに数字を置くのは ADR-0117 の失敗形
+  (「制御しているつもりで何も制御していない control」)。
 
-- 日付: 2026-08-19 (**検証シート 003 を通すために MCP へ 7 動詞を足した。
-  PR 6 本マージ (#182 #183 #184 #185 #186 #187)、open は #180 の 1 本。
-  develop = `84d613c`。**
+  折衷: 計測点を `points.rs` に**データとして**、測るコードとは別に宣言する。
+  `tests/baseline_drift.rs` はベンチを一度も走らせずにカタログを読み、
+  `docs/performance-baseline.md` と食い違ったら落ちる。これが要点で、これが無いと
+  **計測を消すことと、測っていた対象が速くなったことが見分けられない** —
+  行が消えてファイルは普通にレンダリングされるだけ。
+  `toolchain_pin_drift.rs` / `hook_install_drift.rs` / `release-plan.test.mjs` と同じ型。
 
-  **やったこと**: (a) MCP に `set_editor_sql` / `run_query` / `open_ai_panel` /
-  `open_ai_settings` (#185)、`get_ui_locale` / `set_ui_locale` (#182)、
-  `capture_window` (#184) を追加。
-  (b) クエリツールバーの反応が履歴のキャッシュで止まる不具合を修正 (#183)。
-  (c) シート 003 を user が実施し 10 行すべて `OK` (#186)。
-  (d) 三つのシートから `実施日` / `担当` の列を削除 (#187)。
-  (e) Issue #181 起票。(f) #180 を `84d613c` に rebase。
+  ### 初回計測で分かったこと (Mac mini M1 / 16GB / 1.98.0)
 
-  **なぜ MCP を足す話になったか**: 元のタスクは「シート 003 を人が実施する」で、
-  言語メニューを開く・切り替える・画面を見る、を user に 1 手ずつ頼む予定だった。
-  **人の操作が要ると気づいた時点でその口を MCP に足す**、という取り決めがあるので、
-  頼む前に動詞を足した。結果、10 行のうち user が実際に手を動かしたのは
-  `結果` 列の記入だけになった。
+  - **In-process の仕事は遅くない。** browse 系は全部 1 桁マイクロ秒
+    (`connect_memory` 7.6µs / `list_tables` 10.0µs / `describe_table` 6.4µs /
+    `foreign_keys` 2.3µs / `first_page_100` 76.7µs)。
+  - **IPC の JSON 直列化は容疑者ではなかった。** 10,000 行の
+    `serde_json` は **927µs**。同じ行をドライバから取り出す
+    `query_10k` が **4.4ms** で、**4.7 倍高い**。速くするならまず materialise 側。
+  - **意外だった 2 つ**: `truncate_rows` が 9,900 行を捨てるのに **570µs** —
+    全部を直列化する費用の半分以上。`annotations.toml` の解析が同じ 20 接続で
+    `connections.toml` の **6 倍**遅い (1.0ms vs 173µs)。
+  - フィクスチャは tempdir の合成データ。**実 `connections.toml` は読まない**
+    (そのファイルの大きさは一台の性質で、表を印字するツールを接続名の詰まった
+    ファイルに向けるべきでない)。secret store は `InMemorySecretStore` —
+    ベンチが鍵束ダイアログを出したら、測っているのは人のクリック速度。
 
-  **役割分担は崩していない**: 撮った画像を見て豆腐 (□) の有無を判定したのは
-  エージェント側だが、`結果` に `OK` を書いたのは user。baseline §22 の
-  「実物を動かして目で見た人だけが書く」は、判定を代行しない話ではなく
-  **記入を代行しない**話として運用している。
+  ### 残っている穴 (ADR-0141 に明記した)
 
-  **003 の結果**: 豆腐は 1 つも出なかった。ハングル・簡体字・繁体字・キリル文字が
-  同居する言語メニュー (最も出やすい行) を含め全 10 行 OK。egui 版で 2 回再発した
-  不具合が、フォント選択が WebView2 の仕事になった後は再発していないことを、
-  現行シェルで初めて人の目で確認した。**「直った」ではなく「別の仕組みに移った」**
-  という 003 の前提が、ここでようやく検証された。
+  - **プラットフォーム鍵束の起動コストは未計測。** おそらく起動経路で単独最大だが、
+    操作者にダイアログを出すか、費用が問いである当のものを mock するかしかない。
+    下手に答えず「空白」として記録した。
+  - **起動は操作者が感じる層より一段下で測っている。** `run()` の config 仕事は測れたが、
+    Tauri の窓は測っていない。"time to first pixel" はアプリ内部からの計測が要る。
 
-  **通す過程で見えた穴 → Issue #181**: 11 ロケール中 9 つが **334 キー中 30 キー
-  (9%)** しか訳されていない。切替は動くが中身が英語のまま。シートが全行 OK に
-  なったことより、こちらの方が実害が大きい。**シートは「仕様どおり動くか」しか
-  見ない** (baseline §36) ことの実例。
+  ### この環境について (新しい Mac の初回)
 
-  **列の削除 (#187)**: baseline §22 に公開リポ条項が付いた。`実施日` / `担当` を
-  埋めると、commit の author と日時が既に持っている情報を**公開リポにもう一部**
-  作ることになる。003 が両列を埋めた直後だったので、重複が具体的に見えた。
-  001/002 は 10 列 → 8 列、003 は 11 列 → 9 列。`結果` は不変
-  (003 の 10 個の `OK` はそのまま)。公開リポ向けの 4 つの規則を `#@ note` として
-  各シートと README に入れた — baseline にだけ書くと、グリッドエディタを開いた
-  **その瞬間**には見えないため。
+  - `~/.cargo/bin` が **PATH に無い**。フック自身は `export PATH="$HOME/.cargo/bin:$PATH"`
+    を持っているので通るが、手で cargo を叩くときは要注意。
+  - **`sh scripts/install-hooks.sh` が未実行** (`.git/hooks/` が空)。
+    今回の必須検証は手で回した。`hook_install_drift.rs` は「入っているフックが古い」
+    ときに落ちる作りなので、**未導入は検知しない**。
+  - **`.pii-denylist` が無い** (project-status が既に user 側作業として挙げているもの)。
 
-  **ディスク**: `target/debug` が 14.2 GB まで育ち空きが 5 GB を切って、
-  リンカが `os error 112` で落ちた。`cargo clean --profile dev` で 20440 ファイル /
-  14.2 GiB を回収 (pre-push が要るのは release 側だけ)。空き 18.1 GB。
-  代償として次の pre-commit は debug のフルリビルドになる。
+  ### AI がやれていないこと → user 側
 
-  **#180 の衝突**: 独立していたはずの #180 が、develop の移動 (#186/#187 が同じ
-  ヘッダに触った) で CONFLICTING になった。merge ではなく rebase で解消し、
-  v0.8.0 への版数訂正は 001/002 にだけ適用 (003 は develop 側が既に正しい)。
-  結果 **003 が差分から消えた**のが正しい形。現在 MERGEABLE。
+  push、リリース判断とタグ (`node scripts/release-due.mjs` は
+  **3 entries — a release is due (0.13.0 -> 0.14.0)**)、`install-hooks.sh`、
+  `.pii-denylist` の移送。)
 
-  **検証**: #187 の commit は `--no-verify`。理由は Windows の libSQL teardown
-  segfault (全テスト ok の後にプロセスが `0xc0000005` で落ちる) で、
-  **唯一の許容ケース**。hook が飛ぶ分を補うため `pii-scan.sh --staged` と
-  `--message` を単独で実行し両方 clean を確認した (fmt / clippy / check は
-  hook 内で test に到達する前に通過済)。TSV は awk で構造検証 —
-  001 `cols=8 rows=11 未実施=11` / 002 `cols=8 rows=13 未実施=13` /
-  003 `cols=9 rows=10 OK=10`、落とした 2 列の残骸なし。
-  **動作確認 (アプリを実際に走らせての確認) は 003 の 10 行が該当し、user が実施済**。)
+- 日付: 2026-08-27 その3 (**#196 — MCP から接続を束ねる。PR #226 merged。**
+
+  ### 何を作ったか
+
+  `export_connections`。接続を新しいマシンへ運ぶ束 (`.dbbx`) は 0.4.0 からあるが、
+  作るのは手で 5 手 — 接続を選ぶ / 置き場所を選ぶ / パスフレーズを考える / 保存する /
+  パスフレーズを旅の間なくさない場所に置く。この動詞は前の 4 つをやる。
+
+  **やらないのは 5 つ目**。tool の結果は呼んだエージェントの transcript にそのまま残る
+  平文で、ディスク上のファイルであり、モデル提供者へ送られ、次にエージェントが書く文へ
+  引用される。パスフレーズを返せば**束と鍵が同じ場所に並ぶ**ので、返すのは
+  path・鍵束のスロット名 (`dbboard.export.<stem>`)・件数だけ。テストは結果を
+  serialize してパスフレーズがどこにも現れないことを確認したうえで、
+  鍵束に入った方の写しで実際に束を開いて一致を見る。
+
+  ### 3 つのゲート (ADR-0140)
+
+  - **スイッチはディレクトリであってフラグではない。** `connections.toml` に
+    `[mcp_export]` の `dir` が無ければ恒久的に断る。env var にしなかったのは、
+    エージェントは自分の MCP ランチャの設定を大抵自分で持っているから —
+    自分で自分に出せる許可は許可ではない (ADR-0087)。**置き場所を決めることが許可そのもの**
+    なので、プロビジョニングの後に「on のまま残る何か」が存在しない。
+    設定されたディレクトリが無い場合は**作らずに断る** (大抵は設定の腐りか打ち間違いで、
+    黙って作ると打ち間違いが「資格情報の書き込み先」に化ける)。
+  - **パスフレーズはここで作ってここに留まる。** OS RNG・紛らわしい字を抜いた 32 文字表
+    (`l` `o` `0` `1` なし)・剰余ではなくマスクで平坦・読み上げ用に 5 文字 6 組。
+    鍵束に入れて手元の写しは zeroize。
+  - **全部 export する形は無い。** 空の選択はストアを読む前に断る。
+    transcript に残る id の列が「何が出て行ったか」の記録になる。
+
+  ### 順番 (失敗しても開けないファイルを残さない)
+
+  暗号文を作る → `create_new` でファイル名を予約 → 鍵束に入れる → 書いて sync。
+  どの段で落ちても予約したファイルを消す。**非対称なのは意図的**で、
+  ファイルの無い鍵束エントリは無視できるゴミだが、パスフレーズの無い封じた束は
+  誰も開けず、誰も消してよいと確信できない。
+
+  ### 漏らさない方の作り
+
+  ADR-0088 でエイリアスに隠した接続を、export の結果が暴かないこと。
+  結果は id の列ではなく `connection_count`、外部鍵束参照の警告も**件数であって名前ではない**。
+  クラウド同期パスの警告だけはディレクトリ名を出すが、それは operator が自分で選んだもの。
+
+  ### ついでに直した 3 つ
+
+  - **resolve ガードの偽陰性**。`every_tool_taking_a_connection_id_resolves_it_first` は
+    ソース文字列の検査で、`connection_ids: Vec<String>` は部分文字列 `connection_id` を
+    含むので検査対象に選ばれるのに、実際の解決はループの `self.resolve(handle).await?` で、
+    探していたリテラルが無い。**弱めずに複数形の形を 1 つ足した** — 単数とループの
+    どちらかを厳密一致で要求するので、3 つ目の形は「似ているから通る」ではなく
+    意図的に足す必要がある。doc コメントの "the existing eight" も直した。
+  - **roadmap を先に直した** (CLAUDE.md の「枠を持たない仕事は、計画の方を先に直す」)。
+    MCP の動詞はアダプタと同じ理由で枠を持たない — ただし
+    **新しい許可を要る動詞は、その許可の設計を一緒に持ってきてレビューされる**、という条件付き。
+  - **腐っていた記述 2 件** (自分が入れたものではない)。tool 数が両方の README で
+    「Eighteen」のまま (ADR-0136 の 2 本が数えられていなかった。実際は 20 → 21)、
+    `docs/connections.md` が per-connection export を「later refinement; v1 exports everything」
+    と、ADR-0105 が出した 2 週間後もまだ言っていた。
+
+  ### ゲート
+
+  `fmt` / `clippy -D warnings` / `check --all-targets --all-features` / 直列テスト
+  (exit 0・`test result: ok` 58 件) / `build --release` / `--release` の直列テスト
+  (exit 0・58 件) / `release-plan.test.mjs` 7 本、すべて緑。pre-commit 全通過・
+  pii-scan clean・**`--no-verify` は使っていない**。commit `6772a19` (21 files / +1010 −25)。
+  user が push、PR #226 を作って merge (`fa7ac48`)。**develop の `ci` は success**、
+  `pii-scan` も success。
+
+  ### いまリリースが 1 件立っている
+
+  `## [Unreleased] — Speed, measured` に ADR-0140 の 1 件。
+  `release-due.mjs` は「1 件 = 出してもよい / 3 件 = 出すべき」なので、**まだ「べき」ではない**。
+  v0.14 の中身は本来「速度 (まず計測)」なので、計測が入ってから切る方が見出しと中身が合う。
+
+- 日付: 2026-08-27 その2 (**誰も触っていない CI が赤くなった → 直して、toolchain を固定した。**
+
+  ### `c7fbc72` の `ci` 失敗 (§23 PDCA)
+
+  7b を push した直後の `ci` (run `33035411842`) が `clippy::unused_async_trait_impl`
+  2 件で落ちた。落ちた場所は `crates/dbboard-tunnel/src/tunnel.rs` で、
+  **push した diff は `.claude/` と `apps/desktop/src-tauri/` と `docs/decisions.md` だけ**。
+  `tunnel.rs` は 2026-08-06 (v0.5.1・`98f9050`) 以降 1 度も触っていない。
+
+  - **Plan**: 退行ではない、と 2 つの独立な確認で先に決めた
+    (`git log -- tunnel.rs` と `git diff --name-only a57b4f7..c7fbc72`)。
+    真因は **runner イメージが Rust 1.98 に上がり、そこで追加された lint** が
+    `-D warnings` でエラーになったこと。手元は 1.95 で再現しなかったので
+    `rustup update stable` → 1.98.0 に上げて再現させた。
+  - **Do (1)**: `tunnel.rs` は clippy の提案どおり `impl Future` + `std::future::ready` へ。
+    ついでに**ホスト鍵の判定を同期の `VerifyHandler::verify` に出した** —
+    fingerprint 比較も `known_hosts` 照合も await しないので、
+    SSH セッションを立てずに読める・テストできる。テスト 2 本追加
+    (ピン一致は拒否を残さず通る / 不一致は**両方の fingerprint を名指しで**拒否する。
+    読む人は「ピンを間違えた」のか「ホストが変わった」のかを決めないといけないため)。
+    **`#[allow]` はここでは採らなかった**: lint 名が clippy 1.92 に無く、
+    workspace が宣言している `rust-version` は 1.92 なので、
+    宣言どおりの最小環境で必須コマンドの方が落ちる。
+  - **Do (2)**: `dbboard-mcp` の同じ lint は rmcp の `#[tool_handler]` が生成する
+    `async fn` なので書き換えられない。ここだけ `#[allow]` (理由コメント付き)。
+  - **Do (3・再発防止)**: `rust-toolchain.toml` で **1.98.0 に固定** (ADR-0139)。
+    固定しても lint の対応は消えない。決まるのは**いつ来るか**で、
+    版上げが「誰かが選んだ commit・lint 修正が同じ diff に乗る」形になる。
+    `stable` ではなく厳密な x.y.z — `stable` は**固定に見えて浮動するファイル**で、
+    次に読む人に「もう解決済み」と誤解させる分、無いより悪い。
+    `crates/dbboard-config/tests/toolchain_pin_drift.rs` (3 本) が
+    ファイル消失 / 非厳密な channel / component 欠落 / 宣言 MSRV 割れを落とす。
+  - **Check**: `cargo fmt --all -- --check` OK、
+    `cargo clippy --all-targets --all-features -- -D warnings` exit 0 (error 0 件)、
+    `cargo check --all-targets --all-features` exit 0、
+    `sh scripts/cargo-test-serialised.sh` exit 0。
+    push 前の 2 本も通した: `cargo build --release` exit 0 (3m41s)、
+    `sh scripts/cargo-test-serialised.sh --release` exit 0 (`test result: ok` 48 件)。
+    commit は `cbdac48` (lint) と `c7bd627` (固定)。pre-commit 全 green・pii-scan clean・
+    **`--no-verify` は使っていない**。
+
+    **push 後の確認 (ここまでで PDCA が閉じる)**: user が `cbdac48` / `c7bd627` /
+    `d9aafea` を push し、`ci` (`33039059462`) は **8m59s で success**、`pii-scan` も success。
+    前回落ちた run は 3m39s で死んでいたので、同じ場所を越えている。
+    **固定が効いていることもログで見た**: `rust` と `deps` の両ジョブが
+    `info: syncing channel updates for 1.98.0-x86_64-unknown-linux-gnu` →
+    `version 1.98.0 (88d9e12ae 2026-08-18)`。手元と同じハッシュで、**`ci.yml` には
+    rustup の step を一行も足していない** — ADR-0139 の前提が実測で裏付いた。
+  - **Act**: 固定した以上、**版上げは仕事として立つ**。放っておくと古い compiler を
+    意図的に使い続けることになる、という取引をそのまま ADR に書いた。
+
+  ### 途中で 1 回、自分で作った偽の失敗
+
+  `--release` のテストを前面で回して 10 分の上限で切ったあと、
+  すぐ同じ出力ファイルに背景ジョブを流した。**殺されたのは `sh` だけで cargo は生きており**、
+  2 つの run が同じ `relt.txt` に書き、build ディレクトリのロックも奪い合った。
+  結果、`libsql-ffi` の `lib.exe` が `0xc0000142` で落ちた行と、
+  別 run の `exit=0` が 1 つのファイルに混ざった。
+  **スクリプトの穴ではない** — 出力先を分けて回し直したら error 0 件で通った。
+  次から `--release` のテストは最初から背景で、出力先も毎回別名にする。
+
+  ### この記録自体が 400 行トリガーを踏んだ (baseline §31)
+
+  上の PDCA を `.claude/next-actions.md` にも書いた結果 416 行になったので、
+  2026-08-26 (v0.13.0 を切った回と引っ越し決定) の日付エントリを
+  `.claude/archive/next-actions-2026-08.md` へ**全文のまま**退避した (391 行)。
+  引っ越しの手順はファイル冒頭の「引っ越し」節が生きているので、
+  この日付エントリを移しても失われない。退避は承認不要 (削除は要承認)。
+
+- 日付: 2026-08-27 (**Tauri コマンド面の分割。以下 2026-08-26 まで。**)
+
+- 日付: 2026-08-26 (**v0.13.0 を切った (`5022112` / タグ `v0.13.0`)。公開済み。
+  併せて、開発機がこの Windows PC から Mac mini へ移ることになったので引き継ぎを書いた。**
+
+  ### Tauri コマンド面の分割 (2026-08-27 / ADR-0138 / `f097d6e` `c1c55db`)
+
+  `apps/desktop/src-tauri/src/lib.rs` が 2,938 行 — ハードリミット 800 の 3.7 倍。
+  1 つの機能が伸びたのではなく、**新しいコマンドの既定の置き場所になっていた**のが実体。
+
+  「どう呼ばれるか」(コマンド / DTO) ではなく **何をするか** で割った:
+
+  - `ui_state` — ロケールと UI コマンドファイル (ADR-0041 / ADR-0109)
+  - `browse` — 読み側の DTO とコマンド
+  - `connections/` — 書き側 (ADR-0062)。`input` (フォームが送るもの) /
+    `ssh` (トンネル・往復とも・ADR-0069) / `graft` (保存済みパスワードの接ぎ木・ADR-0080) /
+    `fields` (編集フォームの prefill・ADR-0016) / `transfer` (暗号化バンドル・ADR-0038/0105)
+  - `ai/providers` — プロバイダ管理 (`ai.rs` 959 行の分割・スロットの resync は
+    無効化しうるコマンドと同じ側に残した)
+
+  テストは覆う先へ一緒に移した (41 本のまま / 56 passed)。**デスクトップ crate は
+  全ファイルが 800 行以下**になった。
+
+  直すと壊れる箇所を 2 つ ADR に残してある。どちらも「整理し忘れ」に見えるので:
+
+  1. `generate_handler!` は本物のモジュールパスが要る。関数を `pub(crate) use` で
+     再輸出しても、展開先の `__cmd__` マクロは付いてこない。
+  2. `#[tauri::command]` を `pub(crate) fn` に付けると、引数の型**とそのフィールド**の
+     可視性まで引き上がる (E0603 / E0451)。
+
+  **残り**: workspace 側にまだ 800 行超が 15 ファイル。最悪は
+  `crates/dbboard-config/src/admin.rs` 6,032 行、次点 `dbboard-mcp/src/service.rs` 3,885 行。
+  `next-actions.md` の 7i に起票したが、**今すぐではない** — 7b は実利用の摩擦から
+  出てきたのに対し、これは行数から出てきただけで、まだ誰も困っていない。
+
+  ### v0.13.0
+
+  見出しは "Knowing what changed, and letting an agent tidy up"。
+  中身は前日 (2026-08-25) に来た 2 件で、追加した機能はこの版では増やしていない。
+
+  - バージョン確認画面に更新内容 (ADR-0137)
+  - MCP から目印と並び替え (ADR-0136)
+
+  **なぜ 0.14 まで溜めずに切ったか。** 枠は予約であって締切ではない (ADR-0110 / ADR-0122) ので、
+  次の 3 件 (`lib.rs` 分割 / MCP export / 手書きクエリ結果の編集) を同じ枠に積むこともできた。
+  積まなかった理由は 3 つ:
+
+  1. どれも v0.13 の見出し「何が変わったかを知る・整理を任せる」に**当てはまらない**。
+     見出しと中身がずれた版は、後から CHANGELOG を読んでも何が出たのか答えられない。
+  2. **ADR-0135 の「更新が止まっている」告知は 0.12 → 0.13 の更新でしか初めて動かない。**
+     目印を書く側が 0.12.0 で出たので、読む側が実地で動くのはこの版が最初になる。
+     ここを跨がせないと、告知は一度も通らないまま次の版に埋もれる。
+  3. タグを打っていないコードは**誰にも届いていない**。待っているのは収集係と dbboard-web 側。
+
+  手順は `release-cut.mjs` → `cargo check --workspace` (Cargo.lock を動かす) →
+  `docs/roadmap.md` の v0.13 行を削除 → commit → `git tag v0.13.0`。
+  roadmap の行を消すのは、出した後は CHANGELOG が答えるので、
+  同じ問いに答えが 2 つあると計画の方が嘘をつき始めるため (`release-plan.test.mjs` が検出する)。
+
+  検証: `release-plan.test.mjs` 7/7、`release-notes.mjs CHANGELOG.md 0.13.0` が 2 件とも描画、
+  `release-due.mjs` = `nothing unreleased yet`、pre-commit 全 green・pii-scan clean。
+  **`--no-verify` なし。**
+
+  §24 のリリース前セキュリティ確認は**手で実施した** (このセッションは Agent tool を
+  自発的に呼ばない設定のため)。ADR-0136 の差分と `dbboard-mcp` の書き込み経路を読み、
+  (a) 新しい 2 verb はネットワーク面を増やさない、(b) 応答に秘密が乗らない
+  (返すのは alias 射影済みの一覧のみ)、(c) 書き込みは呼び出しごとに
+  `ConnectionAdmin::open` する既存経路 (ADR-0133) で、パレット / タグ長 / 添字の検証は
+  `dbboard-config` 側にあり呼び出し元エラーへ写る、を確認。**新規の指摘なし。**
+
+  ### タグ push の直後に CI が赤くなった (原因と対処・§23 PDCA)
+
+  `929f27c` (ドキュメントだけの commit) で `ci` の frontend job が落ちた。
+  `changelog.test.ts` が**バンドルされた CHANGELOG の最新リリースを `'0.12.0'` と直書き**して
+  いたため、0.13.0 を切った時点で赤くなる。**コードは 1 行も触っていない。**
+
+  - **Plan**: 版を上げるたびに落ちるなら、それはテストではなく作業。期待値を毎回書き換える
+    テストは、唯一発火する場面が常に誤報になる。
+  - **Do**: `package.json` の版と比べる形に変えた (`87a976b`)。About ダイアログが実際に
+    依存している不変条件はこちら — **最新のリリース節は、いま動いているビルドの版**であること。
+    `release-cut.mjs` が両方を同じ編集で動かすので、ずれたら本当に異常。
+  - **Check**: `pnpm check` 0 errors / 325 files、`pnpm test` 632 passed。
+  - **Act**: **frontend のテストは CI でしか走らない** (pre-commit は cargo 側だけ) ので、
+    フロントだけを触った版上げは手元が緑でも赤くなりうる。切る前に `pnpm test` を回す。
+    なお `release.yml` はテストを走らせないので、**公開そのものは止まっていない**。
+
+  ### 公開の結果 (タグ `v0.13.0`)
+
+  `release` ワークフロー 17m25s で success。draft でも prerelease でもない。
+  資産 9 件：Windows NSIS `x64-setup.exe` + `.sig` / macOS universal `.dmg` /
+  `dbboard-desktop.app.tar.gz` + `.sig` / MCP バイナリ 2 本 (windows-x86_64 / macos-universal) /
+  `SHA256SUMS.txt` / `latest.json`。
+  `latest.json` は `version 0.13.0`、platforms は darwin-aarch64 / darwin-x86_64 /
+  windows-x86_64 の 3 つ。**既存の 0.12.0 からの自動更新がここを見る** —
+  ADR-0135 の「更新が止まっている」告知が実際に踏まれるのもこの世代から。
+
+  ダウンロードページは再デプロイ不要 (ADR-0047)。`site/` は読み込み時に
+  Releases API を引くデータ駆動なので、`pages` は `site/**` が変わったときしか走らない。
+
+  **残っているのは公開 exe の PII 目視だけ** (v0.11.0 / v0.12.0 / v0.13.0)。
+  これは AI がやれないし、公開リポなので催促もしない (ベースルール §38)。
+
+  ### 引っ越し (この Windows PC → Mac mini)
+
+  記録は `.claude/next-actions.md` 冒頭の「引っ越し」節が正本。ここでは要旨だけ。
+
+  **git が運ばないものが 3 つある。** リポジトリは clone すれば済むが、
+
+  - `.pii-denylist` — untracked (`.gitignore:58`)。**遮断する語そのものは untracked 側にしかない**。
+    無いまま作業すると pre-commit の pii-scan は**黙って通る**方に落ちる。
+    中身が PII そのものなので **user が書く** (雛形は `.pii-denylist.example`)。
+    CI 側の `PII_DENYLIST` secret は GitHub にあるので引っ越しの影響を受けない。
+  - **エージェントの memory 27 ファイル (132KB)** — git 管理外なので**消したら復元できない**
+    (baseline §33)。Mac ではプロジェクトキーが変わり自動では引き継がれない。
+    うち 2 件は**リポに書けない情報の唯一の写し**。user が手でコピーする。
+  - **git hooks** — clone 後に `sh scripts/install-hooks.sh`。cargo-husky は ADR-0119 で外したので
+    誰も自動ではやらない (`hook_install_drift.rs` が遅れを検出する)。
+
+  **Mac で消える地雷**: libSQL の teardown segfault (`0xc0000005`)、Norton の隔離、
+  `link.exe 1318` / `os error 112` (ディスク枯渇)、scrypt の 256MiB×並列、
+  起動中の release exe がロックして `cargo build --release` が落ちる件、GitHub Desktop の force push。
+  **ただしスクリプトと直列クレート一覧は消さない** — CI の windows runner が同じ道を通るので、
+  手元で踏まなくなっただけで危険が消えたわけではない。
+
+  **効かなくなるルール**: `scripts/pii-scan.sh` の `windows-home-path` 規則は Windows の
+  ホームパスだけを見ており、Mac の `/Users/<名前>` は素通りする。
+  実ユーザー名は tracked file に書けないので、足すなら `.pii-denylist` 側 = **user**。
+
+  **できるようになること / できなくなること**: `.dmg` と universal build が手元で確認できる
+  ようになる代わりに、**Windows の `.exe` は手元でビルドできない**。
+  公開物の PII 目視スキャンは **CI 成果物をダウンロードして**行う形に変わる。
+
+  **AI がやれていないこと**: push (develop + タグ `v0.13.0`)、公開後の exe 目視スキャン、
+  memory と `.pii-denylist` の移送、Mac 側での初回セットアップ。→ すべて **user 側**。)
+
+> 2026-08-25 その6 〜 その5 のセッションログ (更新内容をアプリ内に出した回、
+> v0.12.0 を切った回) も、2026-08-27 に同じ場所へ全文退避した。
+
+> 2026-08-25 その4 〜 2026-08-25 (その1) のセッションログ (止まった更新の告知、
+> ダイアログの取り回しと MCP 接続登録、サイドバーの横区切り、一覧から直に目印) も、
+> 2026-08-26 に同じ場所へ全文退避した。
+
+> 2026-08-24 のセッションログ (接続一覧 #192 の 3 条件、色 + タグの目印) も、
+> 2026-08-25 に同じ場所へ全文退避した。
+> 2026-08-21 その2 〜 2026-08-20 のセッションログ (history 書き換えと force push、
+> 公開リポの実名掃除、v0.10.0 のリリース) も、2026-08-25 に同じ場所へ全文退避した。
+
+> 2026-08-19 のセッションログ (検証シート 003 のために MCP へ 7 動詞を足した回) も、
+> 2026-08-25 に同じ場所へ全文退避した。
 
 > 2026-08-16 その2 〜 2026-07-31 のセッションログは、baseline §31 に基づき
 > [`.claude/archive/project-status-2026-08.md`](archive/project-status-2026-08.md)

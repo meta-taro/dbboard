@@ -8,6 +8,7 @@
 //! whatever holds the database connection so the forward outlives every query
 //! but not the adapter.
 
+use std::future::{ready, Future};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -253,25 +254,24 @@ impl VerifyHandler {
     fn reject(&self, reason: String) {
         *self.rejection.lock().expect("rejection lock poisoned") = Some(reason);
     }
-}
 
-impl russh::client::Handler for VerifyHandler {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        server_public_key: &PublicKey,
-    ) -> Result<bool, Self::Error> {
+    /// Decide the presented key against the configured policy.
+    ///
+    /// Kept out of the trait method because nothing here awaits: a fingerprint
+    /// comparison and a `known_hosts` lookup are both synchronous. As a plain
+    /// function the decision can be read — and tested — without standing up an
+    /// SSH session.
+    fn verify(&self, server_public_key: &PublicKey) -> bool {
         match &self.policy {
             HostKeyPolicy::Fingerprint(expected) => {
                 let actual = server_public_key.fingerprint(HashAlg::Sha256).to_string();
                 if fingerprint_matches(expected, &actual) {
-                    Ok(true)
+                    true
                 } else {
                     self.reject(format!(
                         "fingerprint mismatch: expected {expected}, server presented {actual}"
                     ));
-                    Ok(false)
+                    false
                 }
             }
             HostKeyPolicy::KnownHosts(path) => {
@@ -287,14 +287,14 @@ impl russh::client::Handler for VerifyHandler {
                     }
                 };
                 match checked {
-                    Ok(true) => Ok(true),
+                    Ok(true) => true,
                     Ok(false) => {
                         let fp = server_public_key.fingerprint(HashAlg::Sha256);
                         self.reject(format!(
                             "unknown host {}:{} (server key {fp}); pin it before connecting",
                             self.host, self.port
                         ));
-                        Ok(false)
+                        false
                     }
                     Err(e) => {
                         // A known_hosts *error* is the MITM signal: the host is
@@ -303,11 +303,25 @@ impl russh::client::Handler for VerifyHandler {
                             "KEY MISMATCH for {}:{} — the host key changed, possible man-in-the-middle ({e})",
                             self.host, self.port
                         ));
-                        Ok(false)
+                        false
                     }
                 }
             }
         }
+    }
+}
+
+impl russh::client::Handler for VerifyHandler {
+    type Error = russh::Error;
+
+    // russh declares this `async fn`, and returning a ready future satisfies
+    // that without pretending the check is asynchronous
+    // (clippy::unused_async_trait_impl).
+    fn check_server_key(
+        &mut self,
+        server_public_key: &PublicKey,
+    ) -> impl Future<Output = Result<bool, Self::Error>> {
+        ready(Ok(self.verify(server_public_key)))
     }
 }
 
@@ -320,19 +334,83 @@ struct ProbeHandler {
 impl russh::client::Handler for ProbeHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
         server_public_key: &PublicKey,
-    ) -> Result<bool, Self::Error> {
+    ) -> impl Future<Output = Result<bool, Self::Error>> {
         *self.captured.lock().expect("probe lock poisoned") =
             Some(server_public_key.fingerprint(HashAlg::Sha256).to_string());
-        Ok(false)
+        ready(Ok(false))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{client_config, KEEPALIVE_INTERVAL, KEEPALIVE_MAX};
+    use std::sync::{Arc, Mutex};
+
+    use russh::keys::ssh_key::public::{Ed25519PublicKey, KeyData};
+    use russh::keys::ssh_key::{HashAlg, PublicKey};
+
+    use super::{client_config, VerifyHandler, KEEPALIVE_INTERVAL, KEEPALIVE_MAX};
+    use crate::config::HostKeyPolicy;
+
+    /// A public key built from a fixed seed. The bytes are arbitrary — what
+    /// matters is that two seeds give two different, reproducible
+    /// fingerprints, with no key generation and no filesystem.
+    fn key(seed: u8) -> PublicKey {
+        PublicKey::new(KeyData::Ed25519(Ed25519PublicKey([seed; 32])), "")
+    }
+
+    fn fingerprint_of(key: &PublicKey) -> String {
+        key.fingerprint(HashAlg::Sha256).to_string()
+    }
+
+    fn handler(policy: HostKeyPolicy) -> (VerifyHandler, Arc<Mutex<Option<String>>>) {
+        let rejection = Arc::new(Mutex::new(None));
+        let handler = VerifyHandler {
+            policy,
+            host: "bastion.invalid".to_string(),
+            port: 22,
+            rejection: Arc::clone(&rejection),
+        };
+        (handler, rejection)
+    }
+
+    #[test]
+    fn a_key_matching_the_pin_is_accepted_silently() {
+        let presented = key(1);
+        let (handler, rejection) = handler(HostKeyPolicy::Fingerprint(fingerprint_of(&presented)));
+
+        assert!(handler.verify(&presented));
+        assert!(
+            rejection.lock().expect("rejection lock").is_none(),
+            "an accepted key must leave no rejection behind for `open` to report"
+        );
+    }
+
+    #[test]
+    fn a_key_that_does_not_match_the_pin_is_rejected_and_names_both_keys() {
+        let pinned = fingerprint_of(&key(1));
+        let presented = key(2);
+        let (handler, rejection) = handler(HostKeyPolicy::Fingerprint(pinned.clone()));
+
+        assert!(!handler.verify(&presented));
+        let reason = rejection
+            .lock()
+            .expect("rejection lock")
+            .clone()
+            .expect("a refused key records why");
+        // Both fingerprints, because the person reading this has to decide
+        // whether they mis-pinned or the host really changed.
+        assert!(
+            reason.contains(&pinned),
+            "expected key missing from: {reason}"
+        );
+        assert!(
+            reason.contains(&fingerprint_of(&presented)),
+            "presented key missing from: {reason}"
+        );
+    }
 
     #[test]
     fn the_session_is_kept_alive_while_idle() {

@@ -40,6 +40,12 @@ impl ConnectionAdmin {
     ///   nobody has approved writes to that one yet (ADR-0087). Inheriting the
     ///   flag would hand an agent write access to a database the human never
     ///   saw.
+    /// - **`color` and `tag` are dropped.** The mark exists to tell one
+    ///   database apart from a copy of it (issue #192, ADR-0126). A copy that
+    ///   arrives already wearing the original's mark defeats it at the exact
+    ///   moment it is supposed to work — and that goes for the tag more than
+    ///   the colour, since the tag is the half that reads as a claim: a copy
+    ///   labelled `prod` is worse than a copy labelled nothing.
     ///
     /// Everything else — kind, endpoints, the SSH tunnel — is carried over, and
     /// every secret the source owns is re-written under a ref derived from
@@ -69,6 +75,7 @@ impl ConnectionAdmin {
         new_id: String,
         new_name: String,
     ) -> Result<&ConnectionEntry, ConfigError> {
+        self.sync()?;
         let idx = self
             .find_index(id)
             .ok_or_else(|| ConfigError::NotFound(id.to_string()))?;
@@ -85,6 +92,8 @@ impl ConnectionAdmin {
             id: new_id.clone(),
             name: new_name,
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             kind: source.kind.clone(),
             ssh: source.ssh.clone(),
@@ -198,6 +207,7 @@ impl ConnectionAdmin {
         key_ref: &str,
         mut secret: String,
     ) -> Result<&ConnectionEntry, ConfigError> {
+        self.sync()?;
         let outcome = self.repair_inner(id, key_ref, &secret);
         secret.zeroize();
         outcome?;
@@ -336,6 +346,8 @@ mod tests {
         for id in ["alpha", "beta"] {
             file.connections.push(ConnectionEntry {
                 mcp_alias: None,
+                color: None,
+                tag: None,
                 mcp_write: false,
                 ssh: None,
                 id: id.to_string(),
@@ -446,6 +458,48 @@ mod tests {
 
         assert_eq!(copy.mcp_alias, None);
         assert!(!copy.mcp_write);
+    }
+
+    #[test]
+    fn duplicate_drops_the_colour() {
+        // Production and a copy of it reading alike is what the mark is for
+        // (issue #192); an inherited mark makes them read alike again.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let mut draft = pg_draft("prod", "postgres://u:p@example.test/app");
+        draft.color = Some("red".to_string());
+        admin.add(draft).expect("add source");
+
+        let copy = admin
+            .duplicate("prod", "copy".to_string(), "Copy".to_string())
+            .expect("duplicate");
+
+        assert_eq!(copy.color, None);
+        assert_eq!(
+            admin.entries()[0].color.as_deref(),
+            Some("red"),
+            "the source keeps its own mark"
+        );
+    }
+
+    #[test]
+    fn duplicate_drops_the_tag() {
+        // The louder half of the mark, and so the more dangerous to inherit:
+        // a copy that arrives labelled `prod` is a copy that will be trusted.
+        let (_dir, _secrets, mut admin) = fresh_admin();
+        let mut draft = pg_draft("prod", "postgres://u:p@example.test/app");
+        draft.tag = Some("prod".to_string());
+        admin.add(draft).expect("add source");
+
+        let copy = admin
+            .duplicate("prod", "copy".to_string(), "Copy".to_string())
+            .expect("duplicate");
+
+        assert_eq!(copy.tag, None);
+        assert_eq!(
+            admin.entries()[0].tag.as_deref(),
+            Some("prod"),
+            "the source keeps its own mark"
+        );
     }
 
     #[test]
@@ -696,6 +750,8 @@ mod tests {
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: None,
             id: "beta".to_string(),
@@ -738,6 +794,8 @@ mod tests {
         let mut file = ConnectionFile::empty();
         file.connections.push(ConnectionEntry {
             mcp_alias: None,
+            color: None,
+            tag: None,
             mcp_write: false,
             ssh: Some(SshTunnelToml {
                 host: "bastion.example.test".to_string(),

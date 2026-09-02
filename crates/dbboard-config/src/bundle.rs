@@ -44,6 +44,64 @@ pub const BUNDLE_VERSION: u32 = 1;
 /// the bundle was made with so a bundle from another tool still opens.
 pub const MIN_PASSPHRASE_LEN: usize = 8;
 
+/// Alphabet a generated passphrase is drawn from: 32 characters with every
+/// pair that is read wrong removed — no `l`/`1`, no `o`/`0`.
+///
+/// Exactly 32 so that five bits of entropy map onto one character with no
+/// modulo bias, and so a character can be picked by masking a random byte
+/// rather than by rejection sampling.
+const PASSPHRASE_ALPHABET: &[u8; 32] = b"abcdefghijkmnpqrstuvwxyz23456789";
+
+/// Characters per group in a generated passphrase, and groups per
+/// passphrase: `abcde-fghij-...`, 30 characters of entropy in six runs of
+/// five.
+const PASSPHRASE_GROUP: usize = 5;
+const PASSPHRASE_GROUPS: usize = 6;
+
+/// Mint a passphrase nobody has chosen — 150 bits from the OS entropy
+/// source, grouped for transcription.
+///
+/// This exists for the one caller that must produce a bundle *without* a
+/// human present to think of a passphrase: the MCP export verb (ADR-0140),
+/// which seals a bundle and puts the passphrase straight into the OS
+/// credential store. Every other export takes the operator's own.
+///
+/// Grouped with hyphens because the operator reads this back off a
+/// credential manager on one machine and may have to type it on another.
+/// The hyphens are part of the passphrase, not decoration around it.
+///
+/// The return is a plain `String` to match the rest of this module's
+/// interface (`encrypt_bundle` takes `&str`). It is secret material the
+/// moment it exists: store it and drop it, never log it.
+///
+/// # Panics
+///
+/// Panics if the OS entropy source fails, which `getrandom` treats as
+/// unrecoverable. A passphrase built from a degraded source would be worse
+/// than no bundle at all.
+#[must_use]
+pub fn generate_passphrase() -> String {
+    use rand::RngCore;
+    use zeroize::Zeroize;
+
+    let len = PASSPHRASE_GROUP * PASSPHRASE_GROUPS;
+    let mut bytes = vec![0u8; len];
+    // `OsRng` reads the OS source directly on every call: no seeding, no
+    // userspace state to fork or snapshot wrong.
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+
+    let mut out = String::with_capacity(len + PASSPHRASE_GROUPS - 1);
+    for (i, byte) in bytes.iter().enumerate() {
+        if i > 0 && i % PASSPHRASE_GROUP == 0 {
+            out.push('-');
+        }
+        // 256 is a whole multiple of 32, so the low five bits are uniform.
+        out.push(char::from(PASSPHRASE_ALPHABET[usize::from(byte & 0x1f)]));
+    }
+    bytes.zeroize();
+    out
+}
+
 /// Decrypted bundle contents: the full connection store plus every secret
 /// it references, keyed by keyring reference.
 ///
@@ -328,10 +386,13 @@ mod tests {
 
     fn sample_payload() -> BundlePayload {
         let connections = ConnectionFile {
+            mcp_export: None,
             version: crate::store::CONFIG_VERSION,
             connections: vec![
                 ConnectionEntry {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: false,
                     ssh: None,
                     id: "store-a".to_string(),
@@ -345,6 +406,8 @@ mod tests {
                 },
                 ConnectionEntry {
                     mcp_alias: None,
+                    color: None,
+                    tag: None,
                     mcp_write: false,
                     ssh: None,
                     id: "store-c".to_string(),
@@ -461,5 +524,44 @@ mod tests {
             "secret leaked: {rendered}"
         );
         assert!(rendered.contains("redacted"), "expected redaction marker");
+    }
+
+    // --- generated passphrases (ADR-0140) ----------------------------
+
+    #[test]
+    fn a_generated_passphrase_is_grouped_and_unambiguous() {
+        let pass = generate_passphrase();
+        let groups: Vec<&str> = pass.split('-').collect();
+        assert_eq!(groups.len(), PASSPHRASE_GROUPS, "grouping: {pass}");
+        for group in &groups {
+            assert_eq!(group.len(), PASSPHRASE_GROUP, "group length: {pass}");
+        }
+        for ch in pass.chars().filter(|c| *c != '-') {
+            assert!(
+                PASSPHRASE_ALPHABET.contains(&u8::try_from(ch).expect("ascii")),
+                "character {ch:?} is outside the alphabet: {pass}"
+            );
+        }
+        // The floor `encrypt_bundle` enforces; a generated passphrase that
+        // its own encrypt path would reject is a bug, not a short one.
+        assert!(pass.len() >= MIN_PASSPHRASE_LEN);
+    }
+
+    #[test]
+    fn generated_passphrases_differ() {
+        // Not a randomness test — 150 bits cannot repeat by accident, so a
+        // repeat here means the source is not being read at all.
+        let first = generate_passphrase();
+        let second = generate_passphrase();
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_generated_passphrase_opens_the_bundle_it_sealed() {
+        let pass = generate_passphrase();
+        let payload = sample_payload();
+        let blob = encrypt_bundle(&payload, &pass).expect("encrypt");
+        let back = decrypt_bundle(&blob, &pass).expect("decrypt");
+        assert_eq!(back, payload);
     }
 }

@@ -326,6 +326,34 @@ describe('the MCP alias', () => {
   });
 });
 
+// The identity mark (ADR-0126). The colour and the tag prefill for the same
+// reason the alias does, and the tag more urgently: a blank tag box would send
+// "" on the next save, and the mark that said which server this is would
+// disappear from a row the operator only glanced at.
+describe('the identity mark', () => {
+  it('a new connection carries neither half', () => {
+    expect(emptyForm().color).toBe('');
+    expect(emptyForm().tag).toBe('');
+  });
+
+  it('an edit prefills both halves', () => {
+    const form = formForEdit('p', 'P', { kind: 'neon', color: 'red', tag: 'prod' });
+    expect(form.color).toBe('red');
+    expect(form.tag).toBe('prod');
+  });
+
+  it('one half alone is still prefilled', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon', tag: '本番' }).tag).toBe('本番');
+    expect(formForEdit('p', 'P', { kind: 'neon', tag: '本番' }).color).toBe('');
+  });
+
+  it('no stored mark, or a backend that omits it, opens empty', () => {
+    expect(formForEdit('p', 'P', { kind: 'neon', color: null, tag: null }).tag).toBe('');
+    expect(formForEdit('p', 'P', { kind: 'neon' }).color).toBe('');
+    expect(formForEdit('p', 'P', { kind: 'neon' }).tag).toBe('');
+  });
+});
+
 // The user's report: "「編集」で開くと URL モードは追加の時のフォームが変わるので
 // 困りますね" — add asked for host/port/user/password/database, edit asked for a
 // raw URL, and the same connection looked like two different products.
