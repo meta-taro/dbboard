@@ -7,7 +7,29 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Everyday work
+
+### Changed
+
+- **A finding from v0.14's baseline is withdrawn.** That release's notes said
+  `annotations.toml` parses "six times slower than `connections.toml` for the
+  same twenty connections". The two files are not the same document: the
+  annotations fixture carries a note per table and per column on top of those
+  connections, so it is 38,952 bytes against 2,092 — 18.6x the data parsed in
+  6x the time, which makes it the faster of the two per byte. Measured
+  directly, `toml` costs 21 ns/byte on one and 19.5 ns/byte on the other.
+  Nothing was slow; the comparison was invalid. A test now asserts the two
+  fixtures are *not* the same size, so the same wrong reading cannot be taken
+  from the same two numbers again.
+
+  The other two leads were checked as well. `truncate_rows` is a
+  `Vec::truncate`, and its 570 µs is the cost of freeing 9,900 rows — which
+  every adapter already avoids paying by capping at the source. `query_10k`
+  splits into 143 ns per row and 37 ns per value, which is what the row
+  representation costs rather than a mistake in it. So no optimisation ships
+  against the current measurement points, and the effort moves to not building
+  ten thousand rows for a grid that shows fifty. See
+  [ADR-0142](docs/decisions.md).
 
 ## [0.14.0] — 2026-09-02 — Speed, measured
 
