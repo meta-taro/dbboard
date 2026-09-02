@@ -1,0 +1,34 @@
+[package]
+name = "dbboard-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Measurement harness for dbboard: startup, connect-and-browse, and large result sets."
+
+[dependencies]
+# The types a result set is made of, and the sort the grid applies to them.
+dbboard-core = { workspace = true }
+# The startup group times this crate's file opening and parsing — the work
+# `run()` does before a window exists.
+dbboard-config = { workspace = true }
+# The browse and result-set groups run against in-memory libSQL. Being able
+# to reach this crate is what puts dbboard-bench on
+# scripts/libsql-serialised-crates.txt.
+dbboard-turso = { path = "../dbboard-turso" }
+# What `QueryResult` is turned into on its way across the Tauri IPC boundary,
+# so serialising with it is the thing worth timing.
+serde_json = { workspace = true }
+tokio = { workspace = true }
+# Fixtures are written to a temporary directory, never to the operator's real
+# config: the size of that file is a property of one machine.
+tempfile = { workspace = true }
+# Fixtures are built from the real config structs and serialised, rather than
+# hand-written as TOML text: a hand-written fixture drifts from the schema it
+# claims to represent, and the parse is the thing being timed.
+toml = { workspace = true }
+
+[lints]
+workspace = true

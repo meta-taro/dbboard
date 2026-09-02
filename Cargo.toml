@@ -6,6 +6,8 @@ members = [
     "apps/desktop/src-tauri",
     "crates/dbboard-ai",
     "crates/dbboard-anthropic",
+    # Dev-only measurement harness (ADR-0141). Nothing links it; it is a tool.
+    "crates/dbboard-bench",
     "crates/dbboard-config",
     "crates/dbboard-connect",
     "crates/dbboard-core",
