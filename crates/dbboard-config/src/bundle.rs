@@ -172,6 +172,36 @@ impl Drop for BundlePayload {
     }
 }
 
+/// Which of the three checks in [`decrypt_bundle`] refused a bundle.
+///
+/// Kept separate from the message so a caller can branch on it: a `Header`
+/// failure means the file is not a dbboard bundle at all (the wrong file was
+/// picked), while `Body` means the bytes were a bundle and stopped being one
+/// (a truncated copy, a mangled transfer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorruptStage {
+    /// `Decryptor::new` refused the bytes before the passphrase was
+    /// consulted: not a well-formed age file.
+    Header,
+    /// The passphrase-derived key could not be unwrapped for a structural
+    /// reason — a broken stanza, or work the decryptor declines to do
+    /// (`ExcessiveWork`). A wrong passphrase is reported as
+    /// [`BundleError::IncorrectPassphrase`] instead and never lands here.
+    FileKey,
+    /// The ciphertext body failed its AEAD check.
+    Body,
+}
+
+impl std::fmt::Display for CorruptStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Header => "header",
+            Self::FileKey => "file key",
+            Self::Body => "body",
+        })
+    }
+}
+
 /// Failure modes for bundle encryption / decryption.
 #[derive(Debug, Error)]
 pub enum BundleError {
@@ -193,8 +223,20 @@ pub enum BundleError {
 
     /// The bundle is malformed, truncated, or tampered with (bad MAC,
     /// unknown format, corrupted ciphertext).
-    #[error("bundle is corrupt or was not produced by dbboard")]
-    Corrupt,
+    ///
+    /// `stage` says which of the three checks refused it and `reason` keeps
+    /// `age`'s own words. Both exist because "corrupt" is the reading that is
+    /// usually wrong: a `.dbbx` is made to be carried to another machine, and
+    /// the first thing a person does with a one-word failure is conclude the
+    /// file is damaged.
+    #[error("bundle is corrupt or was not produced by dbboard ({stage} stage: {reason})")]
+    Corrupt {
+        /// Which check refused the bundle.
+        stage: CorruptStage,
+        /// What `age` said, verbatim. Structural only — no key material
+        /// passes through `age`'s error text.
+        reason: String,
+    },
 
     /// The decrypted payload declares a schema version this build does
     /// not understand.
@@ -269,7 +311,7 @@ pub fn decrypt_bundle(blob: &[u8], passphrase: &str) -> Result<BundlePayload, Bu
 
     // Header stage: a failure here is a malformed/non-age file — the
     // passphrase has not been consulted yet.
-    let decryptor = age::Decryptor::new(blob).map_err(map_header_err)?;
+    let decryptor = age::Decryptor::new(blob).map_err(|e| map_header_err(&e))?;
 
     // File-key unwrap stage: the passphrase is used here. age cannot tell
     // a wrong passphrase from a corrupted key stanza (both fail the same
@@ -286,7 +328,10 @@ pub fn decrypt_bundle(blob: &[u8], passphrase: &str) -> Result<BundlePayload, Bu
     let mut plaintext = Vec::new();
     let outcome = match reader.read_to_end(&mut plaintext) {
         Ok(_) => parse_payload(&plaintext),
-        Err(_) => Err(BundleError::Corrupt),
+        Err(err) => Err(BundleError::Corrupt {
+            stage: CorruptStage::Body,
+            reason: err.to_string(),
+        }),
     };
     // Scrub the decrypted JSON — it held the secrets in the clear even
     // after we parsed them into the returned payload.
@@ -353,10 +398,14 @@ fn parse_payload(plaintext: &[u8]) -> Result<BundlePayload, BundleError> {
 // Header parse (`Decryptor::new`) failure: the passphrase has not been
 // used yet, so anything but a real I/O fault means the bytes are not a
 // well-formed age file.
-fn map_header_err(err: age::DecryptError) -> BundleError {
-    match err {
-        age::DecryptError::Io(io) => BundleError::Io(io),
-        _ => BundleError::Corrupt,
+fn map_header_err(err: &age::DecryptError) -> BundleError {
+    // Every arm lands on `Corrupt`, including `Io`: the input is a `&[u8]`,
+    // so there is no device that can fault. An I/O error here is `age`
+    // reaching past the end of the slice — the bundle stops early — and
+    // reporting that as an I/O fault sends the reader to look at their disk.
+    BundleError::Corrupt {
+        stage: CorruptStage::Header,
+        reason: err.to_string(),
     }
 }
 
@@ -372,8 +421,11 @@ fn map_unwrap_err(err: age::DecryptError) -> BundleError {
         age::DecryptError::DecryptionFailed | age::DecryptError::NoMatchingKeys => {
             BundleError::IncorrectPassphrase
         }
-        age::DecryptError::Io(io) => BundleError::Io(io),
-        _ => BundleError::Corrupt,
+        // As in `map_header_err`: no device, so no I/O fault.
+        other => BundleError::Corrupt {
+            stage: CorruptStage::FileKey,
+            reason: other.to_string(),
+        },
     }
 }
 
@@ -478,8 +530,73 @@ mod tests {
         blob[last] ^= 0xff;
         let err = decrypt_bundle(&blob, GOOD_PASS).expect_err("must fail");
         assert!(
-            matches!(err, BundleError::Corrupt | BundleError::IncorrectPassphrase),
+            matches!(
+                err,
+                BundleError::Corrupt { .. } | BundleError::IncorrectPassphrase
+            ),
             "tampered blob must not decrypt cleanly, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn garbage_names_the_header_as_the_stage_that_refused_it() {
+        let err = decrypt_bundle(b"this is not an age file at all", GOOD_PASS)
+            .expect_err("garbage must fail");
+        let BundleError::Corrupt { stage, .. } = &err else {
+            panic!("expected Corrupt, got {err:?}");
+        };
+        assert_eq!(*stage, CorruptStage::Header);
+    }
+
+    #[test]
+    fn a_flipped_body_byte_names_the_body_not_the_header() {
+        let mut blob = encrypt_bundle(&sample_payload(), GOOD_PASS).expect("encrypt");
+        let last = blob.len() - 1;
+        blob[last] ^= 0xff;
+        let err = decrypt_bundle(&blob, GOOD_PASS).expect_err("must fail");
+        let BundleError::Corrupt { stage, .. } = &err else {
+            panic!("expected Corrupt, got {err:?}");
+        };
+        assert_eq!(*stage, CorruptStage::Body);
+    }
+
+    /// The whole point of splitting the stage out: the message a person sees
+    /// when a bundle will not open on the machine they moved it to has to say
+    /// more than "corrupt", because "corrupt" is the one reading that is
+    /// usually wrong.
+    #[test]
+    fn the_message_carries_both_the_stage_and_what_age_said() {
+        let err =
+            decrypt_bundle(b"this is not an age file at all", GOOD_PASS).expect_err("must fail");
+        let text = err.to_string();
+        assert!(text.contains("header"), "no stage in {text:?}");
+        let BundleError::Corrupt { reason, .. } = &err else {
+            panic!("expected Corrupt, got {err:?}");
+        };
+        assert!(!reason.is_empty(), "age's own words were dropped");
+    }
+
+    /// A bundle that stops early is the failure this format is most likely
+    /// to meet in the wild — it exists to be copied to another machine, and a
+    /// copy is what gets interrupted. `age` reports the short read as an I/O
+    /// error, but `decrypt_bundle` is handed a `&[u8]`: there is no device to
+    /// fault, so "I/O error" would be a diagnosis of something that cannot
+    /// have happened.
+    #[test]
+    fn a_bundle_cut_short_is_corrupt_rather_than_an_io_fault() {
+        let blob = encrypt_bundle(&sample_payload(), GOOD_PASS).expect("encrypt");
+
+        let err = decrypt_bundle(&blob[..20], GOOD_PASS).expect_err("must fail");
+        let BundleError::Corrupt { stage, .. } = &err else {
+            panic!("a truncated header must not be an I/O fault, got {err:?}");
+        };
+        assert_eq!(*stage, CorruptStage::Header);
+
+        let half = blob.len() / 2;
+        let err = decrypt_bundle(&blob[..half], GOOD_PASS).expect_err("must fail");
+        assert!(
+            matches!(err, BundleError::Corrupt { .. }),
+            "a body cut in half must not be an I/O fault, got {err:?}"
         );
     }
 
@@ -487,7 +604,7 @@ mod tests {
     fn non_age_bytes_are_corrupt_not_a_panic() {
         let err = decrypt_bundle(b"this is not an age file at all", GOOD_PASS)
             .expect_err("garbage must fail");
-        assert!(matches!(err, BundleError::Corrupt), "got {err:?}");
+        assert!(matches!(err, BundleError::Corrupt { .. }), "got {err:?}");
     }
 
     #[test]

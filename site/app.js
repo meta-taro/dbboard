@@ -23,7 +23,13 @@ const RELEASES_URL = `https://github.com/${REPO}/releases`;
 export function bucketFor(name) {
   const n = name.toLowerCase();
   if (n === "sha256sums.txt") return "sums";
-  if (!n.startsWith("dbboard-desktop")) return null;
+  // Two spellings, because the client was renamed in v0.15.0 and this page
+  // lists whichever release is being looked at. `dbboard_` keeps its
+  // underscore on purpose: the retired egui client was called `dbboard` too
+  // and separated its version with a hyphen, so the underscore is the only
+  // thing standing between "the current client" and "the one that no longer
+  // ships".
+  if (!n.startsWith("dbboard-desktop") && !n.startsWith("dbboard_")) return null;
   if (n.endsWith("-setup.exe")) return "win-setup";
   if (n.endsWith(".dmg")) return "mac-dmg";
   return null;

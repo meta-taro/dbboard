@@ -154,7 +154,9 @@ jobs:
   # `claude mcp add` at it". The asset name carries the product prefix
   # `dbboard-mcp-`, which keeps it out of the download page's buckets — that
   # page offers the desktop client, and `bucketFor` only claims
-  # `dbboard-desktop*` (ADR-0089).
+  # `dbboard-desktop*` and `dbboard_*` (ADR-0089, ADR-0143). The MCP prefix
+  # has a hyphen where the client has an underscore, which is what keeps the
+  # two apart.
   build-mcp-windows:
     runs-on: windows-latest
     steps:

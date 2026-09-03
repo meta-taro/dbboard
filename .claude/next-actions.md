@@ -13,7 +13,17 @@
 |---|---|---|---|
 | a | **`.pii-denylist`** — 実名の遮断リスト | リポ直下・untracked (`.gitignore:58`) | **user** (中身が PII そのものなので AI は触らない) |
 | b | **エージェントの memory 27 ファイル (132KB)** | `<ホーム>/.claude/projects/C--claude-dbboard/memory/` | **user** (手でコピー) |
-| c | **git hooks** | clone 後に `sh scripts/install-hooks.sh` | どちらでも |
+| c | ~~**git hooks**~~ | ~~clone 後に `sh scripts/install-hooks.sh`~~ | **済 (2026-09-02)** |
+
+> **2026-09-02 時点の状況**
+> - **c は完了。** 3 本設置済み、`hook_install_drift.rs` pass。同日中に実際に 4 回働いた
+>   (chacha20 修正の commit / push、リリース 2 コミット)。
+> - **b は未実施で、これが一番危ない。** `~/.claude/projects/-Users-rays-Documents-GitHub-dbboard/memory/`
+>   は **0 ファイル**。旧 Windows 機にしか無い。**その機械を初期化する前に運ぶこと。**
+>   git 管理外なので、消えたら復元手段は存在しない。
+> - **a は未実施。** `.pii-denylist` が無いので pii-scan は
+>   `note: no denylist file — literal name detection off` を出して**通る**。
+>   汎用パターン (メール形式・鍵らしい文字列) は効くが、実店名・実名は素通り。
 
 **a を作り直さないと pii-scan は素通りする。** ルールファイル (`scripts/pii-scan.sh`) は tracked
 だが、遮断する語そのものは untracked 側にしか無い。`.pii-denylist.example` が雛形。

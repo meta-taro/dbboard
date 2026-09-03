@@ -13108,3 +13108,140 @@ on the day.
 - If the coarse harness turns out not to answer a question that matters,
   criterion is still there and this entry is the thing to supersede. The cost
   of having started here is one small crate, not a migration.
+
+## ADR-0142 — The first optimisation the baseline bought was the decision not to optimise (2026-09-02)
+
+**Status.** Accepted. Follows
+[ADR-0141](#adr-0141--the-speed-slot-buys-a-measurement-not-a-benchmark-framework-2026-09-02) (the
+measurement that made this readable) and amends what its first reading was
+taken to mean.
+
+**Context.** v0.14 shipped a baseline and moved the optimisation itself into
+the v0.15 slot, carrying three leads from the first run: `query_10k`
+materialises 10,000 rows in 4.4 ms while `serde_json` serialises the same rows
+in 927 µs; `truncate_rows` spends 570 µs discarding 9,900 rows; and
+`annotations.toml` parses six times slower than `connections.toml` "for the
+same twenty connections".
+
+Two of those three do not survive being looked at.
+
+**The annotations comparison was never a comparison.** The two fixtures are
+not the same document. `connections.toml` holds twenty entries and weighs
+2,092 bytes; `annotations.toml` holds those twenty connections plus a note per
+table and per column — 100 table notes and 400 column notes — and weighs
+38,952 bytes. It is 18.6× the data parsed in 6× the time, which makes the
+annotations path the *faster* of the two per byte, not the slower. Measured
+directly, `toml` costs 21 ns/byte on one file and 19.5 ns/byte on the other:
+the same parser at the same speed. Mapping the parsed TOML onto the typed
+structs — the step suspected of being expensive, because `kind` is a tagged
+enum — adds 2 µs of the 46 µs, and the file read adds 10 µs.
+
+**`truncate_rows` is a `Vec::truncate` and the 570 µs is the free.** Dropping
+9,900 rows destroys 9,900 row vectors and every `String` inside them; that is
+tens of thousands of deallocations, and no rewrite of a one-line function
+touches it. The only way to not pay it is to not build the rows, and every
+adapter already does exactly that: libSQL's `run_select_capped` stops pulling
+at the limit, Postgres caps through a server-side cursor, `MySQL` stops the
+stream and drops it. The `truncate_rows` call that follows each of them is a
+belt, not the mechanism.
+
+**What `query_10k` is made of.** Timing the same 10,000 rows at one, two, four
+and eight columns gives 1.80 / 2.21 / 3.06 / 4.40 ms — a straight line whose
+slope is 37 ns per value and whose intercept is 143 ns per row. So a third of
+the cost is per-row (a driver `next()`, a `Vec` for the row) and two thirds is
+per-value (pulling the value out of libSQL, allocating a `String` for the text
+ones). Neither is a mistake in the code. Both are what this representation
+costs, and the representation reaches the frontend as JSON, so changing it is
+not a local edit.
+
+**And the noise floor is wider than two of the leads.** Running the identical
+experiment twice on the measuring machine — an M1 with four performance and
+four efficiency cores — produced 44 µs and 78 µs for the same work. Within a
+single run the harness is stable (p95 sits within a few percent of the
+median); between runs, which is how a release is compared against the one
+before it, the same code varies by 1.5–1.8×. A "six times slower" finding is
+only just outside that, and a "twenty percent faster" claim would be inside
+it.
+
+**Decision.** No micro-optimisation ships against the current measurement
+points. The startup group totals about a millisecond of real work, which is
+nothing next to a window appearing; the result-set group is allocation cost
+inherent to the row representation; the read-only paths already cap at the
+source in all three adapters.
+
+What the numbers do say is where the effort belongs, and it is not in making
+materialisation faster: it is in not materialising ten thousand rows for a
+grid that shows fifty. That is pagination, a design change with a contract
+consequence, and it is filed as such rather than smuggled in as an
+optimisation. The two blanks ADR-0141 recorded — the platform keychain's
+startup cost, and time to first pixel — are also worth more than any
+percentage available here, because both are unmeasured rather than small.
+
+**Consequences.**
+
+- The baseline document must not be read across measurement points. Points
+  measure different fixtures of different sizes; only the same point across
+  two runs of the same machine means anything, and only when the difference
+  is comfortably clear of the between-run variance above.
+- `crates/dbboard-bench/src/measure/startup.rs` asserts that the two startup
+  fixtures are *not* the same size, so the annotations-versus-connections
+  reading cannot be re-derived by the next person to put the two medians side
+  by side.
+- v0.15 carries the pagination direction rather than a list of micro-targets.
+  If a percentage-sized win is ever claimed here, it needs a machine quieter
+  than this one to be visible at all.
+
+## ADR-0143 — The application is called dbboard, and the download page learns a second spelling (2026-09-03)
+
+**Status.** Accepted. Amends
+[ADR-0089](#adr-0089--the-egui-client-is-retired-and-the-download-page-offers-only-the-tauri-bundles-2026-08-11) (which
+made the download page match on a product prefix) and constrains
+[ADR-0067](#adr-0067--the-updater-manifest-is-assembled-from-the-release-assets-2026-08-05) (the
+updater manifest names the artifact it serves).
+
+**Context.** `productName` was `dbboard-desktop`, so that is what the Dock
+showed, what the `.app` and the installers were called, and what the Start
+menu listed. The name is the cargo package's — `apps/desktop/src-tauri` is
+`dbboard-desktop` because it sits beside `dbboard-mcp` and `dbboard-core` and
+has to be distinguishable from them. None of that is a reason for the product
+a person launches to carry the suffix: to the person, this *is* dbboard. There
+is no second desktop client to disambiguate it from.
+
+**Decision.** `productName` becomes `dbboard`. The cargo package keeps its
+name — the workspace's internal distinctions are still needed, and the binary
+in `target/release/` is still `dbboard-desktop`.
+
+**The download page needs both spellings, and the underscore is why.** The
+page matches assets by prefix rather than extension, because releases up to
+v0.4.0 also carry the retired egui client and keying on `.dmg` alone made the
+offered build depend on the order the Releases API returned assets in (#135,
+ADR-0089). That retired client was called `dbboard` — exactly the new name.
+What separates them is the separator: Tauri writes `dbboard_0.15.0_universal.dmg`
+with an underscore, the egui build wrote `dbboard-macos-universal-0.4.0.dmg`
+with a hyphen. So `bucketFor` accepts `dbboard-desktop` (v0.5.0–v0.14.0) and
+`dbboard_` (v0.15.0 on), and still refuses `dbboard-`. The MCP server is safe
+for the same reason: `dbboard-mcp-` has the hyphen.
+
+That distinction is one character wide and load-bearing, so it is asserted by
+a test that names it rather than left to be noticed by whoever next edits the
+matcher.
+
+**Consequences.**
+
+- **A Windows install from before v0.15.0 is not upgraded; it is joined.** The
+  NSIS installer keys on the product name, so a machine holding
+  `dbboard-desktop` gets a second entry called `dbboard` in
+  `%LOCALAPPDATA%\dbboard\` rather than an in-place upgrade. The old one has
+  to be uninstalled by hand. This is the cost of renaming, it is paid once,
+  and it is smallest now: the client is pre-1.0 and its install base is
+  countable.
+- **On macOS the in-app updater replaces the bundle at the path it is running
+  from**, so an existing install keeps the folder name `dbboard-desktop.app`
+  while its Info.plist — and therefore the Dock — says `dbboard`. Cosmetic,
+  and it resolves itself for anyone who installs from a `.dmg` again.
+- **User data is untouched.** The config directory and the keychain entries
+  derive from the bundle identifier (`io.github.meta-taro.dbboard`) and the
+  `directories` lookup, neither of which changes. Nobody loses a connection
+  over this.
+- `dbboard-mcp`'s window matcher already accepted both names, which is why the
+  screenshot verbs keep working against either build without a change.
