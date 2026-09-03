@@ -134,3 +134,36 @@ pub fn measure(out: &mut Vec<Reading>) -> BenchResult<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{annotations_fixture, connections_fixture};
+
+    /// The two startup parse points do not read comparable files, and the
+    /// first reading of them said `annotations.toml` parses "six times
+    /// slower than `connections.toml` for the same twenty connections".
+    /// It does not: the annotations fixture carries a note per table and
+    /// per column on top of those connections, so it is several times the
+    /// document. Anyone reading the two medians side by side will reach for
+    /// the same wrong conclusion, so the disparity is asserted here rather
+    /// than left to be re-derived.
+    #[test]
+    fn the_two_startup_fixtures_are_not_the_same_size() {
+        let (_a, connections) = connections_fixture().expect("connections fixture");
+        let (_b, annotations) = annotations_fixture().expect("annotations fixture");
+
+        let conn_bytes = std::fs::metadata(&connections)
+            .expect("stat connections")
+            .len();
+        let anno_bytes = std::fs::metadata(&annotations)
+            .expect("stat annotations")
+            .len();
+
+        assert!(
+            anno_bytes > conn_bytes * 4,
+            "annotations.toml ({anno_bytes} bytes) should dwarf connections.toml \
+             ({conn_bytes} bytes); if it no longer does, the fixtures changed and \
+             the two medians may finally be worth comparing"
+        );
+    }
+}

@@ -7,7 +7,47 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Everyday work
+
+### Fixed
+
+- **A bundle that will not open now says which check refused it.** `.dbbx`
+  exists to be carried to another machine, and until now every structural
+  failure arrived as the same four words — "bundle is corrupt or was not
+  produced by dbboard". Three different things produce that: the bytes are not
+  an age file, the key stanza will not unwrap, or the body fails its
+  authentication tag. They call for three different next steps, so the error
+  now carries the stage that refused the bundle and what `age` itself said.
+
+- **A truncated bundle is no longer reported as an I/O error.** An interrupted
+  copy is the most likely way a bundle gets damaged in real use, and `age`
+  reports the short read as I/O. But decryption is handed a byte slice — there
+  is no device that can fault — so "bundle I/O error: failed to fill whole
+  buffer" was a diagnosis of something that cannot have happened, pointing the
+  reader at their disk instead of at the copy. A bundle that stops early is
+  now reported as corrupt at the stage it stopped.
+
+### Changed
+
+- **A finding from v0.14's baseline is withdrawn.** That release's notes said
+  `annotations.toml` parses "six times slower than `connections.toml` for the
+  same twenty connections". The two files are not the same document: the
+  annotations fixture carries a note per table and per column on top of those
+  connections, so it is 38,952 bytes against 2,092 — 18.6x the data parsed in
+  6x the time, which makes it the faster of the two per byte. Measured
+  directly, `toml` costs 21 ns/byte on one and 19.5 ns/byte on the other.
+  Nothing was slow; the comparison was invalid. A test now asserts the two
+  fixtures are *not* the same size, so the same wrong reading cannot be taken
+  from the same two numbers again.
+
+  The other two leads were checked as well. `truncate_rows` is a
+  `Vec::truncate`, and its 570 µs is the cost of freeing 9,900 rows — which
+  every adapter already avoids paying by capping at the source. `query_10k`
+  splits into 143 ns per row and 37 ns per value, which is what the row
+  representation costs rather than a mistake in it. So no optimisation ships
+  against the current measurement points, and the effort moves to not building
+  ten thousand rows for a grid that shows fifty. See
+  [ADR-0142](docs/decisions.md).
 
 ## [0.14.0] — 2026-09-02 — Speed, measured
 
