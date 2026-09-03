@@ -797,10 +797,11 @@ pnpm install          # first time only
 pnpm tauri build
 ```
 
-The bundles land under `apps/desktop/src-tauri/target/release/bundle/`. They
-are named after `productName`, which is `dbboard` — the cargo package is still
-`dbboard-desktop`, and releases v0.5.0 through v0.14.0 carry that spelling in
-their filenames:
+The bundles land under `target/release/bundle/` — the workspace shares one
+target directory, so they are at the repository root and not beside the crate
+that produced them. They are named after `productName`, which is `dbboard`;
+the cargo package is still `dbboard-desktop`, and releases v0.5.0 through
+v0.14.0 carry that spelling in their filenames:
 
 | Platform | Artifact | Built on |
 |---|---|---|
