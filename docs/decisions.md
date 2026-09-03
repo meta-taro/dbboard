@@ -13190,3 +13190,58 @@ percentage available here, because both are unmeasured rather than small.
 - v0.15 carries the pagination direction rather than a list of micro-targets.
   If a percentage-sized win is ever claimed here, it needs a machine quieter
   than this one to be visible at all.
+
+## ADR-0143 — The application is called dbboard, and the download page learns a second spelling (2026-09-03)
+
+**Status.** Accepted. Amends
+[ADR-0089](#adr-0089--the-egui-client-is-retired-and-the-download-page-offers-only-the-tauri-bundles-2026-08-11) (which
+made the download page match on a product prefix) and constrains
+[ADR-0067](#adr-0067--the-updater-manifest-is-assembled-from-the-release-assets-2026-08-05) (the
+updater manifest names the artifact it serves).
+
+**Context.** `productName` was `dbboard-desktop`, so that is what the Dock
+showed, what the `.app` and the installers were called, and what the Start
+menu listed. The name is the cargo package's — `apps/desktop/src-tauri` is
+`dbboard-desktop` because it sits beside `dbboard-mcp` and `dbboard-core` and
+has to be distinguishable from them. None of that is a reason for the product
+a person launches to carry the suffix: to the person, this *is* dbboard. There
+is no second desktop client to disambiguate it from.
+
+**Decision.** `productName` becomes `dbboard`. The cargo package keeps its
+name — the workspace's internal distinctions are still needed, and the binary
+in `target/release/` is still `dbboard-desktop`.
+
+**The download page needs both spellings, and the underscore is why.** The
+page matches assets by prefix rather than extension, because releases up to
+v0.4.0 also carry the retired egui client and keying on `.dmg` alone made the
+offered build depend on the order the Releases API returned assets in (#135,
+ADR-0089). That retired client was called `dbboard` — exactly the new name.
+What separates them is the separator: Tauri writes `dbboard_0.15.0_universal.dmg`
+with an underscore, the egui build wrote `dbboard-macos-universal-0.4.0.dmg`
+with a hyphen. So `bucketFor` accepts `dbboard-desktop` (v0.5.0–v0.14.0) and
+`dbboard_` (v0.15.0 on), and still refuses `dbboard-`. The MCP server is safe
+for the same reason: `dbboard-mcp-` has the hyphen.
+
+That distinction is one character wide and load-bearing, so it is asserted by
+a test that names it rather than left to be noticed by whoever next edits the
+matcher.
+
+**Consequences.**
+
+- **A Windows install from before v0.15.0 is not upgraded; it is joined.** The
+  NSIS installer keys on the product name, so a machine holding
+  `dbboard-desktop` gets a second entry called `dbboard` in
+  `%LOCALAPPDATA%\dbboard\` rather than an in-place upgrade. The old one has
+  to be uninstalled by hand. This is the cost of renaming, it is paid once,
+  and it is smallest now: the client is pre-1.0 and its install base is
+  countable.
+- **On macOS the in-app updater replaces the bundle at the path it is running
+  from**, so an existing install keeps the folder name `dbboard-desktop.app`
+  while its Info.plist — and therefore the Dock — says `dbboard`. Cosmetic,
+  and it resolves itself for anyone who installs from a `.dmg` again.
+- **User data is untouched.** The config directory and the keychain entries
+  derive from the bundle identifier (`io.github.meta-taro.dbboard`) and the
+  `directories` lookup, neither of which changes. Nobody loses a connection
+  over this.
+- `dbboard-mcp`'s window matcher already accepted both names, which is why the
+  screenshot verbs keep working against either build without a change.

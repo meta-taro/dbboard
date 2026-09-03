@@ -23,10 +23,11 @@ use base64::Engine as _;
 use serde::Serialize;
 use xcap::image::{imageops::FilterType, ImageFormat, RgbaImage};
 
-/// Application names that count as "the dbboard app". `dbboard-desktop` is
-/// `productName`; the bare name is kept because a platform that reports the
-/// window class rather than the binary would use it. Matching is on the
-/// whole name, never a substring — a substring match is what lets an
+/// Application names that count as "the dbboard app". `dbboard` is
+/// `productName` from v0.15.0; `dbboard-desktop` is what it was called up to
+/// v0.14.0, and is still the cargo binary's name — so a build run straight out
+/// of `target/release/` reports it whatever the installed one says. Matching
+/// is on the whole name, never a substring — a substring match is what lets an
 /// unrelated window with dbboard in its name win.
 const APP_NAMES: [&str; 2] = ["dbboard-desktop", "dbboard"];
 
@@ -41,7 +42,9 @@ pub const DEFAULT_MAX_EDGE: u32 = 1400;
 pub enum CaptureError {
     /// No dbboard window is on screen. A human has to start the app; there
     /// is nothing the caller can rephrase.
-    #[error("dbboard is not running (no window belonging to `dbboard-desktop` was found)")]
+    #[error(
+        "dbboard is not running (no window belonging to `dbboard` or `dbboard-desktop` was found)"
+    )]
     NotRunning,
     /// The app is running but every one of its windows is minimised. Also a
     /// human's job — restoring a window is not something MCP can do.
