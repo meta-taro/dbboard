@@ -19,12 +19,14 @@ screenshot and identical in Task Manager, so check the process before you point
 anything at it:
 
 ```powershell
-Get-Process dbboard-desktop | Select-Object Id, Path, StartTime
+Get-Process dbboard | Select-Object Id, Path, StartTime
 ```
 
-The demo instance runs from `target/release/`. Your own runs from
-`%LOCALAPPDATA%\dbboard-desktop\`. Capture by process id, never by "the window
-in front".
+The demo instance runs from `target/release/` and is still called
+`dbboard-desktop.exe` there — that is the cargo binary, which kept its name.
+Your own installed one runs from `%LOCALAPPDATA%\dbboard\` (installs made
+before v0.15.0 sit in `%LOCALAPPDATA%\dbboard-desktop\`, and the installer
+does not move them). Capture by process id, never by "the window in front".
 
 ## The checklist
 

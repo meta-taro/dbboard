@@ -797,12 +797,15 @@ pnpm install          # first time only
 pnpm tauri build
 ```
 
-The bundles land under `apps/desktop/src-tauri/target/release/bundle/`:
+The bundles land under `apps/desktop/src-tauri/target/release/bundle/`. They
+are named after `productName`, which is `dbboard` — the cargo package is still
+`dbboard-desktop`, and releases v0.5.0 through v0.14.0 carry that spelling in
+their filenames:
 
 | Platform | Artifact | Built on |
 |---|---|---|
-| Windows | `nsis/dbboard-desktop_<version>_x64-setup.exe` | Windows |
-| macOS | `dmg/dbboard-desktop_<version>_universal.dmg` | macOS (a `.dmg` cannot be produced from Windows) |
+| Windows | `nsis/dbboard_<version>_x64-setup.exe` | Windows |
+| macOS | `dmg/dbboard_<version>_universal.dmg` | macOS (a `.dmg` cannot be produced from Windows) |
 
 App identity — bundle identifier, icons, window defaults, updater endpoint —
 lives in [`apps/desktop/src-tauri/tauri.conf.json`](apps/desktop/src-tauri/tauri.conf.json);
@@ -825,7 +828,7 @@ so it needs no separate deploy. Verify a download:
 ```sh
 sha256sum -c SHA256SUMS.txt        # Linux/macOS
 # or on Windows PowerShell:
-#   (Get-FileHash .\dbboard-desktop_<version>_x64-setup.exe -Algorithm SHA256).Hash
+#   (Get-FileHash .\dbboard_<version>_x64-setup.exe -Algorithm SHA256).Hash
 ```
 
 ### Handing a build to someone

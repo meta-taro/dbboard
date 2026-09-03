@@ -33,6 +33,26 @@ test("the Tauri bundles are the ones offered", () => {
   assert.equal(bucketFor("SHA256SUMS.txt"), "sums");
 });
 
+test("the renamed bundles are offered, and the old ones keep working", () => {
+  // From v0.15.0 the product is called `dbboard`, so Tauri names its bundles
+  // `dbboard_<version>_…`. Releases v0.5.0 through v0.14.0 shipped the same
+  // client as `dbboard-desktop_…`, and the page lists whichever release a
+  // visitor is looking at, so both spellings have to be recognised.
+  assert.equal(bucketFor("dbboard_0.15.0_x64-setup.exe"), "win-setup");
+  assert.equal(bucketFor("dbboard_0.15.0_universal.dmg"), "mac-dmg");
+  assert.equal(bucketFor("dbboard-desktop_0.14.0_universal.dmg"), "mac-dmg");
+});
+
+test("the underscore is what separates the new name from the retired one", () => {
+  // The new prefix cannot simply be `dbboard`: the egui client the project
+  // retired in ADR-0089 was called exactly that, and its assets are still
+  // attached to the releases up to v0.4.0. Tauri puts an underscore before
+  // the version, the egui build used a hyphen, and that is the whole
+  // distinction — so it is asserted rather than left to be noticed.
+  assert.equal(bucketFor("dbboard-macos-universal-0.4.0.dmg"), null);
+  assert.equal(bucketFor("dbboard_0.15.0_universal.dmg"), "mac-dmg");
+});
+
 test("the retired egui assets are ignored", () => {
   // A release from before ADR-0089 still carries these. Offering one would
   // hand a visitor the client that no longer ships.

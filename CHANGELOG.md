@@ -9,6 +9,26 @@ public API is the HTTP contract in
 
 ## [Unreleased] — Everyday work
 
+### Changed
+
+- **The application is called dbboard.** It was `dbboard-desktop` everywhere a
+  person could see it — the Dock, the `.app`, the installer, the Start menu —
+  because that is the cargo package's name, chosen so it could be told apart
+  from `dbboard-core` and `dbboard-mcp`. None of that is the user's problem:
+  there is one desktop client and it is dbboard. The `.dmg` and the Windows
+  setup are now `dbboard_<version>_…`, and the download page recognises both
+  spellings so older releases keep offering their builds.
+
+  Two consequences worth knowing. A **Windows** install from v0.14.0 or
+  earlier is not upgraded in place — the installer keys on the product name,
+  so the new one lands beside it and the old entry needs uninstalling by hand.
+  On **macOS** the in-app updater replaces the bundle where it stands, so an
+  existing install shows the new name in the Dock while its folder is still
+  `dbboard-desktop.app`; installing from the `.dmg` again tidies that.
+  **No connection, setting or stored credential is affected** — those hang off
+  the bundle identifier, which has not changed. See
+  [ADR-0143](docs/decisions.md).
+
 ### Fixed
 
 - **A bundle that will not open now says which check refused it.** `.dbbx`
