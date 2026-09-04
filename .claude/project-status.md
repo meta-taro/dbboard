@@ -5,6 +5,60 @@
 
 ## 最終更新
 
+- 日付: 2026-09-04 その2 (**#233 merge 済み・develop 緑。v0.16 のページングを 4 論点の相談から実装まで。ADR-0145。**
+
+  ### 再開時点の確認
+
+  PR #233 は 05:54 UTC に merge 済み。develop の push ラン (33842257905) は
+  `deps` / `rust` / `frontend` / `site` の 4 ジョブとも緑、pii-scan も緑。
+  前セッションで未 push のまま merge 済みブランチ上に取り残されていた
+  セッションログのコミットを develop へ移した (push は user)。
+
+  **日次 deps の初回実行は 07:00 UTC を過ぎても走っていない** (07:09 時点)。
+  GitHub の schedule は数十分遅れることがあり、**追加直後の初回は特に飛びやすい**。
+  バックグラウンドで監視中。走らないまま日を跨いだら、cron が default branch
+  (`develop`) に乗っているかを確認するところから。
+
+  ### 相談した 4 論点 → 全部「推奨」を選択
+
+  着手前にコードを読んだら、**issue 0029 の前提が間違っていた**:
+
+  - browse クエリはフロントで既に `LIMIT 100` (`selectTopN` / `BROWSE_ROWS`)
+  - `run_read_query` がさらに 200/1000 で丸める
+  - Postgres は `run_read_only_txn` が `DECLARE CURSOR` で `max_rows` 打ち切り
+
+  `MAX_RESULT_ROWS = 10,000` は `query` の天井であって窓の経路の天井ではない。
+  **200 倍は最初から払われていない。** 本当の欠落は「101 行目を見る手段が無い」で、
+  これは性能改善ではなく機能の欠落。issue の題も「10,000 行を作らない」から変えた。
+
+  決定 (ADR-0145): (1) 生成される browse クエリだけページング、手書き SQL は不可侵
+  (2) カーソルは握らない keyset — dump の `build_select_page` (ADR-0049) を再利用
+  (3) `has_more` / `next_cursor` は **`QueryResult` に**、v1.0 凍結前に
+  (4) 総件数は出さない。
+
+  ### 実装 (4 コミット、feature/the-hundred-and-first-row)
+
+  - `QueryResult` に 2 フィールド。空なら JSON から消えるので**既存の払い出しは
+    バイト単位で不変**。`api_contract_drift.rs` に 3 つ目の検査 (網羅的な構造体
+    リテラルなので、将来フィールドを足すとビルドが止まる)
+  - `dbboard-core` に `browse_page`。`cursor_from_last_row` を `dump/run.rs` から
+    `dump/select.rs` へ昇格 (SQL とカーソルが同じ場所に)
+  - `McpService::browse_page` + Tauri コマンド + `$lib/query/pages`
+    (カーソルの列はクライアント側 = だからバックエンドが何も握らずに「前へ」が効く)
+  - bench 点 `browse/next_page_100` は**最後の**ページを読む (OFFSET が高くつくのは
+    5 ページ目であって 2 ページ目ではない)。実測 first 71.6µs / next 70.3µs
+
+  **主キーが無いテーブルは `has_more: true` + `next_cursor: null`** を返す。
+  矛盾に見えて矛盾ではない — 「まだある」と「辿り方がある」は別の答え。
+
+  ### AI がやれていないこと → user 側
+
+  - **push と PR** (develop に 1 コミット、feature ブランチに 4 コミット)
+  - **`dbboard-web` 側の ADR ミラー** — contract に触ったので Pacing Note により必須。
+    web 側 Claude セッションの担当
+  - memory 27 ファイルの移送 / `.pii-denylist` / v0.15.0 公開物の目視 PII スキャン /
+    `sudo rm -f /usr/local/bin/kubectl.docker`)
+
 - 日付: 2026-09-04 (**v0.15.0 公開済み。Dock の名前が変わらない件から、CI を見ていなかったことまで辿った回。PR #233 は merge 済み、develop 4 ジョブ緑。**
 
   ### v0.15.0 まで出し切っている
