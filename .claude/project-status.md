@@ -5,6 +5,44 @@
 
 ## 最終更新
 
+- 日付: 2026-09-04 その3 (**ターミナルが落ちた後の拾い直し。PR #234 を出して merge、develop 緑。**
+
+  ### 落ちた側で失われたものは無かった
+
+  前セッションはターミナルごと落ちたが、コミットは 5 本とも残っており作業ツリーも clean。
+  feature ブランチは **push まで済んでいた** (ローカルに upstream 設定が無いだけで
+  remote も `b9f1c2a`)。`.claude/next-actions.md` の「push と PR」は push 分だけ古かった。
+
+  **CI が一度も走っていなかったのは正常**。`ci.yml` のトリガーは `develop` / `main` への
+  push と PR で、feature ブランチの push だけでは動かない。**PR を出して初めて検証が走る**。
+
+  ### PR #234 → merge
+
+  PR ラン (`33852191059`) は `rust` 5m3s / `frontend` 23s / `deps` 23s / `site` 5s /
+  `pii-scan` 6s の**5 ジョブ緑**。merge 後の develop push ラン (`33853557815`) も
+  4 ジョブ緑。`deps` は今日も無事 (yank 待ちの地雷なし)。
+
+  Node.js 20 deprecation の annotation が 4 ジョブに出ている
+  (`actions/setup-node@v4` / `actions/cache@v4` が Node 24 に強制されている)。
+  **今は警告だけで赤ではない**が、いずれ action の版上げが要る。
+
+  ### 見つけた小さな澱
+
+  - `fix/the-dock-shows-the-file-name` (ローカルのみ) は **消してよい**。remote は
+    #233 merge 時に削除済み、残る `db5cb91` は develop の `1e5a055` と同内容の
+    **amend 前の版** (「PR #233 は open・緑」と書いてある方)。失われる内容は無い。
+  - **日次 deps はまだ一度も走っていない。** `--event schedule` のランが 0 件
+    (17:30 JST 時点、cron は 16:00 JST)。GitHub の cron は追加直後の初回が飛びやすい。
+    **明日も出なければ設定を疑う。**
+  - `release-due.mjs` は `2 unreleased entries — a release may be cut
+    (0.15.0 -> 0.16.0: Everyday work)`。3 件で "due" なのでまだ切らなくてよい。
+
+  ### AI がやれていないこと → user 側
+
+  - **`dbboard-web` 側の ADR ミラー** (ADR-0145 は contract に触るので Pacing Note により必須)
+  - memory 27 ファイルの移送 / `.pii-denylist` / v0.15.0 公開物の目視 PII スキャン /
+    `sudo rm -f /usr/local/bin/kubectl.docker`)
+
 - 日付: 2026-09-04 その2 (**#233 merge 済み・develop 緑。v0.16 のページングを 4 論点の相談から実装まで。ADR-0145。**
 
   ### 再開時点の確認

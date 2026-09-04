@@ -19,10 +19,18 @@
 > ほぼ空 (このセッションで書いた 1 件のみ)。**旧 Windows 機を処分・初期化する前に。**
 > a も未着手。c は完了済み。
 >
-> このほかの user 側ボール: **`feature/the-hundred-and-first-row` の push と PR**
-> (develop にも未 push が 1 コミット)、**`dbboard-web` 側の ADR ミラー**
+> このほかの user 側ボール: **`dbboard-web` 側の ADR ミラー**
 > (ADR-0145 が contract に触るため必須)、v0.15.0 公開物の目視 PII スキャン、
 > `sudo rm -f /usr/local/bin/kubectl.docker`。
+>
+> **2026-09-04 その3 で解消** — `feature/the-hundred-and-first-row` は push 済み、
+> PR #234 → merge (`c6130c8`)。PR ラン 5 ジョブ緑、develop の push ラン
+> (`33853557815`) も 4 ジョブ緑。
+> 併せて 2 点: **日次 deps はまだ一度も走っていない** (`--event schedule` のランが
+> 0 件・17:30 JST 時点)。明日の 16:00 JST も出なければ、cron が default branch
+> (`develop`) に乗っているかの確認から。そして**ローカルの
+> `fix/the-dock-shows-the-file-name` は消してよい** — remote は #233 merge 時に
+> 削除済みで、残る `db5cb91` は develop の `1e5a055` の amend 前の版。
 
 > **2026-09-02 時点の状況**
 > - **c は完了。** 3 本設置済み、`hook_install_drift.rs` pass。同日中に実際に 4 回働いた
