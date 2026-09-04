@@ -90,6 +90,15 @@ export const en = {
   "result-sort-hint": "Click to sort · Shift-click to add a key",
   "result-cell-dialog": "Cell value",
   "result-row-limit": "Rows",
+  // Keyset paging over a browsed table (ADR-0145). "Page N" counts pages
+  // walked, not pages that exist: a keyset cursor knows what comes next, not
+  // how much of it there is, and the total is deliberately not asked for.
+  "result-page-prev": "← Previous",
+  "result-page-next": "Next →",
+  "result-page-position": "Page { $page }",
+  "result-page-end": "End of table",
+  "result-page-no-cursor":
+    "There are more rows, but this table has no primary key — so there is no stable order to continue from.",
   "cell-copy": "Copy",
   "cell-tree": "Document structure",
   "cell-tree-expand-all": "Expand all",
@@ -526,6 +535,12 @@ const ja: Partial<Record<MessageKey, string>> = {
   "query-run-busy": "実行中…",
   "result-rows": "{ $count } 行",
   "result-truncated-suffix": "上限 { $max } で打ち切り",
+  "result-page-prev": "← 前へ",
+  "result-page-next": "次へ →",
+  "result-page-position": "{ $page } ページ目",
+  "result-page-end": "テーブルの末尾",
+  "result-page-no-cursor":
+    "行はまだありますが、このテーブルには主キーがないため、続きを辿る安定した順序がありません。",
   "result-selected": "{ $total } 件中 { $sel } 件選択",
   "result-copy-tsv": "TSV でコピー",
   "result-copy-csv": "CSV でコピー",

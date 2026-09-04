@@ -893,6 +893,7 @@ fn to_mcp(err: &ServiceError) -> McpError {
         | ServiceError::Db(_)
         | ServiceError::WriteBack(_)
         | ServiceError::NotEditable(_)
+        | ServiceError::NotPageable(_)
         | ServiceError::NotDumpable(_)
         | ServiceError::NotRestorable(_)
         | ServiceError::WriteNotEnabled(_)

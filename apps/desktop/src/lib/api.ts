@@ -150,7 +150,19 @@ export interface QueryOutput {
   columns: Column[];
   rows: Cell[][];
   row_count: number;
+  // The result was cut and the rest is out of reach from here — ask a
+  // narrower question. Not the same as `has_more`, which comes with a way
+  // forward (ADR-0145).
   truncated: boolean;
+  // Rows exist beyond this page. Always false for a hand-written statement,
+  // which is run as written and never paged.
+  has_more: boolean;
+  // The cursor to pass back as the next page's `after`. Opaque: it is the
+  // page's last row's key values, and the only supported use is handing it
+  // back. Null when there is no next page — and also when there is one but
+  // no stable order to resume from (a table with no primary key), which is
+  // why `has_more` can be true while this is null.
+  next_cursor: Cell[] | null;
 }
 
 export const listConnections = (): Promise<ConnectionView[]> =>
@@ -214,6 +226,23 @@ export const runReadQuery = (
   maxRows?: number,
 ): Promise<QueryOutput> =>
   invoke('run_read_query', { connectionId, sql, maxRows: maxRows ?? null });
+
+// Read one keyset page of a table (ADR-0145). Separate from `runReadQuery`
+// because this one lets the backend *build* the statement, which is what
+// makes paging safe: there is no author whose LIMIT it could contradict.
+// Pass the previous page's `next_cursor` as `after`; omit it for page one.
+export const browsePage = (
+  connectionId: string,
+  table: TableInfo,
+  pageRows?: number,
+  after?: Cell[] | null,
+): Promise<QueryOutput> =>
+  invoke('browse_page', {
+    connectionId,
+    table,
+    pageRows: pageRows ?? null,
+    after: after ?? null,
+  });
 
 // Apply one row's staged edits as a single UPDATE (ADR-0042) — the app's first
 // DB write path, deliberately NOT exposed to MCP agents. `schema` is the

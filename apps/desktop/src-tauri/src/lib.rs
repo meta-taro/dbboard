@@ -112,6 +112,7 @@ pub fn run() {
             browse::search_schema,
             browse::list_relationships,
             browse::run_read_query,
+            browse::browse_page,
             browse::update_row,
             config_path,
             connections::fields::connection_edit_fields,

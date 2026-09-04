@@ -159,6 +159,31 @@ pub(crate) async fn run_read_query(
         .map_err(|e| e.to_string())
 }
 
+/// Read one keyset page of a table (ADR-0145).
+///
+/// The counterpart to [`run_read_query`], and the reason the two are
+/// separate commands: this one *builds* the statement, so it is free to add
+/// the `ORDER BY`/`WHERE`/`LIMIT` that paging needs. A statement the user
+/// typed goes through `run_read_query` untouched.
+///
+/// `after` is the previous page's `next_cursor`, passed back verbatim;
+/// `None` reads the first page. The frontend keeps the cursors it has been
+/// given so it can step back, which is why nothing is held here.
+#[tauri::command]
+pub(crate) async fn browse_page(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+    table: TableInfo,
+    page_rows: Option<usize>,
+    after: Option<Vec<Value>>,
+) -> Result<QueryOutput, String> {
+    state
+        .service
+        .browse_page(&connection_id, &table, page_rows, after.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // --- Inline cell editing (write path, ADR-0042) --------------------------
 //
 // The grid stages edits and, on Save, sends the table, the row's
