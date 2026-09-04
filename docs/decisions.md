@@ -13308,3 +13308,91 @@ whenever the next pull request happens to be opened.
 - The concurrency group now includes whether the run is scheduled, so a
   nightly can neither cancel nor be cancelled by the run a person is waiting
   on.
+
+## ADR-0145 — Paging is a missing row, not a slow one, and the cursor is a key rather than a connection (2026-09-04)
+
+**Status.** Accepted. Settles the four questions
+[issue 0029](../.claude/issues/0029-pagination-for-large-results.md) left open,
+and corrects the premise it inherited from
+[ADR-0142](#adr-0142--the-first-optimisation-the-baseline-bought-was-the-decision-not-to-optimise-2026-09-02).
+
+**Context.** Issue 0029 was written as the one large optimisation the
+performance baseline still pointed at: the grid shows a few dozen rows,
+`MAX_RESULT_ROWS` is 10,000, and the difference is 200×. Reading the code
+before designing anything showed that the 200× is not being paid.
+
+- The browse query is built in the frontend and already bounded:
+  `selectTopN` in `apps/desktop/src/lib/sql/build.ts` emits
+  `SELECT * FROM t LIMIT 100` (`BROWSE_ROWS`).
+- `McpService::run_read_query` then floors the request again at
+  `DEFAULT_MAX_ROWS` (200), ceiling `MAX_MAX_ROWS` (1000).
+- Postgres does not materialise even that speculatively: `run_read_only_txn`
+  declares a server-side cursor inside the read-only transaction and stops at
+  `max_rows`, falling back to a capped portal stream on Aurora DSQL, where
+  `DECLARE CURSOR` is rejected.
+
+`MAX_RESULT_ROWS` is the ceiling of `query`, not of anything the window
+reaches. So the 4.4 ms of `result/query_10k` is not on the path a user takes,
+and no amount of paging removes a cost the browse path was never paying.
+
+What the reading did find is plainer, and worse: **there is no way to see row
+101.** The bound has always been a truncation, never a first page. That
+reframes the work — this is a missing feature whose performance property is
+that it stays O(1) per page, not an optimisation of an existing slow path. The
+baseline gains nothing to celebrate here, and the changelog entry is about
+rows a person can now reach, not milliseconds they no longer pay.
+
+**Decision.** Four answers, in the order the issue asked them.
+
+1. **Only the generated browse query pages.** Hand-written SQL is left alone.
+   Rewriting a statement a person typed makes the tool argue with the `LIMIT`
+   they wrote, and the disagreement is visible in the results — the one place
+   a database client must not be clever. The truncation flag already tells
+   them when their own query was cut.
+
+2. **The cursor is a key, not a connection.** Pages are keyset:
+   `ORDER BY <pk>`, `WHERE (k1, k2) > (v1, v2)`, `LIMIT n` — each page a fresh
+   statement carrying the previous page's last key. Nothing is held between
+   pages, so there is no teardown to get right when a connection drops, a tab
+   closes, or a window sits idle overnight, and an insert between pages cannot
+   shift rows across the boundary the way `OFFSET` lets it.
+
+   This is not new code. `build_select_page` in
+   `crates/dbboard-core/src/dump/select.rs` has built exactly this since
+   [ADR-0049](#adr-0049--local-logical-dump-schema--data-dump-only), for the dump, with the row-value comparison that
+   composite keys need on both SQLite 3.15+ and Postgres. Browse reuses it
+   rather than growing a second spelling of the same SQL. Its existing
+   contract also settles the awkward case: with no primary key there is no
+   stable cursor, so such a table gets a first page and no next.
+
+3. **The paging fields go on `QueryResult`, before it freezes.** `has_more`
+   and the cursor are optional additions to the shape in
+   `docs/api-contract.md`, which becomes the public API for SemVer at v1.0
+   ([ADR-0011](#adr-0011--semver-for-dbboard-tiered-db-version-support-compatibilitymd-as-the-runbook)). Putting them only on the IPC-side `QueryOutput` is
+   cheaper today and unavailable later: after the freeze the same addition is
+   a breaking change, and an agent reaching the contract over MCP would be
+   left with `truncated` and no way forward. Per the Pacing Note in
+   `CLAUDE.md`, this touches the contract layer, so `dbboard-web` carries the
+   matching ADR.
+
+4. **No total count.** The result says whether more rows exist, not how many.
+   A `COUNT(*)` per page doubles the queries and full-scans a large table on
+   every page turn; one at the start goes stale as rows are inserted and
+   delays the first paint by exactly the scan it costs. The scrollbar
+   therefore promises "there is more", which is true, instead of a length,
+   which would not be. An exact number is already a question a person can ask
+   deliberately — `countRows` sits on the table's right-click menu — and one
+   honest answer is better than two disagreeing ones.
+
+**Consequences.**
+
+- Browsing a table becomes unbounded in reach and bounded in cost: any row is
+  reachable, and no page costs more than the first.
+- A table with no primary key still shows one page. That is a visible gap, and
+  the right place to close it is a chosen sort key, not a hidden `OFFSET`.
+- `result/query_10k` stays in the baseline unchanged. It measures what the
+  representation costs, not what the application does, and this work does not
+  move it — recording that here so the next reader does not go looking for the
+  improvement it did not produce.
+- The contract grows two optional fields now and cannot grow them after v1.0.
+- `dbboard-web` owes the mirrored ADR before its own contract freezes.
