@@ -7,7 +7,25 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Everyday work
+
+### Fixed
+
+- **Updating in place from 0.14.0 or earlier leaves the old name on screen,
+  and 0.15.0's notes said otherwise.** They claimed the Dock would show
+  `dbboard` because the updated bundle says so inside. It does not: macOS
+  names an application after its `.app` file and ignores a display name that
+  disagrees with it, which is what stops any bundle from claiming to be any
+  application. Measured on a real 0.14.0 → 0.15.0 update — re-registering with
+  `lsregister` and restarting the Dock changes nothing, because it is not a
+  cache.
+
+  If yours still reads `dbboard-desktop`, it is the current version wearing
+  the old label. Either rename it —
+  `mv /Applications/dbboard-desktop.app /Applications/dbboard.app`, and the
+  updater follows — or install from the `.dmg` again. Nothing is lost either
+  way: connections and settings hang off the bundle identifier, which has not
+  changed.
 
 ## [0.15.0] — 2026-09-03 — The app has its own name
 

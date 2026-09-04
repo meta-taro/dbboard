@@ -205,6 +205,29 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 - [ ] No secrets or credentials in the diff
 - [ ] Commit granularity is sensible
 
+### After the push: watch CI to the end
+
+A push is not finished when git returns. **Whoever pushed — or the agent that
+prepared it — watches the checks until every job has settled, and says what
+happened.** Do not announce a PR and move on while its run is still going.
+
+```sh
+gh pr checks <number>                     # until nothing reads `pending`
+gh run list --branch develop --workflow ci --limit 1
+```
+
+Two reasons this is a rule rather than a habit. The hooks are a local
+convenience and CI is the gate (ADR-0104), so a green pre-push says nothing
+about the runners. And the `deps` job goes red **for reasons no commit caused**:
+an upstream yank enters the advisory database and every branch turns red at
+once, which is exactly what happened to `chacha20 0.10.1` in v0.14.0 — a red
+that nobody sees until somebody looks.
+
+A failing job's log is only readable once the *whole run* completes, so a
+failure spotted early still has to be waited out before it can be diagnosed.
+The same applies to a tag push: watch `release.yml` through to the published
+assets, because that run is the release.
+
 ## Git Hooks
 
 Hook scripts live in `.cargo-husky/hooks/`. Install them with:
@@ -286,8 +309,12 @@ Tooling:
 
 - `cargo deny check` covers licenses and RustSec advisories. It is **not a
   suggestion** — the `deps` job in `ci.yml` runs it on every push and pull
-  request to `develop` and `main` (ADR-0117). It was a suggestion until
-  v0.10.0, and in that time it went red without anyone noticing.
+  request to `develop` and `main` (ADR-0117), **and nightly** (ADR-0144). It
+  was a suggestion until v0.10.0, and in that time it went red without anyone
+  noticing. The nightly exists because this job answers a question that
+  changes without a commit: two upstream yanks in eight days (`chacha20`,
+  `wnaf`) each turned every branch red, and each was found by someone opening
+  a pull request for unrelated reasons.
 - Anything `deny.toml` ignores carries a per-advisory `reason`. Add entries
   the same way: one line per advisory, saying why this one cannot be fixed
   today and what would clear it. A blanket suppression is not acceptable

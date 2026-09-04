@@ -44,12 +44,23 @@ on:
   pull_request:
     branches: [develop, main, 'feature/**']
   workflow_dispatch: {}
+  # Nightly, for the `deps` job alone (every other job sits it out below).
+  # `cargo deny check` is the one question here whose answer changes without a
+  # commit: a crate nobody in this tree names is yanked upstream, the advisory
+  # database picks it up, and every branch is red the next time anyone looks.
+  # It happened twice in eight days — `chacha20 0.10.1` and `wnaf 0.14.0` —
+  # and both were found by someone opening a pull request for other reasons.
+  # An hour after `pii-scan`, so the two daily runs do not land together.
+  schedule:
+    - cron: "0 7 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The nightly gets its own group: sharing one with the branch would let a
+  # scheduled run cancel the run a person is waiting on, and vice versa.
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'nightly' || 'demand' }}
   cancel-in-progress: true
 
 env:
@@ -69,6 +80,8 @@ jobs:
   rust:
     name: rust (fmt / clippy / check / test)
     runs-on: ubuntu-latest
+    # The nightly exists for `deps`; nothing here changes overnight.
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -198,6 +211,8 @@ jobs:
   frontend:
     name: frontend (svelte-check / vitest)
     runs-on: ubuntu-latest
+    # The nightly exists for `deps`; nothing here changes overnight.
+    if: github.event_name != 'schedule'
     defaults:
       run:
         working-directory: apps/desktop
@@ -225,6 +240,8 @@ jobs:
   site:
     name: site (node --test)
     runs-on: ubuntu-latest
+    # The nightly exists for `deps`; nothing here changes overnight.
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v6
         with:
