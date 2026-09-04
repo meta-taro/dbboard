@@ -13256,3 +13256,55 @@ matcher.
   over this.
 - `dbboard-mcp`'s window matcher already accepted both names, which is why the
   screenshot verbs keep working against either build without a change.
+
+## ADR-0144 — The dependency audit runs nightly, because its answer changes without a commit (2026-09-04)
+
+**Status.** Accepted. Extends
+[ADR-0117](#adr-0117--cargo-deny-is-a-blocking-ci-job-not-a-suggestion-2026-08-14) (which
+made `cargo deny check` blocking) with a trigger it did not have.
+
+**Context.** Every other check in `ci.yml` answers a question about the diff:
+does this code compile, does it pass its tests, does the frontend type-check.
+Run it twice on the same tree and it says the same thing. `cargo deny check`
+does not. Its input is the RustSec advisory database and the crates.io yank
+flags, both of which move on their own, so the same commit is green today and
+red tomorrow with nothing on this side having changed.
+
+That is not hypothetical. In eight days it happened twice:
+
+- `chacha20 0.10.1` was yanked while v0.14.0 was being cut. It reached the
+  tree through `rand 0.10` (hickory, russh, ssh-cipher); no manifest here
+  names it. Found because the merge of #227 happened to be looked at.
+- `wnaf 0.14.0` was yanked the following week, arriving through
+  `russh → p256 → primeorder`. Found because a documentation-only pull request
+  went red, and because the maintainer looked at it — the session that opened
+  that PR had already moved on.
+
+Both fixes were three lines of `Cargo.lock`. The cost was never the repair; it
+was the interval between "every branch is red" and "somebody notices".
+
+**Decision.** `ci.yml` gains a nightly `schedule` trigger, and **only the
+`deps` job runs on it** — `rust`, `frontend` and `site` carry
+`if: github.event_name != 'schedule'`. A nightly that rebuilt the workspace
+would burn runner minutes re-answering a question no change had asked, and a
+noisy nightly is one nobody reads. It runs at 07:00 UTC, an hour after
+`pii-scan.yml`, so the two daily jobs do not land on the runner together.
+
+The schedule does not fix anything by itself: a person still bumps the lock.
+What it decides is *when the repo finds out* — within a day, rather than
+whenever the next pull request happens to be opened.
+
+**Consequences.**
+
+- A scheduled failure notifies through GitHub's own path for scheduled
+  workflows on the default branch. There is no new integration to maintain and
+  no secret to hold.
+- The nightly runs on `develop`, so a yank is reported against the integration
+  branch rather than against whichever feature branch is unlucky.
+- `crates/dbboard-config/tests/nightly_deps_drift.rs` fails if the schedule is
+  removed, if `deps` excludes itself from it, or if another job stops sitting
+  it out. The last one matters most: adding a job to `ci.yml` without the
+  guard silently turns the cheap nightly into a full build.
+- The concurrency group now includes whether the run is scheduled, so a
+  nightly can neither cancel nor be cancelled by the run a person is waiting
+  on.

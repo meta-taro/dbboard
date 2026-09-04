@@ -309,8 +309,12 @@ Tooling:
 
 - `cargo deny check` covers licenses and RustSec advisories. It is **not a
   suggestion** — the `deps` job in `ci.yml` runs it on every push and pull
-  request to `develop` and `main` (ADR-0117). It was a suggestion until
-  v0.10.0, and in that time it went red without anyone noticing.
+  request to `develop` and `main` (ADR-0117), **and nightly** (ADR-0144). It
+  was a suggestion until v0.10.0, and in that time it went red without anyone
+  noticing. The nightly exists because this job answers a question that
+  changes without a commit: two upstream yanks in eight days (`chacha20`,
+  `wnaf`) each turned every branch red, and each was found by someone opening
+  a pull request for unrelated reasons.
 - Anything `deny.toml` ignores carries a per-advisory `reason`. Add entries
   the same way: one line per advisory, saying why this one cannot be fixed
   today and what would clear it. A blanket suppression is not acceptable
