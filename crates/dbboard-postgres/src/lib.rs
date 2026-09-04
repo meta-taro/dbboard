@@ -784,6 +784,7 @@ impl DatabaseAdapter for PostgresAdapter {
             columns: columns.unwrap_or_default(),
             rows,
             rows_affected,
+            ..QueryResult::empty()
         })
     }
 
@@ -1039,6 +1040,7 @@ fn pg_rows_to_result(rows: &[PgRow]) -> DbResult<QueryResult> {
         columns,
         rows,
         rows_affected: 0,
+        ..QueryResult::empty()
     })
 }
 

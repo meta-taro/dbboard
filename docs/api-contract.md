@@ -31,8 +31,12 @@ before either side ships against them (ADR-0004).
 - Each adapter caps a single query at **10,000 rows**. A statement that
   would return more is rejected with a `query` error (status `400`) so
   the UI never silently shows a truncated grid. The cap is uniform
-  across every backend. A later phase may relax it with real streaming
-  or pagination — see `docs/roadmap.md`.
+  across every backend.
+- The cap still stands; what changed is that it is no longer the end of
+  the table. A browsed table is read one keyset page at a time and every
+  page is reachable — see `has_more` and `next_cursor` on
+  [`QueryResult`](#queryresult) (ADR-0145). Streaming is still not
+  offered.
 
 ## Endpoints
 
@@ -186,12 +190,29 @@ every consumer to guess whether a string is prose or a serialized document.
 {
   "columns": [ /* Column */ ],
   "rows": [ [ /* Value */, ... ], ... ],  // each row is a bare array
-  "rows_affected": 0                       // u64
+  "rows_affected": 0,                      // u64
+  "has_more": true,                        // optional; absent means false
+  "next_cursor": [ /* Value */, ... ]      // optional; absent means none
 }
 ```
 
 - `rows` is an array of arrays: one inner array per row, positional,
   aligned with `columns`.
+- `has_more` says whether rows exist beyond this one. It is **absent**
+  unless true, so a result that is not a page is byte-identical to what
+  this shape produced before paging existed.
+- `next_cursor` is the page's last row's primary-key values, in key
+  order, to be sent back as the next page's cursor. It is absent when
+  there is no next page — and also when there is no *reachable* one:
+  a table with no primary key can report `has_more: true` and offer no
+  cursor, because there is no stable order to resume from (ADR-0145).
+  Treat "more rows exist" and "here is how to reach them" as separate
+  answers; they are not always the same one.
+- A client must not construct a cursor itself. Its contents are the
+  server's business and may change shape; the only supported use is
+  sending back what was received.
+- Paging applies to the client's *generated* browse query. A statement a
+  person typed is run as written and reports neither field (ADR-0145).
 
 ### `Column`
 

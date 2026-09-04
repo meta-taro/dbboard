@@ -89,6 +89,7 @@ pub(crate) fn to_result(documents: &[Document]) -> QueryResult {
         rows_affected: 0,
         columns,
         rows,
+        ..QueryResult::empty()
     }
 }
 

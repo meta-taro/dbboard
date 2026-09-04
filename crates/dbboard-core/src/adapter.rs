@@ -531,6 +531,7 @@ mod tests {
                     .map(|i| Row::new(vec![Value::Integer(i64::try_from(i).unwrap())]))
                     .collect(),
                 rows_affected: 0,
+                ..QueryResult::empty()
             })
         }
     }
