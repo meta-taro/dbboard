@@ -4,6 +4,7 @@
   import { uiCommands } from '$lib/ui-command/bus';
   import {
     runReadQuery,
+    browsePage,
     describeTable,
     configPath,
     type QueryOutput,
@@ -17,6 +18,12 @@
     saveRowLimit,
     clampLimit,
   } from '$lib/query/limits';
+  import {
+    advanceTrail,
+    firstTrail,
+    pageState,
+    type Cursor,
+  } from '$lib/query/pages';
   import { enumColumns } from '$lib/grid/enum';
   import { placePopover, type PopoverPlacement } from '$lib/layout/popover';
   import { runStatus } from '$lib/status/status.svelte';
@@ -39,6 +46,7 @@
   let result = $state<QueryOutput | null>(null);
   let error = $state('');
   let busy = $state(false);
+
   // The row cap actually applied to the *displayed* result, so the grid can
   // report "capped at N" accurately even after the selector later changes.
   let resultLimit = $state<number | undefined>(undefined);
@@ -100,6 +108,15 @@
       ? { connectionId: workspace.connectionId, table: editTable, pk: editPk }
       : null,
   );
+  // Keyset paging over a browsed table (ADR-0145). The trail of cursors and
+  // what the pager may offer are decided in `$lib/query/pages`, which is where
+  // their tests are; this holds the position.
+  let cursors = $state<Cursor[]>(firstTrail());
+  let pageIndex = $state(0);
+  // A hand-written statement is run as written and never paged, so the pager
+  // appears only for a browse.
+  const paging = $derived(result !== null && editTable !== null);
+  const pager = $derived(pageState(paging ? result : null, pageIndex));
 
   // First-run guidance: with no connection configured the Run button can only
   // stay disabled, so we explain *why* and *where* to register one. The path
@@ -138,6 +155,8 @@
     editTable = table;
     editPk = [];
     editEnums = {};
+    cursors = firstTrail();
+    pageIndex = 0;
     const limit = rowLimit;
     // Timed around the query alone: the schema read that follows a browse is
     // our own bookkeeping, and charging it to the statement would overstate
@@ -178,8 +197,72 @@
 
   // Re-run the same browse after a committed save so the grid reflects what
   // actually landed (a typed/triggered column may differ from the text sent).
+  // The *same page*, not the first one: a save on page 7 that dropped the
+  // reader back to page 1 would be its own bug report.
   function reloadAfterSave() {
-    execute(editTable);
+    if (editTable) {
+      readPage(editTable, pageIndex);
+    } else {
+      execute(null);
+    }
+  }
+
+  // Read one page of a browsed table. Separate from `execute` because the
+  // backend *builds* this statement, which is the whole reason it may add the
+  // ORDER BY / WHERE / LIMIT that paging needs (ADR-0145). `index` is the page
+  // to land on; its cursor is already in `cursors`.
+  async function readPage(table: TableInfo, index: number) {
+    const connId = workspace.connectionId;
+    if (!connId || busy) return;
+    busy = true;
+    error = '';
+    editTable = table;
+    const limit = rowLimit;
+    runStatus.begin();
+    try {
+      const page = await browsePage(connId, table, limit, cursors[index] ?? null);
+      runStatus.end(false);
+      result = page;
+      resultLimit = limit;
+      pageIndex = index;
+      cursors = advanceTrail(cursors, index, page.next_cursor);
+      // A failed schema read just leaves the table read-only (empty PK); the
+      // rows still show. Never let it mask a successful read.
+      try {
+        const schema = await describeTable(connId, table.name, table.schema);
+        editPk = schema.primary_key;
+        editEnums = enumColumns(schema.columns);
+      } catch {
+        editPk = [];
+        editEnums = {};
+      }
+    } catch (e) {
+      runStatus.end(true);
+      result = null;
+      error = String(e);
+      editTable = null;
+      editPk = [];
+      editEnums = {};
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Start a browse at page one, discarding whatever trail a previous one left.
+  function startBrowse(table: TableInfo) {
+    cursors = firstTrail();
+    pageIndex = 0;
+    editPk = [];
+    editEnums = {};
+    readPage(table, 0);
+  }
+
+  function nextPage() {
+    if (editTable && pager.canNext) readPage(editTable, pageIndex + 1);
+  }
+
+  function prevPage() {
+    if (editTable && pager.canPrev) readPage(editTable, pageIndex - 1);
   }
 
   function loadFromHistory(entry: string) {
@@ -234,7 +317,15 @@
     if (req && req.seq !== lastSeq) {
       lastSeq = req.seq;
       setSql(req.sql);
-      execute(req.table ?? null);
+      // The editor still shows the generated `SELECT * … LIMIT n` — it is a
+      // starting point people edit. Paging happens on the result, not on that
+      // text, so editing it and pressing Run leaves the paged world and
+      // becomes an ordinary hand-written query (ADR-0145).
+      if (req.table) {
+        startBrowse(req.table);
+      } else {
+        execute(null);
+      }
     }
   });
 </script>
@@ -343,6 +434,32 @@
         enums={editEnums}
         onSaved={reloadAfterSave}
       />
+      {#if paging}
+        <div class="pager">
+          <button
+            type="button"
+            class="chip"
+            onclick={prevPage}
+            disabled={!pager.canPrev || busy}>{i18n.t('result-page-prev')}</button
+          >
+          <span class="pager-position"
+            >{i18n.t('result-page-position', { page: pageIndex + 1 })}</span
+          >
+          <button
+            type="button"
+            class="chip"
+            onclick={nextPage}
+            disabled={!pager.canNext || busy}>{i18n.t('result-page-next')}</button
+          >
+          {#if pager.stranded}
+            <span class="pager-note" role="note"
+              >{i18n.t('result-page-no-cursor')}</span
+            >
+          {:else if pager.atEnd}
+            <span class="pager-note">{i18n.t('result-page-end')}</span>
+          {/if}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -592,6 +709,26 @@
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-widget);
+    color: var(--text-muted);
+    font-size: var(--text-hint);
+  }
+
+  /* Page controls for a browsed table (ADR-0145). Below the grid, because
+     that is where a reader arrives when they run out of rows. */
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .pager-position {
+    color: var(--text-muted);
+    font-size: var(--text-hint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pager-note {
     color: var(--text-muted);
     font-size: var(--text-hint);
   }

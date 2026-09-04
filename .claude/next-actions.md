@@ -19,7 +19,10 @@
 > ほぼ空 (このセッションで書いた 1 件のみ)。**旧 Windows 機を処分・初期化する前に。**
 > a も未着手。c は完了済み。
 >
-> このほかの user 側ボール: v0.15.0 公開物の目視 PII スキャン、`sudo rm -f /usr/local/bin/kubectl.docker`。
+> このほかの user 側ボール: **`feature/the-hundred-and-first-row` の push と PR**
+> (develop にも未 push が 1 コミット)、**`dbboard-web` 側の ADR ミラー**
+> (ADR-0145 が contract に触るため必須)、v0.15.0 公開物の目視 PII スキャン、
+> `sudo rm -f /usr/local/bin/kubectl.docker`。
 
 > **2026-09-02 時点の状況**
 > - **c は完了。** 3 本設置済み、`hook_install_drift.rs` pass。同日中に実際に 4 回働いた

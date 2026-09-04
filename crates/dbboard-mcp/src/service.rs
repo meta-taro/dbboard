@@ -50,12 +50,12 @@ use dbboard_connect::{backend_config_for_entry, connect_adapter};
 
 use crate::export::{self, ExportOutcome};
 use dbboard_core::{
-    build_update_sql, classify_write, dialect_for_adapter_id, plan_dump as core_plan_dump,
-    plan_restore as core_plan_restore, run_dump as core_run_dump, run_restore as core_run_restore,
-    Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl, DumpError, DumpOutcome, DumpPlan,
-    DumpProgress, DumpResult, DumpSink, ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome,
-    RestorePlan, Row, TableInfo, TableSchema, UpdatePlan, WriteBackError, WritePolicyViolation,
-    WriteStatement,
+    browse_page as core_browse_page, build_update_sql, classify_write, dialect_for_adapter_id,
+    plan_dump as core_plan_dump, plan_restore as core_plan_restore, run_dump as core_run_dump,
+    run_restore as core_run_restore, Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl,
+    DumpError, DumpOutcome, DumpPlan, DumpProgress, DumpResult, DumpSink, ForeignKey,
+    RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan, Row, TableInfo, TableSchema,
+    UpdatePlan, Value, WriteBackError, WritePolicyViolation, WriteStatement,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -66,6 +66,14 @@ use tokio::sync::Mutex;
 /// `max_rows`. Small enough that an agent's first exploratory query does
 /// not haul back a whole table, large enough to be useful.
 pub const DEFAULT_MAX_ROWS: usize = 200;
+
+/// Default rows in one browse page (ADR-0145) when the caller does not say.
+///
+/// Matches the grid's own `BROWSE_ROWS`, so the desktop client asking for
+/// nothing in particular gets what it would have asked for anyway. Unlike
+/// [`DEFAULT_MAX_ROWS`] this is not a limit on what can be seen — the next
+/// page is one cursor away — only on what arrives at once.
+pub const DEFAULT_PAGE_ROWS: usize = 100;
 
 /// Hard ceiling on `max_rows`. A caller asking for more is silently
 /// clamped to this — the read path is for reconnaissance, not bulk
@@ -162,15 +170,25 @@ pub struct UiLocaleView {
     pub supported: Vec<String>,
 }
 
-/// Result of [`McpService::run_read_query`]. `truncated` tells the agent
-/// the table had more rows than were returned, so it can page with a
-/// tighter `WHERE`/`LIMIT` rather than assume it saw everything.
+/// Result of [`McpService::run_read_query`] and [`McpService::browse_page`].
+///
+/// `truncated` and `has_more` are not two spellings of the same fact.
+/// `truncated` says the result was cut and the rest is out of reach from
+/// here — the caller must ask a narrower question. `has_more` says there is
+/// more *and* (via `next_cursor`) how to reach it. A truncated result never
+/// carries a cursor; a page never truncates.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct QueryOutput {
     pub columns: Vec<Column>,
     pub rows: Vec<Row>,
     pub row_count: usize,
     pub truncated: bool,
+    /// Whether rows exist beyond this page (ADR-0145). Always `false` for
+    /// a hand-written statement, which is run as written and not paged.
+    pub has_more: bool,
+    /// The cursor to pass back as the next page's `after`, or `None` when
+    /// there is no next page or no stable order to resume from.
+    pub next_cursor: Option<Vec<Value>>,
 }
 
 /// Result of [`McpService::run_write`]. `statement` is `"data"` or
@@ -487,6 +505,12 @@ pub enum ServiceError {
     /// can be built for it. Desktop write path only.
     #[error("adapter {0:?} has no known SQL dialect for editing")]
     NotEditable(String),
+
+    /// The connection's adapter has no SQL dialect, so no keyset page can
+    /// be assembled for it. A document store browses through its own
+    /// structured query (ADR-0093), not through `SELECT ... ORDER BY`.
+    #[error("adapter {0:?} has no SQL dialect, so its tables are not read as keyset pages")]
+    NotPageable(String),
 
     /// The connection exists, but the operator has not set `mcp_write` on
     /// it, so the MCP write tools will not touch it (ADR-0087). Says where
@@ -1243,6 +1267,61 @@ impl McpService {
             truncated,
             columns: result.columns,
             rows: result.rows,
+            // A hand-written statement is run as written and never paged
+            // (ADR-0145), so it reports the truncation it has and no cursor.
+            has_more: false,
+            next_cursor: None,
+        })
+    }
+
+    /// Read one keyset page of `table` (ADR-0145).
+    ///
+    /// `after` is the previous page's `next_cursor`; `None` reads the first
+    /// page. `page_rows` defaults to [`DEFAULT_PAGE_ROWS`] and is floored by
+    /// the same [`MAX_MAX_ROWS`] ceiling as a read query, so one page can
+    /// never be a way around the row cap.
+    ///
+    /// Unlike [`Self::run_read_query`] this builds the statement itself,
+    /// which is exactly why it may page: there is no author whose `LIMIT`
+    /// it could contradict.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::NotPageable`] if the adapter has no SQL dialect.
+    /// - [`ServiceError::Db`] if describing the table or reading the page
+    ///   fails.
+    pub async fn browse_page(
+        &self,
+        connection_id: &str,
+        table: &TableInfo,
+        page_rows: Option<usize>,
+        after: Option<&[Value]>,
+    ) -> Result<QueryOutput, ServiceError> {
+        let effective = page_rows.unwrap_or(DEFAULT_PAGE_ROWS).min(MAX_MAX_ROWS);
+        let adapter = self.adapter_for(connection_id).await?;
+        let dialect = dialect_for_adapter_id(adapter.id())
+            .ok_or_else(|| ServiceError::NotPageable(adapter.id().to_string()))?;
+
+        // The primary key is the cursor. Without describe support there is
+        // no way to learn it, which lands on the same footing as a table
+        // that simply has none: one page, honestly labelled.
+        let key_columns = if adapter.capabilities().has_describe_table {
+            adapter.describe_table(table).await?.primary_key
+        } else {
+            Vec::new()
+        };
+
+        let result =
+            core_browse_page(&*adapter, dialect, table, &key_columns, effective, after).await?;
+
+        Ok(QueryOutput {
+            row_count: result.rows.len(),
+            // A page is bounded by design, not cut short by a cap.
+            truncated: false,
+            columns: result.columns,
+            rows: result.rows,
+            has_more: result.has_more,
+            next_cursor: result.next_cursor,
         })
     }
 
@@ -2820,6 +2899,93 @@ path = ":memory:"
             .expect("query");
         assert_eq!(out.row_count, 2);
         assert!(out.truncated, "5 rows capped at 2 must flag truncated");
+    }
+
+    // --- Browse paging (ADR-0145) ------------------------------------
+    //
+    // The seeded fixture is `items (id INTEGER PRIMARY KEY, name TEXT)`
+    // with ids 1..=5, so a page of 2 walks it in three steps.
+
+    #[tokio::test]
+    async fn a_browse_page_carries_the_cursor_for_the_next_one() {
+        let fx = seeded_turso_fixture().await;
+        let out = fx
+            .service
+            .browse_page("mem", &TableInfo::unqualified("items"), Some(2), None)
+            .await
+            .expect("page");
+
+        assert_eq!(out.row_count, 2);
+        assert!(out.has_more);
+        assert_eq!(out.next_cursor, Some(vec![Value::Integer(2)]));
+        assert!(
+            !out.truncated,
+            "a page is bounded by design; calling that truncation would send \
+             the caller looking for a narrower query it does not need"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_pages_walk_the_whole_table_without_repeating_a_row() {
+        let fx = seeded_turso_fixture().await;
+        let table = TableInfo::unqualified("items");
+        let mut seen: Vec<i64> = Vec::new();
+        let mut cursor: Option<Vec<Value>> = None;
+
+        for _ in 0..10 {
+            let out = fx
+                .service
+                .browse_page("mem", &table, Some(2), cursor.as_deref())
+                .await
+                .expect("page");
+            for row in &out.rows {
+                match row.get(0) {
+                    Some(Value::Integer(id)) => seen.push(*id),
+                    other => panic!("unexpected key value {other:?}"),
+                }
+            }
+            if !out.has_more {
+                assert_eq!(out.next_cursor, None, "the last page leads nowhere");
+                break;
+            }
+            cursor = out.next_cursor;
+        }
+
+        assert_eq!(seen, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn a_page_larger_than_the_table_is_the_only_page() {
+        let fx = seeded_turso_fixture().await;
+        let out = fx
+            .service
+            .browse_page("mem", &TableInfo::unqualified("items"), Some(100), None)
+            .await
+            .expect("page");
+
+        assert_eq!(out.row_count, 5);
+        assert!(!out.has_more);
+        assert_eq!(out.next_cursor, None);
+    }
+
+    #[tokio::test]
+    async fn a_page_cannot_be_a_way_around_the_row_cap() {
+        let fx = seeded_turso_fixture().await;
+        // Nothing to assert on the rows — the table has five. What matters
+        // is that an outsized request is accepted and floored rather than
+        // honoured, the same ceiling `run_read_query` applies.
+        let out = fx
+            .service
+            .browse_page(
+                "mem",
+                &TableInfo::unqualified("items"),
+                Some(MAX_MAX_ROWS * 10),
+                None,
+            )
+            .await
+            .expect("page");
+
+        assert_eq!(out.row_count, 5);
     }
 
     #[tokio::test]

@@ -345,6 +345,7 @@ impl DatabaseAdapter for MySqlAdapter {
             columns: columns.unwrap_or_default(),
             rows,
             rows_affected,
+            ..QueryResult::empty()
         })
     }
 
@@ -663,6 +664,7 @@ fn mysql_rows_to_result(rows: &[MySqlRow]) -> DbResult<QueryResult> {
         columns,
         rows,
         rows_affected: 0,
+        ..QueryResult::empty()
     })
 }
 

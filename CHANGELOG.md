@@ -9,6 +9,30 @@ public API is the HTTP contract in
 
 ## [Unreleased] — Everyday work
 
+### Added
+
+- **A browsed table no longer ends at row 100.** Clicking a table has always
+  shown its first rows and stopped; the bound was a truncation, never a first
+  page. It is a page now — Previous and Next walk the whole table, one page at
+  a time, and no page costs more than the first.
+
+  Pages are keyed, not counted: each one resumes strictly after the previous
+  page's last row rather than skipping a running total, so a row inserted
+  while you read cannot make a row appear twice or vanish between pages.
+  Nothing is held open between pages either, so a dropped connection or a
+  window left overnight costs you the click, not the position.
+
+  Two things it deliberately does not do. It does not tell you how many rows
+  the table has: that answer costs a full scan per page and goes stale as soon
+  as it is given, and "Count rows" on the table's right-click menu already
+  answers it when you actually want it. And it does not touch SQL you typed —
+  a statement you wrote is run as written, exactly as before.
+
+  A table with **no primary key** still shows one page, and now says so
+  instead of implying the table ended there. There is no stable order to
+  resume from without a key, and the alternative — counting rows and skipping
+  them — is the thing that quietly repeats and drops rows.
+
 ### Fixed
 
 - **Updating in place from 0.14.0 or earlier leaves the old name on screen,

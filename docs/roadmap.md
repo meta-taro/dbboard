@@ -25,7 +25,7 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.16** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder. Carries the half of v0.14 that did not ship: the optimisation itself, now that [`performance-baseline.md`](performance-baseline.md) says where the time goes and [issue 0029](../.claude/issues/0029-pagination-for-large-results.md) says it is pagination |
+| **v0.16** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder. Carries the half of v0.14 that did not ship — which turned out not to be an optimisation at all: the browse path was never paying the cost the baseline pointed at, and what it lacked was a way to reach row 101 ([ADR-0145](decisions.md), [issue 0029](../.claude/issues/0029-pagination-for-large-results.md)). Paging shipped as the feature it is |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 fixed or its workaround documented, the contract mirrored to `dbboard-web`, sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,

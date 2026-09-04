@@ -389,6 +389,7 @@ fn envelope_to_query_result(envelope: D1Envelope) -> DbResult<QueryResult> {
         columns,
         rows,
         rows_affected: first.meta.changes,
+        ..QueryResult::empty()
     })
 }
 
@@ -426,6 +427,7 @@ fn envelope_to_query_result_capped(envelope: D1Envelope, max_rows: usize) -> DbR
         columns,
         rows,
         rows_affected: first.meta.changes,
+        ..QueryResult::empty()
     })
 }
 

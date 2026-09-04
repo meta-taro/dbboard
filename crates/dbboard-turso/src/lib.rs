@@ -524,6 +524,7 @@ async fn run_select(conn: &libsql::Connection, sql: &str) -> DbResult<QueryResul
         columns,
         rows: result_rows,
         rows_affected: 0,
+        ..QueryResult::empty()
     })
 }
 
@@ -661,6 +662,7 @@ async fn run_select_capped(
         columns,
         rows: result_rows,
         rows_affected: 0,
+        ..QueryResult::empty()
     })
 }
 
@@ -673,6 +675,7 @@ async fn run_execute(conn: &libsql::Connection, sql: &str) -> DbResult<QueryResu
         columns: Vec::new(),
         rows: Vec::new(),
         rows_affected: affected,
+        ..QueryResult::empty()
     })
 }
 

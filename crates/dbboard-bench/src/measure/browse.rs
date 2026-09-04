@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use dbboard_core::{DatabaseAdapter, TableInfo};
+use dbboard_core::{build_select_page, DatabaseAdapter, SqlDialect, TableInfo, Value};
 use dbboard_turso::TursoAdapter;
 
 use super::{BenchResult, Sampler};
@@ -139,6 +139,34 @@ pub async fn measure(out: &mut Vec<Reading>) -> BenchResult<()> {
     while s.wants_more() {
         let t = Instant::now();
         let rows = adapter.query(&page).await?;
+        s.record(t.elapsed());
+        drop(std::hint::black_box(rows));
+    }
+    out.extend(s.finish());
+
+    // ---- browse/next_page_100 -------------------------------------------
+    //
+    // The *deepest* page of the 500-row table, not the second one. `OFFSET`
+    // is cheap at page two and expensive at page five, so a measurement that
+    // only ever read page two would not notice the difference the keyset
+    // cursor was chosen for (ADR-0145).
+    //
+    // Run through `adapter.query` like `first_page_100` above, rather than
+    // through `browse_page`, so the only difference between the two numbers
+    // is the cursor — not the read-only path wrapped around it.
+    let deep = build_select_page(
+        &subject,
+        &["id".to_owned()],
+        SqlDialect::Sqlite,
+        100,
+        Some(&[Value::Integer(
+            i64::try_from(SUBJECT_ROWS - 100).expect("fits"),
+        )]),
+    );
+    let mut s = Sampler::new("browse/next_page_100");
+    while s.wants_more() {
+        let t = Instant::now();
+        let rows = adapter.query(&deep).await?;
         s.record(t.elapsed());
         drop(std::hint::black_box(rows));
     }

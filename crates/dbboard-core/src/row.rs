@@ -56,6 +56,30 @@ pub struct QueryResult {
     /// statements (`SELECT`, `WITH`, ...) the adapter leaves this at 0
     /// and exposes the rows via [`Self::rows`] instead.
     pub rows_affected: u64,
+    /// Whether rows exist beyond this page (ADR-0145).
+    ///
+    /// Set by the paging use-case, never by an adapter: an adapter answers
+    /// the statement it was given and does not know it was one page of
+    /// several. A result that is not a page leaves this `false`, which is
+    /// also what its absence from the JSON means.
+    #[serde(default, skip_serializing_if = "is_not_more")]
+    pub has_more: bool,
+    /// The key values of this page's last row, in primary-key order, to be
+    /// passed back as the next page's `after` (ADR-0145).
+    ///
+    /// `None` when there is no next page *or* no stable cursor: a table
+    /// with no primary key can report [`Self::has_more`] truthfully and
+    /// still have nowhere to go, which is the honest form of "first page
+    /// only" rather than a silent `OFFSET`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Vec<Value>>,
+}
+
+/// `skip_serializing_if` for [`QueryResult::has_more`]: keeps a non-paged
+/// result's JSON byte-identical to what it was before paging existed.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_not_more(has_more: &bool) -> bool {
+    !*has_more
 }
 
 impl QueryResult {
@@ -65,6 +89,8 @@ impl QueryResult {
             columns: Vec::new(),
             rows: Vec::new(),
             rows_affected: 0,
+            has_more: false,
+            next_cursor: None,
         }
     }
 
@@ -117,9 +143,59 @@ mod tests {
             }],
             rows: vec![Row::new(vec![Value::Integer(1)])],
             rows_affected: 0,
+            ..QueryResult::empty()
         };
         assert_eq!(result.columns[0].name, "id");
         assert_eq!(result.rows[0].get(0), Some(&Value::Integer(1)));
+    }
+
+    // --- Paging (ADR-0145) ------------------------------------------
+    //
+    // The two fields are additive to the shape in `docs/api-contract.md`,
+    // which freezes at v1.0. A result that is not a page must serialise
+    // exactly as it did before they existed, and a payload written before
+    // they existed must still parse.
+
+    #[test]
+    fn a_result_that_is_not_a_page_serialises_without_the_paging_keys() {
+        let json = serde_json::to_value(QueryResult::empty()).expect("serialise");
+        let object = json.as_object().expect("object");
+        assert!(!object.contains_key("has_more"));
+        assert!(!object.contains_key("next_cursor"));
+    }
+
+    #[test]
+    fn a_payload_written_before_paging_existed_still_parses() {
+        let json = r#"{"columns":[],"rows":[],"rows_affected":3}"#;
+        let result: QueryResult = serde_json::from_str(json).expect("parse");
+        assert_eq!(result.rows_affected, 3);
+        assert!(!result.has_more);
+        assert_eq!(result.next_cursor, None);
+    }
+
+    #[test]
+    fn a_page_carries_its_cursor_through_json() {
+        let page = QueryResult {
+            has_more: true,
+            next_cursor: Some(vec![Value::Integer(42), Value::Text("b".into())]),
+            ..QueryResult::empty()
+        };
+        let round_tripped: QueryResult =
+            serde_json::from_str(&serde_json::to_string(&page).expect("serialise")).expect("parse");
+        assert_eq!(round_tripped, page);
+    }
+
+    #[test]
+    fn the_last_page_says_so_without_offering_a_cursor() {
+        let last = QueryResult {
+            has_more: false,
+            next_cursor: None,
+            ..QueryResult::empty()
+        };
+        let json = serde_json::to_value(&last).expect("serialise");
+        // `has_more: false` is the absence of a next page, which is what
+        // every non-paged result already says by saying nothing.
+        assert!(!json.as_object().expect("object").contains_key("has_more"));
     }
 
     #[test]
@@ -131,6 +207,7 @@ mod tests {
             }],
             rows: (0..5).map(|i| Row::new(vec![Value::Integer(i)])).collect(),
             rows_affected: 0,
+            ..QueryResult::empty()
         };
         result.truncate_rows(2);
         assert_eq!(result.rows.len(), 2);
@@ -146,6 +223,7 @@ mod tests {
             columns: Vec::new(),
             rows: vec![Row::new(vec![Value::Integer(1)])],
             rows_affected: 0,
+            ..QueryResult::empty()
         };
         result.truncate_rows(10);
         assert_eq!(result.rows.len(), 1);
@@ -157,6 +235,7 @@ mod tests {
             columns: Vec::new(),
             rows: Vec::new(),
             rows_affected: 3,
+            ..QueryResult::empty()
         };
         assert_eq!(result.rows_affected, 3);
     }
@@ -186,6 +265,7 @@ mod tests {
             ],
             rows: vec![Row::new(vec![Value::Integer(1), Value::Null])],
             rows_affected: 0,
+            ..QueryResult::empty()
         };
         let json = serde_json::to_string(&result).unwrap();
         let back: QueryResult = serde_json::from_str(&json).unwrap();
