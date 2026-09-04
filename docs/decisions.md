@@ -13235,10 +13235,21 @@ matcher.
   to be uninstalled by hand. This is the cost of renaming, it is paid once,
   and it is smallest now: the client is pre-1.0 and its install base is
   countable.
-- **On macOS the in-app updater replaces the bundle at the path it is running
-  from**, so an existing install keeps the folder name `dbboard-desktop.app`
-  while its Info.plist — and therefore the Dock — says `dbboard`. Cosmetic,
-  and it resolves itself for anyone who installs from a `.dmg` again.
+- **On macOS an in-place update does not rename anything a person can see.**
+  The updater replaces the bundle at the path it is running from, so an
+  existing install keeps the folder name `dbboard-desktop.app`. This ADR first
+  claimed the Dock would show `dbboard` anyway, because the Info.plist inside
+  says so. **That was wrong, and measuring it said so** (2026-09-04, an actual
+  0.14.0 → 0.15.0 update): macOS names an application after its `.app`
+  file, and ignores a `CFBundleDisplayName` that disagrees with it — otherwise
+  any bundle could claim to be any application. Re-registering with
+  `lsregister -f` and restarting the Dock changes nothing, because it is not a
+  cache.
+
+  So an existing macOS install keeps reading `dbboard-desktop` until someone
+  renames the bundle or installs from the `.dmg` again. Both work; renaming
+  is `mv /Applications/dbboard-desktop.app /Applications/dbboard.app`, and the
+  updater follows the bundle to its new path.
 - **User data is untouched.** The config directory and the keychain entries
   derive from the bundle identifier (`io.github.meta-taro.dbboard`) and the
   `directories` lookup, neither of which changes. Nobody loses a connection
