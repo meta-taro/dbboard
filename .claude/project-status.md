@@ -5,6 +5,86 @@
 
 ## 最終更新
 
+- 日付: 2026-09-04 (**v0.15.0 公開済み。Dock の名前が変わらない件から、CI を見ていなかったことまで辿った回。PR #233 は merge 済み、develop 4 ジョブ緑。**
+
+  ### v0.15.0 まで出し切っている
+
+  #230 (baseline の訂正と束のエラー) → #231 (改名) → #232 (リリース PR) → タグ push。
+  release ワークフロー緑、成果物 9 点。**初めて `dbboard.app` /
+  `dbboard_0.15.0_universal.dmg` / `dbboard_0.15.0_x64-setup.exe` が公開された。**
+  配布ページの仕分けも実際の成果物名で通して確認済み (`mac-dmg` / `win-setup` に正しく落ちる)。
+
+  枠の扱い: v0.15 の見出しは "Everyday work" で予約されていたが中身が違ったので、
+  **見出しを実態 ("The app has its own name") に変え、Everyday work は v0.16 へ送った**
+  (ADR-0110 / 0122: 枠は振り直さない)。
+
+  ### ADR に書いた予測が外れていた
+
+  ADR-0143 は「macOS のその場更新では Dock が新名称になり、フォルダ名だけ古いまま残る」と
+  書いた。**user が実機で更新して、変わらないと指摘した。** 調べると:
+
+  - 更新は当たっている (0.15.0、`CFBundleName` / `CFBundleDisplayName` とも `dbboard`)
+  - **変わらないのは `.app` のファイル名だけ**。macOS はアプリ名としてファイル名を使い、
+    食い違う `CFBundleDisplayName` は無視する (任意のバンドルが任意のアプリを名乗れないように)
+  - `lsregister -f` + Dock 再起動でも変わらない。**キャッシュではない**
+
+  `mv /Applications/dbboard-desktop.app /Applications/dbboard.app` で解決 (この Mac は対応済み)。
+  **測れるものを測らずに書いた予測**で、しかも v0.15.0 のリリースノートとして利用者に届いていた。
+  ADR と CHANGELOG を実測に書き換えた。
+
+  ### CI を見ていなかった (指摘を受けた)
+
+  PR #233 を作って次の話に移った間に `deps (cargo deny)` が赤くなっており、
+  **user が気づいた**。原因は `wnaf 0.14.0` の upstream yank —
+  v0.14.0 の `chacha20` (#228) と同じ形で、**8 日で 2 回目**。
+  どちらも自分たちが名前を書いていない transitive。
+
+  対応を 2 段構えにした:
+
+  - **規則**: `CLAUDE.md` の Pre-Push Checklist の直後に "After the push: watch CI to the end"。
+    失敗ジョブのログは**ランが完走するまで読めない**という実務上の癖も併記。
+    memory にも `verify-ci-after-every-push.md` として記録。
+  - **仕組み** (user が選択肢 2 を選択): **`deps` の日次実行** (`cron "0 7 * * *"`、
+    pii-scan の 1 時間後)。`deps` だけが走り、他 3 ジョブは
+    `if: github.event_name != 'schedule'` で降りる。`nightly_deps_drift.rs` が
+    3 つ全部を固定する — schedule の存在 / deps が自分を除外しないこと /
+    **他のジョブが除外を外していないこと** (これを忘れると安い nightly が黙って全ビルドに化ける)。
+    ADR-0144。
+
+  **通知は GitHub 標準のスケジュール失敗通知に乗るので、新しい仕組みも secret も増えていない。**
+
+  ### この Mac の状態
+
+  - **正式版 v0.15.0 を `/Applications/dbboard.app` に導入済み** (チェックサム照合済み)。
+    自動更新も効いている。
+  - ターミナルの日本語が読めなかった件: 原因は**フォントではなく
+    プロファイルの `FontWidthSpacing = 0.531`** (文字幅を半分に潰す設定) と
+    アンチエイリアス off。1.0 に戻し、Menlo 16pt + アンチエイリアス on にした。
+    ディスプレイは 1920x1080 の等倍 (非 Retina) なので、漢字は元々不利。
+  - Docker のマルウェア警告: **Docker Desktop 本体は入っておらず**、2024-07 の
+    特権ヘルパーと LaunchDaemon だけが残っていた。macOS が毎起動でブロックしていた。
+    全部削除済み (`kubectl.docker` の 1 本だけ user 側で未削除)。
+
+  ### AI がやれていないこと → user 側
+
+  - **memory 27 ファイルの移送** — `~/.claude/projects/-Users-rays-Documents-GitHub-dbboard/memory/`
+    は今も**ほぼ空** (今日書いた 1 件のみ)。旧 Windows 機にしかなく、**消したら復元不能**。
+    **旧機を処分する前に。**
+  - `.pii-denylist` の作成
+  - v0.15.0 公開物の目視 PII スキャン (`.dmg` は `~/Downloads` にある)
+  - `sudo rm -f /usr/local/bin/kubectl.docker`
+
+  ### 次にやること
+
+  #233 は 2026-09-04 05:54 UTC に merge 済み。develop の push ラン (33842257905) は
+  `deps` / `rust` / `frontend` / `site` の 4 ジョブとも緑、pii-scan も緑。
+  残るのは **日次 deps の初回実行 (07:00 UTC = 日本時間 16:00) の確認** —
+  `deps` だけが走り他 3 つがスキップされているか。
+  そのあと v0.16「Everyday work」: JSON export / saved queries / schema diff と、
+  v0.14 から移った最適化 (= ページング、issue 0029)。
+  **ページングは contract に触るので、`docs/api-contract.md` が v1.0 で凍る前に形を決める。**
+  着手前に 4 論点 (切る場所 / カーソルの寿命 / contract への影響 / 総件数) を相談する。)
+
 - 日付: 2026-09-02 その3 (**v0.14.0 公開。v0.15 の最初の作業で、baseline の手がかり 3 つのうち 2 つを取り下げた。ADR-0142 / issue 0029。**
 
   ### v0.14.0 は公開済み

@@ -15,6 +15,12 @@
 | b | **エージェントの memory 27 ファイル (132KB)** | `<ホーム>/.claude/projects/C--claude-dbboard/memory/` | **user** (手でコピー) |
 | c | ~~**git hooks**~~ | ~~clone 後に `sh scripts/install-hooks.sh`~~ | **済 (2026-09-02)** |
 
+> **2026-09-04 追記** — b は**まだ運ばれていない**。移送先ディレクトリは今日時点で
+> ほぼ空 (このセッションで書いた 1 件のみ)。**旧 Windows 機を処分・初期化する前に。**
+> a も未着手。c は完了済み。
+>
+> このほかの user 側ボール: v0.15.0 公開物の目視 PII スキャン、`sudo rm -f /usr/local/bin/kubectl.docker`。
+
 > **2026-09-02 時点の状況**
 > - **c は完了。** 3 本設置済み、`hook_install_drift.rs` pass。同日中に実際に 4 回働いた
 >   (chacha20 修正の commit / push、リリース 2 コミット)。
