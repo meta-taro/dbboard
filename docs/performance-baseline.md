@@ -29,32 +29,33 @@ so a point cannot quietly disappear and take its regression with it
 | OS | macos |
 | Architecture | aarch64 |
 | Toolchain | 1.98.0 |
-| Measured on | 2026-09-02 |
+| Measured on | 2026-09-04 |
 | Timed samples per point | 50 |
 
 ## Startup
 
 | Point | What is timed | Median | p95 | Min | Max |
 |---|---|---|---|---|---|
-| `startup/config_paths` | Resolve the platform config directory (`dbboard_config::default_path`) | 2.4 µs | 2.5 µs | 2.4 µs | 2.6 µs |
-| `startup/connections_open_20` | Open and parse a `connections.toml` holding 20 connections | 173.1 µs | 301.4 µs | 158.7 µs | 341.9 µs |
-| `startup/annotations_open_20` | Open and parse an `annotations.toml` holding 20 annotated connections | 1.0 ms | 1.6 ms | 873.4 µs | 1.8 ms |
+| `startup/config_paths` | Resolve the platform config directory (`dbboard_config::default_path`) | 875 ns | 958 ns | 833 ns | 1.1 µs |
+| `startup/connections_open_20` | Open and parse a `connections.toml` holding 20 connections | 66.4 µs | 67.5 µs | 65.5 µs | 67.9 µs |
+| `startup/annotations_open_20` | Open and parse an `annotations.toml` holding 20 annotated connections | 802.5 µs | 862.6 µs | 736.1 µs | 911.6 µs |
 
 ## Connect and browse
 
 | Point | What is timed | Median | p95 | Min | Max |
 |---|---|---|---|---|---|
-| `browse/connect_memory` | `TursoAdapter::connect_local(":memory:")`, including the read-only probe | 7.6 µs | 7.8 µs | 7.5 µs | 7.8 µs |
-| `browse/list_tables_20` | `list_tables` against a schema of 20 tables | 10.0 µs | 10.1 µs | 9.8 µs | 10.3 µs |
-| `browse/describe_table_12col` | `describe_table` for one 12-column table | 6.4 µs | 6.5 µs | 6.3 µs | 6.5 µs |
-| `browse/foreign_keys` | `foreign_keys` for one table with 2 outgoing references | 2.3 µs | 2.4 µs | 2.3 µs | 2.4 µs |
-| `browse/first_page_100` | The first page the grid asks for: `SELECT * … LIMIT 100` | 76.7 µs | 77.0 µs | 71.1 µs | 78.4 µs |
+| `browse/connect_memory` | `TursoAdapter::connect_local(":memory:")`, including the read-only probe | 7.2 µs | 7.3 µs | 7.0 µs | 7.4 µs |
+| `browse/list_tables_20` | `list_tables` against a schema of 20 tables | 9.3 µs | 9.7 µs | 9.3 µs | 9.8 µs |
+| `browse/describe_table_12col` | `describe_table` for one 12-column table | 6.0 µs | 6.1 µs | 5.9 µs | 6.1 µs |
+| `browse/foreign_keys` | `foreign_keys` for one table with 2 outgoing references | 2.3 µs | 2.3 µs | 2.2 µs | 2.4 µs |
+| `browse/first_page_100` | The first page the grid asks for: `SELECT * … LIMIT 100` | 71.6 µs | 72.2 µs | 69.0 µs | 75.9 µs |
+| `browse/next_page_100` | The *last* page of the same table, reached by keyset cursor — the point of the choice is that it matches `first_page_100` rather than drifting from it (ADR-0145) | 70.3 µs | 70.6 µs | 67.7 µs | 72.0 µs |
 
 ## Large result sets
 
 | Point | What is timed | Median | p95 | Min | Max |
 |---|---|---|---|---|---|
-| `result/query_10k` | Materialise 10,000 rows × 8 columns out of the driver into `QueryResult` | 4.4 ms | 4.5 ms | 4.4 ms | 4.7 ms |
-| `result/serialize_10k` | `serde_json` the same `QueryResult` — what crossing the Tauri IPC boundary costs | 927.0 µs | 977.1 µs | 905.0 µs | 1.0 ms |
-| `result/sort_10k` | `sorted_row_order` over 10,000 rows on one text column | 144.0 µs | 149.3 µs | 143.8 µs | 152.3 µs |
-| `result/truncate_10k_to_100` | `truncate_rows` from 10,000 down to 100 (the read-only path's soft cap) | 570.1 µs | 601.4 µs | 550.7 µs | 641.6 µs |
+| `result/query_10k` | Materialise 10,000 rows × 8 columns out of the driver into `QueryResult` | 4.4 ms | 4.7 ms | 4.4 ms | 4.7 ms |
+| `result/serialize_10k` | `serde_json` the same `QueryResult` — what crossing the Tauri IPC boundary costs | 963.8 µs | 995.4 µs | 943.2 µs | 1.0 ms |
+| `result/sort_10k` | `sorted_row_order` over 10,000 rows on one text column | 141.7 µs | 146.5 µs | 141.5 µs | 160.2 µs |
+| `result/truncate_10k_to_100` | `truncate_rows` from 10,000 down to 100 (the read-only path's soft cap) | 546.6 µs | 588.3 µs | 536.2 µs | 635.2 µs |
