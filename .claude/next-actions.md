@@ -19,18 +19,35 @@
 > ほぼ空 (このセッションで書いた 1 件のみ)。**旧 Windows 機を処分・初期化する前に。**
 > a も未着手。c は完了済み。
 >
-> このほかの user 側ボール: **`dbboard-web` 側の ADR ミラー**
-> (ADR-0145 が contract に触るため必須)、v0.15.0 公開物の目視 PII スキャン、
+> このほかの user 側ボール: v0.15.0 公開物の目視 PII スキャン、
 > `sudo rm -f /usr/local/bin/kubectl.docker`。
+> **`dbboard-web` 側の ADR-0145 ミラーは、2026-09-06 に user 判断で後回し**
+> (「ニーズが薄い」)。Pacing Note 上は contract 変更のミラーが必須なので、
+> **消えたのではなく積んである** — web 側が動く時に最初にやること。
 >
 > **2026-09-04 その3 で解消** — `feature/the-hundred-and-first-row` は push 済み、
 > PR #234 → merge (`c6130c8`)。PR ラン 5 ジョブ緑、develop の push ラン
 > (`33853557815`) も 4 ジョブ緑。
-> 併せて 2 点: **日次 deps はまだ一度も走っていない** (`--event schedule` のランが
-> 0 件・17:30 JST 時点)。明日の 16:00 JST も出なければ、cron が default branch
-> (`develop`) に乗っているかの確認から。そして**ローカルの
-> `fix/the-dock-shows-the-file-name` は消してよい** — remote は #233 merge 時に
-> 削除済みで、残る `db5cb91` は develop の `1e5a055` の amend 前の版。
+> 併せて 2 点を申し送ったが、**どちらも 2026-09-06 に解消した** (下記)。
+
+> **2026-09-06 追記 — 日次 deps は動いている。時刻の期待値だけが違った。**
+> 09-04 の 17:30 JST 時点で 0 件だったのは事実だが、**その約 3 時間半後に初回が走った**。
+> 二晩とも `deps` だけ success、`rust` / `frontend` / `site` は skipped =
+> ADR-0144 の設計どおり。
+>
+> | 実行 | 結果 |
+> |---|---|
+> | 2026-09-04 11:57Z (`33870383638`) | deps success / 他 3 つ skipped |
+> | 2026-09-05 11:07Z (`33962458025`) | deps success / 他 3 つ skipped |
+>
+> **cron は `0 7 * * *` = 16:00 JST だが、実際に走るのは 20:00〜21:00 JST。**
+> GitHub は schedule を混雑時にずらすので、4〜5 時間の遅れが常態。
+> **「16:00 に出なければ疑う」は毎日誤検知する** ので、疑うのは
+> **翌 0:00 JST を跨いでも出ないとき**。`pii-scan` の nightly も同様に遅れて走っている。
+>
+> ローカルブランチ 2 本 (`fix/the-dock-shows-the-file-name` /
+> `feature/the-hundred-and-first-row`) は削除済み。どちらも develop に入っているか、
+> 入っている版の amend 前だった。
 
 > **2026-09-02 時点の状況**
 > - **c は完了。** 3 本設置済み、`hook_install_drift.rs` pass。同日中に実際に 4 回働いた
