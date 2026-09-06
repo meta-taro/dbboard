@@ -19,6 +19,15 @@
 > ほぼ空 (このセッションで書いた 1 件のみ)。**旧 Windows 機を処分・初期化する前に。**
 > a も未着手。c は完了済み。
 >
+> **2026-09-06: b を司令塔へ通報した** —
+> [dokokade/Multi-Product-Management-AI-Agent#4](https://github.com/dokokade/Multi-Product-Management-AI-Agent/issues/4)
+> (`label:escalation`・user の指示による起票・署名 👤🤖)。
+> 引っ越し決定から 11 日、毎セッション書いても運ばれていないので、**記載の問題ではない**と判断し
+> §38 (人にしかできない工程の停止は AI が人を呼ぶ) に従って上へ出した。
+> dbboard の 27 ファイルだけでなく**この Mac は全プロジェクトの memory がほぼ空**
+> (warifu 5 / zumen 3 / dbboard 2 / git-qa 0) なので、範囲を旧機全体に広げてある。
+> **ここから先は司令塔の返答待ち。** ボール自体 (実際にコピーする) は user のまま。
+>
 > このほかの user 側ボール: v0.15.0 公開物の目視 PII スキャン、
 > `sudo rm -f /usr/local/bin/kubectl.docker`。
 > **`dbboard-web` 側の ADR-0145 ミラーは、2026-09-06 に user 判断で後回し**
