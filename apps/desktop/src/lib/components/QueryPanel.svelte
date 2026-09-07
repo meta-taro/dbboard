@@ -28,6 +28,7 @@
   import { placePopover, type PopoverPlacement } from '$lib/layout/popover';
   import { runStatus } from '$lib/status/status.svelte';
   import ResultGrid from './ResultGrid.svelte';
+  import SavedQueries from './SavedQueries.svelte';
   import SqlEditor from './SqlEditor.svelte';
 
   // Local to the panel: the SQL you typed and the last result persist across
@@ -348,6 +349,11 @@
     <SqlEditor bind:this={editor} bind:value={sql} onRun={run} />
     <div class="editor-bar">
       <div class="left-tools">
+        <SavedQueries
+          connectionId={workspace.connectionId ?? null}
+          {sql}
+          onLoad={setSql}
+        />
         <div class="history">
           <button
             type="button"

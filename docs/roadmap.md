@@ -699,7 +699,17 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       Excel needs it. The save confirmation now also says when the file
       holds one page rather than the whole result, which corrects the same
       silence in the CSV path.
-- [ ] Saved queries
+- [x] Saved queries — statements the operator deliberately kept, in
+      `saved-queries.toml` beside `connections.toml` and
+      `annotations.toml` ([ADR-0147](decisions.md), issue 0032). Not in
+      the webview's storage where the run history lives: the history is
+      disposable by design, and "clear site data" empties it, no backup
+      sees it, and it does not follow the operator to another machine.
+      Scoped and anchored to a connection id, so renaming a connection
+      keeps its queries; overwriting one takes an explicit confirmation.
+      Deliberately not an MCP tool — an agent can already run any
+      statement, so listing these would add no capability, only the
+      operator's private notes in its context.
 - [ ] Schema diff between two connections
 - [ ] Performance: cold-start under 1s on a modern laptop
 

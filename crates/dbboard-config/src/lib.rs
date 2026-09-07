@@ -38,6 +38,7 @@ pub mod bundle;
 pub mod dsn;
 pub mod error;
 pub mod mark;
+pub mod saved_queries;
 pub mod secrets;
 pub mod secure_fs;
 pub mod store;
@@ -71,6 +72,10 @@ pub use dsn::{parse_dsn, with_password, DsnParts};
 pub use error::ConfigError;
 pub use mark::{
     is_connection_color, is_connection_tag, CONNECTION_COLORS, CONNECTION_TAG_MAX_CHARS,
+};
+pub use saved_queries::{
+    default_saved_queries_path, ConnectionQueries, SavedQueriesFile, SavedQuery, SavedQueryAdmin,
+    SavedQueryError, SAVED_QUERIES_VERSION,
 };
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{

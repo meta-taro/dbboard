@@ -11,6 +11,19 @@ public API is the HTTP contract in
 
 ### Added
 
+- **Queries you want to keep now have somewhere to live.** The editor has
+  always remembered what you ran, but that list is disposable on purpose — it
+  is capped, it de-duplicates, and there is a Clear button next to it. A query
+  you spent an afternoon getting right is not that. Name it, and it stays:
+  per connection, listed newest first, one click to put it back in the editor.
+
+  They are kept in `saved-queries.toml`, next to your connections and table
+  notes, rather than inside the app window's own storage. That distinction is
+  invisible right up until it matters: browser-style storage is emptied by
+  "clear site data", no backup of your settings includes it, and it does not
+  come with you to a new machine. Renaming a connection keeps its queries, and
+  saving over an existing name asks first.
+
 - **Results save as JSON, not only as CSV.** The save dialog offers a third
   format, and the difference is not punctuation: the CSV and TSV exports have
   to flatten every cell to a string, because that is all a spreadsheet cell

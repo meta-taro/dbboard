@@ -94,6 +94,21 @@ export const en = {
   "result-sort-hint": "Click to sort · Shift-click to add a key",
   "result-cell-dialog": "Cell value",
   "result-row-limit": "Rows",
+  // Saved queries (ADR-0147). Kept in `saved-queries.toml` with the rest of
+  // the profile, not in the webview's storage — a query somebody deliberately
+  // kept should survive "clear site data" and be visible to a backup.
+  "saved-title": "Saved ({ $count })",
+  "saved-heading": "Saved queries",
+  "saved-empty": "Nothing saved for this connection yet.",
+  "saved-name-placeholder": "Name this query",
+  "saved-save": "Save",
+  "saved-replace": "Replace",
+  "saved-name-taken": "\"{ $name }\" already exists. Replace it?",
+  "saved-delete": "Delete",
+  "saved-delete-confirm": "Delete the saved query \"{ $name }\"?",
+  "saved-load-failed": "Could not read the saved queries",
+  "saved-save-failed": "Could not save",
+  "saved-delete-failed": "Could not delete",
   // Keyset paging over a browsed table (ADR-0145). "Page N" counts pages
   // walked, not pages that exist: a keyset cursor knows what comes next, not
   // how much of it there is, and the total is deliberately not asked for.
@@ -560,6 +575,18 @@ const ja: Partial<Record<MessageKey, string>> = {
   "result-sort-hint": "クリックで並び替え・Shift+クリックでキーを追加",
   "result-cell-dialog": "セルの値",
   "result-row-limit": "行数",
+  "saved-title": "保存済み ({ $count })",
+  "saved-heading": "保存したクエリ",
+  "saved-empty": "この接続にはまだ保存されたクエリがありません。",
+  "saved-name-placeholder": "クエリに名前を付ける",
+  "saved-save": "保存",
+  "saved-replace": "置き換える",
+  "saved-name-taken": "「{ $name }」は既にあります。置き換えますか?",
+  "saved-delete": "削除",
+  "saved-delete-confirm": "保存したクエリ「{ $name }」を削除しますか?",
+  "saved-load-failed": "保存したクエリを読めませんでした",
+  "saved-save-failed": "保存できませんでした",
+  "saved-delete-failed": "削除できませんでした",
   "cell-copy": "コピー",
   "cell-tree": "ドキュメントの構造",
   "cell-tree-expand-all": "すべて展開",

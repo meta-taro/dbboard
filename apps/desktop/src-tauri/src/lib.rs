@@ -17,12 +17,13 @@ mod ai;
 mod browse;
 mod connections;
 mod dump;
+mod queries;
 mod restore;
 mod ui_state;
 
 use dbboard_config::secrets::{KeyringStore, SecretStore};
 use dbboard_config::update_attempt;
-use dbboard_config::{AnnotationsAdmin, ConnectionAdmin};
+use dbboard_config::{AnnotationsAdmin, ConnectionAdmin, SavedQueryAdmin};
 use dbboard_mcp::McpService;
 
 /// The managed state backing every command.
@@ -55,6 +56,10 @@ pub(crate) struct AppState {
     pub(crate) service: McpService,
     pub(crate) admin: Mutex<ConnectionAdmin>,
     pub(crate) annotations: Mutex<AnnotationsAdmin>,
+    /// The saved-query write path: [`SavedQueryAdmin`] owns
+    /// `saved-queries.toml`. Like notes, a saved query never reaches a
+    /// database or an adapter, so a write needs no cache eviction (ADR-0147).
+    pub(crate) saved_queries: Mutex<SavedQueryAdmin>,
     pub(crate) dump_cancel: Arc<AtomicBool>,
     pub(crate) restore_cancel: Arc<AtomicBool>,
     /// The AI assistant layer (ADR-0052): the live provider slot, the optional
@@ -80,6 +85,8 @@ pub fn run() {
         .expect("open connections.toml for connection management");
     let annotations =
         AnnotationsAdmin::open_default().expect("open annotations.toml for local note editing");
+    let saved_queries =
+        SavedQueryAdmin::open_default().expect("open saved-queries.toml for saved queries");
     // Stand up the optional AI layer before the service consumes `secrets` —
     // both need the same keyring handle (the `ai.` keyring infix keeps their
     // namespaces apart). A misconfigured assistant degrades to "no provider",
@@ -98,6 +105,7 @@ pub fn run() {
             service,
             admin: Mutex::new(admin),
             annotations: Mutex::new(annotations),
+            saved_queries: Mutex::new(saved_queries),
             dump_cancel: Arc::new(AtomicBool::new(false)),
             restore_cancel: Arc::new(AtomicBool::new(false)),
             ai,
@@ -114,6 +122,9 @@ pub fn run() {
             browse::run_read_query,
             browse::browse_page,
             browse::update_row,
+            queries::list_saved_queries,
+            queries::save_query,
+            queries::delete_saved_query,
             config_path,
             connections::fields::connection_edit_fields,
             connections::connection_marks,

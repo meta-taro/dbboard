@@ -10,6 +10,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import type { EditFields } from '$lib/connections/draft';
+import type { SavedQueryView } from '$lib/queries/saved';
 import type { CellEdit, KeyColumn } from '$lib/grid/edit';
 import type { DumpPlan, DumpOutcome, DumpProgress } from '$lib/backup/plan';
 import type {
@@ -274,6 +275,36 @@ export const configPath = (): Promise<string> => invoke('config_path');
 // happens in Rust so the file lands at the chosen path.
 export const saveTextFile = (path: string, contents: string): Promise<void> =>
   invoke('save_text_file', { path, contents });
+
+// --- Saved queries (ADR-0147) -------------------------------------------
+//
+// Statements the operator deliberately kept, in `saved-queries.toml` beside
+// the rest of the profile — not in the webview's storage, which "clear site
+// data" empties and no backup sees. Deliberately NOT MCP tools: an agent can
+// already run any statement it can compose, so listing these would add no
+// capability, only the operator's private working notes in its context.
+
+export const listSavedQueries = (
+  connectionId: string,
+): Promise<SavedQueryView[]> => invoke('list_saved_queries', { connectionId });
+
+// `overwrite: false` refuses a name that is taken, rejecting with the string
+// `duplicate-name` so the caller can ask before replacing. Replacing silently
+// is how a saved query is lost.
+export const saveQuery = (
+  connectionId: string,
+  name: string,
+  sql: string,
+  overwrite: boolean,
+): Promise<void> =>
+  invoke('save_query', { connectionId, name, sql, overwrite });
+
+// Resolves to whether a query was actually removed, so a second click on a
+// stale list is a no-op rather than an error.
+export const deleteSavedQuery = (
+  connectionId: string,
+  name: string,
+): Promise<boolean> => invoke('delete_saved_query', { connectionId, name });
 
 // --- Logical backup / dump (write-to-file path, ADR-0049/0050) ----------
 //
