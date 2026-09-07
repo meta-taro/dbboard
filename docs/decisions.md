@@ -13493,12 +13493,14 @@ in the webview's `localStorage`, capped at 50 and de-duplicated
 it would be the wrong line.
 
 There is a second history in the design — the `history.jsonl` of
-[ADR-0017](#adr-0017--query-history-persistence-json-lines-schema-shared-with-dbboard-web-stage-2), whose schema `dbboard-web` mirrors. **Nothing in the
-Tauri client writes it.** `dbboard-config` still resolves its path and the
-contract still describes its shape, but the desktop history has been the
-webview's own storage since the client was rebuilt. Saved queries could not
-have ridden along on a file nobody writes, and noting it here is the honest
-version of "we looked". The history is something the tool records on
+[ADR-0017](#adr-0017--query-history-persistence-json-lines-schema-shared-with-dbboard-web-stage-2), whose record schema `dbboard-web` mirrors
+(issue 0003). **Nothing writes it any more.** The reader and writer lived in
+`dbboard-ui`, the egui crate, and went with it when
+[ADR-0089](#adr-0089--the-egui-client-is-retired-tauri-is-the-only-client) retired that client; `dbboard-config` still resolves
+the path and `docs/roadmap.md` still carries the feature as done. Saved
+queries could not have ridden along on a file nobody writes. Tracked
+separately as issue 0033 — it is not this ADR's to fix, but it is this ADR's
+to have noticed. The history is something the tool records on
 your behalf, and it is disposable by design — capped, de-duplicated, cleared
 by the Clear button next to it. A saved query is the opposite: an artefact the
 operator made on purpose, sometimes the distilled result of an afternoon.
