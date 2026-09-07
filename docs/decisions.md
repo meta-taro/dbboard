@@ -13565,3 +13565,78 @@ has now done once, and found out the hard way what lives outside git.
   user-only, like every other store here. Nothing scans it.
 - The frontend grew a component (`SavedQueries.svelte`) rather than more of
   `QueryPanel`, which was at 736 of its 800-line ceiling.
+
+## ADR-0148 — A schema diff that would rather report a cosmetic difference than miss a real one (2026-09-07)
+
+**Status.** Accepted for the comparison itself. The third item in the **v0.16
+— Everyday work** slot; this ADR settles what "different" means and ships the
+engine. **Where it appears in the UI is not decided here** — `CLAUDE.md`
+reserves visual direction for a person, and a default an agent fills in
+becomes the fact.
+
+**Context.** "Schema diff between two connections" has sat unchecked in Phase
+5 since it was written. The unstated question underneath it is what counts as
+a difference, and most of the ways to get that wrong share a direction: they
+call two things the same. A tool that reports a difference which turns out to
+be cosmetic costs the reader a second look. A tool that misses one costs them
+the migration.
+
+**Decision.**
+
+1. **Same engine only, and the refusal lives above this layer.** The
+   comparison here is pure and takes two sets of introspected tables; it has
+   no idea which engine produced them. Declining to compare Postgres against
+   MongoDB is the job of the layer that knows what a connection is. Comparing
+   *across* engines needs a type-correspondence table — is Postgres `text` the
+   same as MySQL `varchar(255)`? — and that table is a whole feature, with a
+   home already reserved for it in the Database Workspace plan's migration
+   phase (Compatibility Scan, band 7). Guessing at it now would fix the wrong
+   half.
+
+2. **Tables match on their qualified name, columns on their name.**
+   `public.orders` and `staging.orders` are different tables; matching on the
+   bare name would compare one against the other and report every column as a
+   difference.
+
+3. **Types are compared exactly as the engine spelled them.** No
+   normalisation, no case folding, no stripping of length modifiers. Deciding
+   that `VARCHAR(255)` and `varchar` are the same column needs engine
+   knowledge this layer does not have, and each normalisation rule is a chance
+   to hide a real difference. The cost is visible: a database restored through
+   a tool that respells types will show differences that are not. That is the
+   direction to be wrong in.
+
+4. **Column order is not a difference.** Two databases holding the same
+   columns in a different order are the same schema for every practical
+   purpose, and reporting the order would bury the real findings under noise
+   from every table that was ever rebuilt. Primary **key** order, by contrast,
+   *is* compared: `(a, b)` and `(b, a)` index different things.
+
+5. **Columns and the primary key; not indexes, not constraints.**
+   `describe_table` already returns columns for every adapter. Indexes are
+   reached differently by each engine and several of the eleven adapters have
+   not been asked whether they can. Shipping the half that is uniformly
+   available beats blocking on the half that is not — and the missing half is
+   additive.
+
+6. **A table that exists on one side only is reported once.** Not also as a
+   table full of missing columns: one finding per fact, or the count of
+   differences lies. An unchanged table is absent entirely — the report is
+   what differs, not an inventory, so a 300-table database with one difference
+   produces one entry.
+
+7. **The output is ordered.** Tables by qualified name, columns by name,
+   differing attributes in a fixed sequence. The inputs arrive in each
+   adapter's native order, and a report that reshuffles between runs cannot be
+   compared against the last one.
+
+**Consequences.**
+
+- `diff_schemas` is pure, I/O-free and unit-tested in `dbboard-core`, like the
+  dump's SQL rendering beside it. Wiring it to two connections, and refusing a
+  cross-engine pair, is a separate slice.
+- Case-only differences will be reported. That is the price of (3), and it is
+  the affordable half of the trade.
+- The feature is not usable from the client yet. `docs/roadmap.md` keeps the
+  Phase 5 item unchecked and says how far it got, because a half-built feature
+  ticked as done is worse than one that is honestly unfinished.

@@ -18,6 +18,7 @@ mod read_only;
 mod restore;
 mod row;
 mod schema;
+mod schema_diff;
 mod sort;
 mod value;
 mod write_back;
@@ -48,6 +49,7 @@ pub use restore::{
 };
 pub use row::{Column, QueryResult, Row};
 pub use schema::{resolve_referenced_columns, ColumnInfo, ForeignKey, TableInfo, TableSchema};
+pub use schema_diff::{diff_schemas, ColumnDiff, ColumnField, SchemaDiff, TableDiff};
 pub use sort::{compare_values, sorted_row_order, SortKey};
 pub use value::Value;
 pub use write_back::{
