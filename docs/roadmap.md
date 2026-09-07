@@ -689,7 +689,16 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       the native save dialog ([ADR-0035](decisions.md)). JSON is not a
       supported export format; it is tracked below rather than left
       implied by this line.
-- [ ] Export results as JSON
+- [x] Export results as JSON — the save dialog's third format, next to
+      the CSV and TSV of [ADR-0035](decisions.md). It exists because the
+      delimited exports flatten every cell to a string: JSON keeps NULL as
+      null, numbers as numbers, and a document as a document
+      ([ADR-0146](decisions.md), issue 0031). A repeated column name is
+      numbered rather than dropped, `$blob` stays tagged because JSON
+      cannot express bytes, and there is no BOM — parsers reject it where
+      Excel needs it. The save confirmation now also says when the file
+      holds one page rather than the whole result, which corrects the same
+      silence in the CSV path.
 - [ ] Saved queries
 - [ ] Schema diff between two connections
 - [ ] Performance: cold-start under 1s on a modern laptop

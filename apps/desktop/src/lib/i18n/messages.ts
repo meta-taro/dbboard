@@ -82,8 +82,12 @@ export const en = {
   "result-copy-tsv-title": "Copy as TSV",
   "result-copy-csv-title": "Copy as CSV",
   "result-save": "↓ Save…",
-  "result-save-title": "Save to a CSV or TSV file",
+  "result-save-title": "Save to a CSV, TSV or JSON file",
   "result-saved": "Saved { $name }",
+  // An export writes what the grid holds. Once a browse is paged (ADR-0145)
+  // that is one page of many, so the count is named rather than implied — a
+  // file that says nothing gets read later as the whole table.
+  "result-saved-partial": "Saved { $name } — { $count } rows on screen, not the whole result",
   "result-save-failed": "Save failed",
   "result-copied": "Copied { $fmt }",
   "result-copy-failed": "Copy failed",
@@ -547,8 +551,9 @@ const ja: Partial<Record<MessageKey, string>> = {
   "result-copy-tsv-title": "TSV としてコピー",
   "result-copy-csv-title": "CSV としてコピー",
   "result-save": "↓ 保存…",
-  "result-save-title": "CSV / TSV ファイルに保存",
+  "result-save-title": "CSV / TSV / JSON ファイルに保存",
   "result-saved": "{ $name } を保存しました",
+  "result-saved-partial": "{ $name } を保存しました — 画面上の { $count } 行のみで、結果全体ではありません",
   "result-save-failed": "保存に失敗しました",
   "result-copied": "{ $fmt } をコピーしました",
   "result-copy-failed": "コピーに失敗しました",
