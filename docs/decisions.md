@@ -13481,3 +13481,85 @@ survive it.
   `null` as a `NULL`.
 - The serializer is pure and unit-tested (`$lib/export/json.ts`), like the
   delimited one it sits beside.
+
+## ADR-0147 — A saved query goes in the profile, because the history is not where you keep things (2026-09-07)
+
+**Status.** Accepted. The second of the three items in the **v0.16 — Everyday
+work** slot, after [ADR-0146](#adr-0146--the-json-export-keeps-the-types-the-csv-export-has-to-throw-away-2026-09-07).
+
+**Context.** The editor already remembers what was run: a per-connection list
+in the webview's `localStorage`, capped at 50 and de-duplicated
+(`$lib/history/`). It would be one line to keep saved queries there too, and
+it would be the wrong line.
+
+There is a second history in the design — the `history.jsonl` of
+[ADR-0017](#adr-0017--query-history-persistence-json-lines-schema-shared-with-dbboard-web-stage-2), whose schema `dbboard-web` mirrors. **Nothing in the
+Tauri client writes it.** `dbboard-config` still resolves its path and the
+contract still describes its shape, but the desktop history has been the
+webview's own storage since the client was rebuilt. Saved queries could not
+have ridden along on a file nobody writes, and noting it here is the honest
+version of "we looked". The history is something the tool records on
+your behalf, and it is disposable by design — capped, de-duplicated, cleared
+by the Clear button next to it. A saved query is the opposite: an artefact the
+operator made on purpose, sometimes the distilled result of an afternoon.
+
+`localStorage` matches the first and not the second. It is emptied by "clear
+site data", it is invisible to any backup of the config directory, and it does
+not come along when the operator moves to another machine — which this project
+has now done once, and found out the hard way what lives outside git.
+
+**Decision.**
+
+1. **`saved-queries.toml`, in the config dir, beside `connections.toml` and
+   `annotations.toml`.** Same `secure_fs` at-rest posture (user-only), same
+   atomic whole-file write, same "a missing file is an empty store" rule, same
+   loud refusal of a duplicate or an unknown schema version. It is a sibling
+   of `annotations` in every respect because it is the same kind of thing:
+   local text about a database, which never goes to the database.
+
+2. **Anchored by connection id, and scoped to it.** Renaming a connection
+   keeps its queries, exactly as notes do. A saved query names tables that
+   exist in one database, so offering it against a connection where they do
+   not is an error the tool can decline to produce.
+
+3. **Overwriting requires an answer.** `add` refuses a name that is taken and
+   the caller confirms before calling `replace`. Silent replacement is how a
+   saved query is lost, and the store cannot know whether it was meant. The
+   command surface carries this through: `save_query` takes `overwrite`, and
+   answers a clash with the exact string `duplicate-name` so the frontend can
+   tell "ask the operator" from "report a failure".
+
+4. **Not an MCP tool.** An agent can already compose and run any statement, so
+   listing these adds no capability it lacks. What it would add is the
+   operator's private working notes arriving in an agent's context because a
+   tool enumerated them — the inverse of the rule
+   [ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list) sets for new verbs. Desktop-only, like inline cell
+   editing and the dump before it.
+
+5. **The file keeps insertion order; the list on screen is by recency.**
+   Insertion order makes the file's diffs readable — a new query is a new
+   stanza at the end, not a reshuffle. Each entry carries `saved_at`, so the
+   view sorts without the storage having to.
+
+**What was not chosen.**
+
+- **Reusing the history store.** Covered above: same shape, opposite
+  lifecycle. Storing the deliberate thing in the disposable place is how it
+  gets thrown away.
+- **A query that belongs to no connection, runnable against any.** A real
+  need — the same report against dev and prod — and deliberately deferred. It
+  is additive to this file format (a stanza with no id, or a copy action), and
+  guessing at it now would fix the wrong half of the problem before anyone has
+  hit it.
+- **A cap, like the history's 50.** The history is capped because the tool
+  writes it without being asked. Nothing here is written without being asked.
+
+**Consequences.**
+
+- One more file in the config directory, and therefore one more thing that a
+  profile backup carries and a machine move must bring.
+- SQL text the operator typed lands on disk. If they paste a credential into a
+  statement and save it, it is in this file — which is why it is written
+  user-only, like every other store here. Nothing scans it.
+- The frontend grew a component (`SavedQueries.svelte`) rather than more of
+  `QueryPanel`, which was at 736 of its 800-line ceiling.
