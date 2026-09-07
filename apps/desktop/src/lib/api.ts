@@ -276,6 +276,49 @@ export const configPath = (): Promise<string> => invoke('config_path');
 export const saveTextFile = (path: string, contents: string): Promise<void> =>
   invoke('save_text_file', { path, contents });
 
+// --- Schema diff (ADR-0148) ---------------------------------------------
+//
+// Compare two connections' schemas. Read-only on both sides. Refused when the
+// two are different engines: deciding whether Postgres `text` is MySQL
+// `varchar(255)` needs a type-correspondence table this does not have, and a
+// report that guesses would look authoritative while being wrong.
+//
+// Nothing is normalised — types are compared exactly as each engine spelled
+// them — because the one mistake a diff must not make is calling two things
+// the same. Column order is not a difference; primary-key order is.
+
+export type ColumnField = 'DeclaredType' | 'Nullable' | 'Default' | 'PrimaryKey';
+
+export interface ColumnDiff {
+  name: string;
+  left: ColumnInfo;
+  right: ColumnInfo;
+  fields: ColumnField[];
+}
+
+export interface TableDiff {
+  table: TableInfo;
+  columns_only_in_left: ColumnInfo[];
+  columns_only_in_right: ColumnInfo[];
+  columns_changed: ColumnDiff[];
+  // Both sides' key columns, in key order, when they differ. `(a, b)` and
+  // `(b, a)` index different things, so order is part of the comparison.
+  primary_key: [string[], string[]] | null;
+}
+
+export interface SchemaDiff {
+  tables_only_in_left: TableInfo[];
+  tables_only_in_right: TableInfo[];
+  // Only tables that differ. The report is what differs, not an inventory.
+  tables_changed: TableDiff[];
+}
+
+export const diffSchemas = (
+  leftConnectionId: string,
+  rightConnectionId: string,
+): Promise<SchemaDiff> =>
+  invoke('diff_schemas', { leftConnectionId, rightConnectionId });
+
 // --- Saved queries (ADR-0147) -------------------------------------------
 //
 // Statements the operator deliberately kept, in `saved-queries.toml` beside

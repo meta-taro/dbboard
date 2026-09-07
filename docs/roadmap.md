@@ -710,16 +710,16 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       Deliberately not an MCP tool — an agent can already run any
       statement, so listing these would add no capability, only the
       operator's private notes in its context.
-- [ ] Schema diff between two connections — **the comparison is built and
-      tested; nothing reaches it yet.** `diff_schemas` in `dbboard-core`
-      settles what "different" means ([ADR-0148](decisions.md), issue
-      0034): same engine only, exact type text with no normalisation,
-      column order ignored but primary-key order compared, columns and
-      the primary key but not indexes. What is left is where it appears
-      in the client, which is a visual decision reserved for a person,
-      and the wiring that fetches two connections' schemas. Left
-      unticked deliberately: a half-built feature marked done is worse
-      than one that is honestly unfinished.
+- [ ] Schema diff between two connections — **everything but the screen
+      is built and tested.** `diff_schemas` in `dbboard-core` settles what
+      "different" means ([ADR-0148](decisions.md), issue 0034): same
+      engine only, exact type text with no normalisation, column order
+      ignored but primary-key order compared, columns and the primary key
+      but not indexes. `McpService::diff_schemas` fetches both sides and
+      refuses a cross-engine pair before either is dialled, and a Tauri
+      command exposes it. What is left is where it appears in the client
+      — a visual decision reserved for a person, not an agent. Left
+      unticked deliberately: a feature nobody can reach is not done.
 - [ ] Performance: cold-start under 1s on a modern laptop
 
 ## Packaging & Distribution

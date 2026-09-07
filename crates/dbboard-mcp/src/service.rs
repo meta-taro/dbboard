@@ -51,11 +51,12 @@ use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use crate::export::{self, ExportOutcome};
 use dbboard_core::{
     browse_page as core_browse_page, build_update_sql, classify_write, dialect_for_adapter_id,
-    plan_dump as core_plan_dump, plan_restore as core_plan_restore, run_dump as core_run_dump,
-    run_restore as core_run_restore, Column, ColumnInfo, DatabaseAdapter, DbError, DumpControl,
-    DumpError, DumpOutcome, DumpPlan, DumpProgress, DumpResult, DumpSink, ForeignKey,
-    RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan, Row, TableInfo, TableSchema,
-    UpdatePlan, Value, WriteBackError, WritePolicyViolation, WriteStatement,
+    diff_schemas, plan_dump as core_plan_dump, plan_restore as core_plan_restore,
+    run_dump as core_run_dump, run_restore as core_run_restore, Column, ColumnInfo,
+    DatabaseAdapter, DbError, DumpControl, DumpError, DumpOutcome, DumpPlan, DumpProgress,
+    DumpResult, DumpSink, ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan,
+    Row, SchemaDiff, TableInfo, TableSchema, UpdatePlan, Value, WriteBackError,
+    WritePolicyViolation, WriteStatement,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -1234,6 +1235,77 @@ impl McpService {
         Ok(adapter.describe_table(&table_info).await?)
     }
 
+    /// Compare two connections' schemas, table by table and column by column
+    /// (ADR-0148).
+    ///
+    /// **Both connections must be the same engine.** Comparing across engines
+    /// needs a type-correspondence table — is Postgres `text` the same as
+    /// MySQL `varchar(255)`? — which is a feature of its own, and guessing at
+    /// it would produce a report that looks authoritative and is not. The
+    /// check runs before either side is dialled, so a refused pair costs no
+    /// connection and resolves no credential.
+    ///
+    /// Introspection is the ordinary read path: `list_tables` then
+    /// `describe_table` per table, through each adapter. A table that cannot
+    /// be described fails the whole comparison rather than being left out of
+    /// one side: a missing table and an unreadable one look identical in the
+    /// report, and reporting the second as the first would be exactly the
+    /// mistake ADR-0148 leans away from — claiming a difference that is really
+    /// an unanswered question.
+    ///
+    /// # Errors
+    ///
+    /// - [`ServiceError::ConnectionNotFound`] naming whichever id is unknown.
+    /// - [`ServiceError::InvalidRequest`] when the two kinds differ, naming
+    ///   both.
+    /// - [`ServiceError::Db`] if either side cannot be introspected.
+    pub async fn diff_schemas(
+        &self,
+        left_id: &str,
+        right_id: &str,
+    ) -> Result<SchemaDiff, ServiceError> {
+        let file = self.load_connection_file().await?;
+        let kind_of = |id: &str| {
+            file.connections
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| kind_label(&e.kind).to_owned())
+                .ok_or_else(|| ServiceError::ConnectionNotFound(id.to_string()))
+        };
+        let left_kind = kind_of(left_id)?;
+        let right_kind = kind_of(right_id)?;
+        if left_kind != right_kind {
+            return Err(ServiceError::InvalidRequest(format!(
+                "cannot compare a {left_kind} schema with a {right_kind} one: \
+                 the two engines spell types differently, and deciding which \
+                 spellings mean the same thing is not something this \
+                 comparison does"
+            )));
+        }
+
+        let left = self.snapshot_schema(left_id).await?;
+        let right = self.snapshot_schema(right_id).await?;
+        Ok(diff_schemas(&left, &right))
+    }
+
+    /// Every table of one connection, described.
+    ///
+    /// Sequential on purpose: a schema with many tables would otherwise open
+    /// as many concurrent statements against a database somebody else is
+    /// using, and this is a background curiosity, not a hot path.
+    async fn snapshot_schema(&self, connection_id: &str) -> Result<Vec<TableSchema>, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let tables = adapter.list_tables().await?;
+        let mut out = Vec::with_capacity(tables.len());
+        for table in tables {
+            // Deliberately `?`: a table listed but not describable (dropped
+            // mid-run, or permissions) must not become "absent from this
+            // side" in the report.
+            out.push(adapter.describe_table(&table).await?);
+        }
+        Ok(out)
+    }
+
     /// Run a single read-only SQL statement, returning at most
     /// `max_rows` rows (default [`DEFAULT_MAX_ROWS`], clamped to
     /// [`MAX_MAX_ROWS`]) plus a `truncated` flag.
@@ -1960,6 +2032,94 @@ mod tests {
             }),
             "firestore"
         );
+    }
+
+    #[tokio::test]
+    async fn a_schema_diff_across_two_engines_is_refused_before_anything_connects() {
+        // Comparing Postgres against libSQL needs a type-correspondence table
+        // — is `text` the same as `VARCHAR(255)`? — which is a feature of its
+        // own (ADR-0148). Refusing here also means the Postgres entry's
+        // credentials are never resolved and no connection is attempted, so
+        // this test needs no server.
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            r#"
+version = 1
+
+[[connections]]
+id   = "local"
+name = "Local libSQL"
+kind = "turso"
+path = ":memory:"
+
+[[connections]]
+id              = "prod-pg"
+name            = "Prod Postgres"
+kind            = "postgres"
+keyring_url_ref = "dbboard.prod-pg.url"
+"#,
+        );
+
+        let err = fx
+            .service
+            .diff_schemas("local", "prod-pg")
+            .await
+            .expect_err("must refuse");
+        assert!(
+            matches!(err, ServiceError::InvalidRequest(ref m) if m.contains("turso") && m.contains("postgres")),
+            "the message must name both engines, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_schema_diff_of_two_empty_databases_is_empty() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            r#"
+version = 1
+
+[[connections]]
+id   = "a"
+name = "A"
+kind = "turso"
+path = ":memory:"
+
+[[connections]]
+id   = "b"
+name = "B"
+kind = "turso"
+path = ":memory:"
+"#,
+        );
+
+        let diff = fx.service.diff_schemas("a", "b").await.expect("diff");
+        assert!(diff.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_schema_diff_naming_an_unknown_connection_says_which_one() {
+        let fx = fixture();
+        write(
+            &fx.config_path,
+            r#"
+version = 1
+
+[[connections]]
+id   = "a"
+name = "A"
+kind = "turso"
+path = ":memory:"
+"#,
+        );
+
+        let err = fx
+            .service
+            .diff_schemas("a", "ghost")
+            .await
+            .expect_err("must fail");
+        assert!(matches!(err, ServiceError::ConnectionNotFound(ref id) if id == "ghost"));
     }
 
     #[tokio::test]
