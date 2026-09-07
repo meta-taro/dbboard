@@ -13396,3 +13396,88 @@ rows a person can now reach, not milliseconds they no longer pay.
   improvement it did not produce.
 - The contract grows two optional fields now and cannot grow them after v1.0.
 - `dbboard-web` owes the mirrored ADR before its own contract freezes.
+
+## ADR-0146 — The JSON export keeps the types the CSV export has to throw away (2026-09-07)
+
+**Status.** Accepted. Settles the shape and value rules for
+`Export results as JSON`, the first of the three items in the **v0.16 —
+Everyday work** slot.
+
+**Context.** The result grid has exported CSV and TSV since
+[ADR-0035](#adr-0035--export-a-result-set-to-csv--tsv-copy-to-clipboard-save-via-native-dialog). Both go through `exportValue`, which flattens every cell to a
+string because a spreadsheet cell has nowhere else to put one: `NULL` becomes
+`''`, a document becomes its JSON *text*, a blob becomes the literal
+`<blob>`. That is the right trade for a file a person opens in Excel and the
+wrong one for a file a program reads back — a consumer that cannot tell `NULL`
+from an empty string cannot reconstruct the row, and one that receives a
+document as a quoted string has to parse it a second time.
+
+So JSON is not CSV with different punctuation. It exists because the types
+survive it.
+
+**Decision.** Five answers.
+
+1. **An array of row objects**, not the grid's own shape. `[{"id": 1, …}, …]`
+   is what `jq`, a dataframe loader and a hand-written script all expect. The
+   `columns`-beside-`rows` shape is already available to anything that wants
+   column metadata — it is what the API contract serves
+   ([ADR-0011](#adr-0011--semver-for-dbboard-tiered-db-version-support-compatibilitymd-as-the-runbook)) — and duplicating it in a file that
+   exists for downstream tools would serve neither audience well.
+
+2. **A repeated column name is numbered, not dropped.** `SELECT a.id, b.id` is
+   ordinary SQL and a JSON object cannot hold two `id` members: the second
+   would overwrite the first, and the file would parse while being quietly
+   wrong. Repeats are keyed by their own occurrence — `id`, `id:2`, `id:3` —
+   so a result with no collisions is spelled exactly as the engine reported
+   it. An unnamed column (an expression in SQLite) is keyed `column:<position>`
+   rather than `""`, which is a legal JSON key no consumer can address.
+
+3. **`$json` is stripped, `$blob` is kept.** One rule, not two exceptions: a
+   tag carries type information the transport cannot express by itself. JSON
+   expresses a document natively, so the tag is noise every consumer would
+   have to strip. JSON cannot express bytes, so removing `$blob` would leave
+   base64 that reads as ordinary text with nothing to say it is not.
+
+4. **No byte-order mark, and this is where the two exports diverge.** The
+   delimited path deliberately leads with one so Excel on a non-UTF-8 code
+   page detects UTF-8 (ADR-0035). `JSON.parse` and most parsers reject a
+   leading BOM outright, so the same habit here would produce a file nothing
+   can read. The output is indented and newline-terminated instead: it is a
+   file a person names in a save dialog, so some of them open it in an editor.
+
+5. **The confirmation says when the file is not the whole result.** An export
+   has always written only what the grid holds. Before paging that was a
+   truncated run and said so on screen; since [ADR-0145](#adr-0145--paging-is-a-missing-row-not-a-slow-one-and-the-cursor-is-a-key-rather-than-a-connection-2026-09-04) it is routinely one
+   page of many, and a file that says nothing about it gets read later as the
+   whole table. The toast now names the row count and that it is what was on
+   screen. This corrects the CSV path too, which had the same silence.
+
+**What was not chosen.**
+
+- **A wrapper object carrying `truncated` / `has_more` beside the rows.** It
+  would make the file self-describing, at the cost of every consumer stripping
+  an envelope before reaching the data — and it would leave the two exports
+  disagreeing about what an export file is. The honesty belongs at the moment
+  of export, where the person is, rather than in a shape every later reader
+  pays for.
+- **Exporting the whole table by walking pages behind the button.** A button
+  labelled Save would then issue an unbounded series of queries. Whole-table
+  extraction already exists deliberately, as the dump (ADR-0049), and if a
+  JSON dump is wanted it belongs there rather than hidden in the grid's
+  toolbar.
+- **Stringifying integers to survive JavaScript.** `i64` values beyond 2^53
+  lose precision in `JSON.parse`, but the text this writes carries the exact
+  digits and every non-JavaScript consumer reads them correctly. Quoting all
+  numbers to protect one runtime would break every consumer that expects a
+  number.
+
+**Consequences.**
+
+- The grid's save dialog offers three formats; the extension picks one, as it
+  already did for `.tsv` vs `.csv`.
+- `NaN` and infinite `Real` values have no JSON spelling and serialize as
+  `null`, the same as the contract's own encoding does. Nothing in the app
+  produces them today; recording it here so the next reader does not read a
+  `null` as a `NULL`.
+- The serializer is pure and unit-tested (`$lib/export/json.ts`), like the
+  delimited one it sits beside.

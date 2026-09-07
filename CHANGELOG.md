@@ -11,6 +11,27 @@ public API is the HTTP contract in
 
 ### Added
 
+- **Results save as JSON, not only as CSV.** The save dialog offers a third
+  format, and the difference is not punctuation: the CSV and TSV exports have
+  to flatten every cell to a string, because that is all a spreadsheet cell
+  holds. An empty CSV field could always have been either an empty string or
+  NULL, a document arrived as text that needed parsing a second time, and a
+  blob arrived as the word `<blob>`. JSON keeps NULL as null, numbers as
+  numbers, and a document as a document.
+
+  Two details you would otherwise find out the hard way. A query selecting two
+  columns of the same name — `SELECT a.id, b.id` — keeps both, the second as
+  `id:2`, rather than one overwriting the other in a file that still parses.
+  And the file carries no byte-order mark: the CSV export deliberately writes
+  one so Excel opens it in the right encoding, and JSON parsers reject exactly
+  that byte.
+
+  Saving now also says what the file holds. An export has always written the
+  rows on screen, which since paging arrived is routinely one page of several;
+  the confirmation names the count instead of leaving a file that gets read
+  later as the whole table. **That applies to the CSV export too**, which had
+  been quiet about it.
+
 - **A browsed table no longer ends at row 100.** Clicking a table has always
   shown its first rows and stopped; the bound was a truncation, never a first
   page. It is a page now — Previous and Next walk the whole table, one page at

@@ -432,6 +432,7 @@
         limit={resultLimit}
         edit={editContext}
         enums={editEnums}
+        partial={result.truncated || result.has_more || pageIndex > 0}
         onSaved={reloadAfterSave}
       />
       {#if paging}
