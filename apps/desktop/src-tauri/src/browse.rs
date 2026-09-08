@@ -6,7 +6,7 @@
 //! — those are written here, to `annotations.toml`, and never to the database
 //! (ADR-0045).
 
-use dbboard_core::{CellValue, RowKey, TableInfo, TableSchema, UpdatePlan, Value};
+use dbboard_core::{CellValue, RowKey, SchemaDiff, TableInfo, TableSchema, UpdatePlan, Value};
 use dbboard_mcp::service::{
     AnnotationsView, ConnectionView, QueryOutput, RelationshipView, SchemaSearchView,
 };
@@ -108,6 +108,29 @@ pub(crate) async fn set_column_note(
     let mut admin = state.annotations.lock().map_err(|_| lock_poisoned())?;
     admin
         .set_column_note(&connection_id, &table, &column, &note)
+        .map_err(|e| e.to_string())
+}
+
+/// Compare two connections' schemas (ADR-0148).
+///
+/// Read-only on both sides: `list_tables` + `describe_table`, nothing else.
+/// Refused when the two connections are different engines — the service
+/// checks before either side is dialled, so the pair costs no connection.
+///
+/// Deliberately not an MCP tool for now. It would open nothing an agent
+/// cannot already reach with the two verbs it composes, so it is additive by
+/// ADR-0087's test; it is left out because the feature this belongs to is
+/// still being built, and a verb is easier to add than to take back.
+#[tauri::command]
+pub(crate) async fn diff_schemas(
+    state: tauri::State<'_, AppState>,
+    left_connection_id: String,
+    right_connection_id: String,
+) -> Result<SchemaDiff, String> {
+    state
+        .service
+        .diff_schemas(&left_connection_id, &right_connection_id)
+        .await
         .map_err(|e| e.to_string())
 }
 

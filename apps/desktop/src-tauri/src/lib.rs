@@ -118,6 +118,7 @@ pub fn run() {
             browse::set_table_note,
             browse::set_column_note,
             browse::search_schema,
+            browse::diff_schemas,
             browse::list_relationships,
             browse::run_read_query,
             browse::browse_page,
