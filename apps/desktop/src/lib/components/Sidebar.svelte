@@ -8,6 +8,7 @@
   import ConnectionMark from './ConnectionMark.svelte';
   import MarkPicker from './MarkPicker.svelte';
   import { tableMenuActions } from '$lib/sidebar/menu';
+  import { compare } from '$lib/compare/compare.svelte';
   import { connectionTooltip } from '$lib/connections/label';
   import { markFor, isConnectionColor, colorVar } from '$lib/connections/marks';
   import {
@@ -185,6 +186,17 @@
     }
   }
 
+  /**
+   * A table click keeps meaning "browse this table". While a comparison is on
+   * screen it *also* moves the report to that table (ADR-0149) — a jump, not
+   * a filter: the report stays whole and only the viewport moves. Doing both
+   * keeps the sidebar's meaning from depending on which tab is open.
+   */
+  function selectOrJump(t: TableInfo) {
+    workspace.selectTable(t);
+    if (compare.active) compare.jumpTo(t);
+  }
+
   function openMenu(e: MouseEvent, table: TableInfo) {
     e.preventDefault();
     menu = { x: e.clientX, y: e.clientY, table };
@@ -348,7 +360,7 @@
               type="button"
               class="nav-row"
               class:active={isSelected(t)}
-              onclick={() => workspace.selectTable(t)}
+              onclick={() => selectOrJump(t)}
               oncontextmenu={(e) => openMenu(e, t)}
               title={workspace.key(t)}
             >
@@ -356,6 +368,16 @@
               <span class="nav-name">
                 {#if t.schema}<span class="schema">{t.schema}.</span>{/if}{t.name}
               </span>
+              {#if compare.marks.get(workspace.key(t))}
+                {@const mark = compare.marks.get(workspace.key(t))}
+                {#if mark === 'changed'}
+                  <span class="diff-dot" title={i18n.t('compare-mark-changed')}></span>
+                {:else}
+                  <span class="diff-side" title={i18n.t('compare-mark-one-side')}>
+                    {mark === 'left-only' ? '◧' : '◨'}
+                  </span>
+                {/if}
+              {/if}
             </button>
           {/each}
         {/if}
@@ -516,6 +538,24 @@
   /* Height comes from the divider, inline (ADR-0131) — a long connection list
      scrolls here rather than pushing the tables off the bottom of the window,
      which is what it used to do. */
+  /* Set only while a comparison is on screen. The dot means "these two
+     disagree"; it uses the caution colour, never the danger one — two
+     databases differing is an answer, not a fault. */
+  .diff-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--warning);
+    flex: none;
+    margin-left: auto;
+  }
+  .diff-side {
+    font-size: var(--text-hint);
+    color: var(--warning);
+    margin-left: auto;
+    flex: none;
+  }
+
   .nav-list {
     display: flex;
     flex-direction: column;

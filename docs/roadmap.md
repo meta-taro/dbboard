@@ -710,16 +710,17 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       Deliberately not an MCP tool — an agent can already run any
       statement, so listing these would add no capability, only the
       operator's private notes in its context.
-- [ ] Schema diff between two connections — **everything but the screen
-      is built and tested.** `diff_schemas` in `dbboard-core` settles what
-      "different" means ([ADR-0148](decisions.md), issue 0034): same
-      engine only, exact type text with no normalisation, column order
-      ignored but primary-key order compared, columns and the primary key
-      but not indexes. `McpService::diff_schemas` fetches both sides and
-      refuses a cross-engine pair before either is dialled, and a Tauri
-      command exposes it. What is left is where it appears in the client
-      — a visual decision reserved for a person, not an agent. Left
-      unticked deliberately: a feature nobody can reach is not done.
+- [x] Schema diff between two connections — pick two connections of the
+      same engine on the **Compare** tab and read what their schemas
+      disagree about: tables, columns, types, nullability, defaults and
+      primary keys ([ADR-0148](decisions.md), [ADR-0149](decisions.md),
+      issue 0034). Nothing is normalised — types are compared exactly as
+      each engine spells them, because the one mistake a diff must not
+      make is calling two things the same. Cross-engine pairs are refused
+      before either side is dialled. While a comparison is up the sidebar
+      marks every table the report mentions and clicking one jumps to it,
+      but never filters the report or replaces it: what you are reading
+      does not change under you.
 - [ ] Performance: cold-start under 1s on a modern laptop
 
 ## Packaging & Distribution

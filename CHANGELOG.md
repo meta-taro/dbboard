@@ -11,6 +11,32 @@ public API is the HTTP contract in
 
 ### Added
 
+- **Two databases, side by side.** A new **Compare** tab answers the question
+  you used to answer by squinting at two Structure tabs: pick another
+  connection of the same engine, and dbboard lists what the two schemas
+  disagree about — tables one side has and the other does not, columns that
+  differ in type, nullability or default, and primary keys that do not match.
+  Only what differs is listed; a database with three hundred tables and one
+  difference gives you one line.
+
+  It compares types exactly as each engine spells them. `VARCHAR(255)` and
+  `varchar` are reported as different even where they may well mean the same
+  thing, because the alternative is a tool that quietly decides two columns
+  match and lets a real difference through. A second look costs you a moment;
+  a missed difference costs you the migration.
+
+  Two connections on different engines cannot be compared, and the app says so
+  instead of trying: deciding whether Postgres `text` is MySQL
+  `varchar(255)` is a question this does not answer.
+
+  While a comparison is on screen, the sidebar marks every table it mentions,
+  and clicking one jumps the report to it. It does not filter the report, and
+  switching connection in the sidebar does not replace it — what you are
+  reading stays where you left it.
+
+  Indexes and constraints are not compared yet, and the "no differences"
+  message says as much rather than implying more than it checked.
+
 - **Queries you want to keep now have somewhere to live.** The editor has
   always remembered what you ran, but that list is disposable on purpose — it
   is capped, it de-duplicates, and there is a Clear button next to it. A query
