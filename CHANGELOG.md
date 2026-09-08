@@ -9,6 +9,14 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+### Fixed
+
+- **The mark in the title bar is the app's own icon.** It had been a plain
+  indigo square — a placeholder from the first mockup that outlived the
+  mockup — sitting a few pixels from the real icon in the Dock and the task
+  bar. Same artwork in both places now.
+
+
 ## [0.16.0] — 2026-09-08 — Everyday work
 
 ### Added
