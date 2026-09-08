@@ -1,6 +1,3 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
 
 // Svelte scopes a component's <style> to that component, and nothing warns
@@ -16,10 +13,43 @@ import { describe, expect, it } from 'vitest';
 // EXIST somewhere else in the app and this component cannot reach them —
 // which is exactly the mistake above. A class with no rules anywhere is a
 // marker or a leftover hook: harmless, and not this test's business.
+//
+// Sources are read through `import.meta.glob` rather than `node:fs` so the
+// test needs no Node types (`@types/node` is not a dependency here — the CI
+// runner found that out before this comment existed) and no assumption about
+// the working directory.
 
-const COMPONENTS = join(process.cwd(), 'src/lib/components');
-const STYLES = join(process.cwd(), 'src/lib/styles');
-const ROUTES = join(process.cwd(), 'src/routes');
+// The options must be written out at each call: Vite reads them at build
+// time, so a shared constant is not something it can follow.
+const componentSources = import.meta.glob('../components/*.svelte', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+const routeSources = import.meta.glob('../../routes/*.svelte', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+const sheetSources = import.meta.glob('./*.css', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+
+const basename = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+
+const components = Object.entries(componentSources).map(([path, source]) => ({
+  file: basename(path),
+  source,
+}));
+const all = [
+  ...components,
+  ...Object.entries(routeSources).map(([path, source]) => ({
+    file: basename(path),
+    source,
+  })),
+];
 
 const classNames = (css: string): string[] =>
   [...css.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]);
@@ -43,20 +73,10 @@ function classesUsedIn(markup: string): Set<string> {
   return used;
 }
 
-const svelteFiles = (dir: string) =>
-  readdirSync(dir)
-    .filter((f) => f.endsWith('.svelte'))
-    .map((f) => ({ file: f, source: readFileSync(join(dir, f), 'utf8') }));
-
-const components = svelteFiles(COMPONENTS);
-const routes = svelteFiles(ROUTES);
-const all = [...components, ...routes];
 
 /** Classes any component can use: global sheets, plus `:global(...)` rules. */
 const globallyReachable = new Set<string>([
-  ...readdirSync(STYLES)
-    .filter((f) => f.endsWith('.css'))
-    .flatMap((f) => classNames(readFileSync(join(STYLES, f), 'utf8'))),
+  ...Object.values(sheetSources).flatMap((css) => classNames(css)),
   ...all.flatMap(({ source }) =>
     [...styleBlock(source).matchAll(/:global\(([^)]*)\)/g)].flatMap((m) =>
       classNames(m[1]),
