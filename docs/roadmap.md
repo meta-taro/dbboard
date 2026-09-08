@@ -25,7 +25,7 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.16** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder. Carries the half of v0.14 that did not ship — which turned out not to be an optimisation at all: the browse path was never paying the cost the baseline pointed at, and what it lacked was a way to reach row 101 ([ADR-0145](decisions.md), [issue 0029](../.claude/issues/0029-pagination-for-large-results.md)). Paging shipped as the feature it is |
+| **v0.17** | The half that was deferred | Three things already written down and deliberately put off: the **cold-start measurement** left unticked in Phase 5, the **`history.jsonl` decision** (issue 0033 — nothing has written that file since [ADR-0089](decisions.md) retired the egui client, while `docs/roadmap.md` called it done and `dbboard-web` mirrors its schema), and the **half of the schema diff that was not built** — indexes and constraints, held back in [ADR-0148](decisions.md) because each adapter reaches them differently and several of the eleven have not been asked yet. Nothing here is new work invented for the slot; it is the backlog the last three releases created and named |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 fixed or its workaround documented, the contract mirrored to `dbboard-web`, sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
