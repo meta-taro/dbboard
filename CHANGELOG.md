@@ -11,6 +11,12 @@ public API is the HTTP contract in
 
 ### Fixed
 
+- **The Saved button in the query editor looks like a button again.** It
+  shipped in 0.16.0 with none of its styling — a bare browser button sitting
+  next to the properly drawn History chip. The rules existed; they just lived
+  in a neighbouring component, and the app's styling is per-component, so they
+  never reached it.
+
 - **The mark in the title bar is the app's own icon.** It had been a plain
   indigo square — a placeholder from the first mockup that outlived the
   mockup — sitting a few pixels from the real icon in the Dock and the task

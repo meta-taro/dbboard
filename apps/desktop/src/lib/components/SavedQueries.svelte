@@ -213,6 +213,47 @@
   .saved {
     position: relative;
   }
+
+  /* `.chip` and `.primary` are defined here rather than inherited: Svelte
+     scopes a component's styles to that component, so the identical rules in
+     QueryPanel never reached this button — it shipped in v0.16.0 as an
+     unstyled browser button next to a styled one. Values copied from
+     QueryPanel's `.chip` and the dialogs' `.primary` so the three read alike;
+     the repo already keeps `.primary` per component rather than sharing it. */
+  .chip {
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-widget);
+    padding: 5px 12px;
+    font-size: var(--text-hint);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .chip:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+  .chip:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .primary {
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+    border: none;
+    border-radius: var(--radius-widget);
+    padding: 6px 14px;
+    font-size: var(--text-body);
+    cursor: pointer;
+  }
+  .primary:disabled {
+    background: var(--bg-surface-alt);
+    color: var(--faint);
+    cursor: default;
+  }
   .saved-pop {
     position: fixed;
     display: flex;
