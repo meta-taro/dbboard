@@ -1,7 +1,6 @@
 # 0034 — 2 つの接続のスキーマ差分
 
-- 状態: **バックエンドは完成**（比較エンジン + 配線、ADR-0148）。
-  **残るは UI の置き場所だけ = 人の判断待ち**
+- 状態: **完了**（ADR-0148 + ADR-0149）。v0.16 の 3 項目がこれで揃った
 - 枠: `docs/roadmap.md` Near slots の **v0.16 — Everyday work**（3 項目の 3 つ目）
 - 関連: ADR-0148（何を「違い」と呼ぶか）、ADR-0028（`describe_table` が返す列情報）、
   ADR-0146 / 0147（同じ枠の 1 つ目・2 つ目）、`.claude/plans/2026-08-17-database-workspace.md`
@@ -50,8 +49,11 @@
       **異種エンジンは接続する前に拒否**（credential も解決しない）。
       サービステスト **3 本**（異種の拒否・空同士・不明な id はどちらか名指し）
 - [x] Tauri コマンド `diff_schemas` + `$lib/api.ts` の型と束縛
-- [ ] **UI の置き場所を決める** ← 人の判断。**残りはこれだけ**
-- [ ] i18n、CHANGELOG（**ユーザから見える変化が出てから**書く）
+- [x] **UI の置き場所を決めた** — 3 案を描いて user が選択（案 A + 案 B の追従）。
+      衝突する 2 つの長所を「サイドバーをフィルタではなく案内板にする」ことで噛み合わせた（ADR-0149）
+- [x] `ComparePanel.svelte` + `MainTab` に `compare` + サイドバーの印と移動
+- [x] `$lib/compare/diff.ts`（純粋）+ テスト **16 本**、`compare.svelte.ts`（2 面が読む状態）
+- [x] i18n（en / ja）21 キー、CHANGELOG、roadmap のチェック
 
 ## 保留していること
 

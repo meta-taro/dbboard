@@ -13640,3 +13640,65 @@ the migration.
 - The feature is not usable from the client yet. `docs/roadmap.md` keeps the
   Phase 5 item unchecked and says how far it got, because a half-built feature
   ticked as done is worse than one that is honestly unfinished.
+
+## ADR-0149 — The comparison gets a tab, and the sidebar becomes its index rather than its filter (2026-09-08)
+
+**Status.** Accepted. Completes the third item of the **v0.16 — Everyday work**
+slot, on top of [ADR-0148](#adr-0148--a-schema-diff-that-would-rather-report-a-cosmetic-difference-than-miss-a-real-one-2026-09-07)'s comparison.
+
+**Context.** ADR-0148 shipped everything except the screen and said so: where
+the comparison appears is a visual decision, and `CLAUDE.md` reserves those for
+a person, because a default an agent fills in becomes the fact. Three
+placements were drawn and put in front of the maintainer — a third tab, an
+extension of the Structure tab, and a dialog off the connection list's context
+menu. The answer that came back was the first **plus** the second's following
+of the sidebar.
+
+Those two virtues are in direct tension. The tab's is independence: you pick
+both sides yourself, whatever the sidebar is pointed at. The Structure
+extension's is that it follows what you already selected. Added naively they
+cancel: a tab whose contents change when you click elsewhere is a tab you
+cannot read.
+
+**Decision.** A third tab, **Compare**, with the sidebar as its *index* rather
+than its filter. Three rules make the two fit together.
+
+1. **Opening seeds, it does not bind.** The left side starts as the connection
+   in the sidebar — the one the operator is already thinking about — and can be
+   changed to any other. It is a default.
+
+2. **A report on screen is never replaced by a click elsewhere.** Once a
+   comparison has run, switching connection in the sidebar leaves it alone.
+   This is the rule that makes the mix work: what you are reading does not
+   change under you, and the picker above the report says which two sides it
+   came from. Implemented as the *absence* of an effect, which is worth
+   naming here, because absent code is the kind a later reader adds back.
+
+3. **A table click is a jump, not a filter.** While a comparison is up, the
+   sidebar marks every table the report mentions, and clicking one scrolls the
+   report to that table. The report stays whole. Filtering to one table would
+   rebuild the Structure-extension design inside the tab and lose the answer
+   the whole-database report is for: *which* tables differ.
+
+**Two colour choices, both following DESIGN.md's axes rather than inventing.**
+Differences are painted with `--warning`, never `--danger`: two databases
+differing is the answer to the question that was asked, not a fault. The two
+sides carry their connections' identity marks (issue #192) in the report's
+header, since that axis exists to say *which server this is* — exactly what a
+side is. The per-row "only in X" chip names the side in words instead of
+relying on that colour, because a connection with no mark has no colour to
+rely on.
+
+**Consequences.**
+
+- `MainTab` gains a third value, and the tab strip a third entry that is
+  visible whether or not anyone compares anything. That is the cost the
+  maintainer chose over the alternatives' costs.
+- The comparison lives in a small store (`$lib/compare/compare.svelte.ts`)
+  rather than in the panel, because the sidebar draws from it too — the same
+  reason the connection marks live in `workspace`.
+- A table click now does two things (browse, and jump when a comparison is
+  up). Doing both unconditionally keeps the sidebar's meaning from depending
+  on which tab is open.
+- Indexes and constraints are still not compared, and the empty state says so
+  rather than letting "no differences" imply more than it checked.

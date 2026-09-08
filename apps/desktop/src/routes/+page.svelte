@@ -7,6 +7,7 @@
   import Sidebar from '$lib/components/Sidebar.svelte';
   import QueryPanel from '$lib/components/QueryPanel.svelte';
   import StructurePanel from '$lib/components/StructurePanel.svelte';
+  import ComparePanel from '$lib/components/ComparePanel.svelte';
   import BackupDialog from '$lib/components/BackupDialog.svelte';
   import RestoreDialog from '$lib/components/RestoreDialog.svelte';
   import AiPanel from '$lib/components/AiPanel.svelte';
@@ -33,6 +34,7 @@
   const tabs: { id: MainTab; labelKey: MessageKey }[] = [
     { id: 'query', labelKey: 'tab-query' },
     { id: 'structure', labelKey: 'tab-structure' },
+    { id: 'compare', labelKey: 'tab-compare' },
   ];
 
   /** Detaches the `ui:locale` subscription when the shell goes away. */
@@ -285,6 +287,9 @@
       </div>
       <div class="tabpane" hidden={workspace.activeTab !== 'structure'}>
         <StructurePanel />
+      </div>
+      <div class="tabpane" hidden={workspace.activeTab !== 'compare'}>
+        <ComparePanel />
       </div>
     </div>
   </main>
