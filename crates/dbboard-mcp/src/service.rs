@@ -51,11 +51,11 @@ use dbboard_connect::{backend_config_for_entry, connect_adapter};
 use crate::export::{self, ExportOutcome};
 use dbboard_core::{
     browse_page as core_browse_page, build_update_sql, classify_write, dialect_for_adapter_id,
-    diff_schemas, plan_dump as core_plan_dump, plan_restore as core_plan_restore,
+    diff_snapshots, plan_dump as core_plan_dump, plan_restore as core_plan_restore,
     run_dump as core_run_dump, run_restore as core_run_restore, Column, ColumnInfo,
     DatabaseAdapter, DbError, DumpControl, DumpError, DumpOutcome, DumpPlan, DumpProgress,
     DumpResult, DumpSink, ForeignKey, RestoreControl, RestoreOptions, RestoreOutcome, RestorePlan,
-    Row, SchemaDiff, TableInfo, TableSchema, UpdatePlan, Value, WriteBackError,
+    Row, SchemaDiff, TableInfo, TableSchema, TableSnapshot, UpdatePlan, Value, WriteBackError,
     WritePolicyViolation, WriteStatement,
 };
 use serde::Serialize;
@@ -1285,7 +1285,7 @@ impl McpService {
 
         let left = self.snapshot_schema(left_id).await?;
         let right = self.snapshot_schema(right_id).await?;
-        Ok(diff_schemas(&left, &right))
+        Ok(diff_snapshots(&left, &right))
     }
 
     /// Every table of one connection, described.
@@ -1293,15 +1293,31 @@ impl McpService {
     /// Sequential on purpose: a schema with many tables would otherwise open
     /// as many concurrent statements against a database somebody else is
     /// using, and this is a background curiosity, not a hot path.
-    async fn snapshot_schema(&self, connection_id: &str) -> Result<Vec<TableSchema>, ServiceError> {
+    async fn snapshot_schema(
+        &self,
+        connection_id: &str,
+    ) -> Result<Vec<TableSnapshot>, ServiceError> {
         let adapter = self.adapter_for(connection_id).await?;
+        // Foreign keys are read only where the adapter says it can
+        // (ADR-0054's capability flag). Document stores cannot, and asking
+        // anyway would turn every table into a capability error.
+        let keys_available = adapter.capabilities().has_foreign_keys;
         let tables = adapter.list_tables().await?;
         let mut out = Vec::with_capacity(tables.len());
         for table in tables {
             // Deliberately `?`: a table listed but not describable (dropped
             // mid-run, or permissions) must not become "absent from this
             // side" in the report.
-            out.push(adapter.describe_table(&table).await?);
+            let schema = adapter.describe_table(&table).await?;
+            let foreign_keys = if keys_available {
+                adapter.foreign_keys(&table).await?
+            } else {
+                Vec::new()
+            };
+            out.push(TableSnapshot {
+                schema,
+                foreign_keys,
+            });
         }
         Ok(out)
     }

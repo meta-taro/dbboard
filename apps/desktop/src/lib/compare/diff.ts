@@ -44,14 +44,19 @@ export function differingTables(diff: SchemaDiff): Map<string, DiffMark> {
  * A changed column counts once however many of its attributes differ: the
  * number is there to tell a person how much there is to look at, and they look
  * at a column, not at four field-level facts about it. The primary key counts
- * once when the two sides disagree.
+ * once when the two sides disagree, and each foreign-key finding once —
+ * a key that points somewhere else is one more thing to check, not a footnote
+ * to the column it sits on.
  */
 export function tableDifferenceCount(t: TableDiff): number {
   return (
     t.columns_only_in_left.length +
     t.columns_only_in_right.length +
     t.columns_changed.length +
-    (t.primary_key === null ? 0 : 1)
+    (t.primary_key === null ? 0 : 1) +
+    t.foreign_keys_only_in_left.length +
+    t.foreign_keys_only_in_right.length +
+    t.foreign_keys_changed.length
   );
 }
 

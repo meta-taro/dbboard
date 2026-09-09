@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ColumnInfo, ConnectionView, SchemaDiff, TableInfo } from '$lib/api';
+import type {
+  ColumnInfo,
+  ConnectionView,
+  ForeignKeyRef,
+  SchemaDiff,
+  TableDiff,
+  TableInfo,
+} from '$lib/api';
 import {
   comparableWith,
   differingTables,
@@ -29,7 +36,27 @@ const emptyDiff: SchemaDiff = {
   tables_only_in_left: [],
   tables_only_in_right: [],
   tables_changed: [],
+  foreign_keys_compared: false,
 };
+
+/** A TableDiff with nothing in it, so a case names only what it is about. */
+const noDiff = (name: string): TableDiff => ({
+  table: table(name),
+  columns_only_in_left: [],
+  columns_only_in_right: [],
+  columns_changed: [],
+  primary_key: null,
+  foreign_keys_only_in_left: [],
+  foreign_keys_only_in_right: [],
+  foreign_keys_changed: [],
+});
+
+const fk = (columns: string[], parent: string): ForeignKeyRef => ({
+  columns,
+  referenced_table: table(parent),
+  referenced_columns: ['id'],
+  constraint_name: null,
+});
 
 describe('comparableWith', () => {
   it('offers only connections of the same engine', () => {
@@ -80,13 +107,7 @@ describe('differingTables', () => {
     const diff: SchemaDiff = {
       ...emptyDiff,
       tables_changed: [
-        {
-          table: table('orders'),
-          columns_only_in_left: [],
-          columns_only_in_right: [],
-          columns_changed: [],
-          primary_key: [['id'], ['id', 'tenant_id']],
-        },
+        { ...noDiff('orders'), primary_key: [['id'], ['id', 'tenant_id']] },
       ],
     };
     expect(differingTables(diff)).toEqual(new Map([['orders', 'changed']]));
@@ -110,7 +131,7 @@ describe('differingTables', () => {
 describe('tableDifferenceCount', () => {
   it('counts every column finding and the key as one each', () => {
     const count = tableDifferenceCount({
-      table: table('orders'),
+      ...noDiff('orders'),
       columns_only_in_left: [col('shipped_at')],
       columns_only_in_right: [col('note')],
       columns_changed: [
@@ -132,31 +153,43 @@ describe('tableDifferenceCount', () => {
   it('does not count a primary key the two sides agree on', () => {
     expect(
       tableDifferenceCount({
-        table: table('orders'),
-        columns_only_in_left: [],
-        columns_only_in_right: [],
+        ...noDiff('orders'),
         columns_changed: [
           { name: 'total', left: col('total'), right: col('total'), fields: ['DeclaredType'] },
         ],
-        primary_key: null,
       }),
     ).toBe(1);
+  });
+
+  it('counts a foreign-key finding like any other', () => {
+    // A key that points somewhere else, or is missing on one side, is one more
+    // thing the reader has to look at — the number is what tells them how much
+    // there is.
+    expect(
+      tableDifferenceCount({
+        ...noDiff('orders'),
+        foreign_keys_only_in_left: [fk(['customer_id'], 'customers')],
+        foreign_keys_changed: [
+          {
+            columns: ['tenant_id'],
+            left: fk(['tenant_id'], 'tenants'),
+            right: fk(['tenant_id'], 'accounts'),
+            fields: ['ReferencedTable'],
+          },
+        ],
+      }),
+    ).toBe(2);
   });
 });
 
 describe('totalDifferingTables', () => {
   it('counts all three kinds of finding', () => {
     const diff: SchemaDiff = {
+      foreign_keys_compared: true,
       tables_only_in_left: [table('refunds')],
       tables_only_in_right: [table('experiments')],
       tables_changed: [
-        {
-          table: table('orders'),
-          columns_only_in_left: [],
-          columns_only_in_right: [],
-          columns_changed: [],
-          primary_key: [['id'], ['id', 'tenant_id']],
-        },
+        { ...noDiff('orders'), primary_key: [['id'], ['id', 'tenant_id']] },
       ],
     };
     expect(totalDifferingTables(diff)).toBe(3);

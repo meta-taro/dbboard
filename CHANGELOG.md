@@ -7,7 +7,26 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — The half that was deferred
+
+### Added
+
+- **The schema comparison now includes foreign keys.** A key that one side has
+  and the other does not, or that points at a different table or different
+  columns, shows up beside the column differences.
+
+  Keys are matched on the columns they sit on rather than on their names,
+  because engines generate those names and the same migrations run twice can
+  produce different ones — matching on the name would have reported every key
+  as replaced when only the label moved. A name that differs is still
+  reported, just as its own kind of difference, so "this is called something
+  else" reads differently from "this points somewhere else".
+
+  Postgres, Neon, Supabase, Aurora DSQL, MySQL, Turso and D1 compare foreign
+  keys. Firestore and MongoDB do not have them in this sense, and the
+  "no differences" message says which of the two you got. Indexes are still
+  not compared.
+
 
 ## [0.16.1] — 2026-09-08 — What 0.16.0 showed on screen
 

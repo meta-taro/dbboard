@@ -13747,3 +13747,58 @@ lands the bump becomes minor and the slot comparison returns.
 - One existing test changed with the rule rather than around it: its fixture
   had an entry under no section, which now reads as a patch. It gained an
   `### Added` heading, which is what made it the reserved version all along.
+
+## ADR-0151 — Foreign keys join the comparison, because the adapters were already answering (2026-09-09)
+
+**Status.** Accepted. Extends [ADR-0148](#adr-0148--a-schema-diff-that-would-rather-report-a-cosmetic-difference-than-miss-a-real-one-2026-09-07)'s comparison; the indexes half stays deferred
+(issue 0035).
+
+**Context.** ADR-0148 shipped columns and the primary key and held back
+"indexes and constraints", on the grounds that each adapter reaches them
+differently and several had not been asked. Asking them (issue 0035) split
+that one deferral into two very different halves.
+
+**Indexes** live only inside `table_ddl`, the dump's DDL renderer, implemented
+by three of the six adapter crates — Postgres, MySQL and D1. Turso renders no
+DDL, and Firestore and MongoDB mean something else by the word.
+
+**Foreign keys** were never in that position. `DatabaseAdapter::foreign_keys`
+has existed since [ADR-0054](#adr-0054--foreign-key-introspection-and-list_relationships-a-seventh-read-only-mcp-tool), structured, with a capability flag, and
+**four** adapters implement it — Turso included, which covers eight of the ten
+connection kinds. The constraint half of the deferral was blocked on nothing.
+
+**Decision.** Compare foreign keys now, using what is already there.
+
+1. **Keys are matched on their local columns, not their names.** Engines
+   generate constraint names and the same migrations run twice can produce
+   different ones; matching on the name would report every key as replaced
+   when only the label moved. The name difference is still reported — as its
+   own field, so a reader can tell "the label differs" from "this points
+   somewhere else".
+
+2. **`TableSnapshot` replaces the bare `TableSchema` as the comparison's
+   input.** The diff now has two sources and will have more; bundling them
+   means `diff_snapshots` takes one list rather than several a caller could
+   mis-align. `diff_schemas` stays as the schema-only door.
+
+3. **The report says whether keys were compared at all.**
+   `foreign_keys_compared` is false when neither side carried any — which
+   includes both "this engine cannot report them" and "neither database has
+   any". Conflating those understates what was checked, which is the safe
+   direction: it never claims coverage it did not have.
+
+4. **Referenced column order is part of the key**, like the primary key's:
+   `(a, b) → (x, y)` and `(a, b) → (y, x)` constrain different pairs.
+
+**Consequences.**
+
+- Turso, Postgres (and Neon, Supabase, Aurora DSQL), MySQL and D1 compare
+  foreign keys. Firestore and MongoDB do not, and the empty state says so.
+- No contract change and no `Capabilities` field: this uses the flag ADR-0054
+  already added, so `dbboard-web` owes no mirror.
+- The FK badge is drawn in the muted ink rather than the accent the primary
+  key gets. A foreign key is scanned past unless it differs; it should not
+  shout louder than the key the table is identified by.
+- Indexes remain out. Issue 0035 holds the three options and the decision is
+  still the maintainer's, because the honest version of it adds a trait method
+  and a capability flag — and that touches the contract layer.
