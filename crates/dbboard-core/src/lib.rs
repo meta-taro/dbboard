@@ -48,10 +48,12 @@ pub use restore::{
     RestoreStatement, StatementFailure, StatementKind,
 };
 pub use row::{Column, QueryResult, Row};
-pub use schema::{resolve_referenced_columns, ColumnInfo, ForeignKey, TableInfo, TableSchema};
+pub use schema::{
+    resolve_referenced_columns, ColumnInfo, ForeignKey, IndexInfo, TableInfo, TableSchema,
+};
 pub use schema_diff::{
     diff_schemas, diff_snapshots, ColumnDiff, ColumnField, ForeignKeyDiff, ForeignKeyField,
-    SchemaDiff, TableDiff, TableSnapshot,
+    IndexDiff, IndexField, SchemaDiff, TableDiff, TableSnapshot,
 };
 pub use sort::{compare_values, sorted_row_order, SortKey};
 pub use value::Value;

@@ -306,6 +306,25 @@ export interface ForeignKeyRef {
   constraint_name: string | null;
 }
 
+export interface IndexInfo {
+  name: string;
+  // In index order — the order is what the index is for, so it is not sorted.
+  columns: string[];
+  unique: boolean;
+}
+
+export type IndexField = 'Columns' | 'Unique';
+
+export interface IndexDiff {
+  // Indexes are matched on their name: it is what somebody wrote in a
+  // migration and what they would DROP. (A foreign key is matched on its
+  // columns instead, because engines generate those names.)
+  name: string;
+  left: IndexInfo;
+  right: IndexInfo;
+  fields: IndexField[];
+}
+
 export type ForeignKeyField = 'ReferencedTable' | 'ReferencedColumns' | 'Name';
 
 export interface ForeignKeyDiff {
@@ -329,6 +348,9 @@ export interface TableDiff {
   // Both sides' key columns, in key order, when they differ. `(a, b)` and
   // `(b, a)` index different things, so order is part of the comparison.
   primary_key: [string[], string[]] | null;
+  indexes_only_in_left: IndexInfo[];
+  indexes_only_in_right: IndexInfo[];
+  indexes_changed: IndexDiff[];
 }
 
 export interface SchemaDiff {
@@ -340,6 +362,9 @@ export interface SchemaDiff {
   // cannot report them (document stores) — so "no differences" never claims
   // more than it checked.
   foreign_keys_compared: boolean;
+  // The same, for indexes. The primary key's own index is never included —
+  // the key itself is compared, and reporting both would say one thing twice.
+  indexes_compared: boolean;
 }
 
 export const diffSchemas = (

@@ -10,6 +10,8 @@
     type ColumnInfo,
     type ForeignKeyField,
     type ForeignKeyRef,
+    type IndexField,
+    type IndexInfo,
     type TableDiff,
   } from '$lib/api';
   import { compare } from '$lib/compare/compare.svelte';
@@ -116,12 +118,35 @@
     return `(${k.columns.join(', ')}) → ${target}(${k.referenced_columns.join(', ')})${name}`;
   }
 
+  const INDEX_FIELD_LABEL = {
+    Columns: 'compare-index-columns',
+    Unique: 'compare-index-unique',
+  } as const;
+
+  function indexFieldLabels(fields: IndexField[]): string {
+    return fields.map((f) => i18n.t(INDEX_FIELD_LABEL[f])).join(' · ');
+  }
+
+  /** An index in the report's shorthand. */
+  function describeIndex(i: IndexInfo): string {
+    return `${i.unique ? 'UNIQUE ' : ''}(${i.columns.join(', ')})`;
+  }
+
   /** One side's spelling of a column, in the report's shorthand. */
   function describe(c: ColumnInfo): string {
     const parts = [c.declared_type ?? '—', c.nullable ? 'NULL' : 'NOT NULL'];
     if (c.default_value) parts.push(`default ${c.default_value}`);
     if (c.primary_key) parts.push('PK');
     return parts.join(' · ');
+  }
+
+  /** What the empty state may claim, which is only what was compared. */
+  function scopeNote(d: { foreign_keys_compared: boolean; indexes_compared: boolean }): string {
+    if (d.foreign_keys_compared && d.indexes_compared) {
+      return i18n.t('compare-scope-note-all');
+    }
+    if (d.foreign_keys_compared) return i18n.t('compare-scope-note-fk');
+    return i18n.t('compare-scope-note');
   }
 
   function count(t: TableDiff): number {
@@ -191,11 +216,7 @@
       {#if totalDifferingTables(diff) === 0}
         <div class="empty" role="note">
           <span class="empty-title">{i18n.t('compare-no-differences')}</span>
-          <span class="empty-body">
-            {diff.foreign_keys_compared
-              ? i18n.t('compare-scope-note-fk')
-              : i18n.t('compare-scope-note')}
-          </span>
+          <span class="empty-body">{scopeNote(diff)}</span>
         </div>
       {/if}
 
@@ -276,6 +297,46 @@
               <span class="only left">{i18n.t('compare-only-in', { name: leftName })}</span>
             </div>
             <div class="cell absent">—</div>
+          </div>
+        {/each}
+
+        {#each t.indexes_changed as ix (ix.name)}
+          <div class="row">
+            <div class="cell">
+              <span class="pk ix">IX</span>
+              <span class="mono col-name">{ix.name}</span>
+              <span class="mono value">{describeIndex(ix.left)}</span>
+            </div>
+            <div class="cell differs">
+              <span class="pk ix">IX</span>
+              <span class="mono col-name">{ix.name}</span>
+              <span class="mono value">{describeIndex(ix.right)}</span>
+              <span class="fields">{indexFieldLabels(ix.fields)}</span>
+            </div>
+          </div>
+        {/each}
+
+        {#each t.indexes_only_in_left as ix (ix.name)}
+          <div class="row">
+            <div class="cell">
+              <span class="pk ix">IX</span>
+              <span class="mono col-name">{ix.name}</span>
+              <span class="mono value">{describeIndex(ix)}</span>
+              <span class="only left">{i18n.t('compare-only-in', { name: leftName })}</span>
+            </div>
+            <div class="cell absent">—</div>
+          </div>
+        {/each}
+
+        {#each t.indexes_only_in_right as ix (ix.name)}
+          <div class="row">
+            <div class="cell absent">—</div>
+            <div class="cell">
+              <span class="pk ix">IX</span>
+              <span class="mono col-name">{ix.name}</span>
+              <span class="mono value">{describeIndex(ix)}</span>
+              <span class="only right">{i18n.t('compare-only-in', { name: rightName })}</span>
+            </div>
           </div>
         {/each}
 
@@ -539,7 +600,8 @@
   /* The same badge as PK, in the muted ink: a foreign key is a constraint the
      reader scans past unless it differs, and it should not shout louder than
      the key the table is identified by. */
-  .fk {
+  .fk,
+  .ix {
     color: var(--text-muted);
     border-color: var(--border-strong);
   }

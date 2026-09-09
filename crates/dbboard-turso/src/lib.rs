@@ -8,8 +8,8 @@
 use async_trait::async_trait;
 use dbboard_core::{
     check_read_only, resolve_referenced_columns, too_many_rows_error, Capabilities, Column,
-    ColumnInfo, DatabaseAdapter, DbError, DbResult, ForeignKey, QueryResult, Row, SqlDialect,
-    TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
+    ColumnInfo, DatabaseAdapter, DbError, DbResult, ForeignKey, IndexInfo, QueryResult, Row,
+    SqlDialect, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 
 /// Where the read-only guarantee of [`TursoAdapter::query_read_only`] is
@@ -209,6 +209,7 @@ impl DatabaseAdapter for TursoAdapter {
             has_execute: true,
             has_atomic_restore: true,
             has_foreign_keys: true,
+            has_list_indexes: true,
             ..Capabilities::default()
         }
     }
@@ -361,6 +362,63 @@ impl DatabaseAdapter for TursoAdapter {
         }
 
         self.assemble_foreign_keys(raw).await
+    }
+
+    async fn list_indexes(&self, table: &TableInfo) -> DbResult<Vec<IndexInfo>> {
+        // `PRAGMA index_list('t')` rows: (seq, name, unique, origin, partial).
+        // `origin` is 'c' for CREATE INDEX, 'u' for a UNIQUE constraint and
+        // 'pk' for the primary key's implicit index — the last is dropped,
+        // because the primary key is already compared on its own and
+        // reporting it twice would inflate the count (ADR-0152).
+        let escaped = table.name.replace('\'', "''");
+        let mut rows = self
+            .conn
+            .query(&format!("PRAGMA index_list('{escaped}')"), ())
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut listed = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?
+        {
+            let name: String = row.get(1).map_err(|e| DbError::Query(e.to_string()))?;
+            let unique: i64 = row.get(2).map_err(|e| DbError::Query(e.to_string()))?;
+            let origin: String = row.get(3).map_err(|e| DbError::Query(e.to_string()))?;
+            if origin == "pk" {
+                continue;
+            }
+            listed.push((name, unique != 0));
+        }
+
+        let mut out = Vec::with_capacity(listed.len());
+        for (name, unique) in listed {
+            let escaped_index = name.replace('\'', "''");
+            let mut cols = self
+                .conn
+                .query(&format!("PRAGMA index_info('{escaped_index}')"), ())
+                .await
+                .map_err(|e| DbError::Query(e.to_string()))?;
+            let mut columns = Vec::new();
+            while let Some(row) = cols
+                .next()
+                .await
+                .map_err(|e| DbError::Query(e.to_string()))?
+            {
+                // Column 2 is the column name, NULL for an expression index —
+                // those are skipped rather than guessed at.
+                if let Ok(column) = row.get::<String>(2) {
+                    columns.push(column);
+                }
+            }
+            out.push(IndexInfo {
+                name,
+                columns,
+                unique,
+            });
+        }
+        Ok(out)
     }
 
     async fn execute(&self, sql: &str) -> DbResult<u64> {
@@ -1064,6 +1122,64 @@ mod tests {
             .unwrap();
         adapter.query(child_ddl).await.unwrap();
         adapter
+    }
+
+    #[tokio::test]
+    async fn list_indexes_skips_the_primary_key_index() {
+        // SQLite reports the PK's implicit index with origin "pk". The primary
+        // key is already compared on its own, so reporting it here too would
+        // state one fact twice.
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY, email TEXT)")
+            .await
+            .unwrap();
+        let indexes = adapter
+            .list_indexes(&TableInfo::unqualified("t"))
+            .await
+            .unwrap();
+        assert!(indexes.is_empty(), "got {indexes:?}");
+    }
+
+    #[tokio::test]
+    async fn list_indexes_reports_columns_in_index_order() {
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE t (a TEXT, b TEXT)")
+            .await
+            .unwrap();
+        adapter
+            .query("CREATE INDEX t_b_a ON t (b, a)")
+            .await
+            .unwrap();
+        let indexes = adapter
+            .list_indexes(&TableInfo::unqualified("t"))
+            .await
+            .unwrap();
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].name, "t_b_a");
+        // (b, a), not sorted to (a, b): the order is what the index is for.
+        assert_eq!(indexes[0].columns, vec!["b".to_string(), "a".to_string()]);
+        assert!(!indexes[0].unique);
+    }
+
+    #[tokio::test]
+    async fn list_indexes_reports_a_unique_constraint() {
+        // A UNIQUE constraint's backing index (origin "u") is kept: nothing
+        // else in the comparison reports it, so dropping it would hide a real
+        // difference.
+        let adapter = TursoAdapter::connect_local(":memory:").await.unwrap();
+        adapter
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY, email TEXT UNIQUE)")
+            .await
+            .unwrap();
+        let indexes = adapter
+            .list_indexes(&TableInfo::unqualified("t"))
+            .await
+            .unwrap();
+        assert_eq!(indexes.len(), 1);
+        assert!(indexes[0].unique);
+        assert_eq!(indexes[0].columns, vec!["email".to_string()]);
     }
 
     #[tokio::test]

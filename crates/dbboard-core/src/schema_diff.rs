@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::{ColumnInfo, ForeignKey, TableInfo, TableSchema};
+use crate::schema::{ColumnInfo, ForeignKey, IndexInfo, TableInfo, TableSchema};
 
 /// Which attribute of a column the two sides disagree about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +57,10 @@ pub struct TableSnapshot {
     /// exists.
     #[serde(default)]
     pub foreign_keys: Vec<ForeignKey>,
+    /// Same rule as `foreign_keys`, with [`SchemaDiff::indexes_compared`] as
+    /// its companion. Excludes the primary key's implicit index (ADR-0152).
+    #[serde(default)]
+    pub indexes: Vec<IndexInfo>,
 }
 
 impl TableSnapshot {
@@ -66,6 +70,7 @@ impl TableSnapshot {
         Self {
             schema,
             foreign_keys: Vec::new(),
+            indexes: Vec::new(),
         }
     }
 }
@@ -91,6 +96,25 @@ pub enum ForeignKeyField {
     Name,
 }
 
+/// One index present on both sides, with something differing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexDiff {
+    /// The index name — how the two sides were matched. Unlike a foreign key,
+    /// an index's name is the thing a person wrote in the migration and the
+    /// thing they will `DROP`, so it is the identity here.
+    pub name: String,
+    pub left: IndexInfo,
+    pub right: IndexInfo,
+    pub fields: Vec<IndexField>,
+}
+
+/// Which part of an index the two sides disagree about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IndexField {
+    Columns,
+    Unique,
+}
+
 /// One table present on both sides, with at least one difference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableDiff {
@@ -105,6 +129,12 @@ pub struct TableDiff {
     pub foreign_keys_only_in_right: Vec<ForeignKey>,
     #[serde(default)]
     pub foreign_keys_changed: Vec<ForeignKeyDiff>,
+    #[serde(default)]
+    pub indexes_only_in_left: Vec<IndexInfo>,
+    #[serde(default)]
+    pub indexes_only_in_right: Vec<IndexInfo>,
+    #[serde(default)]
+    pub indexes_changed: Vec<IndexDiff>,
 }
 
 /// Everything two schemas disagree about.
@@ -118,6 +148,9 @@ pub struct SchemaDiff {
     /// it checked.
     #[serde(default)]
     pub foreign_keys_compared: bool,
+    /// The same, for indexes (ADR-0152).
+    #[serde(default)]
+    pub indexes_compared: bool,
 }
 
 impl SchemaDiff {
@@ -194,12 +227,17 @@ pub fn diff_snapshots(left: &[TableSnapshot], right: &[TableSnapshot]) -> Schema
         .iter()
         .chain(right.iter())
         .any(|t| !t.foreign_keys.is_empty());
+    let any_indexes = left
+        .iter()
+        .chain(right.iter())
+        .any(|t| !t.indexes.is_empty());
 
     SchemaDiff {
         tables_only_in_left: only_in_left,
         tables_only_in_right: only_in_right,
         tables_changed,
         foreign_keys_compared: any_keys,
+        indexes_compared: any_indexes,
     }
 }
 
@@ -256,6 +294,7 @@ fn diff_table(left: &TableSnapshot, right: &TableSnapshot) -> Option<TableDiff> 
 
     let (fk_left, fk_right, fk_changed) =
         diff_foreign_keys(&left.foreign_keys, &right.foreign_keys);
+    let (ix_left, ix_right, ix_changed) = diff_indexes(&left.indexes, &right.indexes);
 
     if only_in_left.is_empty()
         && only_in_right.is_empty()
@@ -264,6 +303,9 @@ fn diff_table(left: &TableSnapshot, right: &TableSnapshot) -> Option<TableDiff> 
         && fk_left.is_empty()
         && fk_right.is_empty()
         && fk_changed.is_empty()
+        && ix_left.is_empty()
+        && ix_right.is_empty()
+        && ix_changed.is_empty()
     {
         return None;
     }
@@ -276,7 +318,59 @@ fn diff_table(left: &TableSnapshot, right: &TableSnapshot) -> Option<TableDiff> 
         foreign_keys_only_in_left: fk_left,
         foreign_keys_only_in_right: fk_right,
         foreign_keys_changed: fk_changed,
+        indexes_only_in_left: ix_left,
+        indexes_only_in_right: ix_right,
+        indexes_changed: ix_changed,
     })
+}
+
+/// Compare one table's indexes, matched on their names.
+///
+/// The name is the identity here, unlike a foreign key's: an index's name is
+/// what somebody wrote in a migration and what they would `DROP`. Two indexes
+/// with the same columns under different names are two indexes, and saying so
+/// is the useful answer.
+type IndexSplit = (Vec<IndexInfo>, Vec<IndexInfo>, Vec<IndexDiff>);
+
+fn diff_indexes(left: &[IndexInfo], right: &[IndexInfo]) -> IndexSplit {
+    let left_by: BTreeMap<&str, &IndexInfo> = left.iter().map(|i| (i.name.as_str(), i)).collect();
+    let right_by: BTreeMap<&str, &IndexInfo> = right.iter().map(|i| (i.name.as_str(), i)).collect();
+
+    let only_left = left_by
+        .iter()
+        .filter(|(n, _)| !right_by.contains_key(*n))
+        .map(|(_, v)| (*v).clone())
+        .collect();
+    let only_right = right_by
+        .iter()
+        .filter(|(n, _)| !left_by.contains_key(*n))
+        .map(|(_, v)| (*v).clone())
+        .collect();
+
+    let changed = left_by
+        .iter()
+        .filter_map(|(n, l)| right_by.get(n).map(|r| (*l, *r)))
+        .filter_map(|(l, r)| {
+            let mut fields = Vec::new();
+            // Column order is compared, not sorted away: `(a, b)` and `(b, a)`
+            // serve different queries. This is the one place order matters —
+            // a table's column order deliberately does not (ADR-0148).
+            if l.columns != r.columns {
+                fields.push(IndexField::Columns);
+            }
+            if l.unique != r.unique {
+                fields.push(IndexField::Unique);
+            }
+            (!fields.is_empty()).then(|| IndexDiff {
+                name: l.name.clone(),
+                left: l.clone(),
+                right: r.clone(),
+                fields,
+            })
+        })
+        .collect();
+
+    (only_left, only_right, changed)
 }
 
 /// Compare one table's foreign keys, matched on their local columns.
@@ -607,6 +701,7 @@ mod tests {
         TableSnapshot {
             schema: t,
             foreign_keys: keys,
+            indexes: Vec::new(),
         }
     }
 
@@ -715,6 +810,113 @@ mod tests {
         let diff = diff_snapshots(&left, &right);
         assert!(diff.is_empty());
         assert!(!diff.foreign_keys_compared);
+    }
+
+    fn idx(name: &str, columns: &[&str], unique: bool) -> IndexInfo {
+        IndexInfo {
+            name: name.to_owned(),
+            columns: columns.iter().map(|c| (*c).to_string()).collect(),
+            unique,
+        }
+    }
+
+    fn with_indexes(t: TableSchema, indexes: Vec<IndexInfo>) -> TableSnapshot {
+        TableSnapshot {
+            schema: t,
+            foreign_keys: Vec::new(),
+            indexes,
+        }
+    }
+
+    #[test]
+    fn an_index_on_one_side_only_is_reported_on_that_side() {
+        let left = vec![with_indexes(
+            table("orders", vec![col("total", "INTEGER")]),
+            vec![idx("orders_total_idx", &["total"], false)],
+        )];
+        let right = vec![with_indexes(
+            table("orders", vec![col("total", "INTEGER")]),
+            vec![],
+        )];
+        let diff = diff_snapshots(&left, &right);
+        let t = &diff.tables_changed[0];
+        assert_eq!(t.indexes_only_in_left.len(), 1);
+        assert!(t.indexes_only_in_right.is_empty());
+        assert!(diff.indexes_compared);
+    }
+
+    #[test]
+    fn indexes_are_matched_on_their_name() {
+        // Unlike a foreign key, the name is what a person wrote in the
+        // migration and what they would DROP, so it is the identity.
+        let left = vec![with_indexes(
+            table("t", vec![col("a", "TEXT")]),
+            vec![idx("t_a_idx", &["a"], false)],
+        )];
+        let right = vec![with_indexes(
+            table("t", vec![col("a", "TEXT")]),
+            vec![idx("t_a_idx", &["a", "b"], false)],
+        )];
+        let diff = diff_snapshots(&left, &right);
+        assert_eq!(
+            diff.tables_changed[0].indexes_changed[0].fields,
+            vec![IndexField::Columns]
+        );
+    }
+
+    #[test]
+    fn column_order_inside_an_index_is_a_difference() {
+        // `(a, b)` and `(b, a)` serve different queries — this is the one
+        // place column order matters, unlike a table's column list.
+        let left = vec![with_indexes(
+            table("t", vec![col("a", "TEXT")]),
+            vec![idx("i", &["a", "b"], false)],
+        )];
+        let right = vec![with_indexes(
+            table("t", vec![col("a", "TEXT")]),
+            vec![idx("i", &["b", "a"], false)],
+        )];
+        assert_eq!(
+            diff_snapshots(&left, &right).tables_changed[0].indexes_changed[0].fields,
+            vec![IndexField::Columns]
+        );
+    }
+
+    #[test]
+    fn uniqueness_is_its_own_finding() {
+        let left = vec![with_indexes(
+            table("t", vec![col("a", "TEXT")]),
+            vec![idx("i", &["a"], true)],
+        )];
+        let right = vec![with_indexes(
+            table("t", vec![col("a", "TEXT")]),
+            vec![idx("i", &["a"], false)],
+        )];
+        assert_eq!(
+            diff_snapshots(&left, &right).tables_changed[0].indexes_changed[0].fields,
+            vec![IndexField::Unique]
+        );
+    }
+
+    #[test]
+    fn identical_indexes_are_not_a_difference() {
+        let one = || {
+            vec![with_indexes(
+                table("t", vec![col("a", "TEXT")]),
+                vec![idx("i", &["a"], true)],
+            )]
+        };
+        assert!(diff_snapshots(&one(), &one()).is_empty());
+    }
+
+    #[test]
+    fn schema_only_snapshots_report_that_indexes_were_not_compared() {
+        let left = vec![TableSnapshot::schema_only(table(
+            "t",
+            vec![col("a", "TEXT")],
+        ))];
+        let diff = diff_snapshots(&left, &left.clone());
+        assert!(!diff.indexes_compared);
     }
 
     #[test]

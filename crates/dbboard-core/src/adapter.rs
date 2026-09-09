@@ -18,7 +18,8 @@ use crate::capabilities::{
     ViewIntrospection,
 };
 use crate::{
-    check_read_only, DbError, DbResult, ForeignKey, QueryResult, SqlDialect, TableInfo, TableSchema,
+    check_read_only, DbError, DbResult, ForeignKey, IndexInfo, QueryResult, SqlDialect, TableInfo,
+    TableSchema,
 };
 
 #[async_trait]
@@ -130,6 +131,30 @@ pub trait DatabaseAdapter: Send + Sync {
         let _ = table;
         Err(DbError::Capability(
             "table_ddl not supported by this adapter".into(),
+        ))
+    }
+
+    /// List a table's indexes (ADR-0152).
+    ///
+    /// Excludes the primary key's implicit backing index: the primary key is
+    /// already compared on its own, and reporting it here as well would state
+    /// one fact twice. A unique constraint's index is included, because
+    /// nothing else reports it.
+    ///
+    /// The default returns [`DbError::Capability`] so adapters that pre-date
+    /// ADR-0152 compile unchanged and miss at runtime rather than at build
+    /// time. Implementors must also flip [`Capabilities::has_list_indexes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if `table` does not exist, plus any error
+    /// the underlying introspection query surfaces.
+    ///
+    /// [`Capabilities::has_list_indexes`]: crate::Capabilities::has_list_indexes
+    async fn list_indexes(&self, table: &TableInfo) -> DbResult<Vec<IndexInfo>> {
+        let _ = table;
+        Err(DbError::Capability(
+            "list_indexes not supported by this adapter".into(),
         ))
     }
 
@@ -252,6 +277,7 @@ mod tests {
                 has_execute: true,
                 has_atomic_restore: true,
                 has_foreign_keys: true,
+                has_list_indexes: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
