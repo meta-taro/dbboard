@@ -13702,3 +13702,48 @@ rely on.
   on which tab is open.
 - Indexes and constraints are still not compared, and the empty state says so
   rather than letting "no differences" imply more than it checked.
+
+## ADR-0150 — A patch is not a slot, so it carries its own headline (2026-09-08)
+
+**Status.** Accepted. Amends the plan/changelog drift check that
+[ADR-0110](#adr-0110--a-release-goes-out-when-there-is-something-in-it-not-when-a-plan-says-so) and
+[ADR-0122](#adr-0122--versions-get-their-contents-reserved-in-advance-2026-08-22) introduced.
+
+**Context.** v0.16.0 shipped with two visible defects — the title-bar mark was
+still a placeholder square, and the Saved button had none of its styling. Both
+were fixed the same day, and cutting 0.16.1 for them was refused by
+`release-plan.test.mjs`: `## [Unreleased]` must carry the headline of the next
+reserved slot, and the next slot is v0.17, "The half that was deferred".
+
+The two rules that collided are each right on their own. Every version gets a
+headline, because a version without one is a number again. And a slot reserves
+what a version will contain, decided before the work starts.
+
+They collide because **a bug in what already shipped is not something anyone
+reserved.** The roadmap's slots are minor-granular by construction — a `v0.16.1`
+row parses as v0.16 and reads as a slot for a version already out — so the
+check had no way to express the release that was actually next.
+
+Taking the refusal at face value would have put "The half that was deferred" on
+a release containing two UI fixes. That is precisely the mismatch v0.15.0 had
+to be renamed to escape, and this time it would have been introduced knowingly.
+
+**Decision.** The headline-matches-slot rule applies to slot-bearing releases
+only. When the pending bump is a patch — which `releaseDue` already computes,
+from whether any entry sits under an additive section — `[Unreleased]` owes a
+headline of its own and is not measured against the next slot.
+
+What does *not* change: a patch still has to carry a headline (the null check
+runs first), a stale slot is still reported, and the moment anything additive
+lands the bump becomes minor and the slot comparison returns.
+
+**Consequences.**
+
+- A patch release names what it fixes. 0.16.1 is "What 0.16.0 showed on screen"
+  while v0.17 keeps its reservation untouched.
+- The roadmap is not asked to predict bugs, which it cannot do. Slots stay
+  minor-granular on purpose rather than growing a patch row that would read as
+  a stale slot.
+- One existing test changed with the rule rather than around it: its fixture
+  had an entry under no section, which now reads as a patch. It gained an
+  `### Added` heading, which is what made it the reserved version all along.

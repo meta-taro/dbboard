@@ -33,6 +33,35 @@ test("a slot for a version already released is stale", () => {
   assert.match(found[0], /released/);
 });
 
+test("a patch release carries its own headline, not the next slot's", () => {
+  // A slot reserves what a version will contain, decided in advance
+  // (ADR-0110). A bug in what already shipped is not something anyone
+  // reserved, so a fix-only Unreleased is not measured against the next
+  // slot — it says what it fixes.
+  const c = changelog(
+    ["## [Unreleased] — What 0.10.0 showed on screen", "", "### Fixed"].join("\n"),
+  );
+  assert.deepEqual(planDrift(ROADMAP, c), []);
+});
+
+test("a patch release still has to carry some headline", () => {
+  const c = changelog(["## [Unreleased]", "", "### Fixed"].join("\n"));
+  const found = planDrift(ROADMAP, c);
+  assert.equal(found.length, 1);
+  assert.match(found[0], /headline/);
+});
+
+test("added content is still measured against the reserved slot", () => {
+  // The exemption is for patches only: the moment something additive lands,
+  // the version becomes the reserved one and owes its headline.
+  const c = changelog(
+    ["## [Unreleased] — Something else", "", "### Added"].join("\n"),
+  );
+  const found = planDrift(ROADMAP, c);
+  assert.equal(found.length, 1);
+  assert.match(found[0], /Connection repair/);
+});
+
 test("unreleased content with no headline is drift", () => {
   const found = planDrift(ROADMAP, changelog("## [Unreleased]"));
   assert.equal(found.length, 1);
@@ -40,7 +69,12 @@ test("unreleased content with no headline is drift", () => {
 });
 
 test("a headline that no longer matches its slot is drift", () => {
-  const found = planDrift(ROADMAP, changelog("## [Unreleased] — Something else"));
+  // `### Added` is what makes this the reserved version rather than a patch:
+  // the slot comparison applies to the release a slot was written for.
+  const found = planDrift(
+    ROADMAP,
+    changelog(["## [Unreleased] — Something else", "", "### Added"].join("\n")),
+  );
   assert.equal(found.length, 1);
   assert.match(found[0], /Something else/);
 });
