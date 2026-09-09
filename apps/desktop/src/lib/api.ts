@@ -296,11 +296,36 @@ export interface ColumnDiff {
   fields: ColumnField[];
 }
 
+// The wire shape of `dbboard_core::ForeignKey` — deliberately not the
+// `Relationship` above, which is the relationship browser's own projection
+// (`from_*` / `to_*`) and would misname these fields.
+export interface ForeignKeyRef {
+  columns: string[];
+  referenced_table: TableInfo;
+  referenced_columns: string[];
+  constraint_name: string | null;
+}
+
+export type ForeignKeyField = 'ReferencedTable' | 'ReferencedColumns' | 'Name';
+
+export interface ForeignKeyDiff {
+  // The local columns the key is on — how the two sides were matched, since
+  // engines generate constraint names and the same migration can produce
+  // different ones.
+  columns: string[];
+  left: ForeignKeyRef;
+  right: ForeignKeyRef;
+  fields: ForeignKeyField[];
+}
+
 export interface TableDiff {
   table: TableInfo;
   columns_only_in_left: ColumnInfo[];
   columns_only_in_right: ColumnInfo[];
   columns_changed: ColumnDiff[];
+  foreign_keys_only_in_left: ForeignKeyRef[];
+  foreign_keys_only_in_right: ForeignKeyRef[];
+  foreign_keys_changed: ForeignKeyDiff[];
   // Both sides' key columns, in key order, when they differ. `(a, b)` and
   // `(b, a)` index different things, so order is part of the comparison.
   primary_key: [string[], string[]] | null;
@@ -311,6 +336,10 @@ export interface SchemaDiff {
   tables_only_in_right: TableInfo[];
   // Only tables that differ. The report is what differs, not an inventory.
   tables_changed: TableDiff[];
+  // Whether foreign keys were part of the comparison. False when an engine
+  // cannot report them (document stores) — so "no differences" never claims
+  // more than it checked.
+  foreign_keys_compared: boolean;
 }
 
 export const diffSchemas = (

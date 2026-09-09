@@ -8,6 +8,8 @@
     tableKey,
     type ColumnField,
     type ColumnInfo,
+    type ForeignKeyField,
+    type ForeignKeyRef,
     type TableDiff,
   } from '$lib/api';
   import { compare } from '$lib/compare/compare.svelte';
@@ -97,6 +99,23 @@
     return fields.map((f) => i18n.t(FIELD_LABEL[f])).join(' · ');
   }
 
+  const FK_FIELD_LABEL = {
+    ReferencedTable: 'compare-fk-table',
+    ReferencedColumns: 'compare-fk-columns',
+    Name: 'compare-fk-name',
+  } as const;
+
+  function fkFieldLabels(fields: ForeignKeyField[]): string {
+    return fields.map((f) => i18n.t(FK_FIELD_LABEL[f])).join(' · ');
+  }
+
+  /** A foreign key in the report's shorthand: what it constrains, and where. */
+  function describeKey(k: ForeignKeyRef): string {
+    const target = tableKey(k.referenced_table);
+    const name = k.constraint_name ? ` · ${k.constraint_name}` : '';
+    return `(${k.columns.join(', ')}) → ${target}(${k.referenced_columns.join(', ')})${name}`;
+  }
+
   /** One side's spelling of a column, in the report's shorthand. */
   function describe(c: ColumnInfo): string {
     const parts = [c.declared_type ?? '—', c.nullable ? 'NULL' : 'NOT NULL'];
@@ -172,7 +191,11 @@
       {#if totalDifferingTables(diff) === 0}
         <div class="empty" role="note">
           <span class="empty-title">{i18n.t('compare-no-differences')}</span>
-          <span class="empty-body">{i18n.t('compare-scope-note')}</span>
+          <span class="empty-body">
+            {diff.foreign_keys_compared
+              ? i18n.t('compare-scope-note-fk')
+              : i18n.t('compare-scope-note')}
+          </span>
         </div>
       {/if}
 
@@ -230,6 +253,42 @@
             </div>
           </div>
         {/if}
+
+        {#each t.foreign_keys_changed as k (k.columns.join(','))}
+          <div class="row">
+            <div class="cell">
+              <span class="pk fk">FK</span>
+              <span class="mono value">{describeKey(k.left)}</span>
+            </div>
+            <div class="cell differs">
+              <span class="pk fk">FK</span>
+              <span class="mono value">{describeKey(k.right)}</span>
+              <span class="fields">{fkFieldLabels(k.fields)}</span>
+            </div>
+          </div>
+        {/each}
+
+        {#each t.foreign_keys_only_in_left as k (k.columns.join(','))}
+          <div class="row">
+            <div class="cell">
+              <span class="pk fk">FK</span>
+              <span class="mono value">{describeKey(k)}</span>
+              <span class="only left">{i18n.t('compare-only-in', { name: leftName })}</span>
+            </div>
+            <div class="cell absent">—</div>
+          </div>
+        {/each}
+
+        {#each t.foreign_keys_only_in_right as k (k.columns.join(','))}
+          <div class="row">
+            <div class="cell absent">—</div>
+            <div class="cell">
+              <span class="pk fk">FK</span>
+              <span class="mono value">{describeKey(k)}</span>
+              <span class="only right">{i18n.t('compare-only-in', { name: rightName })}</span>
+            </div>
+          </div>
+        {/each}
       {/each}
 
       {#each diff.tables_only_in_left as t (tableKey(t))}
@@ -475,6 +534,14 @@
     border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
     border-radius: var(--radius-widget);
     padding: 0 5px;
+  }
+
+  /* The same badge as PK, in the muted ink: a foreign key is a constraint the
+     reader scans past unless it differs, and it should not shout louder than
+     the key the table is identified by. */
+  .fk {
+    color: var(--text-muted);
+    border-color: var(--border-strong);
   }
 
   .empty {

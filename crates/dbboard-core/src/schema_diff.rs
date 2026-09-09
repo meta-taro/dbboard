@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::{ColumnInfo, TableInfo, TableSchema};
+use crate::schema::{ColumnInfo, ForeignKey, TableInfo, TableSchema};
 
 /// Which attribute of a column the two sides disagree about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +42,55 @@ pub struct ColumnDiff {
     pub fields: Vec<ColumnField>,
 }
 
+/// One table as the comparison sees it: what `describe_table` returned, plus
+/// the constraints fetched alongside it.
+///
+/// A struct rather than a bare `TableSchema` because the comparison grew a
+/// second source — foreign keys (ADR-0054) — and will grow more.
+/// Bundling them keeps `diff_schemas` taking one list rather than several
+/// that a caller could mis-align.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableSnapshot {
+    pub schema: TableSchema,
+    /// Empty for an engine that cannot report them — which is not the same as
+    /// a table that has none, and why [`SchemaDiff::foreign_keys_compared`]
+    /// exists.
+    #[serde(default)]
+    pub foreign_keys: Vec<ForeignKey>,
+}
+
+impl TableSnapshot {
+    /// A snapshot of a table whose constraints were not fetched.
+    #[must_use]
+    pub fn schema_only(schema: TableSchema) -> Self {
+        Self {
+            schema,
+            foreign_keys: Vec::new(),
+        }
+    }
+}
+
+/// One foreign key present on both sides, with something differing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForeignKeyDiff {
+    /// The local columns the key is on — how the two sides were matched.
+    pub columns: Vec<String>,
+    pub left: ForeignKey,
+    pub right: ForeignKey,
+    pub fields: Vec<ForeignKeyField>,
+}
+
+/// Which part of a foreign key the two sides disagree about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ForeignKeyField {
+    ReferencedTable,
+    ReferencedColumns,
+    /// The constraint's name. Reported separately because engines generate
+    /// names, so two keys that point at the same place under different names
+    /// are a weaker finding than two that point somewhere different.
+    Name,
+}
+
 /// One table present on both sides, with at least one difference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableDiff {
@@ -50,6 +99,12 @@ pub struct TableDiff {
     pub columns_only_in_right: Vec<ColumnInfo>,
     pub columns_changed: Vec<ColumnDiff>,
     pub primary_key: Option<(Vec<String>, Vec<String>)>,
+    #[serde(default)]
+    pub foreign_keys_only_in_left: Vec<ForeignKey>,
+    #[serde(default)]
+    pub foreign_keys_only_in_right: Vec<ForeignKey>,
+    #[serde(default)]
+    pub foreign_keys_changed: Vec<ForeignKeyDiff>,
 }
 
 /// Everything two schemas disagree about.
@@ -58,6 +113,11 @@ pub struct SchemaDiff {
     pub tables_only_in_left: Vec<TableInfo>,
     pub tables_only_in_right: Vec<TableInfo>,
     pub tables_changed: Vec<TableDiff>,
+    /// Whether foreign keys were part of the comparison. False when either
+    /// engine cannot report them, so "no differences" never claims more than
+    /// it checked.
+    #[serde(default)]
+    pub foreign_keys_compared: bool,
 }
 
 impl SchemaDiff {
@@ -83,20 +143,40 @@ impl SchemaDiff {
 /// between runs cannot be compared against the last one.
 #[must_use]
 pub fn diff_schemas(left: &[TableSchema], right: &[TableSchema]) -> SchemaDiff {
-    let left_by_key: BTreeMap<String, &TableSchema> =
-        left.iter().map(|t| (table_key(&t.table), t)).collect();
-    let right_by_key: BTreeMap<String, &TableSchema> =
-        right.iter().map(|t| (table_key(&t.table), t)).collect();
+    let to_snapshots = |ts: &[TableSchema]| {
+        ts.iter()
+            .map(|t| TableSnapshot::schema_only(t.clone()))
+            .collect::<Vec<_>>()
+    };
+    diff_snapshots(&to_snapshots(left), &to_snapshots(right))
+}
+
+/// Compare two schemas including the constraints fetched alongside them.
+///
+/// `foreign_keys_compared` is true only when **both** sides carry at least one
+/// key, or when both were fetched and both happened to be empty — the caller
+/// says which by handing over snapshots built with the keys it actually read
+/// (see [`TableSnapshot::schema_only`] for the other case).
+#[must_use]
+pub fn diff_snapshots(left: &[TableSnapshot], right: &[TableSnapshot]) -> SchemaDiff {
+    let left_by_key: BTreeMap<String, &TableSnapshot> = left
+        .iter()
+        .map(|t| (table_key(&t.schema.table), t))
+        .collect();
+    let right_by_key: BTreeMap<String, &TableSnapshot> = right
+        .iter()
+        .map(|t| (table_key(&t.schema.table), t))
+        .collect();
 
     let only_in_left = left_by_key
         .iter()
         .filter(|(key, _)| !right_by_key.contains_key(*key))
-        .map(|(_, t)| t.table.clone())
+        .map(|(_, t)| t.schema.table.clone())
         .collect();
     let only_in_right = right_by_key
         .iter()
         .filter(|(key, _)| !left_by_key.contains_key(*key))
-        .map(|(_, t)| t.table.clone())
+        .map(|(_, t)| t.schema.table.clone())
         .collect();
 
     let tables_changed = left_by_key
@@ -105,21 +185,40 @@ pub fn diff_schemas(left: &[TableSchema], right: &[TableSchema]) -> SchemaDiff {
         .filter_map(|(l, r)| diff_table(l, r))
         .collect();
 
+    // Keys were compared when either side actually carried some: a caller that
+    // could not fetch them hands over `schema_only` snapshots, which carry
+    // none. Two databases that both genuinely have no foreign keys therefore
+    // report `false` — the cautious direction, since it only ever understates
+    // what was checked.
+    let any_keys = left
+        .iter()
+        .chain(right.iter())
+        .any(|t| !t.foreign_keys.is_empty());
+
     SchemaDiff {
         tables_only_in_left: only_in_left,
         tables_only_in_right: only_in_right,
         tables_changed,
+        foreign_keys_compared: any_keys,
     }
 }
 
 /// The differences between one table's two sides, or `None` when there are
 /// none — an unchanged table is absent from the report, which is what keeps a
 /// 300-table database with one difference to one entry.
-fn diff_table(left: &TableSchema, right: &TableSchema) -> Option<TableDiff> {
-    let left_cols: BTreeMap<&str, &ColumnInfo> =
-        left.columns.iter().map(|c| (c.name.as_str(), c)).collect();
-    let right_cols: BTreeMap<&str, &ColumnInfo> =
-        right.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+fn diff_table(left: &TableSnapshot, right: &TableSnapshot) -> Option<TableDiff> {
+    let left_cols: BTreeMap<&str, &ColumnInfo> = left
+        .schema
+        .columns
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
+    let right_cols: BTreeMap<&str, &ColumnInfo> = right
+        .schema
+        .columns
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
 
     let only_in_left: Vec<ColumnInfo> = left_cols
         .iter()
@@ -148,23 +247,87 @@ fn diff_table(left: &TableSchema, right: &TableSchema) -> Option<TableDiff> {
 
     // Key order is part of the key: `(a, b)` and `(b, a)` index different
     // things, so the vectors are compared as sequences rather than as sets.
-    let primary_key = (left.primary_key != right.primary_key)
-        .then(|| (left.primary_key.clone(), right.primary_key.clone()));
+    let primary_key = (left.schema.primary_key != right.schema.primary_key).then(|| {
+        (
+            left.schema.primary_key.clone(),
+            right.schema.primary_key.clone(),
+        )
+    });
+
+    let (fk_left, fk_right, fk_changed) =
+        diff_foreign_keys(&left.foreign_keys, &right.foreign_keys);
 
     if only_in_left.is_empty()
         && only_in_right.is_empty()
         && changed.is_empty()
         && primary_key.is_none()
+        && fk_left.is_empty()
+        && fk_right.is_empty()
+        && fk_changed.is_empty()
     {
         return None;
     }
     Some(TableDiff {
-        table: left.table.clone(),
+        table: left.schema.table.clone(),
         columns_only_in_left: only_in_left,
         columns_only_in_right: only_in_right,
         columns_changed: changed,
         primary_key,
+        foreign_keys_only_in_left: fk_left,
+        foreign_keys_only_in_right: fk_right,
+        foreign_keys_changed: fk_changed,
     })
+}
+
+/// Compare one table's foreign keys, matched on their local columns.
+///
+/// The columns are the key's identity here, not its name: engines generate
+/// constraint names, and the same migration run twice can produce different
+/// ones. Matching on the name would report every key as replaced when only the
+/// label moved — while the name difference itself is still reported, as its
+/// own field, so a reader can tell it from a key that points somewhere else.
+type ForeignKeySplit = (Vec<ForeignKey>, Vec<ForeignKey>, Vec<ForeignKeyDiff>);
+
+fn diff_foreign_keys(left: &[ForeignKey], right: &[ForeignKey]) -> ForeignKeySplit {
+    let key_of = |k: &ForeignKey| k.columns.join("\u{1f}");
+    let left_by: BTreeMap<String, &ForeignKey> = left.iter().map(|k| (key_of(k), k)).collect();
+    let right_by: BTreeMap<String, &ForeignKey> = right.iter().map(|k| (key_of(k), k)).collect();
+
+    let only_left = left_by
+        .iter()
+        .filter(|(k, _)| !right_by.contains_key(*k))
+        .map(|(_, v)| (*v).clone())
+        .collect();
+    let only_right = right_by
+        .iter()
+        .filter(|(k, _)| !left_by.contains_key(*k))
+        .map(|(_, v)| (*v).clone())
+        .collect();
+
+    let changed = left_by
+        .iter()
+        .filter_map(|(k, l)| right_by.get(k).map(|r| (*l, *r)))
+        .filter_map(|(l, r)| {
+            let mut fields = Vec::new();
+            if l.referenced_table != r.referenced_table {
+                fields.push(ForeignKeyField::ReferencedTable);
+            }
+            if l.referenced_columns != r.referenced_columns {
+                fields.push(ForeignKeyField::ReferencedColumns);
+            }
+            if l.constraint_name != r.constraint_name {
+                fields.push(ForeignKeyField::Name);
+            }
+            (!fields.is_empty()).then(|| ForeignKeyDiff {
+                columns: l.columns.clone(),
+                left: l.clone(),
+                right: r.clone(),
+                fields,
+            })
+        })
+        .collect();
+
+    (only_left, only_right, changed)
 }
 
 /// Which of a column's compared attributes differ, in a fixed order so two
@@ -429,6 +592,129 @@ mod tests {
         let diff = diff_schemas(&left, &right);
         assert_eq!(diff.tables_changed.len(), 1);
         assert_eq!(diff.tables_changed[0].table.name, "differs");
+    }
+
+    fn fk(columns: &[&str], parent: &str, parent_cols: &[&str], name: Option<&str>) -> ForeignKey {
+        ForeignKey {
+            columns: columns.iter().map(|c| (*c).to_string()).collect(),
+            referenced_table: TableInfo::unqualified(parent),
+            referenced_columns: parent_cols.iter().map(|c| (*c).to_string()).collect(),
+            constraint_name: name.map(str::to_owned),
+        }
+    }
+
+    fn with_keys(t: TableSchema, keys: Vec<ForeignKey>) -> TableSnapshot {
+        TableSnapshot {
+            schema: t,
+            foreign_keys: keys,
+        }
+    }
+
+    #[test]
+    fn a_foreign_key_on_one_side_only_is_reported_on_that_side() {
+        let left = vec![with_keys(
+            table("orders", vec![col("customer_id", "INTEGER")]),
+            vec![fk(&["customer_id"], "customers", &["id"], None)],
+        )];
+        let right = vec![with_keys(
+            table("orders", vec![col("customer_id", "INTEGER")]),
+            vec![],
+        )];
+        let diff = diff_snapshots(&left, &right);
+        let t = &diff.tables_changed[0];
+        assert_eq!(t.foreign_keys_only_in_left.len(), 1);
+        assert!(t.foreign_keys_only_in_right.is_empty());
+    }
+
+    #[test]
+    fn keys_are_matched_on_their_columns_not_their_names() {
+        // Engines generate constraint names, and the same migration run twice
+        // can produce different ones. Matching on the name would report every
+        // key as replaced when only the label moved.
+        let left = vec![with_keys(
+            table("orders", vec![col("customer_id", "INTEGER")]),
+            vec![fk(
+                &["customer_id"],
+                "customers",
+                &["id"],
+                Some("orders_customer_id_fkey"),
+            )],
+        )];
+        let right = vec![with_keys(
+            table("orders", vec![col("customer_id", "INTEGER")]),
+            vec![fk(
+                &["customer_id"],
+                "customers",
+                &["id"],
+                Some("fk_orders_customer"),
+            )],
+        )];
+        let diff = diff_snapshots(&left, &right);
+        let changed = &diff.tables_changed[0].foreign_keys_changed;
+        assert_eq!(changed.len(), 1);
+        // The name difference is still reported — just as its own field, so a
+        // reader can tell it from a key that points somewhere else.
+        assert_eq!(changed[0].fields, vec![ForeignKeyField::Name]);
+    }
+
+    #[test]
+    fn a_key_pointing_at_another_table_is_a_stronger_finding() {
+        let left = vec![with_keys(
+            table("orders", vec![col("customer_id", "INTEGER")]),
+            vec![fk(&["customer_id"], "customers", &["id"], None)],
+        )];
+        let right = vec![with_keys(
+            table("orders", vec![col("customer_id", "INTEGER")]),
+            vec![fk(&["customer_id"], "accounts", &["id"], None)],
+        )];
+        let diff = diff_snapshots(&left, &right);
+        assert_eq!(
+            diff.tables_changed[0].foreign_keys_changed[0].fields,
+            vec![ForeignKeyField::ReferencedTable]
+        );
+    }
+
+    #[test]
+    fn referenced_column_order_matters() {
+        // `(a, b) -> (x, y)` and `(a, b) -> (y, x)` constrain different pairs.
+        let left = vec![with_keys(
+            table("t", vec![col("a", "INTEGER")]),
+            vec![fk(&["a", "b"], "p", &["x", "y"], None)],
+        )];
+        let right = vec![with_keys(
+            table("t", vec![col("a", "INTEGER")]),
+            vec![fk(&["a", "b"], "p", &["y", "x"], None)],
+        )];
+        let diff = diff_snapshots(&left, &right);
+        assert_eq!(
+            diff.tables_changed[0].foreign_keys_changed[0].fields,
+            vec![ForeignKeyField::ReferencedColumns]
+        );
+    }
+
+    #[test]
+    fn identical_keys_are_not_a_difference() {
+        let one = || {
+            vec![with_keys(
+                table("orders", vec![col("customer_id", "INTEGER")]),
+                vec![fk(&["customer_id"], "customers", &["id"], Some("k"))],
+            )]
+        };
+        assert!(diff_snapshots(&one(), &one()).is_empty());
+    }
+
+    #[test]
+    fn schema_only_snapshots_report_that_keys_were_not_compared() {
+        // An engine that cannot report foreign keys must not make "no
+        // differences" mean more than it checked.
+        let left = vec![TableSnapshot::schema_only(table(
+            "t",
+            vec![col("a", "TEXT")],
+        ))];
+        let right = left.clone();
+        let diff = diff_snapshots(&left, &right);
+        assert!(diff.is_empty());
+        assert!(!diff.foreign_keys_compared);
     }
 
     #[test]

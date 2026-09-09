@@ -1,6 +1,6 @@
 # 0035 — schema diff の残り半分（インデックスと制約）
 
-- 状態: **調査のみ完了。設計は未着手 = 判断待ち**
+- 状態: **外部キーは実装済み**（ADR-0151）。**インデックスは調査のみ = 判断待ち**
 - 枠: `docs/roadmap.md` Near slots の **v0.17 — The half that was deferred**（3 項目の 3 つ目）
 - 関連: ADR-0148（保留の理由）、ADR-0149（画面）、ADR-0049（dump の DDL）、
   issue 0034（schema diff 本体・完了）
@@ -50,8 +50,9 @@ mysql + d1 が答えられ、**turso / turso-remote / firestore / mongodb が答
 2. **firestore / mongodb をどう扱うか** — 「インデックス」を無理に同じ名前で並べるのか、
    別概念として出さないのか。**ここは contract に触る可能性がある**（`Capabilities` に
    `has_list_indexes` を足すなら additive だが、`dbboard-web` へのミラー要否が生じる）
-3. **制約（外部キー・一意・CHECK）を同じ便でやるか** — `foreign_keys` は既に trait にある
-   （ADR-0054）ので、**外部キーだけなら今日でも比較できる**
+3. ~~**制約（外部キー・一意・CHECK）を同じ便でやるか**~~ — **外部キーは実装した**（ADR-0151）。
+   `foreign_keys` は ADR-0054 以来 trait にあり、**4 アダプタ（turso 含む＝10 kind 中 8）**が
+   実装済みで、contract にも触らずに済んだ。一意制約と CHECK は未着手
 
 ## やっていないこと
 
