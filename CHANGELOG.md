@@ -11,6 +11,19 @@ public API is the HTTP contract in
 
 ### Added
 
+- **An agent can now ask what dbboard is.** A new `about` tool on the MCP
+  server answers in one call: what the product is for, which version of the
+  server the agent is talking to, which database engines it speaks, and what
+  each released version changed.
+
+  It reaches nothing — no connection, no database, no file of yours. The
+  answer is compiled into the build, which also means it describes the build
+  that is answering rather than whatever happens to be on disk beside it.
+
+  Ask it about a specific version and you get that version's changelog
+  section; ask about one this build does not carry and you get told so, along
+  with the versions it does.
+
 - **The schema comparison now includes indexes.** An index one side has and
   the other does not, one over different columns, or one that is unique on
   only one side — all of it shows up beside the columns.
