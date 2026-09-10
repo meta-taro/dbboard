@@ -77,6 +77,15 @@ pub struct AddConnectionParams {
     pub base_url: Option<String>,
 }
 
+/// Parameters for [`DbboardMcp::about`] (ADR-0154).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AboutParams {
+    /// A version to describe, as it appears in the changelog (`0.16.1`, or
+    /// `Unreleased`). Omit for the running build's own version, which is the
+    /// answer to "what am I talking to".
+    pub version: Option<String>,
+}
+
 /// Parameters for [`DbboardMcp::export_connections`] (ADR-0140).
 ///
 /// One field, and it is required. There is no "all" flag and no filter: the
@@ -327,6 +336,20 @@ Name every connection you mean; there is no form of this that exports everything
             .await
             .map_err(|e| to_mcp(&e))?;
         json_block(&outcome)
+    }
+
+    #[tool(
+        description = "What dbboard is, and what a given version changed. Reads nothing: no connection, no database, no file of the operator's — the answer is compiled into this build.
+
+Returns the product in a paragraph, the version of the server you are talking to, every connection kind it can speak, and the list of releases the shipped changelog describes (newest first, each with its date and the headline that release was reserved to carry). Alongside that comes one version's section of the changelog as markdown — the running build's unless you name another with `version`.
+
+Use it when you have just been handed this server and want to know what it is for, or when the operator asks what changed in a version. A version this build does not carry comes back with no changes and the list of the ones it does; that is the honest answer to being asked about something newer than the binary."
+    )]
+    async fn about(
+        &self,
+        Parameters(AboutParams { version }): Parameters<AboutParams>,
+    ) -> Result<CallToolResult, McpError> {
+        json_block(&crate::about::about(version.as_deref()))
     }
 
     #[tool(

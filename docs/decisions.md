@@ -13903,3 +13903,57 @@ every reader in the meantime.
 - Anyone reading the roadmap sees the gap rather than a completed feature.
 - `dbboard-web` still mirrors a schema nothing produces. That is the cost of
   waiting, and it is a cost either decision would end.
+
+## ADR-0154 — An agent can ask what dbboard is, and the changelog keeps its two readers (2026-09-10)
+
+**Status.** Accepted.
+
+**Context.** An agent handed a running `dbboard-mcp` knows the tool names and
+nothing else: not what the product is for, not which engines it speaks, not
+what the build in front of it changed. Every one of those is answerable from
+what is already compiled in, and asking a person to paste a README into the
+conversation is a worse answer than a verb.
+
+The second half — "what changed in each version" — has a trap in it.
+`CHANGELOG.md` already has two readers: the About dialog's parser
+([ADR-0137](#adr-0137--the-about-dialog-shows-what-the-running-build-changed-from-the-changelog-it-was-cut-from-2026-08-25)) and `scripts/release-notes.mjs`, which writes the
+one-line summary the update notice shows. The parser's own comment says why
+that matters: two readers of one file must not disagree about what a bullet
+says. A third parser would be a third chance to disagree, and this one would
+disagree in front of an agent that cannot check.
+
+**Decision.** Add `about`, and **do not parse the bullets**.
+
+1. **Headings are scanned; bodies are handed over as markdown.** A release
+   heading's shape is fixed and test-enforced (`release-plan.test.mjs`), so
+   reading `## [version] — date — headline` is safe. Everything below it goes
+   back verbatim. The reader is a language model — markdown *is* structure to
+   it, and re-expressing it as JSON would only add a place to be wrong.
+
+2. **Only the em dash separates the fields.** Every heading in the file uses
+   it, back to 0.1.0. Accepting a hyphen as well would also match the ones
+   inside a date and inside a headline, which is how a lenient parser starts
+   reporting `2026` as a version's date.
+
+3. **The changelog is compiled in** (`include_str!`), so the answer describes
+   the build that is answering rather than whatever file happens to sit beside
+   it on disk.
+
+4. **A version this build does not carry returns no changes**, along with the
+   list of the versions it does. That is the honest answer when an agent asks
+   about something newer than the binary, and it beats an empty object.
+
+5. **It is additive by [ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list)'s test**: the verb reaches no connection,
+   no database and no file of the operator's. It opens nothing that was not
+   already open, because it opens nothing at all.
+
+**Consequences.**
+
+- One paragraph of product prose now lives in Rust. It is deliberately short,
+  and points at the README and the download page rather than restating them —
+  a second README is a second thing to keep in step.
+- The adapter-kind list is spelled out in this module. It sits beside
+  `kind_label`'s exhaustive match, which is what actually enforces the set; a
+  kind added there and forgotten here would show up as a missing entry rather
+  than a wrong answer.
+- The changelog still has exactly two parsers.
