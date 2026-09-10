@@ -13856,3 +13856,50 @@ under.
 - The empty state now has three spellings — columns only, plus foreign keys,
   plus indexes — because it may only claim what was actually compared.
 - Other constraints (unique beyond its index, `CHECK`) are still out.
+
+## ADR-0153 — `history.jsonl` is a reserved schema with no writer, and saying so comes before deciding its fate (2026-09-10)
+
+**Status.** Accepted, and deliberately partial: it records the state and
+defers the choice.
+
+**Context.** [ADR-0017](#adr-0017--query-history-persistence-json-lines-schema-shared-with-dbboard-web-stage-2) specified `history.jsonl`, and
+[ADR-0027](#adr-0027--phase-4-stage-2-group-c-ai-calls-recorded-in-historyjsonl-schema-v2) extended it to v:2 so AI calls landed in the same
+file. Both shipped. The reader and writer lived in `dbboard-ui`, the egui
+crate — and [ADR-0089](#adr-0089--the-egui-client-is-retired-tauri-is-the-only-client) retired that client and deleted the crate.
+
+**Nothing has written the file since.** The Tauri client keeps its query
+history in the webview's own storage, which is a different mechanism with a
+different lifecycle. This was found while looking for somewhere to put saved
+queries ([ADR-0147](#adr-0147--a-saved-query-goes-in-the-profile-because-the-history-is-not-where-you-keep-things-2026-09-07)) and written up as issue 0033.
+
+Three documents disagreed with the code: `docs/roadmap.md` ticked the AI
+history entry as done, `dbboard-config` resolved the path with no note, and
+`dbboard-web` implements the v:2 records desktop was supposed to emit
+(issue 0003).
+
+**Decision.** Say what is true, now; decide what to do about it separately.
+
+- The roadmap entry keeps its history but is no longer a tick: it reads as
+  shipped-then-removed, with the reason and a pointer to the open question.
+  The original text stays underneath, because it *was* true when written —
+  striking it out would lose the record of what once existed.
+- `default_history_path`'s doc comment says outright that nothing writes the
+  file, so the next reader does not take the helper's existence as evidence.
+- **The schema stays reserved.** Neither restoring the writer nor retiring
+  the format is chosen here.
+
+**Why not decide now.** Retiring the schema discards something
+`dbboard-web` has already built, which the Pacing Note in `CLAUDE.md` makes a
+contract-layer call needing an ADR in both repositories — and this session
+cannot speak for the other one. Restoring the writer is real work whose value
+depends on that same conversation. What could be done alone was to stop the
+documents from lying while the conversation waits, and a stale tick misleads
+every reader in the meantime.
+
+**Consequences.**
+
+- Issue 0033 stays open with the two live options, and now has a companion
+  that explains why it is not closed.
+- Anyone reading the roadmap sees the gap rather than a completed feature.
+- `dbboard-web` still mirrors a schema nothing produces. That is the cost of
+  waiting, and it is a cost either decision would end.

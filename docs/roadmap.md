@@ -496,8 +496,19 @@ work without it. Trait + first-provider shape locked in
       (`ai-cancel-button`, `ai-cancelled-message`, `ai-tokens-meter`)
       in all 11 locales._
 
-- [x] AI calls recorded in `history.jsonl` with schema v:2 bump —
-      _Stage 2 Group C, planned in [ADR-0027](decisions.md).
+- [~] AI calls recorded in `history.jsonl` with schema v:2 bump —
+      **shipped 2026-07-01 and gone since [ADR-0089](decisions.md).**
+      The reader and writer lived in `dbboard-ui`, the egui crate, and
+      were deleted with it; nothing in the Tauri client has written this
+      file since. `dbboard-config` still resolves the path, and
+      `dbboard-web` still implements the v:2 records desktop was meant to
+      emit ([issue 0003](../.claude/issues/0003-web-history-schema-mirror.md)).
+      **The schema is reserved, not implemented** — whether to restore the
+      writer or retire the schema is open, and is a contract-layer call
+      that needs both repositories ([issue 0033](../.claude/issues/0033-history-jsonl-has-no-writer.md),
+      [ADR-0153](decisions.md)). The original entry follows, because what
+      it describes was true when it was written:
+      _      Stage 2 Group C, planned in [ADR-0027](decisions.md).
       Implementation tracked in
       [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
       **Closed 2026-07-01 on `feature/ai-history-v2`.** Slice (a)
