@@ -13802,3 +13802,57 @@ connection kinds. The constraint half of the deferral was blocked on nothing.
 - Indexes remain out. Issue 0035 holds the three options and the decision is
   still the maintainer's, because the honest version of it adds a trait method
   and a capability flag — and that touches the contract layer.
+
+## ADR-0152 — Indexes join the comparison, and the primary key's own index does not (2026-09-09)
+
+**Status.** Accepted. Closes the half [ADR-0148](#adr-0148--a-schema-diff-that-would-rather-report-a-cosmetic-difference-than-miss-a-real-one-2026-09-07) deferred and issue 0035
+scoped; the maintainer chose the structured option.
+
+**Context.** The survey in issue 0035 found index knowledge in exactly one
+place — `table_ddl`, the dump's DDL renderer, in three of six adapters — and
+laid out three ways forward: compare the DDL text, add a structured
+`list_indexes`, or report only where an engine can answer. Comparing the text
+was rejected on the same grounds as comparing column order: it reports
+formatting as difference, which is the noise ADR-0148 refuses to bury findings
+under.
+
+**Decision.** A structured `list_indexes` on the adapter trait, behind a new
+`Capabilities::has_list_indexes`, plus the "say what was not compared" rule.
+
+1. **The primary key's own backing index is excluded, everywhere.** SQLite
+   reports it with origin `pk`, MySQL calls it `PRIMARY`, Postgres flags it
+   `indisprimary` — each adapter drops it. The primary key is already compared
+   on its own, and reporting its index too would state one fact twice, which
+   is the rule ADR-0148 set when it decided a missing table is one finding
+   rather than a table full of missing columns.
+
+2. **A unique constraint's index is kept.** Nothing else in the comparison
+   reports uniqueness, so dropping it would hide a real difference — the
+   failure direction this feature exists to avoid.
+
+3. **Indexes are matched on their name**, unlike foreign keys, which are
+   matched on their columns ([ADR-0151](#adr-0151--foreign-keys-join-the-comparison-because-the-adapters-were-already-answering-2026-09-09)). An index's name is what somebody
+   wrote in a migration and what they would `DROP`; two indexes over the same
+   columns under different names are two indexes, and saying so is the useful
+   answer. A foreign key's name is generated, which is why that one is
+   matched differently.
+
+4. **Column order inside an index is a difference.** `(a, b)` and `(b, a)`
+   serve different queries. This is the one place order matters — a table's
+   column order deliberately does not (ADR-0148).
+
+5. **Four adapters answer: Turso, Postgres, MySQL, D1** — eight of the ten
+   connection kinds. Firestore and MongoDB leave the flag false, and the
+   report says indexes were not compared rather than implying they matched.
+
+**Consequences.**
+
+- `Capabilities` grows a flag, so this touches the contract layer.
+  `docs/api-contract.md` documents it and `api_contract_drift.rs` enforces
+  that; the addition is additive, and **`dbboard-web` owes the mirrored ADR**
+  per the Pacing Note in `CLAUDE.md`.
+- Expression indexes are reported by the columns they name and skip the parts
+  that are expressions, rather than inventing a column name for them.
+- The empty state now has three spellings — columns only, plus foreign keys,
+  plus indexes — because it may only claim what was actually compared.
+- Other constraints (unique beyond its index, `CHECK`) are still out.

@@ -28,8 +28,8 @@ use std::sync::{Arc, PoisonError, RwLock, Weak};
 use async_trait::async_trait;
 use dbboard_core::{
     classify_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
-    DbError, DbResult, ForeignKey, QueryResult, ReadOnlyStatement, Row, SqlDialect, TableInfo,
-    TableSchema, Value, MAX_RESULT_ROWS,
+    DbError, DbResult, ForeignKey, IndexInfo, QueryResult, ReadOnlyStatement, Row, SqlDialect,
+    TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgSslMode, PgValueRef};
@@ -147,6 +147,26 @@ const FOREIGN_KEYS_SQL: &str = "SELECT con.conname::TEXT, \
      JOIN pg_catalog.pg_attribute fatt ON fatt.attrelid = con.confrelid AND fatt.attnum = rk.attnum \
      WHERE con.contype = 'f' AND n.nspname = $1 AND c.relname = $2 \
      ORDER BY con.conname, lk.ord";
+
+/// Indexes on one table, one row per indexed column, in index order.
+///
+/// `indisprimary` is excluded: the primary key is compared on its own, and
+/// reporting its backing index too would state one fact twice (ADR-0152). A
+/// unique constraint's index is kept — nothing else reports it.
+///
+/// Expression indexes have no `pg_attribute` row for that position, so the
+/// join drops those parts rather than inventing a column name.
+const INDEXES_SQL: &str = "SELECT i.relname::TEXT, \
+     ix.indisunique, \
+     att.attname::TEXT \
+     FROM pg_catalog.pg_index ix \
+     JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid \
+     JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
+     JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE \
+     JOIN pg_catalog.pg_attribute att ON att.attrelid = t.oid AND att.attnum = k.attnum \
+     WHERE NOT ix.indisprimary AND n.nspname = $1 AND t.relname = $2 \
+     ORDER BY i.relname, k.ord";
 
 /// Columns of one table for DDL reconstruction (ADR-0049), read from
 /// `pg_catalog` so the type comes back canonicalised by `format_type` and
@@ -505,6 +525,7 @@ impl DatabaseAdapter for PostgresAdapter {
             // returns no rows there — the capability stays advertised because
             // the introspection path itself works on every flavor.
             has_foreign_keys: true,
+            has_list_indexes: true,
             // Aurora DSQL rejects mixed DDL+DML in one transaction and caps a
             // transaction at a single DDL statement (ADR-0021), so it cannot
             // honour an atomic multi-statement restore — it falls back to
@@ -641,6 +662,29 @@ impl DatabaseAdapter for PostgresAdapter {
             .collect::<DbResult<Vec<_>>>()?;
 
         Ok(assemble_foreign_keys(fk_rows))
+    }
+
+    async fn list_indexes(&self, table: &TableInfo) -> DbResult<Vec<IndexInfo>> {
+        let schema = table.schema.as_deref().unwrap_or("public");
+        let pool = self.pool.current();
+        let rows = sqlx::query(INDEXES_SQL)
+            .bind(schema)
+            .bind(&table.name)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+
+        let decoded = rows
+            .iter()
+            .map(|row| -> DbResult<IndexRow> {
+                Ok(IndexRow {
+                    name: row.try_get(0).map_err(|e| classify_error(&e))?,
+                    unique: row.try_get(1).map_err(|e| classify_error(&e))?,
+                    column: row.try_get(2).map_err(|e| classify_error(&e))?,
+                })
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+        Ok(assemble_indexes(decoded))
     }
 
     async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
@@ -1116,6 +1160,37 @@ struct FkRow {
 /// is unique within a single relation, so every row of one constraint is
 /// consecutive and in key order — folding against the last-built edge is
 /// enough to assemble composite keys without a secondary group pass.
+/// One decoded row of [`INDEXES_SQL`], before rows are grouped per index.
+struct IndexRow {
+    name: String,
+    unique: bool,
+    column: String,
+}
+
+/// Fold [`INDEXES_SQL`] rows into one [`IndexInfo`] per index.
+///
+/// The query orders by index name then key position, so consecutive rows of
+/// the same name are that index's columns in order — the same shape
+/// [`assemble_foreign_keys`] relies on.
+fn assemble_indexes(rows: Vec<IndexRow>) -> Vec<IndexInfo> {
+    let mut out: Vec<IndexInfo> = Vec::new();
+    for r in rows {
+        if out.last().is_some_and(|i| i.name == r.name) {
+            out.last_mut()
+                .expect("checked above")
+                .columns
+                .push(r.column);
+        } else {
+            out.push(IndexInfo {
+                name: r.name,
+                columns: vec![r.column],
+                unique: r.unique,
+            });
+        }
+    }
+    out
+}
+
 fn assemble_foreign_keys(rows: Vec<FkRow>) -> Vec<ForeignKey> {
     let mut out: Vec<ForeignKey> = Vec::new();
     for r in rows {
@@ -1252,9 +1327,9 @@ fn truncate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        assemble_foreign_keys, caps_with_cursor, classify_error, column_from_parts,
-        harden_ssl_mode, read_only_preamble, reclassify_schema, truncate, tuple_to_table, FkRow,
-        FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        assemble_foreign_keys, assemble_indexes, caps_with_cursor, classify_error,
+        column_from_parts, harden_ssl_mode, read_only_preamble, reclassify_schema, truncate,
+        tuple_to_table, FkRow, FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
     };
     use dbboard_core::{DatabaseAdapter, DbError, ForeignKey, TableInfo};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
@@ -1418,6 +1493,46 @@ mod tests {
             referenced_table: ref_table.into(),
             referenced_column: ref_col.into(),
         }
+    }
+
+    #[test]
+    fn assemble_indexes_groups_columns_in_key_order() {
+        use super::IndexRow;
+        let indexes = assemble_indexes(vec![
+            IndexRow {
+                name: "i".into(),
+                unique: false,
+                column: "b".into(),
+            },
+            IndexRow {
+                name: "i".into(),
+                unique: false,
+                column: "a".into(),
+            },
+            IndexRow {
+                name: "j".into(),
+                unique: true,
+                column: "email".into(),
+            },
+        ]);
+        assert_eq!(indexes.len(), 2);
+        // (b, a) as the query ordered them — the order is what the index is for.
+        assert_eq!(indexes[0].columns, vec!["b".to_string(), "a".to_string()]);
+        assert!(!indexes[0].unique);
+        assert!(indexes[1].unique);
+    }
+
+    #[test]
+    fn indexes_sql_excludes_the_primary_keys_index() {
+        // The primary key is compared on its own; its backing index would be
+        // the same fact a second time.
+        assert!(
+            super::INDEXES_SQL.contains("NOT ix.indisprimary"),
+            "must exclude the PK index: {}",
+            super::INDEXES_SQL
+        );
+        // ...but a unique constraint's index stays: nothing else reports it.
+        assert!(!super::INDEXES_SQL.contains("indisunique = false"));
     }
 
     #[test]

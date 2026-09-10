@@ -1301,7 +1301,9 @@ impl McpService {
         // Foreign keys are read only where the adapter says it can
         // (ADR-0054's capability flag). Document stores cannot, and asking
         // anyway would turn every table into a capability error.
-        let keys_available = adapter.capabilities().has_foreign_keys;
+        let caps = adapter.capabilities();
+        let keys_available = caps.has_foreign_keys;
+        let indexes_available = caps.has_list_indexes;
         let tables = adapter.list_tables().await?;
         let mut out = Vec::with_capacity(tables.len());
         for table in tables {
@@ -1314,9 +1316,15 @@ impl McpService {
             } else {
                 Vec::new()
             };
+            let indexes = if indexes_available {
+                adapter.list_indexes(&table).await?
+            } else {
+                Vec::new()
+            };
             out.push(TableSnapshot {
                 schema,
                 foreign_keys,
+                indexes,
             });
         }
         Ok(out)

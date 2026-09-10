@@ -16,8 +16,8 @@
 use async_trait::async_trait;
 use dbboard_core::{
     check_read_only, resolve_referenced_columns, too_many_rows_error, Capabilities, Column,
-    ColumnInfo, DatabaseAdapter, DbError, DbResult, ForeignKey, QueryResult, Row, SqlDialect,
-    TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
+    ColumnInfo, DatabaseAdapter, DbError, DbResult, ForeignKey, IndexInfo, QueryResult, Row,
+    SqlDialect, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -198,6 +198,7 @@ impl DatabaseAdapter for D1Adapter {
             // Foreign keys come from `PRAGMA foreign_key_list` over the same
             // `/raw` envelope as `describe_table` (ADR-0054).
             has_foreign_keys: true,
+            has_list_indexes: true,
             // D1's HTTP API exposes no multi-statement transaction over
             // `/raw`, so restore cannot run atomically — it falls back to
             // per-statement execution (ADR-0051). `has_atomic_restore` stays
@@ -266,6 +267,34 @@ impl DatabaseAdapter for D1Adapter {
             .await?;
         let raw = envelope_to_raw_fks(envelope)?;
         self.assemble_foreign_keys(raw).await
+    }
+
+    async fn list_indexes(&self, table: &TableInfo) -> DbResult<Vec<IndexInfo>> {
+        // The same two PRAGMAs the Turso adapter uses, over the /raw
+        // envelope: `index_list` names them, `index_info` gives each one's
+        // columns in index order. Origin "pk" is dropped — the primary key is
+        // compared on its own, and reporting it here too would state one fact
+        // twice (ADR-0152).
+        let escaped = table.name.replace('\'', "''");
+        let envelope = self
+            .post_raw(&format!("PRAGMA index_list('{escaped}')"))
+            .await?;
+        let listed = envelope_to_index_list(envelope)?;
+
+        let mut out = Vec::with_capacity(listed.len());
+        for (name, unique) in listed {
+            let escaped_index = name.replace('\'', "''");
+            let envelope = self
+                .post_raw(&format!("PRAGMA index_info('{escaped_index}')"))
+                .await?;
+            let columns = envelope_to_index_columns(envelope)?;
+            out.push(IndexInfo {
+                name,
+                columns,
+                unique,
+            });
+        }
+        Ok(out)
     }
 
     async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
@@ -534,6 +563,65 @@ struct RawFk {
 /// on_update, on_delete, match`) onto raw rows. Columns are located by
 /// name rather than position so a reordered envelope still maps correctly;
 /// an empty result (a table without foreign keys) yields no rows.
+/// Decode `PRAGMA index_list` into (name, unique) pairs, dropping the
+/// primary key's implicit index.
+fn envelope_to_index_list(envelope: D1Envelope) -> DbResult<Vec<(String, bool)>> {
+    let result = envelope_to_query_result(envelope)?;
+    let position = |field: &str| -> DbResult<usize> {
+        result
+            .columns
+            .iter()
+            .position(|c| c.name == field)
+            .ok_or_else(|| {
+                DbError::Schema(format!(
+                    "PRAGMA index_list result is missing the '{field}' column"
+                ))
+            })
+    };
+    let name_at = position("name")?;
+    let unique_at = position("unique")?;
+    let origin_at = position("origin")?;
+
+    let mut out = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        if let Some(Value::Text(origin)) = row.get(origin_at) {
+            if origin == "pk" {
+                continue;
+            }
+        }
+        let Some(Value::Text(name)) = row.get(name_at) else {
+            return Err(DbError::Schema(
+                "PRAGMA index_list returned a non-text index name".into(),
+            ));
+        };
+        let unique = matches!(row.get(unique_at), Some(Value::Integer(n)) if *n != 0);
+        out.push((name.clone(), unique));
+    }
+    Ok(out)
+}
+
+/// Decode `PRAGMA index_info` into the index's column names, in index order.
+/// A NULL name is an expression index part and is skipped rather than guessed
+/// at.
+fn envelope_to_index_columns(envelope: D1Envelope) -> DbResult<Vec<String>> {
+    let result = envelope_to_query_result(envelope)?;
+    let name_at = result
+        .columns
+        .iter()
+        .position(|c| c.name == "name")
+        .ok_or_else(|| {
+            DbError::Schema("PRAGMA index_info result is missing the 'name' column".into())
+        })?;
+    Ok(result
+        .rows
+        .iter()
+        .filter_map(|row| match row.get(name_at) {
+            Some(Value::Text(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect())
+}
+
 fn envelope_to_raw_fks(envelope: D1Envelope) -> DbResult<Vec<RawFk>> {
     let result = envelope_to_query_result(envelope)?;
 
@@ -760,10 +848,10 @@ fn reclassify_schema(err: DbError) -> DbError {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_raw_url, convert_json_value, envelope_to_query_result,
-        envelope_to_query_result_capped, envelope_to_raw_fks, envelope_to_table_ddl,
-        envelope_to_table_schema, envelope_to_tables, error_from_response, reclassify_schema,
-        D1Adapter, D1ApiError, D1Config, D1Envelope,
+        build_raw_url, convert_json_value, envelope_to_index_columns, envelope_to_index_list,
+        envelope_to_query_result, envelope_to_query_result_capped, envelope_to_raw_fks,
+        envelope_to_table_ddl, envelope_to_table_schema, envelope_to_tables, error_from_response,
+        reclassify_schema, D1Adapter, D1ApiError, D1Config, D1Envelope,
     };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo, Value};
     use serde_json::json;
@@ -779,6 +867,73 @@ mod tests {
     /// desktop structure view, because its relationship sweep runs
     /// `PRAGMA foreign_key_list` over every listed table. Exclude them at the
     /// source; a table nobody can read is not a table the user has.
+    /// A `/raw` envelope shaped like one PRAGMA's result.
+    fn pragma(columns: &[&str], rows: &serde_json::Value) -> D1Envelope {
+        parse(json!({
+            "success": true,
+            "result": [{ "results": { "columns": columns, "rows": rows.clone() } }]
+        }))
+    }
+
+    #[test]
+    fn index_list_drops_the_primary_keys_own_index() {
+        // SQLite reports it with origin "pk". The primary key is compared on
+        // its own, so keeping this would state one fact twice.
+        let envelope = pragma(
+            &["seq", "name", "unique", "origin", "partial"],
+            &json!([
+                [0, "sqlite_autoindex_t_1", 1, "pk", 0],
+                [1, "t_email_idx", 0, "c", 0]
+            ]),
+        );
+        let listed = envelope_to_index_list(envelope).expect("decodes");
+        assert_eq!(listed, vec![("t_email_idx".to_string(), false)]);
+    }
+
+    #[test]
+    fn index_list_keeps_a_unique_constraints_index() {
+        // Origin "u" is a UNIQUE constraint. Nothing else in the comparison
+        // reports it, so dropping it would hide a real difference.
+        let envelope = pragma(
+            &["seq", "name", "unique", "origin", "partial"],
+            &json!([[0, "sqlite_autoindex_t_2", 1, "u", 0]]),
+        );
+        let listed = envelope_to_index_list(envelope).expect("decodes");
+        assert_eq!(listed, vec![("sqlite_autoindex_t_2".to_string(), true)]);
+    }
+
+    #[test]
+    fn index_info_keeps_the_engines_column_order() {
+        let envelope = pragma(
+            &["seqno", "cid", "name"],
+            &json!([[0, 2, "b"], [1, 1, "a"]]),
+        );
+        let columns = envelope_to_index_columns(envelope).expect("decodes");
+        // (b, a) as reported — the order is what the index is for.
+        assert_eq!(columns, vec!["b".to_string(), "a".to_string()]);
+    }
+
+    #[test]
+    fn index_info_skips_an_expression_part() {
+        // An expression index stores NULL for the column name. Guessing at it
+        // would invent a column that does not exist.
+        let envelope = pragma(
+            &["seqno", "cid", "name"],
+            &json!([[0, -2, null], [1, 1, "a"]]),
+        );
+        let columns = envelope_to_index_columns(envelope).expect("decodes");
+        assert_eq!(columns, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn index_list_without_its_columns_is_a_schema_error() {
+        let envelope = pragma(&["seq", "name"], &json!([[0, "i"]]));
+        assert!(matches!(
+            envelope_to_index_list(envelope),
+            Err(DbError::Schema(_))
+        ));
+    }
+
     #[test]
     fn list_tables_sql_excludes_internal_tables() {
         assert!(

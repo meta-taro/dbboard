@@ -1,6 +1,6 @@
 # 0035 — schema diff の残り半分（インデックスと制約）
 
-- 状態: **外部キーは実装済み**（ADR-0151）。**インデックスは調査のみ = 判断待ち**
+- 状態: **完了**。外部キー = ADR-0151、インデックス = ADR-0152（user が B + C を選択）
 - 枠: `docs/roadmap.md` Near slots の **v0.17 — The half that was deferred**（3 項目の 3 つ目）
 - 関連: ADR-0148（保留の理由）、ADR-0149（画面）、ADR-0049（dump の DDL）、
   issue 0034（schema diff 本体・完了）

@@ -56,7 +56,10 @@ export function tableDifferenceCount(t: TableDiff): number {
     (t.primary_key === null ? 0 : 1) +
     t.foreign_keys_only_in_left.length +
     t.foreign_keys_only_in_right.length +
-    t.foreign_keys_changed.length
+    t.foreign_keys_changed.length +
+    t.indexes_only_in_left.length +
+    t.indexes_only_in_right.length +
+    t.indexes_changed.length
   );
 }
 

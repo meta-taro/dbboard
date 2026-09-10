@@ -23,8 +23,8 @@
 use async_trait::async_trait;
 use dbboard_core::{
     classify_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
-    DbError, DbResult, ForeignKey, QueryResult, ReadOnlyStatement, Row, SqlDialect, TableInfo,
-    TableSchema, Value, MAX_RESULT_ROWS,
+    DbError, DbResult, ForeignKey, IndexInfo, QueryResult, ReadOnlyStatement, Row, SqlDialect,
+    TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
 use sqlx::mysql::{
@@ -92,6 +92,19 @@ const FOREIGN_KEYS_SQL: &str = "SELECT constraint_name, column_name, \
      WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? \
        AND referenced_table_name IS NOT NULL \
      ORDER BY constraint_name, ordinal_position";
+
+/// Indexes on one table, one row per indexed column, in index order.
+///
+/// `PRIMARY` is MySQL's name for the primary key's own index and is excluded:
+/// the primary key is compared on its own, and reporting its index too would
+/// state one fact twice (ADR-0152). A unique constraint's index is kept —
+/// nothing else reports it. `non_unique` is inverted here so callers see the
+/// same `unique` flag every adapter reports.
+const INDEXES_SQL: &str = "SELECT index_name, non_unique, column_name \
+     FROM information_schema.statistics \
+     WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? \
+       AND index_name <> 'PRIMARY' \
+     ORDER BY index_name, seq_in_index";
 
 /// Connection parameters for a `MySQL` database.
 ///
@@ -165,6 +178,7 @@ impl DatabaseAdapter for MySqlAdapter {
             has_table_ddl: true,
             has_execute: true,
             has_foreign_keys: true,
+            has_list_indexes: true,
             // InnoDB restores run as one multi-statement transaction. A DDL
             // statement causes an implicit commit in `MySQL`, so a dump that
             // mixes schema and data is not truly atomic; dbboard's logical dump
@@ -290,6 +304,30 @@ impl DatabaseAdapter for MySqlAdapter {
             .collect::<DbResult<Vec<_>>>()?;
 
         Ok(assemble_foreign_keys(fk_rows))
+    }
+
+    async fn list_indexes(&self, table: &TableInfo) -> DbResult<Vec<IndexInfo>> {
+        let rows = sqlx::query(INDEXES_SQL)
+            .bind(table.schema.as_deref())
+            .bind(&table.name)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| classify_error(&e))?;
+
+        let decoded = rows
+            .iter()
+            .map(|row| -> DbResult<IndexRow> {
+                // `non_unique` is 1 when duplicates are allowed, so the flag
+                // every other adapter reports is its inverse.
+                let non_unique: i64 = row.try_get(1).map_err(|e| classify_error(&e))?;
+                Ok(IndexRow {
+                    name: text_at(row, 0)?,
+                    unique: non_unique == 0,
+                    column: text_at(row, 2)?,
+                })
+            })
+            .collect::<DbResult<Vec<_>>>()?;
+        Ok(assemble_indexes(decoded))
     }
 
     async fn table_ddl(&self, table: &TableInfo) -> DbResult<String> {
@@ -799,6 +837,33 @@ struct FkRow {
 /// name is unique within a single table, so every row of one constraint is
 /// consecutive and in key order — folding against the last-built edge is enough
 /// to assemble composite keys without a secondary group pass.
+/// One decoded row of [`INDEXES_SQL`], before rows are grouped per index.
+struct IndexRow {
+    name: String,
+    unique: bool,
+    column: String,
+}
+
+/// Fold [`INDEXES_SQL`] rows into one [`IndexInfo`] per index, in key order.
+fn assemble_indexes(rows: Vec<IndexRow>) -> Vec<IndexInfo> {
+    let mut out: Vec<IndexInfo> = Vec::new();
+    for r in rows {
+        if out.last().is_some_and(|i| i.name == r.name) {
+            out.last_mut()
+                .expect("checked above")
+                .columns
+                .push(r.column);
+        } else {
+            out.push(IndexInfo {
+                name: r.name,
+                columns: vec![r.column],
+                unique: r.unique,
+            });
+        }
+    }
+    out
+}
+
 fn assemble_foreign_keys(rows: Vec<FkRow>) -> Vec<ForeignKey> {
     let mut out: Vec<ForeignKey> = Vec::new();
     for r in rows {
@@ -1148,6 +1213,42 @@ mod tests {
     fn column_from_parts_rejects_a_non_positive_ordinal() {
         let err = column_from_parts("c".into(), "int".into(), "NO", None, 0, &[]).unwrap_err();
         assert!(matches!(err, DbError::TypeConversion(_)));
+    }
+
+    #[test]
+    fn assemble_indexes_inverts_non_unique_and_keeps_key_order() {
+        use super::IndexRow;
+        let indexes = super::assemble_indexes(vec![
+            IndexRow {
+                name: "i".into(),
+                unique: false,
+                column: "b".into(),
+            },
+            IndexRow {
+                name: "i".into(),
+                unique: false,
+                column: "a".into(),
+            },
+            IndexRow {
+                name: "u_email".into(),
+                unique: true,
+                column: "email".into(),
+            },
+        ]);
+        assert_eq!(indexes.len(), 2);
+        assert_eq!(indexes[0].columns, vec!["b".to_string(), "a".to_string()]);
+        assert!(indexes[1].unique);
+    }
+
+    #[test]
+    fn indexes_sql_excludes_the_primary_key() {
+        // MySQL calls the primary key's index PRIMARY; it is the one index the
+        // comparison already covers as the key itself.
+        assert!(
+            super::INDEXES_SQL.contains("index_name <> 'PRIMARY'"),
+            "must exclude PRIMARY: {}",
+            super::INDEXES_SQL
+        );
     }
 
     #[test]

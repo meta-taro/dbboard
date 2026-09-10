@@ -37,6 +37,7 @@ const emptyDiff: SchemaDiff = {
   tables_only_in_right: [],
   tables_changed: [],
   foreign_keys_compared: false,
+  indexes_compared: false,
 };
 
 /** A TableDiff with nothing in it, so a case names only what it is about. */
@@ -49,6 +50,9 @@ const noDiff = (name: string): TableDiff => ({
   foreign_keys_only_in_left: [],
   foreign_keys_only_in_right: [],
   foreign_keys_changed: [],
+  indexes_only_in_left: [],
+  indexes_only_in_right: [],
+  indexes_changed: [],
 });
 
 const fk = (columns: string[], parent: string): ForeignKeyRef => ({
@@ -180,12 +184,24 @@ describe('tableDifferenceCount', () => {
       }),
     ).toBe(2);
   });
+
+  it('counts an index finding too', () => {
+    expect(
+      tableDifferenceCount({
+        ...noDiff('orders'),
+        indexes_only_in_left: [
+          { name: 'orders_total_idx', columns: ['total'], unique: false },
+        ],
+      }),
+    ).toBe(1);
+  });
 });
 
 describe('totalDifferingTables', () => {
   it('counts all three kinds of finding', () => {
     const diff: SchemaDiff = {
       foreign_keys_compared: true,
+      indexes_compared: true,
       tables_only_in_left: [table('refunds')],
       tables_only_in_right: [table('experiments')],
       tables_changed: [

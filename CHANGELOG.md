@@ -11,6 +11,24 @@ public API is the HTTP contract in
 
 ### Added
 
+- **The schema comparison now includes indexes.** An index one side has and
+  the other does not, one over different columns, or one that is unique on
+  only one side — all of it shows up beside the columns.
+
+  The primary key's own index is left out on purpose. Every engine creates one
+  and the primary key is already compared on its own; listing both would count
+  one difference twice. A unique constraint's index *is* listed, because
+  nothing else in the report would tell you it went missing.
+
+  Indexes are matched by name, and the order of their columns is compared:
+  an index on `(customer_id, created_at)` is not the same as one on
+  `(created_at, customer_id)`, and the difference is usually the reason a
+  query got slow.
+
+  Postgres, Neon, Supabase, Aurora DSQL, MySQL, Turso and D1 compare indexes.
+  Firestore and MongoDB do not, and the "no differences" message says which
+  of the three scopes you got.
+
 - **The schema comparison now includes foreign keys.** A key that one side has
   and the other does not, or that points at a different table or different
   columns, shows up beside the column differences.
