@@ -570,6 +570,14 @@ pub fn default_path() -> Result<PathBuf, ConfigError> {
 /// The default per-user path for `history.jsonl` (ADR-0017), under the same
 /// [`config_dir`] as [`default_path`] so the two live side by side.
 ///
+/// **Nothing writes this file today.** The reader and writer were in
+/// `dbboard-ui`, the egui crate, and went with it in ADR-0089; the Tauri
+/// client keeps its query history in the webview's own storage instead. The
+/// path resolves so the schema stays reserved — `dbboard-web` mirrors those
+/// records — and whether to restore the writer or retire the schema is open
+/// (issue 0033, ADR-0153). Do not read this helper as evidence that the file
+/// exists.
+///
 /// # Errors
 ///
 /// Returns [`ConfigError::NoConfigDir`] when the OS reports no usable
