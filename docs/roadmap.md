@@ -892,7 +892,12 @@ optimising something that was never the cost.
       schema tree being populated; time from Run to first row on screen. On
       the maintainer's machine, against a real connection, not a synthetic
       one — the collector's three store databases are the workload that
-      matters.
+      matters. **One of the four exists**
+      ([startup-measurement.md](startup-measurement.md)): relaunch to a window
+      on screen, median 318 ms over nine samples, with two runs at 2× and 3×
+      that. The rest need the app to report its own first paint, and a real
+      connection with the operator present to choose it — so the item stays
+      unticked, because a quarter of a measurement is not one.
 - [ ] **Startup.** Where the time actually goes between process start and an
       interactive window: Tauri shell, webview creation, the SvelteKit
       bundle, config and connection-list reads, and whether anything is
