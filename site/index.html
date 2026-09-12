@@ -108,9 +108,9 @@
     </header>
     <p class="tagline">
       A high-performance desktop database client for modern serverless and
-      distributed databases — Turso/libSQL, Cloudflare&nbsp;D1, CockroachDB,
-      Neon, Supabase, MySQL/MariaDB, AWS&nbsp;Aurora&nbsp;DSQL, and the document
-      stores Cloud&nbsp;Firestore and MongoDB.
+      distributed databases — Turso/libSQL, Cloudflare&nbsp;D1, PostgreSQL,
+      CockroachDB, Neon, Supabase, MySQL/MariaDB, AWS&nbsp;Aurora&nbsp;DSQL, and
+      the document stores Cloud&nbsp;Firestore and MongoDB.
     </p>
 
     <!-- Before the download buttons, not after: these binaries are unsigned,
@@ -121,8 +121,10 @@
            alt="dbboard running a JOIN across two tables. The sidebar lists the connection and its three tables; the editor holds the query; below it 119 rows are shown in a grid, with empty cells rendered as an italic NULL, and buttons to copy the result as TSV or CSV or save it to a file.">
       <figcaption>
         Write a query, run it with Ctrl+Enter, and take the result out as TSV,
-        CSV or a file. Empty cells are shown as <code>NULL</code> rather than
-        as nothing, so a missing value never reads as an empty string.
+        CSV or JSON. Empty cells are shown as <code>NULL</code> rather than as
+        nothing, so a missing value never reads as an empty string — and the
+        JSON export keeps that distinction in the file, where CSV can only
+        write an empty field for both.
       </figcaption>
     </figure>
 
@@ -155,6 +157,41 @@
       if you want the same three tables to click around in.
     </p>
 
+    <h3>Compare two databases</h3>
+    <p>
+      Pick a second connection on the same engine and dbboard lists what the
+      two schemas disagree about: tables one side has and the other does not,
+      columns that differ in type, nullability or default, primary keys that
+      do not match, foreign keys that point somewhere else, and indexes that
+      are missing, built over different columns, or unique on only one side.
+      Only what differs is listed, so three hundred tables with one difference
+      give you one line.
+    </p>
+    <p>
+      Types are compared exactly as each engine spells them —
+      <code>VARCHAR(255)</code> and <code>varchar</code> are reported as
+      different even where they may well mean the same thing. A second look
+      costs you a moment; a missed difference costs you the migration. Two
+      connections on different engines are refused rather than guessed at.
+    </p>
+
+    <h3>Queries worth keeping, and tables that do not stop at row 100</h3>
+    <p>
+      The editor has always remembered what you ran, but that list is
+      disposable on purpose. Name a query instead and it stays — per
+      connection, one click to put it back — kept in
+      <code>saved-queries.toml</code> beside your connections rather than in
+      the window's own storage, which "clear site data" empties and no
+      settings backup includes.
+    </p>
+    <p>
+      Browsing a table pages through all of it. The pages are keyed rather
+      than counted, resuming strictly after the previous page's last row, so
+      a row inserted while you read cannot make another appear twice or vanish
+      between pages — and no page costs more than the first.
+    </p>
+
+
     <h2>Verify your download</h2>
     <p>
       Every release ships a <code>SHA256SUMS.txt</code> covering all
@@ -165,7 +202,7 @@
 sha256sum -c SHA256SUMS.txt
 
 # Windows PowerShell
-(Get-FileHash .\dbboard-desktop_0.5.0_x64-setup.exe -Algorithm SHA256).Hash</pre>
+(Get-FileHash .\dbboard-desktop_0.17.0_x64-setup.exe -Algorithm SHA256).Hash</pre>
     <p id="checksums-link" class="meta"></p>
 
     <h2>Use it from an AI agent</h2>
@@ -178,6 +215,14 @@ sha256sum -c SHA256SUMS.txt
       <code>DROP</code> are blocked either way. It reuses the same
       <code>connections.toml</code> and OS keychain the app uses, so it adds no
       new place to keep credentials, and secrets never cross the wire.
+    </p>
+    <p>
+      An agent handed this server can ask it what it is: the <code>about</code>
+      tool answers what the product is for, which build is replying, which
+      engines it speaks, and what each released version changed. It reaches no
+      connection, no database and no file of yours — the answer is compiled
+      into the binary, so it describes the build that is answering rather than
+      whatever happens to sit on disk beside it.
     </p>
     <p>
       It is a separate download from the app above — grab
@@ -194,7 +239,7 @@ claude mcp add dbboard --scope user -- "$env:LOCALAPPDATA/dbboard/dbboard-mcp.ex
 claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
     <p class="meta">
       Restart the agent afterwards — each client holds its own server process
-      for the session. Setup, the nine tools, the write policy and
+      for the session. Setup, the twenty-two tools, the write policy and
       troubleshooting are in the
       <a href="https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md">dbboard-mcp
       README</a>. There is also a walkthrough in Japanese:

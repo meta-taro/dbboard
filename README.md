@@ -580,7 +580,7 @@ the GUI, so it adds no new place to keep credentials. See
 [`crates/dbboard-mcp/README.md`](crates/dbboard-mcp/README.md), for the
 full spec.
 
-Twenty-one fixed tools. Seven read a database — `list_connections`,
+Twenty-two fixed tools. Seven read a database — `list_connections`,
 `list_tables`, `describe_table`, `search_schema` (ADR-0053),
 `list_relationships` (ADR-0054), `run_read_query`, and `get_annotations`
 (dbboard's local notes, ADR-0045) — plus `run_write` and `dump_database`
@@ -591,10 +591,14 @@ Twenty-one fixed tools. Seven read a database — `list_connections`,
 `open_ai_settings` drive it (ADR-0109) — so a claim about what the
 interface renders can be set up, performed and checked instead of
 asserted. Those seven act on a screen someone is sitting in front of; all
-but the two getters fail outright when dbboard is not running. The
-remaining `get_server_info` reaches nothing whatever: it names the
-build that is answering (ADR-0116), because this binary is installed by
-hand and a stale one is otherwise indistinguishable from a broken one.
+but the two getters fail outright when dbboard is not running. Two
+reach nothing whatever. `get_server_info` names the build that is
+answering (ADR-0116), because this binary is installed by hand and a
+stale one is otherwise indistinguishable from a broken one; `about`
+describes the product itself — what it is for, which engines it speaks,
+and what each released version changed, with the changelog compiled into
+the build so the answer describes the binary that is replying
+(ADR-0154).
 
 The last four work on the connection list itself, and none of them opens a
 database. `add_connection` registers a connection in `connections.toml` so a

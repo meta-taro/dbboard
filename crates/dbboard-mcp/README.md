@@ -34,7 +34,7 @@ desktop GUI: the `connections.toml` entry store plus the OS keychain
 adds no new place to keep credentials — it reads the ones dbboard already
 holds.
 
-Twenty-one tools (ADR-0046 Decision 5, extended by
+Twenty-two tools (ADR-0046 Decision 5, extended by
 [ADR-0053](../../docs/decisions.md),
 [ADR-0054](../../docs/decisions.md),
 [ADR-0087](../../docs/decisions.md),
@@ -43,11 +43,13 @@ Twenty-one tools (ADR-0046 Decision 5, extended by
 [ADR-0109](../../docs/decisions.md),
 [ADR-0116](../../docs/decisions.md),
 [ADR-0134](../../docs/decisions.md),
-[ADR-0136](../../docs/decisions.md) and
-[ADR-0140](../../docs/decisions.md)). Seven read a database, one writes
+[ADR-0136](../../docs/decisions.md),
+[ADR-0140](../../docs/decisions.md) and
+[ADR-0154](../../docs/decisions.md)). Seven read a database, one writes
 behind a per-connection flag, one takes a backup, seven reach no
-database at all — those seven read or work the running window — one
-reaches nothing whatever (it names the build that is answering), one
+database at all — those seven read or work the running window — two
+reach nothing whatever (one names the build that is answering, the other
+describes the product and what each version changed), one
 registers a connection without ever touching a database, two tidy the
 connection list (its marks and its order), and one seals connections into
 an encrypted bundle behind a permission of its own.
@@ -70,6 +72,7 @@ an encrypted bundle behind a permission of its own.
 | `run_query` | Presses Run in that window: executes whatever its editor holds, against the connection **the window** has selected, and returns the row count once the rows are displayed. Not a cheaper `run_read_query` — it uses the window's connection and row limit and leaves the result on someone's screen, so reach for it when what the app *displays* is the point. Fails when no connection is selected there, or when a query is already running. |
 | `open_ai_panel` | Opens the AI panel, which is where the AI provider settings live. Says so when it was already open. |
 | `get_server_info` | Which build is answering, as `{ name, version }`. This binary is installed by hand and never updates itself, so it can be older than the fix for whatever you are looking at — quote the version in any bug report. Deliberately carries **no** filesystem path: on Windows the config path holds the operator's OS username, and a tool result lands in the calling agent's transcript as plaintext on disk. The same version also opens the handshake `instructions`, because some clients drop those and some agents never call a tool they were not asked about. |
+| `about` | What dbboard is, which build is answering, which engines it speaks, and what each released version changed. Takes an optional `version`: omit it for the product and the list of releases, give one for that version's changelog section. A version this build does not carry comes back with no changes and the list of the ones it does — the honest answer to being asked about something newer than the binary. The whole answer is compiled into the build (`include_str!` over `CHANGELOG.md`), so it describes the binary that is replying rather than whatever sits on disk beside it, and it reaches no connection, no database and no file. Call it when you have just been handed this server. See [ADR-0154](../../docs/decisions.md). |
 | `add_connection` | Registers a new connection in `connections.toml` and returns it as `{ id, name, kind }`. Only the kinds that put **nothing** in the keychain: `turso` (a SQLite/libSQL file on this machine, from a `path`) and `firestore` (the local emulator, from a `project_id` and a `base_url` — it authenticates with a fixed token, so there is no service account to save, [ADR-0093](../../docs/decisions.md)). Every other kind is refused permanently, and the refusal is in the tool's *description* so an agent reads it before sending a password rather than after. The entry is created read-only — `mcp_write` stays off and no alias is set, since an alias the agent chose would hide nothing from it. A dbboard window that is already open lists the new connection after a refresh. See [ADR-0134](../../docs/decisions.md). |
 | `set_connection_mark` | Sets a connection's identity mark: a colour from dbboard's eight (`red`, `orange`, `yellow`, `green`, `teal`, `blue`, `purple`, `pink`) and a tag of at most 12 characters. Both halves are written together, so sending one clears the other and sending neither unmarks the connection — the same all-at-once edit the app's own picker makes, because a half-sent mark and a cleared one are indistinguishable in an agent-composed JSON object. Answers with the whole list in its new state. Reaches no database, so it is **not** behind `mcp_write`: that switch is about data (ADR-0087), and putting the sidebar's colours behind it would make an operator grant production write access to have their list tidied. See [ADR-0136](../../docs/decisions.md). |
 | `move_connection` | Moves a connection to a `position`, sliding the rest over. The list order is the order the sidebar renders (#192), and `position` counts from zero — it is the `position` field `list_connections` reports, not a row counted off by hand, because another window may have reordered the file since. Answers with the whole list in its new order, so a sort can be driven from the response rather than from a read that is one move stale. Reaches no database. See [ADR-0136](../../docs/decisions.md). |
@@ -505,6 +508,9 @@ receives Ctrl-C.
   `set_editor_sql` / `run_query` / `open_ai_panel` / `open_ai_settings`
   verbs that take the surface to sixteen: having seen the window, the
   agent can now work it.
+- [ADR-0154](../../docs/decisions.md) — `about`, which takes the surface to
+  twenty-two: an agent handed this server can ask what the product is and
+  what each version changed, without reaching anything.
 - [`docs/connections.md`](../../docs/connections.md) — `connections.toml`
   schema and the keyring-reference layout.
 - [`docs/architecture.md`](../../docs/architecture.md) — where this crate
