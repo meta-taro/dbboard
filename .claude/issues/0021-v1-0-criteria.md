@@ -47,6 +47,17 @@ Not reproducible by the maintainer on v0.8.0 — but that attempt used a
 **MySQL** connection, and the report is against **Aurora DSQL (IAM)**, so
 an adapter- or environment-specific cause is not excluded.
 
+**There is a sheet for it now**: `.claude/verification/gate-161-run-button-ja.tsv`,
+written in git-qa's step vocabulary so the case that matters — a mouse
+click on 実行 — executes rather than being handed back untranslatable.
+Two of its rows cannot be automated, and the sheet says why in its own
+notes: the connection is left unnamed because its real name is a store
+name (ADR-0055), and the Ctrl+Enter control has no machine form because
+git-qa has no key-press action (git-qa#6). **The control is the row that
+decides whether the fault is the button or the query**, so a run of this
+sheet is not an answer to the gate until a person has pressed that key
+themselves.
+
 **Defined alternative, so this gate cannot stall v1.0 indefinitely.**
 Like gate 4, this one has a second way out: **if the reporter's two
 remaining observations do not arrive, ship 1.0 with the behaviour written
@@ -79,21 +90,33 @@ What remains is the mirror itself, which is human-owned and cross-repo.
 
 **Owner**: human (cross-repo). The contract side is done.
 
-### 3. The verification sheets have never been run
+### 3. The verification sheets have never been run — **one of three is now done**
 
-`docs/test-specs/001`, `002`, `003` are all `未実施` — every row. Under
-baseline §22 the sheets are written by the agent and executed by a
+Under baseline §22 the sheets are written by the agent and executed by a
 person, and nothing may be called complete until a person has run it.
 v1.0 is the strongest "complete" claim the project can make, so shipping
-it against three untouched sheets contradicts the rule directly.
+it against untouched sheets contradicts the rule directly.
 
-Sheet 001 is partly answerable right now: the Firestore emulator is up,
-which makes rows 2–9 runnable. Rows 1, 10 and 11 stay `未実施` until the
-matching environments exist. Teardown when done:
+| Sheet | Status | What it still needs |
+|---|---|---|
+| `003-ui-locales` | **完了** | nothing — a person ran it |
+| `001-firestore-connection` | `未実施` | the Firestore emulator (rows 2–9); rows 1, 10 and 11 need environments that do not exist yet |
+| `002-mongodb-connection` | `未実施` | a MongoDB connection to point it at |
+
+Bringing 001's environment up, and the teardown when done:
 
 ```sh
+docker compose -f docker/firestore-emulator/compose.yaml up -d
 docker compose -f docker/firestore-emulator/compose.yaml down
 ```
+
+Note that these sheets predate git-qa and are written for a person
+reading them. The newer sheets under `.claude/verification/` are written
+in git-qa's step vocabulary so the mechanical half can execute itself —
+but that changes who does the *typing*, not who signs. §22 is unaffected:
+git-qa's own verdict vocabulary keeps `AUTO_PASS` (nobody looked) and
+`VERIFIED` (a person signed) apart at the type level, and only a person
+can produce the second.
 
 **Owner**: human only. The agent must not write `OK` into these files.
 
