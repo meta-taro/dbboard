@@ -81,6 +81,32 @@ pub fn run() {
     let secrets: Arc<dyn SecretStore> = Arc::new(KeyringStore::new());
     let path =
         dbboard_config::default_path().expect("resolve platform config paths for connections.toml");
+
+    // Copy `connections.toml` aside the first time each build runs, before
+    // anything here can write to it (ADR-0155).
+    //
+    // **This is for rolling back, not for upgrading.** An older build that
+    // meets a `kind` it does not know refuses the whole file rather than the
+    // one entry, so going back to the last release that worked — the thing a
+    // person reaches for when a new one does not — can land them on a build
+    // showing no connections at all.
+    //
+    // **A failure here must never stop the launch.** It is a safety net; a
+    // net that drops the thing it was strung under is worse than no net. The
+    // reason goes to stderr and the app carries on.
+    match dbboard_config::store::snapshot_before_version(&path, env!("CARGO_PKG_VERSION")) {
+        Ok(Some(taken)) => {
+            eprintln!(
+                "[dbboard] kept a copy of connections.toml at {}",
+                taken.display()
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("[dbboard] could not keep a copy of connections.toml: {err}");
+        }
+    }
+
     let admin = ConnectionAdmin::open(path, Arc::clone(&secrets))
         .expect("open connections.toml for connection management");
     let annotations =

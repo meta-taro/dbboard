@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { bucketFor, safeUrl } from "./app.js";
+import { archiveOf, bucketFor, latestOf, safeUrl } from "./app.js";
 
 // The exact asset names v0.4.0 published — the last release that carried both
 // clients. The page must pick the Tauri build out of this list unambiguously
@@ -100,4 +100,67 @@ test("only GitHub-served download URLs are accepted", () => {
   assert.equal(safeUrl("http://github.com/x"), null);
   assert.equal(safeUrl("https://evil.example/x"), null);
   assert.equal(safeUrl("not a url"), null);
+});
+
+// --- Installing a specific version (ADR-0155) -------------------------------
+//
+// The page used to call `/releases/latest` and offer exactly one version. That
+// is the wrong shape for the case this is actually for: a release does not
+// work, and the person wants the one that did. Blender's download page has
+// carried a "previous versions" archive for years for the same reason.
+//
+// Switching to `/releases` keeps it to **one** API call rather than two — the
+// list carries the latest release as well as the old ones. Unauthenticated
+// callers get ~60 requests an hour per IP, and this page must work for someone
+// behind a shared address.
+
+test("the latest release is the newest that is neither a draft nor a prerelease", () => {
+  const picked = latestOf([
+    { tag_name: "v0.18.0", draft: true, prerelease: false },
+    { tag_name: "v0.18.0-rc1", draft: false, prerelease: true },
+    { tag_name: "v0.17.0", draft: false, prerelease: false },
+    { tag_name: "v0.16.1", draft: false, prerelease: false },
+  ]);
+  assert.equal(picked.tag_name, "v0.17.0");
+});
+
+test("no usable release is null rather than a guess", () => {
+  assert.equal(latestOf([]), null);
+  assert.equal(latestOf([{ tag_name: "v1.0.0-rc1", draft: false, prerelease: true }]), null);
+});
+
+// GitHub returns releases newest-first. The page keeps that order rather than
+// sorting the tags itself: comparing version strings is a trap ("0.9.0" sorts
+// after "0.10.0" as text) and the API already knows the answer.
+test("the archive keeps the order the API gave, minus the one already offered", () => {
+  const releases = [
+    { tag_name: "v0.17.0", draft: false, prerelease: false, assets: [{ name: "dbboard-desktop_0.17.0_x64-setup.exe" }] },
+    { tag_name: "v0.16.1", draft: false, prerelease: false, assets: [{ name: "dbboard-desktop_0.16.1_x64-setup.exe" }] },
+    { tag_name: "v0.16.0", draft: false, prerelease: false, assets: [{ name: "dbboard-desktop_0.16.0_universal.dmg" }] },
+  ];
+  const rows = archiveOf(releases, latestOf(releases));
+  assert.deepEqual(rows.map((r) => r.tag_name), ["v0.16.1", "v0.16.0"]);
+});
+
+test("a release with nothing installable is not listed as installable", () => {
+  const releases = [
+    { tag_name: "v0.17.0", draft: false, prerelease: false, assets: [{ name: "dbboard-desktop_0.17.0_x64-setup.exe" }] },
+    // A release carrying only the retired egui client (ADR-0089), which
+    // `bucketFor` refuses. Releases up to v0.4.0 carry those names *alongside*
+    // the Tauri bundles, so the real v0.4.0 is listed — it is the asset that
+    // decides, not the version.
+    { tag_name: "v0.4.0", draft: false, prerelease: false, assets: [{ name: "dbboard-windows-x86_64.exe" }] },
+    // A release whose only asset is the checksum file offers no download.
+    { tag_name: "v0.3.0", draft: false, prerelease: false, assets: [{ name: "SHA256SUMS.txt" }] },
+  ];
+  assert.deepEqual(archiveOf(releases, latestOf(releases)).map((r) => r.tag_name), []);
+});
+
+test("drafts and prereleases stay out of the archive too", () => {
+  const releases = [
+    { tag_name: "v0.17.0", draft: false, prerelease: false, assets: [{ name: "dbboard-desktop_0.17.0_x64-setup.exe" }] },
+    { tag_name: "v0.17.1", draft: true, prerelease: false, assets: [{ name: "dbboard-desktop_0.17.1_x64-setup.exe" }] },
+    { tag_name: "v0.18.0-rc1", draft: false, prerelease: true, assets: [{ name: "dbboard-desktop_0.18.0_x64-setup.exe" }] },
+  ];
+  assert.deepEqual(archiveOf(releases, latestOf(releases)).map((r) => r.tag_name), []);
 });
