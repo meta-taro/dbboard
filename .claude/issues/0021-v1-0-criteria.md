@@ -1,6 +1,8 @@
 # 0021: What has to be true before v1.0
 
-- **Status**: open — the four gates below are the whole list
+- **Status**: open — the four gates below are the whole list. Gate 4 closed
+  2026-08-16 (ADR-0106); gate 1 settled 2026-09-14 (did not reproduce, which
+  is not the same as fixed); gates 2 and 3 remain, both human-owned
 - **Opened**: 2026-08-16
 - **Owner**: split; see each gate
 - **Related ADRs**: ADR-0011 (the HTTP contract is the public API for
@@ -21,7 +23,43 @@ contract to change afterwards, or make the promise dishonest.
 
 ## The four gates
 
-### 1. Issue #161 — the Run button does not respond to a click
+### 1. Issue #161 — the Run button does not respond to a click — **did not reproduce, 2026-09-14**
+
+**Checked on 0.17.0, in the environment the report names.** A person clicked
+the Run button with a real mouse against an **Aurora DSQL (IAM)** connection.
+It ran. The status bar went from `クエリ未実行` to `直前のクエリ` / `518 ms`
+and the result grid showed its one row.
+
+That closes the gap this gate was actually held open by. The maintainer's
+earlier attempt did not reproduce it either, but that attempt used **MySQL**
+while the report is against **Aurora DSQL (IAM)**, so an adapter- or
+environment-specific cause could not be excluded. Now it can: the same engine,
+the same gesture, and it works.
+
+**This is "did not reproduce", not "fixed", and the difference matters.** No
+cause was ever identified, so nothing here rules out something that happens
+only on the reporter's machine. What changed is that the one hypothesis this
+repository could test — that the engine was the variable — has been tested and
+did not hold.
+
+**The defined alternative below is therefore not needed.** It stays on the page
+because a gate's escape hatch is worth keeping legible after the fact, not
+because anything still depends on it.
+
+**The control case was not needed either.** `Ctrl+Enter` exists on the sheet to
+separate "the button is broken" from "the query is broken" when the button
+fails. The button did not fail, so there was nothing to separate.
+
+**Run by hand, not by git-qa, and for a reason worth recording.** The sheet at
+`.claude/verification/gate-161-run-button-ja.tsv` is written in git-qa's step
+vocabulary, but git-qa could not drive this app at all: its accessibility walk
+stops at depth 6 and every control in dbboard's window sits at depth 7, so no
+button was findable by name (reported as git-qa#11). Its OCR fallback was not
+a way around it — that path takes the *first* partial match, and `実行` matches
+the status bar's `クエリ未実行`. The sheet is kept for when that limit lifts.
+
+The original statement of the gate follows.
+
 
 Ctrl+Enter runs the query; the button does not. The primary action of
 the primary screen. Nothing that ships as 1.0 should have this.
