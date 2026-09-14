@@ -7,7 +7,34 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — The measurement nobody has taken
+
+### Added
+
+- **Rolling back to an earlier version is a supported move now, and the
+  download page will hand you one.** If a release does not work for you, the
+  one that did is listed under *Previous versions* rather than buried in the
+  Releases page.
+
+  The reason this needed more than a list: an older build that meets a
+  connection using a database engine added *after* it refuses **the whole**
+  `connections.toml`, not just that one entry. Rolling back to escape a broken
+  release could therefore land you on a build with no connections at all.
+
+  So every build now copies `connections.toml` aside the first time it runs —
+  as `connections.pre-<version>.toml`, before it has written anything. A copy
+  taken at that moment is a file the previous version can certainly read,
+  because it is the file that version wrote. Nothing is deleted and the copy
+  is never overwritten on later runs.
+
+  Your saved credentials are not involved either way: they live in the OS
+  keychain and are found by the same name whichever version is running.
+
+  Two things this deliberately does not do. It does not make older builds
+  tolerant of newer connection kinds — that reader has already shipped, and no
+  change here can reach it. And it does not yet snapshot saved queries or
+  table notes; losing those does not leave the app without connections, so
+  they wait.
 
 ## [0.17.0] — 2026-09-10 — The half that was deferred
 

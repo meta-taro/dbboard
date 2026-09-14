@@ -74,6 +74,19 @@
       border: 1px solid var(--border); margin-top: .5rem; font-weight: 500;
     }
     .dl[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+    /* The archive can outgrow a narrow window, so it scrolls inside its own
+       box rather than making the page scroll sideways. */
+    .table-scroll { overflow-x: auto; }
+    table.archive { border-collapse: collapse; width: 100%; font-size: .9rem; }
+    table.archive th, table.archive td {
+      text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    table.archive th { color: var(--muted); font-weight: 600; font-size: .8rem; }
+    table.archive td:first-child { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+    /* In a table cell the download link is a row action, not the page's
+       primary button: it must not compete with the current release above. */
+    table.archive .dl { margin-top: 0; padding: .3rem .6rem; font-size: .85rem; }
     code, pre { font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace; }
     pre {
       background: var(--code-bg); border: 1px solid var(--border);
@@ -191,6 +204,33 @@
       between pages — and no page costs more than the first.
     </p>
 
+
+    <section id="archive" hidden>
+    <h2>Previous versions</h2>
+    <div class="table-scroll">
+      <table class="archive">
+        <thead>
+          <tr><th>Version</th><th>Windows</th><th>macOS</th></tr>
+        </thead>
+        <tbody id="archive-rows"></tbody>
+      </table>
+    </div>
+    <p class="note">
+      <strong>Rolling back is supported, and your connections survive it.</strong>
+      If a release does not work for you, install the last one that did — the
+      list above is there for exactly that. The first time each build runs it
+      copies <code>connections.toml</code> aside as
+      <code>connections.pre-&lt;version&gt;.toml</code> before touching
+      anything, so going back finds a file that version can certainly read.
+    </p>
+    <p class="meta">
+      One thing to know before going a long way back: a connection using a
+      database engine that was added <em>after</em> the version you install
+      cannot be read by it, and older builds refuse the whole file rather than
+      the one entry. That is what the copy is for. Your saved credentials are
+      not affected either way — they live in the OS keychain, not in the file.
+    </p>
+    </section>
 
     <h2>Verify your download</h2>
     <p>

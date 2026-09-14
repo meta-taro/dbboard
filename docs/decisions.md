@@ -13957,3 +13957,99 @@ disagree in front of an agent that cannot check.
   kind added there and forgotten here would show up as a missing entry rather
   than a wrong answer.
 - The changelog still has exactly two parsers.
+
+## ADR-0155 — Rolling back is a supported move, so the file a rollback lands on is kept for it (2026-09-13)
+
+**Status.** Accepted.
+
+**Context.** Until now "downgrade" had no answer in this repository, and the
+question that exposed it was the practical one rather than the theoretical:
+*the new release does not work — I want the one that did, and I want it to do
+what it used to do.*
+
+Reading the config layer for that case found one real hazard and two things
+that were already right.
+
+Already right, and worth recording so nobody "fixes" them:
+
+- **Credentials survive a rollback.** The keyring service name is the constant
+  `"dbboard"`, pinned by a test that says it must stay short and stable, and
+  the per-connection reference lives in the TOML. An older build looks in the
+  same place and finds the same secret.
+- **Newer *fields* are tolerated on read and dropped on the next save.**
+  Nothing sets `deny_unknown_fields`. For a rollback this is the correct
+  behaviour, not a defect: the older build does what it always did, and losing
+  a colour is not losing a connection. ADR-0136 already accepted this for
+  `color` / `tag`; it generalises.
+
+The hazard is **unknown `kind`**, and its shape is what makes it serious:
+`ConnectionFile::parse` fails on the *whole file*, not the offending entry. A
+person rolling back to escape a broken release therefore lands on a build
+showing **no connections at all** — the precise opposite of the reason they
+rolled back. The kinds that draw this line today are `aurora-dsql-iam`
+(v0.2.0), `firestore` (v0.6.0), `mongodb` (v0.7.0) and `turso-remote`
+(v0.10.0). A one- or two-version rollback is currently safe only because no
+kind has been added recently; the next engine arms it.
+
+**Decision.**
+
+1. **On the first run of each build, copy `connections.toml` aside before
+   anything writes to it**, as `connections.pre-<version>.toml`
+   (`store::snapshot_before_version`). A copy taken before the new build has
+   touched the file is, by construction, a file the previous build can read —
+   it is the file that build wrote.
+
+2. **The download page lists previous versions**, so installing a specific one
+   is a supported path rather than an archaeology exercise in the Releases
+   page, and says on the page itself what a rollback does to the connections
+   file.
+
+**Why the name carries the incoming version, not the writer.** Which build
+last wrote `connections.toml` is recorded nowhere. Naming the copy after a
+guess would be a claim an operator cannot check. `pre-0.17.0` asserts only
+what is certain: this is the file as it stood before 0.17.0 first ran.
+
+That choice also removes the need to record anything. "Has this version run
+before?" is answered by whether its own snapshot exists, so there is no
+version registry to keep in step and no second file that could disagree with
+the first. `create_new_user_only` gives the once-only semantics and the `0600`
+mode in the same call.
+
+**Why the copy is verbatim.** Re-serializing through `ConnectionFile` would
+drop precisely the entries a rollback needs — the ones this build understands
+and an older one does not are not the problem; the ones a *future* build wrote
+are. Bytes are copied as they are, including entries this build itself would
+refuse to parse, which one of the tests pins.
+
+**Why a snapshot rather than making the reader tolerant.** A per-entry
+tolerant reader is the better long-term shape and is worth doing. It does not
+help here: the reader that needs to be tolerant is the *older* one, which has
+already shipped. Making today's reader tolerant helps only rollbacks that
+start from a future release. The snapshot is the half that helps now.
+
+**Why a failure to snapshot does not stop the launch.** It is a safety net,
+and a net that drops the thing it was strung under is worse than no net. The
+reason goes to stderr and the app carries on.
+
+**Consequences.**
+
+- One small file per version ever run accumulates in the config directory.
+  They are text, they are each a distinct recovery point, and pruning them
+  would mean deciding which rollback an operator is not allowed to make. Kept.
+- The snapshot contains connection *names* and keyring *references*, never
+  secrets — the same content as the file beside it, written `0600` through the
+  same path.
+- The download page now makes **one** API call (`/releases`) where it made one
+  (`/releases/latest`), and gets the archive from the same response. The
+  unauthenticated rate limit is ~60/hour per IP and this page must work from a
+  shared address, so the count mattered more than the convenience of the
+  `latest` endpoint.
+- `latestOf` applies the draft/prerelease rule the `latest` endpoint used to
+  apply for us, and returns `null` rather than falling back to "whatever is
+  first" — a prerelease offered as the current build is worse than no card.
+- Archive order is the API's, not ours: sorting tags means comparing version
+  strings, where `0.9.0` sorts after `0.10.0`.
+- Saved queries and annotations are **not** snapshotted yet. They carry their
+  own version constants and the same hard-refusal shape, but losing them does
+  not empty the app of connections. Recorded here as known and deferred rather
+  than overlooked.
