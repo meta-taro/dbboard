@@ -9,6 +9,26 @@ public API is the HTTP contract in
 
 ## [Unreleased] — The measurement nobody has taken
 
+### Security
+
+- **`rustls` moved to 0.23.45**, which carries the fix for
+  [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285):
+  TLS 1.3 handshake messages were accepted when they followed a key change
+  inside the same record, where RFC 8446 requires the connection to be closed.
+
+  The practical effect is narrow — the handshake transcript stays
+  authenticated, so this cannot be used to alter or complete a handshake; a
+  peer could merely send in plaintext what should have been encrypted without
+  being rejected. It is the same bug as Go's CVE-2025-61730.
+
+  This is the TLS under dbboard's own outbound connections, so it is worth
+  having even at that severity, and the fix was a lockfile move.
+
+  **The other `rustls` in the tree is not this.** `rustls 0.22.4` arrives via
+  `libsql`'s `hyper-rustls 0.25` and the advisory marks everything below
+  0.23.13 unaffected. It stays where it is, still the duplicate that collapses
+  when libsql moves up.
+
 ### Added
 
 - **Rolling back to an earlier version is a supported move now, and the
