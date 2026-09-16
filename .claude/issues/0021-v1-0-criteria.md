@@ -23,7 +23,32 @@ contract to change afterwards, or make the promise dishonest.
 
 ## The four gates
 
-### 1. Issue #161 — the Run button does not respond to a click — **did not reproduce, 2026-09-14**
+### 1. Issue #161 — the Run button does not respond to a click — **did not reproduce; verified by a person 2026-09-15**
+
+**Signed evidence exists now.** A run through git-qa on 2026-09-15 left
+`runs/20260915-185839/run.json`, against dbboard 0.17.0 with an Aurora DSQL
+(IAM) connection:
+
+| No. | Case | AI | Person |
+|---|---|---|---|
+| 1 | the button starts a run | PASS | **VERIFIED** |
+| 2 | the keyboard does too | BLOCKED | **VERIFIED** |
+| 3 | a second press still works | BLOCKED | **SKIP** |
+
+Case 3 was skipped deliberately rather than left undone. It exists to test one
+plausible shape of "nothing happens": a busy flag that is set and never
+cleared, so the first press works and every later one is ignored — which the
+reporter would experience exactly as the button not responding. Reading
+`QueryPanel.svelte` closes it: both `execute` and `readPage` clear the flag in
+a `finally`, so a failed query cannot leave the button dead. Skipping it says
+"ruled out by reading the code", which is truer than a pass placed on a
+question already answered.
+
+Case 2 reads BLOCKED from the AI and VERIFIED from the person by design: git-qa
+pressed `Ctrl+Enter` (it gained a key action for this), but the expectation
+carries no quoted string, so the machine held and handed it to a person. That
+is the intended division, not a failure.
+
 
 **Checked on 0.17.0, in the environment the report names.** A person clicked
 the Run button with a real mouse against an **Aurora DSQL (IAM)** connection.
