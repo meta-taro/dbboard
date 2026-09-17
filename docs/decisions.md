@@ -14053,3 +14053,72 @@ reason goes to stderr and the app carries on.
   own version constants and the same hard-refusal shape, but losing them does
   not empty the app of connections. Recorded here as known and deferred rather
   than overlooked.
+
+## ADR-0156 — The app says when it painted, because nobody outside can see it (2026-09-17)
+
+**Status.** Accepted.
+
+**Context.** `docs/startup-measurement.md` holds the one startup number this
+project has: a median of **318 ms** from launch to a window on screen, over
+nine samples. That file is equally explicit about what the number is not, and
+the first item on its list is the one that matters most:
+
+> **Not "usable".** What is timed is the window *existing*, which is when the
+> window server hands one over. The webview paints its content after that, and
+> this method cannot see the difference. Treat the number as a floor.
+
+That is not a gap in the method — it is the ceiling of the method. An outside
+observer polls for a window and learns when a window exists. Whether the
+webview inside it has drawn anything is not visible from there, and no amount
+of care in the polling loop will make it visible.
+
+The same file names the fix: *"That needs the app to say when it painted — a
+timestamp at process start and one from the frontend — rather than an outside
+observer guessing."*
+
+**Decision.** The shell stamps a clock as the first statement of `run()`, the
+frontend reports once it has drawn real content, and a Tauri command answers
+both numbers.
+
+**Where the clock starts is load-bearing.** It is the first line of `run()`,
+above the keyring, the config paths, and the adapters. Every line placed above
+it would be invisible to the measurement and would silently flatter the
+number — the measurement would improve without the app getting faster.
+
+**What counts as "painted" is a decision, not a detail.** Reporting from
+`onMount` would fire while the screen is still blank: Svelte has built the DOM
+and the browser has not yet presented it. The frontend therefore waits two
+animation frames — one to schedule the paint, one to be after it — and reports
+from there. This is the earliest moment at which something has actually been
+shown to a person, which is the thing worth timing.
+
+**A second report is ignored rather than taken.** A webview paints again on
+every reload — a dev-server update, a navigation. Keeping the latest would
+quietly convert a startup measurement into a reload measurement, and the
+number would look fine while meaning something else. The first report is the
+launch; the rest are not.
+
+**Two numbers, not one.** `first_paint_ms` is the answer; `uptime_ms` is how
+long the process has been up when asked. They are reported together because a
+paint at 900 ms reads differently when the process has been up 900 ms than
+when it has been up 40 seconds — the second says the report arrived late, not
+that painting was slow.
+
+**A failure to report does not stop anything.** The frontend swallows the
+error. A measurement that can prevent the app from starting is worse than no
+measurement, the same reasoning ADR-0155 applied to the rollback snapshot.
+
+**Consequences.**
+
+- Two timestamps and one IPC call at launch. Nothing is written to disk and
+  nothing leaves the machine.
+- This closes item 1 of `docs/startup-measurement.md`'s "What would close the
+  gap". Items 2 and 3 — connect-and-browse against a real connection, and a
+  genuine cold start after a reboot — still need a person at the machine, and
+  the roadmap slot says so.
+- Nothing asserts a threshold on the number. A timing assertion is a flaky
+  test and this project has already paid for one (ADR-0125); the numbers go in
+  a document a person reads.
+- The frontend guard is per page-life, so a reload re-arms it. The shell is
+  the authority that ignores the repeat, which is where the decision belongs —
+  the frontend cannot know it is a reload rather than a launch.
