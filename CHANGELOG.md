@@ -29,6 +29,10 @@ public API is the HTTP contract in
   ones are ignored, because keeping the latest would quietly turn a startup
   measurement into a reload measurement.
 
+  The figure sits in **About dbboard**, under the version, as *First paint* —
+  launch the app, open the dialog, read it. A dash means no figure yet, which
+  is the honest answer; a zero would read as "it painted instantly".
+
   Nothing is written to disk, nothing leaves the machine, and a failure to
   report never stops the app from starting.
 

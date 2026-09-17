@@ -14108,6 +14108,27 @@ that painting was slow.
 error. A measurement that can prevent the app from starting is worse than no
 measurement, the same reasoning ADR-0155 applied to the rollback snapshot.
 
+**The number is shown in the About dialog, under the version.** This was
+missing from the first draft of this decision, and the omission produced
+exactly the defect it should have prevented: the frontend reported the figure
+to the shell, nothing could read it back, and the measurement existed only in
+memory. The decision recorded "the app can say when it painted" and never
+asked *to whom*.
+
+The About dialog is where a person already goes to ask what build this is, and
+the figure belongs to the same question. No new surface, no new route, and it
+is reachable the way a person actually works: launch, open, read.
+
+**Not on the MCP surface**, deliberately. `dbboard-mcp` is a separate process
+and cannot see the window's clock, so reaching it would mean a new UI command
+(ADR-0109) — more machinery than one number on a dialog is worth. If sampling
+ever needs automating, that is the door; it is not needed to take the samples
+this project is short of, which are taken by hand anyway.
+
+**Unknown shows a dash, never a zero.** Outside a Tauri runtime, or before the
+report lands, there is no figure. A `0 ms` would read as "it painted
+instantly", which is the one wrong answer that looks like a right one.
+
 **Consequences.**
 
 - Two timestamps and one IPC call at launch. Nothing is written to disk and

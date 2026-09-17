@@ -63,15 +63,20 @@ experience from a steady 318 ms, and the tail is the part a person notices.
    the app and reading the number back — but the number is no longer
    unobtainable.
 
-   From an MCP-connected agent, or from a terminal against a running window:
+   **Where to read it: the About dialog.** Launch the app, open *dbboard
+   について* / *About dbboard*, and the figure sits under the version as
+   **First paint**. A dash means the report has not landed — which outside a
+   Tauri runtime it never will.
 
-   ```
-   startup_timing  ->  { "first_paint_ms": 412, "uptime_ms": 38714 }
-   ```
+   It is not on the MCP surface. `dbboard-mcp` is a separate process and
+   cannot see the window's clock; reaching it would mean a new UI command
+   (ADR-0109), which is more machinery than reading a number off a dialog
+   deserves. If sampling ever needs to be automated, that is the door.
 
-   `uptime_ms` is there to be compared against: a paint at 900 ms reads
-   differently when the process has been up 900 ms than when it has been up
-   40 seconds.
+   The shell also keeps `uptime_ms` alongside it, because a paint at 900 ms
+   reads differently when the process has been up 900 ms than when it has been
+   up 40 seconds — the second says the report arrived late, not that painting
+   was slow.
 2. **Connect and browse**, and **Run to first row**, against a real connection,
    with the operator present to choose it.
 3. **A cold start**, taken once after a reboot.
