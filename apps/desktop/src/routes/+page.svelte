@@ -3,6 +3,7 @@
   import type { UnlistenFn } from '@tauri-apps/api/event';
   import { workspace, type MainTab } from '$lib/state/workspace.svelte';
   import { i18n } from '$lib/i18n/i18n.svelte';
+  import { reportFirstPaint } from '$lib/startup';
   import type { MessageKey } from '$lib/i18n/messages';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import QueryPanel from '$lib/components/QueryPanel.svelte';
@@ -62,6 +63,11 @@
   const NUDGE = 16;
 
   onMount(() => {
+    // Tell the shell when this window first showed something (ADR-0156).
+    // Not from here — `onMount` runs while the screen is still blank.
+    // `reportFirstPaint` waits for the frame after the paint.
+    void reportFirstPaint();
+
     i18n.init();
     // Then follow `ui-settings.toml`, which may name a different language and
     // can change while the window is open (ADR-0041). Async, so the UI paints

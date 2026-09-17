@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getVersion } from '@tauri-apps/api/app';
+  import { invoke } from '@tauri-apps/api/core';
   import { i18n } from '$lib/i18n/i18n.svelte';
   import { bundledReleases } from '$lib/about/bundled';
   import { findRelease, releaseHistory } from '$lib/about/changelog';
@@ -14,6 +15,15 @@
 
   let version = $state('—');
 
+  // Launch to the first frame that showed something (ADR-0156). Shown here
+  // because otherwise nothing can read it back: the frontend reports the
+  // figure to the shell and, without somewhere to display it, the measurement
+  // exists only in memory.
+  //
+  // `null` while unknown — outside a Tauri runtime, or before the report has
+  // landed. A dash is honest; a zero would read as "instant".
+  let firstPaintMs = $state<number | null>(null);
+
   // Shipped versions only: [Unreleased] describes a build nobody is running.
   const releases = releaseHistory(bundledReleases());
   let shownVersion = $state('');
@@ -25,6 +35,8 @@
       // A build the changelog has never heard of leaves the picker empty
       // rather than showing someone else's release as if it were theirs.
       shownVersion = findRelease(releases, version)?.version ?? '';
+      const timing = await invoke<{ first_paint_ms: number | null }>('startup_timing');
+      firstPaintMs = timing.first_paint_ms;
     } catch {
       // Outside a Tauri runtime (e.g. a plain browser preview) the app version
       // isn't available; leave the placeholder rather than surfacing an error.
@@ -54,6 +66,8 @@
     <dl class="meta">
       <dt>{i18n.t('about-version')}</dt>
       <dd class="mono">{version}</dd>
+      <dt>{i18n.t('about-first-paint')}</dt>
+      <dd class="mono">{firstPaintMs === null ? '—' : `${firstPaintMs} ms`}</dd>
     </dl>
 
     <section class="changes">

@@ -19,6 +19,7 @@ mod connections;
 mod dump;
 mod queries;
 mod restore;
+mod startup;
 mod ui_state;
 
 use dbboard_config::secrets::{KeyringStore, SecretStore};
@@ -66,6 +67,10 @@ pub(crate) struct AppState {
     /// `ai-providers.toml` admin, the shared keyring handle, and the in-flight
     /// cancel flag. Owned by the `ai` submodule; see [`ai::AiState`].
     pub(crate) ai: ai::AiState,
+    /// Launch-to-first-paint, as the app itself saw it (ADR-0156).
+    /// `docs/startup-measurement.md` could only time the window *existing*;
+    /// what the webview does afterwards is invisible from outside.
+    pub(crate) startup: startup::StartupClock,
 }
 
 /// Build the service against the platform default `connections.toml` /
@@ -78,6 +83,10 @@ pub(crate) struct AppState {
 /// runtime fails to start — both are unrecoverable at launch and there is
 /// no UI yet to surface them.
 pub fn run() {
+    // **Before anything else.** Every line above this one is invisible to the
+    // measurement and silently flatters the number (ADR-0156).
+    let startup = startup::StartupClock::started();
+
     let secrets: Arc<dyn SecretStore> = Arc::new(KeyringStore::new());
     let path =
         dbboard_config::default_path().expect("resolve platform config paths for connections.toml");
@@ -135,8 +144,11 @@ pub fn run() {
             dump_cancel: Arc::new(AtomicBool::new(false)),
             restore_cancel: Arc::new(AtomicBool::new(false)),
             ai,
+            startup,
         })
         .invoke_handler(tauri::generate_handler![
+            startup::report_first_paint,
+            startup::startup_timing,
             browse::list_connections,
             browse::list_tables,
             browse::describe_table,

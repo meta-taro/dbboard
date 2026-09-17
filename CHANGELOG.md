@@ -9,6 +9,33 @@ public API is the HTTP contract in
 
 ## [Unreleased] — The measurement nobody has taken
 
+### Added
+
+- **dbboard can now say when its window first showed something.** The one
+  startup number this project had — a median of 318 ms — timed the window
+  *existing*, which happens before the interface has drawn anything. That was
+  not a gap in the method but its ceiling: from outside, a window either exists
+  or it does not, and what the webview is doing inside it is invisible.
+
+  So the app reports it instead. A clock starts on the first line of the
+  shell's `run()`, the interface reports after the frame that actually put
+  pixels on screen, and `startup_timing` answers both that figure and how long
+  the process has been up.
+
+  Two details that decide whether the number means anything. Reporting from
+  `onMount` would fire while the screen is still blank — the DOM exists, the
+  browser has not presented it — so the report waits for the frame after the
+  paint. And a reload paints again: the first report is the launch and later
+  ones are ignored, because keeping the latest would quietly turn a startup
+  measurement into a reload measurement.
+
+  The figure sits in **About dbboard**, under the version, as *First paint* —
+  launch the app, open the dialog, read it. A dash means no figure yet, which
+  is the honest answer; a zero would read as "it painted instantly".
+
+  Nothing is written to disk, nothing leaves the machine, and a failure to
+  report never stops the app from starting.
+
 ### Security
 
 - **`rustls` moved to 0.23.45**, which carries the fix for
