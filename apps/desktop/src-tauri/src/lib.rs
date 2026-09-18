@@ -17,12 +17,14 @@ mod ai;
 mod browse;
 mod connections;
 mod dump;
+mod queries;
 mod restore;
+mod startup;
 mod ui_state;
 
 use dbboard_config::secrets::{KeyringStore, SecretStore};
 use dbboard_config::update_attempt;
-use dbboard_config::{AnnotationsAdmin, ConnectionAdmin};
+use dbboard_config::{AnnotationsAdmin, ConnectionAdmin, SavedQueryAdmin};
 use dbboard_mcp::McpService;
 
 /// The managed state backing every command.
@@ -55,12 +57,20 @@ pub(crate) struct AppState {
     pub(crate) service: McpService,
     pub(crate) admin: Mutex<ConnectionAdmin>,
     pub(crate) annotations: Mutex<AnnotationsAdmin>,
+    /// The saved-query write path: [`SavedQueryAdmin`] owns
+    /// `saved-queries.toml`. Like notes, a saved query never reaches a
+    /// database or an adapter, so a write needs no cache eviction (ADR-0147).
+    pub(crate) saved_queries: Mutex<SavedQueryAdmin>,
     pub(crate) dump_cancel: Arc<AtomicBool>,
     pub(crate) restore_cancel: Arc<AtomicBool>,
     /// The AI assistant layer (ADR-0052): the live provider slot, the optional
     /// `ai-providers.toml` admin, the shared keyring handle, and the in-flight
     /// cancel flag. Owned by the `ai` submodule; see [`ai::AiState`].
     pub(crate) ai: ai::AiState,
+    /// Launch-to-first-paint, as the app itself saw it (ADR-0156).
+    /// `docs/startup-measurement.md` could only time the window *existing*;
+    /// what the webview does afterwards is invisible from outside.
+    pub(crate) startup: startup::StartupClock,
 }
 
 /// Build the service against the platform default `connections.toml` /
@@ -73,13 +83,45 @@ pub(crate) struct AppState {
 /// runtime fails to start — both are unrecoverable at launch and there is
 /// no UI yet to surface them.
 pub fn run() {
+    // **Before anything else.** Every line above this one is invisible to the
+    // measurement and silently flatters the number (ADR-0156).
+    let startup = startup::StartupClock::started();
+
     let secrets: Arc<dyn SecretStore> = Arc::new(KeyringStore::new());
     let path =
         dbboard_config::default_path().expect("resolve platform config paths for connections.toml");
+
+    // Copy `connections.toml` aside the first time each build runs, before
+    // anything here can write to it (ADR-0155).
+    //
+    // **This is for rolling back, not for upgrading.** An older build that
+    // meets a `kind` it does not know refuses the whole file rather than the
+    // one entry, so going back to the last release that worked — the thing a
+    // person reaches for when a new one does not — can land them on a build
+    // showing no connections at all.
+    //
+    // **A failure here must never stop the launch.** It is a safety net; a
+    // net that drops the thing it was strung under is worse than no net. The
+    // reason goes to stderr and the app carries on.
+    match dbboard_config::store::snapshot_before_version(&path, env!("CARGO_PKG_VERSION")) {
+        Ok(Some(taken)) => {
+            eprintln!(
+                "[dbboard] kept a copy of connections.toml at {}",
+                taken.display()
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("[dbboard] could not keep a copy of connections.toml: {err}");
+        }
+    }
+
     let admin = ConnectionAdmin::open(path, Arc::clone(&secrets))
         .expect("open connections.toml for connection management");
     let annotations =
         AnnotationsAdmin::open_default().expect("open annotations.toml for local note editing");
+    let saved_queries =
+        SavedQueryAdmin::open_default().expect("open saved-queries.toml for saved queries");
     // Stand up the optional AI layer before the service consumes `secrets` —
     // both need the same keyring handle (the `ai.` keyring infix keeps their
     // namespaces apart). A misconfigured assistant degrades to "no provider",
@@ -98,11 +140,15 @@ pub fn run() {
             service,
             admin: Mutex::new(admin),
             annotations: Mutex::new(annotations),
+            saved_queries: Mutex::new(saved_queries),
             dump_cancel: Arc::new(AtomicBool::new(false)),
             restore_cancel: Arc::new(AtomicBool::new(false)),
             ai,
+            startup,
         })
         .invoke_handler(tauri::generate_handler![
+            startup::report_first_paint,
+            startup::startup_timing,
             browse::list_connections,
             browse::list_tables,
             browse::describe_table,
@@ -110,9 +156,14 @@ pub fn run() {
             browse::set_table_note,
             browse::set_column_note,
             browse::search_schema,
+            browse::diff_schemas,
             browse::list_relationships,
             browse::run_read_query,
+            browse::browse_page,
             browse::update_row,
+            queries::list_saved_queries,
+            queries::save_query,
+            queries::delete_saved_query,
             config_path,
             connections::fields::connection_edit_fields,
             connections::connection_marks,

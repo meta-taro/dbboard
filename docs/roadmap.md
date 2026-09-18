@@ -25,8 +25,8 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.16** | Everyday work | JSON export, saved queries, schema diff — the Phase 5 remainder. Carries the half of v0.14 that did not ship: the optimisation itself, now that [`performance-baseline.md`](performance-baseline.md) says where the time goes and [issue 0029](../.claude/issues/0029-pagination-for-large-results.md) says it is pagination |
-| **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 fixed or its workaround documented, the contract mirrored to `dbboard-web`, sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
+| **v0.19** | The measurement nobody has taken | The **cold-start numbers**, reserved by v0.17 and moved on twice. They need the maintainer's machine, a reboot, and a real connection, so no agent can take them alone ([ADR-0110](decisions.md), [ADR-0122](decisions.md)). What changed is that the app can now be asked: launch it, open About, read *First paint* ([ADR-0156](decisions.md)). What remains is items 2 and 3 of [`startup-measurement.md`](startup-measurement.md) — connect-and-browse against a real connection, and one sample after a reboot. Alongside it, whatever the **`history.jsonl` decision** turns out to be ([issue 0033](../.claude/issues/0033-history-jsonl-has-no-writer.md), [ADR-0153](decisions.md)), which needs `dbboard-web` in the conversation |
+| **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
 Elasticsearch/OpenSearch, Oracle) hold no slot on purpose: each is additive
@@ -496,8 +496,19 @@ work without it. Trait + first-provider shape locked in
       (`ai-cancel-button`, `ai-cancelled-message`, `ai-tokens-meter`)
       in all 11 locales._
 
-- [x] AI calls recorded in `history.jsonl` with schema v:2 bump —
-      _Stage 2 Group C, planned in [ADR-0027](decisions.md).
+- [~] AI calls recorded in `history.jsonl` with schema v:2 bump —
+      **shipped 2026-07-01 and gone since [ADR-0089](decisions.md).**
+      The reader and writer lived in `dbboard-ui`, the egui crate, and
+      were deleted with it; nothing in the Tauri client has written this
+      file since. `dbboard-config` still resolves the path, and
+      `dbboard-web` still implements the v:2 records desktop was meant to
+      emit ([issue 0003](../.claude/issues/0003-web-history-schema-mirror.md)).
+      **The schema is reserved, not implemented** — whether to restore the
+      writer or retire the schema is open, and is a contract-layer call
+      that needs both repositories ([issue 0033](../.claude/issues/0033-history-jsonl-has-no-writer.md),
+      [ADR-0153](decisions.md)). The original entry follows, because what
+      it describes was true when it was written:
+      _      Stage 2 Group C, planned in [ADR-0027](decisions.md).
       Implementation tracked in
       [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
       **Closed 2026-07-01 on `feature/ai-history-v2`.** Slice (a)
@@ -689,9 +700,38 @@ ADR-0023 §9 and is queued for its own ADR (ADR-0029).
       the native save dialog ([ADR-0035](decisions.md)). JSON is not a
       supported export format; it is tracked below rather than left
       implied by this line.
-- [ ] Export results as JSON
-- [ ] Saved queries
-- [ ] Schema diff between two connections
+- [x] Export results as JSON — the save dialog's third format, next to
+      the CSV and TSV of [ADR-0035](decisions.md). It exists because the
+      delimited exports flatten every cell to a string: JSON keeps NULL as
+      null, numbers as numbers, and a document as a document
+      ([ADR-0146](decisions.md), issue 0031). A repeated column name is
+      numbered rather than dropped, `$blob` stays tagged because JSON
+      cannot express bytes, and there is no BOM — parsers reject it where
+      Excel needs it. The save confirmation now also says when the file
+      holds one page rather than the whole result, which corrects the same
+      silence in the CSV path.
+- [x] Saved queries — statements the operator deliberately kept, in
+      `saved-queries.toml` beside `connections.toml` and
+      `annotations.toml` ([ADR-0147](decisions.md), issue 0032). Not in
+      the webview's storage where the run history lives: the history is
+      disposable by design, and "clear site data" empties it, no backup
+      sees it, and it does not follow the operator to another machine.
+      Scoped and anchored to a connection id, so renaming a connection
+      keeps its queries; overwriting one takes an explicit confirmation.
+      Deliberately not an MCP tool — an agent can already run any
+      statement, so listing these would add no capability, only the
+      operator's private notes in its context.
+- [x] Schema diff between two connections — pick two connections of the
+      same engine on the **Compare** tab and read what their schemas
+      disagree about: tables, columns, types, nullability, defaults and
+      primary keys ([ADR-0148](decisions.md), [ADR-0149](decisions.md),
+      issue 0034). Nothing is normalised — types are compared exactly as
+      each engine spells them, because the one mistake a diff must not
+      make is calling two things the same. Cross-engine pairs are refused
+      before either side is dialled. While a comparison is up the sidebar
+      marks every table the report mentions and clicking one jumps to it,
+      but never filters the report or replaces it: what you are reading
+      does not change under you.
 - [ ] Performance: cold-start under 1s on a modern laptop
 
 ## Packaging & Distribution
@@ -852,7 +892,12 @@ optimising something that was never the cost.
       schema tree being populated; time from Run to first row on screen. On
       the maintainer's machine, against a real connection, not a synthetic
       one — the collector's three store databases are the workload that
-      matters.
+      matters. **One of the four exists**
+      ([startup-measurement.md](startup-measurement.md)): relaunch to a window
+      on screen, median 318 ms over nine samples, with two runs at 2× and 3×
+      that. The rest need the app to report its own first paint, and a real
+      connection with the operator present to choose it — so the item stays
+      unticked, because a quarter of a measurement is not one.
 - [ ] **Startup.** Where the time actually goes between process start and an
       interactive window: Tauri shell, webview creation, the SvelteKit
       bundle, config and connection-list reads, and whether anything is

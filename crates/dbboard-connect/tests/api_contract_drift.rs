@@ -1,5 +1,6 @@
-//! Keeps `docs/api-contract.md` honest about two things the wire actually
-//! carries: the set of `Capabilities` flags, and the set of adapter ids.
+//! Keeps `docs/api-contract.md` honest about three things the wire actually
+//! carries: the set of `Capabilities` flags, the set of adapter ids, and the
+//! fields of a `QueryResult`.
 //!
 //! Both drifted before this test existed. `has_foreign_keys` (ADR-0054) was
 //! serialized for months without appearing in the contract, and the `id` list
@@ -8,11 +9,11 @@
 //! including `dbboard-web`, which implements against it — was being told
 //! something false about the payload.
 //!
-//! This crate is the home for both checks because it is the one that depends
+//! This crate is the home for all three because it is the one that depends
 //! on every concrete adapter *and* on `dbboard-core`.
 
 use dbboard_connect::BackendConfig;
-use dbboard_core::Capabilities;
+use dbboard_core::{Capabilities, QueryResult};
 
 /// The contract, read from the workspace rather than embedded, so the test
 /// fails when the document changes underneath it.
@@ -52,6 +53,49 @@ fn contract_documents_every_capability_flag() {
         "these Capabilities flags are on the wire but absent from \
          docs/api-contract.md: {missing:?}. A client reading the contract \
          cannot know they exist."
+    );
+}
+
+/// Every field name a `QueryResult` can put on the wire.
+///
+/// The literal is exhaustive on purpose — the same device as [`wire_id`]'s
+/// match below. A field added to the struct stops the build here, which is
+/// the prompt to document it before a client meets it.
+///
+/// The paging fields are set rather than defaulted because they are omitted
+/// from the JSON unless they carry something (ADR-0145): a defaulted value
+/// would serialize to the shape this test is trying to outgrow.
+fn wire_query_result_fields() -> Vec<String> {
+    let paged = QueryResult {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        rows_affected: 0,
+        has_more: true,
+        next_cursor: Some(Vec::new()),
+    };
+    serde_json::to_value(paged)
+        .expect("QueryResult serializes to a JSON object")
+        .as_object()
+        .expect("QueryResult is a flat object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn contract_documents_every_query_result_field() {
+    let doc = contract();
+    let missing: Vec<_> = wire_query_result_fields()
+        .into_iter()
+        .filter(|field| !doc.contains(field.as_str()))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "these QueryResult fields are on the wire but absent from \
+         docs/api-contract.md: {missing:?}. The contract freezes at v1.0 \
+         (ADR-0011), so an undocumented field is one a client cannot rely \
+         on and this side cannot remove."
     );
 }
 

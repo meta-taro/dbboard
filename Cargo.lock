@@ -1459,7 +1459,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dbboard-ai"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-anthropic"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-bench"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "dbboard-config",
  "dbboard-core",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-config"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "age",
  "directories",
@@ -1517,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-connect"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-config",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-core"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-d1"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-desktop"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "dbboard-ai",
  "dbboard-anthropic",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-firestore"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mcp"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1626,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mongodb"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mysql"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-openai"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -1665,7 +1665,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-postgres"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-server"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "axum",
  "dbboard-config",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-tunnel"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "russh",
  "thiserror 2.0.18",
@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-turso"
-version = "0.15.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -3386,7 +3386,7 @@ dependencies = [
  "http 1.4.0",
  "hyper 1.9.0",
  "hyper-util",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "rustls-native-certs 0.8.4",
  "tokio",
  "tokio-rustls 0.26.4",
@@ -4497,7 +4497,7 @@ dependencies = [
  "percent-encoding",
  "rand 0.9.4",
  "rustc_version_runtime",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "serde",
  "serde_bytes",
  "serde_with",
@@ -5912,7 +5912,7 @@ dependencies = [
  "quinn-proto",
  "quinn-udp",
  "rustc-hash 2.1.2",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
@@ -5932,7 +5932,7 @@ dependencies = [
  "rand 0.9.4",
  "ring",
  "rustc-hash 2.1.2",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "rustls-pki-types",
  "slab",
  "thiserror 2.0.18",
@@ -6194,7 +6194,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quinn",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "rustls-native-certs 0.8.4",
  "rustls-pki-types",
  "serde",
@@ -6234,7 +6234,7 @@ dependencies = [
  "log",
  "percent-encoding",
  "pin-project-lite",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "rustls-pki-types",
  "rustls-platform-verifier",
  "serde",
@@ -6600,15 +6600,15 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki 0.103.13",
+ "rustls-webpki 0.103.15",
  "subtle",
  "zeroize",
 ]
@@ -6668,10 +6668,10 @@ dependencies = [
  "jni 0.22.4",
  "log",
  "once_cell",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "rustls-native-certs 0.8.4",
  "rustls-platform-verifier-android",
- "rustls-webpki 0.103.13",
+ "rustls-webpki 0.103.15",
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
@@ -6697,9 +6697,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -7477,7 +7477,7 @@ dependencies = [
  "memchr",
  "once_cell",
  "percent-encoding",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "rustls-native-certs 0.8.4",
  "serde",
  "serde_json",
@@ -8137,7 +8137,7 @@ dependencies = [
  "osakit",
  "percent-encoding",
  "reqwest 0.13.4",
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "semver",
  "serde",
  "serde_json",
@@ -8434,7 +8434,7 @@ version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
- "rustls 0.23.40",
+ "rustls 0.23.45",
  "tokio",
 ]
 
@@ -10041,13 +10041,14 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wnaf"
-version = "0.14.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab12e7090f27e2ffd9322651492942d50c2926094af30601e1964337db39daf1"
+checksum = "795ca18b3fdb5e62bf982199278341ddcf7ebf7d32e25e212ad05d496e95f6fa"
 dependencies = [
  "ff",
  "group",
  "hybrid-array",
+ "primefield",
 ]
 
 [[package]]

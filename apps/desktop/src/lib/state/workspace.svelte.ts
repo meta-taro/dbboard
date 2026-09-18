@@ -21,7 +21,7 @@ import {
 import { BROWSE_ROWS } from '$lib/sidebar/menu';
 import { browseQuery, usesStructuredQuery } from '$lib/sql/build';
 
-export type MainTab = 'query' | 'structure';
+export type MainTab = 'query' | 'structure' | 'compare';
 
 class Workspace {
   connections = $state<ConnectionView[]>([]);

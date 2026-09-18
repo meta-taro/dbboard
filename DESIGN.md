@@ -92,7 +92,9 @@ used for the schema browser.
   icon (16–256 px, PNG-based); `assets/dbboard-logo-256.png` is the 256 px
   master used for the docs, the download page, and for re-rendering at other
   sizes. The shipped app icons are generated from these into
-  `apps/desktop/src-tauri/icons/` and referenced by `tauri.conf.json`. Reference these files; do not
+  `apps/desktop/src-tauri/icons/` and referenced by `tauri.conf.json`; the
+  title bar imports the 256 px master directly, so the mark on screen is the
+  same artwork as the mark in the Dock. Reference these files; do not
   copy the image around ad hoc.
 - **Palette**: background indigo **`#4F46E5`**, mark **`#FFFFFF`**. The
   indigo is the project's `accent` colour above.

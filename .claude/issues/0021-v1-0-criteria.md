@@ -1,6 +1,8 @@
 # 0021: What has to be true before v1.0
 
-- **Status**: open — the four gates below are the whole list
+- **Status**: open — the four gates below are the whole list. Gate 4 closed
+  2026-08-16 (ADR-0106); gate 1 settled 2026-09-14 (did not reproduce, which
+  is not the same as fixed); gates 2 and 3 remain, both human-owned
 - **Opened**: 2026-08-16
 - **Owner**: split; see each gate
 - **Related ADRs**: ADR-0011 (the HTTP contract is the public API for
@@ -21,7 +23,68 @@ contract to change afterwards, or make the promise dishonest.
 
 ## The four gates
 
-### 1. Issue #161 — the Run button does not respond to a click
+### 1. Issue #161 — the Run button does not respond to a click — **did not reproduce; verified by a person 2026-09-15**
+
+**Signed evidence exists now.** A run through git-qa on 2026-09-15 left
+`runs/20260915-185839/run.json`, against dbboard 0.17.0 with an Aurora DSQL
+(IAM) connection:
+
+| No. | Case | AI | Person |
+|---|---|---|---|
+| 1 | the button starts a run | PASS | **VERIFIED** |
+| 2 | the keyboard does too | BLOCKED | **VERIFIED** |
+| 3 | a second press still works | BLOCKED | **SKIP** |
+
+Case 3 was skipped deliberately rather than left undone. It exists to test one
+plausible shape of "nothing happens": a busy flag that is set and never
+cleared, so the first press works and every later one is ignored — which the
+reporter would experience exactly as the button not responding. Reading
+`QueryPanel.svelte` closes it: both `execute` and `readPage` clear the flag in
+a `finally`, so a failed query cannot leave the button dead. Skipping it says
+"ruled out by reading the code", which is truer than a pass placed on a
+question already answered.
+
+Case 2 reads BLOCKED from the AI and VERIFIED from the person by design: git-qa
+pressed `Ctrl+Enter` (it gained a key action for this), but the expectation
+carries no quoted string, so the machine held and handed it to a person. That
+is the intended division, not a failure.
+
+
+**Checked on 0.17.0, in the environment the report names.** A person clicked
+the Run button with a real mouse against an **Aurora DSQL (IAM)** connection.
+It ran. The status bar went from `クエリ未実行` to `直前のクエリ` / `518 ms`
+and the result grid showed its one row.
+
+That closes the gap this gate was actually held open by. The maintainer's
+earlier attempt did not reproduce it either, but that attempt used **MySQL**
+while the report is against **Aurora DSQL (IAM)**, so an adapter- or
+environment-specific cause could not be excluded. Now it can: the same engine,
+the same gesture, and it works.
+
+**This is "did not reproduce", not "fixed", and the difference matters.** No
+cause was ever identified, so nothing here rules out something that happens
+only on the reporter's machine. What changed is that the one hypothesis this
+repository could test — that the engine was the variable — has been tested and
+did not hold.
+
+**The defined alternative below is therefore not needed.** It stays on the page
+because a gate's escape hatch is worth keeping legible after the fact, not
+because anything still depends on it.
+
+**The control case was not needed either.** `Ctrl+Enter` exists on the sheet to
+separate "the button is broken" from "the query is broken" when the button
+fails. The button did not fail, so there was nothing to separate.
+
+**Run by hand, not by git-qa, and for a reason worth recording.** The sheet at
+`.claude/verification/gate-161-run-button-ja.tsv` is written in git-qa's step
+vocabulary, but git-qa could not drive this app at all: its accessibility walk
+stops at depth 6 and every control in dbboard's window sits at depth 7, so no
+button was findable by name (reported as git-qa#11). Its OCR fallback was not
+a way around it — that path takes the *first* partial match, and `実行` matches
+the status bar's `クエリ未実行`. The sheet is kept for when that limit lifts.
+
+The original statement of the gate follows.
+
 
 Ctrl+Enter runs the query; the button does not. The primary action of
 the primary screen. Nothing that ships as 1.0 should have this.
@@ -46,6 +109,17 @@ result:
 Not reproducible by the maintainer on v0.8.0 — but that attempt used a
 **MySQL** connection, and the report is against **Aurora DSQL (IAM)**, so
 an adapter- or environment-specific cause is not excluded.
+
+**There is a sheet for it now**: `.claude/verification/gate-161-run-button-ja.tsv`,
+written in git-qa's step vocabulary so the case that matters — a mouse
+click on 実行 — executes rather than being handed back untranslatable.
+Two of its rows cannot be automated, and the sheet says why in its own
+notes: the connection is left unnamed because its real name is a store
+name (ADR-0055), and the Ctrl+Enter control has no machine form because
+git-qa has no key-press action (git-qa#6). **The control is the row that
+decides whether the fault is the button or the query**, so a run of this
+sheet is not an answer to the gate until a person has pressed that key
+themselves.
 
 **Defined alternative, so this gate cannot stall v1.0 indefinitely.**
 Like gate 4, this one has a second way out: **if the reporter's two
@@ -79,21 +153,33 @@ What remains is the mirror itself, which is human-owned and cross-repo.
 
 **Owner**: human (cross-repo). The contract side is done.
 
-### 3. The verification sheets have never been run
+### 3. The verification sheets have never been run — **one of three is now done**
 
-`docs/test-specs/001`, `002`, `003` are all `未実施` — every row. Under
-baseline §22 the sheets are written by the agent and executed by a
+Under baseline §22 the sheets are written by the agent and executed by a
 person, and nothing may be called complete until a person has run it.
 v1.0 is the strongest "complete" claim the project can make, so shipping
-it against three untouched sheets contradicts the rule directly.
+it against untouched sheets contradicts the rule directly.
 
-Sheet 001 is partly answerable right now: the Firestore emulator is up,
-which makes rows 2–9 runnable. Rows 1, 10 and 11 stay `未実施` until the
-matching environments exist. Teardown when done:
+| Sheet | Status | What it still needs |
+|---|---|---|
+| `003-ui-locales` | **完了** | nothing — a person ran it |
+| `001-firestore-connection` | `未実施` | the Firestore emulator (rows 2–9); rows 1, 10 and 11 need environments that do not exist yet |
+| `002-mongodb-connection` | `未実施` | a MongoDB connection to point it at |
+
+Bringing 001's environment up, and the teardown when done:
 
 ```sh
+docker compose -f docker/firestore-emulator/compose.yaml up -d
 docker compose -f docker/firestore-emulator/compose.yaml down
 ```
+
+Note that these sheets predate git-qa and are written for a person
+reading them. The newer sheets under `.claude/verification/` are written
+in git-qa's step vocabulary so the mechanical half can execute itself —
+but that changes who does the *typing*, not who signs. §22 is unaffected:
+git-qa's own verdict vocabulary keeps `AUTO_PASS` (nobody looked) and
+`VERIFIED` (a person signed) apart at the type level, and only a person
+can produce the second.
 
 **Owner**: human only. The agent must not write `OK` into these files.
 

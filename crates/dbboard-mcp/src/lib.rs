@@ -38,6 +38,7 @@
 //! stdio. stdout carries the JSON-RPC frames, so all logging goes to
 //! stderr.
 
+pub mod about;
 pub mod capture;
 pub mod export;
 pub mod server;

@@ -103,6 +103,7 @@ pub(crate) fn to_result(
         columns,
         rows,
         rows_affected: 0,
+        ..QueryResult::empty()
     })
 }
 

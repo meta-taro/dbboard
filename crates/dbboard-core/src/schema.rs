@@ -73,6 +73,28 @@ pub struct TableSchema {
     pub primary_key: Vec<String>,
 }
 
+/// One index on a table, returned by
+/// [`DatabaseAdapter::list_indexes`] (ADR-0152).
+///
+/// **The primary key's own backing index is excluded** by every adapter that
+/// reports these. The engine creates it implicitly, and the primary key is
+/// already compared on its own — including it would report the same fact
+/// twice, which is the rule ADR-0148 set for tables and columns.
+///
+/// A unique constraint's backing index is *not* excluded: nothing else
+/// reports it, so dropping it would hide a real difference.
+///
+/// [`DatabaseAdapter::list_indexes`]: crate::DatabaseAdapter::list_indexes
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexInfo {
+    /// The index name as the engine reports it.
+    pub name: String,
+    /// Indexed columns, in index order — the order is part of what an index
+    /// is good for, so it is preserved rather than sorted.
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
 /// One foreign-key constraint on a table, returned by
 /// [`DatabaseAdapter::foreign_keys`] (ADR-0054).
 ///

@@ -95,3 +95,48 @@ test("the page says the binaries are unsigned, and does not call it pending", ()
     );
   }
 });
+
+// --- Previous versions (ADR-0155) -------------------------------------------
+
+// The archive starts hidden and is revealed by `renderArchive` only when it has
+// rows. Shipping it visible would show an empty table to anyone whose API call
+// is rate-limited — an empty "Previous versions" reads as "there are none",
+// which is the opposite of true and exactly the wrong thing to tell someone
+// trying to roll back.
+test("the previous-versions section is hidden until it has rows", () => {
+  const section = html.match(/<section id="archive"[^>]*>/i);
+  assert.ok(section, "the archive section must exist");
+  assert.match(section[0], /\bhidden\b/, "it must ship hidden");
+});
+
+// The script fills these two by id. A rename on either side is silent: the
+// table simply never appears, and nothing fails.
+test("the ids the script fills are the ids the page has", () => {
+  const app = readFileSync(join(HERE, "app.js"), "utf8");
+  for (const id of ["archive", "archive-rows"]) {
+    assert.ok(
+      html.includes(`id="${id}"`),
+      `index.html is missing id="${id}", which app.js fills`,
+    );
+    assert.ok(
+      app.includes(`"${id}"`),
+      `app.js no longer references ${id}; the markup is then dead`,
+    );
+  }
+});
+
+// The reason the archive exists is the rollback, and a rollback raises one
+// question immediately: what happens to my connections? The answer has to be on
+// the page, next to the download, not only in a changelog.
+test("the page says what a rollback does to the connections file", () => {
+  assert.match(
+    html,
+    /connections\.pre-&lt;version&gt;\.toml/,
+    "the page must name the snapshot file a rollback falls back on",
+  );
+  assert.match(
+    html,
+    /OS keychain/i,
+    "the page must say credentials are not in the file",
+  );
+});

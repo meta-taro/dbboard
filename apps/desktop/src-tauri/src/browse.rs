@@ -6,7 +6,7 @@
 //! — those are written here, to `annotations.toml`, and never to the database
 //! (ADR-0045).
 
-use dbboard_core::{CellValue, RowKey, TableInfo, TableSchema, UpdatePlan, Value};
+use dbboard_core::{CellValue, RowKey, SchemaDiff, TableInfo, TableSchema, UpdatePlan, Value};
 use dbboard_mcp::service::{
     AnnotationsView, ConnectionView, QueryOutput, RelationshipView, SchemaSearchView,
 };
@@ -111,6 +111,29 @@ pub(crate) async fn set_column_note(
         .map_err(|e| e.to_string())
 }
 
+/// Compare two connections' schemas (ADR-0148).
+///
+/// Read-only on both sides: `list_tables` + `describe_table`, nothing else.
+/// Refused when the two connections are different engines — the service
+/// checks before either side is dialled, so the pair costs no connection.
+///
+/// Deliberately not an MCP tool for now. It would open nothing an agent
+/// cannot already reach with the two verbs it composes, so it is additive by
+/// ADR-0087's test; it is left out because the feature this belongs to is
+/// still being built, and a verb is easier to add than to take back.
+#[tauri::command]
+pub(crate) async fn diff_schemas(
+    state: tauri::State<'_, AppState>,
+    left_connection_id: String,
+    right_connection_id: String,
+) -> Result<SchemaDiff, String> {
+    state
+        .service
+        .diff_schemas(&left_connection_id, &right_connection_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Find tables (and columns) whose name contains `pattern`. Blank
 /// patterns are rejected by the service, not matched to everything.
 #[tauri::command]
@@ -155,6 +178,31 @@ pub(crate) async fn run_read_query(
     state
         .service
         .run_read_query(&connection_id, &sql, max_rows)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Read one keyset page of a table (ADR-0145).
+///
+/// The counterpart to [`run_read_query`], and the reason the two are
+/// separate commands: this one *builds* the statement, so it is free to add
+/// the `ORDER BY`/`WHERE`/`LIMIT` that paging needs. A statement the user
+/// typed goes through `run_read_query` untouched.
+///
+/// `after` is the previous page's `next_cursor`, passed back verbatim;
+/// `None` reads the first page. The frontend keeps the cursors it has been
+/// given so it can step back, which is why nothing is held here.
+#[tauri::command]
+pub(crate) async fn browse_page(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+    table: TableInfo,
+    page_rows: Option<usize>,
+    after: Option<Vec<Value>>,
+) -> Result<QueryOutput, String> {
+    state
+        .service
+        .browse_page(&connection_id, &table, page_rows, after.as_deref())
         .await
         .map_err(|e| e.to_string())
 }

@@ -20,10 +20,10 @@
 use crate::adapter::DatabaseAdapter;
 use crate::capabilities::Capabilities;
 use crate::dump::{
-    build_count, build_insert, build_select_page, INSERT_BATCH_ROWS, READ_PAGE_ROWS,
+    build_count, build_insert, build_select_page, cursor_from_last_row, INSERT_BATCH_ROWS,
+    READ_PAGE_ROWS,
 };
 use crate::error::DbResult;
-use crate::row::Row;
 use crate::schema::TableInfo;
 use crate::value::Value;
 use crate::write_back::SqlDialect;
@@ -390,22 +390,6 @@ async fn dump_table_data(
     Ok(TableFlow::Completed)
 }
 
-/// Extract the key values of the last row of a page, positionally matching
-/// `key_columns`. `None` if any key column is absent from `columns`.
-fn cursor_from_last_row(
-    rows: &[Row],
-    columns: &[String],
-    key_columns: &[String],
-) -> Option<Vec<Value>> {
-    let last = rows.last()?;
-    let mut values = Vec::with_capacity(key_columns.len());
-    for key in key_columns {
-        let at = columns.iter().position(|c| c == key)?;
-        values.push(last.get(at)?.clone());
-    }
-    Some(values)
-}
-
 fn report(
     control: &dyn DumpControl,
     tables_total: usize,
@@ -445,7 +429,7 @@ mod tests {
     use crate::capabilities::Capabilities;
     use crate::dump::{TablePlan, READ_PAGE_ROWS};
     use crate::error::{DbError, DbResult};
-    use crate::row::{Column, QueryResult};
+    use crate::row::{Column, QueryResult, Row};
     use crate::schema::TableSchema;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -635,6 +619,7 @@ mod tests {
                 .map(|&i| Row::new(vec![Value::Integer(i)]))
                 .collect(),
             rows_affected: 0,
+            ..QueryResult::empty()
         }
     }
 

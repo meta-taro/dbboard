@@ -35,6 +35,37 @@ export function bucketFor(name) {
   return null;
 }
 
+// Pick the release the front of the page offers: the newest that is neither a
+// draft nor a prerelease — the same rule `/releases/latest` applies, applied
+// here so the page can get the archive from the same single API call.
+//
+// Returns null rather than falling back to "whatever is first". A prerelease
+// offered as though it were the current build is worse than no card at all.
+export function latestOf(releases) {
+  return (releases || []).find((r) => r && !r.draft && !r.prerelease) || null;
+}
+
+// The older releases worth listing, in the order GitHub gave them.
+//
+// **The order is not recomputed.** GitHub returns newest-first, and sorting
+// tags here would mean comparing version strings — where "0.9.0" sorts after
+// "0.10.0" as text. The API already knows the answer to a question this page
+// would get wrong.
+//
+// A release with no recognised bundle is left out: v0.4.0 and earlier carry
+// only the retired egui client (ADR-0089), and listing a version whose only
+// asset is `SHA256SUMS.txt` would offer a download that is not one.
+export function archiveOf(releases, latest) {
+  return (releases || []).filter((r) => {
+    if (!r || r.draft || r.prerelease) return false;
+    if (latest && r.tag_name === latest.tag_name) return false;
+    return (r.assets || []).some((a) => {
+      const b = bucketFor((a && a.name) || "");
+      return b === "win-setup" || b === "mac-dmg";
+    });
+  });
+}
+
 // Only accept a download URL served by GitHub for this repo, so a surprising
 // API payload can never turn into an off-site link.
 export function safeUrl(u) {
@@ -74,17 +105,56 @@ function fail() {
   status.append("Couldn't load the release list here. ", a);
 }
 
+// Draw the "previous versions" table.
+//
+// Every row is a version someone can install on purpose. The reason this
+// exists is the rollback: a release does not work, and the person needs the
+// one that did — not the newest.
+function renderArchive(releases) {
+  const section = document.getElementById("archive");
+  const body = document.getElementById("archive-rows");
+  if (!section || !body || !releases.length) return;
+
+  for (const rel of releases) {
+    const assets = {};
+    for (const a of (rel.assets || [])) {
+      const b = bucketFor(a.name || "");
+      if (b) assets[b] = a.browser_download_url;
+    }
+    const tr = document.createElement("tr");
+
+    const v = document.createElement("td");
+    v.textContent = rel.tag_name || "";
+    tr.append(v);
+
+    const win = document.createElement("td");
+    if (assets["win-setup"]) win.append(dlLink("Windows .exe", assets["win-setup"], true));
+    tr.append(win);
+
+    const mac = document.createElement("td");
+    if (assets["mac-dmg"]) mac.append(dlLink("macOS .dmg", assets["mac-dmg"], true));
+    tr.append(mac);
+
+    body.append(tr);
+  }
+  section.hidden = false;
+}
+
 // Guarded so `app.js` can be imported by `node --test site/app.test.mjs` for
 // the pure helpers above without rendering a page that isn't there.
 if (typeof document !== "undefined") boot();
 
 async function boot() {
   try {
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+    // One call, not two: this list carries the current release and the older
+    // ones, and an unauthenticated caller gets ~60 an hour per IP.
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
       headers: { "Accept": "application/vnd.github+json" }
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const rel = await res.json();
+    const all = await res.json();
+    const rel = latestOf(all);
+    if (!rel) { fail(); return; }
     const assets = {};
     for (const a of (rel.assets || [])) {
       const b = bucketFor(a.name || "");
@@ -119,8 +189,10 @@ async function boot() {
       a.textContent = "SHA256SUMS.txt for this release";
       p.append("→ ", a);
     }
-    const all = document.getElementById("all-releases");
-    if (rel.html_url && safeUrl(rel.html_url)) all.href = safeUrl(rel.html_url).replace(/\/tag\/.*/, "");
+    const allLink = document.getElementById("all-releases");
+    if (rel.html_url && safeUrl(rel.html_url)) allLink.href = safeUrl(rel.html_url).replace(/\/tag\/.*/, "");
+
+    renderArchive(archiveOf(all, rel));
   } catch (e) {
     fail();
   }

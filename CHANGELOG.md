@@ -9,6 +9,254 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-09-17 — Going back, and the first number from inside
+
+### Added
+
+- **dbboard can now say when its window first showed something.** The one
+  startup number this project had — a median of 318 ms — timed the window
+  *existing*, which happens before the interface has drawn anything. That was
+  not a gap in the method but its ceiling: from outside, a window either exists
+  or it does not, and what the webview is doing inside it is invisible.
+
+  So the app reports it instead. A clock starts on the first line of the
+  shell's `run()`, the interface reports after the frame that actually put
+  pixels on screen, and `startup_timing` answers both that figure and how long
+  the process has been up.
+
+  Two details that decide whether the number means anything. Reporting from
+  `onMount` would fire while the screen is still blank — the DOM exists, the
+  browser has not presented it — so the report waits for the frame after the
+  paint. And a reload paints again: the first report is the launch and later
+  ones are ignored, because keeping the latest would quietly turn a startup
+  measurement into a reload measurement.
+
+  The figure sits in **About dbboard**, under the version, as *First paint* —
+  launch the app, open the dialog, read it. A dash means no figure yet, which
+  is the honest answer; a zero would read as "it painted instantly".
+
+  Nothing is written to disk, nothing leaves the machine, and a failure to
+  report never stops the app from starting.
+
+### Security
+
+- **`rustls` moved to 0.23.45**, which carries the fix for
+  [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285):
+  TLS 1.3 handshake messages were accepted when they followed a key change
+  inside the same record, where RFC 8446 requires the connection to be closed.
+
+  The practical effect is narrow — the handshake transcript stays
+  authenticated, so this cannot be used to alter or complete a handshake; a
+  peer could merely send in plaintext what should have been encrypted without
+  being rejected. It is the same bug as Go's CVE-2025-61730.
+
+  This is the TLS under dbboard's own outbound connections, so it is worth
+  having even at that severity, and the fix was a lockfile move.
+
+  **The other `rustls` in the tree is not this.** `rustls 0.22.4` arrives via
+  `libsql`'s `hyper-rustls 0.25` and the advisory marks everything below
+  0.23.13 unaffected. It stays where it is, still the duplicate that collapses
+  when libsql moves up.
+
+### Added
+
+- **Rolling back to an earlier version is a supported move now, and the
+  download page will hand you one.** If a release does not work for you, the
+  one that did is listed under *Previous versions* rather than buried in the
+  Releases page.
+
+  The reason this needed more than a list: an older build that meets a
+  connection using a database engine added *after* it refuses **the whole**
+  `connections.toml`, not just that one entry. Rolling back to escape a broken
+  release could therefore land you on a build with no connections at all.
+
+  So every build now copies `connections.toml` aside the first time it runs —
+  as `connections.pre-<version>.toml`, before it has written anything. A copy
+  taken at that moment is a file the previous version can certainly read,
+  because it is the file that version wrote. Nothing is deleted and the copy
+  is never overwritten on later runs.
+
+  Your saved credentials are not involved either way: they live in the OS
+  keychain and are found by the same name whichever version is running.
+
+  Two things this deliberately does not do. It does not make older builds
+  tolerant of newer connection kinds — that reader has already shipped, and no
+  change here can reach it. And it does not yet snapshot saved queries or
+  table notes; losing those does not leave the app without connections, so
+  they wait.
+
+## [0.17.0] — 2026-09-10 — The half that was deferred
+
+### Added
+
+- **An agent can now ask what dbboard is.** A new `about` tool on the MCP
+  server answers in one call: what the product is for, which version of the
+  server the agent is talking to, which database engines it speaks, and what
+  each released version changed.
+
+  It reaches nothing — no connection, no database, no file of yours. The
+  answer is compiled into the build, which also means it describes the build
+  that is answering rather than whatever happens to be on disk beside it.
+
+  Ask it about a specific version and you get that version's changelog
+  section; ask about one this build does not carry and you get told so, along
+  with the versions it does.
+
+- **The schema comparison now includes indexes.** An index one side has and
+  the other does not, one over different columns, or one that is unique on
+  only one side — all of it shows up beside the columns.
+
+  The primary key's own index is left out on purpose. Every engine creates one
+  and the primary key is already compared on its own; listing both would count
+  one difference twice. A unique constraint's index *is* listed, because
+  nothing else in the report would tell you it went missing.
+
+  Indexes are matched by name, and the order of their columns is compared:
+  an index on `(customer_id, created_at)` is not the same as one on
+  `(created_at, customer_id)`, and the difference is usually the reason a
+  query got slow.
+
+  Postgres, Neon, Supabase, Aurora DSQL, MySQL, Turso and D1 compare indexes.
+  Firestore and MongoDB do not, and the "no differences" message says which
+  of the three scopes you got.
+
+- **The schema comparison now includes foreign keys.** A key that one side has
+  and the other does not, or that points at a different table or different
+  columns, shows up beside the column differences.
+
+  Keys are matched on the columns they sit on rather than on their names,
+  because engines generate those names and the same migrations run twice can
+  produce different ones — matching on the name would have reported every key
+  as replaced when only the label moved. A name that differs is still
+  reported, just as its own kind of difference, so "this is called something
+  else" reads differently from "this points somewhere else".
+
+  Postgres, Neon, Supabase, Aurora DSQL, MySQL, Turso and D1 compare foreign
+  keys. Firestore and MongoDB do not have them in this sense, and the
+  "no differences" message says which of the two you got. Indexes are still
+  not compared.
+
+
+## [0.16.1] — 2026-09-08 — What 0.16.0 showed on screen
+
+### Fixed
+
+- **The Saved button in the query editor looks like a button again.** It
+  shipped in 0.16.0 with none of its styling — a bare browser button sitting
+  next to the properly drawn History chip. The rules existed; they just lived
+  in a neighbouring component, and the app's styling is per-component, so they
+  never reached it.
+
+- **The mark in the title bar is the app's own icon.** It had been a plain
+  indigo square — a placeholder from the first mockup that outlived the
+  mockup — sitting a few pixels from the real icon in the Dock and the task
+  bar. Same artwork in both places now.
+
+
+## [0.16.0] — 2026-09-08 — Everyday work
+
+### Added
+
+- **Two databases, side by side.** A new **Compare** tab answers the question
+  you used to answer by squinting at two Structure tabs: pick another
+  connection of the same engine, and dbboard lists what the two schemas
+  disagree about — tables one side has and the other does not, columns that
+  differ in type, nullability or default, and primary keys that do not match.
+  Only what differs is listed; a database with three hundred tables and one
+  difference gives you one line.
+
+  It compares types exactly as each engine spells them. `VARCHAR(255)` and
+  `varchar` are reported as different even where they may well mean the same
+  thing, because the alternative is a tool that quietly decides two columns
+  match and lets a real difference through. A second look costs you a moment;
+  a missed difference costs you the migration.
+
+  Two connections on different engines cannot be compared, and the app says so
+  instead of trying: deciding whether Postgres `text` is MySQL
+  `varchar(255)` is a question this does not answer.
+
+  While a comparison is on screen, the sidebar marks every table it mentions,
+  and clicking one jumps the report to it. It does not filter the report, and
+  switching connection in the sidebar does not replace it — what you are
+  reading stays where you left it.
+
+  Indexes and constraints are not compared yet, and the "no differences"
+  message says as much rather than implying more than it checked.
+
+- **Queries you want to keep now have somewhere to live.** The editor has
+  always remembered what you ran, but that list is disposable on purpose — it
+  is capped, it de-duplicates, and there is a Clear button next to it. A query
+  you spent an afternoon getting right is not that. Name it, and it stays:
+  per connection, listed newest first, one click to put it back in the editor.
+
+  They are kept in `saved-queries.toml`, next to your connections and table
+  notes, rather than inside the app window's own storage. That distinction is
+  invisible right up until it matters: browser-style storage is emptied by
+  "clear site data", no backup of your settings includes it, and it does not
+  come with you to a new machine. Renaming a connection keeps its queries, and
+  saving over an existing name asks first.
+
+- **Results save as JSON, not only as CSV.** The save dialog offers a third
+  format, and the difference is not punctuation: the CSV and TSV exports have
+  to flatten every cell to a string, because that is all a spreadsheet cell
+  holds. An empty CSV field could always have been either an empty string or
+  NULL, a document arrived as text that needed parsing a second time, and a
+  blob arrived as the word `<blob>`. JSON keeps NULL as null, numbers as
+  numbers, and a document as a document.
+
+  Two details you would otherwise find out the hard way. A query selecting two
+  columns of the same name — `SELECT a.id, b.id` — keeps both, the second as
+  `id:2`, rather than one overwriting the other in a file that still parses.
+  And the file carries no byte-order mark: the CSV export deliberately writes
+  one so Excel opens it in the right encoding, and JSON parsers reject exactly
+  that byte.
+
+  Saving now also says what the file holds. An export has always written the
+  rows on screen, which since paging arrived is routinely one page of several;
+  the confirmation names the count instead of leaving a file that gets read
+  later as the whole table. **That applies to the CSV export too**, which had
+  been quiet about it.
+
+- **A browsed table no longer ends at row 100.** Clicking a table has always
+  shown its first rows and stopped; the bound was a truncation, never a first
+  page. It is a page now — Previous and Next walk the whole table, one page at
+  a time, and no page costs more than the first.
+
+  Pages are keyed, not counted: each one resumes strictly after the previous
+  page's last row rather than skipping a running total, so a row inserted
+  while you read cannot make a row appear twice or vanish between pages.
+  Nothing is held open between pages either, so a dropped connection or a
+  window left overnight costs you the click, not the position.
+
+  Two things it deliberately does not do. It does not tell you how many rows
+  the table has: that answer costs a full scan per page and goes stale as soon
+  as it is given, and "Count rows" on the table's right-click menu already
+  answers it when you actually want it. And it does not touch SQL you typed —
+  a statement you wrote is run as written, exactly as before.
+
+  A table with **no primary key** still shows one page, and now says so
+  instead of implying the table ended there. There is no stable order to
+  resume from without a key, and the alternative — counting rows and skipping
+  them — is the thing that quietly repeats and drops rows.
+
+### Fixed
+
+- **Updating in place from 0.14.0 or earlier leaves the old name on screen,
+  and 0.15.0's notes said otherwise.** They claimed the Dock would show
+  `dbboard` because the updated bundle says so inside. It does not: macOS
+  names an application after its `.app` file and ignores a display name that
+  disagrees with it, which is what stops any bundle from claiming to be any
+  application. Measured on a real 0.14.0 → 0.15.0 update — re-registering with
+  `lsregister` and restarting the Dock changes nothing, because it is not a
+  cache.
+
+  If yours still reads `dbboard-desktop`, it is the current version wearing
+  the old label. Either rename it —
+  `mv /Applications/dbboard-desktop.app /Applications/dbboard.app`, and the
+  updater follows — or install from the `.dmg` again. Nothing is lost either
+  way: connections and settings hang off the bundle identifier, which has not
+  changed.
+
 ## [0.15.0] — 2026-09-03 — The app has its own name
 
 ### Changed

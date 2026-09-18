@@ -92,6 +92,7 @@ async fn capabilities_reports_adapter_id_and_flags() {
                 "has_execute": true,
                 "has_atomic_restore": true,
                 "has_foreign_keys": true,
+                "has_list_indexes": true,
             }
         })
     );

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { save } from '@tauri-apps/plugin-dialog';
   import { timestampedFileName } from '$lib/export/filename';
+  import { toJsonFile } from '$lib/export/json';
   import {
     displayCell,
     isDocument,
@@ -45,6 +46,10 @@
     // the declared members instead (ADR-0102). Empty for a non-enum table, and
     // for any result that is not an editable browse.
     enums?: Record<string, string[]>;
+    // Whether rows exist outside this grid — a truncated run, or one page of a
+    // paged browse (ADR-0145). An export can only write what the grid holds, so
+    // the confirmation says which of the two it just wrote.
+    partial?: boolean;
     // Called after a save commits, so the parent can re-run the browse and show
     // engine-normalised values.
     onSaved?: () => void;
@@ -57,6 +62,7 @@
     limit,
     edit = null,
     enums = {},
+    partial = false,
     onSaved,
   }: Props = $props();
 
@@ -320,23 +326,37 @@
   }
 
   // Save the export (selection or all rows) to a file the user names in the
-  // native "Save As" dialog. The chosen extension picks the delimiter (.tsv →
-  // tab, anything else → comma); the file always carries a UTF-8 BOM so Excel
-  // on a non-UTF-8 code page opens it without mojibake (ADR-0035). Cancelling
-  // the dialog is a silent no-op.
+  // native "Save As" dialog. The chosen extension picks the format: .json keeps
+  // every cell's type (ADR-0146), .tsv is tab-delimited, anything else is CSV.
+  // Both delimited forms carry a UTF-8 BOM so Excel on a non-UTF-8 code page
+  // opens them without mojibake (ADR-0035); JSON must not, because parsers
+  // reject it. Cancelling the dialog is a silent no-op.
   async function saveFile() {
     const path = await save({
       defaultPath: timestampedFileName('dbboard-result', 'csv'),
       filters: [
         { name: 'CSV', extensions: ['csv'] },
         { name: 'TSV', extensions: ['tsv'] },
+        { name: 'JSON', extensions: ['json'] },
       ],
     });
     if (!path) return;
-    const sep = path.toLowerCase().endsWith('.tsv') ? '\t' : ',';
+    const lower = path.toLowerCase();
+    const exported = rowsForExport();
+    const text = lower.endsWith('.json')
+      ? toJsonFile(columns, exported)
+      : toDelimitedFile(columns, exported, lower.endsWith('.tsv') ? '\t' : ',');
     try {
-      await saveTextFile(path, toDelimitedFile(columns, rowsForExport(), sep));
-      flash(i18n.t('result-saved', { name: baseName(path) }));
+      await saveTextFile(path, text);
+      // Say what the file holds when it is not the whole result. The export has
+      // always written only what the grid has; since paging shipped that is
+      // routinely one page of many, and a file that does not say so gets read
+      // later as the whole table.
+      flash(
+        partial && selected.size === 0
+          ? i18n.t('result-saved-partial', { name: baseName(path), count: exported.length })
+          : i18n.t('result-saved', { name: baseName(path) }),
+      );
     } catch {
       flash(i18n.t('result-save-failed'));
     }

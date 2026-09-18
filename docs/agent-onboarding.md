@@ -75,9 +75,14 @@ keychain.
 
 ### Tools
 
-`list_connections` · `list_tables` · `describe_table` · `search_schema` ·
-`list_relationships` · `run_read_query` · `get_annotations` ·
-`dump_database` — all read-only.
+`about` · `list_connections` · `list_tables` · `describe_table` ·
+`search_schema` · `list_relationships` · `run_read_query` ·
+`get_annotations` · `dump_database` — all read-only.
+
+`about` is the one that reaches nothing at all: what dbboard is, which
+version you are talking to, which engines it speaks, and what a given
+version changed. Start there if this server was handed to you without
+explanation (ADR-0154).
 
 `get_ui_locale` · `set_ui_locale` change dbboard's display language and
 reach no database at all (ADR-0107). Use them only when asked: the effect

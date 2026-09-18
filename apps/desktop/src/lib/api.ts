@@ -10,6 +10,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import type { EditFields } from '$lib/connections/draft';
+import type { SavedQueryView } from '$lib/queries/saved';
 import type { CellEdit, KeyColumn } from '$lib/grid/edit';
 import type { DumpPlan, DumpOutcome, DumpProgress } from '$lib/backup/plan';
 import type {
@@ -150,7 +151,19 @@ export interface QueryOutput {
   columns: Column[];
   rows: Cell[][];
   row_count: number;
+  // The result was cut and the rest is out of reach from here — ask a
+  // narrower question. Not the same as `has_more`, which comes with a way
+  // forward (ADR-0145).
   truncated: boolean;
+  // Rows exist beyond this page. Always false for a hand-written statement,
+  // which is run as written and never paged.
+  has_more: boolean;
+  // The cursor to pass back as the next page's `after`. Opaque: it is the
+  // page's last row's key values, and the only supported use is handing it
+  // back. Null when there is no next page — and also when there is one but
+  // no stable order to resume from (a table with no primary key), which is
+  // why `has_more` can be true while this is null.
+  next_cursor: Cell[] | null;
 }
 
 export const listConnections = (): Promise<ConnectionView[]> =>
@@ -215,6 +228,23 @@ export const runReadQuery = (
 ): Promise<QueryOutput> =>
   invoke('run_read_query', { connectionId, sql, maxRows: maxRows ?? null });
 
+// Read one keyset page of a table (ADR-0145). Separate from `runReadQuery`
+// because this one lets the backend *build* the statement, which is what
+// makes paging safe: there is no author whose LIMIT it could contradict.
+// Pass the previous page's `next_cursor` as `after`; omit it for page one.
+export const browsePage = (
+  connectionId: string,
+  table: TableInfo,
+  pageRows?: number,
+  after?: Cell[] | null,
+): Promise<QueryOutput> =>
+  invoke('browse_page', {
+    connectionId,
+    table,
+    pageRows: pageRows ?? null,
+    after: after ?? null,
+  });
+
 // Apply one row's staged edits as a single UPDATE (ADR-0042) — the app's first
 // DB write path, deliberately NOT exposed to MCP agents. `schema` is the
 // table's schema (null on SQLite/libSQL); `key` carries the row's primary-key
@@ -245,6 +275,133 @@ export const configPath = (): Promise<string> => invoke('config_path');
 // happens in Rust so the file lands at the chosen path.
 export const saveTextFile = (path: string, contents: string): Promise<void> =>
   invoke('save_text_file', { path, contents });
+
+// --- Schema diff (ADR-0148) ---------------------------------------------
+//
+// Compare two connections' schemas. Read-only on both sides. Refused when the
+// two are different engines: deciding whether Postgres `text` is MySQL
+// `varchar(255)` needs a type-correspondence table this does not have, and a
+// report that guesses would look authoritative while being wrong.
+//
+// Nothing is normalised — types are compared exactly as each engine spelled
+// them — because the one mistake a diff must not make is calling two things
+// the same. Column order is not a difference; primary-key order is.
+
+export type ColumnField = 'DeclaredType' | 'Nullable' | 'Default' | 'PrimaryKey';
+
+export interface ColumnDiff {
+  name: string;
+  left: ColumnInfo;
+  right: ColumnInfo;
+  fields: ColumnField[];
+}
+
+// The wire shape of `dbboard_core::ForeignKey` — deliberately not the
+// `Relationship` above, which is the relationship browser's own projection
+// (`from_*` / `to_*`) and would misname these fields.
+export interface ForeignKeyRef {
+  columns: string[];
+  referenced_table: TableInfo;
+  referenced_columns: string[];
+  constraint_name: string | null;
+}
+
+export interface IndexInfo {
+  name: string;
+  // In index order — the order is what the index is for, so it is not sorted.
+  columns: string[];
+  unique: boolean;
+}
+
+export type IndexField = 'Columns' | 'Unique';
+
+export interface IndexDiff {
+  // Indexes are matched on their name: it is what somebody wrote in a
+  // migration and what they would DROP. (A foreign key is matched on its
+  // columns instead, because engines generate those names.)
+  name: string;
+  left: IndexInfo;
+  right: IndexInfo;
+  fields: IndexField[];
+}
+
+export type ForeignKeyField = 'ReferencedTable' | 'ReferencedColumns' | 'Name';
+
+export interface ForeignKeyDiff {
+  // The local columns the key is on — how the two sides were matched, since
+  // engines generate constraint names and the same migration can produce
+  // different ones.
+  columns: string[];
+  left: ForeignKeyRef;
+  right: ForeignKeyRef;
+  fields: ForeignKeyField[];
+}
+
+export interface TableDiff {
+  table: TableInfo;
+  columns_only_in_left: ColumnInfo[];
+  columns_only_in_right: ColumnInfo[];
+  columns_changed: ColumnDiff[];
+  foreign_keys_only_in_left: ForeignKeyRef[];
+  foreign_keys_only_in_right: ForeignKeyRef[];
+  foreign_keys_changed: ForeignKeyDiff[];
+  // Both sides' key columns, in key order, when they differ. `(a, b)` and
+  // `(b, a)` index different things, so order is part of the comparison.
+  primary_key: [string[], string[]] | null;
+  indexes_only_in_left: IndexInfo[];
+  indexes_only_in_right: IndexInfo[];
+  indexes_changed: IndexDiff[];
+}
+
+export interface SchemaDiff {
+  tables_only_in_left: TableInfo[];
+  tables_only_in_right: TableInfo[];
+  // Only tables that differ. The report is what differs, not an inventory.
+  tables_changed: TableDiff[];
+  // Whether foreign keys were part of the comparison. False when an engine
+  // cannot report them (document stores) — so "no differences" never claims
+  // more than it checked.
+  foreign_keys_compared: boolean;
+  // The same, for indexes. The primary key's own index is never included —
+  // the key itself is compared, and reporting both would say one thing twice.
+  indexes_compared: boolean;
+}
+
+export const diffSchemas = (
+  leftConnectionId: string,
+  rightConnectionId: string,
+): Promise<SchemaDiff> =>
+  invoke('diff_schemas', { leftConnectionId, rightConnectionId });
+
+// --- Saved queries (ADR-0147) -------------------------------------------
+//
+// Statements the operator deliberately kept, in `saved-queries.toml` beside
+// the rest of the profile — not in the webview's storage, which "clear site
+// data" empties and no backup sees. Deliberately NOT MCP tools: an agent can
+// already run any statement it can compose, so listing these would add no
+// capability, only the operator's private working notes in its context.
+
+export const listSavedQueries = (
+  connectionId: string,
+): Promise<SavedQueryView[]> => invoke('list_saved_queries', { connectionId });
+
+// `overwrite: false` refuses a name that is taken, rejecting with the string
+// `duplicate-name` so the caller can ask before replacing. Replacing silently
+// is how a saved query is lost.
+export const saveQuery = (
+  connectionId: string,
+  name: string,
+  sql: string,
+  overwrite: boolean,
+): Promise<void> =>
+  invoke('save_query', { connectionId, name, sql, overwrite });
+
+// Resolves to whether a query was actually removed, so a second click on a
+// stale list is a no-op rather than an error.
+export const deleteSavedQuery = (
+  connectionId: string,
+  name: string,
+): Promise<boolean> => invoke('delete_saved_query', { connectionId, name });
 
 // --- Logical backup / dump (write-to-file path, ADR-0049/0050) ----------
 //

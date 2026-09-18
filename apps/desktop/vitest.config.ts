@@ -11,6 +11,12 @@ export default defineConfig({
   test: {
     include: ['src/**/*.{test,spec}.ts'],
     environment: 'node',
+    // Vitest stubs CSS to an empty string by default, which is right for
+    // components (no test mounts one) and wrong for `scoped-classes.test.ts`,
+    // which reads the global sheets to know which classes any component may
+    // use. Without this it sees every sheet as empty and reports the whole
+    // app as unstyled.
+    css: true,
   },
   resolve: {
     alias: {

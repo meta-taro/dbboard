@@ -119,6 +119,13 @@ pub const POINTS: &[Point] = &[
         group: Group::Browse,
         what: "The first page the grid asks for: `SELECT * … LIMIT 100`",
     },
+    Point {
+        id: "browse/next_page_100",
+        group: Group::Browse,
+        what: "The *last* page of the same table, reached by keyset cursor — \
+               the point of the choice is that it matches `first_page_100` \
+               rather than drifting from it (ADR-0145)",
+    },
     // ---- Large result sets ----------------------------------------------
     //
     // `MAX_RESULT_ROWS` is 10,000, so that is the largest result the UI can

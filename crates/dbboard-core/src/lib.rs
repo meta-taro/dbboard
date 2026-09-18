@@ -9,6 +9,7 @@
 //! marker traits in [`capabilities`].
 
 mod adapter;
+mod browse;
 mod capabilities;
 mod dump;
 mod error;
@@ -17,20 +18,23 @@ mod read_only;
 mod restore;
 mod row;
 mod schema;
+mod schema_diff;
 mod sort;
 mod value;
 mod write_back;
 mod write_policy;
 
 pub use adapter::DatabaseAdapter;
+pub use browse::browse_page;
 pub use capabilities::{
     AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
     ViewIntrospection,
 };
 pub use dump::{
-    build_count, build_insert, build_select_page, plan_dump, run_dump, value_literal, DumpControl,
-    DumpError, DumpOutcome, DumpPlan, DumpProgress, DumpResult, DumpSink, TableFailure, TablePlan,
-    TableTruncation, DEFAULT_BACKUP_WARN_ROWS, INSERT_BATCH_ROWS, READ_PAGE_ROWS,
+    build_count, build_insert, build_select_page, cursor_from_last_row, plan_dump, run_dump,
+    value_literal, DumpControl, DumpError, DumpOutcome, DumpPlan, DumpProgress, DumpResult,
+    DumpSink, TableFailure, TablePlan, TableTruncation, DEFAULT_BACKUP_WARN_ROWS,
+    INSERT_BATCH_ROWS, READ_PAGE_ROWS,
 };
 pub use error::{DbError, DbResult};
 pub use limits::{too_many_rows_error, MAX_RESULT_ROWS};
@@ -44,7 +48,13 @@ pub use restore::{
     RestoreStatement, StatementFailure, StatementKind,
 };
 pub use row::{Column, QueryResult, Row};
-pub use schema::{resolve_referenced_columns, ColumnInfo, ForeignKey, TableInfo, TableSchema};
+pub use schema::{
+    resolve_referenced_columns, ColumnInfo, ForeignKey, IndexInfo, TableInfo, TableSchema,
+};
+pub use schema_diff::{
+    diff_schemas, diff_snapshots, ColumnDiff, ColumnField, ForeignKeyDiff, ForeignKeyField,
+    IndexDiff, IndexField, SchemaDiff, TableDiff, TableSnapshot,
+};
 pub use sort::{compare_values, sorted_row_order, SortKey};
 pub use value::Value;
 pub use write_back::{

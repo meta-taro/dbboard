@@ -13235,13 +13235,911 @@ matcher.
   to be uninstalled by hand. This is the cost of renaming, it is paid once,
   and it is smallest now: the client is pre-1.0 and its install base is
   countable.
-- **On macOS the in-app updater replaces the bundle at the path it is running
-  from**, so an existing install keeps the folder name `dbboard-desktop.app`
-  while its Info.plist — and therefore the Dock — says `dbboard`. Cosmetic,
-  and it resolves itself for anyone who installs from a `.dmg` again.
+- **On macOS an in-place update does not rename anything a person can see.**
+  The updater replaces the bundle at the path it is running from, so an
+  existing install keeps the folder name `dbboard-desktop.app`. This ADR first
+  claimed the Dock would show `dbboard` anyway, because the Info.plist inside
+  says so. **That was wrong, and measuring it said so** (2026-09-04, an actual
+  0.14.0 → 0.15.0 update): macOS names an application after its `.app`
+  file, and ignores a `CFBundleDisplayName` that disagrees with it — otherwise
+  any bundle could claim to be any application. Re-registering with
+  `lsregister -f` and restarting the Dock changes nothing, because it is not a
+  cache.
+
+  So an existing macOS install keeps reading `dbboard-desktop` until someone
+  renames the bundle or installs from the `.dmg` again. Both work; renaming
+  is `mv /Applications/dbboard-desktop.app /Applications/dbboard.app`, and the
+  updater follows the bundle to its new path.
 - **User data is untouched.** The config directory and the keychain entries
   derive from the bundle identifier (`io.github.meta-taro.dbboard`) and the
   `directories` lookup, neither of which changes. Nobody loses a connection
   over this.
 - `dbboard-mcp`'s window matcher already accepted both names, which is why the
   screenshot verbs keep working against either build without a change.
+
+## ADR-0144 — The dependency audit runs nightly, because its answer changes without a commit (2026-09-04)
+
+**Status.** Accepted. Extends
+[ADR-0117](#adr-0117--cargo-deny-is-a-blocking-ci-job-not-a-suggestion-2026-08-14) (which
+made `cargo deny check` blocking) with a trigger it did not have.
+
+**Context.** Every other check in `ci.yml` answers a question about the diff:
+does this code compile, does it pass its tests, does the frontend type-check.
+Run it twice on the same tree and it says the same thing. `cargo deny check`
+does not. Its input is the RustSec advisory database and the crates.io yank
+flags, both of which move on their own, so the same commit is green today and
+red tomorrow with nothing on this side having changed.
+
+That is not hypothetical. In eight days it happened twice:
+
+- `chacha20 0.10.1` was yanked while v0.14.0 was being cut. It reached the
+  tree through `rand 0.10` (hickory, russh, ssh-cipher); no manifest here
+  names it. Found because the merge of #227 happened to be looked at.
+- `wnaf 0.14.0` was yanked the following week, arriving through
+  `russh → p256 → primeorder`. Found because a documentation-only pull request
+  went red, and because the maintainer looked at it — the session that opened
+  that PR had already moved on.
+
+Both fixes were three lines of `Cargo.lock`. The cost was never the repair; it
+was the interval between "every branch is red" and "somebody notices".
+
+**Decision.** `ci.yml` gains a nightly `schedule` trigger, and **only the
+`deps` job runs on it** — `rust`, `frontend` and `site` carry
+`if: github.event_name != 'schedule'`. A nightly that rebuilt the workspace
+would burn runner minutes re-answering a question no change had asked, and a
+noisy nightly is one nobody reads. It runs at 07:00 UTC, an hour after
+`pii-scan.yml`, so the two daily jobs do not land on the runner together.
+
+The schedule does not fix anything by itself: a person still bumps the lock.
+What it decides is *when the repo finds out* — within a day, rather than
+whenever the next pull request happens to be opened.
+
+**Consequences.**
+
+- A scheduled failure notifies through GitHub's own path for scheduled
+  workflows on the default branch. There is no new integration to maintain and
+  no secret to hold.
+- The nightly runs on `develop`, so a yank is reported against the integration
+  branch rather than against whichever feature branch is unlucky.
+- `crates/dbboard-config/tests/nightly_deps_drift.rs` fails if the schedule is
+  removed, if `deps` excludes itself from it, or if another job stops sitting
+  it out. The last one matters most: adding a job to `ci.yml` without the
+  guard silently turns the cheap nightly into a full build.
+- The concurrency group now includes whether the run is scheduled, so a
+  nightly can neither cancel nor be cancelled by the run a person is waiting
+  on.
+
+## ADR-0145 — Paging is a missing row, not a slow one, and the cursor is a key rather than a connection (2026-09-04)
+
+**Status.** Accepted. Settles the four questions
+[issue 0029](../.claude/issues/0029-pagination-for-large-results.md) left open,
+and corrects the premise it inherited from
+[ADR-0142](#adr-0142--the-first-optimisation-the-baseline-bought-was-the-decision-not-to-optimise-2026-09-02).
+
+**Context.** Issue 0029 was written as the one large optimisation the
+performance baseline still pointed at: the grid shows a few dozen rows,
+`MAX_RESULT_ROWS` is 10,000, and the difference is 200×. Reading the code
+before designing anything showed that the 200× is not being paid.
+
+- The browse query is built in the frontend and already bounded:
+  `selectTopN` in `apps/desktop/src/lib/sql/build.ts` emits
+  `SELECT * FROM t LIMIT 100` (`BROWSE_ROWS`).
+- `McpService::run_read_query` then floors the request again at
+  `DEFAULT_MAX_ROWS` (200), ceiling `MAX_MAX_ROWS` (1000).
+- Postgres does not materialise even that speculatively: `run_read_only_txn`
+  declares a server-side cursor inside the read-only transaction and stops at
+  `max_rows`, falling back to a capped portal stream on Aurora DSQL, where
+  `DECLARE CURSOR` is rejected.
+
+`MAX_RESULT_ROWS` is the ceiling of `query`, not of anything the window
+reaches. So the 4.4 ms of `result/query_10k` is not on the path a user takes,
+and no amount of paging removes a cost the browse path was never paying.
+
+What the reading did find is plainer, and worse: **there is no way to see row
+101.** The bound has always been a truncation, never a first page. That
+reframes the work — this is a missing feature whose performance property is
+that it stays O(1) per page, not an optimisation of an existing slow path. The
+baseline gains nothing to celebrate here, and the changelog entry is about
+rows a person can now reach, not milliseconds they no longer pay.
+
+**Decision.** Four answers, in the order the issue asked them.
+
+1. **Only the generated browse query pages.** Hand-written SQL is left alone.
+   Rewriting a statement a person typed makes the tool argue with the `LIMIT`
+   they wrote, and the disagreement is visible in the results — the one place
+   a database client must not be clever. The truncation flag already tells
+   them when their own query was cut.
+
+2. **The cursor is a key, not a connection.** Pages are keyset:
+   `ORDER BY <pk>`, `WHERE (k1, k2) > (v1, v2)`, `LIMIT n` — each page a fresh
+   statement carrying the previous page's last key. Nothing is held between
+   pages, so there is no teardown to get right when a connection drops, a tab
+   closes, or a window sits idle overnight, and an insert between pages cannot
+   shift rows across the boundary the way `OFFSET` lets it.
+
+   This is not new code. `build_select_page` in
+   `crates/dbboard-core/src/dump/select.rs` has built exactly this since
+   [ADR-0049](#adr-0049--local-logical-dump-schema--data-dump-only), for the dump, with the row-value comparison that
+   composite keys need on both SQLite 3.15+ and Postgres. Browse reuses it
+   rather than growing a second spelling of the same SQL. Its existing
+   contract also settles the awkward case: with no primary key there is no
+   stable cursor, so such a table gets a first page and no next.
+
+3. **The paging fields go on `QueryResult`, before it freezes.** `has_more`
+   and the cursor are optional additions to the shape in
+   `docs/api-contract.md`, which becomes the public API for SemVer at v1.0
+   ([ADR-0011](#adr-0011--semver-for-dbboard-tiered-db-version-support-compatibilitymd-as-the-runbook)). Putting them only on the IPC-side `QueryOutput` is
+   cheaper today and unavailable later: after the freeze the same addition is
+   a breaking change, and an agent reaching the contract over MCP would be
+   left with `truncated` and no way forward. Per the Pacing Note in
+   `CLAUDE.md`, this touches the contract layer, so `dbboard-web` carries the
+   matching ADR.
+
+4. **No total count.** The result says whether more rows exist, not how many.
+   A `COUNT(*)` per page doubles the queries and full-scans a large table on
+   every page turn; one at the start goes stale as rows are inserted and
+   delays the first paint by exactly the scan it costs. The scrollbar
+   therefore promises "there is more", which is true, instead of a length,
+   which would not be. An exact number is already a question a person can ask
+   deliberately — `countRows` sits on the table's right-click menu — and one
+   honest answer is better than two disagreeing ones.
+
+**Consequences.**
+
+- Browsing a table becomes unbounded in reach and bounded in cost: any row is
+  reachable, and no page costs more than the first.
+- A table with no primary key still shows one page. That is a visible gap, and
+  the right place to close it is a chosen sort key, not a hidden `OFFSET`.
+- `result/query_10k` stays in the baseline unchanged. It measures what the
+  representation costs, not what the application does, and this work does not
+  move it — recording that here so the next reader does not go looking for the
+  improvement it did not produce.
+- The contract grows two optional fields now and cannot grow them after v1.0.
+- `dbboard-web` owes the mirrored ADR before its own contract freezes.
+
+## ADR-0146 — The JSON export keeps the types the CSV export has to throw away (2026-09-07)
+
+**Status.** Accepted. Settles the shape and value rules for
+`Export results as JSON`, the first of the three items in the **v0.16 —
+Everyday work** slot.
+
+**Context.** The result grid has exported CSV and TSV since
+[ADR-0035](#adr-0035--export-a-result-set-to-csv--tsv-copy-to-clipboard-save-via-native-dialog). Both go through `exportValue`, which flattens every cell to a
+string because a spreadsheet cell has nowhere else to put one: `NULL` becomes
+`''`, a document becomes its JSON *text*, a blob becomes the literal
+`<blob>`. That is the right trade for a file a person opens in Excel and the
+wrong one for a file a program reads back — a consumer that cannot tell `NULL`
+from an empty string cannot reconstruct the row, and one that receives a
+document as a quoted string has to parse it a second time.
+
+So JSON is not CSV with different punctuation. It exists because the types
+survive it.
+
+**Decision.** Five answers.
+
+1. **An array of row objects**, not the grid's own shape. `[{"id": 1, …}, …]`
+   is what `jq`, a dataframe loader and a hand-written script all expect. The
+   `columns`-beside-`rows` shape is already available to anything that wants
+   column metadata — it is what the API contract serves
+   ([ADR-0011](#adr-0011--semver-for-dbboard-tiered-db-version-support-compatibilitymd-as-the-runbook)) — and duplicating it in a file that
+   exists for downstream tools would serve neither audience well.
+
+2. **A repeated column name is numbered, not dropped.** `SELECT a.id, b.id` is
+   ordinary SQL and a JSON object cannot hold two `id` members: the second
+   would overwrite the first, and the file would parse while being quietly
+   wrong. Repeats are keyed by their own occurrence — `id`, `id:2`, `id:3` —
+   so a result with no collisions is spelled exactly as the engine reported
+   it. An unnamed column (an expression in SQLite) is keyed `column:<position>`
+   rather than `""`, which is a legal JSON key no consumer can address.
+
+3. **`$json` is stripped, `$blob` is kept.** One rule, not two exceptions: a
+   tag carries type information the transport cannot express by itself. JSON
+   expresses a document natively, so the tag is noise every consumer would
+   have to strip. JSON cannot express bytes, so removing `$blob` would leave
+   base64 that reads as ordinary text with nothing to say it is not.
+
+4. **No byte-order mark, and this is where the two exports diverge.** The
+   delimited path deliberately leads with one so Excel on a non-UTF-8 code
+   page detects UTF-8 (ADR-0035). `JSON.parse` and most parsers reject a
+   leading BOM outright, so the same habit here would produce a file nothing
+   can read. The output is indented and newline-terminated instead: it is a
+   file a person names in a save dialog, so some of them open it in an editor.
+
+5. **The confirmation says when the file is not the whole result.** An export
+   has always written only what the grid holds. Before paging that was a
+   truncated run and said so on screen; since [ADR-0145](#adr-0145--paging-is-a-missing-row-not-a-slow-one-and-the-cursor-is-a-key-rather-than-a-connection-2026-09-04) it is routinely one
+   page of many, and a file that says nothing about it gets read later as the
+   whole table. The toast now names the row count and that it is what was on
+   screen. This corrects the CSV path too, which had the same silence.
+
+**What was not chosen.**
+
+- **A wrapper object carrying `truncated` / `has_more` beside the rows.** It
+  would make the file self-describing, at the cost of every consumer stripping
+  an envelope before reaching the data — and it would leave the two exports
+  disagreeing about what an export file is. The honesty belongs at the moment
+  of export, where the person is, rather than in a shape every later reader
+  pays for.
+- **Exporting the whole table by walking pages behind the button.** A button
+  labelled Save would then issue an unbounded series of queries. Whole-table
+  extraction already exists deliberately, as the dump (ADR-0049), and if a
+  JSON dump is wanted it belongs there rather than hidden in the grid's
+  toolbar.
+- **Stringifying integers to survive JavaScript.** `i64` values beyond 2^53
+  lose precision in `JSON.parse`, but the text this writes carries the exact
+  digits and every non-JavaScript consumer reads them correctly. Quoting all
+  numbers to protect one runtime would break every consumer that expects a
+  number.
+
+**Consequences.**
+
+- The grid's save dialog offers three formats; the extension picks one, as it
+  already did for `.tsv` vs `.csv`.
+- `NaN` and infinite `Real` values have no JSON spelling and serialize as
+  `null`, the same as the contract's own encoding does. Nothing in the app
+  produces them today; recording it here so the next reader does not read a
+  `null` as a `NULL`.
+- The serializer is pure and unit-tested (`$lib/export/json.ts`), like the
+  delimited one it sits beside.
+
+## ADR-0147 — A saved query goes in the profile, because the history is not where you keep things (2026-09-07)
+
+**Status.** Accepted. The second of the three items in the **v0.16 — Everyday
+work** slot, after [ADR-0146](#adr-0146--the-json-export-keeps-the-types-the-csv-export-has-to-throw-away-2026-09-07).
+
+**Context.** The editor already remembers what was run: a per-connection list
+in the webview's `localStorage`, capped at 50 and de-duplicated
+(`$lib/history/`). It would be one line to keep saved queries there too, and
+it would be the wrong line.
+
+There is a second history in the design — the `history.jsonl` of
+[ADR-0017](#adr-0017--query-history-persistence-json-lines-schema-shared-with-dbboard-web-stage-2), whose record schema `dbboard-web` mirrors
+(issue 0003). **Nothing writes it any more.** The reader and writer lived in
+`dbboard-ui`, the egui crate, and went with it when
+[ADR-0089](#adr-0089--the-egui-client-is-retired-tauri-is-the-only-client) retired that client; `dbboard-config` still resolves
+the path and `docs/roadmap.md` still carries the feature as done. Saved
+queries could not have ridden along on a file nobody writes. Tracked
+separately as issue 0033 — it is not this ADR's to fix, but it is this ADR's
+to have noticed. The history is something the tool records on
+your behalf, and it is disposable by design — capped, de-duplicated, cleared
+by the Clear button next to it. A saved query is the opposite: an artefact the
+operator made on purpose, sometimes the distilled result of an afternoon.
+
+`localStorage` matches the first and not the second. It is emptied by "clear
+site data", it is invisible to any backup of the config directory, and it does
+not come along when the operator moves to another machine — which this project
+has now done once, and found out the hard way what lives outside git.
+
+**Decision.**
+
+1. **`saved-queries.toml`, in the config dir, beside `connections.toml` and
+   `annotations.toml`.** Same `secure_fs` at-rest posture (user-only), same
+   atomic whole-file write, same "a missing file is an empty store" rule, same
+   loud refusal of a duplicate or an unknown schema version. It is a sibling
+   of `annotations` in every respect because it is the same kind of thing:
+   local text about a database, which never goes to the database.
+
+2. **Anchored by connection id, and scoped to it.** Renaming a connection
+   keeps its queries, exactly as notes do. A saved query names tables that
+   exist in one database, so offering it against a connection where they do
+   not is an error the tool can decline to produce.
+
+3. **Overwriting requires an answer.** `add` refuses a name that is taken and
+   the caller confirms before calling `replace`. Silent replacement is how a
+   saved query is lost, and the store cannot know whether it was meant. The
+   command surface carries this through: `save_query` takes `overwrite`, and
+   answers a clash with the exact string `duplicate-name` so the frontend can
+   tell "ask the operator" from "report a failure".
+
+4. **Not an MCP tool.** An agent can already compose and run any statement, so
+   listing these adds no capability it lacks. What it would add is the
+   operator's private working notes arriving in an agent's context because a
+   tool enumerated them — the inverse of the rule
+   [ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list) sets for new verbs. Desktop-only, like inline cell
+   editing and the dump before it.
+
+5. **The file keeps insertion order; the list on screen is by recency.**
+   Insertion order makes the file's diffs readable — a new query is a new
+   stanza at the end, not a reshuffle. Each entry carries `saved_at`, so the
+   view sorts without the storage having to.
+
+**What was not chosen.**
+
+- **Reusing the history store.** Covered above: same shape, opposite
+  lifecycle. Storing the deliberate thing in the disposable place is how it
+  gets thrown away.
+- **A query that belongs to no connection, runnable against any.** A real
+  need — the same report against dev and prod — and deliberately deferred. It
+  is additive to this file format (a stanza with no id, or a copy action), and
+  guessing at it now would fix the wrong half of the problem before anyone has
+  hit it.
+- **A cap, like the history's 50.** The history is capped because the tool
+  writes it without being asked. Nothing here is written without being asked.
+
+**Consequences.**
+
+- One more file in the config directory, and therefore one more thing that a
+  profile backup carries and a machine move must bring.
+- SQL text the operator typed lands on disk. If they paste a credential into a
+  statement and save it, it is in this file — which is why it is written
+  user-only, like every other store here. Nothing scans it.
+- The frontend grew a component (`SavedQueries.svelte`) rather than more of
+  `QueryPanel`, which was at 736 of its 800-line ceiling.
+
+## ADR-0148 — A schema diff that would rather report a cosmetic difference than miss a real one (2026-09-07)
+
+**Status.** Accepted for the comparison itself. The third item in the **v0.16
+— Everyday work** slot; this ADR settles what "different" means and ships the
+engine. **Where it appears in the UI is not decided here** — `CLAUDE.md`
+reserves visual direction for a person, and a default an agent fills in
+becomes the fact.
+
+**Context.** "Schema diff between two connections" has sat unchecked in Phase
+5 since it was written. The unstated question underneath it is what counts as
+a difference, and most of the ways to get that wrong share a direction: they
+call two things the same. A tool that reports a difference which turns out to
+be cosmetic costs the reader a second look. A tool that misses one costs them
+the migration.
+
+**Decision.**
+
+1. **Same engine only, and the refusal lives above this layer.** The
+   comparison here is pure and takes two sets of introspected tables; it has
+   no idea which engine produced them. Declining to compare Postgres against
+   MongoDB is the job of the layer that knows what a connection is. Comparing
+   *across* engines needs a type-correspondence table — is Postgres `text` the
+   same as MySQL `varchar(255)`? — and that table is a whole feature, with a
+   home already reserved for it in the Database Workspace plan's migration
+   phase (Compatibility Scan, band 7). Guessing at it now would fix the wrong
+   half.
+
+2. **Tables match on their qualified name, columns on their name.**
+   `public.orders` and `staging.orders` are different tables; matching on the
+   bare name would compare one against the other and report every column as a
+   difference.
+
+3. **Types are compared exactly as the engine spelled them.** No
+   normalisation, no case folding, no stripping of length modifiers. Deciding
+   that `VARCHAR(255)` and `varchar` are the same column needs engine
+   knowledge this layer does not have, and each normalisation rule is a chance
+   to hide a real difference. The cost is visible: a database restored through
+   a tool that respells types will show differences that are not. That is the
+   direction to be wrong in.
+
+4. **Column order is not a difference.** Two databases holding the same
+   columns in a different order are the same schema for every practical
+   purpose, and reporting the order would bury the real findings under noise
+   from every table that was ever rebuilt. Primary **key** order, by contrast,
+   *is* compared: `(a, b)` and `(b, a)` index different things.
+
+5. **Columns and the primary key; not indexes, not constraints.**
+   `describe_table` already returns columns for every adapter. Indexes are
+   reached differently by each engine and several of the eleven adapters have
+   not been asked whether they can. Shipping the half that is uniformly
+   available beats blocking on the half that is not — and the missing half is
+   additive.
+
+6. **A table that exists on one side only is reported once.** Not also as a
+   table full of missing columns: one finding per fact, or the count of
+   differences lies. An unchanged table is absent entirely — the report is
+   what differs, not an inventory, so a 300-table database with one difference
+   produces one entry.
+
+7. **The output is ordered.** Tables by qualified name, columns by name,
+   differing attributes in a fixed sequence. The inputs arrive in each
+   adapter's native order, and a report that reshuffles between runs cannot be
+   compared against the last one.
+
+**Consequences.**
+
+- `diff_schemas` is pure, I/O-free and unit-tested in `dbboard-core`, like the
+  dump's SQL rendering beside it. Wiring it to two connections, and refusing a
+  cross-engine pair, is a separate slice.
+- Case-only differences will be reported. That is the price of (3), and it is
+  the affordable half of the trade.
+- The feature is not usable from the client yet. `docs/roadmap.md` keeps the
+  Phase 5 item unchecked and says how far it got, because a half-built feature
+  ticked as done is worse than one that is honestly unfinished.
+
+## ADR-0149 — The comparison gets a tab, and the sidebar becomes its index rather than its filter (2026-09-08)
+
+**Status.** Accepted. Completes the third item of the **v0.16 — Everyday work**
+slot, on top of [ADR-0148](#adr-0148--a-schema-diff-that-would-rather-report-a-cosmetic-difference-than-miss-a-real-one-2026-09-07)'s comparison.
+
+**Context.** ADR-0148 shipped everything except the screen and said so: where
+the comparison appears is a visual decision, and `CLAUDE.md` reserves those for
+a person, because a default an agent fills in becomes the fact. Three
+placements were drawn and put in front of the maintainer — a third tab, an
+extension of the Structure tab, and a dialog off the connection list's context
+menu. The answer that came back was the first **plus** the second's following
+of the sidebar.
+
+Those two virtues are in direct tension. The tab's is independence: you pick
+both sides yourself, whatever the sidebar is pointed at. The Structure
+extension's is that it follows what you already selected. Added naively they
+cancel: a tab whose contents change when you click elsewhere is a tab you
+cannot read.
+
+**Decision.** A third tab, **Compare**, with the sidebar as its *index* rather
+than its filter. Three rules make the two fit together.
+
+1. **Opening seeds, it does not bind.** The left side starts as the connection
+   in the sidebar — the one the operator is already thinking about — and can be
+   changed to any other. It is a default.
+
+2. **A report on screen is never replaced by a click elsewhere.** Once a
+   comparison has run, switching connection in the sidebar leaves it alone.
+   This is the rule that makes the mix work: what you are reading does not
+   change under you, and the picker above the report says which two sides it
+   came from. Implemented as the *absence* of an effect, which is worth
+   naming here, because absent code is the kind a later reader adds back.
+
+3. **A table click is a jump, not a filter.** While a comparison is up, the
+   sidebar marks every table the report mentions, and clicking one scrolls the
+   report to that table. The report stays whole. Filtering to one table would
+   rebuild the Structure-extension design inside the tab and lose the answer
+   the whole-database report is for: *which* tables differ.
+
+**Two colour choices, both following DESIGN.md's axes rather than inventing.**
+Differences are painted with `--warning`, never `--danger`: two databases
+differing is the answer to the question that was asked, not a fault. The two
+sides carry their connections' identity marks (issue #192) in the report's
+header, since that axis exists to say *which server this is* — exactly what a
+side is. The per-row "only in X" chip names the side in words instead of
+relying on that colour, because a connection with no mark has no colour to
+rely on.
+
+**Consequences.**
+
+- `MainTab` gains a third value, and the tab strip a third entry that is
+  visible whether or not anyone compares anything. That is the cost the
+  maintainer chose over the alternatives' costs.
+- The comparison lives in a small store (`$lib/compare/compare.svelte.ts`)
+  rather than in the panel, because the sidebar draws from it too — the same
+  reason the connection marks live in `workspace`.
+- A table click now does two things (browse, and jump when a comparison is
+  up). Doing both unconditionally keeps the sidebar's meaning from depending
+  on which tab is open.
+- Indexes and constraints are still not compared, and the empty state says so
+  rather than letting "no differences" imply more than it checked.
+
+## ADR-0150 — A patch is not a slot, so it carries its own headline (2026-09-08)
+
+**Status.** Accepted. Amends the plan/changelog drift check that
+[ADR-0110](#adr-0110--a-release-goes-out-when-there-is-something-in-it-not-when-a-plan-says-so) and
+[ADR-0122](#adr-0122--versions-get-their-contents-reserved-in-advance-2026-08-22) introduced.
+
+**Context.** v0.16.0 shipped with two visible defects — the title-bar mark was
+still a placeholder square, and the Saved button had none of its styling. Both
+were fixed the same day, and cutting 0.16.1 for them was refused by
+`release-plan.test.mjs`: `## [Unreleased]` must carry the headline of the next
+reserved slot, and the next slot is v0.17, "The half that was deferred".
+
+The two rules that collided are each right on their own. Every version gets a
+headline, because a version without one is a number again. And a slot reserves
+what a version will contain, decided before the work starts.
+
+They collide because **a bug in what already shipped is not something anyone
+reserved.** The roadmap's slots are minor-granular by construction — a `v0.16.1`
+row parses as v0.16 and reads as a slot for a version already out — so the
+check had no way to express the release that was actually next.
+
+Taking the refusal at face value would have put "The half that was deferred" on
+a release containing two UI fixes. That is precisely the mismatch v0.15.0 had
+to be renamed to escape, and this time it would have been introduced knowingly.
+
+**Decision.** The headline-matches-slot rule applies to slot-bearing releases
+only. When the pending bump is a patch — which `releaseDue` already computes,
+from whether any entry sits under an additive section — `[Unreleased]` owes a
+headline of its own and is not measured against the next slot.
+
+What does *not* change: a patch still has to carry a headline (the null check
+runs first), a stale slot is still reported, and the moment anything additive
+lands the bump becomes minor and the slot comparison returns.
+
+**Consequences.**
+
+- A patch release names what it fixes. 0.16.1 is "What 0.16.0 showed on screen"
+  while v0.17 keeps its reservation untouched.
+- The roadmap is not asked to predict bugs, which it cannot do. Slots stay
+  minor-granular on purpose rather than growing a patch row that would read as
+  a stale slot.
+- One existing test changed with the rule rather than around it: its fixture
+  had an entry under no section, which now reads as a patch. It gained an
+  `### Added` heading, which is what made it the reserved version all along.
+
+## ADR-0151 — Foreign keys join the comparison, because the adapters were already answering (2026-09-09)
+
+**Status.** Accepted. Extends [ADR-0148](#adr-0148--a-schema-diff-that-would-rather-report-a-cosmetic-difference-than-miss-a-real-one-2026-09-07)'s comparison; the indexes half stays deferred
+(issue 0035).
+
+**Context.** ADR-0148 shipped columns and the primary key and held back
+"indexes and constraints", on the grounds that each adapter reaches them
+differently and several had not been asked. Asking them (issue 0035) split
+that one deferral into two very different halves.
+
+**Indexes** live only inside `table_ddl`, the dump's DDL renderer, implemented
+by three of the six adapter crates — Postgres, MySQL and D1. Turso renders no
+DDL, and Firestore and MongoDB mean something else by the word.
+
+**Foreign keys** were never in that position. `DatabaseAdapter::foreign_keys`
+has existed since [ADR-0054](#adr-0054--foreign-key-introspection-and-list_relationships-a-seventh-read-only-mcp-tool), structured, with a capability flag, and
+**four** adapters implement it — Turso included, which covers eight of the ten
+connection kinds. The constraint half of the deferral was blocked on nothing.
+
+**Decision.** Compare foreign keys now, using what is already there.
+
+1. **Keys are matched on their local columns, not their names.** Engines
+   generate constraint names and the same migrations run twice can produce
+   different ones; matching on the name would report every key as replaced
+   when only the label moved. The name difference is still reported — as its
+   own field, so a reader can tell "the label differs" from "this points
+   somewhere else".
+
+2. **`TableSnapshot` replaces the bare `TableSchema` as the comparison's
+   input.** The diff now has two sources and will have more; bundling them
+   means `diff_snapshots` takes one list rather than several a caller could
+   mis-align. `diff_schemas` stays as the schema-only door.
+
+3. **The report says whether keys were compared at all.**
+   `foreign_keys_compared` is false when neither side carried any — which
+   includes both "this engine cannot report them" and "neither database has
+   any". Conflating those understates what was checked, which is the safe
+   direction: it never claims coverage it did not have.
+
+4. **Referenced column order is part of the key**, like the primary key's:
+   `(a, b) → (x, y)` and `(a, b) → (y, x)` constrain different pairs.
+
+**Consequences.**
+
+- Turso, Postgres (and Neon, Supabase, Aurora DSQL), MySQL and D1 compare
+  foreign keys. Firestore and MongoDB do not, and the empty state says so.
+- No contract change and no `Capabilities` field: this uses the flag ADR-0054
+  already added, so `dbboard-web` owes no mirror.
+- The FK badge is drawn in the muted ink rather than the accent the primary
+  key gets. A foreign key is scanned past unless it differs; it should not
+  shout louder than the key the table is identified by.
+- Indexes remain out. Issue 0035 holds the three options and the decision is
+  still the maintainer's, because the honest version of it adds a trait method
+  and a capability flag — and that touches the contract layer.
+
+## ADR-0152 — Indexes join the comparison, and the primary key's own index does not (2026-09-09)
+
+**Status.** Accepted. Closes the half [ADR-0148](#adr-0148--a-schema-diff-that-would-rather-report-a-cosmetic-difference-than-miss-a-real-one-2026-09-07) deferred and issue 0035
+scoped; the maintainer chose the structured option.
+
+**Context.** The survey in issue 0035 found index knowledge in exactly one
+place — `table_ddl`, the dump's DDL renderer, in three of six adapters — and
+laid out three ways forward: compare the DDL text, add a structured
+`list_indexes`, or report only where an engine can answer. Comparing the text
+was rejected on the same grounds as comparing column order: it reports
+formatting as difference, which is the noise ADR-0148 refuses to bury findings
+under.
+
+**Decision.** A structured `list_indexes` on the adapter trait, behind a new
+`Capabilities::has_list_indexes`, plus the "say what was not compared" rule.
+
+1. **The primary key's own backing index is excluded, everywhere.** SQLite
+   reports it with origin `pk`, MySQL calls it `PRIMARY`, Postgres flags it
+   `indisprimary` — each adapter drops it. The primary key is already compared
+   on its own, and reporting its index too would state one fact twice, which
+   is the rule ADR-0148 set when it decided a missing table is one finding
+   rather than a table full of missing columns.
+
+2. **A unique constraint's index is kept.** Nothing else in the comparison
+   reports uniqueness, so dropping it would hide a real difference — the
+   failure direction this feature exists to avoid.
+
+3. **Indexes are matched on their name**, unlike foreign keys, which are
+   matched on their columns ([ADR-0151](#adr-0151--foreign-keys-join-the-comparison-because-the-adapters-were-already-answering-2026-09-09)). An index's name is what somebody
+   wrote in a migration and what they would `DROP`; two indexes over the same
+   columns under different names are two indexes, and saying so is the useful
+   answer. A foreign key's name is generated, which is why that one is
+   matched differently.
+
+4. **Column order inside an index is a difference.** `(a, b)` and `(b, a)`
+   serve different queries. This is the one place order matters — a table's
+   column order deliberately does not (ADR-0148).
+
+5. **Four adapters answer: Turso, Postgres, MySQL, D1** — eight of the ten
+   connection kinds. Firestore and MongoDB leave the flag false, and the
+   report says indexes were not compared rather than implying they matched.
+
+**Consequences.**
+
+- `Capabilities` grows a flag, so this touches the contract layer.
+  `docs/api-contract.md` documents it and `api_contract_drift.rs` enforces
+  that; the addition is additive, and **`dbboard-web` owes the mirrored ADR**
+  per the Pacing Note in `CLAUDE.md`.
+- Expression indexes are reported by the columns they name and skip the parts
+  that are expressions, rather than inventing a column name for them.
+- The empty state now has three spellings — columns only, plus foreign keys,
+  plus indexes — because it may only claim what was actually compared.
+- Other constraints (unique beyond its index, `CHECK`) are still out.
+
+## ADR-0153 — `history.jsonl` is a reserved schema with no writer, and saying so comes before deciding its fate (2026-09-10)
+
+**Status.** Accepted, and deliberately partial: it records the state and
+defers the choice.
+
+**Context.** [ADR-0017](#adr-0017--query-history-persistence-json-lines-schema-shared-with-dbboard-web-stage-2) specified `history.jsonl`, and
+[ADR-0027](#adr-0027--phase-4-stage-2-group-c-ai-calls-recorded-in-historyjsonl-schema-v2) extended it to v:2 so AI calls landed in the same
+file. Both shipped. The reader and writer lived in `dbboard-ui`, the egui
+crate — and [ADR-0089](#adr-0089--the-egui-client-is-retired-tauri-is-the-only-client) retired that client and deleted the crate.
+
+**Nothing has written the file since.** The Tauri client keeps its query
+history in the webview's own storage, which is a different mechanism with a
+different lifecycle. This was found while looking for somewhere to put saved
+queries ([ADR-0147](#adr-0147--a-saved-query-goes-in-the-profile-because-the-history-is-not-where-you-keep-things-2026-09-07)) and written up as issue 0033.
+
+Three documents disagreed with the code: `docs/roadmap.md` ticked the AI
+history entry as done, `dbboard-config` resolved the path with no note, and
+`dbboard-web` implements the v:2 records desktop was supposed to emit
+(issue 0003).
+
+**Decision.** Say what is true, now; decide what to do about it separately.
+
+- The roadmap entry keeps its history but is no longer a tick: it reads as
+  shipped-then-removed, with the reason and a pointer to the open question.
+  The original text stays underneath, because it *was* true when written —
+  striking it out would lose the record of what once existed.
+- `default_history_path`'s doc comment says outright that nothing writes the
+  file, so the next reader does not take the helper's existence as evidence.
+- **The schema stays reserved.** Neither restoring the writer nor retiring
+  the format is chosen here.
+
+**Why not decide now.** Retiring the schema discards something
+`dbboard-web` has already built, which the Pacing Note in `CLAUDE.md` makes a
+contract-layer call needing an ADR in both repositories — and this session
+cannot speak for the other one. Restoring the writer is real work whose value
+depends on that same conversation. What could be done alone was to stop the
+documents from lying while the conversation waits, and a stale tick misleads
+every reader in the meantime.
+
+**Consequences.**
+
+- Issue 0033 stays open with the two live options, and now has a companion
+  that explains why it is not closed.
+- Anyone reading the roadmap sees the gap rather than a completed feature.
+- `dbboard-web` still mirrors a schema nothing produces. That is the cost of
+  waiting, and it is a cost either decision would end.
+
+## ADR-0154 — An agent can ask what dbboard is, and the changelog keeps its two readers (2026-09-10)
+
+**Status.** Accepted.
+
+**Context.** An agent handed a running `dbboard-mcp` knows the tool names and
+nothing else: not what the product is for, not which engines it speaks, not
+what the build in front of it changed. Every one of those is answerable from
+what is already compiled in, and asking a person to paste a README into the
+conversation is a worse answer than a verb.
+
+The second half — "what changed in each version" — has a trap in it.
+`CHANGELOG.md` already has two readers: the About dialog's parser
+([ADR-0137](#adr-0137--the-about-dialog-shows-what-the-running-build-changed-from-the-changelog-it-was-cut-from-2026-08-25)) and `scripts/release-notes.mjs`, which writes the
+one-line summary the update notice shows. The parser's own comment says why
+that matters: two readers of one file must not disagree about what a bullet
+says. A third parser would be a third chance to disagree, and this one would
+disagree in front of an agent that cannot check.
+
+**Decision.** Add `about`, and **do not parse the bullets**.
+
+1. **Headings are scanned; bodies are handed over as markdown.** A release
+   heading's shape is fixed and test-enforced (`release-plan.test.mjs`), so
+   reading `## [version] — date — headline` is safe. Everything below it goes
+   back verbatim. The reader is a language model — markdown *is* structure to
+   it, and re-expressing it as JSON would only add a place to be wrong.
+
+2. **Only the em dash separates the fields.** Every heading in the file uses
+   it, back to 0.1.0. Accepting a hyphen as well would also match the ones
+   inside a date and inside a headline, which is how a lenient parser starts
+   reporting `2026` as a version's date.
+
+3. **The changelog is compiled in** (`include_str!`), so the answer describes
+   the build that is answering rather than whatever file happens to sit beside
+   it on disk.
+
+4. **A version this build does not carry returns no changes**, along with the
+   list of the versions it does. That is the honest answer when an agent asks
+   about something newer than the binary, and it beats an empty object.
+
+5. **It is additive by [ADR-0087](#adr-0087--the-mcp-server-writes-behind-a-per-connection-flag-and-a-closed-list)'s test**: the verb reaches no connection,
+   no database and no file of the operator's. It opens nothing that was not
+   already open, because it opens nothing at all.
+
+**Consequences.**
+
+- One paragraph of product prose now lives in Rust. It is deliberately short,
+  and points at the README and the download page rather than restating them —
+  a second README is a second thing to keep in step.
+- The adapter-kind list is spelled out in this module. It sits beside
+  `kind_label`'s exhaustive match, which is what actually enforces the set; a
+  kind added there and forgotten here would show up as a missing entry rather
+  than a wrong answer.
+- The changelog still has exactly two parsers.
+
+## ADR-0155 — Rolling back is a supported move, so the file a rollback lands on is kept for it (2026-09-13)
+
+**Status.** Accepted.
+
+**Context.** Until now "downgrade" had no answer in this repository, and the
+question that exposed it was the practical one rather than the theoretical:
+*the new release does not work — I want the one that did, and I want it to do
+what it used to do.*
+
+Reading the config layer for that case found one real hazard and two things
+that were already right.
+
+Already right, and worth recording so nobody "fixes" them:
+
+- **Credentials survive a rollback.** The keyring service name is the constant
+  `"dbboard"`, pinned by a test that says it must stay short and stable, and
+  the per-connection reference lives in the TOML. An older build looks in the
+  same place and finds the same secret.
+- **Newer *fields* are tolerated on read and dropped on the next save.**
+  Nothing sets `deny_unknown_fields`. For a rollback this is the correct
+  behaviour, not a defect: the older build does what it always did, and losing
+  a colour is not losing a connection. ADR-0136 already accepted this for
+  `color` / `tag`; it generalises.
+
+The hazard is **unknown `kind`**, and its shape is what makes it serious:
+`ConnectionFile::parse` fails on the *whole file*, not the offending entry. A
+person rolling back to escape a broken release therefore lands on a build
+showing **no connections at all** — the precise opposite of the reason they
+rolled back. The kinds that draw this line today are `aurora-dsql-iam`
+(v0.2.0), `firestore` (v0.6.0), `mongodb` (v0.7.0) and `turso-remote`
+(v0.10.0). A one- or two-version rollback is currently safe only because no
+kind has been added recently; the next engine arms it.
+
+**Decision.**
+
+1. **On the first run of each build, copy `connections.toml` aside before
+   anything writes to it**, as `connections.pre-<version>.toml`
+   (`store::snapshot_before_version`). A copy taken before the new build has
+   touched the file is, by construction, a file the previous build can read —
+   it is the file that build wrote.
+
+2. **The download page lists previous versions**, so installing a specific one
+   is a supported path rather than an archaeology exercise in the Releases
+   page, and says on the page itself what a rollback does to the connections
+   file.
+
+**Why the name carries the incoming version, not the writer.** Which build
+last wrote `connections.toml` is recorded nowhere. Naming the copy after a
+guess would be a claim an operator cannot check. `pre-0.17.0` asserts only
+what is certain: this is the file as it stood before 0.17.0 first ran.
+
+That choice also removes the need to record anything. "Has this version run
+before?" is answered by whether its own snapshot exists, so there is no
+version registry to keep in step and no second file that could disagree with
+the first. `create_new_user_only` gives the once-only semantics and the `0600`
+mode in the same call.
+
+**Why the copy is verbatim.** Re-serializing through `ConnectionFile` would
+drop precisely the entries a rollback needs — the ones this build understands
+and an older one does not are not the problem; the ones a *future* build wrote
+are. Bytes are copied as they are, including entries this build itself would
+refuse to parse, which one of the tests pins.
+
+**Why a snapshot rather than making the reader tolerant.** A per-entry
+tolerant reader is the better long-term shape and is worth doing. It does not
+help here: the reader that needs to be tolerant is the *older* one, which has
+already shipped. Making today's reader tolerant helps only rollbacks that
+start from a future release. The snapshot is the half that helps now.
+
+**Why a failure to snapshot does not stop the launch.** It is a safety net,
+and a net that drops the thing it was strung under is worse than no net. The
+reason goes to stderr and the app carries on.
+
+**Consequences.**
+
+- One small file per version ever run accumulates in the config directory.
+  They are text, they are each a distinct recovery point, and pruning them
+  would mean deciding which rollback an operator is not allowed to make. Kept.
+- The snapshot contains connection *names* and keyring *references*, never
+  secrets — the same content as the file beside it, written `0600` through the
+  same path.
+- The download page now makes **one** API call (`/releases`) where it made one
+  (`/releases/latest`), and gets the archive from the same response. The
+  unauthenticated rate limit is ~60/hour per IP and this page must work from a
+  shared address, so the count mattered more than the convenience of the
+  `latest` endpoint.
+- `latestOf` applies the draft/prerelease rule the `latest` endpoint used to
+  apply for us, and returns `null` rather than falling back to "whatever is
+  first" — a prerelease offered as the current build is worse than no card.
+- Archive order is the API's, not ours: sorting tags means comparing version
+  strings, where `0.9.0` sorts after `0.10.0`.
+- Saved queries and annotations are **not** snapshotted yet. They carry their
+  own version constants and the same hard-refusal shape, but losing them does
+  not empty the app of connections. Recorded here as known and deferred rather
+  than overlooked.
+
+## ADR-0156 — The app says when it painted, because nobody outside can see it (2026-09-17)
+
+**Status.** Accepted.
+
+**Context.** `docs/startup-measurement.md` holds the one startup number this
+project has: a median of **318 ms** from launch to a window on screen, over
+nine samples. That file is equally explicit about what the number is not, and
+the first item on its list is the one that matters most:
+
+> **Not "usable".** What is timed is the window *existing*, which is when the
+> window server hands one over. The webview paints its content after that, and
+> this method cannot see the difference. Treat the number as a floor.
+
+That is not a gap in the method — it is the ceiling of the method. An outside
+observer polls for a window and learns when a window exists. Whether the
+webview inside it has drawn anything is not visible from there, and no amount
+of care in the polling loop will make it visible.
+
+The same file names the fix: *"That needs the app to say when it painted — a
+timestamp at process start and one from the frontend — rather than an outside
+observer guessing."*
+
+**Decision.** The shell stamps a clock as the first statement of `run()`, the
+frontend reports once it has drawn real content, and a Tauri command answers
+both numbers.
+
+**Where the clock starts is load-bearing.** It is the first line of `run()`,
+above the keyring, the config paths, and the adapters. Every line placed above
+it would be invisible to the measurement and would silently flatter the
+number — the measurement would improve without the app getting faster.
+
+**What counts as "painted" is a decision, not a detail.** Reporting from
+`onMount` would fire while the screen is still blank: Svelte has built the DOM
+and the browser has not yet presented it. The frontend therefore waits two
+animation frames — one to schedule the paint, one to be after it — and reports
+from there. This is the earliest moment at which something has actually been
+shown to a person, which is the thing worth timing.
+
+**A second report is ignored rather than taken.** A webview paints again on
+every reload — a dev-server update, a navigation. Keeping the latest would
+quietly convert a startup measurement into a reload measurement, and the
+number would look fine while meaning something else. The first report is the
+launch; the rest are not.
+
+**Two numbers, not one.** `first_paint_ms` is the answer; `uptime_ms` is how
+long the process has been up when asked. They are reported together because a
+paint at 900 ms reads differently when the process has been up 900 ms than
+when it has been up 40 seconds — the second says the report arrived late, not
+that painting was slow.
+
+**A failure to report does not stop anything.** The frontend swallows the
+error. A measurement that can prevent the app from starting is worse than no
+measurement, the same reasoning ADR-0155 applied to the rollback snapshot.
+
+**The number is shown in the About dialog, under the version.** This was
+missing from the first draft of this decision, and the omission produced
+exactly the defect it should have prevented: the frontend reported the figure
+to the shell, nothing could read it back, and the measurement existed only in
+memory. The decision recorded "the app can say when it painted" and never
+asked *to whom*.
+
+The About dialog is where a person already goes to ask what build this is, and
+the figure belongs to the same question. No new surface, no new route, and it
+is reachable the way a person actually works: launch, open, read.
+
+**Not on the MCP surface**, deliberately. `dbboard-mcp` is a separate process
+and cannot see the window's clock, so reaching it would mean a new UI command
+(ADR-0109) — more machinery than one number on a dialog is worth. If sampling
+ever needs automating, that is the door; it is not needed to take the samples
+this project is short of, which are taken by hand anyway.
+
+**Unknown shows a dash, never a zero.** Outside a Tauri runtime, or before the
+report lands, there is no figure. A `0 ms` would read as "it painted
+instantly", which is the one wrong answer that looks like a right one.
+
+**Consequences.**
+
+- Two timestamps and one IPC call at launch. Nothing is written to disk and
+  nothing leaves the machine.
+- This closes item 1 of `docs/startup-measurement.md`'s "What would close the
+  gap". Items 2 and 3 — connect-and-browse against a real connection, and a
+  genuine cold start after a reboot — still need a person at the machine, and
+  the roadmap slot says so.
+- Nothing asserts a threshold on the number. A timing assertion is a flaky
+  test and this project has already paid for one (ADR-0125); the numbers go in
+  a document a person reads.
+- The frontend guard is per page-life, so a reload re-arms it. The shell is
+  the authority that ignores the repeat, which is where the decision belongs —
+  the frontend cannot know it is a reload rather than a launch.

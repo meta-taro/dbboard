@@ -570,6 +570,14 @@ pub fn default_path() -> Result<PathBuf, ConfigError> {
 /// The default per-user path for `history.jsonl` (ADR-0017), under the same
 /// [`config_dir`] as [`default_path`] so the two live side by side.
 ///
+/// **Nothing writes this file today.** The reader and writer were in
+/// `dbboard-ui`, the egui crate, and went with it in ADR-0089; the Tauri
+/// client keeps its query history in the webview's own storage instead. The
+/// path resolves so the schema stays reserved — `dbboard-web` mirrors those
+/// records — and whether to restore the writer or retire the schema is open
+/// (issue 0033, ADR-0153). Do not read this helper as evidence that the file
+/// exists.
+///
 /// # Errors
 ///
 /// Returns [`ConfigError::NoConfigDir`] when the OS reports no usable
@@ -597,6 +605,84 @@ pub fn load_or_empty(path: &Path) -> Result<ConnectionFile, ConfigError> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(ConnectionFile::empty()),
         Err(err) => Err(ConfigError::Io(err)),
     }
+}
+
+/// Copy `path` aside, once, under a name carrying the version that is about
+/// to take over — `connections.toml` becomes `connections.pre-0.17.0.toml`.
+///
+/// **This exists for rolling back, not for upgrading.** An older build that
+/// meets a `kind` it does not know fails to parse the *whole* file rather
+/// than the one entry ([`ConnectionFile::parse`]), so going back to the last
+/// build that worked can land an operator on a build with no connections at
+/// all. That is the opposite of what a rollback is for. A copy taken before
+/// the new build has written anything is, by construction, a file the
+/// previous build could read — it is the one that build wrote.
+///
+/// **The name says what it is, not who wrote it.** Which build last wrote
+/// `connections.toml` is recorded nowhere, and naming the copy after a guess
+/// would be a lie an operator has no way to check. `pre-0.17.0` claims only
+/// what is certain: this is the file as it stood before 0.17.0 first ran.
+///
+/// That naming also removes the need to record anything. "Has this version
+/// run before?" is answered by whether its own snapshot is already there, so
+/// there is no version registry to keep in step — and no second file that
+/// could disagree with the first.
+///
+/// The copy is taken **verbatim**, bytes as they are, including entries this
+/// build would refuse. Re-serializing through [`ConnectionFile`] would drop
+/// exactly the entries the rollback needs, which would make the snapshot
+/// worthless for its only purpose.
+///
+/// Returns the path written, or `None` when there was nothing to copy (a
+/// fresh install) or a copy already exists (any run after the first).
+///
+/// # Errors
+///
+/// - [`ConfigError::Io`] for a read or write failure. An existing snapshot
+///   is not a failure — it is the normal state from the second run onward.
+pub fn snapshot_before_version(path: &Path, version: &str) -> Result<Option<PathBuf>, ConfigError> {
+    // A version with a separator in it would write outside the config dir.
+    // Callers pass `env!("CARGO_PKG_VERSION")`, so this is a guard against a
+    // future caller rather than against today's.
+    if version.is_empty() || version.contains('/') || version.contains('\\') {
+        return Ok(None);
+    }
+
+    let contents = match fs::read(path) {
+        Ok(bytes) => bytes,
+        // A fresh install has nothing to protect. Manufacturing an empty
+        // snapshot would put a file on disk that says the operator once had
+        // no connections, which is not the same as never having been asked.
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(ConfigError::Io(err)),
+    };
+
+    let target = snapshot_path_for(path, version);
+    match write_new_file(&target, &contents) {
+        Ok(()) => Ok(Some(target)),
+        // Already there: this version has run before. Not an error, and not
+        // something to overwrite — by now the live file has been through this
+        // build, and the whole point of the copy is that it has not.
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Ok(None),
+        Err(err) => Err(ConfigError::Io(err)),
+    }
+}
+
+/// `…/connections.toml` + `0.17.0` -> `…/connections.pre-0.17.0.toml`.
+///
+/// Kept beside the original rather than in a subdirectory so that an operator
+/// who opens the config folder while a release is misbehaving sees it without
+/// being told it exists.
+fn snapshot_path_for(path: &Path, version: &str) -> PathBuf {
+    let stem = path.file_stem().map_or_else(
+        || "connections".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    let name = match path.extension() {
+        Some(ext) => format!("{stem}.pre-{version}.{}", ext.to_string_lossy()),
+        None => format!("{stem}.pre-{version}"),
+    };
+    path.with_file_name(name)
 }
 
 /// Write `file` to `path` atomically: serialize to a sibling `*.tmp`

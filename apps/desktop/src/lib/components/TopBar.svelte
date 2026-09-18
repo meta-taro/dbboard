@@ -5,6 +5,11 @@
   import ThemeToggle from './ThemeToggle.svelte';
   import LanguageMenu from './LanguageMenu.svelte';
   import AboutDialog from './AboutDialog.svelte';
+  // The logo master itself, not a copy: DESIGN.md names
+  // `assets/dbboard-logo-256.png` the source of truth and says to reference
+  // it rather than move the image around. Reached the same way the About
+  // dialog reaches the repo's CHANGELOG (`vite.config.ts` allows `../..`).
+  import logo from '../../../../../assets/dbboard-logo-256.png';
 
   let aboutOpen = $state(false);
 
@@ -19,7 +24,7 @@
 
 <header class="topbar" data-tauri-drag-region>
   <div class="lead">
-    <span class="brand-dot" aria-hidden="true"></span>
+    <img class="brand-mark" src={logo} alt="" aria-hidden="true" width="18" height="18" />
     <span class="brand">dbboard</span>
   </div>
 
@@ -93,13 +98,12 @@
     pointer-events: none;
   }
 
-  /* Rounded-square gradient logo mark, matching the design mock. */
-  .brand-dot {
+  /* The app icon, at the size the title bar has room for. It carries its own
+     rounded square and transparent corners, so nothing here draws a shape —
+     a CSS radius or box-shadow would fight the artwork rather than frame it. */
+  .brand-mark {
     width: 18px;
     height: 18px;
-    border-radius: 5px;
-    background: linear-gradient(150deg, #6366f1, #4f46e5);
-    box-shadow: 0 1px 3px rgba(79, 70, 229, 0.4);
     flex: none;
   }
 

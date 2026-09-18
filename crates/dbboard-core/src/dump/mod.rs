@@ -30,4 +30,4 @@ pub use run::{
     plan_dump, run_dump, DumpControl, DumpError, DumpOutcome, DumpProgress, DumpResult, DumpSink,
     TableFailure, TableTruncation,
 };
-pub use select::{build_count, build_select_page};
+pub use select::{build_count, build_select_page, cursor_from_last_row};

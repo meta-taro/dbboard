@@ -68,6 +68,15 @@ pub struct Capabilities {
     /// reads as `false`.
     #[serde(default)]
     pub has_foreign_keys: bool,
+
+    /// The adapter implements `DatabaseAdapter::list_indexes` (ADR-0152) — it
+    /// can enumerate a table's indexes, which the schema comparison reads.
+    /// Engines with no table-bound index concept (the document stores) leave
+    /// this false, and the comparison then says indexes were not compared
+    /// rather than implying they matched. `#[serde(default)]` keeps
+    /// pre-ADR-0152 payloads parseable — the flag reads as `false`.
+    #[serde(default)]
+    pub has_list_indexes: bool,
 }
 
 #[cfg(test)]
@@ -87,6 +96,7 @@ mod tests {
         assert!(!caps.has_execute);
         assert!(!caps.has_atomic_restore);
         assert!(!caps.has_foreign_keys);
+        assert!(!caps.has_list_indexes);
     }
 
     #[test]
@@ -129,7 +139,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false,"has_list_indexes":false}"#
         );
     }
 
@@ -146,6 +156,7 @@ mod tests {
             has_execute: true,
             has_atomic_restore: true,
             has_foreign_keys: true,
+            has_list_indexes: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();

@@ -61,3 +61,8 @@ connections.toml
 # 実体はメンテナ側から同期される。
 /.claude/rules/
 /.claude/templates/
+
+# Design canvases published to claude.ai (2.5 MB of generated payload per
+# canvas). The canvas itself lives at the artifact URL, which the session
+# notes record; the .dc.html sources are re-seeded from there when needed.
+.design/

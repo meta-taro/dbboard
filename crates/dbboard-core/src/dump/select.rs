@@ -15,6 +15,7 @@
 use std::fmt::Write as _;
 
 use crate::dump::value_literal;
+use crate::row::Row;
 use crate::schema::TableInfo;
 use crate::value::Value;
 use crate::write_back::{qualified_table, quote_ident, SqlDialect};
@@ -76,6 +77,28 @@ pub fn build_select_page(
 #[must_use]
 pub fn build_count(table: &TableInfo, dialect: SqlDialect) -> String {
     format!("SELECT COUNT(*) FROM {}", qualified_table(table, dialect))
+}
+
+/// Extract the key values of the last row of a page, positionally matching
+/// `key_columns`. `None` if any key column is absent from `columns`.
+///
+/// This is the other half of [`build_select_page`]: the cursor it produces
+/// is what the next page passes back as `after`, so the two live together
+/// rather than once per caller. The dump reads a whole table with it; the
+/// browse grid reads one page at a time with it (ADR-0145).
+#[must_use]
+pub fn cursor_from_last_row(
+    rows: &[Row],
+    columns: &[String],
+    key_columns: &[String],
+) -> Option<Vec<Value>> {
+    let last = rows.last()?;
+    let mut values = Vec::with_capacity(key_columns.len());
+    for key in key_columns {
+        let at = columns.iter().position(|c| c == key)?;
+        values.push(last.get(at)?.clone());
+    }
+    Some(values)
 }
 
 #[cfg(test)]

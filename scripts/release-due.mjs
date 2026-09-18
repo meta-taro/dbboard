@@ -190,6 +190,16 @@ export function planDrift(roadmap, changelog) {
         `a version that ships without one is a number again`,
     ];
   }
+  // A patch is not a slot. Slots reserve what a version will contain, decided
+  // before the work starts (ADR-0110), and **a bug in what already shipped is
+  // not something anyone reserved** — so a fix-only Unreleased owes a headline
+  // of its own, not the next slot's. Measuring it against the slot would put
+  // the next release's name on a version that does not carry its contents,
+  // which is the mismatch v0.15.0 had to be renamed to escape (ADR-0150).
+  //
+  // The exemption ends the moment something additive lands: `bump` is already
+  // "minor" then, and the version becomes the reserved one.
+  if (state.bump === "patch") return [];
   if (headline !== next.headline) {
     return [
       `CHANGELOG.md's [Unreleased] says "${headline}" where ${where} — ` +

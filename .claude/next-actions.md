@@ -15,6 +15,100 @@
 | b | **エージェントの memory 27 ファイル (132KB)** | `<ホーム>/.claude/projects/C--claude-dbboard/memory/` | **user** (手でコピー) |
 | c | ~~**git hooks**~~ | ~~clone 後に `sh scripts/install-hooks.sh`~~ | **済 (2026-09-02)** |
 
+> **2026-09-04 追記** — b は**まだ運ばれていない**。移送先ディレクトリは今日時点で
+> ほぼ空 (このセッションで書いた 1 件のみ)。**旧 Windows 機を処分・初期化する前に。**
+> a も未着手。c は完了済み。
+>
+> **2026-09-06: b を司令塔へ通報した** —
+> [dokokade/Multi-Product-Management-AI-Agent#4](https://github.com/dokokade/Multi-Product-Management-AI-Agent/issues/4)
+> (`label:escalation`・user の指示による起票・署名 👤🤖)。
+> 引っ越し決定から 11 日、毎セッション書いても運ばれていないので、**記載の問題ではない**と判断し
+> §38 (人にしかできない工程の停止は AI が人を呼ぶ) に従って上へ出した。
+> dbboard の 27 ファイルだけでなく**この Mac は全プロジェクトの memory がほぼ空**
+> (warifu 5 / zumen 3 / dbboard 2 / git-qa 0) なので、範囲を旧機全体に広げてある。
+> **ここから先は司令塔の返答待ち。** ボール自体 (実際にコピーする) は user のまま。
+>
+> このほかの user 側ボール: v0.15.0 公開物の目視 PII スキャン、
+> `sudo rm -f /usr/local/bin/kubectl.docker`。
+> **`dbboard-web` 側の ADR-0145 ミラーは、2026-09-06 に user 判断で後回し**
+> (「ニーズが薄い」)。Pacing Note 上は contract 変更のミラーが必須なので、
+> **消えたのではなく積んである** — web 側が動く時に最初にやること。
+>
+> **2026-09-04 その3 で解消** — `feature/the-hundred-and-first-row` は push 済み、
+> PR #234 → merge (`c6130c8`)。PR ラン 5 ジョブ緑、develop の push ラン
+> (`33853557815`) も 4 ジョブ緑。
+> 併せて 2 点を申し送ったが、**どちらも 2026-09-06 に解消した** (下記)。
+
+> **2026-09-10 追記 — memory は救出済み。期限のあるボールは無くなった。**
+>
+> | | ボール | 期限 |
+> |---|---|---|
+> | 1 | **`dbboard-web` へのミラー ADR**（ADR-0152 = `Capabilities` にフラグ追加） | v1.0 の contract 凍結前 |
+> | 2 | **cold-start の計測** — v0.17 に残る唯一の実作業。**同席が要る** | なし |
+> | 3 | **公開物の目視 PII スキャン** — v0.15.0 / v0.16.0 / **v0.16.1** の 3 版 | なし |
+> | 4 | `main` への release PR / 他 21 プロジェクトの memory 取り込み | なし |
+>
+> **memory は片付いた。** 旧機の 511 ファイルを `~/claude-memory-from-win/`（3.2 MB）に確保し、
+> dbboard 分 27 件は取り込み・§33 検査済み。**旧機は初期化してよい。**
+> ただし**他 21 プロジェクト分はその抽出フォルダにしか無い**ので、各リポで取り込むまで消さないこと。
+> escalation は [#4](https://github.com/dokokade/Multi-Product-Management-AI-Agent/issues/4)（無反応のまま）と
+> [#242](https://github.com/meta-taro/dbboard/issues/242)（自リポ・正規経路）。**結果を書いて閉じてよい。**
+>
+> **2026-09-09 追記 — v0.16.0 と v0.16.1 を公開した。user 側のボールは 4 つ。**
+>
+> | | ボール | 期限 |
+> |---|---|---|
+> | 1 | **memory 27 ファイルの移送** | **旧機を初期化する前。これだけ不可逆** |
+> | 2 | **公開物の目視 PII スキャン** | v0.15.0 / v0.16.0 / **v0.16.1** の 3 版ぶん未実施 |
+> | 3 | **`main` への release PR** | 運用がそうなら |
+> | 4 | **v0.17 の枠の中身の可否** | いつでも（差し替え自由） |
+>
+> **1 は期限を迎えた。** escalation
+> [#4](https://github.com/dokokade/Multi-Product-Management-AI-Agent/issues/4) は
+> **§28 の閾値 3 日 (09-09) を過ぎても無反応・コメント 0**。
+> 前回の申し送りどおりなら、次は**催促ではなく `meta-taro/dbboard` 自リポへの起票**
+> （§27 の正規経路は自リポで、#4 が拾われないとすればその点が理由）。**指示待ち。**
+>
+> **v0.17 の枠**は release-cut が要求したので置いたもので、中身は
+> cold-start 計測 / `history.jsonl` の決着 (issue 0033) / schema diff のインデックス比較。
+> **新規に考えた項目はなく、すべて先送りとして記録済みのもの。** 差し替えは自由。
+>
+> **2026-09-07 追記 — v0.16 の中身が揃った。user 側のボールは 4 つ。**
+>
+> | | ボール | 期限 |
+> |---|---|---|
+> | 1 | **memory 27 ファイルの移送** | **旧機を初期化する前。これだけ不可逆** |
+> | 2 | **schema diff の UI 置き場所** (新タブ / Structure タブ拡張 / 他) | 決まれば仕上げる。**残りはこれだけ** |
+> | 3 | **v0.16 を切るか** (`release-due.mjs` = 4 件 = due) | いつでも |
+> | 4 | **`history.jsonl` の扱い** (issue 0033) | v1.0 の contract 凍結前 |
+>
+> 2 に手を出していないのは `CLAUDE.md` が「見た目の方向性は人が決める。AI が埋めた
+> 既定値はそのまま既成事実になる」と定めているから。**案も出していない。**
+>
+> 1 は司令塔へ通報済み ([#4](https://github.com/dokokade/Multi-Product-Management-AI-Agent/issues/4)・
+> `escalation`・署名 👤🤖)。**09-07 時点で無反応**。§28 の閾値 3 日 = **09-09**。
+> それを過ぎたら催促ではなく**自リポ起票へ切り替える** — §27 の正規経路は自リポで、
+> #4 が拾われないとすればその点が理由になる。
+>
+> **2026-09-06 追記 — 日次 deps は動いている。時刻の期待値だけが違った。**
+> 09-04 の 17:30 JST 時点で 0 件だったのは事実だが、**その約 3 時間半後に初回が走った**。
+> 二晩とも `deps` だけ success、`rust` / `frontend` / `site` は skipped =
+> ADR-0144 の設計どおり。
+>
+> | 実行 | 結果 |
+> |---|---|
+> | 2026-09-04 11:57Z (`33870383638`) | deps success / 他 3 つ skipped |
+> | 2026-09-05 11:07Z (`33962458025`) | deps success / 他 3 つ skipped |
+>
+> **cron は `0 7 * * *` = 16:00 JST だが、実際に走るのは 20:00〜21:00 JST。**
+> GitHub は schedule を混雑時にずらすので、4〜5 時間の遅れが常態。
+> **「16:00 に出なければ疑う」は毎日誤検知する** ので、疑うのは
+> **翌 0:00 JST を跨いでも出ないとき**。`pii-scan` の nightly も同様に遅れて走っている。
+>
+> ローカルブランチ 2 本 (`fix/the-dock-shows-the-file-name` /
+> `feature/the-hundred-and-first-row`) は削除済み。どちらも develop に入っているか、
+> 入っている版の amend 前だった。
+
 > **2026-09-02 時点の状況**
 > - **c は完了。** 3 本設置済み、`hook_install_drift.rs` pass。同日中に実際に 4 回働いた
 >   (chacha20 修正の commit / push、リリース 2 コミット)。
