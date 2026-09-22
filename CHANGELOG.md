@@ -7,7 +7,31 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — The measurement nobody has taken
+
+### Changed
+
+- **The download page opens with the problem instead of the product name.**
+  The largest line used to be "dbboard", which tells a first-time visitor
+  nothing, and the line under it was a list of ten engines — a spec sheet, not
+  a reason to keep reading. It now opens with the thing that brought them:
+  *Turso, D1, Aurora DSQL — a different tool for every one of them.* The engine
+  list is still there, one line down, where it answers "does it cover mine?"
+  instead of asking the question.
+
+  The download buttons moved up into that first screenful as a pair of plain
+  buttons, rather than a section of cards further down. They stay *below* the
+  screenshot rather than above it: these binaries are unsigned, and the page
+  has always shown the app before asking anyone to click through a warning for
+  it. The screenshot is cropped so both still fit without scrolling.
+
+### Added
+
+- **A Japanese page**, at `/ja/`. English remains the source text; the two
+  pages point at each other and English is the `x-default`. Tests keep them
+  from drifting on the parts that must not differ — the sections, the
+  screenshots, and the ids `app.js` fills — while leaving the prose free to
+  read like its own language.
 
 ## [0.18.0] — 2026-09-17 — Going back, and the first number from inside
 

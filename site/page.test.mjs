@@ -140,3 +140,73 @@ test("the page says what a rollback does to the connections file", () => {
     "the page must say credentials are not in the file",
   );
 });
+
+// --- The Japanese page (ADR pending; skeleton adopted 2026-09-22) ----------
+//
+// A second page drifts. This repository has already paid for that once — the
+// MCP surface said "nine tools" on one page and "twenty-one" on another for
+// three releases. These tests do not check the prose (a translation is
+// allowed to read differently); they check the things that must not diverge:
+// the structure, the images, and the hooks `app.js` fills.
+
+const ja = readFileSync(join(HERE, "ja", "index.html"), "utf8");
+
+test("the Japanese page exists and says it is Japanese", () => {
+  assert.match(ja, /<html lang="ja">/);
+});
+
+test("both pages point at each other, and English is the default", () => {
+  for (const page of [html, ja]) {
+    assert.match(page, /hreflang="en" href="https:\/\/meta-taro\.github\.io\/dbboard\/"/);
+    assert.match(page, /hreflang="ja" href="https:\/\/meta-taro\.github\.io\/dbboard\/ja\/"/);
+    // Without x-default a crawler guesses which page to show a reader whose
+    // language it does not recognise. The source text is English.
+    assert.match(page, /hreflang="x-default"/);
+  }
+});
+
+test("each page is the canonical version of itself", () => {
+  assert.match(html, /<link rel="canonical" href="https:\/\/meta-taro\.github\.io\/dbboard\/">/);
+  assert.match(ja, /<link rel="canonical" href="https:\/\/meta-taro\.github\.io\/dbboard\/ja\/">/);
+});
+
+test("the two pages carry the same sections", () => {
+  const sections = (page) => (page.match(/<h2[^>]*>/g) ?? []).length;
+  assert.equal(
+    sections(ja),
+    sections(html),
+    "one page has gained or lost a section the other does not have",
+  );
+});
+
+test("the Japanese page shows the same screenshots, reached from one level down", () => {
+  const shots = (page) => [...page.matchAll(/src="(?:\.\.\/)?(screenshots\/[^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(shots(ja), shots(html), "the two pages show different screenshots");
+  for (const src of ja.match(/(?:href|src)="([^"]+)"/g) ?? []) {
+    const url = src.replace(/^(?:href|src)="/, "").replace(/"$/, "");
+    if (/^(https?:|#|mailto:|data:|\.\.\/)/.test(url)) continue;
+    assert.fail(`ja/index.html points at ${url}, which does not resolve from one level down`);
+  }
+});
+
+test("the script's hooks exist on both pages", () => {
+  // `app.js` is shared. An id renamed on one page only means that page goes
+  // quiet — no error, just a missing download button.
+  for (const id of ["status", "cards", "version", "archive", "archive-rows"]) {
+    assert.ok(html.includes(`id="${id}"`), `index.html lost id="${id}"`);
+    assert.ok(ja.includes(`id="${id}"`), `ja/index.html lost id="${id}"`);
+  }
+});
+
+test("neither page hard-codes a version number", () => {
+  // The skeleton's rule, and the reason for it: a version written into the
+  // page is wrong the day after it is written. `#version` is filled from the
+  // Releases API, which is why that one is allowed.
+  for (const [name, page] of [["index.html", html], ["ja/index.html", ja]]) {
+    const body = page.slice(page.indexOf("<body>"));
+    const hits = [...body.matchAll(/\b\d+\.\d+\.\d+\b/g)].map((m) => m[0]);
+    // The checksum example names a file, which carries a version by nature.
+    const outsideTheExample = hits.filter((v) => !body.includes(`dbboard-desktop_${v}_x64-setup.exe`));
+    assert.deepEqual(outsideTheExample, [], `${name} prints ${outsideTheExample.join(", ")}`);
+  }
+});

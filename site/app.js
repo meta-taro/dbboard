@@ -77,14 +77,12 @@ export function safeUrl(u) {
   } catch { return null; }
 }
 
-function card(title, sub, primary, secondary) {
-  const el = document.createElement("div");
-  el.className = "card";
-  const h = document.createElement("h3"); h.textContent = title; el.append(h);
-  const s = document.createElement("p"); s.className = "sub"; s.textContent = sub; el.append(s);
-  el.append(dlLink(primary.label, primary.url, false));
-  if (secondary) el.append(dlLink(secondary.label, secondary.url, true));
-  return el;
+// A download is a button, not a panel. These used to be cards with a heading
+// and a subtitle each, which is a section's worth of height for two links —
+// and on a laptop it pushed the buttons below the fold, so the one thing the
+// page is for could not be reached without scrolling.
+function dlButton(label, url, primary) {
+  return dlLink(label, url, !primary);
 }
 
 function dlLink(label, url, secondary) {
@@ -166,16 +164,13 @@ async function boot() {
 
     const cards = document.getElementById("cards");
     if (assets["win-setup"]) {
-      cards.append(card(
-        "Windows", "64-bit (x86_64)",
-        { label: "Download installer (.exe)", url: assets["win-setup"] }, null
-      ));
+      cards.append(dlButton("Windows (.exe)", assets["win-setup"], true));
     }
     if (assets["mac-dmg"]) {
-      cards.append(card(
-        "macOS", "Universal (.dmg)",
-        { label: "Download .dmg", url: assets["mac-dmg"] }, null
-      ));
+      // Both platforms are equally the way in; neither is the fallback. The
+      // secondary style exists for a second link *within* one platform, and
+      // there is none.
+      cards.append(dlButton("macOS (.dmg)", assets["mac-dmg"], true));
     }
 
     if (!cards.children.length) { fail(); return; }
