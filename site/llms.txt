@@ -39,7 +39,7 @@ each released version changed. It reaches no database and no file.
 
 ## Get it
 
-- [Download page](https://meta-taro.github.io/dbboard/): Windows `.exe` and macOS `.dmg` for the latest release, with checksum instructions. The binaries are not code-signed yet, so SmartScreen and Gatekeeper warn on first launch.
+- [Download page](https://meta-taro.github.io/dbboard/): Windows `.exe` and macOS `.dmg` for the latest release, with checksum instructions. Also in Japanese at [`/ja/`](https://meta-taro.github.io/dbboard/ja/) — same page, same links; English is the source text. The binaries are not code-signed yet, so SmartScreen and Gatekeeper warn on first launch.
 - [Releases](https://github.com/meta-taro/dbboard/releases): every version, its assets, and `SHA256SUMS.txt`. The MCP binary is published from v0.5.0 onward.
 - [Repository](https://github.com/meta-taro/dbboard)
 

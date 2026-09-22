@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ja">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Download dbboard</title>
+  <title>dbboard をダウンロード</title>
   <meta name="description" content="Download dbboard — a free, open-source desktop database client (Windows, macOS) for MySQL/MariaDB, PostgreSQL, Neon, Supabase, Aurora DSQL, Turso/libSQL, CockroachDB, Cloudflare D1, Cloud Firestore and MongoDB. Also ships dbboard-mcp, a read-only MCP server for AI agents.">
-  <link rel="canonical" href="https://meta-taro.github.io/dbboard/">
+  <link rel="canonical" href="https://meta-taro.github.io/dbboard/ja/">
   <!-- Both pages point at each other, and each names itself. Without the
        x-default a crawler has to guess which one to show someone whose
        language it does not recognise; English is the source text. -->
@@ -18,7 +18,7 @@
        something other than a bare link. -->
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="dbboard">
-  <meta property="og:url" content="https://meta-taro.github.io/dbboard/">
+  <meta property="og:url" content="https://meta-taro.github.io/dbboard/ja/">
   <meta property="og:title" content="Download dbboard — desktop database client">
   <meta property="og:description" content="Free and open source. Windows .exe and macOS .dmg for MySQL, PostgreSQL, Neon, Supabase, Aurora DSQL, Turso, Cloudflare D1, Firestore and MongoDB — plus a read-only MCP server for AI agents.">
   <!-- The screenshot rather than the logo: a preview card is the one place the
@@ -34,7 +34,7 @@
        pinned to the GitHub Releases API, and there is no base/form surface.
        GitHub Pages can't set response headers, so this rides as a meta tag. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src https://api.github.com; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-  <link rel="icon" href="dbboard-logo-256.png">
+  <link rel="icon" href="../dbboard-logo-256.png">
   <style>
     :root {
       --bg: #f7f8fa; --fg: #1c2024; --muted: #5c6570;
@@ -152,21 +152,21 @@
       <!-- The product name stops here. Someone arriving has not heard it yet,
            so it cannot be the largest line on the page. -->
       <div class="mark">
-        <img src="dbboard-logo-256.png" alt="dbboard logo">
+        <img src="../dbboard-logo-256.png" alt="dbboard logo">
         <b>dbboard</b>
-        <nav class="lang" aria-label="Language">
-          <span aria-current="true">EN</span><a href="ja/" hreflang="ja" lang="ja">日本語</a>
+        <nav class="lang" aria-label="言語">
+          <a href="../" hreflang="en" lang="en">EN</a><span aria-current="true">日本語</span>
         </nav>
       </div>
 
-      <h1>Turso, D1, Aurora&nbsp;DSQL —<br>
-        <span class="quiet">a different tool for every one of them.</span></h1>
+      <h1>Turso も D1 も Aurora&nbsp;DSQL も、<br>
+        <span class="quiet">そのたびに道具を持ち替えている。</span></h1>
 
       <p class="lede">
-        One window for ten engines: those three plus PostgreSQL, CockroachDB,
-        Neon, Supabase, MySQL/MariaDB, and the document stores
-        Cloud&nbsp;Firestore and MongoDB.<br>
-        <b>Same editor, same grid, same export, whichever one you opened.</b>
+        10 のエンジンを 1 つの窓で。上の 3 つに加えて PostgreSQL、CockroachDB、
+        Neon、Supabase、MySQL/MariaDB、文書データベースの
+        Cloud&nbsp;Firestore と MongoDB。<br>
+        <b>どれを開いても、同じエディタ、同じ表、同じ書き出し。</b>
       </p>
     </header>
 
@@ -174,14 +174,13 @@
          and asking someone to click through a SmartScreen warning for an app
          they have never seen is asking a lot. -->
     <figure class="hero">
-      <img class="shot" src="screenshots/query-light.png" width="1360" height="860"
+      <img class="shot" src="../screenshots/query-light.png" width="1360" height="860"
            alt="dbboard running a JOIN across two tables. The sidebar lists the connection and its three tables; the editor holds the query; below it 119 rows are shown in a grid, with empty cells rendered as an italic NULL, and buttons to copy the result as TSV or CSV or save it to a file.">
       <figcaption>
-        Write a query, run it with Ctrl+Enter, and take the result out as TSV,
-        CSV or JSON. Empty cells are shown as <code>NULL</code> rather than as
-        nothing, so a missing value never reads as an empty string — and the
-        JSON export keeps that distinction in the file, where CSV can only
-        write an empty field for both.
+        クエリを書いて Ctrl+Enter で実行し、結果を TSV・CSV・JSON で取り出せます。
+        空のセルは何も表示しないのではなく <code>NULL</code> と出るので、値が無いことが
+        空文字と混ざりません。JSON で書き出せばその区別がファイルにも残ります
+        —— CSV はどちらも空欄としか書けません。
       </figcaption>
     </figure>
 
@@ -191,79 +190,74 @@
          unsigned, so the app is shown before anyone is asked to click through
          a warning for it. Both sit in the first screenful either way. -->
     <div class="cta">
-      <div id="status" class="status">Loading the latest release…</div>
+      <div id="status" class="status">最新のリリースを読み込んでいます…</div>
       <div id="cards" class="cards" hidden></div>
       <!-- The skeleton says not to print a version, because one written into
            the page is wrong the day after it is written. This one is not
            written into the page: `app.js` fills it from the Releases API, so
            it names the build the buttons above actually hand over. -->
       <p class="note">
-        Windows 10+ and macOS 13+ · MIT · <span id="version"></span>
+        Windows 10 以降 / macOS 13 以降 · MIT · <span id="version"></span>
       </p>
     </div>
 
-    <h2>A look around</h2>
+    <h2>どんな画面か</h2>
     <figure>
-      <img class="shot" src="screenshots/structure-light.png" width="1360" height="620"
+      <img class="shot" src="../screenshots/structure-light.png" width="1360" height="620"
            alt="The structure view of a table: seven columns listed with their type, whether they accept NULL, which one is the primary key, and their default, plus a free-text note against each. Below the columns, a relationships section shows the foreign key from this table to another.">
       <figcaption>
-        Every table's columns, types, nullability, keys and foreign keys —
-        plus a note field on each column and on the table itself, for the
-        things the schema does not say out loud.
+        各テーブルのカラム、型、NULL の可否、キー、外部キー。
+        加えてカラムごと・テーブルごとに書ける覚え書きの欄。
+        スキーマが自分では語らないことを、ここに置けます。
       </figcaption>
     </figure>
     <figure>
-      <img class="shot" src="screenshots/query-dark.png" width="1360" height="860"
+      <img class="shot" src="../screenshots/query-dark.png" width="1360" height="860"
            alt="The same query and result grid in dark theme, with the interface language set to English.">
       <figcaption>
-        Light, dark, or whatever the OS is set to. The interface is
-        translated into eleven languages.
+        ライト、ダーク、あるいは OS の設定どおり。
+        画面は 11 言語に翻訳されています。
       </figcaption>
     </figure>
     <p class="meta">
-      These are real captures of the app against a fictional dataset, not
-      mockups. The corpus is in
+      これはモックではなく、架空のデータに対して実際に動かした画面です。
+      同じ 3 つのテーブルを手元で触りたい場合、データは
       <a href="https://github.com/meta-taro/dbboard/tree/main/scripts/demo-profile">scripts/demo-profile</a>
-      if you want the same three tables to click around in.
+      にあります。
     </p>
 
-    <h3>Compare two databases</h3>
+    <h3>2 つのデータベースを比べる</h3>
     <p>
-      Pick a second connection on the same engine and dbboard lists what the
-      two schemas disagree about: tables one side has and the other does not,
-      columns that differ in type, nullability or default, primary keys that
-      do not match, foreign keys that point somewhere else, and indexes that
-      are missing, built over different columns, or unique on only one side.
-      Only what differs is listed, so three hundred tables with one difference
-      give you one line.
+      同じ種類の接続をもう 1 つ選ぶと、2 つのスキーマが食い違っている所だけが並びます。
+      片方にしかないテーブル、型・NULL の可否・既定値が違うカラム、一致しない主キー、
+      別の場所を指している外部キー、そして無い・別のカラムで張られている・片方だけ一意、
+      というインデックス。<b>違う所しか出しません</b>ので、300 テーブルあって違いが 1 つなら、
+      出てくるのは 1 行です。
     </p>
     <p>
-      Types are compared exactly as each engine spells them —
-      <code>VARCHAR(255)</code> and <code>varchar</code> are reported as
-      different even where they may well mean the same thing. A second look
-      costs you a moment; a missed difference costs you the migration. Two
-      connections on different engines are refused rather than guessed at.
+      型は、それぞれのエンジンが書くとおりに比べます。
+      <code>VARCHAR(255)</code> と <code>varchar</code> は、同じ意味かもしれなくても
+      違うものとして出します。<b>見直す手間は一瞬ですが、見落とした違いは移行ごと失敗させます。</b>
+      種類の違う接続どうしは、推測せずに断ります。
     </p>
 
-    <h3>Queries worth keeping, and tables that do not stop at row 100</h3>
+    <h3>取っておきたいクエリと、100 行で終わらない表</h3>
     <p>
-      The editor has always remembered what you ran, but that list is
-      disposable on purpose. Name a query instead and it stays — per
-      connection, one click to put it back — kept in
-      <code>saved-queries.toml</code> beside your connections rather than in
-      the window's own storage, which "clear site data" empties and no
-      settings backup includes.
+      エディタは前から実行したものを覚えていますが、その一覧はあえて使い捨てです。
+      名前を付ければ残ります —— 接続ごとに、ひと押しで戻せます。
+      置き場は接続情報の隣の <code>saved-queries.toml</code> で、窓自身の保存領域ではありません。
+      そちらは「サイトデータを消去」で空になり、設定のバックアップにも入りません。
     </p>
     <p>
-      Browsing a table pages through all of it. The pages are keyed rather
-      than counted, resuming strictly after the previous page's last row, so
-      a row inserted while you read cannot make another appear twice or vanish
-      between pages — and no page costs more than the first.
+      テーブルを開くと、最後まで頁を送れます。頁は数えるのではなく<b>鍵で辿る</b>方式で、
+      前の頁の最後の行の直後から続きます。読んでいる間に行が増えても、
+      同じ行が 2 度出たり、頁の境目で消えたりしません。
+      どの頁も、最初の 1 頁より遅くなりません。
     </p>
 
 
     <section id="archive" hidden>
-    <h2>Previous versions</h2>
+    <h2>過去の版</h2>
     <div class="table-scroll">
       <table class="archive">
         <thead>
@@ -273,26 +267,25 @@
       </table>
     </div>
     <p class="note">
-      <strong>Rolling back is supported, and your connections survive it.</strong>
-      If a release does not work for you, install the last one that did — the
-      list above is there for exactly that. The first time each build runs it
-      copies <code>connections.toml</code> aside as
-      <code>connections.pre-&lt;version&gt;.toml</code> before touching
-      anything, so going back finds a file that version can certainly read.
+      <strong>古い版へ戻せます。戻しても接続情報は残ります。</strong>
+      うまく動かない版に当たったら、動いていた版を入れ直してください。
+      上の一覧はそのためにあります。各版は初回の起動時、何かを書く前に
+      <code>connections.toml</code> を
+      <code>connections.pre-&lt;版&gt;.toml</code> として控えます。
+      戻った先で、その版が確実に読めるファイルが見つかります。
     </p>
     <p class="meta">
-      One thing to know before going a long way back: a connection using a
-      database engine that was added <em>after</em> the version you install
-      cannot be read by it, and older builds refuse the whole file rather than
-      the one entry. That is what the copy is for. Your saved credentials are
-      not affected either way — they live in the OS keychain, not in the file.
+      ずっと古い版へ戻すときに 1 つだけ。入れる版より<em>後</em>に増えた種類の接続は、
+      その版には読めません。しかも古い版は、その 1 件ではなく<b>ファイル全体を断ります</b>。
+      控えはそのためにあります。保存した資格情報はどちらの場合も影響を受けません
+      —— ファイルではなく OS のキーチェーンにあります。
     </p>
     </section>
 
-    <h2>Verify your download</h2>
+    <h2>落としたものを確かめる</h2>
     <p>
-      Every release ships a <code>SHA256SUMS.txt</code> covering all
-      artifacts. Compare your download against it before running:
+      どのリリースにも、全成果物ぶんの <code>SHA256SUMS.txt</code> が付いています。
+      動かす前に、落としたものと突き合わせてください。
     </p>
     <pre>
 # Linux / macOS
@@ -302,31 +295,29 @@ sha256sum -c SHA256SUMS.txt
 (Get-FileHash .\dbboard-desktop_0.17.0_x64-setup.exe -Algorithm SHA256).Hash</pre>
     <p id="checksums-link" class="meta"></p>
 
-    <h2>Use it from an AI agent</h2>
+    <h2>AI エージェントから使う</h2>
     <p>
-      dbboard also ships <code>dbboard-mcp</code>, a headless
-      <a href="https://modelcontextprotocol.io">MCP</a> server that hands the
-      connections you have already configured to an AI agent as a tool surface
-      over stdio. Reading is always on; writing stays off until you opt a
-      connection in, and privilege changes, <code>TRUNCATE</code> and
-      <code>DROP</code> are blocked either way. It reuses the same
-      <code>connections.toml</code> and OS keychain the app uses, so it adds no
-      new place to keep credentials, and secrets never cross the wire.
+      dbboard には <code>dbboard-mcp</code> も入っています。画面を持たない
+      <a href="https://modelcontextprotocol.io">MCP</a> サーバで、すでに設定済みの接続を
+      標準入出力ごしに AI エージェントへ道具として渡します。読み取りは常に有効、
+      書き込みは接続ごとに明示して初めて開きます。権限の変更・<code>TRUNCATE</code>・
+      <code>DROP</code> は、どちらであっても通しません。アプリと同じ
+      <code>connections.toml</code> と OS のキーチェーンを使うので、
+      資格情報の置き場が増えることはなく、秘密が通信に乗ることもありません。
     </p>
     <p>
-      An agent handed this server can ask it what it is: the <code>about</code>
-      tool answers what the product is for, which build is replying, which
-      engines it speaks, and what each released version changed. It reaches no
-      connection, no database and no file of yours — the answer is compiled
-      into the binary, so it describes the build that is answering rather than
-      whatever happens to sit on disk beside it.
+      このサーバを渡されたエージェントは、それが何かを尋ねられます。
+      <code>about</code> という道具が、何のための製品か、どの版が答えているか、
+      どのエンジンを話せるか、各版で何が変わったかを返します。
+      接続にもデータベースにも、あなたのファイルにも触れません。
+      答えはバイナリに埋め込まれているので、隣に何が置いてあるかではなく、
+      <b>いま答えている当人</b>を説明します。
     </p>
     <p>
-      It is a separate download from the app above — grab
-      <code>dbboard-mcp-windows-x86_64.exe</code> or
-      <code>dbboard-mcp-macos-universal</code> from the
-      <a href="https://github.com/meta-taro/dbboard/releases/latest">latest
-      release</a>, put it somewhere stable, then register it in one line:
+      上のアプリとは別に落とします。<a href="https://github.com/meta-taro/dbboard/releases/latest">最新のリリース</a>から
+      <code>dbboard-mcp-windows-x86_64.exe</code> か
+      <code>dbboard-mcp-macos-universal</code> を取り、動かさない場所に置いて、
+      1 行で登録します。
     </p>
     <pre>
 # Windows (PowerShell)
@@ -338,31 +329,30 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       Restart the agent afterwards — each client holds its own server process
       for the session. Setup, the twenty-two tools, the write policy and
       troubleshooting are in the
-      <a href="https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md">dbboard-mcp
-      README</a>. There is also a walkthrough in Japanese:
+      <a href="https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md">dbboard-mcp の README</a>. There is also a walkthrough in Japanese:
       <a href="https://zenn.dev/dokokade/articles/46b8c608715963">Claude Code
       に自分の DB を触らせる</a>.
     </p>
 
-    <h2>Before you run it</h2>
+    <h2>動かす前に</h2>
     <p class="note">
-      These binaries are <strong>not code-signed</strong>, by decision rather
-      than by omission: a signing certificate is a recurring purchase this
-      project does not make. Windows SmartScreen may warn about an "unknown
-      publisher", and macOS Gatekeeper will ask you to confirm opening an app
-      from an unidentified developer. Both warnings are expected on every
-      release — verify the checksum above, then allow it through.
+      このバイナリには<strong>署名がありません</strong>。忘れたのではなく、決めたことです
+      —— 署名証明書は毎年払い続ける買い物で、この製品はそれをしません。
+      Windows では SmartScreen が「発行元不明」と警告し、
+      macOS では Gatekeeper が「開発元を確認できないアプリ」の確認を求めます。
+      <b>どちらの警告も、毎回出るのが正常です。</b>
+      上のチェックサムを確かめてから、通してください。
     </p>
 
     <footer>
-      <a id="all-releases" href="https://github.com/meta-taro/dbboard/releases">All releases</a>
-      <a href="https://github.com/meta-taro/dbboard">Source on GitHub</a>
+      <a id="all-releases" href="https://github.com/meta-taro/dbboard/releases">すべてのリリース</a>
+      <a href="https://github.com/meta-taro/dbboard">GitHub のソース</a>
       <a href="https://github.com/meta-taro/dbboard#readme">Docs</a>
     </footer>
   </div>
 
   <!-- A module so the pure helpers can be unit-tested; still
        same-origin, so script-src 'self' covers it. -->
-  <script type="module" src="app.js"></script>
+  <script type="module" src="../app.js"></script>
 </body>
 </html>
