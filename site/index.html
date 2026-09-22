@@ -344,6 +344,31 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       に自分の DB を触らせる</a>.
     </p>
 
+    <h2>Releasing, on a project that has no pipeline</h2>
+    <p>
+      Plenty of systems still get released by hand: someone opens an SSH
+      session, copies files up, then opens a client and runs the migration.
+      There is no pipeline to give an agent, and building one is its own
+      project.
+      <a href="https://meta-taro.github.io/sshboard/">sshboard</a> is the other
+      half of that pair — the same idea applied to the server rather than the
+      database. Your agent and you share <em>one</em> SSH session, and what it
+      runs appears in the console you are already watching.
+    </p>
+    <p>
+      Together they cover the two halves of a hand release: sshboard puts the
+      files where they go, dbboard runs what has to run against the database.
+      The agent does the steps; you are in the room for all of them, on both
+      sides.
+    </p>
+    <p class="meta">
+      <b>Neither one is a way to leave an agent running unattended.</b>
+      sshboard says so on its own page, and dbboard means it the same way:
+      reading is always on, writing stays off until you opt a connection in,
+      and the destructive statements are refused whatever that switch says.
+      What gets automated here is the <em>work</em>, not the watching.
+    </p>
+
     <h2>Before you run it</h2>
     <p class="note">
       These binaries are <strong>not code-signed</strong>, by decision rather

@@ -261,7 +261,7 @@
     <div class="table-scroll">
       <table class="archive">
         <thead>
-          <tr><th>Version</th><th>Windows</th><th>macOS</th></tr>
+          <tr><th>版</th><th>Windows</th><th>macOS</th></tr>
         </thead>
         <tbody id="archive-rows"></tbody>
       </table>
@@ -326,12 +326,36 @@ claude mcp add dbboard --scope user -- "$env:LOCALAPPDATA/dbboard/dbboard-mcp.ex
 # macOS
 claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
     <p class="meta">
-      Restart the agent afterwards — each client holds its own server process
-      for the session. Setup, the twenty-two tools, the write policy and
-      troubleshooting are in the
-      <a href="https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md">dbboard-mcp の README</a>. There is also a walkthrough in Japanese:
+      登録したらエージェントを再起動してください —— クライアントごとに、その
+      セッション用のサーバを 1 つずつ抱えます。導入手順、22 個の道具、書き込みの方針、
+      困ったときの対処は
+      <a href="https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md">dbboard-mcp の README</a>
+      にあります。日本語の解説もあります:
       <a href="https://zenn.dev/dokokade/articles/46b8c608715963">Claude Code
-      に自分の DB を触らせる</a>.
+      に自分の DB を触らせる</a>。
+    </p>
+
+    <h2>デプロイの仕組みが無いプロジェクトで、リリースする</h2>
+    <p>
+      手で出しているシステムは、まだいくらでもあります。SSH で入ってファイルを置き、
+      クライアントを開いてマイグレーションを流す。エージェントに渡せるパイプラインが
+      そもそも無く、作ること自体がひとつのプロジェクトです。
+      <a href="https://meta-taro.github.io/sshboard/">sshboard</a> は、その対になる道具
+      —— 同じ考え方を、データベースではなくサーバへ当てたものです。エージェントとあなたが
+      <em>1 本の</em> SSH セッションを共有し、エージェントが打ったものは、
+      あなたが見ているコンソールにそのまま出ます。
+    </p>
+    <p>
+      2 つ合わせると、手作業のリリースの両半分が埋まります。sshboard がファイルを置き、
+      dbboard がデータベースに対して流すものを流す。
+      <b>手順はエージェントがやり、あなたはその全部に立ち会っています</b> —— 両方の側で。
+    </p>
+    <p class="meta">
+      <b>どちらも、エージェントを無人で走らせるための道具ではありません。</b>
+      sshboard は自分のページでそう明言していますし、dbboard も同じ意味で作ってあります
+      —— 読み取りは常に有効、書き込みは接続ごとに明示して初めて開き、
+      壊す種類の文はその切り替えに関わらず断ります。
+      ここで自動化されるのは<em>作業</em>であって、見ていることではありません。
     </p>
 
     <h2>動かす前に</h2>
