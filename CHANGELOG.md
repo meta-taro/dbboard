@@ -27,6 +27,18 @@ public API is the HTTP contract in
 
 ### Added
 
+- **The download page introduces sshboard**, and says what the two are for
+  together. Plenty of systems are still released by hand — someone opens an
+  SSH session, copies files up, then opens a client and runs the migration.
+  There is no pipeline to hand an agent, and building one is its own project.
+  sshboard covers the server half of that the way dbboard covers the database
+  half: the agent and the person share one session, and what the agent runs
+  appears where the person is already looking.
+
+  The section is explicit that **neither is a way to leave an agent running
+  unattended** — sshboard says so on its own page, and dbboard's write policy
+  means it the same way. What gets automated is the work, not the watching.
+
 - **A Japanese page**, at `/ja/`. English remains the source text; the two
   pages point at each other and English is the `x-default`. Tests keep them
   from drifting on the parts that must not differ — the sections, the
