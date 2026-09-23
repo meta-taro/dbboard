@@ -27,8 +27,8 @@ public API is the HTTP contract in
 
 ### Added
 
-- **The download page introduces sshboard**, and says what the two are for
-  together. Plenty of systems are still released by hand — someone opens an
+- **The download page recommends sshboard**, with its icon, and says what the
+  two are for together. Plenty of systems are still released by hand — someone opens an
   SSH session, copies files up, then opens a client and runs the migration.
   There is no pipeline to hand an agent, and building one is its own project.
   sshboard covers the server half of that the way dbboard covers the database

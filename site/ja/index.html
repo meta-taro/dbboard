@@ -111,6 +111,20 @@
     .dl[aria-disabled="true"] { opacity: .5; pointer-events: none; }
     /* The archive can outgrow a narrow window, so it scrolls inside its own
        box rather than making the page scroll sideways. */
+    /* The sibling product, introduced rather than mentioned in passing. It
+       reads as a thing with a face, not a link buried in a paragraph. */
+    .pair {
+      display: flex; gap: 1rem; align-items: flex-start;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.1rem 1.25rem; margin: 0 0 1.25rem;
+    }
+    .pair-icon { width: 72px; height: 72px; flex: none; border-radius: 14px; }
+    .pair-body { min-width: 0; }
+    .pair h3 { margin: .1rem 0 .4rem; font-size: 1.05rem; }
+    .pair h3 a { text-decoration: none; }
+    .pair h3 a:hover { text-decoration: underline; }
+    .pair p { margin: 0; color: var(--muted); font-size: .92rem; }
+    @media (max-width: 34rem) { .pair { flex-direction: column; } }
     .table-scroll { overflow-x: auto; }
     table.archive { border-collapse: collapse; width: 100%; font-size: .9rem; }
     table.archive th, table.archive td {
@@ -335,27 +349,32 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       に自分の DB を触らせる</a>。
     </p>
 
-    <h2>デプロイの仕組みが無いプロジェクトで、リリースする</h2>
+    <h2>sshboard と一緒に使う</h2>
+    <div class="pair">
+      <img class="pair-icon" src="../sshboard-icon-256.png" width="72" height="72"
+           alt="sshboard のアイコン。角丸の四角に、ターミナルのプロンプト（大なり記号とアンダースコア）">
+      <div class="pair-body">
+        <h3><a href="https://meta-taro.github.io/sshboard/">sshboard</a> —— あなたとエージェントが、1 本の SSH セッションに</h3>
+        <p>
+          dbboard と同じ考え方を、データベースではなくサーバへ当てたものです。
+          エージェントには <code>run_command</code> の穴を渡しません
+          —— 見ていない所で作業させるのではなく、あなたが見ているセッションを共有し、
+          打ったものはそのままあなたのコンソールに出ます。
+        </p>
+      </div>
+    </div>
     <p>
-      手で出しているシステムは、まだいくらでもあります。SSH で入ってファイルを置き、
-      クライアントを開いてマイグレーションを流す。エージェントに渡せるパイプラインが
-      そもそも無く、作ること自体がひとつのプロジェクトです。
-      <a href="https://meta-taro.github.io/sshboard/">sshboard</a> は、その対になる道具
-      —— 同じ考え方を、データベースではなくサーバへ当てたものです。エージェントとあなたが
-      <em>1 本の</em> SSH セッションを共有し、エージェントが打ったものは、
-      あなたが見ているコンソールにそのまま出ます。
-    </p>
-    <p>
-      2 つ合わせると、手作業のリリースの両半分が埋まります。sshboard がファイルを置き、
-      dbboard がデータベースに対して流すものを流す。
-      <b>手順はエージェントがやり、あなたはその全部に立ち会っています</b> —— 両方の側で。
+      <b>2 つ合わせて使うための道具です。</b>手で出しているシステムは、まだいくらでもあります
+      —— SSH で入ってファイルを置き、クライアントを開いてマイグレーションを流す。
+      エージェントに渡せるパイプラインがそもそも無く、作ること自体がひとつのプロジェクトです。
+      2 つあれば、その両半分が埋まります。<b>sshboard がファイルを置き、dbboard が
+      データベースに対して流すものを流す。</b>手順はエージェントがやり、
+      あなたはその全部に立ち会っています —— 両方の側で。
     </p>
     <p class="meta">
-      <b>どちらも、エージェントを無人で走らせるための道具ではありません。</b>
-      sshboard は自分のページでそう明言していますし、dbboard も同じ意味で作ってあります
-      —— 読み取りは常に有効、書き込みは接続ごとに明示して初めて開き、
-      壊す種類の文はその切り替えに関わらず断ります。
-      ここで自動化されるのは<em>作業</em>であって、見ていることではありません。
+      どちらも、エージェントを無人で走らせるための道具ではありません
+      —— sshboard は自分のページでそう明言していますし、dbboard の書き込みの方針も
+      同じ意味です。ここで自動化されるのは作業であって、見ていることではありません。
     </p>
 
     <h2>動かす前に</h2>

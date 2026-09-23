@@ -111,6 +111,20 @@
     .dl[aria-disabled="true"] { opacity: .5; pointer-events: none; }
     /* The archive can outgrow a narrow window, so it scrolls inside its own
        box rather than making the page scroll sideways. */
+    /* The sibling product, introduced rather than mentioned in passing. It
+       reads as a thing with a face, not a link buried in a paragraph. */
+    .pair {
+      display: flex; gap: 1rem; align-items: flex-start;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.1rem 1.25rem; margin: 0 0 1.25rem;
+    }
+    .pair-icon { width: 72px; height: 72px; flex: none; border-radius: 14px; }
+    .pair-body { min-width: 0; }
+    .pair h3 { margin: .1rem 0 .4rem; font-size: 1.05rem; }
+    .pair h3 a { text-decoration: none; }
+    .pair h3 a:hover { text-decoration: underline; }
+    .pair p { margin: 0; color: var(--muted); font-size: .92rem; }
+    @media (max-width: 34rem) { .pair { flex-direction: column; } }
     .table-scroll { overflow-x: auto; }
     table.archive { border-collapse: collapse; width: 100%; font-size: .9rem; }
     table.archive th, table.archive td {
@@ -344,29 +358,36 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       に自分の DB を触らせる</a>.
     </p>
 
-    <h2>Releasing, on a project that has no pipeline</h2>
+    <h2>Better with sshboard</h2>
+    <!-- A sibling product, introduced properly rather than mentioned. The icon
+         is vendored: this page pins `img-src 'self'` (ADR-0047), so an image
+         pointed at the other site would render as nothing at all. -->
+    <div class="pair">
+      <img class="pair-icon" src="sshboard-icon-256.png" width="72" height="72"
+           alt="sshboard icon: a terminal prompt, greater-than and underscore, on a rounded square">
+      <div class="pair-body">
+        <h3><a href="https://meta-taro.github.io/sshboard/">sshboard</a> — you and your agent, on one SSH session</h3>
+        <p>
+          The same idea as dbboard, applied to the server instead of the
+          database. Your agent gets no <code>run_command</code> hole to work in
+          somewhere you cannot see: it shares the session you are watching, and
+          what it runs appears in your console as it happens.
+        </p>
+      </div>
+    </div>
     <p>
-      Plenty of systems still get released by hand: someone opens an SSH
-      session, copies files up, then opens a client and runs the migration.
-      There is no pipeline to give an agent, and building one is its own
-      project.
-      <a href="https://meta-taro.github.io/sshboard/">sshboard</a> is the other
-      half of that pair — the same idea applied to the server rather than the
-      database. Your agent and you share <em>one</em> SSH session, and what it
-      runs appears in the console you are already watching.
-    </p>
-    <p>
-      Together they cover the two halves of a hand release: sshboard puts the
-      files where they go, dbboard runs what has to run against the database.
-      The agent does the steps; you are in the room for all of them, on both
-      sides.
+      <b>They are meant to be used together.</b> Plenty of systems are still
+      released by hand — someone opens an SSH session, copies files up, then
+      opens a client and runs the migration. There is no pipeline to give an
+      agent, and building one is its own project. Between the two, the halves
+      are covered: <b>sshboard puts the files where they go, dbboard runs what
+      has to run against the database.</b> The agent does the steps; you are in
+      the room for all of them, on both sides.
     </p>
     <p class="meta">
-      <b>Neither one is a way to leave an agent running unattended.</b>
-      sshboard says so on its own page, and dbboard means it the same way:
-      reading is always on, writing stays off until you opt a connection in,
-      and the destructive statements are refused whatever that switch says.
-      What gets automated here is the <em>work</em>, not the watching.
+      Neither is a way to leave an agent running unattended — sshboard says so
+      on its own page, and dbboard's write policy means it the same way. What
+      gets automated is the work, not the watching.
     </p>
 
     <h2>Before you run it</h2>
