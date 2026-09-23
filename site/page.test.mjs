@@ -210,3 +210,13 @@ test("neither page hard-codes a version number", () => {
     assert.deepEqual(outsideTheExample, [], `${name} prints ${outsideTheExample.join(", ")}`);
   }
 });
+
+test("the two pages share one stylesheet, byte for byte", () => {
+  // They each carry their own inline <style>, and a rule added to one only is
+  // invisible until someone looks at the other page — which is how the
+  // sshboard card shipped unstyled on the Japanese side for a few minutes.
+  // If these ever need to differ, they need to stop being copies first.
+  const block = (page) => page.match(/<style>[\s\S]*?<\/style>/)?.[0];
+  assert.ok(block(html), "index.html has no <style> block");
+  assert.equal(block(ja), block(html), "the two <style> blocks have drifted apart");
+});
