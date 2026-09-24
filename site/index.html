@@ -84,6 +84,9 @@
       border-radius: 8px; padding: .9rem 1rem; font-size: .92rem;
     }
     .meta { color: var(--muted); font-size: .9rem; }
+    /* 兄弟プロダクト。警告ではないので `.note` の色は使わない */
+    .family { padding-left: 1.1rem; }
+    .family li { margin: .55rem 0; line-height: 1.6; }
     figure { margin: 0 0 1.5rem; }
     /* width/height are on the tags so the page does not reflow when the
        screenshots finish loading, and the caption does not jump. */
@@ -211,6 +214,29 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       from an unidentified developer. Both warnings are expected on every
       release — verify the checksum above, then allow it through.
     </p>
+
+    <h2>The same idea, elsewhere</h2>
+    <p>
+      Three tools, one rule: <strong>the agent works where you can see it, inside a
+      fence you drew.</strong> All free, all open source, all self-hosted — none of
+      them has a service to sign up for.
+    </p>
+    <ul class="family">
+      <li>
+        <a href="https://meta-taro.github.io/sshboard/"><strong>sshboard</strong></a>
+        — servers. A desktop SSH client where you and your agent hold the same one
+        connection. <strong>There is no <code>run_command</code> tool</strong>; the
+        agent runs only commands you listed, writes only inside directories you
+        listed, and every keystroke it sends to the shared terminal is on your screen
+        as it happens.
+      </li>
+      <li>
+        <a href="https://meta-taro.github.io/warifu/"><strong>warifu</strong></a>
+        — conversations. People and agents in one conversation, peer to peer.
+        <strong>No central account and no server to run</strong> — you hand someone a
+        key, and that key is what lets them in.
+      </li>
+    </ul>
 
     <footer>
       <a id="all-releases" href="https://github.com/meta-taro/dbboard/releases">All releases</a>
