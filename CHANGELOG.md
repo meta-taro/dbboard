@@ -9,6 +9,24 @@ public API is the HTTP contract in
 
 ## [Unreleased] — The measurement nobody has taken
 
+### Fixed
+
+- **The startup number could not see a cold start, which is the one thing it
+  was reserved to measure.** The clock starts on the first line of the shell's
+  `run()`, and by then the kernel has exec'd a 47 MB binary and the dynamic
+  linker has paged it in — the exact work a warm launch skips. It showed: the
+  first launch after a reboot reported 451 ms, and the very next launch
+  reported 431 ms. A cold disk does not cost 20 ms.
+
+  The reading now also carries the wall-clock instant the clock started, so a
+  stopwatch that began before the process existed can subtract and recover the
+  loading time. `scripts/measure-cold-start.sh` prints the three numbers: what
+  a person waits, what *First paint* shows, and the difference between them.
+  Nothing is written to disk unless that script asked for it.
+
+  *About* is unchanged. *First paint* is still the right number for whether a
+  change made painting slower; the cold start is a different question.
+
 ### Changed
 
 - **The download page opens with the problem instead of the product name.**

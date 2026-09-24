@@ -14143,3 +14143,79 @@ instantly", which is the one wrong answer that looks like a right one.
 - The frontend guard is per page-life, so a reload re-arms it. The shell is
   the authority that ignores the repeat, which is where the decision belongs —
   the frontend cannot know it is a reload rather than a launch.
+
+## ADR-0157 — The clock starts too late to see a cold start, so it publishes where it started (2026-09-24)
+
+**Status.** Accepted. Amends [ADR-0156](#adr-0156).
+
+**Context.** ADR-0156 gave the app a way to say when it first painted, because
+an outside observer polling for a window cannot see past the window existing.
+That was right, and the number it produces is real. It just cannot answer the
+question [`startup-measurement.md`](startup-measurement.md) item 3 asks.
+
+The reboot on 2026-09-24 is what showed it. The first launch after the boot
+reported **451 ms**; the next launch, with everything still in the page cache,
+reported **431 ms**. A cold disk reading 47 MB should not cost 20 ms.
+
+The cause is visible in ADR-0156's own code, and its comment almost says it:
+
+```rust
+// **Before anything else.** Every line above this one is invisible to the
+// measurement and silently flatters the number (ADR-0156).
+let startup = startup::StartupClock::started();
+```
+
+The comment is written about the lines above it *inside `run()`*. The larger
+invisible stretch is before `run()` is entered at all — the kernel exec'ing the
+binary and dyld paging it in. **That is exactly where a cold launch differs
+from a warm one**, and it is finished before the clock exists.
+
+So ADR-0156 built the instrument that item 3 was waiting for, and item 3 is not
+something that instrument can measure. Neither half of that is wrong; they were
+answering different questions and nobody noticed until a number came back.
+
+**Decision.** The reading carries **`started_at_unix_ms`** — the moment the
+clock started, on the wall clock rather than the process-local `Instant`, which
+is deliberately opaque and cannot cross a process boundary. A stopwatch that
+began before the process existed can then subtract:
+
+```
+total   = started_at_unix_ms + first_paint_ms - stopwatch_start
+inside  = first_paint_ms
+loading = total - inside
+```
+
+`scripts/measure-cold-start.sh` is that stopwatch. The app leaves its reading
+at the path in `DBBOARD_STARTUP_REPORT`, written to a staging file and renamed
+into place so a poller cannot read a half-written number and report it as a
+measurement. **Nothing is written when the variable is unset**, which is every
+ordinary launch.
+
+**Alternatives.**
+
+- **Have the app look up its own process start time.** Self-contained, and
+  About could then show the whole number. Rejected for now: three platform
+  implementations (`sysctl` on macOS, `/proc/self/stat` on Linux,
+  `GetProcessTimes` on Windows), two of them `unsafe`, to avoid one shell
+  script. The door stays open if About is ever the place this has to be read.
+- **Time it from outside only**, as the 318 ms median was. That is what cannot
+  see past window creation — the gap ADR-0156 exists to close. Going back to it
+  would trade one blind spot for the other.
+- **Launch through `open`.** More faithful to a double-click, but macOS
+  LaunchServices does not pass the environment through, so the app would have
+  no way to be told where to leave the reading. The script launches the binary
+  directly and the number excludes LaunchServices' own overhead — stated in the
+  script rather than left to be discovered.
+
+**Consequences.**
+
+- **There is still exactly one cold sample per boot**, and now the script has
+  to be what launches the app. Opening it any other way first spends the
+  sample, and the result will look like a measurement rather than a mistake.
+- **About is unchanged.** It shows `First paint`, which is still the right
+  number for "did a change make painting slower". The cold start is a
+  different question with a different tool.
+- **v0.19 did not become cheaper.** The slot still holds item 2 (connect and
+  browse, Run to first row, against a real connection) and now item 3 needs a
+  reboot *after* this change ships. The reboot already spent was not wasted —
+  it is what found this — but it did not fill the slot.
