@@ -79,7 +79,49 @@ experience from a steady 318 ms, and the tail is the part a person notices.
    was slow.
 2. **Connect and browse**, and **Run to first row**, against a real connection,
    with the operator present to choose it.
-3. **A cold start**, taken once after a reboot.
+3. ~~**A cold start**, taken once after a reboot.~~ **Reboot alone does not
+   take it, and finding that out cost a reboot.** On 2026-09-24 the first
+   launch after a boot reported **451 ms** and the very next launch **431 ms**
+   — a 4% gap, where a cold disk should have been unmissable.
+
+   The reason is in item 1's own design. The clock starts on the first line of
+   `run()`, and by then the kernel has exec'd a 47 MB binary and dyld has
+   paged it in. **That is the work a warm launch skips**, and it finishes
+   before the clock exists. `first_paint_ms` was never wrong; it answers a
+   narrower question than this item asks.
+
+   So the reading now also carries **`started_at_unix_ms`** — the wall-clock
+   instant the clock started, on a clock other processes share. A stopwatch
+   that began *before the process existed* subtracts and recovers the rest:
+
+   ```sh
+   sh scripts/measure-cold-start.sh
+   ```
+
+   ```
+     total     ___ ms   launch -> painted (what a person waits)
+     inside    ___ ms   what About calls First paint
+     loading   ___ ms   exec + dyld + runtime, before the clock starts
+   ```
+
+   Warm, on 2026-09-24: `loading` sits at **15-17 ms** across three runs, so
+   the number is steady enough for a cold one to stand out against.
+
+   **Launch a freshly built binary once before the reboot.** macOS verifies an
+   app it has not seen before, and that verification lands in `loading` where
+   it is indistinguishable from a cold disk — the first launch of a new build
+   measured **3108 ms** against 15-17 ms for every launch after it. Three
+   seconds of signature checking recorded as a cold start would be worse than
+   having no number.
+
+   **There is still exactly one cold sample per boot**, and the script has to
+   be the thing that launches the app. Opening it any other way first spends
+   the sample. The script launches the binary directly rather than through
+   `open`, because LaunchServices does not pass the environment through and
+   the app needs `DBBOARD_STARTUP_REPORT` to know where to leave its reading.
+
+   **Nothing is written unless that variable is set.** An ordinary launch does
+   not start leaving files on a disk.
 
 Until then the roadmap item stays unticked. A quarter of a measurement is not
 a measurement, and the point of taking it first was to have something to
