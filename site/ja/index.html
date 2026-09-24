@@ -349,7 +349,9 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       に自分の DB を触らせる</a>。
     </p>
 
-    <h2>sshboard と一緒に使う</h2>
+    <!-- 題字は sshboard だけを名指していました。下に warifu が並んだので、
+         **2 つのうち 1 つだけを名指す題字**をやめます。 -->
+    <h2>兄弟の道具と一緒に使う</h2>
     <div class="pair">
       <img class="pair-icon" src="../sshboard-icon-256.png" width="72" height="72"
            alt="sshboard のアイコン。角丸の四角に、ターミナルのプロンプト（大なり記号とアンダースコア）">
@@ -376,6 +378,23 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       —— sshboard は自分のページでそう明言していますし、dbboard の書き込みの方針も
       同じ意味です。ここで自動化されるのは作業であって、見ていることではありません。
     </p>
+
+    <!-- 3 つ目。上の sshboard と同じ扱いで、アイコンはここに置く
+         （このページは `img-src 'self'` で留めてある・ADR-0047）。 -->
+    <div class="pair">
+      <img class="pair-icon" src="../warifu-icon-256.png" width="72" height="72"
+           alt="割符のアイコン。木の札がぎざぎざの合わせ目で 2 つに割れ、噛み合う形">
+      <div class="pair-body">
+        <h3><a href="https://meta-taro.github.io/warifu/">warifu（割符）</a> —— 人とエージェントが、同じ会話に着く</h3>
+        <p>
+          機械どうしが直接つながります。<b>中央のアカウントも、建てるサーバーもありません</b>
+          —— 鍵を渡した相手だけが入れる。名前は、割って 2 つにして互いを証しにする
+          あの木の札から来ています。dbboard と sshboard が
+          <b>1 体のエージェントを見ている</b>ための道具なのに対して、こちらは
+          <b>何人かと何体かが、そもそも同じ部屋に居る</b>ための道具です。
+        </p>
+      </div>
+    </div>
 
     <h2>動かす前に</h2>
     <p class="note">

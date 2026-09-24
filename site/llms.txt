@@ -57,3 +57,22 @@ each released version changed. It reaches no database and no file.
 - [Roadmap](https://raw.githubusercontent.com/meta-taro/dbboard/develop/docs/roadmap.md): which phases are closed and what is next.
 - [Design](https://raw.githubusercontent.com/meta-taro/dbboard/develop/DESIGN.md): palette, typography, spacing, component look.
 - [dbboard-web](https://github.com/meta-taro/dbboard-web): the browser counterpart (Nuxt + NestJS). Shares the adapter concepts and feature-parity goals; separate codebase, and not the thing you install for MCP.
+
+## Sibling projects
+
+Same rule, other territory: **the agent works where a human can see it, inside a
+fence that human drew.** All self-hosted, none with a service to sign up for.
+
+- [sshboard](https://meta-taro.github.io/sshboard/): servers. A human and an
+  agent hold the same one SSH connection. **There is no `run_command` tool** —
+  read-only commands come from an allow-list a human wrote, writes are fenced to
+  directories a human listed, and both lists start empty. The terminal is shared:
+  while the agent holds it the human's input is locked out and a Stop button is
+  showing. If you were asked to connect it, read
+  [its llms.txt](https://meta-taro.github.io/sshboard/llms.txt).
+- [warifu](https://meta-taro.github.io/warifu/): conversations. People and agents
+  in one conversation, peer to peer, with no central account and no server to
+  run. A key is handed to someone, and that key is what lets them in.
+
+dbboard and sshboard are about watching one agent work. warifu is about several
+people and several agents being in the same room at all.
