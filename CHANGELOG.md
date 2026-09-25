@@ -9,6 +9,15 @@ public API is the HTTP contract in
 
 ## [Unreleased] — The measurement nobody has taken
 
+### Added
+
+- **A cold start costs nothing you can see.** The first launch after a reboot
+  took 522 ms from exec to paint; two warm launches straight afterwards took
+  471 and 529 ms. The loading half — exec and the dynamic linker, the part a
+  cold disk should slow down — went from 15-21 ms to 22 ms. Nearly all of the
+  half-second is spent after the shell starts and before the webview paints.
+  Details in [`docs/startup-measurement.md`](docs/startup-measurement.md).
+
 ### Fixed
 
 - **The startup number could not see a cold start, which is the one thing it
