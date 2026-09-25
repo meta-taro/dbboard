@@ -79,7 +79,7 @@ experience from a steady 318 ms, and the tail is the part a person notices.
    was slow.
 2. **Connect and browse**, and **Run to first row**, against a real connection,
    with the operator present to choose it.
-3. ~~**A cold start**, taken once after a reboot.~~ **Reboot alone does not
+3. **A cold start** — **taken 2026-09-25**, result below. **Reboot alone does not
    take it, and finding that out cost a reboot.** On 2026-09-24 the first
    launch after a boot reported **451 ms** and the very next launch **431 ms**
    — a 4% gap, where a cold disk should have been unmissable.
@@ -122,6 +122,28 @@ experience from a steady 318 ms, and the tail is the part a person notices.
 
    **Nothing is written unless that variable is set.** An ordinary launch does
    not start leaving files on a disk.
+
+   **Taken on 2026-09-25**, on the 0.18 build that had already been launched
+   once (Gatekeeper done). The reboot was not planned — an unrelated crash
+   took the machine down at 14:35 — and the app had not been opened since:
+
+   ```
+                 total    inside   loading
+     cold          522       500        22 ms
+     warm #1       471       456        15 ms
+     warm #2       529       508        21 ms
+   ```
+
+   **A cold start is not measurably slower here.** `loading` rose by 5-7 ms,
+   and the two warm launches taken straight afterwards differ from each other
+   by more than the cold one differs from either. The machine was not idle
+   (load average around 3, other agents building), which is what widened the
+   warm spread from yesterday's 404-433 ms; the sample says nothing finer
+   than "within the noise".
+
+   What a person waits is about half a second either way, and **almost all of
+   it is `inside`** — after `run()` starts, before the webview paints. If
+   startup is ever worth making faster, that is where to look, not the disk.
 
 Until then the roadmap item stays unticked. A quarter of a measurement is not
 a measurement, and the point of taking it first was to have something to
