@@ -241,7 +241,15 @@
       if you want the same three tables to click around in.
     </p>
 
-    <h3>Compare two databases</h3>
+    <h3>Two databases that are supposed to match</h3>
+    <p>
+      You run a migration on staging. It works. You run it on production. It
+      looks like it worked. <b>Nothing fails — drift does not fail at the
+      moment it happens.</b> Weeks later something breaks on one side only,
+      and the afternoon goes to finding out that one index was never created.
+      The schema is the thing everyone assumes is identical and nobody
+      checks, because until now there was no way to.
+    </p>
     <p>
       Pick a second connection on the same engine and dbboard lists what the
       two schemas disagree about: tables one side has and the other does not,
