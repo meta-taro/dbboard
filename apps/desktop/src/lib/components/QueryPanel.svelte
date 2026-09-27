@@ -27,6 +27,7 @@
   import { enumColumns } from '$lib/grid/enum';
   import { placePopover, type PopoverPlacement } from '$lib/layout/popover';
   import { runStatus } from '$lib/status/status.svelte';
+  import { latency, untilPainted } from '$lib/status/latency.svelte';
   import ResultGrid from './ResultGrid.svelte';
   import SavedQueries from './SavedQueries.svelte';
   import SqlEditor from './SqlEditor.svelte';
@@ -163,10 +164,16 @@
     // our own bookkeeping, and charging it to the statement would overstate
     // what the database actually took.
     runStatus.begin();
-    try {
+    // The status bar's clock stops at the reply; this one waits for the grid
+    // to paint, which is what a person is actually waiting for.
+    const timed = await untilPainted(async () => {
       result = await runReadQuery(connId, sql, limit);
       runStatus.end(false);
       resultLimit = limit;
+    });
+    latency.recordFirstRow(timed, workspace.connection?.kind ?? '');
+    try {
+      if (timed.failed) throw timed.error;
       queryHistory.record(connId, sql);
       if (table) {
         // A failed schema read just leaves the table read-only (empty PK); the

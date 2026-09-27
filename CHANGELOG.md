@@ -11,6 +11,13 @@ public API is the HTTP contract in
 
 ### Added
 
+- **About now shows how long a real connection made you wait.** *Tables
+  listed* runs from choosing a connection until its table list is on screen,
+  including opening the connection (SSH tunnel, IAM token). *Run to first row*
+  runs from Run until the result grid has painted. Both stop at the paint, not
+  at the reply, so they include what the status bar's timer leaves out. Each is
+  labelled with the engine, and never the connection's name.
+
 - **A cold start costs nothing you can see.** The first launch after a reboot
   took 522 ms from exec to paint; two warm launches straight afterwards took
   471 and 529 ms. The loading half — exec and the dynamic linker, the part a
