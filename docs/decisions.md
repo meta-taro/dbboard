@@ -14219,3 +14219,61 @@ ordinary launch.
   browse, Run to first row, against a real connection) and now item 3 needs a
   reboot *after* this change ships. The reboot already spent was not wasted —
   it is what found this — but it did not fill the slot.
+
+## ADR-0158 — A real connection's wait is measured inside the app, so nobody has to stage it (2026-09-27)
+
+**Status.** Accepted. Extends [ADR-0156](#adr-0156).
+
+**Context.** v0.19 reserved item 2 of
+[`startup-measurement.md`](startup-measurement.md): how long a real
+connection makes a person wait, first for the table list and then from Run to
+the first row. The roadmap asks for a real database rather than a synthetic
+one, and so the item waited on two things only the maintainer could supply:
+which connection to use, and being present to time it. It was offered three
+ways — frames captured off the screen (coarse), the app reporting its own
+figures (more code), or a stopwatch by hand (today) — and stayed unmeasured
+while the choice was open.
+
+On 2026-09-27 the screen-capture route failed outright: the machine's display
+was asleep, and a capture came back black. The method that needs a person at
+the screen needs the screen awake too.
+
+**Decision.** The app times both waits itself and shows the latest of each in
+About, beside *First paint*:
+
+- **Tables listed** — from choosing a connection (or reconnecting) until its
+  table list has painted. On first use this includes opening the connection:
+  the SSH tunnel, the IAM token, the TLS handshake — which is the part a person
+  notices.
+- **Run to first row** — from Run (or browsing a table) until the result grid
+  has painted.
+
+Both stop **two animation frames after the work**, the same definition of "on
+screen" as first paint. The status bar's elapsed time is left alone: it stops
+at the reply and answers "how long did the database take", a different and
+still useful question.
+
+Each sample carries the connection's **engine** (`mysql`, `aurora-dsql-iam`,
+…) and not its name. The engine is what makes two numbers comparable; a name
+in a screenshot of About is a name in a bug report (ADR-0055).
+
+**Alternatives.**
+
+- **Screen capture.** No change to the app, but it needs the display awake and
+  someone to stage the session, and it resolves to a frame interval.
+- **A stopwatch by hand.** Available immediately, but reaction time is the same
+  order as the thing measured, and it still needs someone to stage it.
+- **Keep a history of samples, or persist them.** Useful for a trend, but a
+  second file on disk for a figure read by eye is more than the question needs.
+  The latest sample of each is enough to fill the slot. If a trend is ever
+  wanted, `untilPainted` already returns everything a history would store.
+
+**Consequences.**
+
+- **Item 2 stops needing an appointment.** Any ordinary session against a real
+  connection leaves the numbers in About. The maintainer's choice of
+  connection becomes simply whichever one they were going to use.
+- The Run path now waits two frames (about 33 ms) before loading a browsed
+  table's primary key. Nothing is drawn differently; inline editing becomes
+  available that much later.
+- The figures live in memory and are gone on restart, like first paint.

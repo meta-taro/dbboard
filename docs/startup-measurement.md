@@ -77,8 +77,13 @@ experience from a steady 318 ms, and the tail is the part a person notices.
    reads differently when the process has been up 900 ms than when it has been
    up 40 seconds — the second says the report arrived late, not that painting
    was slow.
-2. **Connect and browse**, and **Run to first row**, against a real connection,
-   with the operator present to choose it.
+2. **Connect and browse**, and **Run to first row**, against a real
+   connection. **The app measures these now** (ADR-0158). About shows
+   *Tables listed* (choosing a connection until its table list has painted,
+   including opening the connection) and *Run to first row* (Run until the
+   grid has painted), each with the engine it was taken against. Use the app
+   against a real database as usual, then open About. No appointment is
+   needed, and no connection has to be chosen for the purpose.
 3. **A cold start** — **taken 2026-09-25**, result below. **Reboot alone does not
    take it, and finding that out cost a reboot.** On 2026-09-24 the first
    launch after a boot reported **451 ms** and the very next launch **431 ms**
