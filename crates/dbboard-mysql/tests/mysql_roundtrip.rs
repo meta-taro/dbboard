@@ -380,3 +380,71 @@ async fn table_ddl_round_trips_including_multibyte_identifiers() {
 
     adapter.query(&drop_sql).await.expect("cleanup drop");
 }
+
+/// `DBBOARD_MYSQL_URL` with its database path removed, so the connection has
+/// no default database. Query parameters (TLS mode) are kept.
+fn url_without_database(url: &str) -> String {
+    let (base, query) = url
+        .split_once('?')
+        .map_or((url, None), |(b, q)| (b, Some(q)));
+    let authority_end = base.find("://").map_or(0, |i| i + 3);
+    let base = match base[authority_end..].find('/') {
+        Some(slash) => &base[..authority_end + slash],
+        None => base,
+    };
+    query.map_or_else(|| base.to_string(), |q| format!("{base}?{q}"))
+}
+
+#[test]
+fn stripping_the_database_keeps_host_and_tls() {
+    assert_eq!(
+        url_without_database("mysql://u:p@h:3306/shop?ssl-mode=required"),
+        "mysql://u:p@h:3306?ssl-mode=required"
+    );
+    assert_eq!(url_without_database("mysql://u@h/shop"), "mysql://u@h");
+    assert_eq!(url_without_database("mysql://u@h"), "mysql://u@h");
+}
+
+/// docs/every-database.md: with no default database the account's databases are all
+/// listed, each table qualified by the database it lives in, and the server's
+/// own databases are not.
+#[tokio::test]
+async fn no_default_database_lists_every_database() {
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_MYSQL_URL not set");
+        return;
+    };
+    let wide_url = url_without_database(&config.url);
+    let admin = MySqlAdapter::connect(config).await.expect("connect");
+    admin
+        .execute("CREATE DATABASE IF NOT EXISTS dbboard_wide_probe")
+        .await
+        .expect("create database");
+    admin
+        .execute("CREATE TABLE IF NOT EXISTS dbboard_wide_probe.wide_t (id INT PRIMARY KEY)")
+        .await
+        .expect("create table");
+
+    let wide = MySqlAdapter::connect(MySqlConfig { url: wide_url })
+        .await
+        .expect("connect without a database");
+    let tables = wide.list_tables().await.expect("list tables");
+
+    admin
+        .execute("DROP DATABASE dbboard_wide_probe")
+        .await
+        .expect("drop database");
+
+    assert!(
+        tables
+            .iter()
+            .any(|t| t.schema.as_deref() == Some("dbboard_wide_probe") && t.name == "wide_t"),
+        "the probe table is listed under its own database: {tables:?}"
+    );
+    for system in ["mysql", "information_schema", "performance_schema", "sys"] {
+        assert!(
+            tables.iter().all(|t| t.schema.as_deref() != Some(system)),
+            "{system} is left out"
+        );
+    }
+}

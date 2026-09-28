@@ -177,6 +177,17 @@ mod tests {
         assert_eq!(parts.database, "");
     }
 
+    /// What the form writes for a MySQL connection left without a database
+    /// (docs/every-database.md): no path at all, TLS query kept. Reopening it for edit has
+    /// to come back blank, not fail and open the parts empty.
+    #[test]
+    fn a_url_with_no_database_path_splits_with_the_query_intact() {
+        let parts = parse_dsn("mysql://app@db:3306?ssl-mode=disabled").expect("parses");
+        assert_eq!(parts.database, "");
+        assert_eq!(parts.host, "db");
+        assert_eq!(parts.query, "ssl-mode=disabled");
+    }
+
     #[test]
     fn garbage_does_not_parse() {
         assert!(parse_dsn("not a url").is_none());

@@ -217,8 +217,14 @@ describe('DSN field mode', () => {
     expect(validate(form({ ...mysqlParts, use_url: false, url: '' }), 'add')).toEqual([]);
   });
 
+  // The database is not among them for MySQL: blank lists every database the
+  // account can read (docs/every-database.md). Postgres still needs one.
   it('validateDsnFields reports the blank parts in fields mode', () => {
     expect(validateDsnFields(form({ kind: 'mysql', use_url: false }))).toEqual([
+      'db_host',
+      'db_user',
+    ]);
+    expect(validateDsnFields(form({ kind: 'postgres', use_url: false }))).toEqual([
       'db_host',
       'db_user',
       'db_name',

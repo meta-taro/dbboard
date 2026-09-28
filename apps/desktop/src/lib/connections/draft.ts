@@ -573,7 +573,7 @@ export function validate(form: ConnectionForm, mode: EditorMode): FormField[] {
 // and the component highlights them in different sections.
 export function validateDsnFields(form: ConnectionForm): DsnField[] {
   if (!usesDsnFields(form.kind) || form.use_url) return [];
-  return validateDsn(form);
+  return validateDsn(form, form.kind);
 }
 
 // Parse the form's port string, defaulting a blank/invalid value to 22. The

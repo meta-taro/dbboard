@@ -80,6 +80,14 @@ describe('DSN_FIELDS', () => {
 });
 
 describe('composeDsn', () => {
+  // No trailing `/` for a blank database: `mysql://h:3306/` reads as "the
+  // database named empty string" to anyone looking at it, which it is not.
+  it('omits the database path when it is blank', () => {
+    expect(composeDsn('mysql', parts({ db_name: '', db_password: '' }))).toBe(
+      'mysql://app@db.internal:3306',
+    );
+  });
+
   it('builds a MySQL URL with the default port when the port is blank', () => {
     expect(composeDsn('mysql', parts())).toBe('mysql://app:secret@db.internal:3306/shop');
   });
@@ -295,6 +303,20 @@ describe('validateDsn', () => {
 
   it('reports every blank required field', () => {
     expect(validateDsn(emptyDsnParts())).toEqual(['db_host', 'db_user', 'db_name']);
+  });
+
+  // docs/every-database.md: a MySQL account is not scoped to one database. Blank means
+  // "every database this account can read", which the adapter now lists.
+  it('lets a MySQL connection leave the database blank', () => {
+    expect(validateDsn(parts({ db_name: '' }), 'mysql')).toEqual([]);
+  });
+
+  // A Postgres connection is bound to one database until the per-database
+  // pools of the next step exist; blank there still means nothing to browse.
+  it('still requires a database for Postgres-wire kinds', () => {
+    for (const kind of ['postgres', 'neon', 'supabase'] as const) {
+      expect(validateDsn(parts({ db_name: '' }), kind)).toEqual(['db_name']);
+    }
   });
 
   // Blank is legal (a MySQL account may have no password) and means exactly

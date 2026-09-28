@@ -58,12 +58,22 @@ const ER_UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 /// server message cannot dump an unbounded string into the UI.
 const MAX_ERROR_DETAIL: usize = 2048;
 
-/// User base tables of the connected database. `MySQL` scopes tables to a single
-/// database per connection, so `DATABASE()` is the natural namespace; views and
-/// system schemas are excluded.
+/// User base tables. A connection with a default database lists that database,
+/// as it always has. One without lists **every database the account can
+/// read** (docs/every-database.md): an account is not scoped to one database, and the
+/// comment that used to sit here saying it was is what made the form insist on
+/// a database name. Without one, `table_schema = DATABASE()` compared against
+/// NULL and the list came back empty, with no error.
+///
+/// Views are excluded either way. The server's own databases (`mysql`,
+/// `information_schema`, `performance_schema`, `sys`) are left out of the wide
+/// listing only: a connection whose default *is* one of them asked for it by
+/// name.
 const LIST_TABLES_SQL: &str = "SELECT table_schema, table_name FROM information_schema.tables \
-     WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' \
-     ORDER BY table_name";
+     WHERE table_type = 'BASE TABLE' AND (table_schema = DATABASE() \
+     OR (DATABASE() IS NULL AND table_schema NOT IN \
+     ('mysql', 'information_schema', 'performance_schema', 'sys'))) \
+     ORDER BY table_schema, table_name";
 
 /// Columns of one table in ordinal order (ADR-0028). `column_type` carries the
 /// full declared type (e.g. `varchar(255)`, `int unsigned`); `ordinal_position`
@@ -1000,7 +1010,7 @@ mod tests {
     use super::{
         assemble_foreign_keys, bytes_to_text, classify_error, column_from_parts, harden_ssl_mode,
         is_unknown_system_variable, qualified_ident, quote_ident, reclassify_schema, styles_to_try,
-        truncate, FkRow, TimeoutStyle, FLAVOR_MYSQL, PROBE_ORDER,
+        truncate, FkRow, TimeoutStyle, FLAVOR_MYSQL, LIST_TABLES_SQL, PROBE_ORDER,
     };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo};
     use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
@@ -1008,6 +1018,26 @@ mod tests {
     /// `id()` is part of the public contract: the adapter identifier `mysql`
     /// is a stable string that `SqlDialect`'s adapter-id mapping and capability
     /// consumers match on. It must keep its byte content stable across releases.
+    /// A connection with no default database lists every database the account
+    /// can read (docs/every-database.md). Before, `table_schema = DATABASE()` compared
+    /// against NULL and the list came back empty with no error.
+    #[test]
+    fn listing_widens_to_every_database_when_none_is_selected() {
+        assert!(LIST_TABLES_SQL.contains("DATABASE() IS NULL"));
+        // Grouped by database first, so the sidebar can build its tree in one
+        // pass without re-sorting.
+        assert!(LIST_TABLES_SQL.contains("ORDER BY table_schema, table_name"));
+    }
+
+    /// The server's own bookkeeping is not what anyone opened the connection
+    /// to browse, and `sys` alone is a hundred views of noise.
+    #[test]
+    fn system_databases_are_left_out_of_the_wide_listing() {
+        for name in ["mysql", "information_schema", "performance_schema", "sys"] {
+            assert!(LIST_TABLES_SQL.contains(&format!("'{name}'")), "{name}");
+        }
+    }
+
     #[test]
     fn flavor_constant_is_stable() {
         assert_eq!(FLAVOR_MYSQL, "mysql");

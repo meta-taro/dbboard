@@ -7,6 +7,7 @@
   import ConnectionManager from './ConnectionManager.svelte';
   import ConnectionMark from './ConnectionMark.svelte';
   import MarkPicker from './MarkPicker.svelte';
+  import TableTree from './TableTree.svelte';
   import { tableMenuActions } from '$lib/sidebar/menu';
   import { compare } from '$lib/compare/compare.svelte';
   import { connectionTooltip } from '$lib/connections/label';
@@ -250,6 +251,32 @@
   </svg>
 {/snippet}
 
+{#snippet tableRow(t: TableInfo, qualified: boolean)}
+  <button
+    type="button"
+    class="nav-row"
+    class:active={isSelected(t)}
+    onclick={() => selectOrJump(t)}
+    oncontextmenu={(e) => openMenu(e, t)}
+    title={workspace.key(t)}
+  >
+    {@render tableIcon()}
+    <span class="nav-name">
+      {#if qualified && t.schema}<span class="schema">{t.schema}.</span>{/if}{t.name}
+    </span>
+    {#if compare.marks.get(workspace.key(t))}
+      {@const mark = compare.marks.get(workspace.key(t))}
+      {#if mark === 'changed'}
+        <span class="diff-dot" title={i18n.t('compare-mark-changed')}></span>
+      {:else}
+        <span class="diff-side" title={i18n.t('compare-mark-one-side')}>
+          {mark === 'left-only' ? '◧' : '◨'}
+        </span>
+      {/if}
+    {/if}
+  </button>
+{/snippet}
+
 <aside class="sidebar" bind:this={sidebarEl}>
   <div class="section">
     <div class="section-head">
@@ -355,31 +382,7 @@
         {:else if workspace.tables.length === 0}
           <p class="hint">{i18n.t('sidebar-tables-empty')}</p>
         {:else}
-          {#each workspace.tables as t (workspace.key(t))}
-            <button
-              type="button"
-              class="nav-row"
-              class:active={isSelected(t)}
-              onclick={() => selectOrJump(t)}
-              oncontextmenu={(e) => openMenu(e, t)}
-              title={workspace.key(t)}
-            >
-              {@render tableIcon()}
-              <span class="nav-name">
-                {#if t.schema}<span class="schema">{t.schema}.</span>{/if}{t.name}
-              </span>
-              {#if compare.marks.get(workspace.key(t))}
-                {@const mark = compare.marks.get(workspace.key(t))}
-                {#if mark === 'changed'}
-                  <span class="diff-dot" title={i18n.t('compare-mark-changed')}></span>
-                {:else}
-                  <span class="diff-side" title={i18n.t('compare-mark-one-side')}>
-                    {mark === 'left-only' ? '◧' : '◨'}
-                  </span>
-                {/if}
-              {/if}
-            </button>
-          {/each}
+          <TableTree tables={workspace.tables} row={tableRow} />
         {/if}
       </div>
     {:else}

@@ -10,6 +10,7 @@
   import {
     DSN_FIELDS,
     SSL_MODES,
+    databaseIsOptional,
     defaultPort,
     schemeFor,
     sslModeFromUrl,
@@ -122,6 +123,11 @@
         {/if}
         {#if f === 'db_password' && editorMode === 'edit'}
           <span class="hint">{i18n.t('conn-dsn-edit-password-hint')}</span>
+        {/if}
+        <!-- Said here because blank used to be an error: without the hint
+             it reads as a field someone forgot (docs/every-database.md). -->
+        {#if f === 'db_name' && databaseIsOptional(form.kind)}
+          <span class="hint">{i18n.t('conn-dsn-db-name-optional-hint')}</span>
         {/if}
       </label>
     {/each}
