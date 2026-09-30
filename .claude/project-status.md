@@ -374,7 +374,7 @@
 
   ### memory の移送を司令塔へ通報した
 
-  [Multi-Product-Management-AI-Agent#4](https://github.com/dokokade/Multi-Product-Management-AI-Agent/issues/4)
+  非公開の管理リポジトリの issue
   (`escalation`・user 指示・署名 👤🤖)。引っ越し決定から 11 日、毎セッション書いても
   運ばれていないので、**記載の問題ではない**と判断し §38 に従って上へ出した。
   範囲は dbboard の 27 ファイルだけでなく旧機全体 (この Mac は warifu 5 / zumen 3 /
