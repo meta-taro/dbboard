@@ -29,6 +29,12 @@ if [ "$has_update" = 0 ]; then
     exit 0
 fi
 
+# Working records must not reach the public repository (ADR-0160). Shared
+# script, same one CI runs; cheap, so it goes before the cargo gates.
+echo "[pre-push] bash .github/scripts/oss-placement-check.sh"
+bash .github/scripts/oss-placement-check.sh
+
+
 echo "[pre-push] cargo build --release"
 cargo build --release
 

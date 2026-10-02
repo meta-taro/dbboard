@@ -3450,7 +3450,7 @@ coupling in the trait).
 ## ADR-0027 — Phase 4 Stage 2 Group C: AI calls recorded in `history.jsonl` (schema v:2)
 
 - **Status:** Accepted (2026-07-01). Implementation tracker:
-  [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
+  `.claude/issues/0010-ai-history-v2.md`.
   Lands on `feature/ai-history-v2` across four commits:
   - Slice (a) `f14a387` — `dbboard-ui::history` v:2 reader + writer
     (`RecordWire` flattened, `kind: "query" | "ai"` discriminator,
@@ -3478,7 +3478,7 @@ coupling in the trait).
     `.claude/project-status.md` records the slice landing).
     All five commits shipped via PR #47, merged to `develop` at
     `1aec99b` on 2026-07-01.
-- **Cross-repo brief:** [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md) (issued same PR)
+- **Cross-repo brief:** `.claude/issues/0008-web-history-v2-mirror.md` (issued same PR)
 - **Supersedes:** ADR-0017 §1 record shape (the v:1 schema). ADR-0017's §3
   storage / §4 rotation / §6 forward-compat / §7 secret-handling stances
   carry over unchanged.
@@ -3796,7 +3796,7 @@ moves through brief 0008.
 ## ADR-0028 — Phase 4 Stage 2 Group D-1: Full DDL extraction via `DatabaseAdapter::describe_table`
 
 - **Status:** Accepted (2026-07-02). Implementation tracker:
-  [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md)
+  `.claude/issues/0011-ddl-extraction.md`
   (closed). Lands on `feature/ddl-extraction` across four commits:
   - Slice (a) `92c5749` — `dbboard-core` trait method + `TableSchema` +
     `ColumnInfo` extension + `Capabilities::has_describe_table`
@@ -13312,7 +13312,7 @@ whenever the next pull request happens to be opened.
 ## ADR-0145 — Paging is a missing row, not a slow one, and the cursor is a key rather than a connection (2026-09-04)
 
 **Status.** Accepted. Settles the four questions
-[issue 0029](../.claude/issues/0029-pagination-for-large-results.md) left open,
+issue 0029 left open,
 and corrects the premise it inherited from
 [ADR-0142](#adr-0142--the-first-optimisation-the-baseline-bought-was-the-decision-not-to-optimise-2026-09-02).
 
@@ -14277,3 +14277,58 @@ in a screenshot of About is a name in a bug report (ADR-0055).
   table's primary key. Nothing is drawn differently; inline editing becomes
   available that much later.
 - The figures live in memory and are gone on restart, like first paint.
+
+## ADR-0160 — Working records leave the public repository (2026-10-01)
+
+**Status.** Accepted. Amends the Documentation Policy in `CLAUDE.md`.
+
+**Context.** Plans, issues, status and handoff notes lived under `.claude/`
+and were committed, as `CLAUDE.md` required. The repository is public. A check
+on 2026-09-30 found no real names, emails, hosts or credentials, but it did
+find what such notes always carry: the name of a private repository, home
+network troubleshooting, and conversation between maintainer tooling. None of
+that means anything to a reader outside, and some of it should not reach one.
+The same pattern turned up in the maintainer's other public repositories, so
+the fix is shared across all of them, not invented here.
+
+**Decision.**
+
+- **`.claude/` is ignored except configuration and distributable tooling**
+  (`tools/`, `rules/`, `templates/`, `hooks/`, `commands/`, `agents/`,
+  `skills/`, `settings.json`). The 52 tracked records were removed from the
+  index with `git rm --cached`. They remain on the maintainer's machine, and
+  move to a private notes repository once it exists.
+- **A shared placement check enforces it**:
+  `.github/scripts/oss-placement-check.sh`, run by the pre-commit and
+  pre-push hooks and by the `oss-placement-check` workflow. It is the same
+  script in every one of the maintainer's public repositories and is not
+  edited per repository. If its allow-list stops fitting, the shared copy
+  changes.
+- **History is not rewritten.** The records already published stay in past
+  commits. A rewrite is only justified for real names, personal email or
+  credentials.
+- **Links from `docs/` into `.claude/` became plain text.** Twelve markdown
+  links in `decisions.md` and `roadmap.md` would otherwise point at files that
+  no longer exist in the repository. Where a record holds a design reason a
+  reader needs, that reason moves into `docs/` (a separate change).
+
+**Alternatives.**
+
+- **Keep issues and plans public and drop only status notes.** Issues and
+  plans carry the reasons behind ADRs and the roadmap. But they also carry the
+  same internal asides, and a split by directory still leaves each issue to
+  be read line by line. Moving the needed reasons into `docs/` keeps what an
+  outside reader needs and drops the rest.
+- **Rewrite history to remove past records.** Destructive, and it does not
+  reach forks or the pull-request refs GitHub keeps. Not justified by
+  content that is internal rather than personal.
+
+**Consequences.**
+
+- `CLAUDE.md` still tells agents to keep plans verbatim and track issues
+  under `.claude/`. Only their visibility changed.
+- ADRs and the roadmap that cite "issue NNNN" now cite a record the reader
+  cannot open. Each such reference is either self-contained in the ADR text
+  or due to move into `docs/`.
+- Moving between machines no longer carries the handoff notes with the
+  clone. The private notes repository is what replaces that.
