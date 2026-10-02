@@ -232,8 +232,7 @@ concrete provider `dbboard-anthropic` (Anthropic Messages API over
 `reqwest`) followed in PR #22 (2026-06-15). OpenAI joined as a second
 provider (ADR-0052). The client resolves one from configuration at startup
 and hides the AI panel when it gets `None`
-([ADR-0023](decisions.md);
-`.claude/issues/0005-dbboard-ai-trait-and-anthropic-provider.md`).
+([ADR-0023](decisions.md)).
 The UI panel is registered only when `has_ai_provider()` returns
 true; the worker thread routes `Command::AiExplain` /
 `Command::AiSuggest` through `tokio::runtime::block_on(provider.*)`

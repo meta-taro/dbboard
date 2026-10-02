@@ -25,8 +25,8 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.19** | The measurement nobody has taken | The **cold-start numbers**, reserved by v0.17 and moved on twice. They need the maintainer's machine, a reboot, and a real connection, so no agent can take them alone ([ADR-0110](decisions.md), [ADR-0122](decisions.md)). What changed is that the app can now be asked: launch it, open About, read *First paint* ([ADR-0156](decisions.md)). Item 3 of [`startup-measurement.md`](startup-measurement.md), one sample after a reboot, was taken on 2026-09-25: a cold start is not measurably slower. Item 2, connect-and-browse against a real connection, is now measured by the app itself and shown in About ([ADR-0158](decisions.md)); what remains is to read it off after ordinary use. Alongside it, whatever the **`history.jsonl` decision** turns out to be ([issue 0033](../.claude/issues/0033-history-jsonl-has-no-writer.md), [ADR-0153](decisions.md)), which needs `dbboard-web` in the conversation |
-| **v0.20** | Every database the connection can see | A connection stops meaning one database. The sidebar becomes a tree (database → schema → table), and the engines that can see more than one list them all: **MySQL** (every database the account may read, one connection), the **Postgres family** (every database on the server, a pool opened when one is expanded), **MongoDB**, and **D1** (every database the token can list). The database name becomes optional for those engines; a name keeps today's behaviour. Nobody decided a connection holds one database. It was an assumption, and the form's required field was hiding the empty list it produces ([issue 0038](../.claude/issues/0038-every-database-the-connection-can-see.md)). Placed before v1.0 because the HTTP contract freezes there |
+| **v0.19** | The measurement nobody has taken | The **cold-start numbers**, reserved by v0.17 and moved on twice. They need the maintainer's machine, a reboot, and a real connection, so no agent can take them alone ([ADR-0110](decisions.md), [ADR-0122](decisions.md)). What changed is that the app can now be asked: launch it, open About, read *First paint* ([ADR-0156](decisions.md)). Item 3 of [`startup-measurement.md`](startup-measurement.md), one sample after a reboot, was taken on 2026-09-25: a cold start is not measurably slower. Item 2, connect-and-browse against a real connection, is now measured by the app itself and shown in About ([ADR-0158](decisions.md)); what remains is to read it off after ordinary use. Alongside it, whatever the **`history.jsonl` decision** turns out to be (issue 0033, [ADR-0153](decisions.md)), which needs `dbboard-web` in the conversation |
+| **v0.20** | Every database the connection can see | A connection stops meaning one database. The sidebar becomes a tree (database → schema → table), and the engines that can see more than one list them all: **MySQL** (every database the account may read, one connection), the **Postgres family** (every database on the server, a pool opened when one is expanded), **MongoDB**, and **D1** (every database the token can list). The database name becomes optional for those engines; a name keeps today's behaviour. Nobody decided a connection holds one database. It was an assumption, and the form's required field was hiding the empty list it produces ([the design note](every-database.md)). Placed before v1.0 because the HTTP contract freezes there |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
@@ -441,7 +441,7 @@ work without it. Trait + first-provider shape locked in
 - [x] Settings UI for API key, provider choice — _Stage 2 Group A,
       planned in ADR-0025 (`ai-providers.toml` + multi-provider
       switcher + Settings UI). Implementation tracked in
-      [`.claude/issues/0008-ai-provider-settings-ui-and-persistence.md`](../.claude/issues/0008-ai-provider-settings-ui-and-persistence.md).
+      `.claude/issues/0008-ai-provider-settings-ui-and-persistence.md`.
       Env var `DBBOARD_ANTHROPIC_API_KEY` keeps working as the
       highest-precedence resolution path (Stage 1 / PR #24).
       **Closed 2026-06-29 on `feature/ai-settings-ui`.** Slice a-1
@@ -476,7 +476,7 @@ work without it. Trait + first-provider shape locked in
 - [x] Streaming responses + cooperative cancel + token meter — _Stage 2
       Group B, planned in [ADR-0026](decisions.md). Implementation
       tracked in
-      [`.claude/issues/0009-ai-streaming-cancel-tokens.md`](../.claude/issues/0009-ai-streaming-cancel-tokens.md).
+      `.claude/issues/0009-ai-streaming-cancel-tokens.md`.
       **Closed 2026-06-30 on `feature/ai-streaming-cancel-tokens`.**
       Slice (a) `e869ff3` — `dbboard-ai` trait extension with
       `stream_explain` / `stream_suggest_sql` returning
@@ -503,15 +503,15 @@ work without it. Trait + first-provider shape locked in
       were deleted with it; nothing in the Tauri client has written this
       file since. `dbboard-config` still resolves the path, and
       `dbboard-web` still implements the v:2 records desktop was meant to
-      emit ([issue 0003](../.claude/issues/0003-web-history-schema-mirror.md)).
+      emit (issue 0003).
       **The schema is reserved, not implemented** — whether to restore the
       writer or retire the schema is open, and is a contract-layer call
-      that needs both repositories ([issue 0033](../.claude/issues/0033-history-jsonl-has-no-writer.md),
+      that needs both repositories (issue 0033,
       [ADR-0153](decisions.md)). The original entry follows, because what
       it describes was true when it was written:
       _      Stage 2 Group C, planned in [ADR-0027](decisions.md).
       Implementation tracked in
-      [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
+      `.claude/issues/0010-ai-history-v2.md`.
       **Closed 2026-07-01 on `feature/ai-history-v2`.** Slice (a)
       `f14a387` — `dbboard-ui::history` v:2 reader + writer with a
       `kind: "query" | "ai"` discriminator, `HistoryEntry::{Query, Ai}`
@@ -528,12 +528,12 @@ work without it. Trait + first-provider shape locked in
       18 new unit tests). Slice (d) — docs sweep + `.claude/issues/0010`
       closed + brief 0008 anchors filled + ADR-0027 flipped to
       Accepted. The cross-repo mirror (web-side v:2 pickup) is
-      tracked separately in [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md)._
+      tracked separately in `.claude/issues/0008-web-history-v2-mirror.md`._
 
 - [x] Full DDL extraction via `DatabaseAdapter::describe_table` —
       _Stage 2 Group D-1, planned in [ADR-0028](decisions.md).
       Implementation tracked in
-      [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md).
+      `.claude/issues/0011-ddl-extraction.md`.
       **Closed 2026-07-03 on `feature/ddl-extraction` (PR #49, merge
       `3a294dc`).** Slice (a) `92c5749` (+ review-fix `87542e4`) —
       `dbboard-core` `TableSchema` struct, additive `ColumnInfo.ordinal`

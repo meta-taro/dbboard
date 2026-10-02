@@ -1,0 +1,22 @@
+# Placement check: no working records (session notes, handoffs, planning
+# files under .claude/) in the public repository. The script is shared across
+# the maintainer's public repositories and is not edited per repo (ADR-0160).
+#
+# Security posture (CLAUDE.md "Adding GitHub Actions workflows"): contents:
+# read only, first-party actions/checkout pinned by major tag, and a bash
+# script from this repository. Output is file paths only, never contents.
+name: oss-placement-check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  placement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/oss-placement-check.sh

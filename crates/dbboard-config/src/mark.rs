@@ -1,7 +1,7 @@
 //! The identity marks a connection can carry: a colour and a short tag.
 //!
-//! A closed, named set rather than a colour picker (issue #192, plan
-//! `.claude/issues/0026`). Three reasons, in the order they mattered:
+//! A closed, named set rather than a colour picker (issue #192). Three
+//! reasons, in the order they mattered:
 //!
 //! - A name is what makes the mark usable when the colour cannot be seen —
 //!   said out loud, read by a screen reader, written in a note. A hex string
@@ -21,7 +21,7 @@
 //! The tag is the other half, and the half that survives a greyscale
 //! screenshot or a colour-blind reader: a few characters the operator writes
 //! themselves — `prod`, `本番`, `staging`. Colour alone was ruled out as a mark
-//! for exactly that reason (plan `.claude/issues/0026`, section D). It is free
+//! for exactly that reason. It is free
 //! text rather than another closed set because the words a team uses for its
 //! own servers are not ones this crate can enumerate.
 
