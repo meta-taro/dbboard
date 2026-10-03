@@ -84,6 +84,10 @@ experience from a steady 318 ms, and the tail is the part a person notices.
    grid has painted), each with the engine it was taken against. Use the app
    against a real database as usual, then open About. No appointment is
    needed, and no connection has to be chosen for the purpose.
+
+   **The figures themselves are not in yet.** 0.19.0 ships the measurement
+   rather than waiting on it: the first readings will come from a trial
+   deployment's ordinary use, and are recorded here when they arrive.
 3. **A cold start** — **taken 2026-09-25**, result below. **Reboot alone does not
    take it, and finding that out cost a reboot.** On 2026-09-24 the first
    launch after a boot reported **451 ms** and the very next launch **431 ms**
