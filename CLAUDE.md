@@ -260,8 +260,9 @@ maintainer's preferred language.
 Everything under `.claude/` except configuration and distributable tooling
 (`tools/`, `rules/`, `templates/`, `hooks/`, `commands/`, `agents/`,
 `skills/`, `settings.json`) is ignored by git. That covers plans, issues,
-status and handoff notes. They stay on the maintainer's machine, and move to
-the private `dbboard-notes` repository once it exists.
+status and handoff notes. They stay on the maintainer's machine and are
+mirrored to a private notes repository shared by the maintainer's public
+projects, under a `dbboard/` folder. Its name is not written here.
 `.github/scripts/oss-placement-check.sh` enforces this in the hooks and in CI.
 
 What goes into git or onto GitHub (files, commit messages, issues, PRs,
