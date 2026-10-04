@@ -25,6 +25,11 @@ elif git ls-files --error-unmatch scripts/pii-scan.sh >/dev/null 2>&1; then
     exit 1
 fi
 
+# Working records must not reach the public repository (ADR-0160). Shared
+# script, same one CI runs; cheap, so it goes before the cargo gates.
+echo "[pre-commit] bash .github/scripts/oss-placement-check.sh"
+bash .github/scripts/oss-placement-check.sh
+
 echo "[pre-commit] cargo fmt --all -- --check"
 cargo fmt --all -- --check
 

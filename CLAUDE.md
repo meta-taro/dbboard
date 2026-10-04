@@ -236,10 +236,10 @@ Hook scripts live in `.cargo-husky/hooks/`. Install them with:
 sh scripts/install-hooks.sh
 ```
 
-- **pre-commit**: `pii-scan --staged`, `cargo fmt --check`,
+- **pre-commit**: `pii-scan --staged`, `oss-placement-check`, `cargo fmt --check`,
   `cargo clippy -D warnings`, `cargo check`, `cargo test`.
 - **commit-msg**: `pii-scan --message`.
-- **pre-push**: `cargo build --release`, `cargo test --release`.
+- **pre-push**: `oss-placement-check`, `cargo build --release`, `cargo test --release`.
 
 Run the installer again after editing a hook. Nothing does it for you:
 `cargo-husky` used to, and was dropped when the workspace was restructured
@@ -256,6 +256,21 @@ All external-facing documentation is written in **English**. Internal
 session notes (e.g. `.claude/project-status.md`) may be written in the
 maintainer's preferred language.
 
+**Working records are not part of the public repository** (ADR-0160).
+Everything under `.claude/` except configuration and distributable tooling
+(`tools/`, `rules/`, `templates/`, `hooks/`, `commands/`, `agents/`,
+`skills/`, `settings.json`) is ignored by git. That covers plans, issues,
+status and handoff notes. They stay on the maintainer's machine and are
+mirrored to a private notes repository shared by the maintainer's public
+projects, under a `dbboard/` folder. Its name is not written here.
+`.github/scripts/oss-placement-check.sh` enforces this in the hooks and in CI.
+
+What goes into git or onto GitHub (files, commit messages, issues, PRs,
+releases) has to make sense to someone who knows nothing outside this
+repository. No internal role names, private repository names, local paths, or
+operational asides. Reasons a reader needs, such as why a design is the way
+it is, belong in `docs/`, not in a working record.
+
 | File | Purpose |
 |---|---|
 | `README.md` | Entry point: what dbboard is, how to set it up, how to run it. |
@@ -263,14 +278,17 @@ maintainer's preferred language.
 | `docs/architecture.md` | Layer/crate map, adapter trait spec, dependency rules. |
 | `docs/roadmap.md` | Phase plan. Update when a phase completes. |
 | `docs/decisions.md` | ADR log for technical decisions. Append, do not rewrite. |
-| `.claude/plans/` | Handed-over plans, stored verbatim. Never edited. |
-| `.claude/issues/` | Task tracking — one Markdown file per issue. |
-| `.claude/project-status.md` | Running session status (internal). |
+| `.claude/plans/` | Handed-over plans, stored verbatim. Never edited. **Untracked.** |
+| `.claude/issues/` | Task tracking, one Markdown file per issue. **Untracked.** |
+| `.claude/project-status.md` | Running session status (internal). **Untracked.** |
 
 When a phase ships, mark it complete in `docs/roadmap.md`. When a
 non-trivial decision is made, add an ADR entry to `docs/decisions.md`.
 
 ### Plans arrive as files, and are kept as files
+
+(Kept locally, not in git: see "Working records" above. The rule about
+storing them whole is unchanged.)
 
 A plan handed over as a `.md` goes into `.claude/plans/<date>-<slug>.md`
 **byte for byte, before anything is done with it**. Then, separately, derive

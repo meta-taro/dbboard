@@ -3450,7 +3450,7 @@ coupling in the trait).
 ## ADR-0027 — Phase 4 Stage 2 Group C: AI calls recorded in `history.jsonl` (schema v:2)
 
 - **Status:** Accepted (2026-07-01). Implementation tracker:
-  [`.claude/issues/0010-ai-history-v2.md`](../.claude/issues/0010-ai-history-v2.md).
+  `.claude/issues/0010-ai-history-v2.md`.
   Lands on `feature/ai-history-v2` across four commits:
   - Slice (a) `f14a387` — `dbboard-ui::history` v:2 reader + writer
     (`RecordWire` flattened, `kind: "query" | "ai"` discriminator,
@@ -3478,7 +3478,7 @@ coupling in the trait).
     `.claude/project-status.md` records the slice landing).
     All five commits shipped via PR #47, merged to `develop` at
     `1aec99b` on 2026-07-01.
-- **Cross-repo brief:** [`.claude/issues/0008-web-history-v2-mirror.md`](../.claude/issues/0008-web-history-v2-mirror.md) (issued same PR)
+- **Cross-repo brief:** `.claude/issues/0008-web-history-v2-mirror.md` (issued same PR)
 - **Supersedes:** ADR-0017 §1 record shape (the v:1 schema). ADR-0017's §3
   storage / §4 rotation / §6 forward-compat / §7 secret-handling stances
   carry over unchanged.
@@ -3796,7 +3796,7 @@ moves through brief 0008.
 ## ADR-0028 — Phase 4 Stage 2 Group D-1: Full DDL extraction via `DatabaseAdapter::describe_table`
 
 - **Status:** Accepted (2026-07-02). Implementation tracker:
-  [`.claude/issues/0011-ddl-extraction.md`](../.claude/issues/0011-ddl-extraction.md)
+  `.claude/issues/0011-ddl-extraction.md`
   (closed). Lands on `feature/ddl-extraction` across four commits:
   - Slice (a) `92c5749` — `dbboard-core` trait method + `TableSchema` +
     `ColumnInfo` extension + `Capabilities::has_describe_table`
@@ -13312,7 +13312,7 @@ whenever the next pull request happens to be opened.
 ## ADR-0145 — Paging is a missing row, not a slow one, and the cursor is a key rather than a connection (2026-09-04)
 
 **Status.** Accepted. Settles the four questions
-[issue 0029](../.claude/issues/0029-pagination-for-large-results.md) left open,
+issue 0029 left open,
 and corrects the premise it inherited from
 [ADR-0142](#adr-0142--the-first-optimisation-the-baseline-bought-was-the-decision-not-to-optimise-2026-09-02).
 
@@ -14143,3 +14143,192 @@ instantly", which is the one wrong answer that looks like a right one.
 - The frontend guard is per page-life, so a reload re-arms it. The shell is
   the authority that ignores the repeat, which is where the decision belongs —
   the frontend cannot know it is a reload rather than a launch.
+
+## ADR-0157 — The clock starts too late to see a cold start, so it publishes where it started (2026-09-24)
+
+**Status.** Accepted. Amends [ADR-0156](#adr-0156).
+
+**Context.** ADR-0156 gave the app a way to say when it first painted, because
+an outside observer polling for a window cannot see past the window existing.
+That was right, and the number it produces is real. It just cannot answer the
+question [`startup-measurement.md`](startup-measurement.md) item 3 asks.
+
+The reboot on 2026-09-24 is what showed it. The first launch after the boot
+reported **451 ms**; the next launch, with everything still in the page cache,
+reported **431 ms**. A cold disk reading 47 MB should not cost 20 ms.
+
+The cause is visible in ADR-0156's own code, and its comment almost says it:
+
+```rust
+// **Before anything else.** Every line above this one is invisible to the
+// measurement and silently flatters the number (ADR-0156).
+let startup = startup::StartupClock::started();
+```
+
+The comment is written about the lines above it *inside `run()`*. The larger
+invisible stretch is before `run()` is entered at all — the kernel exec'ing the
+binary and dyld paging it in. **That is exactly where a cold launch differs
+from a warm one**, and it is finished before the clock exists.
+
+So ADR-0156 built the instrument that item 3 was waiting for, and item 3 is not
+something that instrument can measure. Neither half of that is wrong; they were
+answering different questions and nobody noticed until a number came back.
+
+**Decision.** The reading carries **`started_at_unix_ms`** — the moment the
+clock started, on the wall clock rather than the process-local `Instant`, which
+is deliberately opaque and cannot cross a process boundary. A stopwatch that
+began before the process existed can then subtract:
+
+```
+total   = started_at_unix_ms + first_paint_ms - stopwatch_start
+inside  = first_paint_ms
+loading = total - inside
+```
+
+`scripts/measure-cold-start.sh` is that stopwatch. The app leaves its reading
+at the path in `DBBOARD_STARTUP_REPORT`, written to a staging file and renamed
+into place so a poller cannot read a half-written number and report it as a
+measurement. **Nothing is written when the variable is unset**, which is every
+ordinary launch.
+
+**Alternatives.**
+
+- **Have the app look up its own process start time.** Self-contained, and
+  About could then show the whole number. Rejected for now: three platform
+  implementations (`sysctl` on macOS, `/proc/self/stat` on Linux,
+  `GetProcessTimes` on Windows), two of them `unsafe`, to avoid one shell
+  script. The door stays open if About is ever the place this has to be read.
+- **Time it from outside only**, as the 318 ms median was. That is what cannot
+  see past window creation — the gap ADR-0156 exists to close. Going back to it
+  would trade one blind spot for the other.
+- **Launch through `open`.** More faithful to a double-click, but macOS
+  LaunchServices does not pass the environment through, so the app would have
+  no way to be told where to leave the reading. The script launches the binary
+  directly and the number excludes LaunchServices' own overhead — stated in the
+  script rather than left to be discovered.
+
+**Consequences.**
+
+- **There is still exactly one cold sample per boot**, and now the script has
+  to be what launches the app. Opening it any other way first spends the
+  sample, and the result will look like a measurement rather than a mistake.
+- **About is unchanged.** It shows `First paint`, which is still the right
+  number for "did a change make painting slower". The cold start is a
+  different question with a different tool.
+- **v0.19 did not become cheaper.** The slot still holds item 2 (connect and
+  browse, Run to first row, against a real connection) and now item 3 needs a
+  reboot *after* this change ships. The reboot already spent was not wasted —
+  it is what found this — but it did not fill the slot.
+
+## ADR-0158 — A real connection's wait is measured inside the app, so nobody has to stage it (2026-09-27)
+
+**Status.** Accepted. Extends [ADR-0156](#adr-0156).
+
+**Context.** v0.19 reserved item 2 of
+[`startup-measurement.md`](startup-measurement.md): how long a real
+connection makes a person wait, first for the table list and then from Run to
+the first row. The roadmap asks for a real database rather than a synthetic
+one, and so the item waited on two things only the maintainer could supply:
+which connection to use, and being present to time it. It was offered three
+ways — frames captured off the screen (coarse), the app reporting its own
+figures (more code), or a stopwatch by hand (today) — and stayed unmeasured
+while the choice was open.
+
+On 2026-09-27 the screen-capture route failed outright: the machine's display
+was asleep, and a capture came back black. The method that needs a person at
+the screen needs the screen awake too.
+
+**Decision.** The app times both waits itself and shows the latest of each in
+About, beside *First paint*:
+
+- **Tables listed** — from choosing a connection (or reconnecting) until its
+  table list has painted. On first use this includes opening the connection:
+  the SSH tunnel, the IAM token, the TLS handshake — which is the part a person
+  notices.
+- **Run to first row** — from Run (or browsing a table) until the result grid
+  has painted.
+
+Both stop **two animation frames after the work**, the same definition of "on
+screen" as first paint. The status bar's elapsed time is left alone: it stops
+at the reply and answers "how long did the database take", a different and
+still useful question.
+
+Each sample carries the connection's **engine** (`mysql`, `aurora-dsql-iam`,
+…) and not its name. The engine is what makes two numbers comparable; a name
+in a screenshot of About is a name in a bug report (ADR-0055).
+
+**Alternatives.**
+
+- **Screen capture.** No change to the app, but it needs the display awake and
+  someone to stage the session, and it resolves to a frame interval.
+- **A stopwatch by hand.** Available immediately, but reaction time is the same
+  order as the thing measured, and it still needs someone to stage it.
+- **Keep a history of samples, or persist them.** Useful for a trend, but a
+  second file on disk for a figure read by eye is more than the question needs.
+  The latest sample of each is enough to fill the slot. If a trend is ever
+  wanted, `untilPainted` already returns everything a history would store.
+
+**Consequences.**
+
+- **Item 2 stops needing an appointment.** Any ordinary session against a real
+  connection leaves the numbers in About. The maintainer's choice of
+  connection becomes simply whichever one they were going to use.
+- The Run path now waits two frames (about 33 ms) before loading a browsed
+  table's primary key. Nothing is drawn differently; inline editing becomes
+  available that much later.
+- The figures live in memory and are gone on restart, like first paint.
+
+## ADR-0160 — Working records leave the public repository (2026-10-01)
+
+**Status.** Accepted. Amends the Documentation Policy in `CLAUDE.md`.
+
+**Context.** Plans, issues, status and handoff notes lived under `.claude/`
+and were committed, as `CLAUDE.md` required. The repository is public. A check
+on 2026-09-30 found no real names, emails, hosts or credentials, but it did
+find what such notes always carry: the name of a private repository, home
+network troubleshooting, and conversation between maintainer tooling. None of
+that means anything to a reader outside, and some of it should not reach one.
+The same pattern turned up in the maintainer's other public repositories, so
+the fix is shared across all of them, not invented here.
+
+**Decision.**
+
+- **`.claude/` is ignored except configuration and distributable tooling**
+  (`tools/`, `rules/`, `templates/`, `hooks/`, `commands/`, `agents/`,
+  `skills/`, `settings.json`). The 52 tracked records were removed from the
+  index with `git rm --cached`. They remain on the maintainer's machine, and
+  move to a private notes repository once it exists.
+- **A shared placement check enforces it**:
+  `.github/scripts/oss-placement-check.sh`, run by the pre-commit and
+  pre-push hooks and by the `oss-placement-check` workflow. It is the same
+  script in every one of the maintainer's public repositories and is not
+  edited per repository. If its allow-list stops fitting, the shared copy
+  changes.
+- **History is not rewritten.** The records already published stay in past
+  commits. A rewrite is only justified for real names, personal email or
+  credentials.
+- **Links from `docs/` into `.claude/` became plain text.** Twelve markdown
+  links in `decisions.md` and `roadmap.md` would otherwise point at files that
+  no longer exist in the repository. Where a record holds a design reason a
+  reader needs, that reason moves into `docs/` (a separate change).
+
+**Alternatives.**
+
+- **Keep issues and plans public and drop only status notes.** Issues and
+  plans carry the reasons behind ADRs and the roadmap. But they also carry the
+  same internal asides, and a split by directory still leaves each issue to
+  be read line by line. Moving the needed reasons into `docs/` keeps what an
+  outside reader needs and drops the rest.
+- **Rewrite history to remove past records.** Destructive, and it does not
+  reach forks or the pull-request refs GitHub keeps. Not justified by
+  content that is internal rather than personal.
+
+**Consequences.**
+
+- `CLAUDE.md` still tells agents to keep plans verbatim and track issues
+  under `.claude/`. Only their visibility changed.
+- ADRs and the roadmap that cite "issue NNNN" now cite a record the reader
+  cannot open. Each such reference is either self-contained in the ADR text
+  or due to move into `docs/`.
+- Moving between machines no longer carries the handoff notes with the
+  clone. The private notes repository is what replaces that.

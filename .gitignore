@@ -22,6 +22,19 @@ desktop.ini
 .env.local
 .env.*.local
 
+# Working records stay out of the public repository (ADR-0160). Only
+# configuration and distributable tooling under .claude/ is tracked; records
+# live locally or in the private notes repository.
+/.claude/*
+!/.claude/tools/
+!/.claude/rules/
+!/.claude/templates/
+!/.claude/hooks/
+!/.claude/commands/
+!/.claude/agents/
+!/.claude/skills/
+!/.claude/settings.json
+
 # AI セッション関連の一時ファイル
 /.claude/cache/
 /.claude/*.bak

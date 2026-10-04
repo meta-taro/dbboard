@@ -5,6 +5,7 @@
   import { i18n } from '$lib/i18n/i18n.svelte';
   import { bundledReleases } from '$lib/about/bundled';
   import { findRelease, releaseHistory } from '$lib/about/changelog';
+  import { latency, type LatencySample } from '$lib/status/latency.svelte';
 
   interface Props {
     onClose: () => void;
@@ -43,6 +44,15 @@
     }
   });
 
+  // The engine rides along because a number is only comparable with another
+  // from the same kind of database; the connection's name stays out of a
+  // dialog people screenshot (ADR-0055).
+  function showLatency(sample: LatencySample | null): string {
+    if (!sample) return '—';
+    const failed = sample.failed ? `, ${i18n.t('about-latency-failed')}` : '';
+    return `${sample.ms} ms (${sample.kind}${failed})`;
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onClose();
   }
@@ -68,6 +78,10 @@
       <dd class="mono">{version}</dd>
       <dt>{i18n.t('about-first-paint')}</dt>
       <dd class="mono">{firstPaintMs === null ? '—' : `${firstPaintMs} ms`}</dd>
+      <dt>{i18n.t('about-tables-painted')}</dt>
+      <dd class="mono">{showLatency(latency.tables)}</dd>
+      <dt>{i18n.t('about-first-row-painted')}</dt>
+      <dd class="mono">{showLatency(latency.firstRow)}</dd>
     </dl>
 
     <section class="changes">

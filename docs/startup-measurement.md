@@ -77,9 +77,82 @@ experience from a steady 318 ms, and the tail is the part a person notices.
    reads differently when the process has been up 900 ms than when it has been
    up 40 seconds — the second says the report arrived late, not that painting
    was slow.
-2. **Connect and browse**, and **Run to first row**, against a real connection,
-   with the operator present to choose it.
-3. **A cold start**, taken once after a reboot.
+2. **Connect and browse**, and **Run to first row**, against a real
+   connection. **The app measures these now** (ADR-0158). About shows
+   *Tables listed* (choosing a connection until its table list has painted,
+   including opening the connection) and *Run to first row* (Run until the
+   grid has painted), each with the engine it was taken against. Use the app
+   against a real database as usual, then open About. No appointment is
+   needed, and no connection has to be chosen for the purpose.
+
+   **The figures themselves are not in yet.** 0.19.0 ships the measurement
+   rather than waiting on it: the first readings will come from a trial
+   deployment's ordinary use, and are recorded here when they arrive.
+3. **A cold start** — **taken 2026-09-25**, result below. **Reboot alone does not
+   take it, and finding that out cost a reboot.** On 2026-09-24 the first
+   launch after a boot reported **451 ms** and the very next launch **431 ms**
+   — a 4% gap, where a cold disk should have been unmissable.
+
+   The reason is in item 1's own design. The clock starts on the first line of
+   `run()`, and by then the kernel has exec'd a 47 MB binary and dyld has
+   paged it in. **That is the work a warm launch skips**, and it finishes
+   before the clock exists. `first_paint_ms` was never wrong; it answers a
+   narrower question than this item asks.
+
+   So the reading now also carries **`started_at_unix_ms`** — the wall-clock
+   instant the clock started, on a clock other processes share. A stopwatch
+   that began *before the process existed* subtracts and recovers the rest:
+
+   ```sh
+   sh scripts/measure-cold-start.sh
+   ```
+
+   ```
+     total     ___ ms   launch -> painted (what a person waits)
+     inside    ___ ms   what About calls First paint
+     loading   ___ ms   exec + dyld + runtime, before the clock starts
+   ```
+
+   Warm, on 2026-09-24: `loading` sits at **15-17 ms** across three runs, so
+   the number is steady enough for a cold one to stand out against.
+
+   **Launch a freshly built binary once before the reboot.** macOS verifies an
+   app it has not seen before, and that verification lands in `loading` where
+   it is indistinguishable from a cold disk — the first launch of a new build
+   measured **3108 ms** against 15-17 ms for every launch after it. Three
+   seconds of signature checking recorded as a cold start would be worse than
+   having no number.
+
+   **There is still exactly one cold sample per boot**, and the script has to
+   be the thing that launches the app. Opening it any other way first spends
+   the sample. The script launches the binary directly rather than through
+   `open`, because LaunchServices does not pass the environment through and
+   the app needs `DBBOARD_STARTUP_REPORT` to know where to leave its reading.
+
+   **Nothing is written unless that variable is set.** An ordinary launch does
+   not start leaving files on a disk.
+
+   **Taken on 2026-09-25**, on the 0.18 build that had already been launched
+   once (Gatekeeper done). The reboot was not planned — an unrelated crash
+   took the machine down at 14:35 — and the app had not been opened since:
+
+   ```
+                 total    inside   loading
+     cold          522       500        22 ms
+     warm #1       471       456        15 ms
+     warm #2       529       508        21 ms
+   ```
+
+   **A cold start is not measurably slower here.** `loading` rose by 5-7 ms,
+   and the two warm launches taken straight afterwards differ from each other
+   by more than the cold one differs from either. The machine was not idle
+   (load average around 3, other agents building), which is what widened the
+   warm spread from yesterday's 404-433 ms; the sample says nothing finer
+   than "within the noise".
+
+   What a person waits is about half a second either way, and **almost all of
+   it is `inside`** — after `run()` starts, before the webview paints. If
+   startup is ever worth making faster, that is where to look, not the disk.
 
 Until then the roadmap item stays unticked. A quarter of a measurement is not
 a measurement, and the point of taking it first was to have something to

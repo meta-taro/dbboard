@@ -9,6 +9,78 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-10-04 — The measurement nobody has taken
+
+### Added
+
+- **About now shows how long a real connection made you wait.** *Tables
+  listed* runs from choosing a connection until its table list is on screen,
+  including opening the connection (SSH tunnel, IAM token). *Run to first row*
+  runs from Run until the result grid has painted. Both stop at the paint, not
+  at the reply, so they include what the status bar's timer leaves out. Each is
+  labelled with the engine, and never the connection's name.
+
+- **A cold start costs nothing you can see.** The first launch after a reboot
+  took 522 ms from exec to paint; two warm launches straight afterwards took
+  471 and 529 ms. The loading half — exec and the dynamic linker, the part a
+  cold disk should slow down — went from 15-21 ms to 22 ms. Nearly all of the
+  half-second is spent after the shell starts and before the webview paints.
+  Details in [`docs/startup-measurement.md`](docs/startup-measurement.md).
+
+### Fixed
+
+- **The startup number could not see a cold start, which is the one thing it
+  was reserved to measure.** The clock starts on the first line of the shell's
+  `run()`, and by then the kernel has exec'd a 47 MB binary and the dynamic
+  linker has paged it in — the exact work a warm launch skips. It showed: the
+  first launch after a reboot reported 451 ms, and the very next launch
+  reported 431 ms. A cold disk does not cost 20 ms.
+
+  The reading now also carries the wall-clock instant the clock started, so a
+  stopwatch that began before the process existed can subtract and recover the
+  loading time. `scripts/measure-cold-start.sh` prints the three numbers: what
+  a person waits, what *First paint* shows, and the difference between them.
+  Nothing is written to disk unless that script asked for it.
+
+  *About* is unchanged. *First paint* is still the right number for whether a
+  change made painting slower; the cold start is a different question.
+
+### Changed
+
+- **The download page opens with the problem instead of the product name.**
+  The largest line used to be "dbboard", which tells a first-time visitor
+  nothing, and the line under it was a list of ten engines — a spec sheet, not
+  a reason to keep reading. It now opens with the thing that brought them:
+  *Turso, D1, Aurora DSQL — a different tool for every one of them.* The engine
+  list is still there, one line down, where it answers "does it cover mine?"
+  instead of asking the question.
+
+  The download buttons moved up into that first screenful as a pair of plain
+  buttons, rather than a section of cards further down. They stay *below* the
+  screenshot rather than above it: these binaries are unsigned, and the page
+  has always shown the app before asking anyone to click through a warning for
+  it. The screenshot is cropped so both still fit without scrolling.
+
+### Added
+
+- **The download page recommends sshboard**, with its icon, and says what the
+  two are for together. Plenty of systems are still released by hand — someone opens an
+  SSH session, copies files up, then opens a client and runs the migration.
+  There is no pipeline to hand an agent, and building one is its own project.
+  sshboard covers the server half of that the way dbboard covers the database
+  half: the agent and the person share one session, and what the agent runs
+  appears where the person is already looking.
+
+  The section is explicit that **neither is a way to leave an agent running
+  unattended** — sshboard says so on its own page, and dbboard's write policy
+  means it the same way. What gets automated is the work, not the watching.
+
+- **A Japanese page**, at `/ja/`. English remains the source text; the two
+  pages point at each other and English is the `x-default`. Tests keep them
+  from drifting on the parts that must not differ — the sections, the
+  screenshots, and the ids `app.js` fills — while leaving the prose free to
+  read like its own language.
+
 ## [0.18.0] — 2026-09-17 — Going back, and the first number from inside
 
 ### Added

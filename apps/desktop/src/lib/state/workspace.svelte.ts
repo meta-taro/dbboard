@@ -20,6 +20,7 @@ import {
 } from '$lib/api';
 import { BROWSE_ROWS } from '$lib/sidebar/menu';
 import { browseQuery, usesStructuredQuery } from '$lib/sql/build';
+import { latency, untilPainted } from '$lib/status/latency.svelte';
 
 export type MainTab = 'query' | 'structure' | 'compare';
 
@@ -192,13 +193,18 @@ class Workspace {
   async #refreshTables(): Promise<void> {
     if (!this.connectionId) return;
     this.loadingTables = true;
-    try {
-      this.tables = await listTables(this.connectionId);
-    } catch (e) {
-      this.error = String(e);
-    } finally {
-      this.loadingTables = false;
-    }
+    const kind = this.connection?.kind ?? '';
+    const timed = await untilPainted(async () => {
+      try {
+        this.tables = await listTables(this.connectionId);
+      } finally {
+        // Cleared inside the timed work so the paint being waited for is the
+        // list itself, not a spinner that is about to disappear.
+        this.loadingTables = false;
+      }
+    });
+    latency.recordTables(timed, kind);
+    if (timed.failed) this.error = String(timed.error);
   }
 }
 
