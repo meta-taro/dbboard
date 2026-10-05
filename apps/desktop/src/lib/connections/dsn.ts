@@ -181,14 +181,24 @@ export function composeDsn(kind: ConnectionKind, parts: DsnParts): string {
   const auth = blank(parts.db_password)
     ? user
     : `${user}:${encodeURIComponent(parts.db_password)}`;
-  const database = encodeURIComponent(trimmed(parts.db_name));
+  // A blank database leaves the path off altogether: `…:3306/` would read as
+  // a database named "" to anyone looking at the saved URL.
+  const database = blank(parts.db_name) ? '' : `/${encodeURIComponent(trimmed(parts.db_name))}`;
   const query = sslQuery(kind, parts.db_ssl);
-  return `${schemeFor(kind)}://${auth}@${hostAuthority(parts.db_host)}:${port}/${database}${query}`;
+  return `${schemeFor(kind)}://${auth}@${hostAuthority(parts.db_host)}:${port}${database}${query}`;
+}
+
+/** Whether a blank database is a complete answer for this kind (docs/every-database.md).
+ *  A MySQL account sees every database it has privileges on, and a connection
+ *  with no default lists them all. Postgres-wire kinds are bound to one
+ *  database per connection, so for them blank still means nothing to browse. */
+export function databaseIsOptional(kind: ConnectionKind): boolean {
+  return kind === 'mysql';
 }
 
 /** Returns the invalid part fields (empty ⇒ valid). The password is optional:
  *  a MySQL account may legitimately have none. */
-export function validateDsn(parts: DsnParts): DsnField[] {
+export function validateDsn(parts: DsnParts, kind?: ConnectionKind): DsnField[] {
   const bad: DsnField[] = [];
   if (blank(parts.db_host)) bad.push('db_host');
   if (!blank(parts.db_port)) {
@@ -196,6 +206,6 @@ export function validateDsn(parts: DsnParts): DsnField[] {
     if (!Number.isFinite(n) || n < 1 || n > 65535) bad.push('db_port');
   }
   if (blank(parts.db_user)) bad.push('db_user');
-  if (blank(parts.db_name)) bad.push('db_name');
+  if (blank(parts.db_name) && !(kind && databaseIsOptional(kind))) bad.push('db_name');
   return bad;
 }

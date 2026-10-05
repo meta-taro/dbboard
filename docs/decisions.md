@@ -14332,3 +14332,64 @@ the fix is shared across all of them, not invented here.
   or due to move into `docs/`.
 - Moving between machines no longer carries the handoff notes with the
   clone. The private notes repository is what replaces that.
+## ADR-0161 — A connection is not one database, and the table list is a tree (2026-09-28)
+
+**Status.** Accepted. First step of [`every-database.md`](every-database.md) (slot v0.20).
+
+**Context.** The maintainer, writing a MySQL connection by hand, asked why a
+database name was required. Nobody had decided that. The form's check
+(`validateDsn`) came over from the first adapter and applied to every
+URL-shaped engine. The MySQL adapter listed tables `WHERE table_schema =
+DATABASE()`, with a comment saying "`MySQL` scopes tables to a single database
+per connection". That is not true: an account sees every database it has
+privileges on. Without a default database, `DATABASE()` is NULL, the comparison
+is never true, and the list comes back **empty, with no error**. The required
+field was what hid this.
+
+The maintainer asked for a tree across every engine that can see more than
+one database, and turned down a MySQL-only version.
+
+**Decision.** Step one, MySQL, and the tree every later step reuses:
+
+- **MySQL lists every database the account can read when no default is
+  set.** One static statement: `table_schema = DATABASE() OR (DATABASE() IS
+  NULL AND table_schema NOT IN (<system databases>))`. A connection with a
+  default database lists that database, as before.
+- **The server's own databases are left out** of the wide listing (`mysql`,
+  `information_schema`, `performance_schema`, `sys`). A connection whose
+  default is one of them still lists it, because then someone asked for it by
+  name.
+- **The database becomes optional in the form for MySQL only**
+  (`databaseIsOptional`). A hint under the field says what blank means, since
+  blank used to be an error. A blank database writes no path at all
+  (`mysql://u@h:3306`) rather than a trailing `/`. Postgres-wire kinds still
+  require one until they can open a pool per database (step two).
+- **The sidebar groups tables by `TableInfo.schema`** (`TableTree.svelte`,
+  `groupTables`). That field already carried MySQL's database name and
+  Postgres's schema, so no contract changes. **One group is drawn flat**,
+  exactly as before. Groups start open, because a Postgres connection with two
+  schemas used to show every table.
+
+**Alternatives.**
+
+- **List databases with `SHOW DATABASES` and tables per database on expand.**
+  This is the shape Postgres will need, but MySQL can answer the whole tree in
+  one query on one connection. Two round trips per database would buy nothing
+  here.
+- **Keep the database required and add a "browse all" switch.** A second way
+  to say the same thing, and the required field would go on hiding the empty
+  list for anyone who pastes a URL without a path.
+- **Groups collapsed by default.** Tidier for a server with forty databases,
+  but a regression for every Postgres connection with more than one schema.
+  The count on each header already says where the tables are.
+
+**Consequences.**
+
+- **Hand-written SQL on a MySQL connection with no default database** must
+  qualify tables (`shop.orders`). A bare name gets the server's own "No
+  database selected". Choosing a default per query tab is a separate design:
+  `USE` on a pool of five connections lands on one of them.
+- **Postgres connections with several schemas now show them as groups**
+  instead of a flat `schema.table` list. Same tables, one level deeper.
+- Table-level actions (browse, structure, DDL, write-back) already qualify by
+  `TableInfo.schema`, so they work on any listed database without a default.
