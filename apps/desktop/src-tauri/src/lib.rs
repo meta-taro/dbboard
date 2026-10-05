@@ -151,6 +151,7 @@ pub fn run() {
             startup::startup_timing,
             browse::list_connections,
             browse::list_tables,
+            browse::list_databases,
             browse::describe_table,
             browse::get_annotations,
             browse::set_table_note,

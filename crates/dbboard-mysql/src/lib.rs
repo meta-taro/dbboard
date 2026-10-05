@@ -58,6 +58,14 @@ const ER_UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 /// server message cannot dump an unbounded string into the UI.
 const MAX_ERROR_DETAIL: usize = 2048;
 
+/// Databases this account can see (ADR-0162), minus the server's own. Needed
+/// beside [`LIST_TABLES_SQL`] because a database with no tables yet has no row
+/// in `information_schema.tables` and would never appear in the tree.
+const LIST_DATABASES_SQL: &str = "SELECT schema_name FROM information_schema.schemata \
+     WHERE schema_name NOT IN \
+     ('mysql', 'information_schema', 'performance_schema', 'sys') \
+     ORDER BY schema_name";
+
 /// User base tables. A connection with a default database lists that database,
 /// as it always has. One without lists **every database the account can
 /// read** (docs/every-database.md): an account is not scoped to one database, and the
@@ -195,6 +203,7 @@ impl DatabaseAdapter for MySqlAdapter {
             // is data-only (ADR-0049), for which the InnoDB transaction is
             // all-or-nothing.
             has_atomic_restore: true,
+            has_list_databases: true,
             ..Capabilities::default()
         }
     }
@@ -205,6 +214,23 @@ impl DatabaseAdapter for MySqlAdapter {
             .await
             .map_err(|e| classify_error(&e))
             .map(|_| ())
+    }
+
+    async fn list_databases(&self) -> DbResult<Vec<String>> {
+        let result = self
+            .query(LIST_DATABASES_SQL)
+            .await
+            .map_err(reclassify_schema)?;
+        result
+            .rows
+            .iter()
+            .map(|row| match row.get(0) {
+                Some(Value::Text(name)) => Ok(name.clone()),
+                other => Err(DbError::Schema(format!(
+                    "unexpected row shape from information_schema.schemata: {other:?}"
+                ))),
+            })
+            .collect()
     }
 
     async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
@@ -1010,7 +1036,8 @@ mod tests {
     use super::{
         assemble_foreign_keys, bytes_to_text, classify_error, column_from_parts, harden_ssl_mode,
         is_unknown_system_variable, qualified_ident, quote_ident, reclassify_schema, styles_to_try,
-        truncate, FkRow, TimeoutStyle, FLAVOR_MYSQL, LIST_TABLES_SQL, PROBE_ORDER,
+        truncate, FkRow, TimeoutStyle, FLAVOR_MYSQL, LIST_DATABASES_SQL, LIST_TABLES_SQL,
+        PROBE_ORDER,
     };
     use dbboard_core::{DatabaseAdapter, DbError, TableInfo};
     use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
@@ -1036,6 +1063,18 @@ mod tests {
         for name in ["mysql", "information_schema", "performance_schema", "sys"] {
             assert!(LIST_TABLES_SQL.contains(&format!("'{name}'")), "{name}");
         }
+    }
+
+    /// ADR-0162: the database list is what the tree needs to show a database
+    /// with no tables in it yet, which the table listing alone never would.
+    /// The same system databases are left out.
+    #[test]
+    fn listing_databases_leaves_out_the_server_bookkeeping() {
+        assert!(LIST_DATABASES_SQL.contains("information_schema.schemata"));
+        for name in ["mysql", "information_schema", "performance_schema", "sys"] {
+            assert!(LIST_DATABASES_SQL.contains(&format!("'{name}'")), "{name}");
+        }
+        assert!(LIST_DATABASES_SQL.contains("ORDER BY schema_name"));
     }
 
     #[test]
@@ -1195,6 +1234,7 @@ mod tests {
         assert!(caps.has_execute);
         assert!(caps.has_foreign_keys);
         assert!(caps.has_atomic_restore);
+        assert!(caps.has_list_databases);
         assert_eq!(adapter.id(), "mysql");
     }
 

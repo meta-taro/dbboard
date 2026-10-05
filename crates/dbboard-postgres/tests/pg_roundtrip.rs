@@ -535,3 +535,32 @@ async fn aurora_dsql_read_only_decodes_wide_types_as_printed_text() {
         ))
     );
 }
+
+/// ADR-0162: the database list includes the one this connection is on, and
+/// leaves out the templates.
+#[tokio::test]
+async fn list_databases_includes_the_current_one() {
+    let Some(config) = config_from_env() else {
+        eprintln!("skipping: DBBOARD_PG_URL not set");
+        return;
+    };
+    let adapter = PostgresAdapter::connect(config).await.expect("connect");
+    let current = match adapter
+        .query("SELECT current_database()")
+        .await
+        .expect("current database")
+        .rows
+        .first()
+        .and_then(|row| row.get(0).cloned())
+    {
+        Some(Value::Text(name)) => name,
+        other => panic!("unexpected current_database() row: {other:?}"),
+    };
+
+    let databases = adapter.list_databases().await.expect("list databases");
+
+    assert!(databases.contains(&current), "{current} in {databases:?}");
+    assert!(!databases
+        .iter()
+        .any(|d| d == "template0" || d == "template1"));
+}

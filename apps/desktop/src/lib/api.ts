@@ -172,6 +172,11 @@ export const listConnections = (): Promise<ConnectionView[]> =>
 export const listTables = (connectionId: string): Promise<TableInfo[]> =>
   invoke('list_tables', { connectionId });
 
+// The databases a connection can reach (ADR-0162). Rejects for engines that
+// hold one database per connection; callers treat that as "no database level".
+export const listDatabases = (connectionId: string): Promise<string[]> =>
+  invoke('list_databases', { connectionId });
+
 export const describeTable = (
   connectionId: string,
   table: string,

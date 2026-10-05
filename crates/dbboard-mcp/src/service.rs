@@ -1215,6 +1215,18 @@ impl McpService {
         Ok(adapter.list_tables().await?)
     }
 
+    /// The databases `connection_id`'s credentials can reach (ADR-0162).
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] for an unknown id, or
+    /// [`ServiceError::Db`]: a [`DbError::Capability`] when the engine holds a
+    /// single database per connection, or whatever the catalog read surfaces.
+    pub async fn list_databases(&self, connection_id: &str) -> Result<Vec<String>, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        Ok(adapter.list_databases().await?)
+    }
+
     /// Describe one table's columns and primary key.
     ///
     /// # Errors
@@ -2588,6 +2600,38 @@ path = ":memory:"
                 .expect("insert");
         }
         fx
+    }
+
+    /// ADR-0162: an engine that holds one database per connection says so as
+    /// a capability miss, which the caller reads as "draw no database level",
+    /// rather than an empty list that would read as an empty server.
+    #[tokio::test]
+    async fn a_single_database_engine_cannot_list_databases() {
+        let fx = seeded_turso_fixture().await;
+        let err = fx
+            .service
+            .list_databases("mem")
+            .await
+            .expect_err("libSQL holds one database");
+        assert!(
+            matches!(err, ServiceError::Db(DbError::Capability(_))),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_connection_cannot_list_databases() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        let err = fx
+            .service
+            .list_databases("does-not-exist")
+            .await
+            .expect_err("unknown id");
+        assert!(
+            matches!(err, ServiceError::ConnectionNotFound(_)),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

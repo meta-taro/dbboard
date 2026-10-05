@@ -77,6 +77,15 @@ pub struct Capabilities {
     /// pre-ADR-0152 payloads parseable — the flag reads as `false`.
     #[serde(default)]
     pub has_list_indexes: bool,
+
+    /// The adapter implements `DatabaseAdapter::list_databases` (ADR-0162): one
+    /// connection can enumerate more than one database (MySQL, the Postgres
+    /// family). Engines that hold exactly one database per connection leave it
+    /// false, and the UI draws no database level for them.
+    /// `#[serde(default)]` keeps older payloads parseable — the flag reads as
+    /// `false`.
+    #[serde(default)]
+    pub has_list_databases: bool,
 }
 
 #[cfg(test)]
@@ -97,6 +106,7 @@ mod tests {
         assert!(!caps.has_atomic_restore);
         assert!(!caps.has_foreign_keys);
         assert!(!caps.has_list_indexes);
+        assert!(!caps.has_list_databases);
     }
 
     #[test]
@@ -139,7 +149,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false,"has_list_indexes":false}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false,"has_list_indexes":false,"has_list_databases":false}"#
         );
     }
 
@@ -157,6 +167,7 @@ mod tests {
             has_atomic_restore: true,
             has_foreign_keys: true,
             has_list_indexes: true,
+            has_list_databases: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();

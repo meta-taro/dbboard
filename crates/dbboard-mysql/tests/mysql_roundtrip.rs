@@ -429,6 +429,7 @@ async fn no_default_database_lists_every_database() {
         .await
         .expect("connect without a database");
     let tables = wide.list_tables().await.expect("list tables");
+    let databases = wide.list_databases().await.expect("list databases");
 
     admin
         .execute("DROP DATABASE dbboard_wide_probe")
@@ -441,10 +442,18 @@ async fn no_default_database_lists_every_database() {
             .any(|t| t.schema.as_deref() == Some("dbboard_wide_probe") && t.name == "wide_t"),
         "the probe table is listed under its own database: {tables:?}"
     );
+    assert!(
+        databases.iter().any(|d| d == "dbboard_wide_probe"),
+        "the probe database is listed (ADR-0162): {databases:?}"
+    );
     for system in ["mysql", "information_schema", "performance_schema", "sys"] {
         assert!(
             tables.iter().all(|t| t.schema.as_deref() != Some(system)),
             "{system} is left out"
+        );
+        assert!(
+            !databases.iter().any(|d| d == system),
+            "{system} not listed"
         );
     }
 }
