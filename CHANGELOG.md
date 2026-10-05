@@ -7,7 +7,22 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Every database the connection can see
+
+### Added
+
+- **A MySQL connection can leave the database blank, and then lists every
+  database the account can read.** An account was never scoped to one
+  database, but dbboard listed only the default one and the form insisted on
+  a name. That hid a worse fact: without a name the list came back empty,
+  with no error. The server's own databases (`mysql`, `information_schema`,
+  `performance_schema`, `sys`) are left out. A connection that names a
+  database behaves exactly as before.
+- **The sidebar shows tables as a tree, grouped by database or schema.** A
+  connection that only ever had one database or schema still gets the flat
+  list it had. Groups start open and fold on a click. Postgres connections
+  with several schemas now show each schema as a group instead of a
+  `schema.table` prefix on every row.
 
 ## [0.19.0] — 2026-10-04 — The measurement nobody has taken
 
