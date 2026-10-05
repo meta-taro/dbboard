@@ -14393,3 +14393,68 @@ one database, and turned down a MySQL-only version.
   instead of a flat `schema.table` list. Same tables, one level deeper.
 - Table-level actions (browse, structure, DDL, write-back) already qualify by
   `TableInfo.schema`, so they work on any listed database without a default.
+
+## ADR-0162 — An adapter can list the databases its connection can reach (2026-10-05)
+
+**Status.** Accepted. Second step of [`every-database.md`](every-database.md)
+(slot v0.20). Extends ADR-0012 (optional capabilities) and ADR-0161.
+
+**Context.** ADR-0161 let a MySQL connection without a default database list
+every table it can read, grouped by database. That covers MySQL because one
+MySQL connection sees all of its databases at once. It leaves two gaps:
+
+- **A MySQL database with no tables never appears.** The tree is built from
+  table rows, and an empty database has none.
+- **A Postgres connection is bound to one database.** It sees every schema in
+  that database and nothing in any other. Showing the rest means first knowing
+  their names, and then opening a connection to whichever one is expanded.
+
+Both need the same primitive: "which databases can these credentials reach?"
+
+**Decision.**
+
+- **`DatabaseAdapter::list_databases() -> Vec<String>`**, names in name order,
+  plus a `has_list_databases` capability flag. The default returns
+  `DbError::Capability`, because most engines hold exactly one database per
+  connection and an empty list would read as an empty server. The flag is
+  additive on `/capabilities` and older payloads still parse.
+- **MySQL** reads `information_schema.schemata`, leaving out `mysql`,
+  `information_schema`, `performance_schema` and `sys`, the same set as the
+  table listing.
+- **The Postgres family** (Postgres, Neon, Supabase) reads `pg_database`, and
+  keeps only databases that are not templates, allow connections, and grant
+  this role `CONNECT`. On a shared server that keeps the list to what this
+  person can actually open. **Aurora DSQL** has one fixed database, so the
+  flag is off there and the call is a capability miss.
+- **The service and the desktop app expose it as is** (`list_databases`). They
+  do not decide whether to draw a database level. The UI does that from the
+  connection (blank database means show them all, a named one means only that
+  one), as `every-database.md` describes.
+
+**How the next steps address a database** (decided here, built next):
+
+- **An explicit, optional `database` argument** on the calls that touch a
+  table (list, describe, run, browse, write-back), rather than a database name
+  folded into the connection id. The HTTP contract freezes at v1.0. An
+  optional parameter can be added without breaking anything, but a special
+  id format would be frozen along with the contract.
+- **A pool per (connection, database), opened when the database is first
+  used**, which in practice means when it is expanded in the tree. Listing
+  fifty databases opens no pools.
+
+**Alternatives.**
+
+- **Fold the database into the connection id** (`<id><sep><db>`), so every
+  existing command works unchanged. It is the smallest change, but the id is a
+  free-form string with no reserved characters, so any separator could collide
+  with a real id, and the format would become part of the frozen contract.
+- **Return an empty list instead of a capability error.** Simpler for callers,
+  but "zero databases" and "this engine does not have several" would look the
+  same, and the second is by far the common case.
+
+**Consequences.**
+
+- `list_databases` is reachable from the desktop app now. The HTTP and MCP
+  surfaces gain it alongside the `database` argument, before v1.0.
+- Neither MySQL's grouping nor any existing call changes: this step only adds
+  a call.

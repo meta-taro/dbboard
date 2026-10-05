@@ -23,6 +23,11 @@ public API is the HTTP contract in
   list it had. Groups start open and fold on a click. Postgres connections
   with several schemas now show each schema as a group instead of a
   `schema.table` prefix on every row.
+- **Adapters can list the databases a connection can reach**, and
+  `/capabilities` gains `has_list_databases`. MySQL lists every database the
+  account can see, including ones with no tables yet. Postgres, Neon and
+  Supabase list the databases this login may connect to. The desktop app
+  can ask already; the tree uses it in a later step.
 
 ## [0.19.0] — 2026-10-04 — The measurement nobody has taken
 

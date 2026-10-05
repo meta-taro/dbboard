@@ -42,6 +42,21 @@ pub(crate) async fn list_tables(
         .map_err(|e| e.to_string())
 }
 
+/// The databases a connection's credentials can reach (ADR-0162). An engine
+/// with one database per connection answers with a capability error, which
+/// the frontend reads as "no database level to draw".
+#[tauri::command]
+pub(crate) async fn list_databases(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<String>, String> {
+    state
+        .service
+        .list_databases(&connection_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Column-level structure for one table (ordinal, type, nullable, PK,
 /// default) plus the composite primary key. `schema` is optional — pass
 /// the value from [`list_tables`] verbatim.

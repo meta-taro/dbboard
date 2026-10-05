@@ -246,14 +246,15 @@ every consumer to guess whether a string is prose or a serialized document.
   "has_execute": false,         // ADR-0051 (restore)
   "has_atomic_restore": false,  // ADR-0051 (restore)
   "has_foreign_keys": false,    // ADR-0054 (relationship discovery)
-  "has_list_indexes": false     // ADR-0152 (schema comparison)
+  "has_list_indexes": false,    // ADR-0152 (schema comparison)
+  "has_list_databases": false   // ADR-0162 (every database a connection can see)
 }
 ```
 
 - A flat object of `snake_case` boolean flags, one per optional
   capability defined in ADR-0012 and its successors. The set grows over
   time (`has_describe_table`, `has_table_ddl`, the restore flags,
-  `has_foreign_keys` and `has_list_indexes` were each added by a later
+  `has_foreign_keys`, `has_list_indexes` and `has_list_databases` were each added by a later
   ADR); clients must tolerate unknown flags (see `GET /capabilities`).
 - A `true` flag states that the **adapter** implements the capability.
   It does not promise that this document already defines an HTTP
