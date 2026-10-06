@@ -105,9 +105,18 @@
   // A browsed table that has NO declared primary key: editable-intent but not
   // safely keyable, so we show a read-only reason instead of edit affordances.
   const noPk = $derived(editTable !== null && editPk.length === 0);
+  // The database the current result came from (ADR-0162). Captured when the
+  // statement starts, so paging and edits keep going to that database even
+  // after the sidebar points somewhere else.
+  let resultDatabase = $state<string | null>(null);
   const editContext = $derived(
     workspace.connectionId && editTable && editPk.length > 0
-      ? { connectionId: workspace.connectionId, table: editTable, pk: editPk }
+      ? {
+          connectionId: workspace.connectionId,
+          database: resultDatabase,
+          table: editTable,
+          pk: editPk,
+        }
       : null,
   );
   // Keyset paging over a browsed table (ADR-0145). The trail of cursors and
@@ -152,6 +161,8 @@
   async function execute(table: TableInfo | null) {
     const connId = workspace.connectionId;
     if (!connId || busy) return;
+    const database = workspace.database;
+    resultDatabase = database;
     busy = true;
     error = '';
     editTable = table;
@@ -167,7 +178,7 @@
     // The status bar's clock stops at the reply; this one waits for the grid
     // to paint, which is what a person is actually waiting for.
     const timed = await untilPainted(async () => {
-      result = await runReadQuery(connId, sql, limit);
+      result = await runReadQuery(connId, sql, limit, database);
       runStatus.end(false);
       resultLimit = limit;
     });
@@ -179,7 +190,7 @@
         // A failed schema read just leaves the table read-only (empty PK); the
         // rows still show. Never let it mask a successful query.
         try {
-          const schema = await describeTable(connId, table.name, table.schema);
+          const schema = await describeTable(connId, table.name, table.schema, database);
           editPk = schema.primary_key;
           editEnums = enumColumns(schema.columns);
         } catch {
@@ -228,7 +239,7 @@
     const limit = rowLimit;
     runStatus.begin();
     try {
-      const page = await browsePage(connId, table, limit, cursors[index] ?? null);
+      const page = await browsePage(connId, table, limit, cursors[index] ?? null, resultDatabase);
       runStatus.end(false);
       result = page;
       resultLimit = limit;
@@ -237,7 +248,7 @@
       // A failed schema read just leaves the table read-only (empty PK); the
       // rows still show. Never let it mask a successful read.
       try {
-        const schema = await describeTable(connId, table.name, table.schema);
+        const schema = await describeTable(connId, table.name, table.schema, resultDatabase);
         editPk = schema.primary_key;
         editEnums = enumColumns(schema.columns);
       } catch {
@@ -408,6 +419,16 @@
       </div>
 
       <div class="right-tools">
+        <!-- With a database level in the tree (ADR-0162), a typed query goes to
+             the database last clicked there, and nothing else on screen says
+             which one that is. -->
+        {#if workspace.databases.length > 0}
+          <span class="target-db" title={i18n.t('query-target-hint')}>
+            {i18n.t('query-target', {
+              name: workspace.database ?? i18n.t('query-target-default'),
+            })}
+          </span>
+        {/if}
         <label class="limit">
           <span class="limit-label">{i18n.t('result-row-limit')}</span>
           <select value={rowLimit} onchange={onLimitChange}>
@@ -657,6 +678,14 @@
     background: var(--bg-surface-alt);
   }
 
+  .target-db {
+    font-size: var(--text-hint);
+    color: var(--text-muted);
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .limit {
     display: inline-flex;
     align-items: center;

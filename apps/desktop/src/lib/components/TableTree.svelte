@@ -14,10 +14,14 @@
     tables: TableInfo[];
     /** One table row. `qualified` is whether the row should name its own
      *  database or schema, which it must when there is no group header to. */
-    row: Snippet<[TableInfo, boolean]>;
+    row: Snippet<[TableInfo, boolean, string | null]>;
+    /** The database these tables belong to (ADR-0162), passed back to `row`
+     *  so a click knows where to point table-level calls. Null: the
+     *  connection's own. */
+    database?: string | null;
   }
 
-  let { tables, row }: Props = $props();
+  let { tables, row, database = null }: Props = $props();
 
   const groups = $derived(groupTables(tables));
 
@@ -35,7 +39,7 @@
 
 {#if groups.length <= 1}
   {#each tables as t (`${t.schema ?? ''}.${t.name}`)}
-    {@render row(t, true)}
+    {@render row(t, true, database)}
   {/each}
 {:else}
   {#each groups as g (g.name ?? '')}
@@ -55,7 +59,7 @@
     {#if open}
       <div class="members">
         {#each g.tables as t (`${key}.${t.name}`)}
-          {@render row(t, false)}
+          {@render row(t, false, database)}
         {/each}
       </div>
     {/if}

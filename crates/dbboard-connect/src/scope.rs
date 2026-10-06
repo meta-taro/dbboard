@@ -51,6 +51,54 @@ pub fn scoped_to_database(config: BackendConfig, database: &str) -> DbResult<Bac
     })
 }
 
+/// The database `config` was saved with, decoded, or `None` when it names none
+/// or the engine holds a single database (ADR-0162). The UI reads this to keep
+/// a connection saved with a database looking exactly as it did, and to offer
+/// every database only for one saved without.
+#[must_use]
+pub fn configured_database(config: &BackendConfig) -> Option<String> {
+    let (BackendConfig::Postgres { url, .. }
+    | BackendConfig::Neon { url, .. }
+    | BackendConfig::Supabase { url, .. }
+    | BackendConfig::MySql { url, .. }) = config
+    else {
+        return None;
+    };
+    // The same reading the edit form uses, so the two never disagree about
+    // what a connection was saved with.
+    dbboard_config::parse_dsn(url)
+        .map(|parts| parts.database)
+        .filter(|db| !db.is_empty())
+}
+
+/// Where a Postgres-family connection saved without a database opens.
+const POSTGRES_MAINTENANCE_DATABASE: &str = "postgres";
+
+/// `config`, made connectable when it names no database (ADR-0162).
+///
+/// A Postgres server given no database falls back to one named after the
+/// user, which rarely exists. The `postgres` maintenance database does on a
+/// self-hosted server, Neon and Supabase, so a connection saved without a
+/// database opens there and lists the rest. A saved database is never
+/// overridden, and every other engine passes through unchanged.
+///
+/// # Errors
+///
+/// Only what [`scoped_to_database`] returns for an unparseable URL.
+pub fn with_listing_default(config: BackendConfig) -> DbResult<BackendConfig> {
+    let postgres_family = matches!(
+        config,
+        BackendConfig::Postgres { .. }
+            | BackendConfig::Neon { .. }
+            | BackendConfig::Supabase { .. }
+    );
+    if postgres_family && configured_database(&config).is_none() {
+        scoped_to_database(config, POSTGRES_MAINTENANCE_DATABASE)
+    } else {
+        Ok(config)
+    }
+}
+
 /// `url` with its path replaced by `database` as one percent-encoded segment.
 /// The error never carries the URL: it embeds the password.
 fn with_database(url: &str, database: &str) -> DbResult<String> {
@@ -66,7 +114,7 @@ fn with_database(url: &str, database: &str) -> DbResult<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::scoped_to_database;
+    use super::{configured_database, scoped_to_database, with_listing_default};
     use crate::BackendConfig;
     use dbboard_core::DbError;
 
@@ -141,5 +189,74 @@ mod tests {
         };
         let err = scoped_to_database(config, "  ").expect_err("blank");
         assert!(matches!(err, DbError::Connection(_)), "{err:?}");
+    }
+
+    /// What the connection was saved with, so the UI can tell "show this one
+    /// database, as before" from "show every database it can reach".
+    #[test]
+    fn the_saved_database_is_read_back_decoded() {
+        let named = BackendConfig::Postgres {
+            url: "postgres://app@h:5432/my%20db?sslmode=require".into(),
+            ssh: None,
+        };
+        assert_eq!(configured_database(&named).as_deref(), Some("my db"));
+
+        let blank = BackendConfig::MySql {
+            url: "mysql://app@h:3306?ssl-mode=disabled".into(),
+            ssh: None,
+        };
+        assert_eq!(configured_database(&blank), None);
+
+        let trailing_slash = BackendConfig::Neon {
+            url: "postgres://app@h/".into(),
+            ssh: None,
+        };
+        assert_eq!(configured_database(&trailing_slash), None);
+    }
+
+    /// An engine with one database per connection has nothing to choose
+    /// between, so there is no "saved database" to report.
+    #[test]
+    fn a_single_database_engine_reports_none() {
+        assert_eq!(configured_database(&BackendConfig::turso(":memory:")), None);
+    }
+
+    /// A Postgres server falls back to a database named after the user when
+    /// the URL names none, and that one rarely exists. `postgres` does, on a
+    /// self-hosted server, Neon and Supabase alike, so a connection saved
+    /// without a database opens there to list the rest.
+    #[test]
+    fn a_blank_postgres_connection_opens_the_maintenance_database() {
+        let blank = BackendConfig::Neon {
+            url: "postgres://app@ep-x.neon.tech?sslmode=require".into(),
+            ssh: None,
+        };
+        let opened = with_listing_default(blank).expect("defaulted");
+        assert_eq!(
+            url_of(&opened),
+            "postgres://app@ep-x.neon.tech/postgres?sslmode=require"
+        );
+    }
+
+    /// A saved database is never overridden, and MySQL needs no default: one
+    /// MySQL connection sees every database without being "in" any.
+    #[test]
+    fn a_named_database_and_mysql_are_left_alone() {
+        let named = BackendConfig::Postgres {
+            url: "postgres://app@h/shop".into(),
+            ssh: None,
+        };
+        assert_eq!(
+            url_of(&with_listing_default(named).expect("ok")),
+            "postgres://app@h/shop"
+        );
+        let mysql = BackendConfig::MySql {
+            url: "mysql://app@h:3306".into(),
+            ssh: None,
+        };
+        assert_eq!(
+            url_of(&with_listing_default(mysql).expect("ok")),
+            "mysql://app@h:3306"
+        );
     }
 }

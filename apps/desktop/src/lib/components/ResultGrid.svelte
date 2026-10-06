@@ -262,7 +262,7 @@
     saveError = '';
     try {
       for (const u of updates) {
-        await updateRow(edit.connectionId, edit.table, u.key, u.edits);
+        await updateRow(edit.connectionId, edit.table, u.key, u.edits, edit.database);
       }
       staged = new Map();
       flash(i18n.t('edit-saved', { count: updates.length }));

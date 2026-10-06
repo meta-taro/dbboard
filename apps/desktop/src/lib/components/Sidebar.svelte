@@ -8,6 +8,7 @@
   import ConnectionMark from './ConnectionMark.svelte';
   import MarkPicker from './MarkPicker.svelte';
   import TableTree from './TableTree.svelte';
+  import DatabaseTree from './DatabaseTree.svelte';
   import { tableMenuActions } from '$lib/sidebar/menu';
   import { compare } from '$lib/compare/compare.svelte';
   import { connectionTooltip } from '$lib/connections/label';
@@ -138,7 +139,7 @@
     searching = true;
     const timer = setTimeout(async () => {
       try {
-        const view = await searchSchema(connId, q);
+        const view = await searchSchema(connId, q, workspace.database);
         if (mine !== seq) return;
         matches = view.matches;
         searchError = '';
@@ -153,9 +154,12 @@
     return () => clearTimeout(timer);
   });
 
-  function isSelected(t: TableInfo): boolean {
+  // The same schema.table can exist in two databases (ADR-0162), so a row is
+  // selected only when its database is the one in use as well.
+  function isSelected(t: TableInfo, database: string | null = null): boolean {
     return (
       !!workspace.selectedTable &&
+      workspace.database === database &&
       workspace.key(workspace.selectedTable) === workspace.key(t)
     );
   }
@@ -251,13 +255,19 @@
   </svg>
 {/snippet}
 
-{#snippet tableRow(t: TableInfo, qualified: boolean)}
+{#snippet tableRow(t: TableInfo, qualified: boolean, database: string | null)}
   <button
     type="button"
     class="nav-row"
-    class:active={isSelected(t)}
-    onclick={() => selectOrJump(t)}
-    oncontextmenu={(e) => openMenu(e, t)}
+    class:active={isSelected(t, database)}
+    onclick={() => {
+      workspace.useDatabase(database);
+      selectOrJump(t);
+    }}
+    oncontextmenu={(e) => {
+      workspace.useDatabase(database);
+      openMenu(e, t);
+    }}
     title={workspace.key(t)}
   >
     {@render tableIcon()}
@@ -377,7 +387,9 @@
         {/if}
       </div>
       <div class="list">
-        {#if workspace.loadingTables}
+        {#if workspace.databases.length > 0}
+          <DatabaseTree row={tableRow} />
+        {:else if workspace.loadingTables}
           <p class="hint">{i18n.t('sidebar-loading')}</p>
         {:else if workspace.tables.length === 0}
           <p class="hint">{i18n.t('sidebar-tables-empty')}</p>

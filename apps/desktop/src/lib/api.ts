@@ -174,9 +174,15 @@ export const listConnections = (): Promise<ConnectionView[]> =>
 export const listTables = (connectionId: string, database?: string | null): Promise<TableInfo[]> =>
   invoke('list_tables', { connectionId, database: database ?? null });
 
-// The databases a connection can reach (ADR-0162). Rejects for engines that
-// hold one database per connection; callers treat that as "no database level".
-export const listDatabases = (connectionId: string): Promise<string[]> =>
+// What a connection was saved with, and the databases it could switch to
+// (ADR-0162). `databases` is empty for a connection saved with a database and
+// for engines that hold one; either way the sidebar draws no database level.
+export interface DatabaseListing {
+  configured: string | null;
+  databases: string[];
+}
+
+export const listDatabases = (connectionId: string): Promise<DatabaseListing> =>
   invoke('list_databases', { connectionId });
 
 export const describeTable = (
@@ -220,14 +226,16 @@ export const setColumnNote = (
 export const searchSchema = (
   connectionId: string,
   pattern: string,
+  database?: string | null,
 ): Promise<SchemaSearchView> =>
-  invoke('search_schema', { connectionId, pattern });
+  invoke('search_schema', { connectionId, pattern, database: database ?? null });
 
 export const listRelationships = (
   connectionId: string,
   table?: string | null,
+  database?: string | null,
 ): Promise<RelationshipView> =>
-  invoke('list_relationships', { connectionId, table: table ?? null });
+  invoke('list_relationships', { connectionId, table: table ?? null, database: database ?? null });
 
 export const runReadQuery = (
   connectionId: string,

@@ -46,7 +46,10 @@ use dbboard_config::{
     ui_command, ui_settings, ConfigError, ConnectionAdmin, ConnectionDraft, ConnectionKindDraft,
     SecretStore, CONNECTION_COLORS,
 };
-use dbboard_connect::{backend_config_for_entry, connect_adapter, scoped_to_database};
+use dbboard_connect::{
+    backend_config_for_entry, configured_database, connect_adapter, scoped_to_database,
+    with_listing_default,
+};
 
 use crate::export::{self, ExportOutcome};
 use crate::target::Target;
@@ -676,15 +679,41 @@ pub struct McpService {
 struct CachedAdapter {
     adapter: Arc<dyn DatabaseAdapter>,
     checked_at: Instant,
+    /// The database the connection resolved to (ADR-0162): the one it was
+    /// saved with, or the one a [`Target`] named. Read off the config when the
+    /// adapter is built, because that is the only time the secret URL is in
+    /// hand; asking again would mean another keychain read.
+    configured_database: Option<String>,
 }
 
 impl CachedAdapter {
+    // Only tests build an entry without a resolved database; the service
+    // always knows it, from the config it just read.
+    #[cfg(test)]
     fn new(adapter: Arc<dyn DatabaseAdapter>) -> Self {
+        Self::with_database(adapter, None)
+    }
+
+    fn with_database(
+        adapter: Arc<dyn DatabaseAdapter>,
+        configured_database: Option<String>,
+    ) -> Self {
         Self {
             adapter,
             checked_at: Instant::now(),
+            configured_database,
         }
     }
+}
+
+/// What a connection was saved with, and which databases it could switch to
+/// (ADR-0162). The UI draws a database level only when `configured` is `None`
+/// and `databases` is not empty; otherwise the connection looks as it always
+/// did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DatabaseListing {
+    pub configured: Option<String>,
+    pub databases: Vec<String>,
 }
 
 /// How long a cached adapter is trusted without proof.
@@ -1231,6 +1260,44 @@ impl McpService {
         Ok(adapter.list_databases().await?)
     }
 
+    /// The database `connection_id` was saved with, and the ones it could
+    /// switch to (ADR-0162). A connection saved with a database lists nothing
+    /// to switch to, so it keeps looking as it did. An engine that cannot list
+    /// databases answers with an empty list rather than an error, because "draw
+    /// no database level" is the only thing the caller does with either.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::ConnectionNotFound`] for an unknown id, or
+    /// [`ServiceError::Db`] for a failure other than a capability miss.
+    pub async fn database_listing(
+        &self,
+        connection_id: &str,
+    ) -> Result<DatabaseListing, ServiceError> {
+        let adapter = self.adapter_for(connection_id).await?;
+        let configured = self
+            .cache
+            .lock()
+            .await
+            .get(connection_id)
+            .and_then(|entry| entry.configured_database.clone());
+        if configured.is_some() {
+            return Ok(DatabaseListing {
+                configured,
+                databases: Vec::new(),
+            });
+        }
+        let databases = match adapter.list_databases().await {
+            Ok(names) => names,
+            Err(DbError::Capability(_)) => Vec::new(),
+            Err(other) => return Err(other.into()),
+        };
+        Ok(DatabaseListing {
+            configured: None,
+            databases,
+        })
+    }
+
     /// Describe one table's columns and primary key.
     ///
     /// # Errors
@@ -1740,9 +1807,9 @@ impl McpService {
     /// needle would match the entire catalog — use `list_tables` for that).
     /// [`ServiceError::ConnectionNotFound`] for an unknown id, or
     /// [`ServiceError::Db`] if the adapter's catalog read fails.
-    pub async fn search_schema(
+    pub async fn search_schema<'t>(
         &self,
-        connection_id: &str,
+        target: impl Into<Target<'t>>,
         pattern: &str,
     ) -> Result<SchemaSearchView, ServiceError> {
         let needle = pattern.trim().to_lowercase();
@@ -1752,7 +1819,9 @@ impl McpService {
             ));
         }
 
-        let adapter = self.adapter_for(connection_id).await?;
+        let target = target.into();
+        let connection_id = target.connection_id;
+        let adapter = self.adapter_for_target(target).await?;
         let tables = adapter.list_tables().await?;
 
         let cap = tables.len().min(MAX_SCHEMA_MATCHES);
@@ -1804,9 +1873,9 @@ impl McpService {
     /// [`ServiceError::ConnectionNotFound`] for an unknown id, or
     /// [`ServiceError::Db`] if the adapter cannot list tables or introspect
     /// a table's foreign keys.
-    pub async fn list_relationships(
+    pub async fn list_relationships<'t>(
         &self,
-        connection_id: &str,
+        target: impl Into<Target<'t>>,
         table_filter: Option<&str>,
     ) -> Result<RelationshipView, ServiceError> {
         // A blank filter means "no filter" — the tool takes an optional
@@ -1816,7 +1885,9 @@ impl McpService {
             .filter(|s| !s.is_empty())
             .map(str::to_lowercase);
 
-        let adapter = self.adapter_for(connection_id).await?;
+        let target = target.into();
+        let connection_id = target.connection_id;
+        let adapter = self.adapter_for_target(target).await?;
         let tables = adapter.list_tables().await?;
 
         let mut relationships = Vec::new();
@@ -1937,8 +2008,16 @@ impl McpService {
             Some(database) => scoped_to_database(config, database)?,
             None => config,
         };
+        // Read before the listing default is applied: a connection saved
+        // without a database must still report none, or the UI would draw it
+        // flat as if it named `postgres`.
+        let configured = configured_database(&config);
+        let config = with_listing_default(config)?;
         let adapter = connect_adapter(config).await?;
-        cache.insert(key, CachedAdapter::new(Arc::clone(&adapter)));
+        cache.insert(
+            key,
+            CachedAdapter::with_database(Arc::clone(&adapter), configured),
+        );
         Ok(adapter)
     }
 
@@ -2659,6 +2738,17 @@ path = ":memory:"
         );
     }
 
+    /// ADR-0162: the UI decides whether to draw a database level from this. A
+    /// libSQL connection was saved with no database name and cannot list any,
+    /// so the answer is "no saved name, nothing to list": draw it flat.
+    #[tokio::test]
+    async fn a_single_database_engine_lists_nothing_to_choose_from() {
+        let fx = seeded_turso_fixture().await;
+        let listing = fx.service.database_listing("mem").await.expect("listing");
+        assert_eq!(listing.configured, None);
+        assert!(listing.databases.is_empty(), "{listing:?}");
+    }
+
     /// ADR-0162: naming a database must actually switch databases, or fail.
     /// A libSQL connection holds one, so asking for another is a capability
     /// miss rather than silently listing the connection's own tables.
@@ -2747,6 +2837,7 @@ path = ":memory:"
                     pings: Arc::clone(&pings),
                 }),
                 checked_at,
+                configured_database: None,
             },
         );
         pings

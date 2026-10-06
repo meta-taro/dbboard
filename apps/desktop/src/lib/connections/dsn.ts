@@ -188,12 +188,13 @@ export function composeDsn(kind: ConnectionKind, parts: DsnParts): string {
   return `${schemeFor(kind)}://${auth}@${hostAuthority(parts.db_host)}:${port}${database}${query}`;
 }
 
-/** Whether a blank database is a complete answer for this kind (docs/every-database.md).
- *  A MySQL account sees every database it has privileges on, and a connection
- *  with no default lists them all. Postgres-wire kinds are bound to one
- *  database per connection, so for them blank still means nothing to browse. */
+/** Whether a blank database is a complete answer for this kind (ADR-0161,
+ *  ADR-0162). MySQL sees every database it has privileges on from one
+ *  connection. The Postgres family opens the `postgres` maintenance database
+ *  and lists the others. Aurora DSQL has one fixed database, so blank there
+ *  still means nothing to browse. */
 export function databaseIsOptional(kind: ConnectionKind): boolean {
-  return kind === 'mysql';
+  return kind === 'mysql' || kind === 'postgres' || kind === 'neon' || kind === 'supabase';
 }
 
 /** Returns the invalid part fields (empty ⇒ valid). The password is optional:

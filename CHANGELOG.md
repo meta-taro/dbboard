@@ -34,6 +34,12 @@ public API is the HTTP contract in
   account can see, including ones with no tables yet. Postgres, Neon and
   Supabase list the databases this login may connect to. The desktop app
   can ask already; the tree uses it in a later step.
+- **A Postgres, Neon or Supabase connection can leave the database blank, and
+  then shows every database the login may open**, each one connecting the
+  first time it is expanded. Inside a database, tables are grouped by schema
+  as before. Clicking a table points browsing, queries, structure and edits
+  at its database, and the query toolbar says where a query will run. A
+  connection saved with a database looks exactly as it did.
 
 ## [0.19.0] — 2026-10-04 — The measurement nobody has taken
 

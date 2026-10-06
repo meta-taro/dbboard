@@ -63,9 +63,9 @@
         // table that was perfectly readable. A side read that fails now costs
         // only its own section.
         const [s, ann, rel] = await Promise.allSettled([
-          describeTable(connId, table.name, table.schema),
+          describeTable(connId, table.name, table.schema, workspace.database),
           getAnnotations(connId, tableKey(table)),
-          listRelationships(connId, tableKey(table)),
+          listRelationships(connId, tableKey(table), workspace.database),
         ]);
         if (mine !== seq) return; // superseded by a newer selection
 
