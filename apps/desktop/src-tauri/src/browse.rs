@@ -8,7 +8,8 @@
 
 use dbboard_core::{CellValue, RowKey, SchemaDiff, TableInfo, TableSchema, UpdatePlan, Value};
 use dbboard_mcp::service::{
-    AnnotationsView, ConnectionView, QueryOutput, RelationshipView, SchemaSearchView,
+    AnnotationsView, ConnectionView, DatabaseListing, QueryOutput, RelationshipView,
+    SchemaSearchView,
 };
 use dbboard_mcp::target::Target;
 
@@ -46,17 +47,17 @@ pub(crate) async fn list_tables(
         .map_err(|e| e.to_string())
 }
 
-/// The databases a connection's credentials can reach (ADR-0162). An engine
-/// with one database per connection answers with a capability error, which
-/// the frontend reads as "no database level to draw".
+/// What a connection was saved with and the databases it could switch to
+/// (ADR-0162). The sidebar draws a database level only for a connection saved
+/// with no database whose engine lists several.
 #[tauri::command]
 pub(crate) async fn list_databases(
     state: tauri::State<'_, AppState>,
     connection_id: String,
-) -> Result<Vec<String>, String> {
+) -> Result<DatabaseListing, String> {
     state
         .service
-        .list_databases(&connection_id)
+        .database_listing(&connection_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -166,11 +167,13 @@ pub(crate) async fn diff_schemas(
 pub(crate) async fn search_schema(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162); absent means its own.
+    database: Option<String>,
     pattern: String,
 ) -> Result<SchemaSearchView, String> {
     state
         .service
-        .search_schema(&connection_id, &pattern)
+        .search_schema(Target::new(&connection_id, database.as_deref()), &pattern)
         .await
         .map_err(|e| e.to_string())
 }
@@ -182,11 +185,16 @@ pub(crate) async fn search_schema(
 pub(crate) async fn list_relationships(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162); absent means its own.
+    database: Option<String>,
     table: Option<String>,
 ) -> Result<RelationshipView, String> {
     state
         .service
-        .list_relationships(&connection_id, table.as_deref())
+        .list_relationships(
+            Target::new(&connection_id, database.as_deref()),
+            table.as_deref(),
+        )
         .await
         .map_err(|e| e.to_string())
 }

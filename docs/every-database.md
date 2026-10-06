@@ -79,6 +79,10 @@ node above it rather than a parent with a single child.
 2. **The Postgres family.** The per-database pool is the real work.
 3. **MongoDB**, then **D1**.
 
+**Status (2026-10-06):** steps 1 and 2 are done (ADR-0161, ADR-0162,
+ADR-0163). v0.20 ships with MySQL and the Postgres family, and MongoDB and D1
+move to a later slot.
+
 Each step can ship on its own. A step that is not finished when v0.20 is cut
 moves to the next slot, as every slot's unfinished content does.
 

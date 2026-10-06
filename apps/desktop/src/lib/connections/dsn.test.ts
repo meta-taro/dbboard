@@ -311,12 +311,17 @@ describe('validateDsn', () => {
     expect(validateDsn(parts({ db_name: '' }), 'mysql')).toEqual([]);
   });
 
-  // A Postgres connection is bound to one database until the per-database
-  // pools of the next step exist; blank there still means nothing to browse.
-  it('still requires a database for Postgres-wire kinds', () => {
+  // ADR-0162: a Postgres-family connection saved without a database opens the
+  // maintenance database and lists the rest, so blank is a complete answer.
+  it('lets a Postgres-family connection leave the database blank', () => {
     for (const kind of ['postgres', 'neon', 'supabase'] as const) {
-      expect(validateDsn(parts({ db_name: '' }), kind)).toEqual(['db_name']);
+      expect(validateDsn(parts({ db_name: '' }), kind)).toEqual([]);
     }
+  });
+
+  // Aurora DSQL has one fixed database; there is nothing to list instead.
+  it('still requires a database for Aurora DSQL', () => {
+    expect(validateDsn(parts({ db_name: '' }), 'aurora_dsql')).toEqual(['db_name']);
   });
 
   // Blank is legal (a MySQL account may have no password) and means exactly

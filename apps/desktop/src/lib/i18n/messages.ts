@@ -122,6 +122,9 @@ export const en = {
   "result-copy-failed": "Copy failed",
   "result-sort-hint": "Click to sort · Shift-click to add a key",
   "result-cell-dialog": "Cell value",
+  "query-target": "Runs in { $name }",
+  "query-target-default": "the default database",
+  "query-target-hint": "Click a table in the sidebar to run queries in its database.",
   "result-row-limit": "Rows",
   // Saved queries (ADR-0147). Kept in `saved-queries.toml` with the rest of
   // the profile, not in the webview's storage — a query somebody deliberately
@@ -635,6 +638,9 @@ const ja: Partial<Record<MessageKey, string>> = {
   "result-copy-failed": "コピーに失敗しました",
   "result-sort-hint": "クリックで並び替え・Shift+クリックでキーを追加",
   "result-cell-dialog": "セルの値",
+  "query-target": "実行先: { $name }",
+  "query-target-default": "既定のデータベース",
+  "query-target-hint": "サイドバーでテーブルを選ぶと、そのデータベースで実行します。",
   "result-row-limit": "行数",
   "saved-title": "保存済み ({ $count })",
   "saved-heading": "保存したクエリ",

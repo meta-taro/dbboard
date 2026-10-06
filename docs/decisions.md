@@ -14458,3 +14458,61 @@ Both need the same primitive: "which databases can these credentials reach?"
   surfaces gain it alongside the `database` argument, before v1.0.
 - Neither MySQL's grouping nor any existing call changes: this step only adds
   a call.
+
+## ADR-0163 — A Postgres connection saved without a database shows every database it can open (2026-10-06)
+
+**Status.** Accepted. Fourth step of [`every-database.md`](every-database.md)
+(slot v0.20). Builds on ADR-0161 (the tree) and ADR-0162 (listing databases,
+and naming one per call).
+
+**Context.** With ADR-0162 the backend can list a server's databases and run
+any table-level call in one of them. Three things were still missing before a
+person could see the result: the UI had to tell a connection saved *with* a
+database from one saved without, a Postgres URL with no database had to be
+connectable, and the screen had to show where a query would run.
+
+**Decision.**
+
+- **The service remembers which database a connection resolved to.** It reads
+  it off the config when it builds the adapter, because that is the only time
+  the secret URL is in hand. `list_databases` on the desktop now returns that
+  name together with the list (`DatabaseListing`). A connection saved with a
+  database returns no list, so **it looks exactly as before**.
+- **A Postgres-family connection saved without a database opens the
+  `postgres` maintenance database** (`with_listing_default`). Given no
+  database, a Postgres server falls back to one named after the user, which
+  rarely exists. `postgres` does on a self-hosted server, Neon and Supabase.
+  The saved name is read before this default is applied, so the connection
+  still reports "saved without a database".
+- **The sidebar draws a database level** (`DatabaseTree`) only when the
+  connection was saved without a database and can see more than one
+  (`drawsDatabaseLevel`). Databases start closed: opening one is what connects
+  to it, and a server can list dozens. Inside, tables are grouped by schema
+  exactly as a single-database connection's are.
+- **The database last clicked in the tree is where table-level calls go**
+  (`workspace.database`): browse, run, describe, structure, relationships,
+  search and write-back. A result keeps the database it was read from, so
+  paging and edits go back to the same place even after another database is
+  clicked. The query toolbar shows the target ("Runs in …") whenever the tree
+  has a database level.
+- **The form lets Postgres, Neon and Supabase leave the database blank**, as
+  MySQL already could. Aurora DSQL still requires it.
+
+**Alternatives.**
+
+- **Always draw every database for Postgres, with the saved one first.** That
+  is simpler, but it changes how every existing Postgres connection looks, and
+  `every-database.md` promised it would not.
+- **Pick a database per query tab.** More flexible, but it needs a tab model
+  the query panel does not have. Following the tree click needs nothing new and
+  covers the common case. The toolbar label makes the target visible.
+- **Use `template1` as the maintenance database.** It exists everywhere, but it
+  is the template new databases are copied from. Connecting to it blocks
+  `CREATE DATABASE` for as long as the connection is open.
+
+**Consequences.**
+
+- On a connection saved without a database, a query typed before any table is
+  clicked runs in `postgres`, and the toolbar says "the default database".
+- MongoDB and D1 remain for a later slot. Each needs its own way of opening a
+  database, which this step does not touch.
