@@ -169,8 +169,10 @@ export interface QueryOutput {
 export const listConnections = (): Promise<ConnectionView[]> =>
   invoke('list_connections');
 
-export const listTables = (connectionId: string): Promise<TableInfo[]> =>
-  invoke('list_tables', { connectionId });
+// `database` (ADR-0162) picks a database within the connection; omit it for
+// the one the connection was saved with. The same holds for the calls below.
+export const listTables = (connectionId: string, database?: string | null): Promise<TableInfo[]> =>
+  invoke('list_tables', { connectionId, database: database ?? null });
 
 // The databases a connection can reach (ADR-0162). Rejects for engines that
 // hold one database per connection; callers treat that as "no database level".
@@ -181,8 +183,9 @@ export const describeTable = (
   connectionId: string,
   table: string,
   schema?: string | null,
+  database?: string | null,
 ): Promise<TableSchema> =>
-  invoke('describe_table', { connectionId, schema: schema ?? null, table });
+  invoke('describe_table', { connectionId, schema: schema ?? null, table, database: database ?? null });
 
 export const getAnnotations = (
   connectionId: string,
@@ -230,8 +233,9 @@ export const runReadQuery = (
   connectionId: string,
   sql: string,
   maxRows?: number,
+  database?: string | null,
 ): Promise<QueryOutput> =>
-  invoke('run_read_query', { connectionId, sql, maxRows: maxRows ?? null });
+  invoke('run_read_query', { connectionId, sql, maxRows: maxRows ?? null, database: database ?? null });
 
 // Read one keyset page of a table (ADR-0145). Separate from `runReadQuery`
 // because this one lets the backend *build* the statement, which is what
@@ -242,12 +246,14 @@ export const browsePage = (
   table: TableInfo,
   pageRows?: number,
   after?: Cell[] | null,
+  database?: string | null,
 ): Promise<QueryOutput> =>
   invoke('browse_page', {
     connectionId,
     table,
     pageRows: pageRows ?? null,
     after: after ?? null,
+    database: database ?? null,
   });
 
 // Apply one row's staged edits as a single UPDATE (ADR-0042) — the app's first
@@ -261,6 +267,7 @@ export const updateRow = (
   table: TableInfo,
   key: KeyColumn[],
   edits: CellEdit[],
+  database?: string | null,
 ): Promise<void> =>
   invoke('update_row', {
     connectionId,
@@ -268,6 +275,7 @@ export const updateRow = (
     table: table.name,
     key,
     edits,
+    database: database ?? null,
   });
 
 // Absolute path of the connections.toml this app reads — shown in the

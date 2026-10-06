@@ -15,6 +15,7 @@
 
 mod backend;
 mod config;
+mod scope;
 mod ssh;
 mod tunneled;
 
@@ -23,5 +24,6 @@ pub use config::{
     backend_config_for_entry, backend_config_from_env, backend_config_from_env_and_store,
     resolved_connection_label, BackendConfig,
 };
+pub use scope::scoped_to_database;
 pub use ssh::ResolvedSsh;
 pub use tunneled::TunneledAdapter;

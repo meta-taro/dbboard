@@ -43,6 +43,7 @@ pub mod capture;
 pub mod export;
 pub mod server;
 pub mod service;
+pub mod target;
 
 pub use capture::{CaptureError, CaptureShot};
 pub use server::DbboardMcp;
