@@ -11,6 +11,12 @@ public API is the HTTP contract in
 
 ### Added
 
+- **Windows on ARM gets native builds.** Every release now carries
+  `dbboard_<version>_arm64-setup.exe` and `dbboard-mcp-windows-aarch64.exe`
+  alongside the x64 ones, built on an ARM64 machine rather than
+  cross-compiled. The auto-updater serves ARM machines their own build, and
+  the download page offers x64 and ARM64 as separate buttons.
+
 - **A MySQL connection can leave the database blank, and then lists every
   database the account can read.** An account was never scoped to one
   database, but dbboard listed only the default one and the form insisted on

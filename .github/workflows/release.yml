@@ -63,12 +63,37 @@ jobs:
   # deferred (ADR-0044 §Future) and these bundles still trip SmartScreen /
   # Gatekeeper. Rust is preinstalled on the runners; only Node + pnpm (via
   # corepack) are added.
+  #
+  # Two Windows machines, not one cross-compile (ADR-0164): x64 on
+  # windows-latest and ARM64 on windows-11-arm, each building for itself. Tauri
+  # names the NSIS bundle after the machine (`_x64-setup.exe` /
+  # `_arm64-setup.exe`), which is what keeps the two apart downstream.
   build-tauri-windows:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      # windows-latest ships Rust; the ARM image does not promise it. Installs
+      # rustup only, with no toolchain: rust-toolchain.toml then selects the
+      # pinned compiler, so both machines build with the same one.
+      - name: Ensure rustup (ARM64)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            .\rustup-init.exe -y --default-toolchain none --profile minimal
+            "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
       - uses: actions/setup-node@v4
         with:
           # Must stay >= 22.5: `apps/desktop` pins pnpm 11 via `packageManager`,
@@ -80,6 +105,13 @@ jobs:
       - name: Install frontend deps
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
+      # On ARM64 Windows, pnpm has been seen to skip the ARM-only optional
+      # packages (@rollup/rollup-win32-arm64-msvc, @tauri-apps/cli-win32-arm64-msvc)
+      # even though the lockfile lists them. A forced reinstall fetches them.
+      - name: Reinstall platform packages (ARM64)
+        if: matrix.arch == 'arm64'
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile --force
       # `pnpm tauri build` runs the pinned @tauri-apps/cli devDep. With the
       # signing env set + createUpdaterArtifacts, the NSIS setup .exe lands in
       # the workspace target/ alongside its `.exe.sig`.
@@ -97,11 +129,11 @@ jobs:
           Copy-Item (Get-ChildItem target/release/bundle/nsis/*-setup.exe.sig | Select-Object -First 1) dist/
           Get-ChildItem dist -Filter *.exe | ForEach-Object {
             (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $_.Name |
-              Out-File -Append -Encoding ascii dist/SHA256SUMS.tauri-windows.txt
+              Out-File -Append -Encoding ascii dist/SHA256SUMS.tauri-windows-${{ matrix.arch }}.txt
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: tauri-windows
+          name: tauri-windows-${{ matrix.arch }}
           path: dist/
 
   build-tauri-macos:
@@ -157,25 +189,44 @@ jobs:
   # `dbboard-desktop*` and `dbboard_*` (ADR-0089, ADR-0143). The MCP prefix
   # has a hyphen where the client has an underscore, which is what keeps the
   # two apart.
+  # Same two machines as the desktop build (ADR-0164). The file name carries
+  # the Rust architecture name, as the x86_64 one always has.
   build-mcp-windows:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+          - arch: aarch64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - name: Ensure rustup (ARM64)
+        if: matrix.arch == 'aarch64'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+            .\rustup-init.exe -y --default-toolchain none --profile minimal
+            "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
       - name: Build the MCP server
         run: cargo build --release -p dbboard-mcp
       - name: Stage artifact + checksum
         shell: pwsh
         run: |
+          $name = "dbboard-mcp-windows-${{ matrix.arch }}.exe"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target/release/dbboard-mcp.exe dist/dbboard-mcp-windows-x86_64.exe
-          (Get-FileHash dist/dbboard-mcp-windows-x86_64.exe -Algorithm SHA256).Hash.ToLower() +
-            "  dbboard-mcp-windows-x86_64.exe" |
-            Out-File -Encoding ascii dist/SHA256SUMS.mcp-windows.txt
+          Copy-Item target/release/dbboard-mcp.exe "dist/$name"
+          (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower() + "  $name" |
+            Out-File -Encoding ascii dist/SHA256SUMS.mcp-windows-${{ matrix.arch }}.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: mcp-windows
+          name: mcp-windows-${{ matrix.arch }}
           path: dist/
 
   build-mcp-macos:
@@ -305,8 +356,12 @@ jobs:
               with open(path, encoding="utf-8") as fh:
                   return fh.read().strip()
 
-          win = one("out/*-setup.exe")
-          win_sig = one("out/*-setup.exe.sig")
+          # By name, never "the first .exe": with two Windows builds that would
+          # hand one architecture the other's installer (ADR-0164).
+          win = one("out/*_x64-setup.exe")
+          win_sig = one("out/*_x64-setup.exe.sig")
+          win_arm = one("out/*_arm64-setup.exe")
+          win_arm_sig = one("out/*_arm64-setup.exe.sig")
           mac = one("out/*.app.tar.gz")
           mac_sig = one("out/*.app.tar.gz.sig")
 
@@ -323,6 +378,10 @@ jobs:
                   "windows-x86_64": {
                       "signature": sig(win_sig),
                       "url": f"{base}/{os.path.basename(win)}",
+                  },
+                  "windows-aarch64": {
+                      "signature": sig(win_arm_sig),
+                      "url": f"{base}/{os.path.basename(win_arm)}",
                   },
                   "darwin-x86_64": mac_entry,
                   "darwin-aarch64": mac_entry,
@@ -353,7 +412,7 @@ jobs:
           gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
             || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
                  --title "${GITHUB_REF_NAME}" --generate-notes \
-                 --notes "**[Download dbboard](https://meta-taro.github.io/dbboard/)** picks the right installer for your OS. For the MCP server that hands your databases to an AI agent, grab \`dbboard-mcp-windows-x86_64.exe\` or \`dbboard-mcp-macos-universal\` from the assets below and follow [the setup](https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md).
+                 --notes "**[Download dbboard](https://meta-taro.github.io/dbboard/)** picks the right installer for your OS. For the MCP server that hands your databases to an AI agent, grab \`dbboard-mcp-windows-x86_64.exe\`, \`dbboard-mcp-windows-aarch64.exe\` (Windows on ARM) or \`dbboard-mcp-macos-universal\` from the assets below and follow [the setup](https://github.com/meta-taro/dbboard/blob/main/crates/dbboard-mcp/README.md).
 
           > **These binaries are not code-signed**, by decision rather than by omission ([ADR-0106](https://github.com/meta-taro/dbboard/blob/main/docs/decisions.md)). Windows SmartScreen and macOS Gatekeeper warn about an unknown publisher on every release. Verify what you download against \`SHA256SUMS.txt\` — that is what tells you the file is the one this repo built."
 

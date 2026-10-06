@@ -644,7 +644,8 @@ The security posture is the reason it is safe to point an agent at:
 
 **Get it from the
 [latest release](https://github.com/meta-taro/dbboard/releases/latest)** —
-`dbboard-mcp-windows-x86_64.exe` or `dbboard-mcp-macos-universal`. It is a
+`dbboard-mcp-windows-x86_64.exe`, `dbboard-mcp-windows-aarch64.exe` (Windows
+on ARM) or `dbboard-mcp-macos-universal`. It is a
 single executable with no runtime dependencies, and it is a *separate*
 download from the desktop app: the installer on the download page does not
 contain it. Put it somewhere stable, because the path goes into the agent's
@@ -809,7 +810,8 @@ v0.14.0 carry that spelling in their filenames:
 
 | Platform | Artifact | Built on |
 |---|---|---|
-| Windows | `nsis/dbboard_<version>_x64-setup.exe` | Windows |
+| Windows x64 | `nsis/dbboard_<version>_x64-setup.exe` | Windows x64 |
+| Windows ARM64 | `nsis/dbboard_<version>_arm64-setup.exe` | Windows ARM64 (built natively, not cross-compiled; ADR-0164) |
 | macOS | `dmg/dbboard_<version>_universal.dmg` | macOS (a `.dmg` cannot be produced from Windows) |
 
 App identity — bundle identifier, icons, window defaults, updater endpoint —

@@ -28,7 +28,7 @@ const V0_4_0 = [
 ];
 
 test("the Tauri bundles are the ones offered", () => {
-  assert.equal(bucketFor("dbboard-desktop_0.4.0_x64-setup.exe"), "win-setup");
+  assert.equal(bucketFor("dbboard-desktop_0.4.0_x64-setup.exe"), "win-x64");
   assert.equal(bucketFor("dbboard-desktop_0.4.0_universal.dmg"), "mac-dmg");
   assert.equal(bucketFor("SHA256SUMS.txt"), "sums");
 });
@@ -38,7 +38,7 @@ test("the renamed bundles are offered, and the old ones keep working", () => {
   // `dbboard_<version>_…`. Releases v0.5.0 through v0.14.0 shipped the same
   // client as `dbboard-desktop_…`, and the page lists whichever release a
   // visitor is looking at, so both spellings have to be recognised.
-  assert.equal(bucketFor("dbboard_0.15.0_x64-setup.exe"), "win-setup");
+  assert.equal(bucketFor("dbboard_0.15.0_x64-setup.exe"), "win-x64");
   assert.equal(bucketFor("dbboard_0.15.0_universal.dmg"), "mac-dmg");
   assert.equal(bucketFor("dbboard-desktop_0.14.0_universal.dmg"), "mac-dmg");
 });
@@ -89,7 +89,7 @@ test("a whole release resolves to exactly one asset per bucket", () => {
       assert.equal(seen.has(b), false, `bucket ${b} claimed twice by ${name}`);
       seen.set(b, name);
     }
-    assert.deepEqual([...seen.keys()].sort(), ["mac-dmg", "sums", "win-setup"]);
+    assert.deepEqual([...seen.keys()].sort(), ["mac-dmg", "sums", "win-x64"]);
   }
 });
 
@@ -163,4 +163,35 @@ test("drafts and prereleases stay out of the archive too", () => {
     { tag_name: "v0.18.0-rc1", draft: false, prerelease: true, assets: [{ name: "dbboard-desktop_0.18.0_x64-setup.exe" }] },
   ];
   assert.deepEqual(archiveOf(releases, latestOf(releases)).map((r) => r.tag_name), []);
+});
+
+test("Windows x64 and ARM64 installers each get their own slot", () => {
+  // From v0.20.0 a release carries a setup .exe per Windows architecture. One
+  // shared slot would offer whichever the API listed last, so an ARM laptop
+  // could be handed the x64 build or the other way round.
+  assert.equal(bucketFor("dbboard_0.20.0_x64-setup.exe"), "win-x64");
+  assert.equal(bucketFor("dbboard_0.20.0_arm64-setup.exe"), "win-arm64");
+  assert.equal(bucketFor("dbboard_0.20.0_arm64-setup.exe.sig"), null);
+  assert.equal(bucketFor("dbboard-mcp-windows-aarch64.exe"), null);
+});
+
+test("a release with both Windows builds claims each slot once", () => {
+  const v020 = [
+    "dbboard_0.20.0_x64-setup.exe",
+    "dbboard_0.20.0_arm64-setup.exe",
+    "dbboard_0.20.0_universal.dmg",
+    "dbboard-mcp-windows-x86_64.exe",
+    "dbboard-mcp-windows-aarch64.exe",
+    "SHA256SUMS.txt",
+  ];
+  for (const order of [v020, [...v020].reverse()]) {
+    const seen = new Map();
+    for (const name of order) {
+      const b = bucketFor(name);
+      if (!b) continue;
+      assert.equal(seen.has(b), false, `bucket ${b} claimed twice by ${name}`);
+      seen.set(b, name);
+    }
+    assert.deepEqual([...seen.keys()].sort(), ["mac-dmg", "sums", "win-arm64", "win-x64"]);
+  }
 });
