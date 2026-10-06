@@ -14516,3 +14516,58 @@ connectable, and the screen had to show where a query would run.
   clicked runs in `postgres`, and the toolbar says "the default database".
 - MongoDB and D1 remain for a later slot. Each needs its own way of opening a
   database, which this step does not touch.
+## ADR-0164 — Windows ARM64 builds ship with every release, built on ARM (2026-10-06)
+
+**Status.** Accepted. Amends ADR-0044 (release CI) and ADR-0047 (download
+page).
+
+**Context.** Up to v0.19.0 a release carried one Windows desktop installer
+(`_x64-setup.exe`) and one Windows MCP binary (`dbboard-mcp-windows-x86_64.exe`).
+Windows on ARM (Snapdragon laptops, for example) could not install either
+natively. The maintainer decided that dbboard ships an ARM64 Windows build
+every time. That is not left to a release-by-release judgement, because ARM
+is where Windows hardware is heading. A sibling project hit the same gap and
+documented three failures worth avoiding.
+
+**Decision.**
+
+- **Two Windows machines, not a cross-compile.** The Windows desktop and MCP
+  jobs became a matrix: x64 on `windows-latest`, ARM64 on `windows-11-arm`.
+  Each builds for its own architecture. Building natively avoids the separate
+  cross toolchains a Tauri bundle and its WebView2 bootstrap would need.
+- **Names carry the architecture.** Tauri names the NSIS bundle after the
+  machine (`dbboard_<v>_x64-setup.exe`, `dbboard_<v>_arm64-setup.exe`). The MCP
+  binary follows the Rust name it already used
+  (`dbboard-mcp-windows-x86_64.exe`, `dbboard-mcp-windows-aarch64.exe`).
+- **Everything downstream picks by name, never "the first one".** The updater
+  manifest gains a `windows-aarch64` entry pointing at the ARM64 installer. The
+  download page gives each architecture its own slot (`win-x64`, `win-arm64`)
+  and its own button. With a single slot, whichever installer the API listed
+  last would win, and an ARM laptop could be offered the x64 build.
+- **The ARM machine gets rustup if it lacks it**, with no toolchain, so
+  `rust-toolchain.toml` selects the same pinned compiler as on x64. No pnpm
+  workaround: the ARM-only optional packages install normally. They sit under
+  `node_modules/.pnpm`, not at the top level, which is what made them look
+  missing in the report that first suggested a `--force` reinstall.
+- **The download page does not guess the architecture.** It names both
+  buttons. Browsers do not reliably report Windows on ARM, and the wrong
+  installer fails to start.
+
+**Alternatives.**
+
+- **Cross-compile ARM64 on the x64 machine.** One machine is cheaper, but the
+  bundle step and its prerequisites would each need an ARM64 cross setup, and
+  a sibling project found native builds simpler to keep working.
+- **One "universal" Windows installer.** NSIS has no fat-binary form like
+  macOS's universal `.dmg`, so this would mean an installer that carries both
+  builds and picks at install time. That is more moving parts than two files.
+
+**Consequences.**
+
+- Every release now builds on five machines. The ARM64 job is the one most
+  likely to break on a runner-image change, so its first run is on a branch,
+  via `workflow_dispatch`, before a release depends on it.
+- Release builds run no tests, so the time-zone pitfall the sibling project
+  hit (a West-coast runner turning a JST date into the previous day) does not
+  apply to this workflow. If tests ever run on the ARM machine, dates have to
+  come from that machine's own time zone.

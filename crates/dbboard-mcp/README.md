@@ -7,7 +7,8 @@ Code — as a small tool surface, served over stdio.
 
 dbboard is free and open source.
 
-> **Get the server:** download `dbboard-mcp-windows-x86_64.exe` or
+> **Get the server:** download `dbboard-mcp-windows-x86_64.exe`,
+> `dbboard-mcp-windows-aarch64.exe` (Windows on ARM) or
 > `dbboard-mcp-macos-universal` from the
 > **[latest release](https://github.com/meta-taro/dbboard/releases/latest)**,
 > then register it in one line — see [Install](#install) and

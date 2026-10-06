@@ -30,7 +30,11 @@ export function bucketFor(name) {
   // thing standing between "the current client" and "the one that no longer
   // ships".
   if (!n.startsWith("dbboard-desktop") && !n.startsWith("dbboard_")) return null;
-  if (n.endsWith("-setup.exe")) return "win-setup";
+  // One slot per Windows architecture (from v0.20.0 both ship). Tauri names
+  // the NSIS bundle after the build machine: `_x64-setup.exe` on x64,
+  // `_arm64-setup.exe` on ARM64. Every release before ARM64 existed is x64.
+  if (n.endsWith("_arm64-setup.exe")) return "win-arm64";
+  if (n.endsWith("-setup.exe")) return "win-x64";
   if (n.endsWith(".dmg")) return "mac-dmg";
   return null;
 }
@@ -61,7 +65,7 @@ export function archiveOf(releases, latest) {
     if (latest && r.tag_name === latest.tag_name) return false;
     return (r.assets || []).some((a) => {
       const b = bucketFor((a && a.name) || "");
-      return b === "win-setup" || b === "mac-dmg";
+      return b === "win-x64" || b === "win-arm64" || b === "mac-dmg";
     });
   });
 }
@@ -126,7 +130,8 @@ function renderArchive(releases) {
     tr.append(v);
 
     const win = document.createElement("td");
-    if (assets["win-setup"]) win.append(dlLink("Windows .exe", assets["win-setup"], true));
+    if (assets["win-x64"]) win.append(dlLink("Windows x64", assets["win-x64"], true));
+    if (assets["win-arm64"]) win.append(" ", dlLink("Windows ARM64", assets["win-arm64"], true));
     tr.append(win);
 
     const mac = document.createElement("td");
@@ -163,8 +168,13 @@ async function boot() {
       rel.tag_name ? `— ${rel.tag_name}` : "";
 
     const cards = document.getElementById("cards");
-    if (assets["win-setup"]) {
-      cards.append(dlButton("Windows (.exe)", assets["win-setup"], true));
+    // Named by architecture rather than guessed: a browser does not reliably
+    // say whether Windows runs on ARM, and the wrong installer fails to start.
+    if (assets["win-x64"]) {
+      cards.append(dlButton("Windows x64 (.exe)", assets["win-x64"], true));
+    }
+    if (assets["win-arm64"]) {
+      cards.append(dlButton("Windows ARM64 (.exe)", assets["win-arm64"], true));
     }
     if (assets["mac-dmg"]) {
       // Both platforms are equally the way in; neither is the fallback. The
