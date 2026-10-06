@@ -105,13 +105,6 @@ jobs:
       - name: Install frontend deps
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      # On ARM64 Windows, pnpm has been seen to skip the ARM-only optional
-      # packages (@rollup/rollup-win32-arm64-msvc, @tauri-apps/cli-win32-arm64-msvc)
-      # even though the lockfile lists them. A forced reinstall fetches them.
-      - name: Reinstall platform packages (ARM64)
-        if: matrix.arch == 'arm64'
-        working-directory: apps/desktop
-        run: pnpm install --frozen-lockfile --force
       # `pnpm tauri build` runs the pinned @tauri-apps/cli devDep. With the
       # signing env set + createUpdaterArtifacts, the NSIS setup .exe lands in
       # the workspace target/ alongside its `.exe.sig`.

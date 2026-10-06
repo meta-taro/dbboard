@@ -14487,10 +14487,11 @@ documented three failures worth avoiding.
   download page gives each architecture its own slot (`win-x64`, `win-arm64`)
   and its own button. With a single slot, whichever installer the API listed
   last would win, and an ARM laptop could be offered the x64 build.
-- **The ARM machine is set up defensively.** rustup is installed if absent,
-  with no toolchain, so `rust-toolchain.toml` selects the same pinned compiler
-  as on x64. pnpm is re-run with `--force`, because on ARM64 Windows it has
-  been seen to skip the ARM-only optional packages the lockfile lists.
+- **The ARM machine gets rustup if it lacks it**, with no toolchain, so
+  `rust-toolchain.toml` selects the same pinned compiler as on x64. No pnpm
+  workaround: the ARM-only optional packages install normally. They sit under
+  `node_modules/.pnpm`, not at the top level, which is what made them look
+  missing in the report that first suggested a `--force` reinstall.
 - **The download page does not guess the architecture.** It names both
   buttons. Browsers do not reliably report Windows on ARM, and the wrong
   installer fails to start.
