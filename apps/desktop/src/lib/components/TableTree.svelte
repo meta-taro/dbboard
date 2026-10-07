@@ -8,7 +8,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import type { TableInfo } from '$lib/api';
-  import { groupTables } from '$lib/sidebar/tree';
+  import { groupTables, repeatsItsDatabase } from '$lib/sidebar/tree';
 
   interface Props {
     tables: TableInfo[];
@@ -39,7 +39,7 @@
 
 {#if groups.length <= 1}
   {#each tables as t (`${t.schema ?? ''}.${t.name}`)}
-    {@render row(t, true, database)}
+    {@render row(t, !repeatsItsDatabase(t, database), database)}
   {/each}
 {:else}
   {#each groups as g (g.name ?? '')}

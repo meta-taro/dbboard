@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TableInfo } from '$lib/api';
-import { groupTables } from './tree';
+import { groupTables, repeatsItsDatabase } from './tree';
 
 const t = (schema: string | null, name: string): TableInfo => ({ schema, name });
 
@@ -27,5 +27,19 @@ describe('groupTables', () => {
 
   it('returns nothing for nothing', () => {
     expect(groupTables([])).toEqual([]);
+  });
+});
+
+describe('repeatsItsDatabase', () => {
+  // Inside a MySQL database node the schema *is* the database, so `shop.orders`
+  // under `shop` says the same thing twice.
+  it('is true when a table sits under a database of the same name', () => {
+    expect(repeatsItsDatabase(t('shop', 'orders'), 'shop')).toBe(true);
+  });
+
+  // A Postgres schema is a level of its own and still worth naming.
+  it('is false for a schema inside a database, or with no database level', () => {
+    expect(repeatsItsDatabase(t('public', 'orders'), 'shop')).toBe(false);
+    expect(repeatsItsDatabase(t('shop', 'orders'), null)).toBe(false);
   });
 });
