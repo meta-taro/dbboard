@@ -80,6 +80,14 @@ describe('DSN_FIELDS', () => {
 });
 
 describe('composeDsn', () => {
+  // No trailing `/` for a blank database: `mysql://h:3306/` reads as "the
+  // database named empty string" to anyone looking at it, which it is not.
+  it('omits the database path when it is blank', () => {
+    expect(composeDsn('mysql', parts({ db_name: '', db_password: '' }))).toBe(
+      'mysql://app@db.internal:3306',
+    );
+  });
+
   it('builds a MySQL URL with the default port when the port is blank', () => {
     expect(composeDsn('mysql', parts())).toBe('mysql://app:secret@db.internal:3306/shop');
   });
@@ -295,6 +303,25 @@ describe('validateDsn', () => {
 
   it('reports every blank required field', () => {
     expect(validateDsn(emptyDsnParts())).toEqual(['db_host', 'db_user', 'db_name']);
+  });
+
+  // docs/every-database.md: a MySQL account is not scoped to one database. Blank means
+  // "every database this account can read", which the adapter now lists.
+  it('lets a MySQL connection leave the database blank', () => {
+    expect(validateDsn(parts({ db_name: '' }), 'mysql')).toEqual([]);
+  });
+
+  // ADR-0162: a Postgres-family connection saved without a database opens the
+  // maintenance database and lists the rest, so blank is a complete answer.
+  it('lets a Postgres-family connection leave the database blank', () => {
+    for (const kind of ['postgres', 'neon', 'supabase'] as const) {
+      expect(validateDsn(parts({ db_name: '' }), kind)).toEqual([]);
+    }
+  });
+
+  // Aurora DSQL has one fixed database; there is nothing to list instead.
+  it('still requires a database for Aurora DSQL', () => {
+    expect(validateDsn(parts({ db_name: '' }), 'aurora_dsql')).toEqual(['db_name']);
   });
 
   // Blank is legal (a MySQL account may have no password) and means exactly

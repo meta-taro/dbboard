@@ -158,6 +158,31 @@ pub trait DatabaseAdapter: Send + Sync {
         ))
     }
 
+    /// The databases this connection's credentials can reach, by name, in
+    /// name order (ADR-0162, docs/every-database.md).
+    ///
+    /// For an engine where one connection sees several databases at once
+    /// (MySQL) this is what the account may read. For one where a connection
+    /// is bound to a single database (the Postgres family) it is the databases
+    /// the same credentials could connect to; opening one is the caller's job.
+    /// The server's own bookkeeping databases are left out.
+    ///
+    /// The default returns [`DbError::Capability`]: most engines hold exactly
+    /// one database per connection, and "no databases" would misread as an
+    /// empty server. Implementors must also flip
+    /// [`Capabilities::has_list_databases`].
+    ///
+    /// # Errors
+    ///
+    /// Any error the underlying catalog query surfaces.
+    ///
+    /// [`Capabilities::has_list_databases`]: crate::Capabilities::has_list_databases
+    async fn list_databases(&self) -> DbResult<Vec<String>> {
+        Err(DbError::Capability(
+            "list_databases not supported by this adapter".into(),
+        ))
+    }
+
     /// Execute one write/DDL statement, returning the number of rows it
     /// affected (0 for DDL). This is the per-statement primitive the
     /// restore/import path (ADR-0051) drives — unlike [`query`](Self::query),
@@ -278,6 +303,7 @@ mod tests {
                 has_atomic_restore: true,
                 has_foreign_keys: true,
                 has_list_indexes: true,
+                has_list_databases: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -385,6 +411,20 @@ mod tests {
         assert!(adapter.auth().is_some());
         assert!(adapter.storage().is_some());
         assert!(adapter.realtime().is_some());
+    }
+
+    /// Most engines hold one database per connection (docs/every-database.md),
+    /// so an adapter that does not say otherwise cannot list more than one.
+    /// That is a capability miss, not an empty list: "no databases" would read
+    /// as a server with nothing on it.
+    #[tokio::test]
+    async fn default_list_databases_surfaces_capability_error() {
+        let err = NoopAdapter.list_databases().await.unwrap_err();
+        assert!(matches!(err, DbError::Capability(_)));
+        assert_eq!(
+            err.message(),
+            "list_databases not supported by this adapter"
+        );
     }
 
     #[tokio::test]

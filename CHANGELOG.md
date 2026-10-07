@@ -9,6 +9,42 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-10-07 — Every database the connection can see
+
+### Added
+
+- **Windows on ARM gets native builds.** Every release now carries
+  `dbboard_<version>_arm64-setup.exe` and `dbboard-mcp-windows-aarch64.exe`
+  alongside the x64 ones, built on an ARM64 machine rather than
+  cross-compiled. The auto-updater serves ARM machines their own build, and
+  the download page offers x64 and ARM64 as separate buttons.
+
+- **A MySQL connection can leave the database blank, and then lists every
+  database the account can read.** An account was never scoped to one
+  database, but dbboard listed only the default one and the form insisted on
+  a name. That hid a worse fact: without a name the list came back empty,
+  with no error. The server's own databases (`mysql`, `information_schema`,
+  `performance_schema`, `sys`) are left out. A connection that names a
+  database behaves exactly as before.
+- **The sidebar shows tables as a tree, grouped by database or schema.** A
+  connection that only ever had one database or schema still gets the flat
+  list it had. Groups start open and fold on a click. Postgres connections
+  with several schemas now show each schema as a group instead of a
+  `schema.table` prefix on every row.
+- **Adapters can list the databases a connection can reach**, and
+  `/capabilities` gains `has_list_databases`. MySQL lists every database the
+  account can see, including ones with no tables yet. Postgres, Neon and
+  Supabase list the databases this login may connect to. The desktop app
+  can ask already; the tree uses it in a later step.
+- **A Postgres, Neon or Supabase connection can leave the database blank, and
+  then shows every database the login may open**, each one connecting the
+  first time it is expanded. Inside a database, tables are grouped by schema
+  as before. Clicking a table points browsing, queries, structure and edits
+  at its database, and the query toolbar says where a query will run. A
+  connection saved with a database looks exactly as it did. Inside a MySQL
+  database node, tables are listed by name alone; the database is the schema
+  there, so `shop.orders` under `shop` would say `shop` twice.
+
 ## [0.19.0] — 2026-10-04 — The measurement nobody has taken
 
 ### Added

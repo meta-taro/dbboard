@@ -8,8 +8,10 @@
 
 use dbboard_core::{CellValue, RowKey, SchemaDiff, TableInfo, TableSchema, UpdatePlan, Value};
 use dbboard_mcp::service::{
-    AnnotationsView, ConnectionView, QueryOutput, RelationshipView, SchemaSearchView,
+    AnnotationsView, ConnectionView, DatabaseListing, QueryOutput, RelationshipView,
+    SchemaSearchView,
 };
+use dbboard_mcp::target::Target;
 
 use crate::{lock_poisoned, none_if_blank, AppState};
 
@@ -34,10 +36,28 @@ pub(crate) async fn list_connections(
 pub(crate) async fn list_tables(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162). Absent or blank means
+    // the one the connection was saved with.
+    database: Option<String>,
 ) -> Result<Vec<TableInfo>, String> {
     state
         .service
-        .list_tables(&connection_id)
+        .list_tables(Target::new(&connection_id, database.as_deref()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// What a connection was saved with and the databases it could switch to
+/// (ADR-0162). The sidebar draws a database level only for a connection saved
+/// with no database whose engine lists several.
+#[tauri::command]
+pub(crate) async fn list_databases(
+    state: tauri::State<'_, AppState>,
+    connection_id: String,
+) -> Result<DatabaseListing, String> {
+    state
+        .service
+        .database_listing(&connection_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -49,12 +69,19 @@ pub(crate) async fn list_tables(
 pub(crate) async fn describe_table(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162). Absent or blank means
+    // the one the connection was saved with.
+    database: Option<String>,
     schema: Option<String>,
     table: String,
 ) -> Result<TableSchema, String> {
     state
         .service
-        .describe_table(&connection_id, schema.as_deref(), &table)
+        .describe_table(
+            Target::new(&connection_id, database.as_deref()),
+            schema.as_deref(),
+            &table,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -140,11 +167,13 @@ pub(crate) async fn diff_schemas(
 pub(crate) async fn search_schema(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162); absent means its own.
+    database: Option<String>,
     pattern: String,
 ) -> Result<SchemaSearchView, String> {
     state
         .service
-        .search_schema(&connection_id, &pattern)
+        .search_schema(Target::new(&connection_id, database.as_deref()), &pattern)
         .await
         .map_err(|e| e.to_string())
 }
@@ -156,11 +185,16 @@ pub(crate) async fn search_schema(
 pub(crate) async fn list_relationships(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162); absent means its own.
+    database: Option<String>,
     table: Option<String>,
 ) -> Result<RelationshipView, String> {
     state
         .service
-        .list_relationships(&connection_id, table.as_deref())
+        .list_relationships(
+            Target::new(&connection_id, database.as_deref()),
+            table.as_deref(),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -172,12 +206,19 @@ pub(crate) async fn list_relationships(
 pub(crate) async fn run_read_query(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162). Absent or blank means
+    // the one the connection was saved with.
+    database: Option<String>,
     sql: String,
     max_rows: Option<usize>,
 ) -> Result<QueryOutput, String> {
     state
         .service
-        .run_read_query(&connection_id, &sql, max_rows)
+        .run_read_query(
+            Target::new(&connection_id, database.as_deref()),
+            &sql,
+            max_rows,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -196,13 +237,21 @@ pub(crate) async fn run_read_query(
 pub(crate) async fn browse_page(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162). Absent or blank means
+    // the one the connection was saved with.
+    database: Option<String>,
     table: TableInfo,
     page_rows: Option<usize>,
     after: Option<Vec<Value>>,
 ) -> Result<QueryOutput, String> {
     state
         .service
-        .browse_page(&connection_id, &table, page_rows, after.as_deref())
+        .browse_page(
+            Target::new(&connection_id, database.as_deref()),
+            &table,
+            page_rows,
+            after.as_deref(),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -248,6 +297,9 @@ pub(crate) struct CellEditInput {
 pub(crate) async fn update_row(
     state: tauri::State<'_, AppState>,
     connection_id: String,
+    // The database within the connection (ADR-0162). Absent or blank means
+    // the one the connection was saved with.
+    database: Option<String>,
     schema: Option<String>,
     table: String,
     key: Vec<KeyColumnInput>,
@@ -272,7 +324,7 @@ pub(crate) async fn update_row(
     };
     let affected = state
         .service
-        .apply_row_update(&connection_id, &plan)
+        .apply_row_update(Target::new(&connection_id, database.as_deref()), &plan)
         .await
         .map_err(|e| e.to_string())?;
     match affected {

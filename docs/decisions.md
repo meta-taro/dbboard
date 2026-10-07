@@ -14332,3 +14332,242 @@ the fix is shared across all of them, not invented here.
   or due to move into `docs/`.
 - Moving between machines no longer carries the handoff notes with the
   clone. The private notes repository is what replaces that.
+## ADR-0161 — A connection is not one database, and the table list is a tree (2026-09-28)
+
+**Status.** Accepted. First step of [`every-database.md`](every-database.md) (slot v0.20).
+
+**Context.** The maintainer, writing a MySQL connection by hand, asked why a
+database name was required. Nobody had decided that. The form's check
+(`validateDsn`) came over from the first adapter and applied to every
+URL-shaped engine. The MySQL adapter listed tables `WHERE table_schema =
+DATABASE()`, with a comment saying "`MySQL` scopes tables to a single database
+per connection". That is not true: an account sees every database it has
+privileges on. Without a default database, `DATABASE()` is NULL, the comparison
+is never true, and the list comes back **empty, with no error**. The required
+field was what hid this.
+
+The maintainer asked for a tree across every engine that can see more than
+one database, and turned down a MySQL-only version.
+
+**Decision.** Step one, MySQL, and the tree every later step reuses:
+
+- **MySQL lists every database the account can read when no default is
+  set.** One static statement: `table_schema = DATABASE() OR (DATABASE() IS
+  NULL AND table_schema NOT IN (<system databases>))`. A connection with a
+  default database lists that database, as before.
+- **The server's own databases are left out** of the wide listing (`mysql`,
+  `information_schema`, `performance_schema`, `sys`). A connection whose
+  default is one of them still lists it, because then someone asked for it by
+  name.
+- **The database becomes optional in the form for MySQL only**
+  (`databaseIsOptional`). A hint under the field says what blank means, since
+  blank used to be an error. A blank database writes no path at all
+  (`mysql://u@h:3306`) rather than a trailing `/`. Postgres-wire kinds still
+  require one until they can open a pool per database (step two).
+- **The sidebar groups tables by `TableInfo.schema`** (`TableTree.svelte`,
+  `groupTables`). That field already carried MySQL's database name and
+  Postgres's schema, so no contract changes. **One group is drawn flat**,
+  exactly as before. Groups start open, because a Postgres connection with two
+  schemas used to show every table.
+
+**Alternatives.**
+
+- **List databases with `SHOW DATABASES` and tables per database on expand.**
+  This is the shape Postgres will need, but MySQL can answer the whole tree in
+  one query on one connection. Two round trips per database would buy nothing
+  here.
+- **Keep the database required and add a "browse all" switch.** A second way
+  to say the same thing, and the required field would go on hiding the empty
+  list for anyone who pastes a URL without a path.
+- **Groups collapsed by default.** Tidier for a server with forty databases,
+  but a regression for every Postgres connection with more than one schema.
+  The count on each header already says where the tables are.
+
+**Consequences.**
+
+- **Hand-written SQL on a MySQL connection with no default database** must
+  qualify tables (`shop.orders`). A bare name gets the server's own "No
+  database selected". Choosing a default per query tab is a separate design:
+  `USE` on a pool of five connections lands on one of them.
+- **Postgres connections with several schemas now show them as groups**
+  instead of a flat `schema.table` list. Same tables, one level deeper.
+- Table-level actions (browse, structure, DDL, write-back) already qualify by
+  `TableInfo.schema`, so they work on any listed database without a default.
+
+## ADR-0162 — An adapter can list the databases its connection can reach (2026-10-05)
+
+**Status.** Accepted. Second step of [`every-database.md`](every-database.md)
+(slot v0.20). Extends ADR-0012 (optional capabilities) and ADR-0161.
+
+**Context.** ADR-0161 let a MySQL connection without a default database list
+every table it can read, grouped by database. That covers MySQL because one
+MySQL connection sees all of its databases at once. It leaves two gaps:
+
+- **A MySQL database with no tables never appears.** The tree is built from
+  table rows, and an empty database has none.
+- **A Postgres connection is bound to one database.** It sees every schema in
+  that database and nothing in any other. Showing the rest means first knowing
+  their names, and then opening a connection to whichever one is expanded.
+
+Both need the same primitive: "which databases can these credentials reach?"
+
+**Decision.**
+
+- **`DatabaseAdapter::list_databases() -> Vec<String>`**, names in name order,
+  plus a `has_list_databases` capability flag. The default returns
+  `DbError::Capability`, because most engines hold exactly one database per
+  connection and an empty list would read as an empty server. The flag is
+  additive on `/capabilities` and older payloads still parse.
+- **MySQL** reads `information_schema.schemata`, leaving out `mysql`,
+  `information_schema`, `performance_schema` and `sys`, the same set as the
+  table listing.
+- **The Postgres family** (Postgres, Neon, Supabase) reads `pg_database`, and
+  keeps only databases that are not templates, allow connections, and grant
+  this role `CONNECT`. On a shared server that keeps the list to what this
+  person can actually open. **Aurora DSQL** has one fixed database, so the
+  flag is off there and the call is a capability miss.
+- **The service and the desktop app expose it as is** (`list_databases`). They
+  do not decide whether to draw a database level. The UI does that from the
+  connection (blank database means show them all, a named one means only that
+  one), as `every-database.md` describes.
+
+**How the next steps address a database** (decided here, built next):
+
+- **An explicit, optional `database` argument** on the calls that touch a
+  table (list, describe, run, browse, write-back), rather than a database name
+  folded into the connection id. The HTTP contract freezes at v1.0. An
+  optional parameter can be added without breaking anything, but a special
+  id format would be frozen along with the contract.
+- **A pool per (connection, database), opened when the database is first
+  used**, which in practice means when it is expanded in the tree. Listing
+  fifty databases opens no pools.
+
+**Alternatives.**
+
+- **Fold the database into the connection id** (`<id><sep><db>`), so every
+  existing command works unchanged. It is the smallest change, but the id is a
+  free-form string with no reserved characters, so any separator could collide
+  with a real id, and the format would become part of the frozen contract.
+- **Return an empty list instead of a capability error.** Simpler for callers,
+  but "zero databases" and "this engine does not have several" would look the
+  same, and the second is by far the common case.
+
+**Consequences.**
+
+- `list_databases` is reachable from the desktop app now. The HTTP and MCP
+  surfaces gain it alongside the `database` argument, before v1.0.
+- Neither MySQL's grouping nor any existing call changes: this step only adds
+  a call.
+
+## ADR-0163 — A Postgres connection saved without a database shows every database it can open (2026-10-06)
+
+**Status.** Accepted. Fourth step of [`every-database.md`](every-database.md)
+(slot v0.20). Builds on ADR-0161 (the tree) and ADR-0162 (listing databases,
+and naming one per call).
+
+**Context.** With ADR-0162 the backend can list a server's databases and run
+any table-level call in one of them. Three things were still missing before a
+person could see the result: the UI had to tell a connection saved *with* a
+database from one saved without, a Postgres URL with no database had to be
+connectable, and the screen had to show where a query would run.
+
+**Decision.**
+
+- **The service remembers which database a connection resolved to.** It reads
+  it off the config when it builds the adapter, because that is the only time
+  the secret URL is in hand. `list_databases` on the desktop now returns that
+  name together with the list (`DatabaseListing`). A connection saved with a
+  database returns no list, so **it looks exactly as before**.
+- **A Postgres-family connection saved without a database opens the
+  `postgres` maintenance database** (`with_listing_default`). Given no
+  database, a Postgres server falls back to one named after the user, which
+  rarely exists. `postgres` does on a self-hosted server, Neon and Supabase.
+  The saved name is read before this default is applied, so the connection
+  still reports "saved without a database".
+- **The sidebar draws a database level** (`DatabaseTree`) only when the
+  connection was saved without a database and can see more than one
+  (`drawsDatabaseLevel`). Databases start closed: opening one is what connects
+  to it, and a server can list dozens. Inside, tables are grouped by schema
+  exactly as a single-database connection's are.
+- **The database last clicked in the tree is where table-level calls go**
+  (`workspace.database`): browse, run, describe, structure, relationships,
+  search and write-back. A result keeps the database it was read from, so
+  paging and edits go back to the same place even after another database is
+  clicked. The query toolbar shows the target ("Runs in …") whenever the tree
+  has a database level.
+- **The form lets Postgres, Neon and Supabase leave the database blank**, as
+  MySQL already could. Aurora DSQL still requires it.
+
+**Alternatives.**
+
+- **Always draw every database for Postgres, with the saved one first.** That
+  is simpler, but it changes how every existing Postgres connection looks, and
+  `every-database.md` promised it would not.
+- **Pick a database per query tab.** More flexible, but it needs a tab model
+  the query panel does not have. Following the tree click needs nothing new and
+  covers the common case. The toolbar label makes the target visible.
+- **Use `template1` as the maintenance database.** It exists everywhere, but it
+  is the template new databases are copied from. Connecting to it blocks
+  `CREATE DATABASE` for as long as the connection is open.
+
+**Consequences.**
+
+- On a connection saved without a database, a query typed before any table is
+  clicked runs in `postgres`, and the toolbar says "the default database".
+- MongoDB and D1 remain for a later slot. Each needs its own way of opening a
+  database, which this step does not touch.
+## ADR-0164 — Windows ARM64 builds ship with every release, built on ARM (2026-10-06)
+
+**Status.** Accepted. Amends ADR-0044 (release CI) and ADR-0047 (download
+page).
+
+**Context.** Up to v0.19.0 a release carried one Windows desktop installer
+(`_x64-setup.exe`) and one Windows MCP binary (`dbboard-mcp-windows-x86_64.exe`).
+Windows on ARM (Snapdragon laptops, for example) could not install either
+natively. The maintainer decided that dbboard ships an ARM64 Windows build
+every time. That is not left to a release-by-release judgement, because ARM
+is where Windows hardware is heading. A sibling project hit the same gap and
+documented three failures worth avoiding.
+
+**Decision.**
+
+- **Two Windows machines, not a cross-compile.** The Windows desktop and MCP
+  jobs became a matrix: x64 on `windows-latest`, ARM64 on `windows-11-arm`.
+  Each builds for its own architecture. Building natively avoids the separate
+  cross toolchains a Tauri bundle and its WebView2 bootstrap would need.
+- **Names carry the architecture.** Tauri names the NSIS bundle after the
+  machine (`dbboard_<v>_x64-setup.exe`, `dbboard_<v>_arm64-setup.exe`). The MCP
+  binary follows the Rust name it already used
+  (`dbboard-mcp-windows-x86_64.exe`, `dbboard-mcp-windows-aarch64.exe`).
+- **Everything downstream picks by name, never "the first one".** The updater
+  manifest gains a `windows-aarch64` entry pointing at the ARM64 installer. The
+  download page gives each architecture its own slot (`win-x64`, `win-arm64`)
+  and its own button. With a single slot, whichever installer the API listed
+  last would win, and an ARM laptop could be offered the x64 build.
+- **The ARM machine gets rustup if it lacks it**, with no toolchain, so
+  `rust-toolchain.toml` selects the same pinned compiler as on x64. No pnpm
+  workaround: the ARM-only optional packages install normally. They sit under
+  `node_modules/.pnpm`, not at the top level, which is what made them look
+  missing in the report that first suggested a `--force` reinstall.
+- **The download page does not guess the architecture.** It names both
+  buttons. Browsers do not reliably report Windows on ARM, and the wrong
+  installer fails to start.
+
+**Alternatives.**
+
+- **Cross-compile ARM64 on the x64 machine.** One machine is cheaper, but the
+  bundle step and its prerequisites would each need an ARM64 cross setup, and
+  a sibling project found native builds simpler to keep working.
+- **One "universal" Windows installer.** NSIS has no fat-binary form like
+  macOS's universal `.dmg`, so this would mean an installer that carries both
+  builds and picks at install time. That is more moving parts than two files.
+
+**Consequences.**
+
+- Every release now builds on five machines. The ARM64 job is the one most
+  likely to break on a runner-image change, so its first run is on a branch,
+  via `workflow_dispatch`, before a release depends on it.
+- Release builds run no tests, so the time-zone pitfall the sibling project
+  hit (a West-coast runner turning a JST date into the previous day) does not
+  apply to this workflow. If tests ever run on the ARM machine, dates have to
+  come from that machine's own time zone.

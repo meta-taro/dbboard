@@ -7,6 +7,8 @@
   import ConnectionManager from './ConnectionManager.svelte';
   import ConnectionMark from './ConnectionMark.svelte';
   import MarkPicker from './MarkPicker.svelte';
+  import TableTree from './TableTree.svelte';
+  import DatabaseTree from './DatabaseTree.svelte';
   import { tableMenuActions } from '$lib/sidebar/menu';
   import { compare } from '$lib/compare/compare.svelte';
   import { connectionTooltip } from '$lib/connections/label';
@@ -137,7 +139,7 @@
     searching = true;
     const timer = setTimeout(async () => {
       try {
-        const view = await searchSchema(connId, q);
+        const view = await searchSchema(connId, q, workspace.database);
         if (mine !== seq) return;
         matches = view.matches;
         searchError = '';
@@ -152,9 +154,12 @@
     return () => clearTimeout(timer);
   });
 
-  function isSelected(t: TableInfo): boolean {
+  // The same schema.table can exist in two databases (ADR-0162), so a row is
+  // selected only when its database is the one in use as well.
+  function isSelected(t: TableInfo, database: string | null = null): boolean {
     return (
       !!workspace.selectedTable &&
+      workspace.database === database &&
       workspace.key(workspace.selectedTable) === workspace.key(t)
     );
   }
@@ -248,6 +253,38 @@
     <line x1="2" y1="6.5" x2="14" y2="6.5" />
     <line x1="6.5" y1="6.5" x2="6.5" y2="13" />
   </svg>
+{/snippet}
+
+{#snippet tableRow(t: TableInfo, qualified: boolean, database: string | null)}
+  <button
+    type="button"
+    class="nav-row"
+    class:active={isSelected(t, database)}
+    onclick={() => {
+      workspace.useDatabase(database);
+      selectOrJump(t);
+    }}
+    oncontextmenu={(e) => {
+      workspace.useDatabase(database);
+      openMenu(e, t);
+    }}
+    title={workspace.key(t)}
+  >
+    {@render tableIcon()}
+    <span class="nav-name">
+      {#if qualified && t.schema}<span class="schema">{t.schema}.</span>{/if}{t.name}
+    </span>
+    {#if compare.marks.get(workspace.key(t))}
+      {@const mark = compare.marks.get(workspace.key(t))}
+      {#if mark === 'changed'}
+        <span class="diff-dot" title={i18n.t('compare-mark-changed')}></span>
+      {:else}
+        <span class="diff-side" title={i18n.t('compare-mark-one-side')}>
+          {mark === 'left-only' ? '◧' : '◨'}
+        </span>
+      {/if}
+    {/if}
+  </button>
 {/snippet}
 
 <aside class="sidebar" bind:this={sidebarEl}>
@@ -350,36 +387,14 @@
         {/if}
       </div>
       <div class="list">
-        {#if workspace.loadingTables}
+        {#if workspace.databases.length > 0}
+          <DatabaseTree row={tableRow} />
+        {:else if workspace.loadingTables}
           <p class="hint">{i18n.t('sidebar-loading')}</p>
         {:else if workspace.tables.length === 0}
           <p class="hint">{i18n.t('sidebar-tables-empty')}</p>
         {:else}
-          {#each workspace.tables as t (workspace.key(t))}
-            <button
-              type="button"
-              class="nav-row"
-              class:active={isSelected(t)}
-              onclick={() => selectOrJump(t)}
-              oncontextmenu={(e) => openMenu(e, t)}
-              title={workspace.key(t)}
-            >
-              {@render tableIcon()}
-              <span class="nav-name">
-                {#if t.schema}<span class="schema">{t.schema}.</span>{/if}{t.name}
-              </span>
-              {#if compare.marks.get(workspace.key(t))}
-                {@const mark = compare.marks.get(workspace.key(t))}
-                {#if mark === 'changed'}
-                  <span class="diff-dot" title={i18n.t('compare-mark-changed')}></span>
-                {:else}
-                  <span class="diff-side" title={i18n.t('compare-mark-one-side')}>
-                    {mark === 'left-only' ? '◧' : '◨'}
-                  </span>
-                {/if}
-              {/if}
-            </button>
-          {/each}
+          <TableTree tables={workspace.tables} row={tableRow} />
         {/if}
       </div>
     {:else}

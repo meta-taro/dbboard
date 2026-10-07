@@ -35,6 +35,7 @@ keychain.
 
 1. Download the MCP server from <https://meta-taro.github.io/dbboard/>
    (the *Releases* link) — `dbboard-mcp-windows-x86_64.exe` on Windows,
+   `dbboard-mcp-windows-aarch64.exe` on Windows on ARM,
    `dbboard-mcp-macos-universal` on macOS. It is a **separate download
    from the desktop app**; the installer does not contain it.
 

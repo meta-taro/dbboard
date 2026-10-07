@@ -11,13 +11,16 @@ import {
   connectionMarks,
   setConnectionMark,
   listConnections,
+  listDatabases,
   listTables,
   reconnectConnection,
   tableKey,
   type ConnectionMark,
   type ConnectionView,
   type TableInfo,
+  type DatabaseListing,
 } from '$lib/api';
+import { drawsDatabaseLevel } from './databases';
 import { BROWSE_ROWS } from '$lib/sidebar/menu';
 import { browseQuery, usesStructuredQuery } from '$lib/sql/build';
 import { latency, untilPainted } from '$lib/status/latency.svelte';
@@ -36,6 +39,20 @@ class Workspace {
   tables = $state<TableInfo[]>([]);
   selectedTable = $state<TableInfo | null>(null);
   activeTab = $state<MainTab>('query');
+
+  /** Databases drawn above the tables (ADR-0162). Empty means the flat list
+   *  every connection had before: one saved with a database, or an engine
+   *  that holds one. */
+  databases = $state<string[]>([]);
+  /** Tables of each database, loaded the first time it is opened. Opening is
+   *  what makes the backend connect to it, so fifty listed databases cost
+   *  nothing until someone looks inside one. */
+  databaseTables = $state<Record<string, TableInfo[]>>({});
+  loadingDatabases = $state<Record<string, boolean>>({});
+  /** Where table-level calls go: the database last clicked in the tree, or
+   *  null for the connection's own. Set by the sidebar on every table click so
+   *  a query never runs against a database other than the one in view. */
+  database = $state<string | null>(null);
 
   /** Populated whenever a load fails; surfaced by the shell, cleared on the
    *  next successful action. */
@@ -121,8 +138,32 @@ class Workspace {
     this.connectionId = id;
     this.selectedTable = null;
     this.tables = [];
+    this.databases = [];
+    this.databaseTables = {};
+    this.loadingDatabases = {};
+    this.database = null;
     this.error = '';
-    await this.#refreshTables();
+    await this.#loadTree();
+  }
+
+  /** Open one database of the tree, loading its tables the first time. */
+  async openDatabase(database: string): Promise<void> {
+    if (this.databaseTables[database] || this.loadingDatabases[database]) return;
+    this.loadingDatabases = { ...this.loadingDatabases, [database]: true };
+    try {
+      const tables = await listTables(this.connectionId, database);
+      this.databaseTables = { ...this.databaseTables, [database]: tables };
+    } catch (e) {
+      this.error = String(e);
+    } finally {
+      const { [database]: _, ...rest } = this.loadingDatabases;
+      this.loadingDatabases = rest;
+    }
+  }
+
+  /** Point table-level calls at `database` (null: the connection's own). */
+  useDatabase(database: string | null): void {
+    this.database = database;
   }
 
   /** Throw away the live connection and open a new one, then reload the table
@@ -141,7 +182,8 @@ class Workspace {
     try {
       await reconnectConnection(this.connectionId);
       this.error = '';
-      await this.#refreshTables();
+      this.databaseTables = {};
+      await this.#loadTree();
     } catch (e) {
       this.error = String(e);
     } finally {
@@ -188,6 +230,26 @@ class Workspace {
   /** Stable key for a table, used for list keying and equality. */
   key(table: TableInfo): string {
     return tableKey(table);
+  }
+
+  /** A database level when the connection can see several and was saved
+   *  without one; otherwise the table list, exactly as before. A failed
+   *  listing falls back to the table list, which reports its own error. */
+  async #loadTree(): Promise<void> {
+    if (!this.connectionId) return;
+    let listing: DatabaseListing | null = null;
+    try {
+      listing = await listDatabases(this.connectionId);
+    } catch {
+      listing = null;
+    }
+    if (listing && drawsDatabaseLevel(listing)) {
+      this.databases = listing.databases;
+      this.tables = [];
+      return;
+    }
+    this.databases = [];
+    await this.#refreshTables();
   }
 
   async #refreshTables(): Promise<void> {

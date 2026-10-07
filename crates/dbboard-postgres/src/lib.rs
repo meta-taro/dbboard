@@ -99,6 +99,16 @@ const LIST_TABLES_SQL: &str = "SELECT table_schema, table_name FROM information_
      AND table_type = 'BASE TABLE' \
      ORDER BY table_schema, table_name";
 
+/// Databases this login could open (ADR-0162). Templates are for `CREATE
+/// DATABASE`, not browsing; `datallowconn = false` refuses every connection;
+/// and a database without CONNECT for this role would only fail once expanded.
+/// The privilege check is what keeps a shared server's list to what this
+/// person can actually use.
+const LIST_DATABASES_SQL: &str = "SELECT datname FROM pg_database \
+     WHERE NOT datistemplate AND datallowconn \
+     AND has_database_privilege(datname, 'CONNECT') \
+     ORDER BY datname";
+
 /// Columns of one table in ordinal order (ADR-0028). Each text column is
 /// cast to `TEXT` so the `information_schema` domain types
 /// (`sql_identifier`, `character_data`, ...) decode as plain strings
@@ -532,6 +542,8 @@ impl DatabaseAdapter for PostgresAdapter {
             // per-statement, best-effort execution (ADR-0051). Every other
             // Postgres flavor has ordinary multi-statement transactions.
             has_atomic_restore: self.flavor != FLAVOR_AURORA_DSQL,
+            // Aurora DSQL has one database, fixed (ADR-0021): nothing to list.
+            has_list_databases: self.flavor != FLAVOR_AURORA_DSQL,
             ..Capabilities::default()
         }
     }
@@ -561,6 +573,28 @@ impl DatabaseAdapter for PostgresAdapter {
                 }
                 other => Err(DbError::Schema(format!(
                     "unexpected row shape from information_schema.tables: {other:?}"
+                ))),
+            })
+            .collect()
+    }
+
+    async fn list_databases(&self) -> DbResult<Vec<String>> {
+        if self.flavor == FLAVOR_AURORA_DSQL {
+            return Err(DbError::Capability(
+                "Aurora DSQL has a single database".into(),
+            ));
+        }
+        let result = self
+            .query(LIST_DATABASES_SQL)
+            .await
+            .map_err(reclassify_schema)?;
+        result
+            .rows
+            .iter()
+            .map(|row| match row.get(0) {
+                Some(Value::Text(name)) => Ok(name.clone()),
+                other => Err(DbError::Schema(format!(
+                    "unexpected row shape from pg_database: {other:?}"
                 ))),
             })
             .collect()
@@ -1330,6 +1364,7 @@ mod tests {
         assemble_foreign_keys, assemble_indexes, caps_with_cursor, classify_error,
         column_from_parts, harden_ssl_mode, read_only_preamble, reclassify_schema, truncate,
         tuple_to_table, FkRow, FLAVOR_AURORA_DSQL, FLAVOR_NEON, FLAVOR_POSTGRES, FLAVOR_SUPABASE,
+        LIST_DATABASES_SQL,
     };
     use dbboard_core::{DatabaseAdapter, DbError, ForeignKey, TableInfo};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
@@ -1392,6 +1427,40 @@ mod tests {
     /// is enough to read the adapter's static capability flags. It still
     /// needs a Tokio context to spawn the pool's background worker,
     /// hence `#[tokio::test]`.
+    /// A database list someone can act on (ADR-0162): template databases are
+    /// not for browsing, one that refuses connections cannot be opened, and
+    /// one this login lacks CONNECT on would only fail when expanded.
+    #[test]
+    fn listing_databases_skips_what_cannot_be_opened() {
+        assert!(LIST_DATABASES_SQL.contains("NOT datistemplate"));
+        assert!(LIST_DATABASES_SQL.contains("datallowconn"));
+        assert!(LIST_DATABASES_SQL.contains("has_database_privilege(datname, 'CONNECT')"));
+        assert!(LIST_DATABASES_SQL.contains("ORDER BY datname"));
+    }
+
+    /// Aurora DSQL has one database, fixed, so there is nothing to list. Every
+    /// other flavor can see the server's databases from one login.
+    #[tokio::test]
+    async fn every_flavor_but_dsql_can_list_databases() {
+        for (flavor, expected) in [
+            (FLAVOR_POSTGRES, true),
+            (FLAVOR_NEON, true),
+            (FLAVOR_SUPABASE, true),
+            (FLAVOR_AURORA_DSQL, false),
+        ] {
+            let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+            let adapter = super::PostgresAdapter {
+                pool: super::PoolHandle::Static(pool),
+                flavor,
+            };
+            assert_eq!(
+                adapter.capabilities().has_list_databases,
+                expected,
+                "{flavor}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn capabilities_advertise_describe_table() {
         let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
