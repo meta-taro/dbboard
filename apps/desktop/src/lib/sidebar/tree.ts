@@ -33,3 +33,13 @@ export function groupTables(tables: TableInfo[]): TableGroup[] {
     .sort(([a], [b]) => (a === null ? -1 : b === null ? 1 : byName(a, b)))
     .map(([name, list]) => ({ name, tables: list.sort((x, y) => byName(x.name, y.name)) }));
 }
+
+/**
+ * Whether a table's schema just repeats the database node it is drawn under
+ * (ADR-0163). In MySQL the database *is* the schema, so under a `shop` node
+ * `shop.orders` says `shop` twice; a Postgres schema inside a database is a
+ * level of its own and keeps its name.
+ */
+export function repeatsItsDatabase(table: TableInfo, database: string | null): boolean {
+  return database !== null && table.schema === database;
+}

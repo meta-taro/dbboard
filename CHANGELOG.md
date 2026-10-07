@@ -39,7 +39,9 @@ public API is the HTTP contract in
   first time it is expanded. Inside a database, tables are grouped by schema
   as before. Clicking a table points browsing, queries, structure and edits
   at its database, and the query toolbar says where a query will run. A
-  connection saved with a database looks exactly as it did.
+  connection saved with a database looks exactly as it did. Inside a MySQL
+  database node, tables are listed by name alone; the database is the schema
+  there, so `shop.orders` under `shop` would say `shop` twice.
 
 ## [0.19.0] — 2026-10-04 — The measurement nobody has taken
 
