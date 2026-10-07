@@ -25,7 +25,6 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.20** | Every database the connection can see | A connection stops meaning one database. The sidebar becomes a tree (database → schema → table), and the engines that can see more than one list them all: **MySQL** (every database the account may read, one connection), the **Postgres family** (every database on the server, a pool opened when one is expanded), **MongoDB**, and **D1** (every database the token can list). The database name becomes optional for those engines; a name keeps today's behaviour. Nobody decided a connection holds one database. It was an assumption, and the form's required field was hiding the empty list it produces ([the design note](every-database.md)). Placed before v1.0 because the HTTP contract freezes there |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
