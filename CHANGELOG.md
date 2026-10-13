@@ -7,7 +7,17 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Checksums that check
+
+### Fixed
+
+- **`SHA256SUMS.txt` verifies with `sha256sum -c` / `shasum -c` again on macOS
+  and Linux.** The lines written on the Windows build machines ended in a
+  carriage return, which the checker read as part of the file name, so every
+  Windows entry failed with "No such file" even though its hash was right. The
+  release now strips the carriage returns and checks its own list against the
+  files before publishing. Releases up to 0.20.0 have correct hashes; strip the
+  `\r` (`tr -d '\r'`) to verify them.
 
 ## [0.20.0] — 2026-10-07 — Every database the connection can see
 
