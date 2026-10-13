@@ -73,6 +73,25 @@ not a temp directory under your home. dbboard prints the resolved
 of a fresh profile is a screenshot of that path. On Windows the per-user temp
 directory contains the OS username, which is denylisted PII.
 
+## A Postgres server with several databases
+
+The README's screenshots show a sidebar of databases, schemas and tables, which
+a single SQLite file cannot. `shop-postgres.sql` builds that on a throwaway
+local Postgres: three databases (`shop`, `crm`, `analytics`), a `billing`
+schema next to `public`, and 180 orders between fictional customers. Every value
+comes from `generate_series`, so a rerun produces the same rows.
+
+```sh
+initdb -D /tmp/dbboard-demo/pg -U postgres --auth=trust
+pg_ctl -D /tmp/dbboard-demo/pg -o "-p 55432 -c listen_addresses=127.0.0.1" start
+psql -h 127.0.0.1 -p 55432 -U postgres -f scripts/demo-profile/shop-postgres.sql
+```
+
+Add it in the demo profile as a Postgres connection to `127.0.0.1:55432`, user
+`app`, password `app-local-test`, **Database** left blank and TLS disabled. The
+password is a throwaway for a server that listens on loopback only; it is not
+a secret and is written here on purpose.
+
 ## Before publishing anything captured here
 
 See [`docs/maintainer/screenshots.md`](../../docs/maintainer/screenshots.md).
