@@ -50,6 +50,15 @@ ignore = [
     { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102 via libsql/hyper-rustls 0.25: wildcard name-constraint bypass. Reachable but narrow; fixed only on 0.103, which rustls 0.22 cannot take. Revisit at every libsql bump" },
     # Unmaintained (not a vulnerability), same hyper-rustls 0.25 subtree.
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: unmaintained, via libsql/hyper-rustls 0.25 -> rustls-native-certs 0.7; moves when that subtree does" },
+    # rustls 0.22 itself, same subtree. The workspace's own rustls is on
+    # 0.23.46, which fixes all four of the 2026-10 advisories; these two IDs
+    # match only the 0.22 copy, which has no patched release. libsql 0.10.0
+    # still requires hyper-rustls 0.25, so a libsql bump does not clear them.
+    # Neither has anything to act on in that copy: libsql installs no custom
+    # session store, and rustls 0.22 offers no hybrid post-quantum group to be
+    # downgraded from.
+    { id = "RUSTSEC-2026-0346", reason = "rustls 0.22 via libsql/hyper-rustls 0.25: Debug of client session values shows secrets, reached only through a custom ClientSessionStore, which libsql does not install. 0.23 copy is patched" },
+    { id = "RUSTSEC-2026-0349", reason = "rustls 0.22 via libsql/hyper-rustls 0.25: key-share prediction downgrade to classical; 0.22 offers no post-quantum group, so there is nothing to downgrade from. 0.23 copy is patched" },
 
     # ---- h2 --------------------------------------------------------------
     #

@@ -19,6 +19,31 @@ public API is the HTTP contract in
   files before publishing. Releases up to 0.20.0 have correct hashes; strip the
   `\r` (`tr -d '\r'`) to verify them.
 
+### Security
+
+- **`rustls` moved to 0.23.46**, which fixes four advisories published
+  together:
+  [RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346)
+  (`Debug` output of client session values included TLS secrets),
+  [RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347)
+  (data buffered for an ECH connection was sent to the outer server after ECH
+  was rejected),
+  [RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348)
+  (Brotli certificate decompression could allocate up to 1 GiB before the
+  peer was authenticated) and
+  [RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349)
+  (an unauthenticated ServerHello could steer later connections to the same
+  host off post-quantum key exchange). This is the TLS under dbboard's own
+  outbound connections, and the fix was a lockfile move.
+
+  **The `rustls 0.22.4` that `libsql` pins is still in the tree**, and two of
+  the four, 0346 and 0349, name it too. That line has no patched release, and
+  `libsql` 0.10.0 still requires the same `hyper-rustls 0.25`, so moving
+  `libsql` up would not clear them. Neither is reachable there: the first
+  needs a custom session store, which `libsql` does not install, and the
+  second needs a post-quantum group to be downgraded from, which 0.22 never
+  offers. Both are recorded in `deny.toml` with those reasons.
+
 ## [0.20.0] — 2026-10-07 — Every database the connection can see
 
 ### Added
