@@ -25,12 +25,32 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
+| **v0.21** | History you can read | Read-only views of the history a versioned database already keeps ([ADR-0165](decisions.md)). A MySQL connection that turns out to be Dolt gains a commit log, a row's history, a diff between two commits with changed cells marked, and who last changed each row. Nothing writes: no commit, checkout or merge from dbboard in this slot. MariaDB system-versioned tables and branch switching wait for the next slot that has room |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
 Elasticsearch/OpenSearch, Oracle) hold no slot on purpose: each is additive
 and independent, so one ships in whichever release is open when it is
 finished. Demand decides the order, not this table.
+
+**Versioned databases** are on that list for the same reason: they are
+additive, and none of them holds a slot. They are grouped here because they
+share the history views that v0.21 introduces (ADR-0165), so each one is
+measured by whether those views work against it, not only by whether it
+connects. How each one is reached:
+
+| Database | What it keeps | Route into dbboard |
+|---|---|---|
+| Dolt | Commits, branches, merges, cell-level diffs | MySQL wire. Not a new adapter: v0.21 detects it on a MySQL connection |
+| MariaDB system-versioned tables | Every past version of a row | MySQL wire, through the existing MySQL / MariaDB adapter |
+| XTDB | Bitemporal history per record | PostgreSQL wire. Whether the shared pg-wire adapter is enough has to be checked before anything is built |
+| TerminusDB | History per fact, with branch and merge | Its own HTTP API. A new adapter |
+| Datomic | Immutable facts per attribute | Datalog, not SQL. A new adapter, read-only like the document stores |
+
+Neon branches are a different kind of history. They branch a whole database
+rather than tracking rows, and they are reached through Neon's management
+API rather than the connection. They belong with the Neon adapter, not in
+this table.
 
 MCP verbs hold no slot either, for the same reason and with one condition
 attached: a verb is additive only while it opens nothing an operator had not

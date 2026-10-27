@@ -14571,3 +14571,73 @@ documented three failures worth avoiding.
   hit (a West-coast runner turning a JST date into the previous day) does not
   apply to this workflow. If tests ever run on the ARM machine, dates have to
   come from that machine's own time zone.
+
+## ADR-0165 — dbboard reads the history a versioned database keeps, starting with Dolt (2026-10-27)
+
+**Status.** Proposed.
+
+**Context.** Some databases keep their own history of every change. Dolt
+speaks the MySQL wire protocol and adds commits, branches, merges and
+per-cell diffs, all exposed as SQL: `dolt_log`, `dolt_branches`,
+`dolt_diff_<table>`, `dolt_history_<table>`, `dolt_blame_<table>` and
+`dolt_commit_diff_<table>`, plus `active_branch()`. MariaDB's
+system-versioned tables keep every past version of a row and answer
+`FOR SYSTEM_TIME AS OF`. Both are reachable through the MySQL adapter
+today, so dbboard can already connect to them. What it cannot do is show
+that history as history: the tables come back as ordinary result grids,
+and the reader has to know the system-table names and write the diff
+query by hand.
+
+The question these databases answer is "when, by whom, and from what to
+what did this value change?" A raw grid does not answer that.
+
+**Decision.**
+
+- **Read only.** This slot shows history and never changes it. It does not
+  offer `CALL DOLT_COMMIT`, checkout, merge, reset or branch creation. A
+  history view that can also rewrite history needs its own permission
+  design first (ADR-0087), and that design comes later.
+- **Detection is by asking, not by naming.** A MySQL connection counts as
+  Dolt when the server answers Dolt's version function. A connection's
+  name or URL is never used to decide. Detection runs once per connection
+  open, and a failure means "plain MySQL", never an error on screen.
+- **Three views, shared with whatever comes next.**
+  - The commit log: who, when, and the message.
+  - One row's history: its value at each commit, newest first.
+  - A diff between two commits: rows marked added, modified or removed,
+    with each changed cell marked.
+
+  Each view is described in `dbboard-core` by what it shows, not by where
+  the data came from. MariaDB system versioning can fill the same row-history
+  view later without a second design.
+- **Who last changed this row** comes from `dolt_blame_<table>`. It is
+  offered only for tables with a primary key, because Dolt offers it only
+  for those.
+- **It is a capability, not a new adapter.** Dolt stays a MySQL
+  connection. The adapter reports that the connection can show history,
+  and the client shows the views only when it does.
+
+**Alternatives.**
+
+- **A separate Dolt adapter.** This would duplicate the MySQL adapter for
+  what is, on the wire, a MySQL server. It would also make the user choose
+  the right kind of connection up front, when the server can be asked
+  instead.
+- **Documenting the system tables and leaving it at that.** The history is
+  then reachable but not readable. This is the situation today.
+- **Writes in the same slot.** Committing and switching branches are the
+  obvious next step, but they open things no operator opened by hand.
+  Shipping the read side first also settles what the views look like
+  before anything can act through them.
+
+**Consequences.**
+
+- A MySQL connection opens with one extra round trip for detection.
+- Dolt's system-table names and columns become a dependency. CI runs no
+  live database today, so the views are tested against recorded Dolt
+  responses. Whether CI should also start a Dolt container, so that an
+  upstream rename turns a test red rather than a screen blank, is decided
+  when the views are built, not here.
+- MariaDB system-versioned tables are expected to reuse the row-history
+  view. If they turn out not to fit, this ADR is amended rather than worked
+  around.
