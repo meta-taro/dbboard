@@ -41,7 +41,7 @@ connects. How each one is reached:
 
 | Database | What it keeps | Route into dbboard |
 |---|---|---|
-| Dolt | Commits, branches, merges, cell-level diffs | MySQL wire. Not a new adapter: v0.21 detects it on a MySQL connection |
+| Dolt | Commits, branches, merges, cell-level diffs | MySQL wire, so it connects through the MySQL adapter today. v0.21 detects it and adds the read-only history views. After that, Dolt gets its own entry in the connection list (still the MySQL adapter underneath), and then the write side: commit, branch checkout and merge, each behind its own permission design (ADR-0087) |
 | MariaDB system-versioned tables | Every past version of a row | MySQL wire, through the existing MySQL / MariaDB adapter |
 | XTDB | Bitemporal history per record | PostgreSQL wire. Whether the shared pg-wire adapter is enough has to be checked before anything is built |
 | TerminusDB | History per fact, with branch and merge | Its own HTTP API. A new adapter |
