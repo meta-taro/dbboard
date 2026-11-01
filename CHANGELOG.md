@@ -44,6 +44,43 @@ public API is the HTTP contract in
   second needs a post-quantum group to be downgraded from, which 0.22 never
   offers. Both are recorded in `deny.toml` with those reasons.
 
+- **Root certificates and certificate checking moved past the distrusted
+  emSign intermediates.** The private keys of those intermediates are now
+  public. `rustls-webpki` 0.103.16 rejects paths through them
+  ([RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382)).
+  `webpki-roots` and `webpki-root-certs` 1.0.11 no longer bundle trust that
+  admits them
+  ([RUSTSEC-2026-0381](https://rustsec.org/advisories/RUSTSEC-2026-0381),
+  [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383)).
+  The `rustls-webpki` 0.102 copy that `libsql` pins is again the exception.
+  It has no patched release, and a Turso connection does go through it. An
+  attack would still need a position on the network path as well as one of
+  the leaked keys. It is recorded in `deny.toml` until `libsql` moves.
+- **`tokio` 1.54.1, `crypto-bigint` 0.7.10 and `ctutils` 0.4.6**, which fix
+  an I/O-safety soundness bug in `AsyncFd`
+  ([RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386)) and
+  timing leaks in operations meant to be constant-time
+  ([RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387),
+  [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385)).
+- **Not moved, with the reason recorded in `deny.toml`:**
+  - `zip` 4, used by the auto-updater
+    ([RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367),
+    [0368](https://rustsec.org/advisories/RUSTSEC-2026-0368),
+    [0369](https://rustsec.org/advisories/RUSTSEC-2026-0369)). The updater
+    only unpacks a zip on Windows, and only after the release signature has
+    been checked. dbboard's updates are `.exe` installers, never zips. The
+    fix is in `zip` 9, which the updater does not accept yet.
+  - `zvariant`, `zvariant_derive` and `zbus_names`
+    ([0370](https://rustsec.org/advisories/RUSTSEC-2026-0370),
+    [0371](https://rustsec.org/advisories/RUSTSEC-2026-0371),
+    [0372](https://rustsec.org/advisories/RUSTSEC-2026-0372)). These are
+    unmaintained, not vulnerable: they were folded into `zbus` 6. They are
+    reached only through the Linux window capture, whose latest release still
+    uses `zbus` 5.
+  - `basic-toml`
+    ([0374](https://rustsec.org/advisories/RUSTSEC-2026-0374)). It is
+    unmaintained and runs only at build time.
+
 ## [0.20.0] — 2026-10-07 — Every database the connection can see
 
 ### Added
