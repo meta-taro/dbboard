@@ -6,7 +6,7 @@ parts that matter are four pixels tall. `scripts/pii-scan.sh` cannot read a
 PNG, so nothing downstream will catch what the capture caught — this checklist
 is the whole control.
 
-Everything published — the download page, the README, an article, a bug report
+Everything published — the download page, the README (`docs/screenshots/`), an article, a bug report
 to a third party — comes from the demo profile in
 [`scripts/demo-profile`](../../scripts/demo-profile/README.md). Set that up
 first; the rest of this page assumes it.
@@ -27,6 +27,21 @@ The demo instance runs from `target/release/` and is still called
 Your own installed one runs from `%LOCALAPPDATA%\dbboard\` (installs made
 before v0.15.0 sit in `%LOCALAPPDATA%\dbboard-desktop\`, and the installer
 does not move them). Capture by process id, never by "the window in front".
+
+On macOS, launch the demo instance from the built bundle with the profile in
+its environment, and capture its window by id, not the screen:
+
+```sh
+DBBOARD_CONFIG_DIR=/tmp/dbboard-demo/config DBBOARD_NO_UPDATE_CHECK=1 \
+  target/release/bundle/macos/dbboard.app/Contents/MacOS/dbboard-desktop &
+screencapture -x -o -l <window-id> shot.png
+```
+
+The window id comes from `CGWindowListCopyWindowInfo`, filtered on that
+process id. The installed app runs from `/Applications/dbboard.app`, and the
+version in the status bar tells the two apart. Both share one WebKit storage,
+so a theme or language changed in the demo instance is the one the installed
+app starts with next time: set them back when you are done.
 
 ## The checklist
 

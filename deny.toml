@@ -24,6 +24,9 @@ ignore = [
     # The unforked original, reached the same way. This is a separate advisory
     # ID for a separate crate; the entry above does not cover it.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: build-time-only transitive dep of i18n-embed-fl; no runtime exposure, no upstream fix" },
+    # Same subtree: i18n-embed-fl -> i18n-config reads its config with
+    # basic-toml, at compile time only. Archived upstream, no successor release.
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml: unmaintained, build-time-only via i18n-embed-fl -> i18n-config; no runtime exposure, no upstream fix" },
 
     # ---- rustls-webpki 0.102, pinned by libsql ---------------------------
     #
@@ -59,6 +62,13 @@ ignore = [
     # downgraded from.
     { id = "RUSTSEC-2026-0346", reason = "rustls 0.22 via libsql/hyper-rustls 0.25: Debug of client session values shows secrets, reached only through a custom ClientSessionStore, which libsql does not install. 0.23 copy is patched" },
     { id = "RUSTSEC-2026-0349", reason = "rustls 0.22 via libsql/hyper-rustls 0.25: key-share prediction downgrade to classical; 0.22 offers no post-quantum group, so there is nothing to downgrade from. 0.23 copy is patched" },
+    # Distrusted emSign intermediates (2026-10). The workspace's own 0.103 copy
+    # is on 0.103.16, which rejects them; this ID now matches only the 0.102
+    # copy, which has no patched release. Reachable: a Turso connection
+    # verifies against the OS trust store. Exploiting it needs a position on
+    # the path plus one of the leaked intermediate keys. Same libsql-bump
+    # condition as the entries above.
+    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.102 via libsql/hyper-rustls 0.25: may accept distrusted emSign intermediates. Reachable but needs an on-path attacker; fixed only on 0.103 (workspace copy is on 0.103.16). Revisit at every libsql bump" },
 
     # ---- h2 --------------------------------------------------------------
     #
@@ -66,6 +76,18 @@ ignore = [
     # so this ID now matches only the h2 0.3 that `libsql -> hyper 0.14` pins.
     # The 0.3 line has no patched release. Same libsql-bump condition as above.
     { id = "RUSTSEC-2026-0258", reason = "h2 0.3 via libsql/hyper 0.14 (unbounded empty DATA frames). The workspace's own copy is on 0.4.17, which is patched; the 0.3 line has no fix" },
+
+    # ---- zip, via the Tauri updater ---------------------------------------
+    #
+    # tauri-plugin-updater (latest 2.14 still requires zip ^4) extracts a zip
+    # only on Windows, and only when the downloaded update is a zip. dbboard's
+    # update artifact is the NSIS -setup.exe, never a zip, and the updater
+    # checks the minisign signature before extracting anything, so only an
+    # archive signed with the release key could reach these paths. The fixes
+    # are on zip 9, which the updater does not accept yet.
+    { id = "RUSTSEC-2026-0367", reason = "zip 4 via tauri-plugin-updater: SUID/SGID bits kept on extract. Windows-only zip path, never used for dbboard's .exe updates, and only after the signature check; fix needs zip 9, which the updater does not take" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 4 via tauri-plugin-updater: extracted symlinks can point outside the target. Windows-only zip path, never used for dbboard's .exe updates, and only after the signature check; fix needs zip 9, which the updater does not take" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 4 via tauri-plugin-updater: Unix permissions applied on extract. Windows-only zip path, never used for dbboard's .exe updates, and only after the signature check; fix needs zip 9, which the updater does not take" },
 
     # ---- rsa -------------------------------------------------------------
     #
@@ -100,6 +122,12 @@ ignore = [
     { id = "RUSTSEC-2024-0418", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
     { id = "RUSTSEC-2024-0419", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
     { id = "RUSTSEC-2024-0420", reason = "gtk-rs GTK3 bindings: unmaintained, via tauri's Linux backend; no GTK4 backend exists in Tauri 2" },
+    # zbus 5's split-out crates, merged into zbus 6 and no longer maintained
+    # on their own. Reached through xcap (dbboard-mcp's window capture) on
+    # Linux only. xcap 0.9.8 is the latest release and still requires zbus 5.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained (merged into zbus 6), via xcap -> zbus 5 on Linux; latest xcap still requires zbus 5, not a vulnerability" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained (merged into zbus 6), via xcap -> zbus 5 on Linux; latest xcap still requires zbus 5, not a vulnerability" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained (merged into zbus 6), via xcap -> zbus 5 on Linux; latest xcap still requires zbus 5, not a vulnerability" },
 ]
 
 [licenses]
