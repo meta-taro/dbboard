@@ -7,10 +7,24 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased] — Checksums that check
+## [Unreleased] — Edits go back where the rows came from
 
 ### Fixed
 
+- **An edit is saved to the connection its rows were read from, and nowhere
+  else.** Browsing a table on one connection and then selecting another left
+  the first connection's rows on screen, still editable, and *Save changes*
+  sent the `UPDATE` to the connection now selected. Its primary keys then
+  matched whichever rows there had the same keys, so an edit made on staging
+  data could land on production. Selecting another connection now clears the
+  grid, and the grid stays read-only for rows from any connection other than
+  the selected one. A query still running when the connection changes is
+  dropped when it returns.
+- **"Select top 100" reads the database the table is listed under.** Opened
+  from the sidebar on a connection that shows several databases (new in
+  0.20.0), a table was read from the database the *last hand-written query*
+  ran in, not the one it sits under, so it failed as missing or showed a
+  same-named table from elsewhere, and edits followed it there.
 - **`SHA256SUMS.txt` verifies with `sha256sum -c` / `shasum -c` again on macOS
   and Linux.** The lines written on the Windows build machines ended in a
   carriage return, which the checker read as part of the file name, so every

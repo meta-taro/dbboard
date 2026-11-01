@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { workspace } from '$lib/state/workspace.svelte';
   import { uiCommands } from '$lib/ui-command/bus';
   import {
@@ -25,6 +25,7 @@
     type Cursor,
   } from '$lib/query/pages';
   import { enumColumns } from '$lib/grid/enum';
+  import { belongsTo, editContextFor, type ResultOrigin } from '$lib/query/origin';
   import { placePopover, type PopoverPlacement } from '$lib/layout/popover';
   import { runStatus } from '$lib/status/status.svelte';
   import { latency, untilPainted } from '$lib/status/latency.svelte';
@@ -105,20 +106,31 @@
   // A browsed table that has NO declared primary key: editable-intent but not
   // safely keyable, so we show a read-only reason instead of edit affordances.
   const noPk = $derived(editTable !== null && editPk.length === 0);
-  // The database the current result came from (ADR-0162). Captured when the
-  // statement starts, so paging and edits keep going to that database even
-  // after the sidebar points somewhere else.
-  let resultDatabase = $state<string | null>(null);
+  // The connection and database the current result came from (ADR-0162).
+  // Captured when the statement starts, so paging and edits keep going there
+  // even after the sidebar points somewhere else.
+  let resultOrigin = $state.raw<ResultOrigin | null>(null);
   const editContext = $derived(
-    workspace.connectionId && editTable && editPk.length > 0
-      ? {
-          connectionId: workspace.connectionId,
-          database: resultDatabase,
-          table: editTable,
-          pk: editPk,
-        }
-      : null,
+    editContextFor(resultOrigin, workspace.connectionId, editTable, editPk),
   );
+  // Rows from one connection must not sit under another's badge: selecting a
+  // different connection clears them, rather than leaving a grid that looks
+  // like it belongs to the new one.
+  $effect(() => {
+    const current = workspace.connectionId;
+    untrack(() => {
+      if (resultOrigin && !belongsTo(resultOrigin, current)) clearResult();
+    });
+  });
+
+  function clearResult() {
+    resultOrigin = null;
+    result = null;
+    error = '';
+    editTable = null;
+    editPk = [];
+    editEnums = {};
+  }
   // Keyset paging over a browsed table (ADR-0145). The trail of cursors and
   // what the pager may offer are decided in `$lib/query/pages`, which is where
   // their tests are; this holds the position.
@@ -162,7 +174,8 @@
     const connId = workspace.connectionId;
     if (!connId || busy) return;
     const database = workspace.database;
-    resultDatabase = database;
+    const origin: ResultOrigin = { connectionId: connId, database };
+    resultOrigin = origin;
     busy = true;
     error = '';
     editTable = table;
@@ -178,11 +191,20 @@
     // The status bar's clock stops at the reply; this one waits for the grid
     // to paint, which is what a person is actually waiting for.
     const timed = await untilPainted(async () => {
-      result = await runReadQuery(connId, sql, limit, database);
+      const rows = await runReadQuery(connId, sql, limit, database);
       runStatus.end(false);
+      // The connection changed while the query ran: these rows are not for
+      // what is selected now, and the switch has already cleared the grid.
+      if (resultOrigin !== origin) return;
+      result = rows;
       resultLimit = limit;
     });
     latency.recordFirstRow(timed, workspace.connection?.kind ?? '');
+    if (resultOrigin !== origin) {
+      if (timed.failed) runStatus.end(true);
+      busy = false;
+      return;
+    }
     try {
       if (timed.failed) throw timed.error;
       queryHistory.record(connId, sql);
@@ -231,16 +253,18 @@
   // ORDER BY / WHERE / LIMIT that paging needs (ADR-0145). `index` is the page
   // to land on; its cursor is already in `cursors`.
   async function readPage(table: TableInfo, index: number) {
-    const connId = workspace.connectionId;
-    if (!connId || busy) return;
+    const origin = resultOrigin;
+    if (!origin || busy) return;
+    const connId = origin.connectionId;
     busy = true;
     error = '';
     editTable = table;
     const limit = rowLimit;
     runStatus.begin();
     try {
-      const page = await browsePage(connId, table, limit, cursors[index] ?? null, resultDatabase);
+      const page = await browsePage(connId, table, limit, cursors[index] ?? null, origin.database);
       runStatus.end(false);
+      if (resultOrigin !== origin) return;
       result = page;
       resultLimit = limit;
       pageIndex = index;
@@ -248,7 +272,7 @@
       // A failed schema read just leaves the table read-only (empty PK); the
       // rows still show. Never let it mask a successful read.
       try {
-        const schema = await describeTable(connId, table.name, table.schema, resultDatabase);
+        const schema = await describeTable(connId, table.name, table.schema, origin.database);
         editPk = schema.primary_key;
         editEnums = enumColumns(schema.columns);
       } catch {
@@ -257,6 +281,7 @@
       }
     } catch (e) {
       runStatus.end(true);
+      if (resultOrigin !== origin) return;
       result = null;
       error = String(e);
       editTable = null;
@@ -268,7 +293,13 @@
   }
 
   // Start a browse at page one, discarding whatever trail a previous one left.
+  // The rows come from wherever the sidebar points now, not from wherever the
+  // last hand-written query ran: a table opened under another database is read
+  // from that database.
   function startBrowse(table: TableInfo) {
+    const connId = workspace.connectionId;
+    if (!connId || busy) return;
+    resultOrigin = { connectionId: connId, database: workspace.database };
     cursors = firstTrail();
     pageIndex = 0;
     editPk = [];
