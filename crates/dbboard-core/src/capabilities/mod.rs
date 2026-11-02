@@ -86,6 +86,13 @@ pub struct Capabilities {
     /// `false`.
     #[serde(default)]
     pub has_list_databases: bool,
+    /// The connection is to a database that keeps its own history, and
+    /// `DatabaseAdapter::history` returns a reader for it (ADR-0165). Decided
+    /// per connection by asking the server, not by the adapter kind.
+    /// `#[serde(default)]` keeps pre-ADR-0165 payloads parseable — the flag
+    /// reads as `false`.
+    #[serde(default)]
+    pub has_history: bool,
 }
 
 #[cfg(test)]
@@ -107,6 +114,16 @@ mod tests {
         assert!(!caps.has_foreign_keys);
         assert!(!caps.has_list_indexes);
         assert!(!caps.has_list_databases);
+        assert!(!caps.has_history);
+    }
+
+    #[test]
+    fn legacy_json_without_history_flag_deserializes_as_false() {
+        // Pre-ADR-0165 payloads do not carry the flag (additive wire contract).
+        let json = r#"{"has_views":false,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":false,"has_list_databases":true}"#;
+        let caps: Capabilities = serde_json::from_str(json).unwrap();
+        assert!(caps.has_list_databases);
+        assert!(!caps.has_history);
     }
 
     #[test]
@@ -149,7 +166,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false,"has_list_indexes":false,"has_list_databases":false}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false,"has_list_indexes":false,"has_list_databases":false,"has_history":false}"#
         );
     }
 
@@ -168,6 +185,7 @@ mod tests {
             has_foreign_keys: true,
             has_list_indexes: true,
             has_list_databases: true,
+            has_history: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();

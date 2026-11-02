@@ -13,6 +13,7 @@ mod browse;
 mod capabilities;
 mod dump;
 mod error;
+mod history;
 mod limits;
 mod read_only;
 mod restore;
@@ -37,6 +38,10 @@ pub use dump::{
     INSERT_BATCH_ROWS, READ_PAGE_ROWS,
 };
 pub use error::{DbError, DbResult};
+pub use history::{
+    changed_columns, BlameEntry, ChangeKind, Commit, CommitDiff, HistoryReader, RowChange,
+    RowHistory, RowVersion,
+};
 pub use limits::{too_many_rows_error, MAX_RESULT_ROWS};
 pub use read_only::{
     check_read_only, classify_read_only, is_single_read_only_statement, ReadOnlyStatement,
