@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use dbboard_config::{ConfigError, SecretStore, SshTunnelToml};
 use dbboard_core::{DbError, DbResult};
-use dbboard_tunnel::{HostKeyPolicy, SshAuth, SshTunnelConfig};
+use dbboard_tunnel::{HostKeyPolicy, SshAuth, SshBastion, SshTunnelConfig};
 use url::Url;
 
 /// Default database ports, used as the SSH forward target when a connection
@@ -107,6 +107,18 @@ impl ResolvedSsh {
             auth,
             host_key,
         })
+    }
+
+    /// The bastion alone, for a session that forwards to several targets
+    /// (a Redis cluster, ADR-0166).
+    pub(crate) fn into_bastion(self) -> SshBastion {
+        SshBastion {
+            host: self.host,
+            port: self.port,
+            user: self.user,
+            auth: self.auth,
+            host_key: self.host_key,
+        }
     }
 
     /// Pair this bastion config with a forward target (the database's own

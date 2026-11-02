@@ -23,8 +23,7 @@ public API is the HTTP contract in
   size first and refuse what would not fit in a result. The sidebar lists key
   prefixes (`user:*`), and *Select top* on one is a bounded `SCAN`. MemoryDB is always
   a cluster and always TLS. The MCP server's `run_read_query` takes the same
-  command lines on a `redis` connection. These stores cannot be reached
-  through an SSH tunnel yet.
+  command lines on a `redis` connection.
 - **A key browser for Redis-compatible connections** (ADR-0166). Their
   Structure tab lists the keys under the picked prefix a page at a time, and
   shows the picked key's type, how long it has left, and its value laid out
@@ -32,6 +31,12 @@ public API is the HTTP contract in
   from zero, a set as members, a sorted set as member and score, and a stream
   newest first. Every read is one bounded page, so the browser never asks for
   a whole collection.
+- **Redis, Valkey, MemoryDB and ElastiCache can be reached through an SSH
+  bastion** (ADR-0166). The connection form shows the SSH section for them.
+  One SSH session is opened, and every node the client connects to — the one
+  in the URL, and in cluster mode each node the server names — gets its own
+  forward. The URL is not rewritten, so a TLS connection still asks for the
+  host its certificate names.
 
 ## [0.21.0] — 2026-11-02 — History you can read
 

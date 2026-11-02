@@ -45,6 +45,53 @@ impl std::fmt::Debug for SshTunnelConfig {
     }
 }
 
+impl SshTunnelConfig {
+    /// The bastion half of this tunnel: everything but the forward target.
+    #[must_use]
+    pub fn bastion(&self) -> SshBastion {
+        SshBastion {
+            host: self.host.clone(),
+            port: self.port,
+            user: self.user.clone(),
+            auth: self.auth.clone(),
+            host_key: self.host_key.clone(),
+        }
+    }
+}
+
+/// A bastion to open an SSH session to, without a forward target.
+///
+/// A session opened from it ([`crate::connect`]) forwards to as many far-side
+/// addresses as the caller asks for. A Redis cluster is the case that needs
+/// this: the server names the nodes to talk to only once the client is
+/// connected, so the targets cannot be listed up front (ADR-0166).
+#[derive(Clone)]
+pub struct SshBastion {
+    /// Bastion hostname or IP (the SSH server we connect to).
+    pub host: String,
+    /// Bastion SSH port (usually 22).
+    pub port: u16,
+    /// SSH username on the bastion.
+    pub user: String,
+    /// How to authenticate to the bastion.
+    pub auth: SshAuth,
+    /// How to verify the bastion's host key. There is no accept-any variant.
+    pub host_key: HostKeyPolicy,
+}
+
+impl std::fmt::Debug for SshBastion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `auth` redacts itself; the rest is non-secret.
+        f.debug_struct("SshBastion")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("auth", &self.auth)
+            .field("host_key", &self.host_key)
+            .finish()
+    }
+}
+
 /// How to authenticate to the bastion.
 #[derive(Clone)]
 pub enum SshAuth {
@@ -121,6 +168,27 @@ mod tests {
         };
         let rendered = format!("{auth:?}");
         assert!(rendered.contains("None"));
+    }
+
+    #[test]
+    fn the_bastion_half_drops_only_the_forward_target() {
+        let cfg = SshTunnelConfig {
+            host: "bastion.example".to_string(),
+            port: 2222,
+            user: "deploy".to_string(),
+            auth: SshAuth::Password("topsecret".to_string()),
+            host_key: HostKeyPolicy::Fingerprint("SHA256:abc".to_string()),
+            forward_host: "10.0.0.5".to_string(),
+            forward_port: 6379,
+        };
+        let bastion = cfg.bastion();
+        assert_eq!(
+            (bastion.host.as_str(), bastion.port, bastion.user.as_str()),
+            ("bastion.example", 2222, "deploy")
+        );
+        let rendered = format!("{bastion:?}");
+        assert!(!rendered.contains("topsecret"));
+        assert!(!rendered.contains("10.0.0.5"));
     }
 
     #[test]

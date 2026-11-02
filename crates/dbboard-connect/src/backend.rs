@@ -25,6 +25,7 @@ use dbboard_tunnel::SshTunnel;
 use dbboard_turso::TursoAdapter;
 
 use crate::config::BackendConfig;
+use crate::redis_route::Forwards;
 use crate::ssh::{
     forward_target, rewrite_to_loopback, ResolvedSsh, DEFAULT_MYSQL_PORT, DEFAULT_POSTGRES_PORT,
 };
@@ -199,11 +200,19 @@ pub async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn Database
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }
-        BackendConfig::Redis(cfg) => {
+        BackendConfig::Redis { mut config, ssh } => {
+            // No URL rewrite and no `TunneledAdapter`: the adapter holds the
+            // route, and the route holds the session and every forward.
+            if let Some(ssh) = ssh {
+                let session = dbboard_tunnel::connect(ssh.into_bastion())
+                    .await
+                    .map_err(|e| DbError::Connection(format!("ssh tunnel: {e}")))?;
+                config.route = Some(Arc::new(Forwards::new(session)));
+            }
             // `connect` opens the connection (and, for a cluster, reads its
             // slot map), so a ping here only confirms the ACL user may run
             // commands at all.
-            let adapter = RedisAdapter::connect(cfg).await?;
+            let adapter = RedisAdapter::connect(config).await?;
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }

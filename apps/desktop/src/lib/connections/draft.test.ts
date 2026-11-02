@@ -800,7 +800,7 @@ describe('redis-compatible services', () => {
   };
 
   it.each(['redis', 'valkey', 'memorydb', 'elasticache', 'upstash'] as const)(
-    '%s asks for one masked url and cannot front an SSH tunnel',
+    '%s asks for one masked url',
     (kind) => {
       expect(fieldsForKind(kind)).toEqual(['url']);
       expect(secretFields(kind)).toEqual(['url']);
@@ -808,9 +808,34 @@ describe('redis-compatible services', () => {
       expect(requiredFields(kind, 'edit')).toEqual(['name']);
       // No host/user/password parts: the URL is entered whole.
       expect(validateDsnFields(form({ kind, use_url: false }))).toEqual([]);
-      expect(supportsSshTunnel(kind)).toBe(false);
     },
   );
+
+  // The managed services live inside a private network, so the bastion is
+  // how a laptop reaches them. Upstash is reached over the internet, and a
+  // bastion in front of it would only add a hop.
+  it.each(['redis', 'valkey', 'memorydb', 'elasticache'] as const)(
+    '%s can be reached through an SSH bastion',
+    (kind) => {
+      expect(supportsSshTunnel(kind)).toBe(true);
+    },
+  );
+
+  it('upstash offers no SSH bastion', () => {
+    expect(supportsSshTunnel('upstash')).toBe(false);
+  });
+
+  // The URL is sent as typed: the backend forwards every node by the name
+  // the client asks for, so the TLS certificate still matches.
+  it('sends the bastion alongside an unchanged url', () => {
+    const f = tunnelForm({ ...memorydb });
+    expect(buildKindInput(f)).toMatchObject({
+      kind: 'redis',
+      url: 'rediss://reader:hunter2@cache.example:6379',
+    });
+    expect(buildSshInput(f)).toMatchObject({ host: 'bastion.example', user: 'deploy' });
+    expect(buildSshEditInput(f)).toMatchObject({ action: 'set' });
+  });
 
   it('sends one backend kind with the service as a label', () => {
     expect(buildKindInput(form({ ...memorydb, kind: 'valkey', cluster: true }))).toEqual({

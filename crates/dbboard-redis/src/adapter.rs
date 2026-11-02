@@ -17,6 +17,7 @@
 //! cannot be continued on another, so it is refused there.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -31,6 +32,7 @@ use redis::{AsyncConnectionConfig, Client, Cmd, Value};
 
 use crate::read_only::{classify, ReadPlan, Shape, SizeGuard};
 use crate::reply;
+use crate::route::{AddressMap, Resolver};
 
 /// How long to wait for a connection, and for any one reply.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -55,7 +57,7 @@ const MAX_SCAN_CALLS: usize = 200;
 /// The delimiter key prefixes are grouped by.
 const DELIMITER: char = ':';
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RedisConfig {
     /// A `redis://` or `rediss://` (TLS) URL. User and password, when the
     /// server wants them, are in the URL.
@@ -64,6 +66,19 @@ pub struct RedisConfig {
     /// a cluster-mode server refuses keyed commands sent to the wrong node
     /// unless the client follows its redirects.
     pub cluster: bool,
+    /// Where each server's `host:port` is actually reached, such as an SSH
+    /// forward. `None` connects to the address itself.
+    pub route: Option<Arc<dyn AddressMap>>,
+}
+
+/// Hand-written: the URL usually carries the password.
+impl std::fmt::Debug for RedisConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisConfig")
+            .field("cluster", &self.cluster)
+            .field("routed", &self.route.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
@@ -74,6 +89,9 @@ enum Connection {
 
 pub struct RedisAdapter {
     connection: Connection,
+    /// Held so whatever the route keeps open, such as a forward, lasts as
+    /// long as the connection that goes through it.
+    _route: Option<Arc<dyn AddressMap>>,
 }
 
 /// Hand-written so the URL, which usually carries the password, never
@@ -99,11 +117,13 @@ impl RedisAdapter {
     /// cannot be reached. The message never contains the URL.
     pub async fn connect(config: RedisConfig) -> DbResult<Self> {
         let connection = if config.cluster {
-            let client = ClusterClient::builder([config.url.as_str()])
+            let mut builder = ClusterClient::builder([config.url.as_str()])
                 .connection_timeout(CONNECT_TIMEOUT)
-                .response_timeout(RESPONSE_TIMEOUT)
-                .build()
-                .map_err(|e| connection_error(&e))?;
+                .response_timeout(RESPONSE_TIMEOUT);
+            if let Some(route) = &config.route {
+                builder = builder.async_dns_resolver(Resolver(Arc::clone(route)));
+            }
+            let client = builder.build().map_err(|e| connection_error(&e))?;
             Connection::Cluster(
                 client
                     .get_async_connection()
@@ -112,9 +132,12 @@ impl RedisAdapter {
             )
         } else {
             let client = Client::open(config.url.as_str()).map_err(|e| connection_error(&e))?;
-            let settings = AsyncConnectionConfig::new()
+            let mut settings = AsyncConnectionConfig::new()
                 .set_connection_timeout(Some(CONNECT_TIMEOUT))
                 .set_response_timeout(Some(RESPONSE_TIMEOUT));
+            if let Some(route) = &config.route {
+                settings = settings.set_dns_resolver(Resolver(Arc::clone(route)));
+            }
             Connection::Single(
                 client
                     .get_multiplexed_async_connection_with_config(&settings)
@@ -122,7 +145,10 @@ impl RedisAdapter {
                     .map_err(|e| connection_error(&e))?,
             )
         };
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            _route: config.route,
+        })
     }
 
     async fn send(&self, cmd: &Cmd) -> DbResult<Value> {
@@ -491,6 +517,7 @@ e7d1 10.0.0.4:6379@16379 master - 0 0 3 connected 10923-16383
         let error = RedisAdapter::connect(RedisConfig {
             url: "postgres://user:hunter2@localhost/shop".into(),
             cluster: false,
+            route: None,
         })
         .await
         .unwrap_err();
@@ -503,6 +530,7 @@ e7d1 10.0.0.4:6379@16379 master - 0 0 3 connected 10923-16383
         let error = RedisAdapter::connect(RedisConfig {
             url: "redis://:hunter2@127.0.0.1:1".into(),
             cluster: false,
+            route: None,
         })
         .await
         .unwrap_err();

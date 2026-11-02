@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 
-use crate::config::{HostKeyPolicy, SshAuth, SshTunnelConfig};
+use crate::config::{HostKeyPolicy, SshAuth, SshBastion, SshTunnelConfig};
 use crate::error::{TunnelError, TunnelResult};
 use crate::fingerprint::fingerprint_matches;
 
@@ -108,52 +108,93 @@ fn client_config() -> russh::client::Config {
 /// host or — worse — a mismatch), [`TunnelError::Auth`] on bad credentials,
 /// [`TunnelError::KeyLoad`] if the private key cannot be read/decrypted, and
 /// [`TunnelError::Connect`]/[`TunnelError::Listener`] for transport failures.
+pub async fn open(config: SshTunnelConfig) -> TunnelResult<SshTunnel> {
+    connect(config.bastion())
+        .await?
+        .forward(config.forward_host, config.forward_port)
+        .await
+}
+
+/// An authenticated SSH session to a bastion, from which any number of
+/// forwards can be opened. Cheap to clone: every clone shares the one
+/// session, which closes once the last clone and the last forward are gone.
+#[derive(Clone)]
+pub struct SshSession {
+    handle: Arc<russh::client::Handle<VerifyHandler>>,
+}
+
+impl std::fmt::Debug for SshSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshSession").finish_non_exhaustive()
+    }
+}
+
+impl SshSession {
+    /// Start forwarding a fresh loopback port to `forward_host:forward_port`,
+    /// as the bastion sees it.
+    ///
+    /// # Errors
+    /// [`TunnelError::Listener`] when no loopback port can be bound. Whether
+    /// the bastion can reach the target is only known when a connection is
+    /// made through the forward.
+    pub async fn forward(
+        &self,
+        forward_host: String,
+        forward_port: u16,
+    ) -> TunnelResult<SshTunnel> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0u16))
+            .await
+            .map_err(TunnelError::Listener)?;
+        let local_addr = listener.local_addr().map_err(TunnelError::Listener)?;
+        let accept_task = tokio::spawn(accept_loop(
+            listener,
+            Arc::clone(&self.handle),
+            forward_host,
+            forward_port,
+        ));
+        Ok(SshTunnel {
+            local_addr,
+            accept_task,
+        })
+    }
+}
+
+/// Connect to the bastion, verify its host key and authenticate, without
+/// forwarding anything yet.
+///
+/// # Errors
+/// As [`open`], less the listener failure.
 ///
 /// # Panics
 /// Panics only if an internal mutex is poisoned — i.e. another task panicked
 /// while holding it, which does not happen in normal operation.
-pub async fn open(config: SshTunnelConfig) -> TunnelResult<SshTunnel> {
+pub async fn connect(bastion: SshBastion) -> TunnelResult<SshSession> {
     let rejection = Arc::new(Mutex::new(None));
     let handler = VerifyHandler {
-        policy: config.host_key.clone(),
-        host: config.host.clone(),
-        port: config.port,
+        policy: bastion.host_key.clone(),
+        host: bastion.host.clone(),
+        port: bastion.port,
         rejection: Arc::clone(&rejection),
     };
 
     let ssh_config = Arc::new(client_config());
     let mut session =
-        russh::client::connect(ssh_config, (config.host.as_str(), config.port), handler)
+        russh::client::connect(ssh_config, (bastion.host.as_str(), bastion.port), handler)
             .await
             .map_err(
                 |e| match rejection.lock().expect("rejection lock poisoned").take() {
                     // A captured rejection means check_server_key rejected the key —
                     // report it as a host-key failure, not a bland connect error.
                     Some(reason) => TunnelError::HostKey(reason),
-                    None => TunnelError::Connect(format!("{}:{}: {e}", config.host, config.port)),
+                    None => TunnelError::Connect(format!("{}:{}: {e}", bastion.host, bastion.port)),
                 },
             )?;
 
-    if !authenticate(&mut session, &config).await? {
-        return Err(TunnelError::Auth(config.user.clone()));
+    if !authenticate(&mut session, &bastion).await? {
+        return Err(TunnelError::Auth(bastion.user.clone()));
     }
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0u16))
-        .await
-        .map_err(TunnelError::Listener)?;
-    let local_addr = listener.local_addr().map_err(TunnelError::Listener)?;
-
-    let session = Arc::new(session);
-    let accept_task = tokio::spawn(accept_loop(
-        listener,
-        session,
-        config.forward_host.clone(),
-        config.forward_port,
-    ));
-
-    Ok(SshTunnel {
-        local_addr,
-        accept_task,
+    Ok(SshSession {
+        handle: Arc::new(session),
     })
 }
 
@@ -183,7 +224,7 @@ pub async fn probe_host_key(host: &str, port: u16) -> TunnelResult<String> {
 
 async fn authenticate(
     session: &mut russh::client::Handle<VerifyHandler>,
-    config: &SshTunnelConfig,
+    config: &SshBastion,
 ) -> TunnelResult<bool> {
     match &config.auth {
         SshAuth::PrivateKey { path, passphrase } => {

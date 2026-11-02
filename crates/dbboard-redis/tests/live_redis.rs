@@ -12,15 +12,20 @@
 //! ```
 
 use dbboard_core::{DatabaseAdapter, DbError, QueryResult, Value};
-use dbboard_redis::{RedisAdapter, RedisConfig};
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+
+use dbboard_redis::{AddressMap, MapFuture, RedisAdapter, RedisConfig};
 use redis::AsyncCommands;
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-fn prefix() -> String {
-    format!("dbboard_it_{}", std::process::id())
+/// Unique per test as well as per run: tests against the same server run
+/// in parallel, and the fixtures include a list that seeding appends to.
+fn prefix(test: &str) -> String {
+    format!("dbboard_it_{}_{test}", std::process::id())
 }
 
 fn texts(result: &QueryResult, column: usize) -> Vec<String> {
@@ -66,12 +71,13 @@ async fn seed_with<C: AsyncCommands>(c: &mut C, p: &str) -> redis::RedisResult<(
     Ok(())
 }
 
-async fn exercise(url: String, cluster: bool) {
-    let p = prefix();
+async fn exercise(test: &str, url: String, cluster: bool, route: Option<Arc<dyn AddressMap>>) {
+    let p = prefix(test);
     seed(&url, cluster, &p).await.expect("seed fixtures");
     let adapter = RedisAdapter::connect(RedisConfig {
         url: url.clone(),
         cluster,
+        route,
     })
     .await
     .expect("connect");
@@ -173,7 +179,7 @@ async fn a_single_server_reads_and_refuses_writes() {
         eprintln!("skipping: DBBOARD_REDIS_URL not set");
         return;
     };
-    exercise(url, false).await;
+    exercise("single", url, false, None).await;
 }
 
 #[tokio::test]
@@ -182,15 +188,75 @@ async fn a_cluster_is_read_across_every_node() {
         eprintln!("skipping: DBBOARD_REDIS_CLUSTER_URL not set");
         return;
     };
-    exercise(url, true).await;
+    exercise("cluster", url, true, None).await;
 
     // A cursor belongs to one node, so continuing one is refused rather than
     // read from the wrong node.
     let adapter = RedisAdapter::connect(RedisConfig {
         url: env("DBBOARD_REDIS_CLUSTER_URL").unwrap(),
         cluster: true,
+        route: None,
     })
     .await
     .expect("connect");
     assert!(adapter.query("SCAN 17").await.is_err());
+}
+
+/// Resolves names the ordinary way, and records every one it was asked for:
+/// a stand-in for an SSH forward that shows the client goes through the map
+/// for every connection, not only the first.
+#[derive(Default)]
+struct Recording {
+    asked: Mutex<BTreeSet<(String, u16)>>,
+}
+
+impl AddressMap for Recording {
+    fn resolve<'a>(&'a self, host: &'a str, port: u16) -> MapFuture<'a> {
+        self.asked.lock().unwrap().insert((host.to_owned(), port));
+        Box::pin(async move {
+            tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|e| e.to_string())?
+                .next()
+                .ok_or_else(|| format!("{host}:{port} has no address"))
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_routed_server_is_reached_through_the_route() {
+    let Some(url) = env("DBBOARD_REDIS_URL") else {
+        eprintln!("skipping: DBBOARD_REDIS_URL not set");
+        return;
+    };
+    let route = Arc::new(Recording::default());
+    exercise(
+        "routed",
+        url,
+        false,
+        Some(route.clone() as Arc<dyn AddressMap>),
+    )
+    .await;
+    assert_eq!(route.asked.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn every_node_of_a_routed_cluster_is_reached_through_the_route() {
+    let Some(url) = env("DBBOARD_REDIS_CLUSTER_URL") else {
+        eprintln!("skipping: DBBOARD_REDIS_CLUSTER_URL not set");
+        return;
+    };
+    let route = Arc::new(Recording::default());
+    exercise(
+        "routed_cluster",
+        url,
+        true,
+        Some(route.clone() as Arc<dyn AddressMap>),
+    )
+    .await;
+    let asked = route.asked.lock().unwrap();
+    // The URL names one node; the others come from the server, and the
+    // client must reach them through the route too.
+    let ports: BTreeSet<u16> = asked.iter().map(|(_, port)| *port).collect();
+    assert!(ports.len() >= 3, "only asked for {asked:?}");
 }

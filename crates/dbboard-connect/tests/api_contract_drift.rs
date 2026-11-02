@@ -122,7 +122,7 @@ fn wire_id(config: &BackendConfig) -> &'static str {
         BackendConfig::Firestore(_) => "firestore",
         BackendConfig::MongoDb(_) => "mongodb",
         // Every Redis-compatible service is one adapter (ADR-0166).
-        BackendConfig::Redis(_) => "redis",
+        BackendConfig::Redis { .. } => "redis",
     }
 }
 
