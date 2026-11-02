@@ -9,6 +9,94 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-11-02 — Edits go back where the rows came from
+
+### Fixed
+
+- **An edit is saved to the connection its rows were read from, and nowhere
+  else.** Browsing a table on one connection and then selecting another left
+  the first connection's rows on screen, still editable, and *Save changes*
+  sent the `UPDATE` to the connection now selected. Its primary keys then
+  matched whichever rows there had the same keys, so an edit made on staging
+  data could land on production. Selecting another connection now clears the
+  grid, and the grid stays read-only for rows from any connection other than
+  the selected one. A query still running when the connection changes is
+  dropped when it returns.
+- **"Select top 100" reads the database the table is listed under.** Opened
+  from the sidebar on a connection that shows several databases (new in
+  0.20.0), a table was read from the database the *last hand-written query*
+  ran in, not the one it sits under, so it failed as missing or showed a
+  same-named table from elsewhere, and edits followed it there.
+- **`SHA256SUMS.txt` verifies with `sha256sum -c` / `shasum -c` again on macOS
+  and Linux.** The lines written on the Windows build machines ended in a
+  carriage return, which the checker read as part of the file name, so every
+  Windows entry failed with "No such file" even though its hash was right. The
+  release now strips the carriage returns and checks its own list against the
+  files before publishing. Releases up to 0.20.0 have correct hashes; strip the
+  `\r` (`tr -d '\r'`) to verify them.
+
+### Security
+
+- **`rustls` moved to 0.23.46**, which fixes four advisories published
+  together:
+  [RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346)
+  (`Debug` output of client session values included TLS secrets),
+  [RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347)
+  (data buffered for an ECH connection was sent to the outer server after ECH
+  was rejected),
+  [RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348)
+  (Brotli certificate decompression could allocate up to 1 GiB before the
+  peer was authenticated) and
+  [RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349)
+  (an unauthenticated ServerHello could steer later connections to the same
+  host off post-quantum key exchange). This is the TLS under dbboard's own
+  outbound connections, and the fix was a lockfile move.
+
+  **The `rustls 0.22.4` that `libsql` pins is still in the tree**, and two of
+  the four, 0346 and 0349, name it too. That line has no patched release, and
+  `libsql` 0.10.0 still requires the same `hyper-rustls 0.25`, so moving
+  `libsql` up would not clear them. Neither is reachable there: the first
+  needs a custom session store, which `libsql` does not install, and the
+  second needs a post-quantum group to be downgraded from, which 0.22 never
+  offers. Both are recorded in `deny.toml` with those reasons.
+
+- **Root certificates and certificate checking moved past the distrusted
+  emSign intermediates.** The private keys of those intermediates are now
+  public. `rustls-webpki` 0.103.16 rejects paths through them
+  ([RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382)).
+  `webpki-roots` and `webpki-root-certs` 1.0.11 no longer bundle trust that
+  admits them
+  ([RUSTSEC-2026-0381](https://rustsec.org/advisories/RUSTSEC-2026-0381),
+  [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383)).
+  The `rustls-webpki` 0.102 copy that `libsql` pins is again the exception.
+  It has no patched release, and a Turso connection does go through it. An
+  attack would still need a position on the network path as well as one of
+  the leaked keys. It is recorded in `deny.toml` until `libsql` moves.
+- **`tokio` 1.54.1, `crypto-bigint` 0.7.10 and `ctutils` 0.4.6**, which fix
+  an I/O-safety soundness bug in `AsyncFd`
+  ([RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386)) and
+  timing leaks in operations meant to be constant-time
+  ([RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387),
+  [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385)).
+- **Not moved, with the reason recorded in `deny.toml`:**
+  - `zip` 4, used by the auto-updater
+    ([RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367),
+    [0368](https://rustsec.org/advisories/RUSTSEC-2026-0368),
+    [0369](https://rustsec.org/advisories/RUSTSEC-2026-0369)). The updater
+    only unpacks a zip on Windows, and only after the release signature has
+    been checked. dbboard's updates are `.exe` installers, never zips. The
+    fix is in `zip` 9, which the updater does not accept yet.
+  - `zvariant`, `zvariant_derive` and `zbus_names`
+    ([0370](https://rustsec.org/advisories/RUSTSEC-2026-0370),
+    [0371](https://rustsec.org/advisories/RUSTSEC-2026-0371),
+    [0372](https://rustsec.org/advisories/RUSTSEC-2026-0372)). These are
+    unmaintained, not vulnerable: they were folded into `zbus` 6. They are
+    reached only through the Linux window capture, whose latest release still
+    uses `zbus` 5.
+  - `basic-toml`
+    ([0374](https://rustsec.org/advisories/RUSTSEC-2026-0374)). It is
+    unmaintained and runs only at build time.
+
 ## [0.20.0] — 2026-10-07 — Every database the connection can see
 
 ### Added

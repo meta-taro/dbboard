@@ -300,9 +300,17 @@ jobs:
             echo "::error::artifact filename collision: staged $expected files but out/ has $actual" >&2
             exit 1
           fi
-          cat staged/*/SHA256SUMS.*.txt > out/SHA256SUMS.txt
+          # The Windows jobs write their lines from PowerShell, which ends them
+          # with CRLF. A trailing CR becomes part of the file name for
+          # `sha256sum -c` / `shasum -c`, so every Windows line failed with "No
+          # such file" on macOS and Linux through v0.20.0, although the hashes
+          # matched. Normalise here, where all platforms' lines meet.
+          cat staged/*/SHA256SUMS.*.txt | tr -d '\r' > out/SHA256SUMS.txt
           ls -la out
           cat out/SHA256SUMS.txt
+          # The published list must verify the published files, the way a
+          # person following the release notes would check it.
+          (cd out && sha256sum -c SHA256SUMS.txt)
 
       # Build latest.json — the manifest tauri-plugin-updater fetches from the
       # release. It carries, per platform, the `.sig` contents plus the static

@@ -7,22 +7,89 @@
 [![Download](https://img.shields.io/badge/Download-dbboard-2f81f7?style=for-the-badge)](https://meta-taro.github.io/dbboard/)
 [![Latest release](https://img.shields.io/github/v/release/meta-taro/dbboard?style=for-the-badge)](https://github.com/meta-taro/dbboard/releases/latest)
 
-A high-performance desktop database client for modern serverless and
-distributed databases.
+**One window for every database you look after — and a safe way to let an AI
+agent read them.**
 
-dbboard is a learning and reference project that explores multi-database
-integration, local-first tooling, and pluggable AI-assisted workflows. It
-exposes a unified, native UI for Neon, Supabase, Aurora DSQL, MySQL,
-Turso/libSQL, Cloud Firestore and MongoDB, with an adapter-based architecture that
-makes adding new databases straightforward.
+[![dbboard with a Postgres server open: databases, schemas and tables in the sidebar, and a JOIN that ran in the shop database with 180 rows in the grid](docs/screenshots/query-light.png)](https://meta-taro.github.io/dbboard/)
 
-[![dbboard running a JOIN across two tables, with 119 rows in the result grid](site/screenshots/query-light.png)](https://meta-taro.github.io/dbboard/)
+dbboard is a desktop database client for Windows and macOS. It speaks Postgres
+(and Neon, Supabase, CockroachDB, Aurora DSQL), MySQL / MariaDB, Turso /
+libSQL, Cloudflare D1, Cloud Firestore and MongoDB, keeps every password in the
+operating system's keychain, and ships a separate MCP server so that Claude and
+other agents can read the same databases without being able to change them.
 
-More of the interface — the structure view, dark theme — is on the
-[download page](https://meta-taro.github.io/dbboard/). Every screenshot is
-taken against the fictional dataset in
-[`scripts/demo-profile`](scripts/demo-profile/README.md), never against a real
-connection ([ADR-0098](docs/decisions.md)).
+## When it helps
+
+**Your databases live on four different services.** Production is on Neon,
+the side project on Supabase, the old system on a MySQL server behind a
+bastion, and the experiments in a Turso file. Instead of four web consoles and
+a terminal, they sit in one sidebar. An SSH tunnel reaches the one behind the
+bastion, and a colour and a tag on each connection make it obvious which one
+you are about to run a statement against.
+
+**You want an AI agent to read production, and it must never write.**
+`dbboard-mcp` hands your existing connections to Claude Code or Claude
+Desktop. Reads run inside the database's own read-only mode (a `READ ONLY`
+transaction, `PRAGMA query_only`), not behind a keyword filter, so an
+`UPDATE` fails at the server. Writing stays off until you switch it on for
+one connection, and even then `DROP`, `TRUNCATE` and privilege changes are
+refused. Passwords never reach the agent.
+→ [MCP server](#mcp-server)
+
+**One login can see a dozen databases.** Leave the database name blank when
+you add a Postgres or MySQL connection, and the sidebar lists every database
+that account can open, with its schemas and tables beneath. Click a table and
+the editor runs in that database; the label next to *Run* says which.
+
+**Someone needs one value fixed, without writing an `UPDATE`.** Open the
+table, double-click the cell, type, and *Save changes*. The edit is keyed on
+the primary key, so a table without one stays read-only instead of guessing.
+
+## Try it
+
+1. Download the installer for your machine from the
+   **[download page](https://meta-taro.github.io/dbboard/)**
+   (Windows x64 / ARM64 `.exe`, macOS `.dmg`).
+2. Open it. The builds are not code-signed, so Windows SmartScreen and macOS
+   Gatekeeper ask you to confirm the first time; compare the file with
+   `SHA256SUMS.txt` from the release first if you want to be sure.
+3. Click **Manage → Add connection**, pick the database type and fill in the
+   server. dbboard requires TLS unless you turn it off for that connection.
+
+There are no Linux builds yet; on Linux, build from source (see
+[Run](#run)).
+
+## A tour
+
+**Add a connection.** Host, port, user and password, or paste a connection URL
+instead. The password goes to the OS keychain, never to a file. Leave
+*Database* blank to browse all of them.
+
+![The add-connection form for a Postgres server on 127.0.0.1, with the database field left blank](docs/screenshots/connection-form.png)
+
+**Find the table.** Databases, then schemas, then tables. Selecting a table
+opens its structure: columns, types, defaults, the primary key, and the foreign
+keys in both directions. Notes you add stay on your machine.
+
+![The structure view of public.orders, with its columns and three relationships](docs/screenshots/structure.png)
+
+**Query it.** Write SQL and press ⌘/Ctrl + Enter. Results come back in a grid
+you can copy as TSV or CSV or save to a file, and recent queries are kept in that
+connection's history.
+
+**Change a row.** *Select top 100* from the table's menu opens an editable
+grid. Edits stay pending, highlighted, until you save or discard them.
+
+![A products table with one edited stock value waiting to be saved](docs/screenshots/edit-rows.png)
+
+**Light or dark, in your language.** The theme follows the system or stays
+where you put it, and the interface is available in eleven languages.
+
+![The same query in the dark theme](docs/screenshots/query-dark.png)
+
+Every screenshot here is taken in a separate profile against fictional data
+([`scripts/demo-profile`](scripts/demo-profile/README.md)), never against a
+real connection ([ADR-0098](docs/decisions.md)).
 
 ## Status
 
