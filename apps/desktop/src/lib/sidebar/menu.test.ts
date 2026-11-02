@@ -100,12 +100,12 @@ describe('tableMenuActions', () => {
   });
 });
 
-// A Redis "table" is a key prefix with no schema (ADR-0166): there is no
-// structure to open and no cheap count, so the menu offers neither.
+// A Redis "table" is a key prefix (ADR-0166). Its structure is the key
+// browser, and counting it would walk every key, so the count is left out.
 describe('tableMenuActions on a redis connection', () => {
-  it('offers the bounded SCAN and the name, nothing that would only fail', () => {
+  it('opens the key browser and the bounded SCAN, and offers no count', () => {
     const actions = tableMenuActions({ schema: null, name: 'user:*' }, 'redis');
-    expect(actions.map((a) => a.id)).toEqual(['select-top', 'copy-name']);
-    expect(actions[0]).toMatchObject({ sql: 'SCAN 0 MATCH user:* COUNT 100' });
+    expect(actions.map((a) => a.id)).toEqual(['open-structure', 'select-top', 'copy-name']);
+    expect(actions[1]).toMatchObject({ sql: 'SCAN 0 MATCH user:* COUNT 100' });
   });
 });

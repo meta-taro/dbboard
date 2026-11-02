@@ -21,15 +21,12 @@ describe('workspace.selectTable', () => {
 });
 
 describe('workspace.selectTable on a Redis-compatible connection', () => {
-  it('opens the prefix as a bounded SCAN, since a prefix has no structure', () => {
+  it('opens the Structure tab, which is the key browser there', () => {
     workspace.connections = [{ id: 'cache', name: 'cache', kind: 'redis' }];
     workspace.connectionId = 'cache';
     workspace.setTab('query');
     workspace.selectTable({ schema: null, name: 'user:*' });
-    expect(workspace.activeTab).toBe('query');
-    expect(workspace.queryRequest?.sql).toBe('SCAN 0 MATCH user:* COUNT 100');
-    // Read-only: no table identity, so the grid offers no editing.
-    expect(workspace.queryRequest?.table).toBeUndefined();
+    expect(workspace.activeTab).toBe('structure');
     workspace.connections = [];
     workspace.connectionId = '';
   });

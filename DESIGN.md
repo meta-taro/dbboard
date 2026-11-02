@@ -198,6 +198,18 @@ Each component will get a small style spec in this file once it is built.
   leftover width — otherwise `space-between` splits it either side of the name
   and every row starts at a different indent.
 
+### Built — key browser (ADR-0166)
+
+- **Key browser** — the Structure tab of a Redis-compatible connection, whose
+  "tables" are key prefixes with no columns. A fixed `320px` column lists the
+  prefix's keys in monospace, one row each, with the same accent-weak fill
+  and ring as a selected commit for the picked key; a ghost *Load more* sits
+  under the list while the scan has further to go. The rest of the width is
+  the picked key: its name at heading size, then a two-column `Type` /
+  `Expires` list, then the value — a string in a `bg.code` block that wraps,
+  everything else in the same bordered grid the history views use. A value
+  that filled its page says it is the first page, rather than looking whole.
+
 ### Built — history views (ADR-0165)
 
 - **Commits tab** — a fourth tab, drawn only for a connection that keeps
