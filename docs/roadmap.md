@@ -25,7 +25,6 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.21** | History you can read | Read-only views of the history a versioned database already keeps ([ADR-0165](decisions.md)). A MySQL connection that turns out to be Dolt gains a commit log, a row's history, a diff between two commits with changed cells marked, and who last changed each row. Nothing writes: no commit, checkout or merge from dbboard in this slot. MariaDB system-versioned tables and branch switching wait for the next slot that has room |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
@@ -51,6 +50,15 @@ Neon branches are a different kind of history. They branch a whole database
 rather than tracking rows, and they are reached through Neon's management
 API rather than the connection. They belong with the Neon adapter, not in
 this table.
+
+**Redis-compatible stores** come through one adapter
+([ADR-0166](decisions.md)): Amazon MemoryDB, Amazon ElastiCache, Valkey,
+Redis and Upstash all speak the Redis protocol, so they share it the way
+Neon and Supabase share the Postgres adapter. It starts read-only, browsing
+keys by prefix and showing each value in a view for its type. Writes come
+later, through the write policy (ADR-0087). MemoryDB is the first one asked
+for; reaching a MemoryDB cluster from outside its network through an SSH
+tunnel is the open question.
 
 MCP verbs hold no slot either, for the same reason and with one condition
 attached: a verb is additive only while it opens nothing an operator had not

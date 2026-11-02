@@ -14641,3 +14641,98 @@ what did this value change?" A raw grid does not answer that.
 - MariaDB system-versioned tables are expected to reuse the row-history
   view. If they turn out not to fit, this ADR is amended rather than worked
   around.
+
+**Amendment (2026-11-02), when the views were built.**
+
+- The views are a fourth tab, *Commits*, drawn only when the connection's
+  commit log answers `available: true`. Asking costs one read per connection
+  (and per database within it) as it comes into view; a failed answer counts
+  as "no history" and hides the tab, so a server that refuses the read never
+  shows an error for a feature it does not have.
+- They reach the adapter through `McpService`, as Tauri commands, like every
+  other read. None is offered to an MCP agent in this slot: they are
+  read-only, so the risk is low, but a verb is easier to add than to take
+  back, and agents already reach the same tables through `run_read_query`.
+- A diff is always taken against the previous commit in the log, which for a
+  merge is its first parent. Choosing two arbitrary commits waits until
+  someone asks for it.
+- CI does not start a Dolt server. The parsers are tested against responses
+  recorded from Dolt 2.6.2, and `crates/dbboard-mysql/tests/dolt_history.rs`
+  runs the whole path against a live server when `DBBOARD_DOLT_URL` is set.
+  A container in CI would catch an upstream rename sooner. It is left out
+  because CI starts no live database for any adapter today, and the first
+  one deserves a decision of its own rather than arriving inside a feature.
+
+## ADR-0166 — One adapter for every Redis-compatible store, read-only first (2026-11-02)
+
+**Status.** Proposed.
+
+**Context.** Redis/Valkey has been on the list of new adapters since the
+list existed, with no design behind it. The maintainer now wants Amazon
+MemoryDB, which raises the question of how MemoryDB should arrive: as its
+own adapter, or as one of several services that speak the same protocol.
+
+MemoryDB, Amazon ElastiCache, Valkey, Redis and Upstash all speak RESP, the
+Redis protocol. They differ in how they are reached (TLS, ACL users,
+cluster mode, a private network), not in the commands a client sends.
+
+This is also the first store dbboard would read that has no tables and no
+schema. A key holds one of several types (string, hash, list, set, sorted
+set, stream), and the only way to find keys is to scan for them.
+
+**Decision.**
+
+- **One adapter, several labels.** A `dbboard-redis` adapter speaks RESP.
+  MemoryDB, ElastiCache, Valkey, Redis and Upstash are entries in the
+  connection list that share it, the same way Neon and Supabase share the
+  Postgres adapter (ADR-0018). The label changes what the list shows and
+  which defaults the form fills in, not the code path.
+- **Read-only, enforced twice.** Like MongoDB (ADR-0095), the read path is
+  an allowlist of commands *and* of their arguments, failing closed on
+  anything it does not recognise. Reads use `SCAN`, `HSCAN`, `SSCAN` and
+  `ZSCAN` rather than `KEYS` or `HGETALL` on unknown sizes, because a
+  single `KEYS *` blocks a production server. As the second layer, the
+  connection form recommends an ACL user without write commands
+  (`-@write -@dangerous`). That is the server refusing a write, which is
+  what `BEGIN TRANSACTION READ ONLY` is for Postgres; dbboard says so on
+  screen when the user it was given can write.
+- **Browsing is by key prefix.** The sidebar groups keys by a delimiter
+  (`:` by default), loaded a page of `SCAN` at a time and never all at
+  once. Opening a key shows its value in a view for its type, with its TTL.
+  Large values are bounded, as result sets already are.
+- **The MCP surface takes one allowlisted command.** `run_read_query`
+  accepts a command and its arguments for a Redis connection, as it accepts
+  a command document for MongoDB. No pub/sub, no blocking commands, no
+  scripts (`EVAL`, `FUNCTION`), no `MONITOR`.
+- **No writes in the first version.** Editing a value, setting a TTL or
+  deleting a key comes later and goes through the write policy (ADR-0087).
+- **TLS by default; the password in the keychain.** MemoryDB requires both
+  TLS and an ACL user, so the MemoryDB entry offers no way to turn TLS off.
+
+**Alternatives.**
+
+- **A MemoryDB-only adapter.** It would be the same code as a Redis
+  adapter with a narrower name, and the next request (ElastiCache, Upstash)
+  would need another.
+- **Showing raw command output only.** That is a terminal, not a viewer.
+  The point of a client is the value shown in a shape that fits its type.
+- **Relying on the ACL user alone.** Many operators hand out the default
+  user. The command allowlist is what holds when they do.
+
+**Consequences.**
+
+- A new crate dependency (a RESP client with cluster support and rustls).
+  It gets its own short ADR when it is chosen, as every non-trivial crate
+  does.
+- **Cluster mode and tunnels do not mix simply.** MemoryDB always runs in
+  cluster mode, and a cluster answers with the addresses of other nodes
+  (`MOVED`). Through an SSH tunnel to one node, those addresses are not
+  reachable. Whether dbboard maps each node through the tunnel, or supports
+  only connections that can reach every node, is decided when the adapter
+  is built. Until then MemoryDB works only from a machine inside its
+  network.
+- The browse views are new kinds of screen, not reuses of the grid. Their
+  layout follows DESIGN.md and is reviewed with screenshots taken against
+  fictional data, as every screenshot is (ADR-0098).
+- Like every new adapter it holds no release slot. It ships in whichever
+  release is open when it is finished.

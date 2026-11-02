@@ -17,6 +17,7 @@ mod ai;
 mod browse;
 mod connections;
 mod dump;
+mod history;
 mod queries;
 mod restore;
 mod startup;
@@ -162,6 +163,10 @@ pub fn run() {
             browse::run_read_query,
             browse::browse_page,
             browse::update_row,
+            history::commit_log,
+            history::row_history,
+            history::commit_diff,
+            history::blame,
             queries::list_saved_queries,
             queries::save_query,
             queries::delete_saved_query,

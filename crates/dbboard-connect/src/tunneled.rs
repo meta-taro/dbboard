@@ -13,7 +13,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dbboard_core::{
-    AuthAdmin, FunctionIntrospection, RealtimeChannels, StorageAdmin, ViewIntrospection,
+    AuthAdmin, FunctionIntrospection, HistoryReader, RealtimeChannels, StorageAdmin,
+    ViewIntrospection,
 };
 use dbboard_core::{
     Capabilities, DatabaseAdapter, DbResult, ForeignKey, QueryResult, TableInfo, TableSchema,
@@ -108,11 +109,16 @@ impl DatabaseAdapter for TunneledAdapter {
     fn realtime(&self) -> Option<&dyn RealtimeChannels> {
         self.inner.realtime()
     }
+
+    fn history(&self) -> Option<&dyn HistoryReader> {
+        self.inner.history()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbboard_core::{BlameEntry, Commit, CommitDiff, RowHistory, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Inner adapter that records how often each delegated method was called
@@ -193,6 +199,72 @@ mod tests {
                 .unwrap(),
             7
         );
+    }
+
+    /// An inner adapter that keeps history, the way a Dolt server does.
+    struct HistoryAdapter;
+
+    #[async_trait]
+    impl HistoryReader for HistoryAdapter {
+        async fn commit_log(&self, _limit: usize) -> DbResult<Vec<Commit>> {
+            Ok(Vec::new())
+        }
+        async fn row_history(
+            &self,
+            _table: &TableInfo,
+            _key: &[(String, Value)],
+            _limit: usize,
+        ) -> DbResult<RowHistory> {
+            Ok(RowHistory {
+                columns: Vec::new(),
+                versions: Vec::new(),
+            })
+        }
+        async fn diff(&self, _table: &TableInfo, _from: &str, _to: &str) -> DbResult<CommitDiff> {
+            Ok(CommitDiff {
+                columns: Vec::new(),
+                changes: Vec::new(),
+            })
+        }
+        async fn blame(&self, _table: &TableInfo) -> DbResult<Vec<BlameEntry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl DatabaseAdapter for HistoryAdapter {
+        fn id(&self) -> &'static str {
+            "mysql"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                has_history: true,
+                ..Capabilities::default()
+            }
+        }
+        async fn ping(&self) -> DbResult<()> {
+            Ok(())
+        }
+        async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+            Ok(Vec::new())
+        }
+        async fn query(&self, _sql: &str) -> DbResult<QueryResult> {
+            Ok(QueryResult::empty())
+        }
+        fn history(&self) -> Option<&dyn HistoryReader> {
+            Some(self)
+        }
+    }
+
+    /// A Dolt server behind a bastion is still Dolt. Without the delegation
+    /// the capability said "has history" while the reader said "none", and
+    /// the history views stayed empty for exactly the connections that go
+    /// through SSH.
+    #[test]
+    fn history_passes_through() {
+        let adapter = tunneled(Arc::new(HistoryAdapter));
+        assert!(adapter.capabilities().has_history);
+        assert!(adapter.history().is_some());
     }
 
     #[test]

@@ -281,6 +281,7 @@ Get it from the [latest release](https://github.com/meta-taro/dbboard/releases/l
 | Platform | Asset |
 |---|---|
 | Windows x64 | `dbboard-mcp-windows-x86_64.exe` |
+| Windows ARM64 | `dbboard-mcp-windows-aarch64.exe` |
 | macOS (Intel + Apple silicon) | `dbboard-mcp-macos-universal` |
 
 The desktop app's installer does **not** contain it. They are separate
@@ -411,6 +412,12 @@ most "it still doesn't work" reports:
 Also note that the binary an agent runs is whatever absolute path its
 config points at. Installing a new dbboard release does not update a
 path that points into a local `target/release/` build tree.
+
+**Nor does it update the copy you installed.** The desktop installer never
+touches `dbboard-mcp`. Upgrading the app leaves the server at whatever
+version you last copied in, so replace it from the same release each time
+you upgrade (close the agent first on Windows), then check that
+`get_server_info` reports the same version as the app.
 
 ## Running more than one agent at once
 

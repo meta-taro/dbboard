@@ -9,6 +9,8 @@
   import QueryPanel from '$lib/components/QueryPanel.svelte';
   import StructurePanel from '$lib/components/StructurePanel.svelte';
   import ComparePanel from '$lib/components/ComparePanel.svelte';
+  import VersionedPanel from '$lib/components/VersionedPanel.svelte';
+  import { versioned } from '$lib/versioned/versioned.svelte';
   import BackupDialog from '$lib/components/BackupDialog.svelte';
   import RestoreDialog from '$lib/components/RestoreDialog.svelte';
   import AiPanel from '$lib/components/AiPanel.svelte';
@@ -32,11 +34,32 @@
     resetSidebarWidth,
   } from '$lib/layout/splitter';
 
-  const tabs: { id: MainTab; labelKey: MessageKey }[] = [
+  const baseTabs: { id: MainTab; labelKey: MessageKey }[] = [
     { id: 'query', labelKey: 'tab-query' },
     { id: 'structure', labelKey: 'tab-structure' },
     { id: 'compare', labelKey: 'tab-compare' },
   ];
+  // The Commits tab exists only where there is history to read (ADR-0165): a
+  // tab that is always empty on every other connection would be noise.
+  const tabs = $derived(
+    versioned.available
+      ? [...baseTabs, { id: 'versioned' as MainTab, labelKey: 'tab-versioned' as MessageKey }]
+      : baseTabs,
+  );
+
+  // Ask each connection, and each database within it, once as it comes into
+  // view. A Dolt server holds one history per database.
+  $effect(() => {
+    void versioned.load(workspace.connectionId, workspace.database);
+  });
+
+  // Leaving for a connection without history must not strand the user on a
+  // tab that is no longer drawn.
+  $effect(() => {
+    if (workspace.activeTab === 'versioned' && !versioned.available && !versioned.loading) {
+      workspace.setTab('query');
+    }
+  });
 
   /** Detaches the `ui:locale` subscription when the shell goes away. */
   let unlistenLocale: UnlistenFn | null = null;
@@ -297,6 +320,11 @@
       <div class="tabpane" hidden={workspace.activeTab !== 'compare'}>
         <ComparePanel />
       </div>
+      {#if versioned.available}
+        <div class="tabpane" hidden={workspace.activeTab !== 'versioned'}>
+          <VersionedPanel />
+        </div>
+      {/if}
     </div>
   </main>
 </div>

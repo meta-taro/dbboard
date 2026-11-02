@@ -198,6 +198,33 @@ Each component will get a small style spec in this file once it is built.
   leftover width — otherwise `space-between` splits it either side of the name
   and every row starts at a different indent.
 
+### Built — history views (ADR-0165)
+
+- **Commits tab** — a fourth tab, drawn only for a connection that keeps
+  history. A bar on top holds the table picker, a two-segment toggle
+  (*What changed* / *Last changed by*), a ghost *Reload*, and a muted
+  "read only" note pushed to the right edge, so the promise is on screen
+  wherever the history is. Picking a table in the sidebar while this tab is
+  open keeps the tab and reads that table's history, rather than jumping to
+  Structure.
+- **Commit list** — a fixed `300px` column: message on the first line,
+  `hash · author · date` muted on the second, the hash in the accent and in
+  monospace. The selected commit takes the same accent-weak fill and ring as
+  a selected tab.
+- **Diff grid** — one row per changed row, led by a pill that names the
+  change: `+ Added` on success, `~ Modified` on warning, `− Removed` on
+  danger, each a weak fill under a hairline in its own colour. The symbol and
+  the word travel with the colour, never the colour alone. In a modified row
+  only the changed cells are marked: a warning-weak fill, the old value
+  struck through and muted, an arrow, then the new value. An added or removed
+  row marks no cells, because the pill already says the whole row changed;
+  a removed row's values are struck through. A text *History* link at the
+  row's end opens that row's history when the table has a primary key.
+- **Row history dialog** — the modal frame of the other dialogs, widened to
+  `960px`. One row per commit that changed the row, newest first: the commit
+  (hash, message, author and date stacked) and then the row's values, each
+  cell that differs from the version below it marked as in the diff grid.
+
 ## Layout
 
 - Default: three-pane (sidebar / editor / results) inspired by classic

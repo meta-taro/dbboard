@@ -25,7 +25,8 @@ import { BROWSE_ROWS } from '$lib/sidebar/menu';
 import { browseQuery, usesStructuredQuery } from '$lib/sql/build';
 import { latency, untilPainted } from '$lib/status/latency.svelte';
 
-export type MainTab = 'query' | 'structure' | 'compare';
+// `versioned` is drawn only for a connection that keeps history (ADR-0165).
+export type MainTab = 'query' | 'structure' | 'compare' | 'versioned';
 
 class Workspace {
   connections = $state<ConnectionView[]>([]);
@@ -192,10 +193,12 @@ class Workspace {
   }
 
   /** Focus a table and jump to the Structure tab — clicking a table in the
-   *  sidebar is a request to inspect it. */
+   *  sidebar is a request to inspect it. On the Commits tab it stays put:
+   *  there, inspecting a table means reading its history, which that tab
+   *  follows the sidebar to do (ADR-0165). */
   selectTable(table: TableInfo): void {
     this.selectedTable = table;
-    this.activeTab = 'structure';
+    if (this.activeTab !== 'versioned') this.activeTab = 'structure';
   }
 
   setTab(tab: MainTab): void {
