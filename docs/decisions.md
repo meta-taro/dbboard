@@ -14642,6 +14642,27 @@ what did this value change?" A raw grid does not answer that.
   view. If they turn out not to fit, this ADR is amended rather than worked
   around.
 
+**Amendment (2026-11-02), when the views were built.**
+
+- The views are a fourth tab, *Commits*, drawn only when the connection's
+  commit log answers `available: true`. Asking costs one read per connection
+  (and per database within it) as it comes into view; a failed answer counts
+  as "no history" and hides the tab, so a server that refuses the read never
+  shows an error for a feature it does not have.
+- They reach the adapter through `McpService`, as Tauri commands, like every
+  other read. None is offered to an MCP agent in this slot: they are
+  read-only, so the risk is low, but a verb is easier to add than to take
+  back, and agents already reach the same tables through `run_read_query`.
+- A diff is always taken against the previous commit in the log, which for a
+  merge is its first parent. Choosing two arbitrary commits waits until
+  someone asks for it.
+- CI does not start a Dolt server. The parsers are tested against responses
+  recorded from Dolt 2.6.2, and `crates/dbboard-mysql/tests/dolt_history.rs`
+  runs the whole path against a live server when `DBBOARD_DOLT_URL` is set.
+  A container in CI would catch an upstream rename sooner. It is left out
+  because CI starts no live database for any adapter today, and the first
+  one deserves a decision of its own rather than arriving inside a feature.
+
 ## ADR-0166 — One adapter for every Redis-compatible store, read-only first (2026-11-02)
 
 **Status.** Proposed.

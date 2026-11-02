@@ -18,7 +18,16 @@ public API is the HTTP contract in
   changed cells marked, and who last changed each row. `/capabilities` gains
   `has_history`, which is `true` only for such a connection. Every read runs
   in the same read-only transaction an agent's query does, and nothing
-  commits, checks out or merges. The screens that show it come next.
+  commits, checks out or merges.
+- **A Commits tab shows that history** (ADR-0165). It appears only on a
+  connection that keeps history, and for one table at a time. *What changed*
+  lists the commits and, for the one picked, the rows it added, modified or
+  removed, each changed cell beside its old value. *Last changed by* shows
+  the commit that last touched each row. Either opens the history of a
+  single row: its value at every commit that changed it, newest first. A
+  change is marked by a symbol and a word as well as a colour. The tab reads
+  only; it offers no commit, checkout or merge. It works the same through an
+  SSH bastion.
 
 ## [0.20.1] — 2026-11-02 — Edits go back where the rows came from
 
