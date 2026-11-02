@@ -109,6 +109,27 @@ as the passphrase travels separately**.
      `.dbbx` import);
    - tester trying the app → [`../internal-testing.md`](../internal-testing.md).
 
+### If the recipient also runs `dbboard-mcp`
+
+**The desktop installer does not update the MCP server.** They are separate
+files from the same release, and `setup.exe` never touches
+`%LOCALAPPDATA%\dbboard\dbboard-mcp.exe`. After an upgrade the app reports
+the new version while the agent keeps talking to whatever MCP build was
+copied there by hand. On 0.20.1 this was found on two machines at once: the
+app was 0.20.1 and the MCP server was still 0.10.0 from August.
+
+So whenever you hand over a new release to someone who uses an AI agent with
+dbboard, hand over the MCP server with it:
+
+1. Download `dbboard-mcp-windows-x86_64.exe` (or `-aarch64.exe` on ARM)
+   from the same release and check it against `SHA256SUMS.txt`.
+2. Close every agent that has the server open (Claude Code, Claude Desktop).
+   Windows will not replace a running executable.
+3. Copy it over `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe`, keeping that name,
+   so the path the agent is registered with stays the same.
+4. Start the agent and ask for `get_server_info`. The version it returns
+   must match the app's.
+
 ---
 
 ## Do-not-commit hygiene
