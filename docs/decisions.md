@@ -14767,8 +14767,12 @@ set, stream), and the only way to find keys is to scan for them.
   `SCAN` named instead.
 - **The sidebar lists prefixes.** `list_tables` samples up to 10,000 keys and
   offers one entry per first segment before `:` (`user:*`), at most 500,
-  each named by the `MATCH` pattern that browses it. The views shaped for
-  each key type are the next step and land separately.
+  each named by the `MATCH` pattern that browses it. Picking one opens the
+  Structure tab as a key browser: a prefix has no columns, and its keys are
+  what there is to look at. The browser reads through the same read-only
+  path a typed query does, one bounded page at a time (`HSCAN`, `SSCAN`,
+  `LRANGE 0 99`, `ZRANGE 0 99`, `XREVRANGE … COUNT 100`), so it never meets
+  the size check that refuses a whole collection.
 - **A slot after all.** Adapters hold no slot, but the only slot left before
   this was v1.0, which is not a feature release, so the roadmap gains v0.22
   for this adapter rather than letting it ride under the wrong headline.

@@ -21,10 +21,17 @@ public API is the HTTP contract in
   keys and reports where to go on; in cluster mode it walks every primary.
   `HGETALL`, `SMEMBERS`, `LRANGE 0 -1` and the like check the collection's
   size first and refuse what would not fit in a result. The sidebar lists key
-  prefixes (`user:*`) and opens one as a bounded `SCAN`. MemoryDB is always
+  prefixes (`user:*`), and *Select top* on one is a bounded `SCAN`. MemoryDB is always
   a cluster and always TLS. The MCP server's `run_read_query` takes the same
   command lines on a `redis` connection. These stores cannot be reached
   through an SSH tunnel yet.
+- **A key browser for Redis-compatible connections** (ADR-0166). Their
+  Structure tab lists the keys under the picked prefix a page at a time, and
+  shows the picked key's type, how long it has left, and its value laid out
+  for its type: a string as text, a hash as field and value, a list numbered
+  from zero, a set as members, a sorted set as member and score, and a stream
+  newest first. Every read is one bounded page, so the browser never asks for
+  a whole collection.
 
 ## [0.21.0] — 2026-11-02 — History you can read
 

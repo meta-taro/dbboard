@@ -21,7 +21,7 @@ import {
   type DatabaseListing,
 } from '$lib/api';
 import { drawsDatabaseLevel } from './databases';
-import { BROWSE_ROWS, hasStructure } from '$lib/sidebar/menu';
+import { BROWSE_ROWS } from '$lib/sidebar/menu';
 import { browseQuery, usesStructuredQuery } from '$lib/sql/build';
 import { latency, untilPainted } from '$lib/status/latency.svelte';
 
@@ -197,13 +197,6 @@ class Workspace {
    *  there, inspecting a table means reading its history, which that tab
    *  follows the sidebar to do (ADR-0165). */
   selectTable(table: TableInfo): void {
-    // A Redis-compatible store lists key prefixes, which have no structure;
-    // looking at one means reading its keys (ADR-0166).
-    if (!hasStructure(this.connection?.kind)) {
-      this.selectedTable = table;
-      this.browse(table);
-      return;
-    }
     this.selectedTable = table;
     if (this.activeTab !== 'versioned') this.activeTab = 'structure';
   }
