@@ -79,7 +79,7 @@ ignore = [
 
     # ---- zip, via the Tauri updater ---------------------------------------
     #
-    # tauri-plugin-updater (latest 2.14 still requires zip ^4) extracts a zip
+    # tauri-plugin-updater (latest 2.14, and the 3.0 alphas, still require zip ^4) extracts a zip
     # only on Windows, and only when the downloaded update is a zip. dbboard's
     # update artifact is the NSIS -setup.exe, never a zip, and the updater
     # checks the minisign signature before extracting anything, so only an
@@ -88,6 +88,7 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip 4 via tauri-plugin-updater: SUID/SGID bits kept on extract. Windows-only zip path, never used for dbboard's .exe updates, and only after the signature check; fix needs zip 9, which the updater does not take" },
     { id = "RUSTSEC-2026-0368", reason = "zip 4 via tauri-plugin-updater: extracted symlinks can point outside the target. Windows-only zip path, never used for dbboard's .exe updates, and only after the signature check; fix needs zip 9, which the updater does not take" },
     { id = "RUSTSEC-2026-0369", reason = "zip 4 via tauri-plugin-updater: Unix permissions applied on extract. Windows-only zip path, never used for dbboard's .exe updates, and only after the signature check; fix needs zip 9, which the updater does not take" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 4 via tauri-plugin-updater: extracting a symlink entry with a huge declared size aborts the process. Windows-only zip path, never used for dbboard's .exe updates, and only after the signature check; fix needs zip 9, which the updater (3.0 alphas included) does not take" },
 
     # ---- rsa -------------------------------------------------------------
     #
