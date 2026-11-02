@@ -23,8 +23,8 @@
 use async_trait::async_trait;
 use dbboard_core::{
     classify_read_only, too_many_rows_error, Capabilities, Column, ColumnInfo, DatabaseAdapter,
-    DbError, DbResult, ForeignKey, IndexInfo, QueryResult, ReadOnlyStatement, Row, SqlDialect,
-    TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
+    DbError, DbResult, ForeignKey, HistoryReader, IndexInfo, QueryResult, ReadOnlyStatement, Row,
+    SqlDialect, TableInfo, TableSchema, Value, MAX_RESULT_ROWS,
 };
 use futures_util::TryStreamExt;
 use sqlx::mysql::{
@@ -36,6 +36,8 @@ use sqlx::{
 };
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+
+mod dolt;
 
 /// Small pool: a desktop client issues one statement at a time, so a handful
 /// of connections is plenty and keeps server-side resource use modest.
@@ -144,6 +146,9 @@ pub struct MySqlAdapter {
     /// Cached [`TimeoutStyle`] for this server, shared with the free `async fn`
     /// that runs the read-only transaction.
     timeout_style: Arc<AtomicU8>,
+    /// Present when the server answered `dolt_version()` at connect time
+    /// (ADR-0165). Asked once per connection; any failure means plain `MySQL`.
+    history: Option<dolt::DoltHistory>,
 }
 
 impl MySqlAdapter {
@@ -176,11 +181,28 @@ impl MySqlAdapter {
             .connect_with(harden_ssl_mode(options))
             .await
             .map_err(|e| classify_error(&e))?;
+        let timeout_style = Arc::new(AtomicU8::new(TimeoutStyle::Unprobed.as_u8()));
+        let history = is_dolt(&pool).await.then(|| dolt::DoltHistory {
+            pool: pool.clone(),
+            timeout_style: Arc::clone(&timeout_style),
+        });
         Ok(Self {
             pool,
-            timeout_style: Arc::new(AtomicU8::new(TimeoutStyle::Unprobed.as_u8())),
+            timeout_style,
+            history,
         })
     }
+}
+
+/// Whether the server is Dolt. Detection is by asking, never by the
+/// connection's name or URL (ADR-0165), and a failure of any kind — the
+/// function not existing on `MySQL`, a permission error, a timeout — means
+/// "not Dolt" rather than an error on screen.
+async fn is_dolt(pool: &MySqlPool) -> bool {
+    sqlx::raw_sql(dolt::DETECT_SQL)
+        .fetch_optional(pool)
+        .await
+        .is_ok()
 }
 
 #[async_trait]
@@ -204,8 +226,13 @@ impl DatabaseAdapter for MySqlAdapter {
             // all-or-nothing.
             has_atomic_restore: true,
             has_list_databases: true,
+            has_history: self.history.is_some(),
             ..Capabilities::default()
         }
+    }
+
+    fn history(&self) -> Option<&dyn HistoryReader> {
+        self.history.as_ref().map(|h| h as &dyn HistoryReader)
     }
 
     async fn ping(&self) -> DbResult<()> {
@@ -1227,6 +1254,7 @@ mod tests {
         let adapter = super::MySqlAdapter {
             pool,
             timeout_style: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            history: None,
         };
         let caps = adapter.capabilities();
         assert!(caps.has_describe_table);
@@ -1235,6 +1263,10 @@ mod tests {
         assert!(caps.has_foreign_keys);
         assert!(caps.has_atomic_restore);
         assert!(caps.has_list_databases);
+        // Plain MySQL keeps no history; only a server that answers
+        // `dolt_version()` turns this on (ADR-0165).
+        assert!(!caps.has_history);
+        assert!(adapter.history().is_none());
         assert_eq!(adapter.id(), "mysql");
     }
 
