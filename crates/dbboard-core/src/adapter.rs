@@ -18,8 +18,8 @@ use crate::capabilities::{
     ViewIntrospection,
 };
 use crate::{
-    check_read_only, DbError, DbResult, ForeignKey, IndexInfo, QueryResult, SqlDialect, TableInfo,
-    TableSchema,
+    check_read_only, DbError, DbResult, ForeignKey, HistoryReader, IndexInfo, QueryResult,
+    SqlDialect, TableInfo, TableSchema,
 };
 
 #[async_trait]
@@ -238,6 +238,15 @@ pub trait DatabaseAdapter: Send + Sync {
     fn realtime(&self) -> Option<&dyn RealtimeChannels> {
         None
     }
+
+    /// The history this connection's database keeps, when it keeps one
+    /// (ADR-0165). Implementors that return `Some` must also set
+    /// [`Capabilities::has_history`].
+    ///
+    /// [`Capabilities::has_history`]: crate::Capabilities::has_history
+    fn history(&self) -> Option<&dyn HistoryReader> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -251,9 +260,10 @@ mod tests {
         AuthAdmin, Capabilities, FunctionIntrospection, RealtimeChannels, StorageAdmin,
         ViewIntrospection,
     };
+    use crate::Commit;
     use crate::{
-        Column, ColumnInfo, DbError, DbResult, ForeignKey, QueryResult, Row, TableInfo,
-        TableSchema, Value,
+        BlameEntry, Column, ColumnInfo, CommitDiff, DbError, DbResult, ForeignKey, HistoryReader,
+        QueryResult, Row, RowHistory, TableInfo, TableSchema, Value,
     };
 
     struct NoopAdapter;
@@ -286,6 +296,33 @@ mod tests {
     impl RealtimeChannels for FullAdapter {}
 
     #[async_trait]
+    impl HistoryReader for FullAdapter {
+        async fn commit_log(&self, _limit: usize) -> DbResult<Vec<Commit>> {
+            Ok(Vec::new())
+        }
+        async fn row_history(
+            &self,
+            _table: &TableInfo,
+            _key: &[(String, Value)],
+            _limit: usize,
+        ) -> DbResult<RowHistory> {
+            Ok(RowHistory {
+                columns: Vec::new(),
+                versions: Vec::new(),
+            })
+        }
+        async fn diff(&self, _table: &TableInfo, _from: &str, _to: &str) -> DbResult<CommitDiff> {
+            Ok(CommitDiff {
+                columns: Vec::new(),
+                changes: Vec::new(),
+            })
+        }
+        async fn blame(&self, _table: &TableInfo) -> DbResult<Vec<BlameEntry>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
     impl DatabaseAdapter for FullAdapter {
         fn id(&self) -> &'static str {
             "full"
@@ -304,6 +341,7 @@ mod tests {
                 has_foreign_keys: true,
                 has_list_indexes: true,
                 has_list_databases: true,
+                has_history: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -369,6 +407,9 @@ mod tests {
         fn realtime(&self) -> Option<&dyn RealtimeChannels> {
             Some(self)
         }
+        fn history(&self) -> Option<&dyn HistoryReader> {
+            Some(self)
+        }
     }
 
     #[test]
@@ -393,6 +434,8 @@ mod tests {
         assert!(adapter.auth().is_none());
         assert!(adapter.storage().is_none());
         assert!(adapter.realtime().is_none());
+        assert_eq!(caps.has_history, adapter.history().is_some());
+        assert!(adapter.history().is_none());
     }
 
     #[test]
@@ -411,6 +454,8 @@ mod tests {
         assert!(adapter.auth().is_some());
         assert!(adapter.storage().is_some());
         assert!(adapter.realtime().is_some());
+        assert_eq!(caps.has_history, adapter.history().is_some());
+        assert!(adapter.history().is_some());
     }
 
     /// Most engines hold one database per connection (docs/every-database.md),

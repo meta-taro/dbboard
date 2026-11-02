@@ -77,7 +77,8 @@ async fn capabilities_reports_adapter_id_and_flags() {
     // The restore flags `has_execute`/`has_atomic_restore` (ADR-0051) turned
     // `true` once libSQL grew per-statement + atomic execution — it has real
     // multi-statement transactions. `has_list_databases` (ADR-0162) is `false`:
-    // a libSQL connection is one database. The id is what `TursoAdapter::id` returns.
+    // a libSQL connection is one database. `has_history` (ADR-0165) is `false`:
+    // libSQL keeps no history of its own. The id is what `TursoAdapter::id` returns.
     assert_eq!(
         body,
         json!({
@@ -95,6 +96,7 @@ async fn capabilities_reports_adapter_id_and_flags() {
                 "has_foreign_keys": true,
                 "has_list_indexes": true,
                 "has_list_databases": false,
+                "has_history": false,
             }
         })
     );
