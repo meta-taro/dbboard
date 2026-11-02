@@ -7,7 +7,18 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — History you can read
+
+### Added
+
+- **A MySQL connection that turns out to be Dolt can read its history**
+  (ADR-0165). The adapter asks the server for `dolt_version()` once when it
+  connects, and when the answer comes back it reads the commit log, one
+  row's past values, the rows that differ between two commits with the
+  changed cells marked, and who last changed each row. `/capabilities` gains
+  `has_history`, which is `true` only for such a connection. Every read runs
+  in the same read-only transaction an agent's query does, and nothing
+  commits, checks out or merges. The screens that show it come next.
 
 ## [0.20.1] — 2026-11-02 — Edits go back where the rows came from
 
