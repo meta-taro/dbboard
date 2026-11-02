@@ -53,6 +53,8 @@ use dbboard_connect::{
 
 use crate::export::{self, ExportOutcome};
 use crate::target::Target;
+
+mod history;
 use dbboard_core::{
     browse_page as core_browse_page, build_update_sql, classify_write, dialect_for_adapter_id,
     diff_snapshots, plan_dump as core_plan_dump, plan_restore as core_plan_restore,
@@ -62,6 +64,7 @@ use dbboard_core::{
     Row, SchemaDiff, TableInfo, TableSchema, TableSnapshot, UpdatePlan, Value, WriteBackError,
     WritePolicyViolation, WriteStatement,
 };
+pub use history::{CommitLogView, DEFAULT_COMMIT_LIMIT, DEFAULT_ROW_VERSIONS, MAX_COMMIT_LIMIT};
 use serde::Serialize;
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -516,6 +519,13 @@ pub enum ServiceError {
     /// structured query (ADR-0093), not through `SELECT ... ORDER BY`.
     #[error("adapter {0:?} has no SQL dialect, so its tables are not read as keyset pages")]
     NotPageable(String),
+
+    /// The connection keeps no history of its own (ADR-0165), so there is no
+    /// row history, diff or blame to read. The commit log answers this case
+    /// with `available: false` instead, because that is how a client finds
+    /// out whether to show the history views at all.
+    #[error("adapter {0:?} keeps no history to read")]
+    NoHistory(String),
 
     /// The connection exists, but the operator has not set `mcp_write` on
     /// it, so the MCP write tools will not touch it (ADR-0087). Says where

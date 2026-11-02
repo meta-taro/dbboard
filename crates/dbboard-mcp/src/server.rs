@@ -917,6 +917,9 @@ fn to_mcp(err: &ServiceError) -> McpError {
         | ServiceError::WriteBack(_)
         | ServiceError::NotEditable(_)
         | ServiceError::NotPageable(_)
+        // Asking a database that keeps no history for its history is the
+        // caller's mistake, and asking again will not change the server.
+        | ServiceError::NoHistory(_)
         | ServiceError::NotDumpable(_)
         | ServiceError::NotRestorable(_)
         | ServiceError::WriteNotEnabled(_)

@@ -26,6 +26,12 @@ import type {
   AiProviderView,
 } from '$lib/ai/panel';
 import type {
+  BlameEntry,
+  CommitDiff,
+  CommitLogView,
+  RowHistory,
+} from '$lib/versioned/view';
+import type {
   AvailableUpdate,
   DownloadEvent,
   StalledUpdate,
@@ -285,6 +291,45 @@ export const updateRow = (
     edits,
     database: database ?? null,
   });
+
+// --- History a versioned database keeps (ADR-0165) ------------------------
+//
+// Read only. `available: false` from `commitLog` means the connection keeps no
+// history, and the other three would refuse; the History tab is hidden then.
+
+export const commitLog = (
+  connectionId: string,
+  database?: string | null,
+  limit?: number,
+): Promise<CommitLogView> =>
+  invoke('commit_log', { connectionId, database: database ?? null, limit: limit ?? null });
+
+// `key` is the row's primary key, columns and values as the diff or blame
+// returned them — the same shape `updateRow` takes.
+export const rowHistory = (
+  connectionId: string,
+  table: TableInfo,
+  key: KeyColumn[],
+  database?: string | null,
+): Promise<RowHistory> =>
+  invoke('row_history', { connectionId, table, key, database: database ?? null, limit: null });
+
+// `from` and `to` are any ref the database resolves: a hash, a branch, HEAD.
+export const commitDiff = (
+  connectionId: string,
+  table: TableInfo,
+  from: string,
+  to: string,
+  database?: string | null,
+): Promise<CommitDiff> =>
+  invoke('commit_diff', { connectionId, table, from, to, database: database ?? null });
+
+export const blame = (
+  connectionId: string,
+  table: TableInfo,
+  database?: string | null,
+): Promise<BlameEntry[]> =>
+  invoke('blame', { connectionId, table, database: database ?? null });
 
 // Absolute path of the connections.toml this app reads — shown in the
 // first-run empty state and the connection manager's footer.
