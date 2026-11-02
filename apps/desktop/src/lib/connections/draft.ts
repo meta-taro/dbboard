@@ -101,12 +101,20 @@ export type FormField =
 // Turso (embedded/libSQL HTTP) and D1 (HTTP) have no host:port to forward, so
 // the tunnel section is hidden for them — matching the backend's
 // `ConnectionKind::supports_ssh_tunnel`.
+//
+// The Redis-compatible services that live in a private network are here too
+// (ADR-0166). Upstash is not: it is reached over the internet, and the backend
+// accepts a bastion for it only because all five are one backend kind.
 export const SSH_TUNNELABLE_KINDS: readonly ConnectionKind[] = [
   'postgres',
   'mysql',
   'neon',
   'supabase',
   'aurora_dsql',
+  'redis',
+  'valkey',
+  'memorydb',
+  'elasticache',
 ] as const;
 
 export function supportsSshTunnel(kind: ConnectionKind): boolean {

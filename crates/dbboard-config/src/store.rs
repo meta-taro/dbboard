@@ -396,13 +396,13 @@ impl ConnectionKind {
     /// would appear to work and then silently stop. Refusing is the honest
     /// answer until a tunnel can front every member.
     ///
-    /// A Redis-compatible store is excluded for both reasons at once
-    /// (ADR-0166). In cluster mode, which `MemoryDB` always uses, the server
-    /// answers with the addresses of other nodes, and a forward to one node
-    /// does not reach them. And the managed services require TLS, whose
-    /// certificate names the real host, not the loopback forward. Until the
-    /// tunnel can map every node and keep the server name, such a store is
-    /// reached from a machine inside its network.
+    /// A Redis-compatible store has both problems at once — in cluster mode
+    /// the server names other nodes to connect to, and the managed services
+    /// require TLS for a certificate that names the real host — and is
+    /// tunnelled anyway (ADR-0166), because a private network is where
+    /// `MemoryDB` and `ElastiCache` live. It is not done by rewriting the URL:
+    /// the client keeps every host name, and each one is forwarded on its own
+    /// as the client reaches it, over one SSH session.
     #[must_use]
     pub fn supports_ssh_tunnel(&self) -> bool {
         matches!(
@@ -412,6 +412,7 @@ impl ConnectionKind {
                 | ConnectionKind::Neon { .. }
                 | ConnectionKind::Supabase { .. }
                 | ConnectionKind::AuroraDsql { .. }
+                | ConnectionKind::Redis { .. }
         )
     }
 }
@@ -1294,10 +1295,36 @@ keyring_url_ref = "dbboard.cache.url"
             );
             assert_eq!(kind.adapter_label(), label);
             assert!(
-                !kind.supports_ssh_tunnel(),
-                "{service} through a bastion is refused"
+                kind.supports_ssh_tunnel(),
+                "{service} can be reached through a bastion"
             );
         }
+    }
+
+    /// A managed store usually lives inside a private network, so the bastion
+    /// block is accepted on a Redis-compatible entry (ADR-0166).
+    #[test]
+    fn a_redis_entry_may_carry_an_ssh_block() {
+        let toml_src = r#"
+version = 1
+[[connections]]
+id   = "cache"
+name = "Cache"
+kind = "redis"
+keyring_url_ref = "dbboard.cache.url"
+service = "memorydb"
+
+[connections.ssh]
+host = "bastion.example"
+user = "deploy"
+key_path = "/k"
+fingerprint = "SHA256:abc"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("redis + ssh parses");
+        assert_eq!(
+            file.connections[0].ssh.as_ref().map(|s| s.host.as_str()),
+            Some("bastion.example")
+        );
     }
 
     /// The defaults are left out of the file, so an entry written by this

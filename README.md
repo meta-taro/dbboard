@@ -199,8 +199,10 @@ refused before anything is sent, and so is `KEYS`, which blocks the server:
 until it has the keys asked for, across every node of a cluster. A command
 that returns a whole hash, set, list or sorted set checks its size first. The
 sidebar lists key prefixes (`user:*`). MemoryDB always runs in cluster mode
-and over TLS, and none of these stores can be reached through an SSH tunnel
-yet. See [ADR-0166](docs/decisions.md) and [ADR-0167](docs/decisions.md).
+and over TLS. A store inside a private network is reached through an SSH
+bastion: every node the cluster names is forwarded on its own, and the URL
+keeps the host its TLS certificate names. See [ADR-0166](docs/decisions.md)
+and [ADR-0167](docs/decisions.md).
 
 Aurora DSQL also has a second connection kind, `aurora-dsql-iam`
 ([ADR-0036](docs/decisions.md)): instead of a manually supplied URL
@@ -316,7 +318,8 @@ keychain. Import is skip-and-report on id/reference conflicts. See
 
 A connection to a database that only listens on a bastion's `localhost`
 can reach it through an **SSH tunnel**: the desktop connection form has an
-**SSH tunnel** section (for the Postgres family and MySQL) to set the
+**SSH tunnel** section (for the Postgres family, MySQL and the Redis-compatible
+stores) to set the
 bastion host/port/user, key- or password-based auth, and a mandatory
 server host-key pin (fingerprint or `known_hosts`). dbboard opens a
 pure-Rust local port forward (russh) and rewrites the connection URL to the

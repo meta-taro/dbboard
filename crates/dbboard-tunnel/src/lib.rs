@@ -23,7 +23,7 @@ mod error;
 mod fingerprint;
 mod tunnel;
 
-pub use config::{HostKeyPolicy, SshAuth, SshTunnelConfig};
+pub use config::{HostKeyPolicy, SshAuth, SshBastion, SshTunnelConfig};
 pub use error::{TunnelError, TunnelResult};
 pub use fingerprint::{fingerprint_matches, normalize_fingerprint};
-pub use tunnel::{open, probe_host_key, SshTunnel};
+pub use tunnel::{connect, open, probe_host_key, SshSession, SshTunnel};

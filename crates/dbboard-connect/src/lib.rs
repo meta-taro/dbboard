@@ -15,6 +15,7 @@
 
 mod backend;
 mod config;
+mod redis_route;
 mod scope;
 mod ssh;
 mod tunneled;

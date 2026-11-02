@@ -361,7 +361,7 @@ export const en = {
   "conn-redis-cluster-hint":
     "Tick this when the server runs in cluster mode: dbboard then follows its redirects and scans every node.",
   "conn-memorydb-cluster-hint":
-    "MemoryDB always runs in cluster mode. It also only accepts TLS, so the URL starts with rediss://, and it is reached from inside its VPC: an SSH tunnel cannot front it yet.",
+    "MemoryDB always runs in cluster mode. It also only accepts TLS, so the URL starts with rediss://. From outside its VPC, connect through an SSH bastion below: every node is forwarded, and the URL stays as it is.",
   "conn-redis-url-hint":
     "redis://user:password@host:6379, or rediss:// for TLS. The whole URL is stored in the OS keychain, never in connections.toml.",
   "conn-redis-read-only-hint":
@@ -919,7 +919,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-redis-cluster-hint":
     "サーバがクラスターモードで動いているときにチェックします。dbboard がリダイレクトをたどり、全ノードを走査します。",
   "conn-memorydb-cluster-hint":
-    "MemoryDB は常にクラスターモードで動きます。また TLS しか受け付けないため URL は rediss:// で始まり、VPC の内側から接続します（SSH トンネル経由にはまだ対応していません）。",
+    "MemoryDB は常にクラスターモードで動きます。また TLS しか受け付けないため URL は rediss:// で始まります。VPC の外からは、下の SSH 踏み台を経由して接続します。全ノードが転送され、URL はそのままで構いません。",
   "conn-redis-url-hint":
     "redis://ユーザー:パスワード@ホスト:6379、TLS なら rediss://。URL 全体が OS のキーチェーンに保存され、connections.toml には書き込まれません。",
   "conn-redis-read-only-hint":

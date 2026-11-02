@@ -13,7 +13,9 @@ mod adapter;
 mod command;
 mod read_only;
 mod reply;
+mod route;
 
 pub use adapter::{RedisAdapter, RedisConfig};
 pub use command::{split, SplitError};
 pub use read_only::{classify, ReadPlan, Shape, SizeGuard, Violation, MAX_SCAN_COUNT};
+pub use route::{AddressMap, MapFuture};

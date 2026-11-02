@@ -58,8 +58,8 @@ Redis and Upstash all speak the Redis protocol, so they share it the way
 Neon and Supabase share the Postgres adapter. It starts read-only, browsing
 keys by prefix and showing each value in a view for its type. Writes come
 later, through the write policy (ADR-0087). MemoryDB is the first one asked
-for; reaching a MemoryDB cluster from outside its network through an SSH
-tunnel is the open question.
+for, and is reached from outside its network through an SSH bastion that
+forwards every node of the cluster.
 
 MCP verbs hold no slot either, for the same reason and with one condition
 attached: a verb is additive only while it opens nothing an operator had not

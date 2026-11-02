@@ -14777,6 +14777,41 @@ set, stream), and the only way to find keys is to scan for them.
   this was v1.0, which is not a feature release, so the roadmap gains v0.22
   for this adapter rather than letting it ride under the wrong headline.
 
+**Amendment (2026-11-03): through an SSH bastion after all.**
+
+The *No SSH tunnel, for now* point above is reversed. Both of its reasons
+are met at the one place a host name becomes a socket address, rather than
+by rewriting the URL.
+
+- **The client keeps every host name.** The `redis` crate asks a pluggable
+  resolver for the socket of each `host:port` it connects to: the one in the
+  URL, and in cluster mode each node the server names. TLS still uses the
+  host name for the server name and the certificate check; only the socket
+  changes. So the URL is written as it would be from inside the network.
+- **Each node gets its own forward, over one session.** `dbboard-tunnel`
+  splits `open` into `connect` (an authenticated session) and
+  `SshSession::forward`, which can be called any number of times. The
+  connection factory gives the adapter an `AddressMap` that opens a forward
+  the first time a `host:port` is asked for and reuses it after. The
+  adapter holds the map, and the map holds the session and the forwards, so
+  no `TunneledAdapter` wrapper is needed.
+- **The adapter still knows nothing about SSH.** `AddressMap` is a trait in
+  `dbboard-redis`; the SSH implementation lives in `dbboard-connect`, which
+  already depends on both sides.
+- **Upstash is not offered a bastion in the form.** It is reached over the
+  internet. The backend accepts one for it anyway, because all five
+  services are one connection kind.
+- **What it needs from the bastion.** The bastion has to be able to reach
+  every node, and resolves their names itself. That is the case for a
+  bastion inside the same VPC, which is the usual setup.
+
+Checked against a three-primary Valkey cluster behind an `sshd` on loopback:
+every key on every primary is read, and the bastion's log shows one
+`direct-tcpip` channel per node. TLS through the bastion is covered by the
+crate's own code path — it passes the host name, not the forward, to the TLS
+connector — rather than by a live test, for want of a certificate a test
+could trust.
+
 ## ADR-0167 — The `redis` crate for the Redis-compatible adapter (2026-11-02)
 
 **Status.** Accepted.
