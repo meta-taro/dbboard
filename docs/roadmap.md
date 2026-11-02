@@ -52,6 +52,15 @@ rather than tracking rows, and they are reached through Neon's management
 API rather than the connection. They belong with the Neon adapter, not in
 this table.
 
+**Redis-compatible stores** come through one adapter
+([ADR-0166](decisions.md)): Amazon MemoryDB, Amazon ElastiCache, Valkey,
+Redis and Upstash all speak the Redis protocol, so they share it the way
+Neon and Supabase share the Postgres adapter. It starts read-only, browsing
+keys by prefix and showing each value in a view for its type. Writes come
+later, through the write policy (ADR-0087). MemoryDB is the first one asked
+for; reaching a MemoryDB cluster from outside its network through an SSH
+tunnel is the open question.
+
 MCP verbs hold no slot either, for the same reason and with one condition
 attached: a verb is additive only while it opens nothing an operator had not
 already opened by hand. One that needs a new permission carries that
