@@ -25,7 +25,9 @@ export function tableMenuActions(
 ): TableMenuAction[] {
   const count = countQuery(table, kind);
   return [
-    { id: 'open-structure' },
+    // A key prefix has no schema to describe (ADR-0166), so the entry is
+    // omitted for the same reason the count is below.
+    ...(hasStructure(kind) ? [{ id: 'open-structure' as const }] : []),
     {
       id: 'select-top',
       n: BROWSE_ROWS,
@@ -38,4 +40,10 @@ export function tableMenuActions(
     ...(count === null ? [] : [{ id: 'count-rows' as const, sql: count }]),
     { id: 'copy-name', text: tableKey(table) },
   ];
+}
+
+/** Whether a table of this connection kind has a structure to open. A
+ *  Redis-compatible store lists key prefixes, which have none (ADR-0166). */
+export function hasStructure(kind: string | undefined): boolean {
+  return kind !== 'redis';
 }

@@ -25,6 +25,7 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
+| **v0.22** | Redis-compatible stores, read-only | One adapter for Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache and Upstash ([ADR-0166](decisions.md)). New adapters hold no slot, but this one is finished while the only slot left is v1.0, which is not a feature release, so it gets its own. Commands go through an allowlist of commands and arguments, keys are found with `SCAN` and never `KEYS`, a cluster is walked node by node, and the sidebar lists key prefixes. Views shaped for each key type follow in the same slot if they are ready; if not, they move to the next one |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. The nine 9%-translated locales (#181) ride along |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,

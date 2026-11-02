@@ -337,6 +337,21 @@ export const en = {
   "conn-kind-aurora_dsql_iam": "Aurora DSQL (IAM)",
   "conn-kind-firestore": "Cloud Firestore",
   "conn-kind-mongodb": "MongoDB",
+  "conn-kind-redis": "Redis",
+  "conn-kind-valkey": "Valkey",
+  "conn-kind-memorydb": "Amazon MemoryDB",
+  "conn-kind-elasticache": "Amazon ElastiCache",
+  "conn-kind-upstash": "Upstash",
+  // Redis-compatible stores (ADR-0166): one adapter, read-only.
+  "conn-redis-cluster": "Cluster mode",
+  "conn-redis-cluster-hint":
+    "Tick this when the server runs in cluster mode: dbboard then follows its redirects and scans every node.",
+  "conn-memorydb-cluster-hint":
+    "MemoryDB always runs in cluster mode. It also only accepts TLS, so the URL starts with rediss://, and it is reached from inside its VPC: an SSH tunnel cannot front it yet.",
+  "conn-redis-url-hint":
+    "redis://user:password@host:6379, or rediss:// for TLS. The whole URL is stored in the OS keychain, never in connections.toml.",
+  "conn-redis-read-only-hint":
+    "dbboard only reads: write commands are refused before they are sent. Give it an ACL user without write commands (-@write -@dangerous) so the server refuses them too.",
   // SSH tunnel (ADR-0069)
   "conn-ssh-section": "SSH tunnel",
   "conn-ssh-enable": "Connect through an SSH tunnel",
@@ -868,6 +883,20 @@ const ja: Partial<Record<MessageKey, string>> = {
   "conn-kind-aurora_dsql_iam": "Aurora DSQL (IAM)",
   "conn-kind-firestore": "Cloud Firestore",
   "conn-kind-mongodb": "MongoDB",
+  "conn-kind-redis": "Redis",
+  "conn-kind-valkey": "Valkey",
+  "conn-kind-memorydb": "Amazon MemoryDB",
+  "conn-kind-elasticache": "Amazon ElastiCache",
+  "conn-kind-upstash": "Upstash",
+  "conn-redis-cluster": "クラスターモード",
+  "conn-redis-cluster-hint":
+    "サーバがクラスターモードで動いているときにチェックします。dbboard がリダイレクトをたどり、全ノードを走査します。",
+  "conn-memorydb-cluster-hint":
+    "MemoryDB は常にクラスターモードで動きます。また TLS しか受け付けないため URL は rediss:// で始まり、VPC の内側から接続します（SSH トンネル経由にはまだ対応していません）。",
+  "conn-redis-url-hint":
+    "redis://ユーザー:パスワード@ホスト:6379、TLS なら rediss://。URL 全体が OS のキーチェーンに保存され、connections.toml には書き込まれません。",
+  "conn-redis-read-only-hint":
+    "dbboard は読むだけです。書き込みコマンドは送る前に拒否します。書き込み権限のない ACL ユーザー（-@write -@dangerous）を渡せば、サーバ側でも拒否されます。",
   // SSH トンネル (ADR-0069)
   "conn-ssh-section": "SSH トンネル",
   "conn-ssh-enable": "SSH トンネル経由で接続する",

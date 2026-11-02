@@ -15,6 +15,7 @@ members = [
     "crates/dbboard-firestore",
     "crates/dbboard-mcp",
     "crates/dbboard-mongodb",
+    "crates/dbboard-redis",
     "crates/dbboard-mysql",
     "crates/dbboard-openai",
     "crates/dbboard-postgres",
@@ -74,6 +75,10 @@ dbboard-firestore = { path = "crates/dbboard-firestore" }
 # read commands that also walks the document for writing aggregation stages —
 # and the adapter is built on top of it, not beside it.
 dbboard-mongodb = { path = "crates/dbboard-mongodb" }
+# Redis-compatible adapter (ADR-0166): Redis, Valkey, MemoryDB, ElastiCache and
+# Upstash. Read-only through an allowlist of commands *and* arguments, like
+# MongoDB, because RESP carries no hint of which commands write.
+dbboard-redis = { path = "crates/dbboard-redis" }
 # SSH local-forward tunnel (ADR-0069): a pure-Rust SSH client (russh) that
 # opens a bastion-gated database's port on a loopback address so the ordinary
 # TCP adapters connect through it. Leaf crate — depends on russh + tokio only,
@@ -131,6 +136,13 @@ libsql = { version = "0.9", default-features = false, features = [
 # the same call reqwest's `without_url()` makes in the Firestore adapter: the
 # caller already knows which connection it picked.
 mongodb = { version = "3.8", features = ["redact-errors"] }
+# RESP client for the Redis-compatible adapter (ADR-0166, ADR-0167). Default
+# features off; `tokio-rustls-comp` resolves onto the rustls 0.23 already in
+# the tree with no aws-lc-sys (ADR-0034), checked with `cargo tree -i`.
+# `cluster-async` is for MemoryDB and other cluster-mode servers, whose keyspace
+# is walked node by node with `route_command`. Like the MongoDB driver it
+# trusts the webpki root bundle rather than the OS store.
+redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots", "cluster-async"] }
 # WHATWG URL parser (already in the tree via reqwest). Used by the
 # connection factory to extract a database URL's host:port as the SSH
 # forward target and to rewrite it to the loopback forward address

@@ -19,6 +19,7 @@ dbboard-config = { workspace = true }
 dbboard-d1 = { path = "../dbboard-d1" }
 dbboard-firestore = { path = "../dbboard-firestore" }
 dbboard-mongodb = { path = "../dbboard-mongodb" }
+dbboard-redis = { path = "../dbboard-redis" }
 dbboard-mysql = { path = "../dbboard-mysql" }
 dbboard-postgres = { path = "../dbboard-postgres" }
 dbboard-turso = { path = "../dbboard-turso" }

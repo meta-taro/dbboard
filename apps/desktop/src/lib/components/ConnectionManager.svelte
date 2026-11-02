@@ -30,6 +30,8 @@
     buildSshInput,
     buildSshEditInput,
     CONNECTION_KINDS,
+    isRedisKind,
+    alwaysCluster,
     type ConnectionForm,
     type ConnectionKind,
     type FormField,
@@ -270,6 +272,11 @@
     aurora_dsql_iam: 'conn-kind-aurora_dsql_iam',
     firestore: 'conn-kind-firestore',
     mongodb: 'conn-kind-mongodb',
+    redis: 'conn-kind-redis',
+    valkey: 'conn-kind-valkey',
+    memorydb: 'conn-kind-memorydb',
+    elasticache: 'conn-kind-elasticache',
+    upstash: 'conn-kind-upstash',
   };
 
   // Spelled out rather than built from the colour name, so that adding a
@@ -774,6 +781,23 @@
             </label>
             <span class="hint">{i18n.t('conn-firestore-emulator-hint')}</span>
           {/if}
+          <!-- Cluster mode sits above the URL it changes how to read. MemoryDB
+               only runs as a cluster, so there the box is ticked and fixed,
+               and says why, rather than offering a choice that cannot work. -->
+          {#if f === 'url' && isRedisKind(form.kind)}
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={form.cluster || alwaysCluster(form.kind)}
+                disabled={alwaysCluster(form.kind)}
+                onchange={(e) => (form.cluster = e.currentTarget.checked)}
+              />
+              <span>{i18n.t('conn-redis-cluster')}</span>
+            </label>
+            <span class="hint">
+              {i18n.t(alwaysCluster(form.kind) ? 'conn-memorydb-cluster-hint' : 'conn-redis-cluster-hint')}
+            </span>
+          {/if}
           {#if !(f === 'url' && usesDsnFields(form.kind)) && !(f === 'service_account' && form.use_emulator)}
             <label class="field">
               <span class="label">{i18n.t(FIELD_LABEL[f])}</span>
@@ -821,6 +845,10 @@
                    password is in it rather than in its own box. -->
               {#if f === 'uri'}
                 <span class="hint">{i18n.t('conn-field-uri-hint')}</span>
+              {/if}
+              {#if f === 'url' && isRedisKind(form.kind)}
+                <span class="hint">{i18n.t('conn-redis-url-hint')}</span>
+                <span class="hint">{i18n.t('conn-redis-read-only-hint')}</span>
               {/if}
               <!-- `database` is shared with Aurora DSQL (IAM), where it is
                    required and means something else entirely — hence the guard. -->

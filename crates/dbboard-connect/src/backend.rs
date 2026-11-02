@@ -20,6 +20,7 @@ use dbboard_firestore::FirestoreAdapter;
 use dbboard_mongodb::MongoAdapter;
 use dbboard_mysql::{MySqlAdapter, MySqlConfig};
 use dbboard_postgres::{AuroraDsqlIamParams, PostgresAdapter, PostgresConfig};
+use dbboard_redis::RedisAdapter;
 use dbboard_tunnel::SshTunnel;
 use dbboard_turso::TursoAdapter;
 
@@ -195,6 +196,14 @@ pub async fn connect_adapter(config: BackendConfig) -> DbResult<Arc<dyn Database
             // for a plain `mongodb://`, so without this ping an unreachable
             // server would only surface on the first query.
             let adapter = MongoAdapter::connect(cfg).await?;
+            adapter.ping().await?;
+            Ok(Arc::new(adapter))
+        }
+        BackendConfig::Redis(cfg) => {
+            // `connect` opens the connection (and, for a cluster, reads its
+            // slot map), so a ping here only confirms the ACL user may run
+            // commands at all.
+            let adapter = RedisAdapter::connect(cfg).await?;
             adapter.ping().await?;
             Ok(Arc::new(adapter))
         }

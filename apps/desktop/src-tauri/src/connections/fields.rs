@@ -4,7 +4,7 @@
 //! those inputs blank, and blank means "keep the stored secret". Everything
 //! here is therefore a projection of the non-secret half of a stored entry.
 
-use dbboard_config::ConnectionKind;
+use dbboard_config::{ConnectionKind, RedisService};
 
 use crate::{lock_poisoned, AppState};
 
@@ -66,6 +66,12 @@ pub(crate) enum EditFieldsDto {
     #[serde(rename = "mongodb")]
     MongoDb {
         database: Option<String>,
+    },
+    /// The URL is the secret and stays in the keychain (ADR-0166); the two
+    /// plain settings beside it come back so the form opens as it was saved.
+    Redis {
+        cluster: bool,
+        service: RedisService,
     },
 }
 
@@ -165,6 +171,12 @@ pub(crate) fn connection_edit_fields(
         },
         ConnectionKind::MongoDb { database, .. } => EditFieldsDto::MongoDb {
             database: database.clone(),
+        },
+        ConnectionKind::Redis {
+            cluster, service, ..
+        } => EditFieldsDto::Redis {
+            cluster: *cluster,
+            service: *service,
         },
         ConnectionKind::AuroraDsqlIam {
             endpoint,
