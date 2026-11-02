@@ -148,7 +148,8 @@ pub struct RunReadQueryParams {
     /// The query text, in whatever language the connection speaks: a single
     /// read-only SQL statement (`SELECT` / `WITH` / `EXPLAIN`) on a SQL
     /// connection, a Firestore `StructuredQuery` as JSON on a `firestore`
-    /// one, or a `MongoDB` command document as JSON on a `mongodb` one. Named
+    /// one, a `MongoDB` command document as JSON on a `mongodb` one, or one
+    /// allowlisted command line (`HGETALL user:1`) on a `redis` one. Named
     /// `sql` for compatibility with agents that already call this
     /// tool; renaming it would break them for a connection kind most of them
     /// will never see.
@@ -353,7 +354,7 @@ Use it when you have just been handed this server and want to know what it is fo
     }
 
     #[tool(
-        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, turso-remote, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb). `turso` is a local SQLite/libSQL file and `turso-remote` is a Turso Cloud database reached over the network; both take the same SQL, so the distinction matters for latency and for where the data lives, not for what you send. Check the kind before you write a query: every kind above except firestore and mongodb takes SQL, firestore takes a Firestore StructuredQuery as JSON, and mongodb takes a MongoDB command document as JSON. Each entry also carries its position in the list, counting from zero, and the identity mark a person gave it (a color and a short tag) when it has one — position is what move_connection takes, and the mark is the operator's own shorthand rather than anything the database knows. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
+        description = "List the database connections dbboard is configured with. Returns each connection's id, display name, and kind (turso, turso-remote, d1, postgres, mysql, neon, supabase, aurora-dsql, aurora-dsql-iam, firestore, mongodb, redis). `turso` is a local SQLite/libSQL file and `turso-remote` is a Turso Cloud database reached over the network; both take the same SQL, so the distinction matters for latency and for where the data lives, not for what you send. Check the kind before you write a query: every kind above except firestore, mongodb and redis takes SQL, firestore takes a Firestore StructuredQuery as JSON, mongodb takes a MongoDB command document as JSON, and redis (Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache or Upstash) takes one Redis command line. Each entry also carries its position in the list, counting from zero, and the identity mark a person gave it (a color and a short tag) when it has one — position is what move_connection takes, and the mark is the operator's own shorthand rather than anything the database knows. Secrets are never included, and an operator may have replaced a connection's id and name with a neutral alias — the id you get back is the one to use, and there is no other. Use a returned id with the other tools."
     )]
     async fn list_connections(&self) -> Result<CallToolResult, McpError> {
         self.connection_list().await
@@ -383,7 +384,7 @@ Use it when you have just been handed this server and want to know what it is fo
     #[tool(
         description = "Register a new database connection in dbboard, so a database you just set up is usable straight away without asking a person to retype its path.         
 
-Only connections that need NO credential can be registered: `turso` (a SQLite/libSQL file on this machine — pass `path`) and `firestore` (the local Firestore emulator — pass `project_id` and `base_url`). Everything else — Postgres, MySQL, Neon, Supabase, Aurora DSQL, D1, MongoDB, Turso Cloud — needs a password, token, or key, and is refused permanently: no setting enables it, so do not rephrase or retry. Say the operator must add it in the dbboard app, and do not send the credential here.         
+Only connections that need NO credential can be registered: `turso` (a SQLite/libSQL file on this machine — pass `path`) and `firestore` (the local Firestore emulator — pass `project_id` and `base_url`). Everything else — Postgres, MySQL, Neon, Supabase, Aurora DSQL, D1, MongoDB, Redis, Turso Cloud — needs a password, token, or key, and is refused permanently: no setting enables it, so do not rephrase or retry. Say the operator must add it in the dbboard app, and do not send the credential here.         
 
 The connection is created read-only: `mcp_write` stays off and only a human can turn it on. A dbboard window that is already open lists it after a refresh."
     )]
@@ -517,7 +518,7 @@ A dbboard window that is already open shows the old order until it is refreshed.
     }
 
     #[tool(
-        description = "Run a single READ-ONLY query and return the rows. On a SQL connection that is one statement (SELECT / WITH / EXPLAIN); writes, DDL, multi-statement batches, and locking reads (FOR UPDATE) are rejected at the database engine, not just by string matching. On a firestore connection the query is not SQL at all: send a Firestore StructuredQuery as JSON, with or without the outer structuredQuery wrapper — a bounded example is {`from`: [{`collectionId`: `orders`}], `limit`: 100} with real double quotes. Firestore reads through an endpoint that has no write form, so there is nothing there to reject. On a mongodb connection send a command document as JSON — a bounded example is {`find`: `orders`, `limit`: 100} with real double quotes, and `aggregate`, `count`, `distinct`, `listCollections`, and `listIndexes` are accepted too; anything that writes is refused. Returns at most `max_rows` rows (default 200, hard cap 1000) plus a `truncated` flag telling you there were more."
+        description = "Run a single READ-ONLY query and return the rows. On a SQL connection that is one statement (SELECT / WITH / EXPLAIN); writes, DDL, multi-statement batches, and locking reads (FOR UPDATE) are rejected at the database engine, not just by string matching. On a firestore connection the query is not SQL at all: send a Firestore StructuredQuery as JSON, with or without the outer structuredQuery wrapper — a bounded example is {`from`: [{`collectionId`: `orders`}], `limit`: 100} with real double quotes. Firestore reads through an endpoint that has no write form, so there is nothing there to reject. On a mongodb connection send a command document as JSON — a bounded example is {`find`: `orders`, `limit`: 100} with real double quotes, and `aggregate`, `count`, `distinct`, `listCollections`, and `listIndexes` are accepted too; anything that writes is refused. On a redis connection send one command line such as `HGETALL user:1` or `SCAN 0 MATCH user:* COUNT 100`: only reads from an allowlist are sent (GET, MGET, HGET, HGETALL, LRANGE, SMEMBERS, ZRANGE, XRANGE with COUNT, the SCAN family, TYPE, TTL, INFO and similar); writes, scripts, blocking and pub/sub commands are refused, and so is KEYS, which blocks the server — use SCAN, which follows its cursor until it has COUNT keys and reports where to go on. A command that would return a whole hash, set, list or sorted set checks its size first and is refused when it is over the cap. Returns at most `max_rows` rows (default 200, hard cap 1000) plus a `truncated` flag telling you there were more."
     )]
     async fn run_read_query(
         &self,
@@ -1221,6 +1222,12 @@ mod tests {
         assert!(
             description.contains("find"),
             "run_read_query names mongodb but not the command it takes"
+        );
+        // A Redis connection takes neither SQL nor JSON, and the one command
+        // an agent reaches for first, KEYS, is the one it must not send.
+        assert!(
+            description.contains("redis") && description.contains("SCAN"),
+            "run_read_query does not tell the agent what a redis connection expects"
         );
     }
 

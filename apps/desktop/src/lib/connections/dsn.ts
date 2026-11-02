@@ -73,6 +73,14 @@ const NON_DSN_KINDS: readonly ConnectionKind[] = [
   'firestore',
   'mongodb',
   'aurora_dsql_iam',
+  // Redis-compatible stores (ADR-0166): the URL is short and the services hand
+  // it over whole (`rediss://user:password@host:port`), often with an ACL user
+  // the five boxes would make easy to drop.
+  'redis',
+  'valkey',
+  'memorydb',
+  'elasticache',
+  'upstash',
 ] as const;
 
 export function usesDsnFields(kind: ConnectionKind): boolean {

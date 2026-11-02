@@ -25,7 +25,8 @@ const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
 /// precisely so it does not become a second README to keep in step.
 const WHAT_IT_IS: &str = "A local-first desktop client for several databases at once: \
 libSQL/Turso, Cloudflare D1, Postgres (including Neon, Supabase and Aurora DSQL), MySQL, \
-Firestore and MongoDB. Connections, credentials and notes live on the operator's machine; \
+Firestore, MongoDB and Redis-compatible stores (Redis, Valkey, Amazon MemoryDB, Amazon \
+ElastiCache, Upstash). Connections, credentials and notes live on the operator's machine; \
 nothing is hosted. This MCP server is the read-only surface an agent gets: it can look at \
 schemas and run read-only queries, while writing, dumping and restoring stay in the hands \
 of whoever is sitting at the app.";
@@ -73,6 +74,7 @@ const ADAPTER_KINDS: &[&str] = &[
     "aurora-dsql-iam",
     "firestore",
     "mongodb",
+    "redis",
 ];
 
 /// Split a `## [version] — date — headline` heading into its parts.

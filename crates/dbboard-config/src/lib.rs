@@ -80,7 +80,7 @@ pub use saved_queries::{
 pub use secrets::{InMemorySecretStore, KeyringStore, SecretError, SecretStore, KEYRING_SERVICE};
 pub use store::{
     default_history_path, default_path, ConnectionEntry, ConnectionFile, ConnectionKind, McpExport,
-    SshTunnelToml, CONFIG_VERSION,
+    RedisService, SshTunnelToml, CONFIG_VERSION,
 };
 pub use ui_command::{
     default_ui_command_path, default_ui_result_path, load_command_or_default,

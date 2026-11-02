@@ -138,6 +138,17 @@ pub enum ConfigError {
         reason: String,
     },
 
+    /// A service that only accepts TLS was given a URL without it — today an
+    /// Amazon `MemoryDB` entry whose URL is `redis://` rather than `rediss://`
+    /// (ADR-0166). Said up front, because the server's own answer to a plain
+    /// connection is a timeout that names no cause.
+    #[error("connection {id}: {service} only accepts TLS, so its URL must start with {scheme}")]
+    TlsRequired {
+        id: String,
+        service: &'static str,
+        scheme: &'static str,
+    },
+
     /// The DSN stored in the keychain for this connection could not be
     /// parsed, so the password the user asked to keep cannot be recovered
     /// (ADR-0080). Raised only on the save path: saving the edit anyway would

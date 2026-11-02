@@ -7,7 +7,24 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — Redis-compatible stores, read-only
+
+### Added
+
+- **Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache and Upstash connect
+  through one read-only adapter** (ADR-0166, ADR-0167). Each is its own entry
+  in the connection form; they differ only in the label and the defaults. A
+  query is one command line as `redis-cli` takes it (`HGETALL user:1`), and
+  only reads from an allowlist of commands and arguments are sent: writes,
+  scripts, blocking and pub/sub commands are refused first, and so is `KEYS`,
+  which blocks the server. `SCAN` follows its cursor until it has `COUNT`
+  keys and reports where to go on; in cluster mode it walks every primary.
+  `HGETALL`, `SMEMBERS`, `LRANGE 0 -1` and the like check the collection's
+  size first and refuse what would not fit in a result. The sidebar lists key
+  prefixes (`user:*`) and opens one as a bounded `SCAN`. MemoryDB is always
+  a cluster and always TLS. The MCP server's `run_read_query` takes the same
+  command lines on a `redis` connection. These stores cannot be reached
+  through an SSH tunnel yet.
 
 ## [0.21.0] — 2026-11-02 — History you can read
 

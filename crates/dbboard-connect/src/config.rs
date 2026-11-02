@@ -10,10 +10,13 @@
 
 use std::fmt;
 
-use dbboard_config::{ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind, SecretStore};
+use dbboard_config::{
+    ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind, RedisService, SecretStore,
+};
 use dbboard_d1::D1Config;
 use dbboard_firestore::{FirestoreConfig, FirestoreCredentials};
 use dbboard_mongodb::MongoConfig;
+use dbboard_redis::RedisConfig;
 
 use crate::ssh::{resolved_ssh_from_env, ResolvedSsh, SshEnv};
 
@@ -140,6 +143,9 @@ pub enum BackendConfig {
     /// password in its authority, so the whole struct is redacted in `Debug`
     /// exactly like the Postgres-wire URLs.
     MongoDb(MongoConfig),
+    /// A Redis-compatible store (ADR-0166). The URL carries the ACL user and
+    /// password, so the variant is redacted in `Debug` like the others.
+    Redis(RedisConfig),
 }
 
 impl BackendConfig {
@@ -175,6 +181,7 @@ impl fmt::Debug for BackendConfig {
             Self::Firestore(_) => f.write_str("Firestore(<redacted>)"),
             // The URI's authority carries the password.
             Self::MongoDb(_) => f.write_str("MongoDb(<redacted>)"),
+            Self::Redis(_) => f.write_str("Redis(<redacted>)"),
         }
     }
 }
@@ -387,6 +394,12 @@ fn attach_env_ssh(backend: BackendConfig, env: &EnvSnapshot) -> Result<BackendCo
         BackendConfig::MongoDb(_) => Err(ConfigError::SshUnsupportedKind {
             id: "env".to_string(),
             kind: "MongoDB",
+        }),
+        // Not reachable from the environment today, but refused for the
+        // reasons `ConnectionKind::supports_ssh_tunnel` gives should it be.
+        BackendConfig::Redis(_) => Err(ConfigError::SshUnsupportedKind {
+            id: "env".to_string(),
+            kind: "Redis",
         }),
     }
 }
@@ -723,12 +736,87 @@ fn entry_to_backend(
                 database: database.clone(),
             }))
         }
+        ConnectionKind::Redis {
+            keyring_url_ref,
+            cluster,
+            service,
+        } => redis_backend(&entry.id, secrets.get(keyring_url_ref)?, *cluster, *service),
     }
+}
+
+/// A Redis-compatible backend. `MemoryDB` is held to what the service
+/// itself requires (ADR-0166): it always runs in cluster mode, and it only
+/// accepts TLS, so the entry cannot turn either off — a plain `redis://` URL
+/// would otherwise fail with a timeout that says nothing about why.
+fn redis_backend(
+    id: &str,
+    url: String,
+    cluster: bool,
+    service: RedisService,
+) -> Result<BackendConfig, ConfigError> {
+    if service == RedisService::MemoryDb && !url.starts_with("rediss://") {
+        return Err(ConfigError::TlsRequired {
+            id: id.to_owned(),
+            service: service.label(),
+            scheme: "rediss://",
+        });
+    }
+    Ok(BackendConfig::Redis(RedisConfig {
+        url,
+        cluster: cluster || service == RedisService::MemoryDb,
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `MemoryDB` is held to what the service requires (ADR-0166): TLS, and
+    /// cluster mode whether or not the entry asked for it.
+    #[test]
+    fn memorydb_requires_tls_and_always_runs_as_a_cluster() {
+        let refused = redis_backend(
+            "cache",
+            "redis://reader:pw@cache.example:6379".into(),
+            false,
+            RedisService::MemoryDb,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(refused, ConfigError::TlsRequired { .. }),
+            "{refused}"
+        );
+        assert!(!refused.to_string().contains("pw@"), "{refused}");
+
+        let BackendConfig::Redis(cfg) = redis_backend(
+            "cache",
+            "rediss://reader:pw@cache.example:6379".into(),
+            false,
+            RedisService::MemoryDb,
+        )
+        .expect("tls url") else {
+            panic!("expected a Redis backend");
+        };
+        assert!(cfg.cluster);
+    }
+
+    #[test]
+    fn other_redis_services_take_the_entry_as_written() {
+        let BackendConfig::Redis(cfg) = redis_backend(
+            "cache",
+            "redis://127.0.0.1:6379".into(),
+            false,
+            RedisService::Valkey,
+        )
+        .expect("plain url") else {
+            panic!("expected a Redis backend");
+        };
+        assert!(!cfg.cluster);
+        assert_eq!(
+            format!("{:?}", BackendConfig::Redis(cfg)),
+            "Redis(<redacted>)"
+        );
+    }
     use dbboard_config::{ConnectionEntry, ConnectionFile, InMemorySecretStore, CONFIG_VERSION};
 
     fn empty_env() -> EnvSnapshot {
