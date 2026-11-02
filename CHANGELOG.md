@@ -7,7 +7,9 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased] — Edits go back where the rows came from
+## [Unreleased]
+
+## [0.20.1] — 2026-11-02 — Edits go back where the rows came from
 
 ### Fixed
 
