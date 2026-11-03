@@ -121,6 +121,8 @@ fn wire_id(config: &BackendConfig) -> &'static str {
         BackendConfig::AuroraDsql { .. } | BackendConfig::AuroraDsqlIam { .. } => "aurora-dsql",
         BackendConfig::Firestore(_) => "firestore",
         BackendConfig::MongoDb(_) => "mongodb",
+        // Every Redis-compatible service is one adapter (ADR-0166).
+        BackendConfig::Redis { .. } => "redis",
     }
 }
 
@@ -135,6 +137,7 @@ const WIRE_IDS: &[&str] = &[
     "aurora-dsql",
     "firestore",
     "mongodb",
+    "redis",
 ];
 
 #[test]

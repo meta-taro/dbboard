@@ -362,7 +362,7 @@ can reach it through an **SSH tunnel**: dbboard opens a local port
 forward over SSH, then rewrites the connection URL's host/port to the
 local end of that forward before the adapter dials. The tunnel is a
 cross-cutting `ssh` sub-table on any connection whose `kind` supports it
-(`postgres`, `neon`, `supabase`, `aurora-dsql`, `mysql`). The rest refuse
+(`postgres`, `neon`, `supabase`, `aurora-dsql`, `mysql`, `redis`). The rest refuse
 it rather than ignoring it, for three different reasons: `turso` is a
 local file and `d1`, `firestore` and `aurora-dsql-iam` are HTTPS APIs or
 mint their own endpoint, so none of them dial a `host:port` a forward
@@ -376,6 +376,16 @@ several hosts and `mongodb+srv://` discovers a whole replica set from
 DNS, so rewriting a single host would leave the driver failing over to
 members the tunnel never covered: working at first, then silently not
 (ADR-0096). See [ADR-0069](decisions.md) for the design.
+
+`redis` takes a tunnel too, but not by rewriting its URL (ADR-0166). A
+cluster names its other nodes only once the client is connected, and the
+managed services' TLS certificates name the real host. So dbboard opens one
+SSH session and, each time the client is about to connect to a
+`host:port` — the one in the URL or a node the cluster named — forwards that
+address on its own and connects there, while still asking for the host by
+name. The URL is written exactly as it would be from inside the network
+(`rediss://…@clustercfg.….amazonaws.com:6379`), and the bastion has to be
+able to reach every node.
 
 ```toml
 [[connections]]

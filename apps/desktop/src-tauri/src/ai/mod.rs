@@ -221,6 +221,8 @@ fn dialect_label_for_kind(kind: &ConnectionKind) -> Option<String> {
         ConnectionKind::Firestore { .. } => "firestore",
         // Same as Firestore: a document store with no SQL dialect to tag.
         ConnectionKind::MongoDb { .. } => "mongodb",
+        // No SQL dialect either; commands, not statements.
+        ConnectionKind::Redis { .. } => "redis",
     };
     dialect_for_adapter_id(adapter_id).map(|d| match d {
         SqlDialect::Sqlite => "sqlite".to_string(),

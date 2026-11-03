@@ -66,7 +66,7 @@ export function countRows(
  *  because a dialect is a *spelling* difference, and Firestore's is not one:
  *  it runs a `StructuredQuery` in JSON (ADR-0093), so no amount of quoting
  *  makes `SELECT * FROM …` reach it. */
-const STRUCTURED_QUERY_KINDS = ['firestore', 'mongodb'];
+const STRUCTURED_QUERY_KINDS = ['firestore', 'mongodb', 'redis'];
 
 /** Whether `kind` states its queries as a `StructuredQuery` instead of SQL.
  *
@@ -104,6 +104,25 @@ export function mongoFindCommand(table: TableInfo, n: number): string {
   return `{\n  "find": ${collection},\n  "limit": ${limit}\n}`;
 }
 
+/** The most one `SCAN` may ask for, matching the adapter's limit (ADR-0166). */
+const MAX_REDIS_SCAN_COUNT = 1000;
+
+/** A bounded `SCAN` over one key prefix of a Redis-compatible store.
+ *
+ *  A Redis "table" is a key prefix, and its name is the `MATCH` pattern that
+ *  finds its keys (ADR-0166), so it goes in as it is — quoted only when the
+ *  command line would otherwise split it at a space or read a quote or a
+ *  backslash as its own. */
+export function redisScan(table: TableInfo, n: number): string {
+  const count = Math.min(MAX_REDIS_SCAN_COUNT, Math.max(1, Math.floor(n)));
+  return `SCAN 0 MATCH ${redisArg(table.name)} COUNT ${count}`;
+}
+
+function redisArg(word: string): string {
+  if (word !== '' && /^[^\s"'\\]+$/.test(word)) return word;
+  return `"${word.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+}
+
 /** The "show me this table's first rows" query for a connection of `kind`,
  *  in whatever language that connection speaks. */
 export function browseQuery(
@@ -113,6 +132,7 @@ export function browseQuery(
 ): string {
   if (kind === 'firestore') return structuredQuery(table, n);
   if (kind === 'mongodb') return mongoFindCommand(table, n);
+  if (kind === 'redis') return redisScan(table, n);
   return selectTopN(table, n, dialectForKind(kind));
 }
 
@@ -128,5 +148,7 @@ export function countQuery(
 ): string | null {
   if (kind === 'firestore') return null;
   if (kind === 'mongodb') return `{ "count": ${JSON.stringify(table.name)} }`;
+  // Counting the keys under a prefix means walking every one of them.
+  if (kind === 'redis') return null;
   return countRows(table, dialectForKind(kind));
 }

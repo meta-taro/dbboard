@@ -302,6 +302,9 @@ fn kind_keyring_refs_mut(kind: &mut ConnectionKind) -> Vec<&mut String> {
         | ConnectionKind::AuroraDsql { keyring_url_ref }
         | ConnectionKind::MongoDb {
             keyring_url_ref, ..
+        }
+        | ConnectionKind::Redis {
+            keyring_url_ref, ..
         } => vec![keyring_url_ref],
         ConnectionKind::AuroraDsqlIam {
             keyring_secret_key_ref,

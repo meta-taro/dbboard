@@ -652,6 +652,9 @@ fn kind_label(kind: &ConnectionKind) -> &'static str {
         ConnectionKind::AuroraDsqlIam { .. } => "aurora-dsql-iam",
         ConnectionKind::Firestore { .. } => "firestore",
         ConnectionKind::MongoDb { .. } => "mongodb",
+        // The service (MemoryDB, Valkey, …) is a label for people; an agent
+        // needs to know which command language to speak, and it is one.
+        ConnectionKind::Redis { .. } => "redis",
     }
 }
 

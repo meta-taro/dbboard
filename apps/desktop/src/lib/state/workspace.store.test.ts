@@ -19,3 +19,15 @@ describe('workspace.selectTable', () => {
     expect(workspace.selectedTable).toEqual(orders);
   });
 });
+
+describe('workspace.selectTable on a Redis-compatible connection', () => {
+  it('opens the Structure tab, which is the key browser there', () => {
+    workspace.connections = [{ id: 'cache', name: 'cache', kind: 'redis' }];
+    workspace.connectionId = 'cache';
+    workspace.setTab('query');
+    workspace.selectTable({ schema: null, name: 'user:*' });
+    expect(workspace.activeTab).toBe('structure');
+    workspace.connections = [];
+    workspace.connectionId = '';
+  });
+});

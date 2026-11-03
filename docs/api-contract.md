@@ -100,6 +100,7 @@ optional features to surface without probing each one individually.
   | `"aurora-dsql"` | AWS Aurora DSQL (ADR-0021, ADR-0036) |
   | `"firestore"` | Cloud Firestore (ADR-0091, ADR-0093) |
   | `"mongodb"` | MongoDB (ADR-0096) |
+  | `"redis"` | Redis-compatible stores: Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache, Upstash (ADR-0166) |
 
   The three Postgres-wire flavours (`neon`, `supabase`, `aurora-dsql`)
   speak the same protocol as `postgres` and differ only in this label,

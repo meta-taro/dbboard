@@ -14736,3 +14736,109 @@ set, stream), and the only way to find keys is to scan for them.
   fictional data, as every screenshot is (ADR-0098).
 - Like every new adapter it holds no release slot. It ships in whichever
   release is open when it is finished.
+
+**Amendment (2026-11-02), when the adapter was built.**
+
+- **One connection kind, `redis`, with a `service` field.** The five
+  services are five entries in the connection form, but `connections.toml`,
+  the MCP kind label and the adapter id all say `redis`. Five kinds would have
+  meant five arms in every match in the workspace for one code path.
+- **MemoryDB is held to what it requires.** The connection factory always
+  connects it as a cluster and refuses a URL that is not `rediss://`, with an
+  error that names TLS; the server's own answer to a plain connection is a
+  timeout that names nothing.
+- **No SSH tunnel, for now.** The cluster question in *Consequences* is
+  settled the conservative way: a Redis-compatible store is not tunnelable,
+  like `MongoDB`, because a forward to one node does not reach the others a
+  cluster redirects to, and the managed services' TLS certificates name the
+  real host, not the loopback forward. These stores are reached from a
+  machine inside their network until the tunnel can map every node and keep
+  the server name.
+- **`SCAN` collects.** A `SCAN` with a sparse `MATCH` mostly returns empty
+  pages, which is useless to read by hand, so the adapter follows the cursor
+  until it has `COUNT` keys (100 if none is given), the walk ends, or 200
+  calls have been made, and puts the cursor to go on from in every row. In
+  cluster mode a scan from `0` visits every primary in turn (read from
+  `CLUSTER NODES`); a non-zero cursor belongs to one node and is refused.
+- **Whole-collection reads check their size first.** `HGETALL`, `HKEYS`,
+  `HVALS`, `SMEMBERS`, and `LRANGE` / `ZRANGE` ranges that count from the end
+  send `HLEN`, `SCARD`, `LLEN` or `ZCARD` first and refuse when the answer is
+  over the row cap. A stream range must say `COUNT`. `KEYS` is refused with
+  `SCAN` named instead.
+- **The sidebar lists prefixes.** `list_tables` samples up to 10,000 keys and
+  offers one entry per first segment before `:` (`user:*`), at most 500,
+  each named by the `MATCH` pattern that browses it. Picking one opens the
+  Structure tab as a key browser: a prefix has no columns, and its keys are
+  what there is to look at. The browser reads through the same read-only
+  path a typed query does, one bounded page at a time (`HSCAN`, `SSCAN`,
+  `LRANGE 0 99`, `ZRANGE 0 99`, `XREVRANGE … COUNT 100`), so it never meets
+  the size check that refuses a whole collection.
+- **A slot after all.** Adapters hold no slot, but the only slot left before
+  this was v1.0, which is not a feature release, so the roadmap gains v0.22
+  for this adapter rather than letting it ride under the wrong headline.
+
+**Amendment (2026-11-03): through an SSH bastion after all.**
+
+The *No SSH tunnel, for now* point above is reversed. Both of its reasons
+are met at the one place a host name becomes a socket address, rather than
+by rewriting the URL.
+
+- **The client keeps every host name.** The `redis` crate asks a pluggable
+  resolver for the socket of each `host:port` it connects to: the one in the
+  URL, and in cluster mode each node the server names. TLS still uses the
+  host name for the server name and the certificate check; only the socket
+  changes. So the URL is written as it would be from inside the network.
+- **Each node gets its own forward, over one session.** `dbboard-tunnel`
+  splits `open` into `connect` (an authenticated session) and
+  `SshSession::forward`, which can be called any number of times. The
+  connection factory gives the adapter an `AddressMap` that opens a forward
+  the first time a `host:port` is asked for and reuses it after. The
+  adapter holds the map, and the map holds the session and the forwards, so
+  no `TunneledAdapter` wrapper is needed.
+- **The adapter still knows nothing about SSH.** `AddressMap` is a trait in
+  `dbboard-redis`; the SSH implementation lives in `dbboard-connect`, which
+  already depends on both sides.
+- **Upstash is not offered a bastion in the form.** It is reached over the
+  internet. The backend accepts one for it anyway, because all five
+  services are one connection kind.
+- **What it needs from the bastion.** The bastion has to be able to reach
+  every node, and resolves their names itself. That is the case for a
+  bastion inside the same VPC, which is the usual setup.
+
+Checked against a three-primary Valkey cluster behind an `sshd` on loopback:
+every key on every primary is read, and the bastion's log shows one
+`direct-tcpip` channel per node. TLS through the bastion is covered by the
+crate's own code path — it passes the host name, not the forward, to the TLS
+connector — rather than by a live test, for want of a certificate a test
+could trust.
+
+## ADR-0167 — The `redis` crate for the Redis-compatible adapter (2026-11-02)
+
+**Status.** Accepted.
+
+**Context.** ADR-0166 called for a RESP client with cluster support and
+rustls, chosen with its own ADR. Two crates are maintained enough to
+consider: `redis` (redis-rs) and `fred`.
+
+**Decision.** `redis` 1.8, with default features off and
+`tokio-comp`, `tokio-rustls-comp`, `tls-rustls-webpki-roots` and
+`cluster-async` on.
+
+- It is the de facto client (over 120 million downloads, releases every few
+  weeks; 1.8.1 is from 2026-10-30), BSD-3-Clause, which `deny.toml` allows.
+  `fred` had no release between February 2025 and this decision.
+- Its async cluster client can send a command to one node by address
+  (`route_command` with `SingleNodeRoutingInfo::ByAddress`), which is what
+  walking a cluster with `SCAN` needs.
+- With these features it resolves onto the rustls 0.23 already in the tree
+  and pulls no `aws-lc-sys` (checked with `cargo tree -i`), so ADR-0034's
+  pure-Rust constraint holds. `cargo deny check` passes.
+
+**Alternatives.** `fred`: a capable client with its own cluster and
+reconnect logic, but the gap in releases is the risk this project avoids.
+Hand-writing RESP: small for single servers, but cluster slot maps, `MOVED`
+and `ASK` redirects and TLS are exactly what a maintained client is for.
+
+**Consequences.** The webpki root bundle is trusted rather than the
+operating system's store, as for `MongoDB` (ADR-0096). A private CA would
+need the native-roots feature, decided when someone needs it.

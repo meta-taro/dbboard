@@ -10,6 +10,7 @@ import {
   browseQuery,
   countQuery,
   usesStructuredQuery,
+  redisScan,
 } from './build';
 
 describe('dialectForKind', () => {
@@ -256,5 +257,38 @@ describe('countQuery', () => {
     expect(countQuery({ schema: null, name: 'orders' }, 'mongodb')).toBe(
       '{ "count": "orders" }',
     );
+  });
+});
+
+// A Redis "table" is a key prefix, named by the MATCH pattern that finds its
+// keys (ADR-0166), so browsing it is a bounded SCAN.
+describe('redis', () => {
+  it('browses a prefix with a bounded SCAN', () => {
+    expect(browseQuery({ schema: null, name: 'user:*' }, 100, 'redis')).toBe(
+      'SCAN 0 MATCH user:* COUNT 100',
+    );
+  });
+
+  it('quotes a pattern the command line would otherwise split or mangle', () => {
+    expect(redisScan({ schema: null, name: 'my key:*' }, 10)).toBe(
+      'SCAN 0 MATCH "my key:*" COUNT 10',
+    );
+    // A glob escape survives the quoting: `\*` in the pattern reaches the
+    // server as a literal asterisk.
+    expect(redisScan({ schema: null, name: 'a\\*b:*' }, 10)).toBe(
+      'SCAN 0 MATCH "a\\\\*b:*" COUNT 10',
+    );
+  });
+
+  it('keeps the count inside what one call may ask for', () => {
+    expect(redisScan({ schema: null, name: 'k' }, 5000)).toBe('SCAN 0 MATCH k COUNT 1000');
+    expect(redisScan({ schema: null, name: 'k' }, 0)).toBe('SCAN 0 MATCH k COUNT 1');
+  });
+
+  // Counting the keys under a prefix means walking all of them, which is the
+  // cost SCAN's paging exists to avoid; the action is dropped instead.
+  it('offers no count, and reads as not-SQL', () => {
+    expect(countQuery({ schema: null, name: 'user:*' }, 'redis')).toBeNull();
+    expect(usesStructuredQuery('redis')).toBe(true);
   });
 });

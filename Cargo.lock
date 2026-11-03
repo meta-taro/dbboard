@@ -211,6 +211,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
+
+[[package]]
 name = "argon2"
 version = "0.6.0-rc.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -258,9 +264,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -1048,12 +1054,16 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "combine"
-version = "4.6.7"
+version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
+checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
 dependencies = [
  "bytes",
+ "futures-core",
  "memchr",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1213,6 +1223,12 @@ name = "crc-catalog"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
+
+[[package]]
+name = "crc16"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
 
 [[package]]
 name = "crc32fast"
@@ -1459,7 +1475,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dbboard-ai"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1472,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-anthropic"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -1487,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-bench"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dbboard-config",
  "dbboard-core",
@@ -1500,7 +1516,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-config"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "age",
  "directories",
@@ -1517,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-connect"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-config",
@@ -1527,6 +1543,7 @@ dependencies = [
  "dbboard-mongodb",
  "dbboard-mysql",
  "dbboard-postgres",
+ "dbboard-redis",
  "dbboard-tunnel",
  "dbboard-turso",
  "reqwest 0.12.28",
@@ -1537,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-core"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1550,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-d1"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1562,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-desktop"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "dbboard-ai",
  "dbboard-anthropic",
@@ -1585,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-firestore"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1603,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mcp"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1626,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mongodb"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1639,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mysql"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1650,7 +1667,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-openai"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -1665,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-postgres"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1680,8 +1697,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbboard-redis"
+version = "0.22.0"
+dependencies = [
+ "async-trait",
+ "dbboard-core",
+ "redis",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dbboard-server"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "axum",
  "dbboard-config",
@@ -1697,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-tunnel"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "russh",
  "thiserror 2.0.18",
@@ -1706,7 +1735,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-turso"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1934,7 +1963,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2280,7 +2309,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3410,7 +3439,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tokio",
  "tower-service",
  "tracing",
@@ -4556,7 +4585,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.18",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4645,7 +4674,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5913,7 +5942,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.2",
  "rustls 0.23.46",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5950,7 +5979,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -6082,6 +6111,37 @@ checksum = "76009fbe0614077fc1a2ce255e3a1881a2e3a3527097d5dc6d8212c585e7e38b"
 dependencies = [
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "redis"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db7f3d75b5a3301746bff39a767bf4c5c42506b08513527308b3875bfb64a031"
+dependencies = [
+ "arcstr",
+ "async-lock",
+ "bytes",
+ "cfg-if",
+ "combine",
+ "crc16",
+ "futures-channel",
+ "futures-util",
+ "itoa",
+ "log",
+ "percent-encoding",
+ "pin-project-lite",
+ "rand 0.10.2",
+ "rustls 0.23.46",
+ "rustls-native-certs 0.8.4",
+ "ryu",
+ "socket2 0.6.3",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tokio-util",
+ "url",
+ "webpki-roots 1.0.11",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -6581,7 +6641,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6675,7 +6735,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7349,7 +7409,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7681,7 +7741,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8260,10 +8320,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8753,7 +8813,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.18",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8811,7 +8871,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9433,7 +9493,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10210,6 +10270,12 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "yoke"

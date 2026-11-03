@@ -14,7 +14,8 @@ agent read them.**
 
 dbboard is a desktop database client for Windows and macOS. It speaks Postgres
 (and Neon, Supabase, CockroachDB, Aurora DSQL), MySQL / MariaDB, Turso /
-libSQL, Cloudflare D1, Cloud Firestore and MongoDB, keeps every password in the
+libSQL, Cloudflare D1, Cloud Firestore, MongoDB and Redis-compatible stores
+(Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache, Upstash), keeps every password in the
 operating system's keychain, and ships a separate MCP server so that Claude and
 other agents can read the same databases without being able to change them.
 
@@ -99,7 +100,7 @@ for external AI agents (ADR-0046) — read-only unless you opt a connection
 in, and never for privilege changes, `TRUNCATE` or `DROP` (ADR-0087).
 The Turso, Cloudflare
 D1, CockroachDB, Neon, Supabase, AWS Aurora DSQL, MySQL / MariaDB,
-Cloud Firestore and MongoDB adapters all ship over the local HTTP backend. See
+Cloud Firestore, MongoDB and Redis-compatible adapters all ship over the local HTTP backend. See
 [`CHANGELOG.md`](CHANGELOG.md) for what
 landed and [`docs/roadmap.md`](docs/roadmap.md) for the next phase.
 
@@ -143,8 +144,10 @@ every release. The checksum is what you verify instead.
 - MySQL / MariaDB (`mysql://…`, its own SQL dialect)
 - Cloud Firestore (document store, REST API — read-only)
 - MongoDB (document store, official driver — read-only)
+- Redis-compatible stores: Redis, Valkey, Amazon MemoryDB, Amazon
+  ElastiCache, Upstash (key-value, RESP — read-only)
 
-All nine adapters ship today. The four pg-wire flavors share the
+All ten adapters ship today. The four pg-wire flavors share the
 generic `dbboard-postgres` adapter (`sqlx` + `tls-rustls-ring`),
 differing only in the runtime label exposed by `DatabaseAdapter::id()`
 (`"postgres"`, `"neon"`, `"supabase"`, `"aurora-dsql"`) so the
@@ -184,6 +187,22 @@ hosts and `mongodb+srv://` discovers a replica set from DNS, so forwarding a
 single host leaves the driver failing over to members the tunnel never
 covered. See [ADR-0095](docs/decisions.md) and
 [ADR-0096](docs/decisions.md).
+
+Redis-compatible stores are the third, and the first with no tables at all.
+Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache and Upstash all speak
+RESP, so they share one adapter and differ only in the label and the form's
+defaults. A query is one command line, as `redis-cli` takes it —
+`HGETALL user:1` — and read-only is again an **allowlist of commands and of
+their arguments**. Writes, scripts, blocking and pub/sub commands are
+refused before anything is sent, and so is `KEYS`, which blocks the server:
+`SCAN` gives the same answer a page at a time, and dbboard follows its cursor
+until it has the keys asked for, across every node of a cluster. A command
+that returns a whole hash, set, list or sorted set checks its size first. The
+sidebar lists key prefixes (`user:*`). MemoryDB always runs in cluster mode
+and over TLS. A store inside a private network is reached through an SSH
+bastion: every node the cluster names is forwarded on its own, and the URL
+keeps the host its TLS certificate names. See [ADR-0166](docs/decisions.md)
+and [ADR-0167](docs/decisions.md).
 
 Aurora DSQL also has a second connection kind, `aurora-dsql-iam`
 ([ADR-0036](docs/decisions.md)): instead of a manually supplied URL
@@ -299,7 +318,8 @@ keychain. Import is skip-and-report on id/reference conflicts. See
 
 A connection to a database that only listens on a bastion's `localhost`
 can reach it through an **SSH tunnel**: the desktop connection form has an
-**SSH tunnel** section (for the Postgres family and MySQL) to set the
+**SSH tunnel** section (for the Postgres family, MySQL and the Redis-compatible
+stores) to set the
 bastion host/port/user, key- or password-based auth, and a mandatory
 server host-key pin (fingerprint or `known_hosts`). dbboard opens a
 pure-Rust local port forward (russh) and rewrites the connection URL to the

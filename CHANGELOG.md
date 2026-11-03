@@ -9,6 +9,37 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-11-03 — Redis-compatible stores, read-only
+
+### Added
+
+- **Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache and Upstash connect
+  through one read-only adapter** (ADR-0166, ADR-0167). Each is its own entry
+  in the connection form; they differ only in the label and the defaults. A
+  query is one command line as `redis-cli` takes it (`HGETALL user:1`), and
+  only reads from an allowlist of commands and arguments are sent: writes,
+  scripts, blocking and pub/sub commands are refused first, and so is `KEYS`,
+  which blocks the server. `SCAN` follows its cursor until it has `COUNT`
+  keys and reports where to go on; in cluster mode it walks every primary.
+  `HGETALL`, `SMEMBERS`, `LRANGE 0 -1` and the like check the collection's
+  size first and refuse what would not fit in a result. The sidebar lists key
+  prefixes (`user:*`), and *Select top* on one is a bounded `SCAN`. MemoryDB is always
+  a cluster and always TLS. The MCP server's `run_read_query` takes the same
+  command lines on a `redis` connection.
+- **A key browser for Redis-compatible connections** (ADR-0166). Their
+  Structure tab lists the keys under the picked prefix a page at a time, and
+  shows the picked key's type, how long it has left, and its value laid out
+  for its type: a string as text, a hash as field and value, a list numbered
+  from zero, a set as members, a sorted set as member and score, and a stream
+  newest first. Every read is one bounded page, so the browser never asks for
+  a whole collection.
+- **Redis, Valkey, MemoryDB and ElastiCache can be reached through an SSH
+  bastion** (ADR-0166). The connection form shows the SSH section for them.
+  One SSH session is opened, and every node the client connects to — the one
+  in the URL, and in cluster mode each node the server names — gets its own
+  forward. The URL is not rewritten, so a TLS connection still asks for the
+  host its certificate names.
+
 ## [0.21.0] — 2026-11-02 — History you can read
 
 ### Added

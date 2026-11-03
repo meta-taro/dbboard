@@ -62,7 +62,7 @@ an encrypted bundle behind a permission of its own.
 | `describe_table` | One table's columns (name, type, nullability, PK flag, ordinal) and primary key. `schema` is optional (the Postgres schema namespace; omit for SQLite/libSQL/D1). |
 | `search_schema` | The tables and columns across a connection whose **name** contains a case-insensitive substring — the fast "which table has the email column?" lookup, without `describe_table` on every table. Matches identifiers, not row data. Capped at 200 matched tables with a `truncated` flag. |
 | `list_relationships` | The foreign-key join graph as directed edges (`from_table.from_columns → to_table.to_columns`). With no `table`, the whole graph; with a `table`, every edge touching it on **either** side — the "how is `orders` connected?" lookup. Declared constraints only; Aurora DSQL (no FKs) returns none. Capped at 500 edges with a `truncated` flag. |
-| `run_read_query` | The rows from a single read-only statement, capped at `max_rows` (default 200, hard cap 1000) with a `truncated` flag. SQL (`SELECT` / `WITH` / `EXPLAIN`) on the eight SQL engines; JSON on the two document stores — a `StructuredQuery` for `firestore`, a command document like `{"find": "users", "limit": 100}` for `mongodb`. The tool description says so, so an agent told only "SQL" does not send a `SELECT` and read the parse error as its own mistake. |
+| `run_read_query` | The rows from a single read-only statement, capped at `max_rows` (default 200, hard cap 1000) with a `truncated` flag. SQL (`SELECT` / `WITH` / `EXPLAIN`) on the eight SQL engines; JSON on the two document stores — a `StructuredQuery` for `firestore`, a command document like `{"find": "users", "limit": 100}` for `mongodb`. On a `redis` connection (Redis, Valkey, MemoryDB, ElastiCache, Upstash) it is one command line such as `HGETALL user:1`, sent only if it is on the read allowlist; `KEYS` is refused in favour of `SCAN`. The tool description says so, so an agent told only "SQL" does not send a `SELECT` and read the parse error as its own mistake. |
 | `get_annotations` | dbboard's local table/column notes ([ADR-0045](../../docs/decisions.md)) for a connection, optionally filtered to one table and/or column. |
 | `run_write` | Runs one write statement and returns the rows affected. Requires `mcp_write = true` on the connection; see the write policy below. |
 | `dump_database` | Writes a logical SQL dump of a whole connection to a file and reports the path, counts, byte size, and a `complete` flag. Reads only, so it needs **no** flag — it is what an agent should call before a `run_write` it might need to undo. |
@@ -96,17 +96,21 @@ string matching:
   `$merge`, `$where`, `$function` or `$accumulator` hidden inside a
   `$facet`, `$lookup` or `$unionWith`
   ([ADR-0095](../../docs/decisions.md)).
+- A Redis-compatible store allow-lists the reading commands (`GET`, `HGETALL`,
+  `LRANGE`, `ZRANGE`, the `SCAN` family, `TYPE`, `TTL`, `INFO`, …) **and the
+  arguments each takes**, refuses `KEYS`, and checks a whole collection's size
+  before reading it ([ADR-0166](../../docs/decisions.md)).
 
 So `DELETE`, `UPDATE`, DDL, multi-statement batches, and locking reads
 (`SELECT … FOR UPDATE`) all fail at the source. See `dbboard-core`'s
 `query_read_only` and the per-adapter enforcement.
 
 `run_write` is a SQL path and stays one. Setting `mcp_write = true` on a
-`firestore` or `mongodb` connection opens nothing: neither adapter
-implements `execute`, so a write fails as an unsupported capability. Both
-report that in `capabilities` rather than advertising a write and then
-refusing it — the two document stores are read-only for every caller, not
-only for agents.
+`firestore`, `mongodb` or `redis` connection opens nothing: none of those adapters
+implements `execute`, so a write fails as an unsupported capability. Each
+reports that in `capabilities` rather than advertising a write and then
+refusing it — these stores are read-only for every caller, not only for
+agents.
 
 ## The write policy (ADR-0087)
 

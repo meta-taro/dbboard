@@ -296,6 +296,57 @@ pub enum ConnectionKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         database: Option<String>,
     },
+    /// A Redis-compatible store (ADR-0166): Redis, Valkey, Amazon `MemoryDB`,
+    /// Amazon `ElastiCache` or Upstash, all through the one `dbboard-redis`
+    /// adapter. The keychain holds a `redis://` or `rediss://` URL, which
+    /// carries the ACL user and password.
+    ///
+    /// One variant rather than five: the services differ in how they are
+    /// reached, not in the protocol, so `service` changes the label and the
+    /// form's defaults and nothing else. `cluster` makes the adapter follow a
+    /// cluster's redirects and walk every node when it scans; `MemoryDB`
+    /// always runs in cluster mode, which the connection factory enforces.
+    Redis {
+        keyring_url_ref: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        cluster: bool,
+        #[serde(default, skip_serializing_if = "RedisService::is_plain")]
+        service: RedisService,
+    },
+}
+
+/// Which Redis-compatible service a [`ConnectionKind::Redis`] entry is.
+/// A label, not a code path (ADR-0166).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RedisService {
+    #[default]
+    Redis,
+    Valkey,
+    #[serde(rename = "memorydb")]
+    MemoryDb,
+    #[serde(rename = "elasticache")]
+    ElastiCache,
+    Upstash,
+}
+
+impl RedisService {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Redis => "Redis",
+            Self::Valkey => "Valkey",
+            Self::MemoryDb => "Amazon MemoryDB",
+            Self::ElastiCache => "Amazon ElastiCache",
+            Self::Upstash => "Upstash",
+        }
+    }
+
+    // Takes `&self` because serde's `skip_serializing_if` passes a reference.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn is_plain(&self) -> bool {
+        *self == Self::Redis
+    }
 }
 
 impl ConnectionKind {
@@ -319,6 +370,7 @@ impl ConnectionKind {
             ConnectionKind::AuroraDsqlIam { .. } => "Aurora DSQL (IAM)",
             ConnectionKind::Firestore { .. } => "Firestore",
             ConnectionKind::MongoDb { .. } => "MongoDB",
+            ConnectionKind::Redis { service, .. } => service.label(),
         }
     }
 
@@ -343,6 +395,14 @@ impl ConnectionKind {
     /// would leave the driver failing over to the untunnelled members, so it
     /// would appear to work and then silently stop. Refusing is the honest
     /// answer until a tunnel can front every member.
+    ///
+    /// A Redis-compatible store has both problems at once — in cluster mode
+    /// the server names other nodes to connect to, and the managed services
+    /// require TLS for a certificate that names the real host — and is
+    /// tunnelled anyway (ADR-0166), because a private network is where
+    /// `MemoryDB` and `ElastiCache` live. It is not done by rewriting the URL:
+    /// the client keeps every host name, and each one is forwarded on its own
+    /// as the client reaches it, over one SSH session.
     #[must_use]
     pub fn supports_ssh_tunnel(&self) -> bool {
         matches!(
@@ -352,6 +412,7 @@ impl ConnectionKind {
                 | ConnectionKind::Neon { .. }
                 | ConnectionKind::Supabase { .. }
                 | ConnectionKind::AuroraDsql { .. }
+                | ConnectionKind::Redis { .. }
         )
     }
 }
@@ -1179,6 +1240,105 @@ keyring_url_ref = "dbboard.mongo-atlas.url"
                 database: None,
             }
         );
+    }
+
+    /// A plain Redis entry needs only its keychain reference: a single
+    /// server, labelled Redis, is what an entry that says nothing more means.
+    #[test]
+    fn parses_a_redis_entry_with_its_defaults() {
+        let toml_src = r#"
+version = 1
+
+[[connections]]
+id              = "cache"
+name            = "Cache"
+kind            = "redis"
+keyring_url_ref = "dbboard.cache.url"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("redis entry parses");
+        assert_eq!(
+            file.connections[0].kind,
+            ConnectionKind::Redis {
+                keyring_url_ref: "dbboard.cache.url".to_string(),
+                cluster: false,
+                service: RedisService::Redis,
+            }
+        );
+        assert_eq!(file.connections[0].kind.adapter_label(), "Redis");
+    }
+
+    #[test]
+    fn a_redis_entry_names_its_service_and_cluster_mode() {
+        for (service, expected, label) in [
+            ("memorydb", RedisService::MemoryDb, "Amazon MemoryDB"),
+            (
+                "elasticache",
+                RedisService::ElastiCache,
+                "Amazon ElastiCache",
+            ),
+            ("valkey", RedisService::Valkey, "Valkey"),
+            ("upstash", RedisService::Upstash, "Upstash"),
+        ] {
+            let toml_src = format!(
+                "version = 1\n[[connections]]\nid = \"c\"\nname = \"C\"\nkind = \"redis\"\n\
+                 keyring_url_ref = \"dbboard.c.url\"\ncluster = true\nservice = \"{service}\"\n"
+            );
+            let file = ConnectionFile::parse(&toml_src).expect("redis entry parses");
+            let kind = &file.connections[0].kind;
+            assert_eq!(
+                *kind,
+                ConnectionKind::Redis {
+                    keyring_url_ref: "dbboard.c.url".to_string(),
+                    cluster: true,
+                    service: expected,
+                }
+            );
+            assert_eq!(kind.adapter_label(), label);
+            assert!(
+                kind.supports_ssh_tunnel(),
+                "{service} can be reached through a bastion"
+            );
+        }
+    }
+
+    /// A managed store usually lives inside a private network, so the bastion
+    /// block is accepted on a Redis-compatible entry (ADR-0166).
+    #[test]
+    fn a_redis_entry_may_carry_an_ssh_block() {
+        let toml_src = r#"
+version = 1
+[[connections]]
+id   = "cache"
+name = "Cache"
+kind = "redis"
+keyring_url_ref = "dbboard.cache.url"
+service = "memorydb"
+
+[connections.ssh]
+host = "bastion.example"
+user = "deploy"
+key_path = "/k"
+fingerprint = "SHA256:abc"
+"#;
+        let file = ConnectionFile::parse(toml_src).expect("redis + ssh parses");
+        assert_eq!(
+            file.connections[0].ssh.as_ref().map(|s| s.host.as_str()),
+            Some("bastion.example")
+        );
+    }
+
+    /// The defaults are left out of the file, so an entry written by this
+    /// build reads the same in one that predates `service`.
+    #[test]
+    fn a_plain_redis_entry_writes_no_defaults() {
+        let kind = ConnectionKind::Redis {
+            keyring_url_ref: "dbboard.cache.url".to_string(),
+            cluster: false,
+            service: RedisService::Redis,
+        };
+        let written = toml::to_string(&kind).expect("serialise");
+        assert!(!written.contains("cluster"), "{written}");
+        assert!(!written.contains("service"), "{written}");
     }
 
     /// `MongoDB` *is* a TCP protocol on `host:port`, so unlike D1 and Firestore

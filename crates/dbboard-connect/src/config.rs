@@ -10,10 +10,13 @@
 
 use std::fmt;
 
-use dbboard_config::{ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind, SecretStore};
+use dbboard_config::{
+    ConfigError, ConnectionEntry, ConnectionFile, ConnectionKind, RedisService, SecretStore,
+};
 use dbboard_d1::D1Config;
 use dbboard_firestore::{FirestoreConfig, FirestoreCredentials};
 use dbboard_mongodb::MongoConfig;
+use dbboard_redis::RedisConfig;
 
 use crate::ssh::{resolved_ssh_from_env, ResolvedSsh, SshEnv};
 
@@ -140,6 +143,14 @@ pub enum BackendConfig {
     /// password in its authority, so the whole struct is redacted in `Debug`
     /// exactly like the Postgres-wire URLs.
     MongoDb(MongoConfig),
+    /// A Redis-compatible store (ADR-0166). The URL carries the ACL user and
+    /// password, so the variant is redacted in `Debug` like the others.
+    Redis {
+        config: RedisConfig,
+        /// Optional SSH bastion. Unlike the URL kinds, the URL is not
+        /// rewritten: every node is forwarded as the client reaches it.
+        ssh: Option<ResolvedSsh>,
+    },
 }
 
 impl BackendConfig {
@@ -175,6 +186,7 @@ impl fmt::Debug for BackendConfig {
             Self::Firestore(_) => f.write_str("Firestore(<redacted>)"),
             // The URI's authority carries the password.
             Self::MongoDb(_) => f.write_str("MongoDb(<redacted>)"),
+            Self::Redis { .. } => f.write_str("Redis(<redacted>)"),
         }
     }
 }
@@ -387,6 +399,12 @@ fn attach_env_ssh(backend: BackendConfig, env: &EnvSnapshot) -> Result<BackendCo
         BackendConfig::MongoDb(_) => Err(ConfigError::SshUnsupportedKind {
             id: "env".to_string(),
             kind: "MongoDB",
+        }),
+        // Not reachable from the environment today; kept total so the
+        // tunnel is attached rather than dropped should it become so.
+        BackendConfig::Redis { config, .. } => Ok(BackendConfig::Redis {
+            config,
+            ssh: Some(resolved),
         }),
     }
 }
@@ -723,12 +741,119 @@ fn entry_to_backend(
                 database: database.clone(),
             }))
         }
+        ConnectionKind::Redis { .. } => redis_entry(entry, secrets),
     }
+}
+
+fn redis_entry(
+    entry: &ConnectionEntry,
+    secrets: &dyn SecretStore,
+) -> Result<BackendConfig, ConfigError> {
+    let ConnectionKind::Redis {
+        keyring_url_ref,
+        cluster,
+        service,
+    } = &entry.kind
+    else {
+        unreachable!("redis_entry is only called for a Redis entry");
+    };
+    redis_backend(
+        &entry.id,
+        secrets.get(keyring_url_ref)?,
+        *cluster,
+        *service,
+        entry_ssh(entry, secrets)?,
+    )
+}
+
+/// A Redis-compatible backend. `MemoryDB` is held to what the service
+/// itself requires (ADR-0166): it always runs in cluster mode, and it only
+/// accepts TLS, so the entry cannot turn either off — a plain `redis://` URL
+/// would otherwise fail with a timeout that says nothing about why.
+fn redis_backend(
+    id: &str,
+    url: String,
+    cluster: bool,
+    service: RedisService,
+    ssh: Option<ResolvedSsh>,
+) -> Result<BackendConfig, ConfigError> {
+    if service == RedisService::MemoryDb && !url.starts_with("rediss://") {
+        return Err(ConfigError::TlsRequired {
+            id: id.to_owned(),
+            service: service.label(),
+            scheme: "rediss://",
+        });
+    }
+    Ok(BackendConfig::Redis {
+        config: RedisConfig {
+            url,
+            cluster: cluster || service == RedisService::MemoryDb,
+            // Filled in by `connect_adapter`, which opens the session.
+            route: None,
+        },
+        ssh,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `MemoryDB` is held to what the service requires (ADR-0166): TLS, and
+    /// cluster mode whether or not the entry asked for it.
+    #[test]
+    fn memorydb_requires_tls_and_always_runs_as_a_cluster() {
+        let refused = redis_backend(
+            "cache",
+            "redis://reader:pw@cache.example:6379".into(),
+            false,
+            RedisService::MemoryDb,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(refused, ConfigError::TlsRequired { .. }),
+            "{refused}"
+        );
+        assert!(!refused.to_string().contains("pw@"), "{refused}");
+
+        let BackendConfig::Redis { config: cfg, .. } = redis_backend(
+            "cache",
+            "rediss://reader:pw@cache.example:6379".into(),
+            false,
+            RedisService::MemoryDb,
+            None,
+        )
+        .expect("tls url") else {
+            panic!("expected a Redis backend");
+        };
+        assert!(cfg.cluster);
+    }
+
+    #[test]
+    fn other_redis_services_take_the_entry_as_written() {
+        let BackendConfig::Redis { config: cfg, .. } = redis_backend(
+            "cache",
+            "redis://127.0.0.1:6379".into(),
+            false,
+            RedisService::Valkey,
+            None,
+        )
+        .expect("plain url") else {
+            panic!("expected a Redis backend");
+        };
+        assert!(!cfg.cluster);
+        assert_eq!(
+            format!(
+                "{:?}",
+                BackendConfig::Redis {
+                    config: cfg,
+                    ssh: None
+                }
+            ),
+            "Redis(<redacted>)"
+        );
+    }
     use dbboard_config::{ConnectionEntry, ConnectionFile, InMemorySecretStore, CONFIG_VERSION};
 
     fn empty_env() -> EnvSnapshot {
@@ -1238,6 +1363,50 @@ mod tests {
             keyring_service_account_ref: None,
         }
         .supports_ssh_tunnel());
+    }
+
+    /// The bastion block of a Redis-compatible entry reaches the backend,
+    /// where `connect_adapter` turns it into a route rather than a URL
+    /// rewrite: the URL keeps the host its TLS certificate names (ADR-0166).
+    #[test]
+    fn a_redis_entry_keeps_its_url_and_carries_its_bastion() {
+        let file = ConnectionFile::parse(
+            r#"
+version = 1
+[[connections]]
+id   = "cache"
+name = "Cache"
+kind = "redis"
+keyring_url_ref = "dbboard.cache.url"
+service = "memorydb"
+
+[connections.ssh]
+host = "bastion.example"
+user = "deploy"
+key_path = "/k"
+fingerprint = "SHA256:abc"
+"#,
+        )
+        .expect("parses");
+        let secrets = InMemorySecretStore::new();
+        secrets
+            .set(
+                "dbboard.cache.url",
+                "rediss://reader:pw@clustercfg.cache.example:6379",
+            )
+            .expect("set");
+        let BackendConfig::Redis { config, ssh } =
+            backend_config_for_entry(&file.connections[0], &secrets).expect("resolve")
+        else {
+            panic!("expected a Redis backend");
+        };
+        assert_eq!(
+            config.url,
+            "rediss://reader:pw@clustercfg.cache.example:6379"
+        );
+        assert!(config.cluster);
+        assert!(config.route.is_none(), "the route is opened at connect");
+        assert!(ssh.is_some());
     }
 
     #[test]

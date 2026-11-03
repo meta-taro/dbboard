@@ -8,6 +8,7 @@
   import Sidebar from '$lib/components/Sidebar.svelte';
   import QueryPanel from '$lib/components/QueryPanel.svelte';
   import StructurePanel from '$lib/components/StructurePanel.svelte';
+  import RedisKeysPanel from '$lib/components/RedisKeysPanel.svelte';
   import ComparePanel from '$lib/components/ComparePanel.svelte';
   import VersionedPanel from '$lib/components/VersionedPanel.svelte';
   import { versioned } from '$lib/versioned/versioned.svelte';
@@ -315,7 +316,12 @@
         <QueryPanel />
       </div>
       <div class="tabpane" hidden={workspace.activeTab !== 'structure'}>
-        <StructurePanel />
+        <!-- A key prefix has no columns; its structure is its keys (ADR-0166). -->
+        {#if workspace.connection?.kind === 'redis'}
+          <RedisKeysPanel />
+        {:else}
+          <StructurePanel />
+        {/if}
       </div>
       <div class="tabpane" hidden={workspace.activeTab !== 'compare'}>
         <ComparePanel />

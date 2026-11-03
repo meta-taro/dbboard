@@ -473,6 +473,7 @@ describe('isEditableInApp', () => {
     'aurora-dsql-iam',
     'firestore',
     'mongodb',
+    'redis',
   ])('accepts %s', (slug) => {
     expect(isEditableInApp(slug)).toBe(true);
   });
@@ -483,7 +484,7 @@ describe('isEditableInApp', () => {
 });
 
 describe('CONNECTION_KINDS', () => {
-  it('lists all eleven kinds with turso first', () => {
+  it('lists every kind with turso first and the Redis-compatible services together', () => {
     expect(CONNECTION_KINDS).toEqual([
       'turso',
       'turso_remote',
@@ -496,6 +497,11 @@ describe('CONNECTION_KINDS', () => {
       'aurora_dsql_iam',
       'firestore',
       'mongodb',
+      'redis',
+      'valkey',
+      'memorydb',
+      'elasticache',
+      'upstash',
     ]);
   });
 });
@@ -779,6 +785,94 @@ describe('mongodb', () => {
 
   it('opens a connection whose database comes from the uri with the box empty', () => {
     expect(formForEdit('mg', 'MG', { kind: 'mongodb', database: null }).database).toBe('');
+  });
+});
+
+// Redis-compatible stores (ADR-0166). Five entries in the picker, one kind on
+// the backend: the service is a label and a set of defaults, and the URL —
+// which carries the ACL password — is the one secret.
+describe('redis-compatible services', () => {
+  const memorydb = {
+    kind: 'memorydb' as const,
+    id: 'cache',
+    name: 'Cache',
+    url: 'rediss://reader:hunter2@cache.example:6379',
+  };
+
+  it.each(['redis', 'valkey', 'memorydb', 'elasticache', 'upstash'] as const)(
+    '%s asks for one masked url',
+    (kind) => {
+      expect(fieldsForKind(kind)).toEqual(['url']);
+      expect(secretFields(kind)).toEqual(['url']);
+      expect(requiredFields(kind, 'add')).toEqual(['id', 'name', 'url']);
+      expect(requiredFields(kind, 'edit')).toEqual(['name']);
+      // No host/user/password parts: the URL is entered whole.
+      expect(validateDsnFields(form({ kind, use_url: false }))).toEqual([]);
+    },
+  );
+
+  // The managed services live inside a private network, so the bastion is
+  // how a laptop reaches them. Upstash is reached over the internet, and a
+  // bastion in front of it would only add a hop.
+  it.each(['redis', 'valkey', 'memorydb', 'elasticache'] as const)(
+    '%s can be reached through an SSH bastion',
+    (kind) => {
+      expect(supportsSshTunnel(kind)).toBe(true);
+    },
+  );
+
+  it('upstash offers no SSH bastion', () => {
+    expect(supportsSshTunnel('upstash')).toBe(false);
+  });
+
+  // The URL is sent as typed: the backend forwards every node by the name
+  // the client asks for, so the TLS certificate still matches.
+  it('sends the bastion alongside an unchanged url', () => {
+    const f = tunnelForm({ ...memorydb });
+    expect(buildKindInput(f)).toMatchObject({
+      kind: 'redis',
+      url: 'rediss://reader:hunter2@cache.example:6379',
+    });
+    expect(buildSshInput(f)).toMatchObject({ host: 'bastion.example', user: 'deploy' });
+    expect(buildSshEditInput(f)).toMatchObject({ action: 'set' });
+  });
+
+  it('sends one backend kind with the service as a label', () => {
+    expect(buildKindInput(form({ ...memorydb, kind: 'valkey', cluster: true }))).toEqual({
+      kind: 'redis',
+      url: 'rediss://reader:hunter2@cache.example:6379',
+      cluster: true,
+      service: 'valkey',
+    });
+  });
+
+  // MemoryDB only runs in cluster mode, so the form cannot send it otherwise,
+  // whatever the checkbox was left at.
+  it('always sends memorydb as a cluster', () => {
+    expect(buildKindInput(form({ ...memorydb, cluster: false }))).toMatchObject({
+      cluster: true,
+      service: 'memorydb',
+    });
+    expect(buildKindEditInput(form({ ...memorydb, cluster: false }))).toMatchObject({
+      cluster: true,
+    });
+  });
+
+  it('edit sends a blank url as null so the stored one is kept', () => {
+    expect(buildKindEditInput(form({ ...memorydb, kind: 'redis', url: ' ' }))).toEqual({
+      kind: 'redis',
+      url: null,
+      cluster: false,
+      service: 'redis',
+    });
+  });
+
+  it('opens the edit form on the service that was saved', () => {
+    const f = formForEdit('cache', 'Cache', { kind: 'redis', cluster: true, service: 'elasticache' });
+    expect(f.kind).toBe('elasticache');
+    expect(f.cluster).toBe(true);
+    expect(f.url).toBe('');
+    expect(validate(f, 'edit')).toEqual([]);
   });
 });
 

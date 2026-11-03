@@ -7,7 +7,7 @@
 
 use dbboard_config::{
     ConnectionDraft, ConnectionEditDraft, ConnectionKindDraft, ConnectionKindEditDraft,
-    FirestoreCredentialField, SecretField,
+    FirestoreCredentialField, RedisService, SecretField,
 };
 
 use crate::none_if_blank;
@@ -81,6 +81,15 @@ pub(crate) enum KindInput {
         uri: String,
         database: Option<String>,
     },
+    /// A Redis-compatible store (ADR-0166). The URL is the secret; `service`
+    /// is the label the operator picked (`memorydb`, `valkey`, …).
+    Redis {
+        url: String,
+        #[serde(default)]
+        cluster: bool,
+        #[serde(default)]
+        service: RedisService,
+    },
 }
 
 /// Edit-time kind. Secret fields are `Option`: absent or blank means
@@ -147,6 +156,14 @@ pub(crate) enum KindEditInput {
     MongoDb {
         uri: Option<String>,
         database: Option<String>,
+    },
+    /// A Redis-compatible store (ADR-0166). Blank `url` keeps the stored one.
+    Redis {
+        url: Option<String>,
+        #[serde(default)]
+        cluster: bool,
+        #[serde(default)]
+        service: RedisService,
     },
 }
 
@@ -233,6 +250,15 @@ pub(crate) fn to_add_draft(
             // Blank means "the URI's path names it"; an empty-string database
             // would instead be written to the TOML as a real, unusable name.
             database: none_if_blank(database),
+        },
+        KindInput::Redis {
+            url,
+            cluster,
+            service,
+        } => ConnectionKindDraft::Redis {
+            url,
+            cluster,
+            service,
         },
     };
     ConnectionDraft {
@@ -327,6 +353,15 @@ pub(crate) fn to_edit_draft(
         KindEditInput::MongoDb { uri, database } => ConnectionKindEditDraft::MongoDb {
             uri: secret_field(uri),
             database: none_if_blank(database),
+        },
+        KindEditInput::Redis {
+            url,
+            cluster,
+            service,
+        } => ConnectionKindEditDraft::Redis {
+            url: secret_field(url),
+            cluster,
+            service,
         },
     };
     ConnectionEditDraft {

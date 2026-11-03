@@ -39,7 +39,7 @@ use crate::mark::{is_connection_color, is_connection_tag, CONNECTION_TAG_MAX_CHA
 use crate::secrets::{SecretError, SecretStore};
 use crate::store::{
     load_or_empty, save_atomic, ConnectionEntry, ConnectionFile, ConnectionKind, McpExport,
-    SshTunnelToml,
+    RedisService, SshTunnelToml,
 };
 
 mod repair;
@@ -179,6 +179,14 @@ pub enum ConnectionKindDraft {
     MongoDb {
         uri: String,
         database: Option<String>,
+    },
+    /// A Redis-compatible store (ADR-0166). The URL is the secret — it
+    /// carries the ACL user and password — and `cluster` and `service` are
+    /// plain settings beside it.
+    Redis {
+        url: String,
+        cluster: bool,
+        service: RedisService,
     },
 }
 
@@ -329,6 +337,13 @@ pub enum ConnectionKindEditDraft {
     MongoDb {
         uri: SecretField,
         database: Option<String>,
+    },
+    /// A Redis-compatible store (ADR-0166). Like `MongoDB`, a connection
+    /// always has a URL, so two states are enough.
+    Redis {
+        url: SecretField,
+        cluster: bool,
+        service: RedisService,
     },
 }
 
@@ -1465,12 +1480,44 @@ impl ConnectionAdmin {
                     database,
                 }
             })?,
+            (
+                ConnectionKind::Redis {
+                    keyring_url_ref, ..
+                },
+                draft @ ConnectionKindEditDraft::Redis { .. },
+            ) => self.apply_redis_edit(id, keyring_url_ref, draft, &mut applied)?,
             (_, _) => {
                 return Err(ConfigError::KindMismatch { id: id.to_string() });
             }
         };
 
         Ok((new_kind, applied))
+    }
+
+    /// The Redis arm of [`Self::apply_update_kind`], lifted out for length
+    /// alone, like the D1 arm below.
+    fn apply_redis_edit(
+        &self,
+        id: &str,
+        keyring_url_ref: &str,
+        draft: ConnectionKindEditDraft,
+        applied: &mut Vec<AppliedSecretWrite>,
+    ) -> Result<ConnectionKind, ConfigError> {
+        let ConnectionKindEditDraft::Redis {
+            url,
+            cluster,
+            service,
+        } = draft
+        else {
+            return Err(ConfigError::KindMismatch { id: id.to_string() });
+        };
+        self.apply_secret_edit(keyring_url_ref, url, applied, |keyring_url_ref| {
+            ConnectionKind::Redis {
+                keyring_url_ref,
+                cluster,
+                service,
+            }
+        })
     }
 
     /// The D1 arm of [`Self::apply_update_kind`], lifted out for length alone:
@@ -1924,6 +1971,9 @@ fn keyring_refs_in(kind: &ConnectionKind) -> Vec<String> {
         | ConnectionKind::AuroraDsql { keyring_url_ref }
         | ConnectionKind::MongoDb {
             keyring_url_ref, ..
+        }
+        | ConnectionKind::Redis {
+            keyring_url_ref, ..
         } => {
             vec![keyring_url_ref.clone()]
         }
@@ -2069,6 +2119,15 @@ fn build_kind_for_add(
                 database,
             })
         }
+        ConnectionKindDraft::Redis {
+            url,
+            cluster,
+            service,
+        } => url_backed_add(id, url, |keyring_url_ref| ConnectionKind::Redis {
+            keyring_url_ref,
+            cluster,
+            service,
+        }),
     }
 }
 
@@ -2431,6 +2490,103 @@ mod tests {
             secrets.get("dbboard.mongo.url").expect("uri"),
             "mongodb://127.0.0.1:27117",
             "a Keep must not disturb the stored URI"
+        );
+    }
+
+    fn redis_draft(id: &str, url: &str, service: RedisService) -> ConnectionDraft {
+        ConnectionDraft {
+            mcp_alias: None,
+            color: None,
+            tag: None,
+            mcp_write: false,
+            ssh: None,
+            id: id.to_string(),
+            name: format!("Cache {id}"),
+            kind: ConnectionKindDraft::Redis {
+                url: url.to_string(),
+                cluster: true,
+                service,
+            },
+        }
+    }
+
+    /// The URL carries the ACL password, so it goes to the keychain and the
+    /// TOML keeps only the plain settings beside it (ADR-0166).
+    #[test]
+    fn add_redis_keeps_the_url_in_the_keychain_and_the_settings_in_the_file() {
+        let (dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(redis_draft(
+                "cache",
+                "rediss://reader:hunter2@cache.example:6379",
+                RedisService::MemoryDb,
+            ))
+            .expect("add redis");
+        match &admin.entries()[0].kind {
+            ConnectionKind::Redis {
+                keyring_url_ref,
+                cluster,
+                service,
+            } => {
+                assert_eq!(keyring_url_ref, "dbboard.cache.url");
+                assert!(*cluster);
+                assert_eq!(*service, RedisService::MemoryDb);
+            }
+            other => panic!("expected Redis, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.cache.url").expect("url"),
+            "rediss://reader:hunter2@cache.example:6379"
+        );
+        let written = std::fs::read_to_string(dir.path().join("connections.toml")).expect("read");
+        assert!(!written.contains("hunter2"), "leaked: {written}");
+        assert!(written.contains(r#"kind = "redis""#), "got: {written}");
+        assert!(
+            written.contains(r#"service = "memorydb""#),
+            "got: {written}"
+        );
+    }
+
+    #[test]
+    fn update_redis_changes_the_settings_and_keeps_the_url() {
+        let (_dir, secrets, mut admin) = fresh_admin();
+        admin
+            .add(redis_draft(
+                "cache",
+                "redis://127.0.0.1:6379",
+                RedisService::Redis,
+            ))
+            .expect("add redis");
+        admin
+            .update(
+                "cache",
+                ConnectionEditDraft {
+                    name: "Cache".to_string(),
+                    kind: ConnectionKindEditDraft::Redis {
+                        url: SecretField::Keep,
+                        cluster: false,
+                        service: RedisService::Valkey,
+                    },
+                    ssh: SshEditField::Keep,
+                    mcp_write: None,
+                    mcp_alias: None,
+                    color: None,
+                    tag: None,
+                },
+            )
+            .expect("update redis");
+        match &admin.entries()[0].kind {
+            ConnectionKind::Redis {
+                cluster, service, ..
+            } => {
+                assert!(!*cluster);
+                assert_eq!(*service, RedisService::Valkey);
+            }
+            other => panic!("expected Redis, got {other:?}"),
+        }
+        assert_eq!(
+            secrets.get("dbboard.cache.url").expect("url"),
+            "redis://127.0.0.1:6379"
         );
     }
 

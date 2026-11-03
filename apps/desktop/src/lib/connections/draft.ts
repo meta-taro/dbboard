@@ -27,7 +27,30 @@ export type ConnectionKind =
   | 'aurora_dsql'
   | 'aurora_dsql_iam'
   | 'firestore'
-  | 'mongodb';
+  | 'mongodb'
+  // Redis-compatible stores (ADR-0166). Five entries in the picker, one kind on
+  // the backend (`redis`): the service is a label and a set of defaults.
+  | RedisService;
+
+export type RedisService = 'redis' | 'valkey' | 'memorydb' | 'elasticache' | 'upstash';
+
+export const REDIS_SERVICES: readonly RedisService[] = [
+  'redis',
+  'valkey',
+  'memorydb',
+  'elasticache',
+  'upstash',
+] as const;
+
+export function isRedisKind(kind: ConnectionKind): kind is RedisService {
+  return (REDIS_SERVICES as readonly string[]).includes(kind);
+}
+
+/** Whether the service only runs in cluster mode, so the form cannot offer
+ *  to turn it off. `MemoryDB` is the one (ADR-0166). */
+export function alwaysCluster(kind: ConnectionKind): boolean {
+  return kind === 'memorydb';
+}
 
 // Order shown in the kind picker. `turso` first: it's the zero-credential
 // local/libSQL case and the friendliest default. `turso_remote` sits next to it
@@ -45,6 +68,7 @@ export const CONNECTION_KINDS: readonly ConnectionKind[] = [
   'aurora_dsql_iam',
   'firestore',
   'mongodb',
+  ...REDIS_SERVICES,
 ] as const;
 
 // Every field the union of all kinds can carry. A given kind uses only a
@@ -77,12 +101,20 @@ export type FormField =
 // Turso (embedded/libSQL HTTP) and D1 (HTTP) have no host:port to forward, so
 // the tunnel section is hidden for them — matching the backend's
 // `ConnectionKind::supports_ssh_tunnel`.
+//
+// The Redis-compatible services that live in a private network are here too
+// (ADR-0166). Upstash is not: it is reached over the internet, and the backend
+// accepts a bastion for it only because all five are one backend kind.
 export const SSH_TUNNELABLE_KINDS: readonly ConnectionKind[] = [
   'postgres',
   'mysql',
   'neon',
   'supabase',
   'aurora_dsql',
+  'redis',
+  'valkey',
+  'memorydb',
+  'elasticache',
 ] as const;
 
 export function supportsSshTunnel(kind: ConnectionKind): boolean {
@@ -152,6 +184,9 @@ export interface ConnectionForm extends DsnParts {
   // means "keep the stored one" — so the choice needs its own flag, exactly as
   // an unencrypted SSH key does.
   use_emulator: boolean;
+  // Redis-compatible stores only (ADR-0166): connect as a cluster client, which
+  // follows the server's redirects and scans every node. Forced on for MemoryDB.
+  cluster: boolean;
   // How the DSN is being supplied. `false` (the default on add) means the
   // structured `db_*` parts, which is what every other client asks for; `true`
   // means the raw URL, kept as the escape hatch for what a form can't express
@@ -248,6 +283,9 @@ export type EditFields = (
   // Only the explicit database name comes back; the URI is the secret
   // (ADR-0096). `null` means the URI's path names it.
   | { kind: 'mongodb'; database: string | null }
+  // The URL is the secret (ADR-0166); the two settings beside it come back so
+  // the form opens on the service and mode it was saved with.
+  | { kind: 'redis'; cluster: boolean; service: RedisService }
   // All five come back, the access key id included: it is an identifier the
   // operator has to see to know which key pair they are rotating away from.
   // The secret access key never does (ADR-0016).
@@ -304,6 +342,7 @@ export function emptyForm(): ConnectionForm {
     access_key_id: '',
     secret_access_key: '',
     use_emulator: false,
+    cluster: false,
     use_url: false,
     ...emptyDsnParts(),
     ssh_enabled: false,
@@ -437,6 +476,9 @@ export function formForEdit(id: string, name: string, fields: EditFields): Conne
       };
     case 'mongodb':
       return { ...base, database: fields.database ?? '' };
+    // One backend kind opens as whichever of the five services it was saved as.
+    case 'redis':
+      return { ...base, kind: fields.service, cluster: fields.cluster };
     case 'aurora_dsql_iam':
       return {
         ...base,
@@ -485,6 +527,12 @@ export function fieldsForKind(kind: ConnectionKind): FormField[] {
       return ['project_id', 'database_id', 'base_url', 'service_account'];
     case 'mongodb':
       return ['uri', 'database'];
+    case 'redis':
+    case 'valkey':
+    case 'memorydb':
+    case 'elasticache':
+    case 'upstash':
+      return ['url'];
     case 'aurora_dsql_iam':
       return ['endpoint', 'region', 'database', 'username', 'access_key_id', 'secret_access_key'];
     case 'postgres':
@@ -525,6 +573,13 @@ export function secretFields(kind: ConnectionKind): FormField[] {
       return ['service_account'];
     case 'mongodb':
       return ['uri'];
+    // The URL carries the ACL user's password.
+    case 'redis':
+    case 'valkey':
+    case 'memorydb':
+    case 'elasticache':
+    case 'upstash':
+      return ['url'];
     // Only the AWS secret access key. The access key id sits beside it in
     // connections.toml in the clear, and masking an identifier the operator has
     // to compare against the AWS console would help nobody.
@@ -742,6 +797,12 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
         // Blank means "the URI's path names it" — not a database called "".
         database: blank(form.database) ? null : clean(form.database),
       };
+    case 'redis':
+    case 'valkey':
+    case 'memorydb':
+    case 'elasticache':
+    case 'upstash':
+      return redisInput(form, clean(form.url));
     case 'aurora_dsql_iam':
       return {
         kind: 'aurora_dsql_iam',
@@ -759,6 +820,17 @@ export function buildKindInput(form: ConnectionForm): Record<string, unknown> {
     case 'aurora_dsql':
       return { kind: form.kind, url: dsnFor(form) };
   }
+}
+
+// One backend kind for all five services (ADR-0166). MemoryDB is sent as a
+// cluster whatever the checkbox says, because that is the only way it runs.
+function redisInput(form: ConnectionForm, url: string | null): Record<string, unknown> {
+  return {
+    kind: 'redis',
+    url,
+    cluster: form.cluster || alwaysCluster(form.kind),
+    service: form.kind,
+  };
 }
 
 // The service-account JSON to send, or `null`. On add `null` means the
@@ -818,6 +890,13 @@ export function buildKindEditInput(form: ConnectionForm): Record<string, unknown
         access_key_id: form.access_key_id,
         secret_access_key: blank(form.secret_access_key) ? null : form.secret_access_key,
       };
+    // Blank is "keep the stored URL", as it is for every other secret.
+    case 'redis':
+    case 'valkey':
+    case 'memorydb':
+    case 'elasticache':
+    case 'upstash':
+      return redisInput(form, blank(form.url) ? null : clean(form.url));
     case 'postgres':
     case 'mysql':
     case 'neon':
