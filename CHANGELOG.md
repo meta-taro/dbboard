@@ -7,7 +7,9 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased] — Redis-compatible stores, read-only
+## [Unreleased]
+
+## [0.22.0] — 2026-11-03 — Redis-compatible stores, read-only
 
 ### Added
 
