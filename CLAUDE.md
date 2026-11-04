@@ -154,7 +154,8 @@ reason to put a release off:
 node scripts/release-cut.mjs        # or: … release-cut.mjs 0.12.0
 ```
 
-It rewrites the changelog heading, the workspace version and both manifests,
+It rewrites the changelog heading, the workspace version, both manifests
+and `server.json` (the MCP Registry listing, ADR-0168),
 then prints what is left: `cargo check` to move `Cargo.lock`, the commit, and
 the tag. It stops there deliberately — the tag push is the release, and that
 is the human's (ADR-0121).

@@ -14842,3 +14842,42 @@ and `ASK` redirects and TLS are exactly what a maintained client is for.
 **Consequences.** The webpki root bundle is trusted rather than the
 operating system's store, as for `MongoDB` (ADR-0096). A private CA would
 need the native-roots feature, decided when someone needs it.
+
+## ADR-0168 — dbboard-mcp is listed in the official MCP Registry (2026-11-04)
+
+**Status.** Accepted.
+
+**Context.** The MCP Registry (<https://registry.modelcontextprotocol.io>) is
+where MCP clients and directories look servers up. dbboard-mcp ships with
+every release but was not listed, so someone searching there for a database
+server could not find it.
+
+**Decision.** List it as `io.github.meta-taro/dbboard`.
+
+- `server.json` at the repository root is the listing: name, description,
+  version, website and repository. It has no `packages` entry. The server is
+  a downloaded executable, not a package on npm, PyPI or a container
+  registry, and the registry verifies only packages it can fetch from those.
+  The listing points people to the website and the release page.
+- `.github/workflows/mcp-registry.yml` publishes it after the release
+  workflow succeeds for a tag. It checks that `server.json` names the tag's
+  version and that the GitHub release exists. It reads the registry first and
+  does nothing if that version is already listed. A run where the registry
+  cannot be read fails rather than pass having done nothing. It can be run
+  by hand for a first listing or a retry.
+- Authentication is GitHub OIDC (`id-token: write`). No token or key is
+  stored in the repository.
+- `scripts/release-cut.mjs` bumps `server.json` with the other manifests, and
+  `scripts/mcp-registry.test.mjs` fails when its version and the app's
+  differ. The listing cannot fall behind a release unnoticed.
+
+**Alternatives.** Publishing by hand with `mcp-publisher login github` after
+each release depends on someone remembering, and a stale listing reads as an
+abandoned project. Putting the job in `release.yml` would tie a registry
+outage to the release run. The release would already be out, but the run
+would show red.
+
+**Consequences.** `mcp-publisher` is pinned to an exact version and moved
+deliberately. The listing carries no package to install, so a client that
+installs only from registry packages will not install dbboard-mcp
+automatically. People follow the links to the download.

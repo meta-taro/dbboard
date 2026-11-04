@@ -103,11 +103,16 @@ export function bumpJson(json, version) {
   );
 }
 
-/** Files a release touches, and how each one is edited. */
-const TARGETS = [
+/**
+ * Files a release touches, and how each one is edited. `server.json` is the
+ * MCP Registry's listing (ADR-0168); the release workflow publishes it on
+ * the tag, so it has to name the version the tag does.
+ */
+export const TARGETS = [
   ["Cargo.toml", bumpCargoToml],
   ["apps/desktop/package.json", bumpJson],
   ["apps/desktop/src-tauri/tauri.conf.json", bumpJson],
+  ["server.json", bumpJson],
 ];
 
 const invokedDirectly =
@@ -150,7 +155,7 @@ if (invokedDirectly) {
   const slot = roadmap ? plannedFor(version, roadmap) : null;
 
   console.log(`[release] v${version} — ${date}${slot ? ` — ${slot}` : ""}`);
-  console.log("[release] edited CHANGELOG.md, Cargo.toml, and both manifests");
+  console.log("[release] edited CHANGELOG.md, Cargo.toml, both manifests and server.json");
   console.log("[release] left to do:");
   console.log("[release]   cargo check --workspace   # Cargo.lock follows");
   console.log(`[release]   git commit -am "chore: release v${version}"`);
