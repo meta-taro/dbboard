@@ -56,7 +56,11 @@ export function summarise(section) {
     const [heading, ...rest] = group.split(/\r?\n/);
     // Only the bolded opening of a bullet: `- **Short title** — long prose`.
     // A bullet without one is prose, and prose belongs in the release page.
-    const titles = [...rest.join("\n").matchAll(/^- \*\*(.+?)\*\*/gm)].map((m) => flatten(m[1]));
+    // The title may wrap onto the next line, so it may cross a newline, but
+    // never into the next bullet.
+    const titles = [...rest.join("\n").matchAll(/^- \*\*((?:(?!\n- )[^*])+)\*\*/gm)].map((m) =>
+      flatten(m[1]),
+    );
     if (titles.length > 0) out.push([flatten(heading), ...titles.map((t) => `• ${t}`)].join("\n"));
   }
   return out.length > 0 ? out.join("\n\n") : null;

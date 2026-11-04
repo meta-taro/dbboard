@@ -7,7 +7,14 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — The update dialog names the whole release
+
+### Fixed
+
+- **The update dialog lists every entry again.** It shows the bolded title of
+  each entry, and a title long enough to wrap onto a second line was left out:
+  the v0.22.0 dialog named the key browser but not the Redis adapter or the
+  SSH bastion. A wrapped title is now read whole.
 
 ## [0.22.0] — 2026-11-03 — Redis-compatible stores, read-only
 
