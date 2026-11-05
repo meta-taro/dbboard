@@ -119,3 +119,23 @@ test("an em dash separator inside a bullet title is kept out of the title", () =
   const notes = releaseNotes(CHANGELOG, "0.9.0".replace("0.9.0", "0.7.0"));
   assert.ok(!notes.includes("—"), `separator leaked: ${JSON.stringify(notes)}`);
 });
+
+// Titles are hard-wrapped like the rest of the file, so a long one runs onto
+// the next line. Matching it within one line dropped it silently: the v0.22.0
+// dialog listed its key browser and left out the Redis adapter and the SSH
+// bastion, which were the release.
+test("a bullet title wrapped onto the next line is still listed", () => {
+  const section = `### Added
+
+- **Redis, Valkey and MemoryDB connect
+  through one read-only adapter** (ADR-0166). Each is its own entry.
+- **A key browser** for them.
+- a plain bullet, then **bold later** in its prose.
+- **Reached through an SSH
+  bastion** (ADR-0166).
+`;
+  assert.equal(
+    summarise(section),
+    "Added\n• Redis, Valkey and MemoryDB connect through one read-only adapter\n• A key browser\n• Reached through an SSH bastion",
+  );
+});
