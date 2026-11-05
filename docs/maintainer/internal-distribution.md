@@ -111,15 +111,22 @@ as the passphrase travels separately**.
 
 ### If the recipient also runs `dbboard-mcp`
 
-**The desktop installer does not update the MCP server.** They are separate
-files from the same release, and `setup.exe` never touches
-`%LOCALAPPDATA%\dbboard\dbboard-mcp.exe`. After an upgrade the app reports
-the new version while the agent keeps talking to whatever MCP build was
-copied there by hand. On 0.20.1 this was found on two machines at once: the
-app was 0.20.1 and the MCP server was still 0.10.0 from August.
+**From v0.22.2 the Windows installer updates the MCP server too** (ADR-0169).
+It installs `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe` next to the app, the
+path the agent is already registered with, and replaces it on every upgrade,
+including the in-app one. A server an agent has open is renamed aside to
+`dbboard-mcp.replaced-<version>.exe` rather than blocking the install; restart
+the agent to pick up the new one, then ask for `get_server_info` to confirm
+the version matches the app's.
 
-So whenever you hand over a new release to someone who uses an AI agent with
-dbboard, hand over the MCP server with it:
+Up to v0.22.1 it did not. `setup.exe` never touched that file, so after an
+upgrade the app reported the new version while the agent kept talking to
+whatever MCP build was copied there by hand. On 0.20.1 this was found on two
+machines at once: the app was 0.20.1 and the MCP server was still 0.10.0 from
+August.
+
+For a machine still on v0.22.1 or older, hand over the MCP server with the
+release:
 
 1. Download `dbboard-mcp-windows-x86_64.exe` (or `-aarch64.exe` on ARM)
    from the same release and check it against `SHA256SUMS.txt`.

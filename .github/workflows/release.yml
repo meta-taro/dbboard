@@ -105,15 +105,43 @@ jobs:
       - name: Install frontend deps
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
+      # The installer carries the MCP server, so an upgrade replaces both
+      # (ADR-0169). Tauri looks for an externalBin under its target triple and
+      # installs it as dbboard-mcp.exe next to the app.
+      - name: Build the MCP server for the installer
+        shell: pwsh
+        run: |
+          cargo build --release -p dbboard-mcp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $triple = ((rustc -vV | Select-String '^host: ').ToString() -split ' ')[1]
+          New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries | Out-Null
+          Copy-Item target/release/dbboard-mcp.exe "apps/desktop/src-tauri/binaries/dbboard-mcp-$triple.exe"
+          Get-ChildItem apps/desktop/src-tauri/binaries
       # `pnpm tauri build` runs the pinned @tauri-apps/cli devDep. With the
       # signing env set + createUpdaterArtifacts, the NSIS setup .exe lands in
-      # the workspace target/ alongside its `.exe.sig`.
+      # the workspace target/ alongside its `.exe.sig`. The overlay adds the
+      # server and the installer hooks; the base config leaves them out so
+      # that builds which never stage the server still work.
       - name: Build Tauri bundle (NSIS + updater .sig)
         working-directory: apps/desktop
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build
+        run: pnpm tauri build --config src-tauri/tauri.bundle-mcp.conf.json
+      # A release whose installer silently lost the server would put back the
+      # version skew ADR-0169 removed, and nothing else would notice.
+      - name: Check the installer carries the MCP server
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $list = & 7z l $setup.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not ($list | Select-String -SimpleMatch 'dbboard-mcp.exe')) {
+            $list | Write-Output
+            Write-Error "$($setup.Name) does not contain dbboard-mcp.exe"
+            exit 1
+          }
+          $list | Select-String -SimpleMatch '.exe'
       - name: Stage artifacts + checksums
         shell: pwsh
         run: |

@@ -7,7 +7,18 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — The Windows installer brings the MCP server along
+
+### Fixed
+
+- **Upgrading dbboard on Windows upgrades its MCP server too** (ADR-0169).
+  The installer now installs `dbboard-mcp.exe` at
+  `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe`, the path agents are already
+  registered with, and replaces it on every upgrade, including the in-app
+  one. Until now that copy was put there by hand and never updated, so an
+  agent could go on talking to a server months older than the app. A server
+  an agent has open is moved aside instead of failing the install; restart
+  the agent to use the new one.
 
 ## [0.22.1] — 2026-11-05 — The update dialog names the whole release
 

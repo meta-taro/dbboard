@@ -288,8 +288,10 @@ Get it from the [latest release](https://github.com/meta-taro/dbboard/releases/l
 | Windows ARM64 | `dbboard-mcp-windows-aarch64.exe` |
 | macOS (Intel + Apple silicon) | `dbboard-mcp-macos-universal` |
 
-The desktop app's installer does **not** contain it. They are separate
-products from the same tag: the app is for a human, this is for an agent.
+On Windows, from v0.22.2 the desktop app's installer also installs it, at
+`%LOCALAPPDATA%\dbboard\dbboard-mcp.exe` (the path below), and every upgrade of
+the app replaces it (ADR-0169). The separate asset is for macOS, and for an
+agent on a machine without the app.
 
 Where to put it — the paths the rest of this README assumes:
 
