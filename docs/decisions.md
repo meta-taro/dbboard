@@ -14881,3 +14881,48 @@ would show red.
 deliberately. The listing carries no package to install, so a client that
 installs only from registry packages will not install dbboard-mcp
 automatically. People follow the links to the download.
+
+## ADR-0169 — The Windows installer carries the MCP server (2026-11-05)
+
+**Status:** Accepted. Amends ADR-0090, decision 1 and its rejection of
+bundling.
+
+**Context.** ADR-0090 kept the MCP server out of the desktop installer:
+an agent needs an absolute path, and an install tree looked like a guess
+about where things land on each machine. The setup instructions then
+settled on one Windows path, `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe`, copied
+there by hand. Nothing ever replaced that copy. On 0.20.1 two machines ran the
+app at 0.20.1 and the server at 0.10.0, and nobody could tell from the app.
+
+The guess ADR-0090 feared turns out to have one answer on Windows. The
+per-user NSIS installer installs to `%LOCALAPPDATA%\<productName>`, which is
+`%LOCALAPPDATA%\dbboard`, and an `externalBin` lands next to the app under its
+name without the target triple. That is the documented path, byte for byte.
+
+**Decision.**
+
+1. The Windows release build compiles `dbboard-mcp` first and ships it as an
+   `externalBin`, so `setup.exe` installs `dbboard-mcp.exe` at the path agents
+   are already registered with, and every upgrade (in-app or by hand)
+   replaces it with the app.
+2. The `externalBin` and the installer hooks live in an overlay,
+   `tauri.bundle-mcp.conf.json`, passed with `--config` by the release job
+   only. `tauri-build` fails when an `externalBin` is missing, and clippy,
+   the tests and `tauri dev` never build the server first.
+3. A server an agent has open is renamed to
+   `dbboard-mcp.replaced-<version>.exe` before the copy, because Windows
+   refuses to overwrite a running executable but allows renaming it. The
+   agent keeps the old one until it restarts. The rename runs after the
+   template's running-app check, so cancelling that prompt never leaves the
+   install without a server. Leftovers are deleted on the next install and on
+   uninstall.
+4. The separate release assets stay: macOS, and Windows machines without the
+   app, still need them. macOS is unchanged; the app there is a bundle the
+   agent would have to be pointed inside, which is the guess ADR-0090 was
+   right to avoid.
+
+**Consequences.** The Windows release jobs build the server twice, once for
+the installer and once as the standalone asset. Uninstalling the app also
+removes `dbboard-mcp.exe`, including one copied there by hand.
+`scripts/mcp-bundled.test.mjs` holds the path, the overlay, the release step
+and the hooks together.

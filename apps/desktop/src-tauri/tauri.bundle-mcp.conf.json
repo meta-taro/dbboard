@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/dbboard-mcp"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/mcp-installer-hooks.nsh"
+      }
+    }
+  }
+}
