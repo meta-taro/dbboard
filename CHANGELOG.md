@@ -7,7 +7,9 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased] — The Windows installer brings the MCP server along
+## [Unreleased]
+
+## [0.22.2] — 2026-11-06 — The Windows installer brings the MCP server along
 
 ### Fixed
 
