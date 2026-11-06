@@ -36,8 +36,10 @@ keychain.
 1. Download the MCP server from <https://meta-taro.github.io/dbboard/>
    (the *Releases* link) — `dbboard-mcp-windows-x86_64.exe` on Windows,
    `dbboard-mcp-windows-aarch64.exe` on Windows on ARM,
-   `dbboard-mcp-macos-universal` on macOS. It is a **separate download
-   from the desktop app**; the installer does not contain it.
+   `dbboard-mcp-macos-universal` on macOS. On Windows, from v0.22.2
+   the desktop installer already put it at
+   `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe`; if that file exists, skip to
+   registering it.
 
 2. Put it somewhere stable, because the path goes into the agent's
    config.

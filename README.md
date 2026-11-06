@@ -733,10 +733,13 @@ The security posture is the reason it is safe to point an agent at:
 [latest release](https://github.com/meta-taro/dbboard/releases/latest)** —
 `dbboard-mcp-windows-x86_64.exe`, `dbboard-mcp-windows-aarch64.exe` (Windows
 on ARM) or `dbboard-mcp-macos-universal`. It is a
-single executable with no runtime dependencies, and it is a *separate*
-download from the desktop app: the installer on the download page does not
-contain it. Put it somewhere stable, because the path goes into the agent's
-config:
+single executable with no runtime dependencies.
+
+**On Windows, from v0.22.2 the desktop installer brings it along** and puts it
+at `%LOCALAPPDATA%\dbboard\dbboard-mcp.exe`, so if dbboard is installed you
+can skip straight to registering it, and every upgrade replaces the server
+with the app (ADR-0169). Without the app, or on macOS, download it and put it
+somewhere stable, because the path goes into the agent's config:
 
 ```powershell
 # Windows (PowerShell)

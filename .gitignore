@@ -3,6 +3,9 @@
 **/*.rs.bk
 **/target/
 
+# The MCP server the release job builds into the Windows installer (ADR-0169).
+/apps/desktop/src-tauri/binaries/
+
 # Cargo のローカル設定 (個人環境用、共有しない)
 /.cargo/config.local.toml
 
