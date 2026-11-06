@@ -14926,3 +14926,78 @@ the installer and once as the standalone asset. Uninstalling the app also
 removes `dbboard-mcp.exe`, including one copied there by hand.
 `scripts/mcp-bundled.test.mjs` holds the path, the overlay, the release step
 and the hooks together.
+
+## ADR-0170 — Umbrachyx's history, read through the Redis-compatible adapter (2026-11-06)
+
+**Status.** Proposed.
+
+**Context.** [Umbrachyx](https://github.com/meta-taro/umbrachyx) is an
+in-memory database that keeps every change as history: commits, branches,
+who changed a value and why, and values that can be erased per subject. It
+speaks the Redis protocol for one branch, so dbboard already reaches it
+through the Redis-compatible adapter (ADR-0166). It also answers five
+commands about its history, `UMBRA.BRANCHES`, `UMBRA.CELLS`,
+`UMBRA.HISTORY`, `UMBRA.LOG` and `UMBRA.DIFF`, each with one string of JSON
+and each stopping at a page of 1,000 entries. ADR-0165 already describes
+the history views by what they show, so the question is only how
+Umbrachyx fills them.
+
+**Decision.**
+
+- **It is a capability of the Redis-compatible adapter, not a new
+  adapter,** as Dolt is of the MySQL one. A connection counts as Umbrachyx
+  when the server answers `UMBRA.BRANCHES` with the branch it serves. The
+  connection's name or URL is never used, and any other answer, an error
+  included, means a plain Redis-compatible store. Cluster connections are
+  not asked: Umbrachyx serves one node.
+- **The shapes are filled as they are.** A table is a key pattern from the
+  sidebar (`player/*`), a row is one key, and its columns are `key` and
+  `value`. The commit log, a row's history and the diff come from
+  `UMBRA.LOG`, `UMBRA.HISTORY` and `UMBRA.DIFF` for the branch the server
+  serves; who last changed each row comes from `UMBRA.CELLS`, read a page
+  at a time. A commit's author is Umbrachyx's `who`, its message is `why`,
+  and its hash is the short id Umbrachyx accepts back.
+- **Keys group by `/` on Umbrachyx.** Its keys separate their parts with
+  `/`, and it erases by the first two (`player/42`), so the sidebar groups
+  them by `/` instead of `:`.
+- **The five commands join the read-only allowlist.** Each takes a fixed
+  number of arguments, reads only, and answers one value that the server
+  itself bounds, so a typed `UMBRA.LOG agent` shows its JSON as one cell.
+  Other `UMBRA.` names are refused like any unknown command.
+- **A diff longer than one page is refused, not cut.** `UMBRA.DIFF` says
+  when more keys changed than it answered, and part of a diff would read
+  as the whole of it.
+
+**What the shapes cannot carry, and is left out on purpose.** The history
+types are shared by Dolt, the screen and the MCP JSON, so they are not
+widened for one source here.
+
+- **Who approved a change.** Umbrachyx records an approver on a commit.
+  `Commit` has no field for it, so it is not shown.
+- **Email.** Umbrachyx keeps none, so the field is empty.
+- **Erased values.** A value whose subject was erased reads as `Null`, the
+  same as a removed key. The screen cannot tell "erased" from "no value"
+  apart. A `Value` kind for it would change every match on `Value` in the
+  workspace, and is a decision of its own.
+- **Branches.** `HistoryReader` takes no branch, so only the branch the
+  server serves is shown.
+
+**Alternatives.**
+
+- **A separate `dbboard-umbrachyx` adapter.** On the wire it is a Redis
+  server, so it would duplicate the adapter, and the user would have to
+  choose the right kind up front when the server can be asked.
+- **Opening Umbrachyx's log file directly.** Only the server's process may
+  open the log, and opening one repairs a torn end, which is a write.
+
+**Consequences.**
+
+- A single-node Redis connection opens with one extra round trip, the
+  detection command. Other servers answer it with an unknown-command
+  error, which is ignored.
+- The parsers are tested against replies recorded from `umbrachyx serve`
+  on fictional data. `crates/dbboard-redis/tests/live_umbrachyx.rs` runs
+  the whole path against a live server when `DBBOARD_UMBRACHYX_URL` is set.
+  As for Dolt, CI starts no Umbrachyx server.
+- Listing and opening keys needs `SCAN`, `TYPE` and `TTL`, which Umbrachyx
+  answers for this reason.
