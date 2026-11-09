@@ -15,8 +15,9 @@
 
 use async_trait::async_trait;
 use dbboard_core::{
-    too_many_rows_error, BlameEntry, Column, Commit, CommitDiff, DbError, DbResult, HistoryReader,
-    Row, RowChange, RowHistory, RowVersion, TableInfo, Value, MAX_RESULT_ROWS,
+    too_many_rows_error, BlameEntry, Column, ColumnInfo, Commit, CommitDiff, DbError, DbResult,
+    HistoryReader, Row, RowChange, RowHistory, RowVersion, TableInfo, TableSchema, Value,
+    MAX_RESULT_ROWS,
 };
 use serde::Deserialize;
 use time::format_description::well_known::Rfc3339;
@@ -277,6 +278,32 @@ fn blame_page(page: &CellsReply, pattern: &str) -> (Vec<BlameEntry>, Option<Vec<
 
 // -- Pieces ---------------------------------------------------------------
 
+/// A pattern described as the history views see it: a key, which is the
+/// primary key, and its value. The views offer a row's history and blame
+/// only on a table with a primary key, so without this both stayed closed.
+pub(crate) fn schema(table: &TableInfo) -> TableSchema {
+    let columns = columns()
+        .into_iter()
+        .zip(1u32..)
+        .map(|(column, ordinal)| {
+            let key = ordinal == 1;
+            ColumnInfo {
+                name: column.name,
+                declared_type: None,
+                nullable: !key,
+                primary_key: key,
+                ordinal,
+                default_value: None,
+            }
+        })
+        .collect();
+    TableSchema {
+        table: table.clone(),
+        columns,
+        primary_key: vec!["key".into()],
+    }
+}
+
 fn columns() -> Vec<Column> {
     ["key", "value"]
         .into_iter()
@@ -400,6 +427,27 @@ fn matches_from(pattern: &[char], key: &[char]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // The history views ask for a table's primary key before they offer a
+    // row's history or blame, and a table with none gets neither. Without
+    // this the two views Umbrachyx answers stayed closed on every pattern.
+    #[test]
+    fn a_pattern_is_keyed_by_its_key_column() {
+        let table = TableInfo::unqualified("player/*");
+        let schema = schema(&table);
+        assert_eq!(schema.table, table);
+        assert_eq!(schema.primary_key, vec!["key".to_string()]);
+        let names: Vec<_> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["key", "value"]);
+        assert!(schema.columns[0].primary_key && !schema.columns[0].nullable);
+        assert!(!schema.columns[1].primary_key && schema.columns[1].nullable);
+        // The same names, in the same order, as the rows the history returns.
+        let row_names: Vec<_> = columns().into_iter().map(|c| c.name).collect();
+        assert_eq!(
+            names,
+            row_names.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+    }
+
     use super::*;
     use dbboard_core::ChangeKind;
 

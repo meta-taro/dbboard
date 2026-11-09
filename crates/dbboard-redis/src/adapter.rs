@@ -23,7 +23,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use dbboard_core::{
     Capabilities, DatabaseAdapter, DbError, DbResult, HistoryReader, QueryResult, TableInfo,
-    MAX_RESULT_ROWS,
+    TableSchema, MAX_RESULT_ROWS,
 };
 use redis::aio::{ConnectionLike, MultiplexedConnection};
 use redis::cluster::ClusterClient;
@@ -493,6 +493,19 @@ impl DatabaseAdapter for RedisAdapter {
 
     async fn query_read_only(&self, sql: &str, max_rows: usize) -> DbResult<QueryResult> {
         self.run(sql, max_rows).await
+    }
+
+    /// Only an Umbrachyx connection describes a pattern, so that the history
+    /// views can key a row by it (ADR-0170). `has_describe_table` stays off:
+    /// it would also put the column views on a plain Redis connection's
+    /// patterns, whose Structure tab is the key browser.
+    async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+        match self.umbrachyx {
+            Some(_) => Ok(crate::umbrachyx::schema(table)),
+            None => Err(DbError::Capability(
+                "describe_table not supported by this adapter".into(),
+            )),
+        }
     }
 
     fn history(&self) -> Option<&dyn HistoryReader> {
