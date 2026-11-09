@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>dbboard をダウンロード</title>
-  <meta name="description" content="Download dbboard — a free, open-source desktop database client (Windows, macOS) for MySQL/MariaDB, PostgreSQL, Neon, Supabase, Aurora DSQL, Turso/libSQL, CockroachDB, Cloudflare D1, Cloud Firestore and MongoDB. Also ships dbboard-mcp, a read-only MCP server for AI agents.">
+  <meta name="description" content="dbboard は無料・オープンソースのデスクトップ用データベースクライアントです（Windows・macOS）。MySQL/MariaDB、PostgreSQL、Neon、Supabase、Aurora DSQL、Turso/libSQL、CockroachDB、Cloudflare D1、Cloud Firestore、MongoDB、Redis 互換のストアに 1 つの窓でつなぎます。AI エージェント向けの読み取り専用 MCP サーバ dbboard-mcp も同梱。">
   <link rel="canonical" href="https://meta-taro.github.io/dbboard/ja/">
   <!-- Both pages point at each other, and each names itself. Without the
        x-default a crawler has to guess which one to show someone whose
@@ -34,6 +34,11 @@
        pinned to the GitHub Releases API, and there is no base/form surface.
        GitHub Pages can't set response headers, so this rides as a meta tag. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src https://api.github.com; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <!-- Structured data (ADR-0171). Data blocks are not executed, so the
+       CSP's script-src does not apply to them. The FAQPage repeats the
+       visible FAQ below word for word; page.test.mjs holds them equal. -->
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "dbboard", "applicationCategory": "DeveloperApplication", "operatingSystem": "Windows 10+, macOS 13+", "url": "https://meta-taro.github.io/dbboard/ja/", "downloadUrl": "https://github.com/meta-taro/dbboard/releases/latest", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "JPY"}, "codeRepository": "https://github.com/meta-taro/dbboard", "image": "https://meta-taro.github.io/dbboard/screenshots/query-light.png", "inLanguage": "ja"}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "inLanguage": "ja", "mainEntity": [{"@type": "Question", "name": "dbboard とは何ですか？", "acceptedAnswer": {"@type": "Answer", "text": "dbboard は、Windows と macOS で動く無料・オープンソースのデスクトップ用データベースクライアントです。PostgreSQL、MySQL/MariaDB、Neon・Supabase・Turso・Cloudflare D1・Aurora DSQL といったサーバーレスのデータベース、文書データベースの Cloud Firestore と MongoDB、Redis 互換のストアを、1 つの窓で読み書きできます。AI エージェントが同じデータベースを読むための MCP サーバ dbboard-mcp も付いています。"}}, {"@type": "Question", "name": "どのデータベースにつながりますか？", "acceptedAnswer": {"@type": "Answer", "text": "Turso/libSQL、Turso Cloud、Cloudflare D1、PostgreSQL、CockroachDB、Neon、Supabase、AWS Aurora DSQL、MySQL/MariaDB、Cloud Firestore、MongoDB、それに Redis・Valkey・Amazon MemoryDB・Amazon ElastiCache・Upstash です。Dolt には MySQL としてつながり、コミットの履歴もたどれます。文書データベースと Redis 互換のストアは読み取り専用です。"}}, {"@type": "Question", "name": "無料ですか？アカウントは要りますか？", "acceptedAnswer": {"@type": "Answer", "text": "無料で、MIT ライセンスです。アカウントもありません。dbboard は手元で動かすだけのもので、裏にサービスはありません。接続の設定は手元のファイルに、パスワードは OS のキーチェーンに入ります。"}}, {"@type": "Question", "name": "AI エージェントからデータベースを使えますか？", "acceptedAnswer": {"@type": "Answer", "text": "使えます。Claude Code などのエージェント向けの MCP サーバ dbboard-mcp を通します。接続ごとに書き込みを許可しない限り読むだけで、許可しても権限の付与・TRUNCATE・DROP は断ります。保存した秘密情報を返すことはありません。"}}, {"@type": "Question", "name": "開くと Windows や macOS が警告を出すのはなぜですか？", "acceptedAnswer": {"@type": "Answer", "text": "コード署名をしていないためで、そう決めています。署名証明書は毎年払い続ける買い物で、この製品はそれをしません。警告は毎回出るのが正常です。落としたファイルを公開しているチェックサムと照らしてから、通してください。"}}]}</script>
   <link rel="icon" href="../dbboard-logo-256.png">
   <style>
     :root {
@@ -75,6 +80,9 @@
     /* 3. How it goes away. The second line carries the effect. */
     .lede { margin: 0 0 1.5rem; max-width: 42rem; }
     .lede b { color: var(--fg); }
+    .what { margin: 0 0 1.5rem; max-width: 42rem; color: var(--muted); font-size: .95rem; }
+    #faq h3, #roadmap h3 { font-size: 1rem; margin: 1.25rem 0 .35rem; }
+    #faq p, #roadmap p { margin: 0 0 .5rem; }
     /* 4. The way in. `.note` says what it runs on and under what licence —
        never a version number, which is wrong the day after it is written. */
     .cta { margin: 0 0 2.5rem; }
@@ -177,10 +185,15 @@
         <span class="quiet">そのたびに道具を持ち替えている。</span></h1>
 
       <p class="lede">
-        10 のエンジンを 1 つの窓で。上の 3 つに加えて PostgreSQL、CockroachDB、
+        ぜんぶ 1 つの窓で。上の 3 つに加えて PostgreSQL、CockroachDB、
         Neon、Supabase、MySQL/MariaDB、文書データベースの
-        Cloud&nbsp;Firestore と MongoDB。<br>
+        Cloud&nbsp;Firestore と MongoDB、Redis 互換のストアまで。<br>
         <b>どれを開いても、同じエディタ、同じ表、同じ書き出し。</b>
+      </p>
+      <p class="what">
+        dbboard は、Windows と macOS で動く無料・オープンソースのデスクトップ用
+        データベースクライアントです。AI エージェントが同じデータベースを読むための
+        MCP サーバも付いています。
       </p>
     </header>
 
@@ -395,6 +408,53 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       <b>どちらの警告も、毎回出るのが正常です。</b>
       上のチェックサムを確かめてから、通してください。
     </p>
+
+    <section id="roadmap">
+    <h2>これから</h2>
+    <h3>済んだこと</h3>
+    <p>
+      PostgreSQL、MySQL、サーバーレスのデータベース、2 つの文書データベース、
+      Redis 互換のストアを 1 つの窓で。エージェント向けの読み取り専用 MCP サーバ、
+      2 つのデータベースの突き合わせ、名前を付けて残すクエリ、キーでたどるページ送り、
+      SSH の踏み台越しの接続、Dolt のコミット履歴、Redis 互換のストアのキーブラウザ。
+    </p>
+    <h3>いま</h3>
+    <p>
+      変更をすべて残すデータベース Umbrachyx に、同じ履歴の画面を出すこと
+      （Redis の通信方式を話すサーバから読みます）。
+    </p>
+    <h3>次</h3>
+    <p>
+      最初の安定版。手元の HTTP の取り決めを公開の API として固め、その上に作った
+      道具が頼れるようにします。
+    </p>
+    <h3>その後</h3>
+    <p>
+      新しいエンジンを、求められた順に。DuckDB、SQL Server、ClickHouse、
+      Elasticsearch/OpenSearch、Oracle が候補です。データベースの作業場としての
+      機能も広げます。作らないもの：ホスティングするサービス。dbboard は手元で
+      動かすものであり続けます。
+    </p>
+    <p class="meta">
+      版ごとに何を入れるかまで書いた計画は
+      <a href="https://github.com/meta-taro/dbboard/blob/main/docs/roadmap.md">docs/roadmap.md</a>
+      にあります。
+    </p>
+    </section>
+
+    <section id="faq">
+    <h2>よくある質問</h2>
+    <h3>dbboard とは何ですか？</h3>
+    <p>dbboard は、Windows と macOS で動く無料・オープンソースのデスクトップ用データベースクライアントです。PostgreSQL、MySQL/MariaDB、Neon・Supabase・Turso・Cloudflare D1・Aurora DSQL といったサーバーレスのデータベース、文書データベースの Cloud Firestore と MongoDB、Redis 互換のストアを、1 つの窓で読み書きできます。AI エージェントが同じデータベースを読むための MCP サーバ dbboard-mcp も付いています。</p>
+    <h3>どのデータベースにつながりますか？</h3>
+    <p>Turso/libSQL、Turso Cloud、Cloudflare D1、PostgreSQL、CockroachDB、Neon、Supabase、AWS Aurora DSQL、MySQL/MariaDB、Cloud Firestore、MongoDB、それに Redis・Valkey・Amazon MemoryDB・Amazon ElastiCache・Upstash です。Dolt には MySQL としてつながり、コミットの履歴もたどれます。文書データベースと Redis 互換のストアは読み取り専用です。</p>
+    <h3>無料ですか？アカウントは要りますか？</h3>
+    <p>無料で、MIT ライセンスです。アカウントもありません。dbboard は手元で動かすだけのもので、裏にサービスはありません。接続の設定は手元のファイルに、パスワードは OS のキーチェーンに入ります。</p>
+    <h3>AI エージェントからデータベースを使えますか？</h3>
+    <p>使えます。Claude Code などのエージェント向けの MCP サーバ dbboard-mcp を通します。接続ごとに書き込みを許可しない限り読むだけで、許可しても権限の付与・TRUNCATE・DROP は断ります。保存した秘密情報を返すことはありません。</p>
+    <h3>開くと Windows や macOS が警告を出すのはなぜですか？</h3>
+    <p>コード署名をしていないためで、そう決めています。署名証明書は毎年払い続ける買い物で、この製品はそれをしません。警告は毎回出るのが正常です。落としたファイルを公開しているチェックサムと照らしてから、通してください。</p>
+    </section>
 
     <footer>
       <a id="all-releases" href="https://github.com/meta-taro/dbboard/releases">すべてのリリース</a>
