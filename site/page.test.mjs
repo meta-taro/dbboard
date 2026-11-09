@@ -220,3 +220,66 @@ test("the two pages share one stylesheet, byte for byte", () => {
   assert.ok(block(html), "index.html has no <style> block");
   assert.equal(block(ja), block(html), "the two <style> blocks have drifted apart");
 });
+
+// -- What a search engine or an AI answer engine reads (ADR-0171) -----------
+//
+// Both pages carry structured data, a sentence that says what dbboard is in
+// so many words, a FAQ, and the roadmap. The FAQ is written twice, once for
+// people and once as FAQPage JSON-LD, and a structured answer nobody can see
+// on the page is what search engines penalise, so the two are held equal.
+
+const PAGES = {
+  en: html,
+  ja: readFileSync(join(HERE, "ja", "index.html"), "utf8"),
+};
+
+/** Every JSON-LD block on a page, parsed. */
+function jsonLd(page) {
+  return [
+    ...page.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g),
+  ].map((m) => JSON.parse(m[1]));
+}
+
+/** The visible FAQ questions, in page order. */
+function visibleQuestions(page) {
+  const section = page.match(/<section id="faq">([\s\S]*?)<\/section>/)?.[1] ?? "";
+  return [...section.matchAll(/<h3>([\s\S]*?)<\/h3>/g)].map((m) =>
+    m[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(),
+  );
+}
+
+for (const [lang, page] of Object.entries(PAGES)) {
+  test(`${lang}: it describes itself as a free desktop application`, () => {
+    const app = jsonLd(page).find((d) => d["@type"] === "SoftwareApplication");
+    assert.ok(app, "no SoftwareApplication JSON-LD");
+    assert.equal(app.name, "dbboard");
+    assert.match(app.operatingSystem, /Windows/);
+    assert.match(app.operatingSystem, /macOS/);
+    assert.equal(app.offers?.price, "0");
+    assert.match(app.license, /MIT/);
+  });
+
+  test(`${lang}: the FAQ in the markup is the FAQ on the page`, () => {
+    const faq = jsonLd(page).find((d) => d["@type"] === "FAQPage");
+    assert.ok(faq, "no FAQPage JSON-LD");
+    const marked = faq.mainEntity.map((q) => q.name);
+    const shown = visibleQuestions(page);
+    assert.ok(shown.length >= 4, `only ${shown.length} visible questions`);
+    assert.deepEqual(marked, shown);
+    for (const q of faq.mainEntity) assert.ok(q.acceptedAnswer?.text?.length > 20, q.name);
+  });
+
+  test(`${lang}: one paragraph says what dbboard is`, () => {
+    const what = page.match(/<p class="what">([\s\S]*?)<\/p>/)?.[1];
+    assert.ok(what, "no definition paragraph");
+    assert.match(what, /dbboard/);
+  });
+
+  test(`${lang}: the roadmap is on the page and names no version`, () => {
+    const section = page.match(/<section id="roadmap">([\s\S]*?)<\/section>/)?.[1];
+    assert.ok(section, "no roadmap section");
+    assert.match(section, /docs\/roadmap\.md/);
+    // A version number in the body is wrong the day after it is written.
+    assert.doesNotMatch(section, /\bv?\d+\.\d+(\.\d+)?\b/);
+  });
+}

@@ -15001,3 +15001,36 @@ widened for one source here.
   As for Dolt, CI starts no Umbrachyx server.
 - Listing and opening keys needs `SCAN`, `TYPE` and `TTL`, which Umbrachyx
   answers for this reason.
+
+## ADR-0171 — The download page answers "what is it" for search and AI engines (2026-11-09)
+
+**Status:** Accepted.
+
+**Context.** The download page opens with a problem, not the product (the
+h1 names three databases and the pain of a tool each). That works for a
+person who arrived looking for a client, and leaves nothing quotable for a
+search engine or an AI answer engine asked "what is dbboard": no sentence
+said it, there was no structured data, and the page's engine list had
+stopped at ten while Redis-compatible stores and Dolt's history shipped.
+Nor did the page say where the project is going; that lived only in
+`docs/roadmap.md`.
+
+**Decision.** Both pages (English and Japanese) carry:
+
+1. One plain sentence under the lede that says what dbboard is.
+2. `SoftwareApplication` and `FAQPage` JSON-LD. They are data blocks, which
+   are not executed, so the page's `script-src 'self'` policy (ADR-0047)
+   is unchanged.
+3. A visible FAQ, repeated word for word in the `FAQPage` block.
+   `site/page.test.mjs` holds the two equal, because a structured answer
+   that is not on the page is what search engines penalise.
+4. A short roadmap (done, now, next, after that, not planned) that links to
+   `docs/roadmap.md` and names no version, which would be stale the day
+   after it is written. The test rejects a version number in it.
+
+`llms.txt` names the current engines.
+
+**Consequences.** The FAQ and the roadmap summary are hand-written, so they
+age with the product: a new engine means touching the FAQ, the lede and
+`llms.txt`. The roadmap section says what is next in words rather than
+numbers, so it needs editing only when the plan itself moves.
