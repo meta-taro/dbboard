@@ -15034,3 +15034,34 @@ Nor did the page say where the project is going; that lived only in
 age with the product: a new engine means touching the FAQ, the lede and
 `llms.txt`. The roadmap section says what is next in words rather than
 numbers, so it needs editing only when the plan itself moves.
+
+## ADR-0172 — Every shipped locale translates every key (2026-11-09)
+
+**Status:** Accepted. Settles #181.
+
+**Context.** Eleven locales are in the language menu. English is the source
+and Japanese is written beside it; the other nine carried the 30 keys
+ported from the retired egui client (ADR-0089) and fell back to English for
+the ~470 written since. On screen that is a window half in one language:
+the menu itself is translated, so the switch looks as if it worked.
+`set_ui_locale` (ADR-0107) lets an agent switch the language too, so these
+locales are exercised more than when only a person opened the menu.
+
+**Decision.**
+
+1. Each of the nine catalogs lives in its own file under
+   `apps/desktop/src/lib/i18n/catalogs/`, so a translation can be reviewed
+   or replaced one language at a time, and `messages.ts` stays the file
+   where English and Japanese are written.
+2. All nine translate every key. The translations are machine-made, with
+   the Japanese catalog as the reference for meaning, and product names,
+   SQL keywords, file names and placeholders left as they are.
+3. `catalogs.test.ts` fails when any locale lacks a key, has a key English
+   does not, or changes a placeholder. Adding a key to `en` therefore means
+   adding it to all eleven in the same change.
+4. The fallback to English in `translate.ts` stays, as a net for a mistake,
+   not as a way to ship a locale.
+
+**Consequences.** A new label costs eleven strings instead of two. The nine
+machine translations have not been read by native speakers; the changelog
+says so, and a correction to one is a one-file change.

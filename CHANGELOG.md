@@ -7,7 +7,25 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — The HTTP contract freezes
+
+### Changed
+
+- **Every language in the language menu is now a whole translation** (#181,
+  ADR-0172). Korean, Simplified and Traditional Chinese, German, French,
+  Spanish, Brazilian Portuguese, Russian and Italian carried 30 of the
+  app's labels each and fell back to English for the rest, so picking one
+  gave a window half in that language. All nine now translate every label,
+  and a test fails the build when a key, or a placeholder in it, is
+  missing from any of them. The translations are machine-made and reviewed
+  against the Japanese one; corrections from native speakers are welcome.
+
+### Fixed
+
+- **The SSH host-key hint shows the Windows path again.** It read
+  ".sshknown_hosts" in English and Japanese: the backslash in
+  `.ssh\known_hosts` was swallowed as an escape. A test now checks the path
+  in every language.
 
 ## [0.22.2] — 2026-11-06 — The Windows installer brings the MCP server along
 
