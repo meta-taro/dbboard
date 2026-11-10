@@ -30,6 +30,7 @@ const zh_CN: Partial<Record<MessageKey, string>> = {
   "versioned-kind-removed": "已删除",
   "versioned-was": "原值 { $value }",
   "versioned-no-key": "{ $table } 没有主键，因此无法读取单行的历史记录及其最后修改者。",
+  "versioned-latest-only": "{ $table } 只保留最新值，因此没有可显示的历史记录。",
   "versioned-no-rows": "{ $table } 没有行。",
   "versioned-row-history": "历史",
   "versioned-row-history-title": "{ $table } 中某一行的历史",

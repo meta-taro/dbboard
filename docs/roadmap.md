@@ -45,7 +45,7 @@ connects. How each one is reached:
 | XTDB | Bitemporal history per record | PostgreSQL wire. Whether the shared pg-wire adapter is enough has to be checked before anything is built |
 | TerminusDB | History per fact, with branch and merge | Its own HTTP API. A new adapter |
 | Datomic | Immutable facts per attribute | Datalog, not SQL. A new adapter, read-only like the document stores |
-| Umbrachyx | Commits, branches, who changed a value and why, values erased per subject | Redis wire, through the Redis-compatible adapter, which detects it and fills the read-only history views ([ADR-0170](decisions.md)). Who approved a change and which values were erased do not fit the shared shapes yet |
+| Umbrachyx | Commits, branches, who changed a value and why, values erased per subject | Redis wire, through the Redis-compatible adapter, which detects it and fills the read-only history views ([ADR-0170](decisions.md)); a table declared to keep only its latest value shows a note instead of history ([ADR-0173](decisions.md)). Who approved a change and which values were erased do not fit the shared shapes yet |
 
 Neon branches are a different kind of history. They branch a whole database
 rather than tracking rows, and they are reached through Neon's management

@@ -12,6 +12,10 @@
 //! no place for who approved a change, for an email, or for a value whose
 //! subject was erased: the first two are left out and an erased value reads
 //! as `Null`, as ADR-0170 records.
+//!
+//! A table can be declared to keep only its latest value (ADR-0173). Its
+//! history is refused with a capability error carrying [`LATEST_ONLY`], so
+//! the screen can say so instead of showing an error.
 
 use async_trait::async_trait;
 use dbboard_core::{
@@ -31,6 +35,10 @@ pub(crate) const DETECT: &str = "UMBRA.BRANCHES";
 /// Umbrachyx separates the parts of a key with `/`, and erases by the first
 /// two of them (`player/42`), so its keys group by `/` rather than `:`.
 pub(crate) const DELIMITER: char = '/';
+
+/// The words every refusal for a table that keeps no history carries. The
+/// frontend looks for them, so changing them is a change on both sides.
+pub(crate) const LATEST_ONLY: &str = "keeps only its latest value";
 
 /// The most `UMBRA.CELLS` pages one blame reads, each up to 1,000 keys.
 const MAX_CELL_PAGES: usize = 20;
@@ -61,6 +69,19 @@ impl UmbrachyxHistory {
         }
         reply_text(send(&self.connection, &cmd).await?)
     }
+
+    /// Whether `pattern` lies wholly in a table declared to keep only its
+    /// latest value. A server older than `UMBRA.TABLES` keeps history for
+    /// every table, so any failure to ask reads as "no".
+    async fn is_latest_only(&self, pattern: &str) -> bool {
+        let Some(table) = table_of(pattern) else {
+            return false;
+        };
+        match self.ask("UMBRA.TABLES", &[]).await {
+            Ok(reply) => latest_tables(&reply).is_ok_and(|t| t.iter().any(|n| n == table)),
+            Err(_) => false,
+        }
+    }
 }
 
 #[async_trait]
@@ -77,9 +98,14 @@ impl HistoryReader for UmbrachyxHistory {
         limit: usize,
     ) -> DbResult<RowHistory> {
         let key = key_of(key)?;
+        if self.is_latest_only(&key).await {
+            return Err(latest_only(&key));
+        }
         let reply = self
             .ask("UMBRA.HISTORY", &[self.branch.as_bytes(), key.as_bytes()])
-            .await?;
+            .await
+            // Declared between the check above and this read.
+            .map_err(|e| no_history(e, &key))?;
         row_history(&reply, limit)
     }
 
@@ -92,6 +118,9 @@ impl HistoryReader for UmbrachyxHistory {
 
     async fn blame(&self, table: &TableInfo) -> DbResult<Vec<BlameEntry>> {
         let pattern = &table.name;
+        if self.is_latest_only(pattern).await {
+            return Err(latest_only(pattern));
+        }
         let mut after = start_before(&literal_prefix(pattern));
         let mut entries = Vec::new();
         for _ in 0..MAX_CELL_PAGES {
@@ -122,6 +151,17 @@ impl HistoryReader for UmbrachyxHistory {
 #[derive(Deserialize)]
 struct Branches {
     served: String,
+}
+
+#[derive(Deserialize)]
+struct TablesReply {
+    tables: Vec<TableReply>,
+}
+
+#[derive(Deserialize)]
+struct TableReply {
+    name: String,
+    engine: String,
 }
 
 #[derive(Deserialize)]
@@ -159,6 +199,10 @@ struct ChangeReply {
 struct DiffReply {
     changes: Vec<ValueChangeReply>,
     more: bool,
+    /// Tables whose past this diff reaches but which keep none. Servers
+    /// older than ADR-0173 do not send it.
+    #[serde(default)]
+    omitted_tables: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -177,6 +221,17 @@ struct CellsReply {
 fn parse<'a, T: Deserialize<'a>>(reply: &'a str, command: &str) -> DbResult<T> {
     serde_json::from_str(reply)
         .map_err(|e| DbError::TypeConversion(format!("{command} answered unreadable JSON: {e}")))
+}
+
+/// The tables declared to keep only their latest value.
+fn latest_tables(reply: &str) -> DbResult<Vec<String>> {
+    let tables: TablesReply = parse(reply, "UMBRA.TABLES")?;
+    Ok(tables
+        .tables
+        .into_iter()
+        .filter(|t| t.engine == "latest")
+        .map(|t| t.name)
+        .collect())
 }
 
 fn served_branch(reply: &str) -> Option<String> {
@@ -218,6 +273,9 @@ fn row_history(reply: &str, limit: usize) -> DbResult<RowHistory> {
 /// if it were whole.
 fn diff(reply: &str, pattern: &str) -> DbResult<CommitDiff> {
     let diff: DiffReply = parse(reply, "UMBRA.DIFF")?;
+    if table_of(pattern).is_some_and(|t| diff.omitted_tables.iter().any(|o| o == t)) {
+        return Err(latest_only(pattern));
+    }
     if diff.more {
         return Err(DbError::Query(
             "more keys changed between these commits than Umbrachyx answers at once (1,000), \
@@ -379,6 +437,34 @@ fn reply_text(reply: redis::Value) -> DbResult<String> {
         _ => Err(DbError::TypeConversion(
             "Umbrachyx answered something other than a string".into(),
         )),
+    }
+}
+
+/// The Umbrachyx table a key or a pattern lies in: its first part, or
+/// `None` when that part has a wildcard or an escape and so may span tables.
+fn table_of(pattern: &str) -> Option<&str> {
+    let first = pattern.split(DELIMITER).next().unwrap_or(pattern);
+    (!first.contains(['*', '?', '[', '\\'])).then_some(first)
+}
+
+/// The refusal for reading the history of a table that keeps none.
+fn latest_only(pattern: &str) -> DbError {
+    let table = table_of(pattern).unwrap_or(pattern);
+    DbError::Capability(format!(
+        "{table} {LATEST_ONLY}: Umbrachyx records no history for it"
+    ))
+}
+
+/// The server's own refusal (`-NOHISTORY ...`) as [`latest_only`]; any
+/// other error unchanged.
+fn no_history(error: DbError, pattern: &str) -> DbError {
+    match &error {
+        DbError::Query(m)
+            if m.contains("NOHISTORY") || m.contains("keeps only the latest value") =>
+        {
+            latest_only(pattern)
+        }
+        _ => error,
     }
 }
 
@@ -573,5 +659,58 @@ mod tests {
         assert!(key_of(&[("key".into(), text("player/7/gems"))]).is_ok());
         assert!(key_of(&[]).is_err());
         assert!(key_of(&[("key".into(), Value::Integer(1))]).is_err());
+    }
+
+    // Recorded from `umbrachyx serve` after `umbrachyx table pos latest`
+    // (ADR-0173). The data is fictional.
+    const TABLES: &str = r#"{"default":"history","tables":[{"name":"pos","engine":"latest"},{"name":"player","engine":"history"}]}"#;
+
+    #[test]
+    fn only_tables_declared_latest_keep_no_history() {
+        assert_eq!(
+            latest_tables(TABLES).expect("parses"),
+            vec!["pos".to_string()]
+        );
+        let none = r#"{"default":"history","tables":[]}"#;
+        assert!(latest_tables(none).expect("parses").is_empty());
+    }
+
+    #[test]
+    fn a_key_or_pattern_belongs_to_the_table_named_by_its_first_part() {
+        assert_eq!(table_of("pos/7/x"), Some("pos"));
+        assert_eq!(table_of("pos/*"), Some("pos"));
+        assert_eq!(table_of("pos"), Some("pos"));
+        // A wildcard in the first part can span tables of both kinds.
+        assert_eq!(table_of("*/7/gems"), None);
+        assert_eq!(table_of("po?/7"), None);
+        assert_eq!(table_of(r"p\*s/7"), None);
+    }
+
+    #[test]
+    fn a_diff_over_a_table_left_out_is_refused_as_latest_only() {
+        let omitted = DIFF.replace(
+            r#""more":false"#,
+            r#""more":false,"omitted_tables":["pos"]"#,
+        );
+        let refused = diff(&omitted, "pos/*").expect_err("pos keeps no history");
+        assert!(matches!(&refused, DbError::Capability(m) if m.contains(LATEST_ONLY)));
+        // The other tables of the same diff read as before.
+        assert_eq!(diff(&omitted, "player/*").expect("parses").changes.len(), 1);
+        let empty = DIFF.replace(r#""more":false"#, r#""more":false,"omitted_tables":[]"#);
+        assert!(diff(&empty, "pos/*").expect("parses").changes.is_empty());
+    }
+
+    #[test]
+    fn the_servers_no_history_error_reads_as_latest_only() {
+        let server = DbError::Query(
+            "ExtensionError: NOHISTORY table 'pos' keeps only the latest value".into(),
+        );
+        let mapped = no_history(server, "pos/7");
+        assert!(matches!(&mapped, DbError::Capability(m) if m.contains(LATEST_ONLY)));
+        let other = no_history(
+            DbError::Query("ResponseError: wrong number".into()),
+            "pos/7",
+        );
+        assert!(matches!(other, DbError::Query(_)));
     }
 }

@@ -15065,3 +15065,60 @@ locales are exercised more than when only a person opened the menu.
 **Consequences.** A new label costs eleven strings instead of two. The nine
 machine translations have not been read by native speakers; the changelog
 says so, and a correction to one is a one-file change.
+
+## ADR-0173 — An Umbrachyx table that keeps only its latest value shows a note, not an error (2026-11-10)
+
+**Status.** Proposed. Amends ADR-0170.
+
+**Context.** Umbrachyx now lets a person declare, per table, that it keeps
+only its latest value (`umbrachyx table pos latest`). A table there is the
+first `/`-separated part of a key. Such a table has no history, and the
+server says so in three ways:
+
+- `UMBRA.TABLES` lists every declared table with its engine, `history` or
+  `latest`; an undeclared table is `history`.
+- `UMBRA.HISTORY` on one of its keys answers the error `-NOHISTORY ...`.
+- `UMBRA.CELLS` leaves its keys out, and `UMBRA.DIFF` leaves it out when the
+  diff reaches into its past. Both name what they left out in
+  `omitted_tables`.
+
+Without handling these, opening such a table in the Commits tab showed the
+server's error in red, as if something had gone wrong.
+
+**Decision.**
+
+- **A history read of a latest-only table is a capability error** whose
+  message carries the fixed words "keeps only its latest value". Before a
+  row's history or blame, the adapter asks `UMBRA.TABLES` and refuses when
+  the key or pattern lies in such a table. A `NOHISTORY` answer from the
+  server, for a table declared between the check and the read, is mapped
+  to the same error. A diff whose `omitted_tables` names the pattern's
+  table is refused the same way.
+- **The screen shows those words as a note.** The Commits tab and the row
+  history dialog recognise the refusal and say that the table keeps only
+  its latest value, in the muted style used for "no commits yet", instead
+  of the red error style.
+- **The table is the pattern's first part, only when it is literal.** A
+  pattern whose first part has a wildcard (`*/7/gems`) can span tables of
+  both kinds, so it is never refused as a whole. Its diff and blame show
+  what the server returned, which already leaves the latest-only keys out.
+- **A server without `UMBRA.TABLES` keeps history for every table.** Any
+  failure to ask reads as "not latest-only", so older Umbrachyx servers
+  behave exactly as before. `UMBRA.TABLES` joins the read-only allowlist
+  with the other five commands.
+
+**Alternatives.**
+
+- **Reporting latest-only tables as having no primary key,** which already
+  closes row history and blame. The screen would then say "has no primary
+  key", which is false for these tables.
+- **A new error category.** The HTTP contract's categories are frozen for
+  1.0, and `capability` already means "this source cannot do that here".
+
+**Consequences.**
+
+- A row's history and blame on Umbrachyx cost one more round trip, the
+  `UMBRA.TABLES` call. The answer is small and is not cached, so a table
+  declared while dbboard is open is picked up on the next read.
+- The words "keeps only its latest value" are now shared by the adapter
+  and the frontend. Tests on both sides pin them.

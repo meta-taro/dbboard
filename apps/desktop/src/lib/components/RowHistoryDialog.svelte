@@ -6,7 +6,7 @@
   import { displayCell, rowHistory, tableKey, type TableInfo } from '$lib/api';
   import type { KeyColumn } from '$lib/grid/edit';
   import { i18n } from '$lib/i18n/i18n.svelte';
-  import { shortHash, versionRows, type RowHistory } from '$lib/versioned/view';
+  import { keepsNoHistory, shortHash, versionRows, type RowHistory } from '$lib/versioned/view';
 
   interface Props {
     connectionId: string;
@@ -57,7 +57,9 @@
     </header>
 
     <div class="body">
-      {#if error}
+      {#if keepsNoHistory(error)}
+        <p class="muted">{i18n.t('versioned-latest-only', { table: tableKey(table) })}</p>
+      {:else if error}
         <p class="error">{error}</p>
       {:else if !history}
         <p class="muted">{i18n.t('versioned-loading')}</p>

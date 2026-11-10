@@ -30,6 +30,7 @@ const it: Partial<Record<MessageKey, string>> = {
   "versioned-kind-removed": "Rimossa",
   "versioned-was": "era { $value }",
   "versioned-no-key": "{ $table } non ha una chiave primaria, quindi non è possibile leggere la cronologia di una riga né chi l'ha modificata per ultimo.",
+  "versioned-latest-only": "{ $table } conserva solo il valore più recente, quindi non c'è una cronologia da mostrare.",
   "versioned-no-rows": "{ $table } non contiene righe.",
   "versioned-row-history": "Cronologia",
   "versioned-row-history-title": "Cronologia di una riga in { $table }",

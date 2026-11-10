@@ -21,6 +21,7 @@
   import {
     blameRows,
     diffRows,
+    keepsNoHistory,
     keyFor,
     parentOf,
     shortHash,
@@ -190,6 +191,8 @@
     <section class="detail">
       {#if !table}
         <p class="muted">{i18n.t('versioned-no-table')}</p>
+      {:else if keepsNoHistory(error)}
+        <p class="muted">{i18n.t('versioned-latest-only', { table: tableKey(table) })}</p>
       {:else if error}
         <p class="error">{error}</p>
       {:else if mode === 'diff' && selectedHash && !from}

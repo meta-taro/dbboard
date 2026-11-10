@@ -30,6 +30,7 @@ const ru: Partial<Record<MessageKey, string>> = {
   "versioned-kind-removed": "Удалено",
   "versioned-was": "было: { $value }",
   "versioned-no-key": "У таблицы { $table } нет первичного ключа, поэтому нельзя прочитать историю отдельной строки и узнать, кто изменил её последним.",
+  "versioned-latest-only": "Таблица { $table } хранит только последнее значение, поэтому истории для показа нет.",
   "versioned-no-rows": "В таблице { $table } нет строк.",
   "versioned-row-history": "История",
   "versioned-row-history-title": "История строки в { $table }",
