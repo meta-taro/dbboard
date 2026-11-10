@@ -33,7 +33,9 @@ use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, ProtocolVersion, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities, ServerConfig,
+};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -801,14 +803,23 @@ struct UiCommandOutcome {
 #[allow(clippy::unused_async_trait_impl)]
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DbboardMcp {
-    fn get_info(&self) -> ServerInfo {
-        // `ServerInfo::new` seeds `server_info` from the crate's build env
-        // (name + version); the builder methods layer on the rest. The
-        // struct is `#[non_exhaustive]`, so a literal is not an option.
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2024_11_05)
-            .with_instructions(instructions())
+    fn get_info(&self) -> ServerConfig {
+        server_config()
     }
+}
+
+/// What the server says about itself in the handshake. The struct is
+/// `#[non_exhaustive]`, so it is built with the builder methods. Its default
+/// `server_info` reads the build env of rmcp, not of this crate, so the name
+/// and version are set here.
+fn server_config() -> ServerConfig {
+    ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        .with_server_info(Implementation::new(
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_protocol_version(ProtocolVersion::V_2024_11_05)
+        .with_instructions(instructions())
 }
 
 /// The handshake text the client hands to the model.
@@ -962,7 +973,7 @@ fn capture_to_mcp(err: &CaptureError) -> McpError {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_info, capture_to_mcp, instructions, to_mcp};
+    use super::{build_info, capture_to_mcp, instructions, server_config, to_mcp};
     use crate::capture::CaptureError;
     use crate::service::ServiceError;
     use dbboard_core::DbError;
@@ -1002,6 +1013,16 @@ mod tests {
             text.contains("get_server_info"),
             "the handshake does not name the tool that repeats the version"
         );
+    }
+
+    // The handshake's serverInfo used to name the SDK ("rmcp 2.2.0"): its
+    // default reads the build env of the crate it is compiled in, which is
+    // rmcp's. A client that shows serverInfo then named the wrong program.
+    #[test]
+    fn the_handshake_names_this_server_not_the_sdk() {
+        let config = server_config();
+        assert_eq!(config.server_info.name, env!("CARGO_PKG_NAME"));
+        assert_eq!(config.server_info.version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
