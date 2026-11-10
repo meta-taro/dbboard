@@ -22,6 +22,11 @@ public API is the HTTP contract in
 
 ### Fixed
 
+- **The MCP server introduces itself by its own name.** Its handshake
+  named the SDK it is built on ("rmcp 2.2.0") instead of `dbboard-mcp` and
+  its version, so a client that shows who it is talking to showed the
+  wrong program. The same change moves that SDK to 3.9, which clears two
+  advisories in parts of it dbboard does not use (ADR-0174).
 - **The SSH host-key hint shows the Windows path again.** It read
   ".sshknown_hosts" in English and Japanese: the backslash in
   `.ssh\known_hosts` was swallowed as an escape. A test now checks the path
