@@ -30,6 +30,7 @@ const de: Partial<Record<MessageKey, string>> = {
   "versioned-kind-removed": "Entfernt",
   "versioned-was": "war { $value }",
   "versioned-no-key": "{ $table } hat keinen Primärschlüssel, daher können der Verlauf einer Zeile und ihr letzter Bearbeiter nicht gelesen werden.",
+  "versioned-latest-only": "{ $table } speichert nur den neuesten Wert, daher gibt es keinen Verlauf anzuzeigen.",
   "versioned-no-rows": "{ $table } enthält keine Zeilen.",
   "versioned-row-history": "Verlauf",
   "versioned-row-history-title": "Verlauf einer Zeile in { $table }",

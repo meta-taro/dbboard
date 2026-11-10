@@ -80,6 +80,17 @@ export interface BlameRow {
   commit: Commit;
 }
 
+/**
+ * Whether a history read was refused because the table keeps only its
+ * latest value, as an Umbrachyx table can be declared to (ADR-0173). The
+ * screen says so as a note: nothing went wrong, there is no history.
+ */
+export function keepsNoHistory(error: string): boolean {
+  return (
+    error.startsWith('capability unavailable:') && error.includes('keeps only its latest value')
+  );
+}
+
 /** The leading seven characters, as git and Dolt print a hash. */
 export function shortHash(hash: string): string {
   return hash.slice(0, 7);

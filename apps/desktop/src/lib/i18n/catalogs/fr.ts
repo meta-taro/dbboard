@@ -30,6 +30,7 @@ const fr: Partial<Record<MessageKey, string>> = {
   "versioned-kind-removed": "Supprimée",
   "versioned-was": "était { $value }",
   "versioned-no-key": "{ $table } n'a pas de clé primaire : l'historique d'une ligne et l'auteur de sa dernière modification ne peuvent donc pas être lus.",
+  "versioned-latest-only": "{ $table } ne conserve que sa valeur la plus récente : il n'y a donc pas d'historique à afficher.",
   "versioned-no-rows": "{ $table } ne contient aucune ligne.",
   "versioned-row-history": "Historique",
   "versioned-row-history-title": "Historique d'une ligne de { $table }",

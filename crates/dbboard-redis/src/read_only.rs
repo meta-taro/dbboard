@@ -195,7 +195,7 @@ fn rule(name: &str, args: &[String]) -> Rule {
         "XINFO" => xinfo(args),
         // Umbrachyx's history reads (ADR-0170). Each answers one string of
         // JSON, and the server stops every list in it at a page.
-        "UMBRA.BRANCHES" => arity(name, args, 0, 0).map(|()| plain(Shape::Value)),
+        "UMBRA.BRANCHES" | "UMBRA.TABLES" => arity(name, args, 0, 0).map(|()| plain(Shape::Value)),
         "UMBRA.LOG" => arity(name, args, 1, 1).map(|()| plain(Shape::Value)),
         "UMBRA.HISTORY" | "UMBRA.DIFF" => arity(name, args, 2, 2).map(|()| plain(Shape::Value)),
         "UMBRA.CELLS" => arity(name, args, 1, 2).map(|()| plain(Shape::Value)),
@@ -508,6 +508,7 @@ mod tests {
             "UMBRA.BRANCHES",
             "umbra.log agent",
             "UMBRA.HISTORY agent player/7/gems",
+            "UMBRA.TABLES",
             "UMBRA.CELLS agent",
             "UMBRA.CELLS agent player/7",
             "UMBRA.DIFF agent~1 agent",
@@ -522,6 +523,7 @@ mod tests {
     fn umbrachyx_commands_are_held_to_their_arguments_and_names() {
         for line in [
             "UMBRA.BRANCHES agent",
+            "UMBRA.TABLES pos",
             "UMBRA.LOG",
             "UMBRA.HISTORY agent",
             "UMBRA.CELLS agent a b",

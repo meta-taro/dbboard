@@ -30,6 +30,7 @@ const ko: Partial<Record<MessageKey, string>> = {
   "versioned-kind-removed": "삭제됨",
   "versioned-was": "이전 값: { $value }",
   "versioned-no-key": "{ $table }에 기본 키가 없어 행 단위 기록과 마지막 변경자를 읽을 수 없습니다.",
+  "versioned-latest-only": "{ $table }은(는) 최신 값만 보관하므로 표시할 기록이 없습니다.",
   "versioned-no-rows": "{ $table }에 행이 없습니다.",
   "versioned-row-history": "기록",
   "versioned-row-history-title": "{ $table }의 행 기록",

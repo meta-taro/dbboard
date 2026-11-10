@@ -4,6 +4,7 @@ import type { Column } from '$lib/api';
 import {
   blameRows,
   diffRows,
+  keepsNoHistory,
   keyFor,
   parentOf,
   shortHash,
@@ -144,5 +145,22 @@ describe('blameRows', () => {
     expect(rows[0].cells).toEqual(['7']);
     expect(rows[0].key).toEqual([{ column: 'id', value: 7 }]);
     expect(rows[0].commit.message).toBe('second');
+  });
+});
+
+describe('keepsNoHistory', () => {
+  // The words come from the Redis-compatible adapter's refusal for an
+  // Umbrachyx table that keeps only its latest value (ADR-0173).
+  it('recognises the refusal for a table that keeps only its latest value', () => {
+    expect(
+      keepsNoHistory(
+        'capability unavailable: pos keeps only its latest value: Umbrachyx records no history for it',
+      ),
+    ).toBe(true);
+  });
+
+  it('leaves every other error an error', () => {
+    expect(keepsNoHistory('capability unavailable: describe_table not supported')).toBe(false);
+    expect(keepsNoHistory('query failed: keeps only its latest value')).toBe(false);
   });
 });
