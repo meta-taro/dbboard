@@ -15122,3 +15122,33 @@ server's error in red, as if something had gone wrong.
   declared while dbboard is open is picked up on the next read.
 - The words "keeps only its latest value" are now shared by the adapter
   and the frontend. Tests on both sides pin them.
+
+## ADR-0174 — The MCP server moves to rmcp 3.9 (2026-11-10)
+
+**Status.** Accepted. Amends ADR-0046 §2.
+
+**Context.** Two advisories against `rmcp` 2.2.0 turned the `deps` job red
+on every branch: RUSTSEC-2026-0457 (the OAuth client's SSRF filter checks
+host strings, not resolved addresses; fixed in 3.7.0) and RUSTSEC-2026-0462
+(the Streamable HTTP clients buffer response bodies without a limit; fixed
+in 3.9.0). dbboard builds `rmcp` with `server`, `macros` and
+`transport-io` only. It is a stdio server and uses neither the OAuth
+client nor an HTTP client, so neither flaw is reachable from it.
+
+**Decision.** Upgrade to `rmcp` 3.9 rather than ignore the two advisories
+in `deny.toml`. The upgrade compiles unchanged apart from one rename:
+`ServerInfo` is deprecated in favour of `ServerConfig`, the same type.
+All `dbboard-mcp` tests pass on it.
+
+**Alternatives.** Ignoring both advisories with a reason ("feature not
+built") would be true today, but would also hide them if a later change
+turned on an HTTP transport or OAuth, and would keep the server on a line
+that gets no more fixes.
+
+**Also fixed here.** The handshake's `serverInfo` named the SDK
+(`rmcp 2.2.0`) rather than the server: rmcp's default fills it from the
+build environment of rmcp itself. The server now sets its own name and
+version, and a test pins them.
+
+**Consequences.** The server still offers protocol version 2024-11-05, so
+agents negotiate as before. `deny.toml` needs no new entry.

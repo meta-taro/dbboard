@@ -241,10 +241,10 @@ tempfile = "3"
 # connections. `server` = the `ServerHandler` + service layer, `macros`
 # = the `#[tool]`/`#[tool_router]`/`#[tool_handler]` proc-macros,
 # `transport-io` = the stdio transport (stdout is the MCP channel, so all
-# logging goes to stderr). Pinned to 2.2.0 (the v2 model/protocol line).
-rmcp = { version = "2.2", features = ["server", "macros", "transport-io"] }
+# logging goes to stderr). On the 3.x line since 3.9.0 (ADR-0174).
+rmcp = { version = "3.9", features = ["server", "macros", "transport-io"] }
 # JSON Schema derivation for the MCP tool parameter structs. rmcp 2.x
-# requires schemars 1.0 (a 0.8 `JsonSchema` will not satisfy the bound).
+# and 3.x require schemars 1.0 (a 0.8 `JsonSchema` will not satisfy the bound).
 schemars = "1"
 # Structured, level-filtered logging for the headless MCP server. Emitted
 # to stderr only — stdout carries the JSON-RPC frames. `tracing` is also
