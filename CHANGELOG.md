@@ -9,6 +9,8 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.23.1] — 2026-11-11 — Agents sharing one PC never wait on each other in silence
+
 ### Fixed
 
 - **One agent's slow call no longer silently holds up another**
