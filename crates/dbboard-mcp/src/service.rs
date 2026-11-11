@@ -604,6 +604,19 @@ pub enum ServiceError {
     /// The window received the command and answered that it could not do it.
     #[error("dbboard could not do it: {0}")]
     UiRefused(String),
+
+    /// Another agent's UI command is still waiting for the window.
+    ///
+    /// Every agent on the PC runs its own server, and the window reads one
+    /// command at a time from one file. Writing over a command in flight
+    /// would lose it, and its sender would then wait out the whole timeout
+    /// for an answer that is never coming, so the second agent is told at
+    /// once instead.
+    #[error(
+        "another agent is using the dbboard window right now; \
+         try again in a moment"
+    )]
+    UiBusy,
 }
 
 /// Flatten one [`ForeignKey`] on `from_table` into a directed edge.
@@ -672,8 +685,9 @@ pub struct McpService {
     // Adapters are connected lazily on first use and reused thereafter —
     // reconnecting per request would be wasteful and, for Turso
     // `:memory:`, would silently open a fresh empty database each time
-    // (see `dbboard_connect::connect_adapter`). A tokio `Mutex` because
-    // the miss path connects across an `.await`.
+    // (see `dbboard_connect::connect_adapter`). The lock is held for a
+    // lookup or an update only, never across a round-trip (see
+    // `adapter_for_target`).
     cache: Mutex<HashMap<String, CachedAdapter>>,
 }
 
@@ -869,6 +883,35 @@ impl McpService {
         self.ui_sibling("ui-command-result.toml")
     }
 
+    /// The file whose lock says an agent's UI command is in flight.
+    fn ui_lock_path(&self) -> PathBuf {
+        self.ui_sibling("ui-command.lock")
+    }
+
+    /// Take the window for one command, or say at once that it is taken.
+    ///
+    /// A cross-process lock, because the agents that compete for the window
+    /// are separate `dbboard-mcp` processes. `try_lock` rather than `lock`:
+    /// queueing would put the second agent back into a silent wait, which is
+    /// the thing this exists to prevent.
+    fn claim_window(&self) -> Result<std::fs::File, ServiceError> {
+        let path = self.ui_lock_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(ConfigError::Io)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(ConfigError::Io)?;
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => Err(ServiceError::UiBusy),
+            Err(std::fs::TryLockError::Error(e)) => Err(ConfigError::Io(e).into()),
+        }
+    }
+
     fn ui_sibling(&self, name: &str) -> PathBuf {
         self.ui_settings_path
             .parent()
@@ -909,6 +952,9 @@ impl McpService {
         command: UiCommand,
         timeout: Duration,
     ) -> Result<Option<String>, ServiceError> {
+        // Held until this call returns, answer or not. The lock lives on the
+        // open file, so it also goes if this process dies mid-wait.
+        let _window = self.claim_window()?;
         let command_path = self.ui_command_path();
         let result_path = self.ui_result_path();
 
@@ -1977,29 +2023,45 @@ impl McpService {
     ) -> Result<Arc<dyn DatabaseAdapter>, ServiceError> {
         let connection_id = target.connection_id;
         let key = target.cache_key();
-        let mut cache = self.cache.lock().await;
-        let cached = cache
+        // The cache lock is only ever held for a lookup or an update, never
+        // across a round-trip. It used to cover the ping and the connect
+        // below, which made the "briefly" in "serialises the other
+        // connections briefly" as long as the slowest network on any one
+        // connection: a bastion that accepted and then went quiet held every
+        // other connection's table list until it timed out.
+        let cached = self
+            .cache
+            .lock()
+            .await
             .get(&key)
             .map(|e| (Arc::clone(&e.adapter), e.checked_at));
         if let Some((adapter, checked_at)) = cached {
             if checked_at.elapsed() < HEALTH_CHECK_AFTER_IDLE {
                 return Ok(adapter);
             }
-            // The ping runs under the cache lock, like the connect below it:
-            // one round-trip serialises the other connections briefly, but a
-            // second caller racing in would otherwise get the entry this one
-            // is about to evict.
-            if adapter.ping().await.is_ok() {
-                if let Some(entry) = cache.get_mut(&key) {
-                    entry.checked_at = Instant::now();
+            let alive = adapter.ping().await.is_ok();
+            let mut cache = self.cache.lock().await;
+            // Another caller may have replaced the entry during the ping.
+            // Only the adapter this call probed is marked or evicted, so a
+            // fresh one built meanwhile is never thrown away on its behalf.
+            let still_cached = cache
+                .get(&key)
+                .is_some_and(|e| Arc::ptr_eq(&e.adapter, &adapter));
+            if alive {
+                if still_cached {
+                    if let Some(entry) = cache.get_mut(&key) {
+                        entry.checked_at = Instant::now();
+                    }
                 }
                 return Ok(adapter);
             }
             // Unreachable, so it is not an adapter any more. Dropping it here
-            // also drops any SSH tunnel guard it owns, which is what lets the
-            // rebuild below open a *new* forward instead of reusing the dead
-            // one.
-            cache.remove(&key);
+            // (and `adapter` at the end of this block) also drops any SSH
+            // tunnel guard it owns, which is what lets the rebuild below open
+            // a *new* forward instead of reusing the dead one.
+            if still_cached {
+                cache.remove(&key);
+            }
         }
 
         let file = self.load_connection_file().await?;
@@ -2027,6 +2089,14 @@ impl McpService {
         let configured = configured_database(&config);
         let config = with_listing_default(config)?;
         let adapter = connect_adapter(config).await?;
+        let mut cache = self.cache.lock().await;
+        // Two calls that missed together both connected. Every caller must
+        // end up on the same adapter — for Turso `:memory:` a second one is a
+        // second, empty database — so the first one cached wins and this one
+        // is dropped.
+        if let Some(existing) = cache.get(&key) {
+            return Ok(Arc::clone(&existing.adapter));
+        }
         cache.insert(
             key,
             CachedAdapter::with_database(Arc::clone(&adapter), configured),
@@ -2934,6 +3004,66 @@ path = ":memory:"
         fx.service.list_tables("warm").await.expect("warm");
         fx.service.list_tables("warm").await.expect("warm again");
         assert_eq!(pings.load(Ordering::SeqCst), 0);
+    }
+
+    /// An adapter whose health check never comes back: a bastion that
+    /// accepts the TCP connection and then says nothing.
+    struct HangingPing;
+
+    #[async_trait::async_trait]
+    impl DatabaseAdapter for HangingPing {
+        fn id(&self) -> &'static str {
+            "hanging"
+        }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
+        async fn ping(&self) -> DbResult<()> {
+            std::future::pending().await
+        }
+        async fn list_tables(&self) -> DbResult<Vec<TableInfo>> {
+            Ok(Vec::new())
+        }
+        async fn query(&self, _sql: &str) -> DbResult<CoreQueryResult> {
+            Ok(CoreQueryResult::empty())
+        }
+    }
+
+    /// Several agents on one PC each run their own server, but one agent
+    /// works several connections at once. A probe that hangs on one
+    /// connection used to hold the cache lock for as long as it hung, so a
+    /// table list on a healthy connection waited behind it with nothing on
+    /// screen to say why.
+    #[tokio::test]
+    async fn a_hanging_probe_on_one_connection_does_not_hold_up_another() {
+        let fx = fixture();
+        write(&fx.config_path, "version = 1\n");
+        let checked_long_ago = Instant::now()
+            .checked_sub(HEALTH_CHECK_AFTER_IDLE * 2)
+            .expect("booted more than a minute ago");
+        fx.service.cache.lock().await.insert(
+            "stuck".to_string(),
+            CachedAdapter {
+                adapter: Arc::new(HangingPing),
+                checked_at: checked_long_ago,
+                configured_database: None,
+            },
+        );
+        cache_aged(&fx, "healthy", true, Duration::from_secs(0)).await;
+
+        let stuck = fx.service.list_tables("stuck");
+        tokio::pin!(stuck);
+        tokio::select! {
+            _ = &mut stuck => panic!("the hanging probe cannot finish"),
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        let healthy =
+            tokio::time::timeout(Duration::from_secs(2), fx.service.list_tables("healthy")).await;
+        let tables = healthy
+            .expect("a healthy connection must not wait behind a hanging one")
+            .expect("healthy");
+        assert_eq!(tables.len(), 1);
     }
 
     /// `reconnect` is the manual form of the probe, for a user looking at a
@@ -4226,6 +4356,59 @@ path = ":memory:"
         let on_disk = dbboard_config::load_command_or_default(&fx.service.ui_command_path());
         assert_eq!(on_disk.seq, 1);
         assert_eq!(on_disk.command, Some(UiCommand::OpenAiPanel));
+    }
+
+    /// Every agent on the PC runs its own server, and they all write the
+    /// same one-slot command file. A second agent used to overwrite the
+    /// first one's command, and whoever lost waited out the whole timeout
+    /// before failing. Now the second agent hears straight away that the
+    /// window is taken.
+    #[tokio::test]
+    async fn a_second_agent_hears_at_once_that_the_window_is_taken() {
+        let fx = fixture();
+        let other_agent = McpService::new(
+            fx.config_path.clone(),
+            fx.annotations_path.clone(),
+            fx.ui_settings_path.clone(),
+            Arc::new(InMemorySecretStore::default()),
+        );
+
+        let first = fx
+            .service
+            .send_ui_command_within(UiCommand::OpenAiPanel, Duration::from_millis(600));
+        tokio::pin!(first);
+        tokio::select! {
+            _ = &mut first => panic!("nothing answers, so the first command is still waiting"),
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        let started = Instant::now();
+        let err = other_agent
+            .send_ui_command_within(UiCommand::RunQuery, Duration::from_secs(5))
+            .await
+            .expect_err("the window is taken");
+        assert!(matches!(err, ServiceError::UiBusy), "got {err:?}");
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "a busy window must be reported at once, not after a wait"
+        );
+        let on_disk = dbboard_config::load_command_or_default(&fx.service.ui_command_path());
+        assert_eq!(
+            on_disk.command,
+            Some(UiCommand::OpenAiPanel),
+            "the refused command must not overwrite the one in flight"
+        );
+
+        let _ = first.await;
+        // Once the first one is done, the window is free again.
+        let after = other_agent
+            .send_ui_command_within(UiCommand::RunQuery, Duration::from_millis(50))
+            .await
+            .expect_err("still nothing answers");
+        assert!(
+            matches!(after, ServiceError::UiNoResponse(_)),
+            "got {after:?}"
+        );
     }
 
     #[tokio::test]
