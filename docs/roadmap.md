@@ -25,7 +25,6 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.23** | Every language is a whole translation | The nine locales that carried 9% of the labels translate all of them (#181, ADR-0172). Moved out of v1.0, where they were to ride along, because v1.0 waits on work only a person can do and finished translations should not wait with it |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
