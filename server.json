@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.meta-taro/dbboard",
   "description": "Hands AI agents the databases dbboard connects to: reads by default, and never a secret.",
-  "version": "0.22.2",
+  "version": "0.23.0",
   "websiteUrl": "https://meta-taro.github.io/dbboard/",
   "repository": {
     "url": "https://github.com/meta-taro/dbboard",

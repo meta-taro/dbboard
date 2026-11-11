@@ -1,9 +1,11 @@
 # dbboard
 
 > A desktop database client for serverless and distributed databases, and an
-> MCP server that lets an AI agent read those same databases. Ten engines:
+> MCP server that lets an AI agent read those same databases. Engines:
 > Turso/libSQL, Cloudflare D1, PostgreSQL, CockroachDB, Neon, Supabase,
-> AWS Aurora DSQL, MySQL/MariaDB, Cloud Firestore and MongoDB. Rust core, Tauri 2 + SvelteKit
+> AWS Aurora DSQL, MySQL/MariaDB (and Dolt, with its commit history), Cloud
+> Firestore, MongoDB, and the Redis-compatible stores (Redis, Valkey, Amazon
+> MemoryDB, Amazon ElastiCache, Upstash), read-only. Rust core, Tauri 2 + SvelteKit
 > shell, MIT-licensed, self-hosted only — there is no service to sign up for.
 
 This file exists because the README is ~800 lines and the MCP section is

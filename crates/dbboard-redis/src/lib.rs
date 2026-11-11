@@ -8,12 +8,16 @@
 //! the guarantee is a classifier: [`read_only`] is an allowlist of commands
 //! and of their arguments, pure and I/O-free, and every path from caller text
 //! to the server runs through it.
+//!
+//! One Redis-compatible server keeps a history: Umbrachyx, found by asking
+//! it at connect time and read through [`umbrachyx`] (ADR-0170).
 
 mod adapter;
 mod command;
 mod read_only;
 mod reply;
 mod route;
+mod umbrachyx;
 
 pub use adapter::{RedisAdapter, RedisConfig};
 pub use command::{split, SplitError};

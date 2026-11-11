@@ -22,7 +22,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dbboard_core::{
-    Capabilities, DatabaseAdapter, DbError, DbResult, QueryResult, TableInfo, MAX_RESULT_ROWS,
+    Capabilities, DatabaseAdapter, DbError, DbResult, HistoryReader, QueryResult, TableInfo,
+    TableSchema, MAX_RESULT_ROWS,
 };
 use redis::aio::{ConnectionLike, MultiplexedConnection};
 use redis::cluster::ClusterClient;
@@ -33,6 +34,7 @@ use redis::{AsyncConnectionConfig, Client, Cmd, Value};
 use crate::read_only::{classify, ReadPlan, Shape, SizeGuard};
 use crate::reply;
 use crate::route::{AddressMap, Resolver};
+use crate::umbrachyx::{self, UmbrachyxHistory};
 
 /// How long to wait for a connection, and for any one reply.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -82,13 +84,16 @@ impl std::fmt::Debug for RedisConfig {
 }
 
 #[derive(Clone)]
-enum Connection {
+pub(crate) enum Connection {
     Single(MultiplexedConnection),
     Cluster(ClusterConnection),
 }
 
 pub struct RedisAdapter {
     connection: Connection,
+    /// Present when the server answered `UMBRA.BRANCHES` at connect time:
+    /// it is Umbrachyx, and keeps a history (ADR-0170).
+    umbrachyx: Option<UmbrachyxHistory>,
     /// Held so whatever the route keeps open, such as a forward, lasts as
     /// long as the connection that goes through it.
     _route: Option<Arc<dyn AddressMap>>,
@@ -145,18 +150,20 @@ impl RedisAdapter {
                     .map_err(|e| connection_error(&e))?,
             )
         };
+        // Umbrachyx serves one node, so a cluster is never asked.
+        let umbrachyx = match &connection {
+            Connection::Single(_) => UmbrachyxHistory::detect(&connection).await,
+            Connection::Cluster(_) => None,
+        };
         Ok(Self {
             connection,
+            umbrachyx,
             _route: config.route,
         })
     }
 
     async fn send(&self, cmd: &Cmd) -> DbResult<Value> {
-        match self.connection.clone() {
-            Connection::Single(mut c) => c.req_packed_command(cmd).await,
-            Connection::Cluster(mut c) => c.req_packed_command(cmd).await,
-        }
-        .map_err(|e| query_error(&e))
+        send(&self.connection, cmd).await
     }
 
     /// Classify `line`, check its size guard, send it and shape the reply.
@@ -340,7 +347,12 @@ impl RedisAdapter {
                 _ => None,
             })
             .collect();
-        Ok(group(&names)
+        let delimiter = if self.umbrachyx.is_some() {
+            umbrachyx::DELIMITER
+        } else {
+            DELIMITER
+        };
+        Ok(group(&names, delimiter)
             .into_iter()
             .map(TableInfo::unqualified)
             .collect())
@@ -362,11 +374,11 @@ fn wanted(plan: &ReadPlan, max_rows: usize) -> usize {
 
 /// The `MATCH` pattern for each prefix in `keys`: `user:*` for every key that
 /// starts `user:`, and the key itself, escaped, for one with no delimiter.
-fn group(keys: &[String]) -> Vec<String> {
+fn group(keys: &[String], delimiter: char) -> Vec<String> {
     let mut patterns = BTreeSet::new();
     for key in keys {
-        let pattern = match key.split_once(DELIMITER) {
-            Some((head, _)) => format!("{}{DELIMITER}*", escape_glob(head)),
+        let pattern = match key.split_once(delimiter) {
+            Some((head, _)) => format!("{}{delimiter}*", escape_glob(head)),
             None => escape_glob(key),
         };
         patterns.insert(pattern);
@@ -409,6 +421,15 @@ fn primaries_of(body: &str) -> Vec<(String, u16)> {
         .collect()
 }
 
+/// Send `cmd` on `connection` and read its reply.
+pub(crate) async fn send(connection: &Connection, cmd: &Cmd) -> DbResult<Value> {
+    match connection.clone() {
+        Connection::Single(mut c) => c.req_packed_command(cmd).await,
+        Connection::Cluster(mut c) => c.req_packed_command(cmd).await,
+    }
+    .map_err(|e| query_error(&e))
+}
+
 fn command<S: AsRef<str>>(words: &[S]) -> Cmd {
     let mut cmd = redis::cmd(words[0].as_ref());
     for word in &words[1..] {
@@ -448,7 +469,10 @@ impl DatabaseAdapter for RedisAdapter {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities {
+            has_history: self.umbrachyx.is_some(),
+            ..Capabilities::default()
+        }
     }
 
     async fn ping(&self) -> DbResult<()> {
@@ -470,6 +494,23 @@ impl DatabaseAdapter for RedisAdapter {
     async fn query_read_only(&self, sql: &str, max_rows: usize) -> DbResult<QueryResult> {
         self.run(sql, max_rows).await
     }
+
+    /// Only an Umbrachyx connection describes a pattern, so that the history
+    /// views can key a row by it (ADR-0170). `has_describe_table` stays off:
+    /// it would also put the column views on a plain Redis connection's
+    /// patterns, whose Structure tab is the key browser.
+    async fn describe_table(&self, table: &TableInfo) -> DbResult<TableSchema> {
+        match self.umbrachyx {
+            Some(_) => Ok(crate::umbrachyx::schema(table)),
+            None => Err(DbError::Capability(
+                "describe_table not supported by this adapter".into(),
+            )),
+        }
+    }
+
+    fn history(&self) -> Option<&dyn HistoryReader> {
+        self.umbrachyx.as_ref().map(|h| h as &dyn HistoryReader)
+    }
 }
 
 #[cfg(test)]
@@ -490,7 +531,15 @@ mod tests {
     #[test]
     fn keys_group_by_their_first_segment() {
         let keys = ["user:1", "user:2:cart", "order:9", "config", "a*b:1"].map(String::from);
-        assert_eq!(group(&keys), ["a\\*b:*", "config", "order:*", "user:*"]);
+        assert_eq!(
+            group(&keys, DELIMITER),
+            ["a\\*b:*", "config", "order:*", "user:*"]
+        );
+        let umbrachyx_keys = ["player/42/gems", "player/7/gems", "config"].map(String::from);
+        assert_eq!(
+            group(&umbrachyx_keys, umbrachyx::DELIMITER),
+            ["config", "player/*"]
+        );
     }
 
     #[test]

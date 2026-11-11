@@ -193,6 +193,12 @@ fn rule(name: &str, args: &[String]) -> Rule {
         "HSCAN" | "SSCAN" | "ZSCAN" => scan(name, args, 1),
         "XRANGE" | "XREVRANGE" => xrange(name, args),
         "XINFO" => xinfo(args),
+        // Umbrachyx's history reads (ADR-0170). Each answers one string of
+        // JSON, and the server stops every list in it at a page.
+        "UMBRA.BRANCHES" | "UMBRA.TABLES" => arity(name, args, 0, 0).map(|()| plain(Shape::Value)),
+        "UMBRA.LOG" => arity(name, args, 1, 1).map(|()| plain(Shape::Value)),
+        "UMBRA.HISTORY" | "UMBRA.DIFF" => arity(name, args, 2, 2).map(|()| plain(Shape::Value)),
+        "UMBRA.CELLS" => arity(name, args, 1, 2).map(|()| plain(Shape::Value)),
         "KEYS" => Err(Violation::Keys),
         _ => Err(Violation::NotAllowed(printable(name))),
     }
@@ -485,6 +491,53 @@ mod tests {
             "GETEX a EX 1",
             "SORT l",
             "PFCOUNT h",
+        ] {
+            assert!(
+                matches!(refused(line), Violation::NotAllowed(_)),
+                "{line} must not be sent"
+            );
+        }
+    }
+
+    /// Umbrachyx's history commands read, and each answers one string of
+    /// JSON that the server itself stops at a page of 1,000 entries
+    /// (ADR-0170), so one value is all the reply can be.
+    #[test]
+    fn umbrachyx_history_reads_are_one_bounded_value() {
+        for line in [
+            "UMBRA.BRANCHES",
+            "umbra.log agent",
+            "UMBRA.HISTORY agent player/7/gems",
+            "UMBRA.TABLES",
+            "UMBRA.CELLS agent",
+            "UMBRA.CELLS agent player/7",
+            "UMBRA.DIFF agent~1 agent",
+        ] {
+            let plan = ok(line);
+            assert_eq!(plan.shape, Shape::Value, "{line}");
+            assert!(plan.guard.is_none(), "{line}");
+        }
+    }
+
+    #[test]
+    fn umbrachyx_commands_are_held_to_their_arguments_and_names() {
+        for line in [
+            "UMBRA.BRANCHES agent",
+            "UMBRA.TABLES pos",
+            "UMBRA.LOG",
+            "UMBRA.HISTORY agent",
+            "UMBRA.CELLS agent a b",
+            "UMBRA.DIFF agent",
+        ] {
+            assert!(
+                matches!(refused(line), Violation::WrongArguments(_)),
+                "{line} must not be sent"
+            );
+        }
+        for line in [
+            "UMBRA.ERASE player/42",
+            "UMBRA.MERGE main agent",
+            "UMBRA. x",
         ] {
             assert!(
                 matches!(refused(line), Violation::NotAllowed(_)),

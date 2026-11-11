@@ -34,9 +34,9 @@ describe('translate', () => {
   });
 
   it('falls back to English when a locale lacks a key', () => {
-    // about-title is a Tauri-only key translated only for en/ja; German
-    // must fall back to the English source of truth.
-    expect(translate('de', 'about-title')).toBe(translate('en', 'about-title'));
+    // Every shipped locale is complete now (ADR-0172), so the net is shown
+    // with a code that has no catalog at all; it must still read English.
+    expect(translate('nl', 'about-title')).toBe(translate('en', 'about-title'));
   });
 
   it('returns the key itself for an unknown/mistyped key', () => {

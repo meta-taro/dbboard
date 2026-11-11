@@ -14926,3 +14926,229 @@ the installer and once as the standalone asset. Uninstalling the app also
 removes `dbboard-mcp.exe`, including one copied there by hand.
 `scripts/mcp-bundled.test.mjs` holds the path, the overlay, the release step
 and the hooks together.
+
+## ADR-0170 — Umbrachyx's history, read through the Redis-compatible adapter (2026-11-06)
+
+**Status.** Proposed.
+
+**Context.** [Umbrachyx](https://github.com/meta-taro/umbrachyx) is an
+in-memory database that keeps every change as history: commits, branches,
+who changed a value and why, and values that can be erased per subject. It
+speaks the Redis protocol for one branch, so dbboard already reaches it
+through the Redis-compatible adapter (ADR-0166). It also answers five
+commands about its history, `UMBRA.BRANCHES`, `UMBRA.CELLS`,
+`UMBRA.HISTORY`, `UMBRA.LOG` and `UMBRA.DIFF`, each with one string of JSON
+and each stopping at a page of 1,000 entries. ADR-0165 already describes
+the history views by what they show, so the question is only how
+Umbrachyx fills them.
+
+**Decision.**
+
+- **It is a capability of the Redis-compatible adapter, not a new
+  adapter,** as Dolt is of the MySQL one. A connection counts as Umbrachyx
+  when the server answers `UMBRA.BRANCHES` with the branch it serves. The
+  connection's name or URL is never used, and any other answer, an error
+  included, means a plain Redis-compatible store. Cluster connections are
+  not asked: Umbrachyx serves one node.
+- **The shapes are filled as they are.** A table is a key pattern from the
+  sidebar (`player/*`), a row is one key, and its columns are `key` and
+  `value`. The commit log, a row's history and the diff come from
+  `UMBRA.LOG`, `UMBRA.HISTORY` and `UMBRA.DIFF` for the branch the server
+  serves; who last changed each row comes from `UMBRA.CELLS`, read a page
+  at a time. A commit's author is Umbrachyx's `who`, its message is `why`,
+  and its hash is the short id Umbrachyx accepts back.
+- **Keys group by `/` on Umbrachyx.** Its keys separate their parts with
+  `/`, and it erases by the first two (`player/42`), so the sidebar groups
+  them by `/` instead of `:`.
+- **The five commands join the read-only allowlist.** Each takes a fixed
+  number of arguments, reads only, and answers one value that the server
+  itself bounds, so a typed `UMBRA.LOG agent` shows its JSON as one cell.
+  Other `UMBRA.` names are refused like any unknown command.
+- **A diff longer than one page is refused, not cut.** `UMBRA.DIFF` says
+  when more keys changed than it answered, and part of a diff would read
+  as the whole of it.
+
+**What the shapes cannot carry, and is left out on purpose.** The history
+types are shared by Dolt, the screen and the MCP JSON, so they are not
+widened for one source here.
+
+- **Who approved a change.** Umbrachyx records an approver on a commit.
+  `Commit` has no field for it, so it is not shown.
+- **Email.** Umbrachyx keeps none, so the field is empty.
+- **Erased values.** A value whose subject was erased reads as `Null`, the
+  same as a removed key. The screen cannot tell "erased" from "no value"
+  apart. A `Value` kind for it would change every match on `Value` in the
+  workspace, and is a decision of its own.
+- **Branches.** `HistoryReader` takes no branch, so only the branch the
+  server serves is shown.
+
+**Alternatives.**
+
+- **A separate `dbboard-umbrachyx` adapter.** On the wire it is a Redis
+  server, so it would duplicate the adapter, and the user would have to
+  choose the right kind up front when the server can be asked.
+- **Opening Umbrachyx's log file directly.** Only the server's process may
+  open the log, and opening one repairs a torn end, which is a write.
+
+**Consequences.**
+
+- A single-node Redis connection opens with one extra round trip, the
+  detection command. Other servers answer it with an unknown-command
+  error, which is ignored.
+- The parsers are tested against replies recorded from `umbrachyx serve`
+  on fictional data. `crates/dbboard-redis/tests/live_umbrachyx.rs` runs
+  the whole path against a live server when `DBBOARD_UMBRACHYX_URL` is set.
+  As for Dolt, CI starts no Umbrachyx server.
+- Listing and opening keys needs `SCAN`, `TYPE` and `TTL`, which Umbrachyx
+  answers for this reason.
+
+## ADR-0171 — The download page answers "what is it" for search and AI engines (2026-11-09)
+
+**Status:** Accepted.
+
+**Context.** The download page opens with a problem, not the product (the
+h1 names three databases and the pain of a tool each). That works for a
+person who arrived looking for a client, and leaves nothing quotable for a
+search engine or an AI answer engine asked "what is dbboard": no sentence
+said it, there was no structured data, and the page's engine list had
+stopped at ten while Redis-compatible stores and Dolt's history shipped.
+Nor did the page say where the project is going; that lived only in
+`docs/roadmap.md`.
+
+**Decision.** Both pages (English and Japanese) carry:
+
+1. One plain sentence under the lede that says what dbboard is.
+2. `SoftwareApplication` and `FAQPage` JSON-LD. They are data blocks, which
+   are not executed, so the page's `script-src 'self'` policy (ADR-0047)
+   is unchanged.
+3. A visible FAQ, repeated word for word in the `FAQPage` block.
+   `site/page.test.mjs` holds the two equal, because a structured answer
+   that is not on the page is what search engines penalise.
+4. A short roadmap (done, now, next, after that, not planned) that links to
+   `docs/roadmap.md` and names no version, which would be stale the day
+   after it is written. The test rejects a version number in it.
+
+`llms.txt` names the current engines.
+
+**Consequences.** The FAQ and the roadmap summary are hand-written, so they
+age with the product: a new engine means touching the FAQ, the lede and
+`llms.txt`. The roadmap section says what is next in words rather than
+numbers, so it needs editing only when the plan itself moves.
+
+## ADR-0172 — Every shipped locale translates every key (2026-11-09)
+
+**Status:** Accepted. Settles #181.
+
+**Context.** Eleven locales are in the language menu. English is the source
+and Japanese is written beside it; the other nine carried the 30 keys
+ported from the retired egui client (ADR-0089) and fell back to English for
+the ~470 written since. On screen that is a window half in one language:
+the menu itself is translated, so the switch looks as if it worked.
+`set_ui_locale` (ADR-0107) lets an agent switch the language too, so these
+locales are exercised more than when only a person opened the menu.
+
+**Decision.**
+
+1. Each of the nine catalogs lives in its own file under
+   `apps/desktop/src/lib/i18n/catalogs/`, so a translation can be reviewed
+   or replaced one language at a time, and `messages.ts` stays the file
+   where English and Japanese are written.
+2. All nine translate every key. The translations are machine-made, with
+   the Japanese catalog as the reference for meaning, and product names,
+   SQL keywords, file names and placeholders left as they are.
+3. `catalogs.test.ts` fails when any locale lacks a key, has a key English
+   does not, or changes a placeholder. Adding a key to `en` therefore means
+   adding it to all eleven in the same change.
+4. The fallback to English in `translate.ts` stays, as a net for a mistake,
+   not as a way to ship a locale.
+
+**Consequences.** A new label costs eleven strings instead of two. The nine
+machine translations have not been read by native speakers; the changelog
+says so, and a correction to one is a one-file change.
+
+## ADR-0173 — An Umbrachyx table that keeps only its latest value shows a note, not an error (2026-11-10)
+
+**Status.** Proposed. Amends ADR-0170.
+
+**Context.** Umbrachyx now lets a person declare, per table, that it keeps
+only its latest value (`umbrachyx table pos latest`). A table there is the
+first `/`-separated part of a key. Such a table has no history, and the
+server says so in three ways:
+
+- `UMBRA.TABLES` lists every declared table with its engine, `history` or
+  `latest`; an undeclared table is `history`.
+- `UMBRA.HISTORY` on one of its keys answers the error `-NOHISTORY ...`.
+- `UMBRA.CELLS` leaves its keys out, and `UMBRA.DIFF` leaves it out when the
+  diff reaches into its past. Both name what they left out in
+  `omitted_tables`.
+
+Without handling these, opening such a table in the Commits tab showed the
+server's error in red, as if something had gone wrong.
+
+**Decision.**
+
+- **A history read of a latest-only table is a capability error** whose
+  message carries the fixed words "keeps only its latest value". Before a
+  row's history or blame, the adapter asks `UMBRA.TABLES` and refuses when
+  the key or pattern lies in such a table. A `NOHISTORY` answer from the
+  server, for a table declared between the check and the read, is mapped
+  to the same error. A diff whose `omitted_tables` names the pattern's
+  table is refused the same way.
+- **The screen shows those words as a note.** The Commits tab and the row
+  history dialog recognise the refusal and say that the table keeps only
+  its latest value, in the muted style used for "no commits yet", instead
+  of the red error style.
+- **The table is the pattern's first part, only when it is literal.** A
+  pattern whose first part has a wildcard (`*/7/gems`) can span tables of
+  both kinds, so it is never refused as a whole. Its diff and blame show
+  what the server returned, which already leaves the latest-only keys out.
+- **A server without `UMBRA.TABLES` keeps history for every table.** Any
+  failure to ask reads as "not latest-only", so older Umbrachyx servers
+  behave exactly as before. `UMBRA.TABLES` joins the read-only allowlist
+  with the other five commands.
+
+**Alternatives.**
+
+- **Reporting latest-only tables as having no primary key,** which already
+  closes row history and blame. The screen would then say "has no primary
+  key", which is false for these tables.
+- **A new error category.** The HTTP contract's categories are frozen for
+  1.0, and `capability` already means "this source cannot do that here".
+
+**Consequences.**
+
+- A row's history and blame on Umbrachyx cost one more round trip, the
+  `UMBRA.TABLES` call. The answer is small and is not cached, so a table
+  declared while dbboard is open is picked up on the next read.
+- The words "keeps only its latest value" are now shared by the adapter
+  and the frontend. Tests on both sides pin them.
+
+## ADR-0174 — The MCP server moves to rmcp 3.9 (2026-11-10)
+
+**Status.** Accepted. Amends ADR-0046 §2.
+
+**Context.** Two advisories against `rmcp` 2.2.0 turned the `deps` job red
+on every branch: RUSTSEC-2026-0457 (the OAuth client's SSRF filter checks
+host strings, not resolved addresses; fixed in 3.7.0) and RUSTSEC-2026-0462
+(the Streamable HTTP clients buffer response bodies without a limit; fixed
+in 3.9.0). dbboard builds `rmcp` with `server`, `macros` and
+`transport-io` only. It is a stdio server and uses neither the OAuth
+client nor an HTTP client, so neither flaw is reachable from it.
+
+**Decision.** Upgrade to `rmcp` 3.9 rather than ignore the two advisories
+in `deny.toml`. The upgrade compiles unchanged apart from one rename:
+`ServerInfo` is deprecated in favour of `ServerConfig`, the same type.
+All `dbboard-mcp` tests pass on it.
+
+**Alternatives.** Ignoring both advisories with a reason ("feature not
+built") would be true today, but would also hide them if a later change
+turned on an HTTP transport or OAuth, and would keep the server on a line
+that gets no more fixes.
+
+**Also fixed here.** The handshake's `serverInfo` named the SDK
+(`rmcp 2.2.0`) rather than the server: rmcp's default fills it from the
+build environment of rmcp itself. The server now sets its own name and
+version, and a test pins them.
+
+**Consequences.** The server still offers protocol version 2024-11-05, so
+agents negotiate as before. `deny.toml` needs no new entry.

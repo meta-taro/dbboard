@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Download dbboard</title>
-  <meta name="description" content="Download dbboard — a free, open-source desktop database client (Windows, macOS) for MySQL/MariaDB, PostgreSQL, Neon, Supabase, Aurora DSQL, Turso/libSQL, CockroachDB, Cloudflare D1, Cloud Firestore and MongoDB. Also ships dbboard-mcp, a read-only MCP server for AI agents.">
+  <meta name="description" content="Download dbboard — a free, open-source desktop database client (Windows, macOS) for MySQL/MariaDB, PostgreSQL, Neon, Supabase, Aurora DSQL, Turso/libSQL, CockroachDB, Cloudflare D1, Cloud Firestore, MongoDB and the Redis-compatible stores. Also ships dbboard-mcp, a read-only MCP server for AI agents.">
   <link rel="canonical" href="https://meta-taro.github.io/dbboard/">
   <!-- Both pages point at each other, and each names itself. Without the
        x-default a crawler has to guess which one to show someone whose
@@ -34,6 +34,11 @@
        pinned to the GitHub Releases API, and there is no base/form surface.
        GitHub Pages can't set response headers, so this rides as a meta tag. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src https://api.github.com; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <!-- Structured data (ADR-0171). Data blocks are not executed, so the
+       CSP's script-src does not apply to them. The FAQPage repeats the
+       visible FAQ below word for word; page.test.mjs holds them equal. -->
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "dbboard", "applicationCategory": "DeveloperApplication", "operatingSystem": "Windows 10+, macOS 13+", "url": "https://meta-taro.github.io/dbboard/", "downloadUrl": "https://github.com/meta-taro/dbboard/releases/latest", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "codeRepository": "https://github.com/meta-taro/dbboard", "image": "https://meta-taro.github.io/dbboard/screenshots/query-light.png"}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is dbboard?", "acceptedAnswer": {"@type": "Answer", "text": "dbboard is a free, open-source desktop database client for Windows and macOS. One window queries PostgreSQL, MySQL/MariaDB, serverless databases such as Neon, Supabase, Turso, Cloudflare D1 and Aurora DSQL, the document stores Cloud Firestore and MongoDB, and Redis-compatible stores. It also ships dbboard-mcp, an MCP server that lets an AI agent read the same databases."}}, {"@type": "Question", "name": "Which databases does it connect to?", "acceptedAnswer": {"@type": "Answer", "text": "Turso/libSQL, Turso Cloud, Cloudflare D1, PostgreSQL, CockroachDB, Neon, Supabase, AWS Aurora DSQL, MySQL/MariaDB, Cloud Firestore, MongoDB, and Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache and Upstash. Dolt is reached as MySQL, and its commit history can be browsed. The document stores and the Redis-compatible stores are read-only."}}, {"@type": "Question", "name": "Is it free, and do I need an account?", "acceptedAnswer": {"@type": "Answer", "text": "It is free and MIT-licensed, and there is no account: dbboard is self-hosted only, with no service behind it. Connections live in a file on your machine and their passwords in the operating system's keychain."}}, {"@type": "Question", "name": "Can an AI agent use my databases through it?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, through dbboard-mcp, an MCP server for agents such as Claude Code. It only reads unless you opt a connection in to writes, and even then grants, TRUNCATE and DROP are refused. It never returns a stored secret."}}, {"@type": "Question", "name": "Why does Windows or macOS warn me when I open it?", "acceptedAnswer": {"@type": "Answer", "text": "The builds are not code-signed, by decision: a signing certificate is a recurring purchase this project does not make. The warning is expected on every release. Check the download against its published checksum, then allow it through."}}]}</script>
   <link rel="icon" href="dbboard-logo-256.png">
   <style>
     :root {
@@ -75,6 +80,9 @@
     /* 3. How it goes away. The second line carries the effect. */
     .lede { margin: 0 0 1.5rem; max-width: 42rem; }
     .lede b { color: var(--fg); }
+    .what { margin: 0 0 1.5rem; max-width: 42rem; color: var(--muted); font-size: .95rem; }
+    #faq h3, #roadmap h3 { font-size: 1rem; margin: 1.25rem 0 .35rem; }
+    #faq p, #roadmap p { margin: 0 0 .5rem; }
     /* 4. The way in. `.note` says what it runs on and under what licence —
        never a version number, which is wrong the day after it is written. */
     .cta { margin: 0 0 2.5rem; }
@@ -177,10 +185,17 @@
         <span class="quiet">a different tool for every one of them.</span></h1>
 
       <p class="lede">
-        One window for ten engines: those three plus PostgreSQL, CockroachDB,
-        Neon, Supabase, MySQL/MariaDB, and the document stores
-        Cloud&nbsp;Firestore and MongoDB.<br>
+        One window for all of them: those three plus PostgreSQL, CockroachDB,
+        Neon, Supabase, MySQL/MariaDB, the document stores
+        Cloud&nbsp;Firestore and MongoDB, and the Redis-compatible stores.<br>
         <b>Same editor, same grid, same export, whichever one you opened.</b>
+      </p>
+      <!-- Said in so many words for anyone, or anything, that needs one
+           sentence to quote. The h1 above names a problem, not the product. -->
+      <p class="what">
+        dbboard is a free, open-source desktop database client for Windows and
+        macOS, with an MCP server that lets an AI agent read the same
+        databases.
       </p>
     </header>
 
@@ -408,6 +423,53 @@ claude mcp add dbboard --scope user -- "$HOME/.local/bin/dbboard-mcp"</pre>
       from an unidentified developer. Both warnings are expected on every
       release — verify the checksum above, then allow it through.
     </p>
+
+    <section id="roadmap">
+    <h2>Where it is going</h2>
+    <h3>Done</h3>
+    <p>
+      PostgreSQL, MySQL, the serverless databases, two document stores and
+      the Redis-compatible stores in one window, a read-only MCP server for agents,
+      side-by-side comparison of two databases, saved queries, keyset paging,
+      connections behind an SSH bastion, Dolt's commit history, and a key
+      browser for the Redis-compatible stores.
+    </p>
+    <h3>Now</h3>
+    <p>
+      The same history views for Umbrachyx, a database that keeps every
+      change, read through its Redis-protocol server.
+    </p>
+    <h3>Next</h3>
+    <p>
+      The first stable release, which freezes the local HTTP contract as a
+      public API, so tools built on it can rely on it.
+    </p>
+    <h3>After that</h3>
+    <p>
+      New engines in the order people ask for them — DuckDB, SQL Server,
+      ClickHouse, Elasticsearch/OpenSearch and Oracle are on the list — and a
+      fuller database workspace. Not planned: a hosted service. dbboard stays
+      something you run yourself.
+    </p>
+    <p class="meta">
+      The full plan, with what each release is reserved for, is
+      <a href="https://github.com/meta-taro/dbboard/blob/main/docs/roadmap.md">docs/roadmap.md</a>.
+    </p>
+    </section>
+
+    <section id="faq">
+    <h2>Questions</h2>
+    <h3>What is dbboard?</h3>
+    <p>dbboard is a free, open-source desktop database client for Windows and macOS. One window queries PostgreSQL, MySQL/MariaDB, serverless databases such as Neon, Supabase, Turso, Cloudflare D1 and Aurora DSQL, the document stores Cloud Firestore and MongoDB, and Redis-compatible stores. It also ships dbboard-mcp, an MCP server that lets an AI agent read the same databases.</p>
+    <h3>Which databases does it connect to?</h3>
+    <p>Turso/libSQL, Turso Cloud, Cloudflare D1, PostgreSQL, CockroachDB, Neon, Supabase, AWS Aurora DSQL, MySQL/MariaDB, Cloud Firestore, MongoDB, and Redis, Valkey, Amazon MemoryDB, Amazon ElastiCache and Upstash. Dolt is reached as MySQL, and its commit history can be browsed. The document stores and the Redis-compatible stores are read-only.</p>
+    <h3>Is it free, and do I need an account?</h3>
+    <p>It is free and MIT-licensed, and there is no account: dbboard is self-hosted only, with no service behind it. Connections live in a file on your machine and their passwords in the operating system&#x27;s keychain.</p>
+    <h3>Can an AI agent use my databases through it?</h3>
+    <p>Yes, through dbboard-mcp, an MCP server for agents such as Claude Code. It only reads unless you opt a connection in to writes, and even then grants, TRUNCATE and DROP are refused. It never returns a stored secret.</p>
+    <h3>Why does Windows or macOS warn me when I open it?</h3>
+    <p>The builds are not code-signed, by decision: a signing certificate is a recurring purchase this project does not make. The warning is expected on every release. Check the download against its published checksum, then allow it through.</p>
+    </section>
 
     <footer>
       <a id="all-releases" href="https://github.com/meta-taro/dbboard/releases">All releases</a>
