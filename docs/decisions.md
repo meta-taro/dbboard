@@ -15152,3 +15152,66 @@ version, and a test pins them.
 
 **Consequences.** The server still offers protocol version 2024-11-05, so
 agents negotiate as before. `deny.toml` needs no new entry.
+
+## ADR-0175 — One agent's slow call never silently holds up another (2026-11-11)
+
+**Status.** Accepted.
+
+**Context.** One PC runs several AI agents at once, and each one starts its
+own `dbboard-mcp` over stdio. The processes share no memory, so one agent's
+slow query cannot block another agent's database calls. An audit for "a
+slow call from one caller must not silently stall a light call from
+another" found three places where it still could:
+
+1. **The adapter cache lock was held across round-trips.** Within one
+   process, the idle health check (`ping`) and the whole connect on a cache
+   miss ran under the cache's single lock. One connection behind a bastion
+   that accepted and then went quiet held the table lists and queries of
+   every other connection in that process until the driver gave up.
+2. **The UI command file has one slot and no lock.** Two agents driving the
+   window at once could overwrite each other's command or answer. The loser
+   waited out the full 30-second timeout and was then told the app was
+   probably not running, which was false.
+3. **A cancel did not stop anything.** rmcp turns `notifications/cancelled`
+   into a token, and no tool read it. Postgres, MySQL and Redis queries end
+   at a server-side timeout. Turso, MongoDB, Firestore, D1 and dumps have
+   none, so an abandoned call held its connection with nobody waiting for
+   the answer.
+
+**Decision.**
+
+1. The cache lock covers lookups and updates only. The ping and the connect
+   run outside it. After a ping, only the adapter that was probed is marked
+   or evicted (`Arc::ptr_eq`), so an entry rebuilt meanwhile is never thrown
+   away. Two calls that miss together both connect, and the first one
+   cached wins, so every caller shares one adapter. For Turso `:memory:`
+   that is the difference between one database and two.
+2. A UI command takes an exclusive lock on `ui-command.lock`, beside the
+   command file, for as long as it waits for the answer. It uses `try_lock`,
+   not `lock`. A second agent gets `UiBusy` at once ("another agent is using
+   the dbboard window right now"), and its command is not written. The lock
+   belongs to the open file, so a process that dies mid-wait releases it.
+3. `call_tool` is written out instead of generated, and races the tool
+   against the cancel token. Cancelling drops the tool's future, and with
+   it the query future, which is what releases the connection.
+
+Each point has a test that failed before the change:
+
+- `a_hanging_probe_on_one_connection_does_not_hold_up_another`
+- `a_second_agent_hears_at_once_that_the_window_is_taken`
+- `a_cancelled_call_stops_its_work_and_lets_go_of_it`
+
+**Alternatives.**
+
+- *One lock per connection* would also stop the cross-connection stall,
+  and would keep concurrent first calls on one connection from connecting
+  twice. It costs a second map of locks for a race that a single agent
+  rarely hits, and the duplicate connection is dropped at once.
+- *Queueing UI commands* (`lock` instead of `try_lock`) would turn a lost
+  command into a silent wait, which is the failure this ADR removes.
+
+**Consequences.** A second connect can happen, and so a second keychain
+read or SSH tunnel, when two calls hit an uncached connection at the same
+instant. The extra one is closed straight away. An agent that gets
+`UiBusy` retries after a moment. It used to wait 30 seconds and then fail
+with the wrong reason.

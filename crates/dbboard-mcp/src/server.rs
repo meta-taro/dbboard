@@ -806,6 +806,19 @@ impl ServerHandler for DbboardMcp {
     fn get_info(&self) -> ServerConfig {
         server_config()
     }
+
+    // Written out instead of left to the macro so that a cancel stops the
+    // tool (see `unless_cancelled`). The body is otherwise what
+    // `#[tool_handler]` generates.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, McpError> {
+        let cancel = context.ct.clone();
+        let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        unless_cancelled(cancel.cancelled(), self.tool_router.call(call)).await
+    }
 }
 
 /// What the server says about itself in the handshake. The struct is
@@ -950,7 +963,32 @@ fn to_mcp(err: &ServiceError) -> McpError {
         // its own answer — the tab the command needed was not there — and
         // retrying the identical call cannot change that either.
         | ServiceError::UiNoResponse(_)
+        | ServiceError::UiBusy
         | ServiceError::UiRefused(_) => McpError::invalid_params(message, None),
+    }
+}
+
+/// Run `work` until it finishes or the caller cancels, whichever is first.
+///
+/// rmcp turns `notifications/cancelled` into a token and nothing more: the
+/// handler keeps running. Only some adapters have a server-side timeout
+/// (Postgres, MySQL and Redis do; Turso, MongoDB, Firestore, D1 and dumps do
+/// not), so an abandoned call could hold its connection with nobody waiting
+/// for the answer. Dropping `work` here drops the query future, which is
+/// what releases the connection.
+async fn unless_cancelled<T>(
+    cancelled: impl std::future::Future<Output = ()>,
+    work: impl std::future::Future<Output = Result<T, McpError>>,
+) -> Result<T, McpError> {
+    tokio::select! {
+        // Finished work wins a tie: an answer that is already here is
+        // worth more than a cancel that arrived alongside it.
+        biased;
+        outcome = work => outcome,
+        () = cancelled => Err(McpError::internal_error(
+            "the call was cancelled by the client",
+            None,
+        )),
     }
 }
 
@@ -973,11 +1011,54 @@ fn capture_to_mcp(err: &CaptureError) -> McpError {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_info, capture_to_mcp, instructions, server_config, to_mcp};
+    use super::{
+        build_info, capture_to_mcp, instructions, server_config, to_mcp, unless_cancelled,
+    };
     use crate::capture::CaptureError;
     use crate::service::ServiceError;
     use dbboard_core::DbError;
     use rmcp::model::ErrorCode;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Sets its flag when dropped: proof that the work was let go of, not
+    /// merely ignored while it kept running.
+    struct DroppedFlag(Arc<AtomicBool>);
+
+    impl Drop for DroppedFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A caller that gives up sends `notifications/cancelled`. rmcp only
+    /// flips a token on it, so before this the tool kept running: a query
+    /// with no server-side timeout (Turso, MongoDB, a dump) held its
+    /// connection until it finished on its own, with nobody waiting.
+    #[tokio::test]
+    async fn a_cancelled_call_stops_its_work_and_lets_go_of_it() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DroppedFlag(Arc::clone(&dropped));
+        let work = async move {
+            let _held = guard;
+            std::future::pending::<Result<(), rmcp::ErrorData>>().await
+        };
+        let cancelled = tokio::time::sleep(Duration::from_millis(20));
+
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(2), unless_cancelled(cancelled, work))
+                .await
+                .expect("a cancelled call must return, not run on");
+        assert!(outcome.is_err(), "a cancelled call is not a success");
+        assert!(dropped.load(Ordering::SeqCst), "the work must be dropped");
+    }
+
+    #[tokio::test]
+    async fn a_call_that_finishes_first_returns_its_own_result() {
+        let outcome = unless_cancelled(std::future::pending::<()>(), async { Ok(7) }).await;
+        assert_eq!(outcome.expect("finished"), 7);
+    }
 
     // Why any of the next four tests exist (#195): this binary is copied
     // into place by hand and never updates itself. A bug was once reported
