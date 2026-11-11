@@ -15215,3 +15215,84 @@ read or SSH tunnel, when two calls hit an uncached connection at the same
 instant. The extra one is closed straight away. An agent that gets
 `UiBusy` retries after a moment. It used to wait 30 seconds and then fail
 with the wrong reason.
+
+## ADR-0176 — A person approves or rejects an agent's change to Umbrachyx (2026-11-12)
+
+**Status.** Proposed.
+
+**Context.** Umbrachyx gives each agent a token that can write only to its
+own branch. A change reaches `main` only when a person approves it. The
+server now answers three commands for this (umbrachyx `d7d9e3c`):
+
+- `UMBRA.PENDING` lists, branch by branch, the changes that are not on
+  `main` yet. For each one it gives the authors, why, the first and last
+  write, the head commit, how many keys each table changes, whether `main`
+  has moved since, and whether approving would conflict.
+- `UMBRA.APPROVE <branch> <head> <reason>` merges the branch into `main`
+  and returns the merge commit.
+- `UMBRA.REJECT <branch> <head> <reason>` closes the branch without
+  merging.
+
+Both refuse unless the branch's head is still the `<head>` the person
+looked at. They refuse from a connection whose token cannot approve every
+key the change touches, and an agent's token never can. A token that can
+approve cannot write. The refusals name their kind in the first word, and
+for `-NOTWAITING` in the second word too (`moved`, `decided`, `none`).
+`-CONFLICT` lists the conflicting keys. ADR-0170 reads Umbrachyx's
+history. Nothing in dbboard writes to it yet.
+
+The roadmap gives this its own slot, v0.24.
+
+**Decision.**
+
+- **A review screen for Umbrachyx connections.** It is a tab next to the
+  history views, and only an Umbrachyx connection has it (detected as in
+  ADR-0170). It shows the waiting changes as a list. Picking one shows its
+  diff in the grid the commit diff already uses. Approve and Reject each
+  ask for a reason before they send anything.
+- **The diff is the branch's own change.** It is `UMBRA.DIFF <base>
+  <head>`, where `base` is where the branch left `main`. It is not `main`
+  against the head: once `main` has moved, that diff would include keys
+  the agent never touched, and the person would think they had approved
+  those too. `base` has been asked of Umbrachyx. Until it arrives, a
+  change whose `main_moved` is set shows a warning instead of a diff.
+- **Approval is a person's act in the window, never an agent's.** The MCP
+  server gets no tool for it, and the HTTP server gets no route. This is
+  not the only safeguard, since Umbrachyx also refuses an agent's token,
+  but an agent should never be offered a button that the server has to
+  turn down.
+- **The token is the connection's password.** Umbrachyx accepts `AUTH
+  <token>` in Redis's own form, which the Redis-compatible adapter already
+  sends on connect. The person's approve token therefore lives in the
+  keychain like any other password. A connection used for review is a
+  separate saved connection from the one an agent uses.
+- **`UMBRA.PENDING` joins the read-only allowlist. `APPROVE` and `REJECT`
+  do not.** They are sent only by the two buttons, so a typed command
+  cannot approve.
+- **Each refusal becomes something the person can act on.**
+
+  | Refusal | What the screen says and does |
+  |---|---|
+  | `NOTWAITING moved` | The agent wrote more since you looked. Reloads the diff. |
+  | `NOTWAITING decided` | Someone has already decided it. Drops it from the list. |
+  | `NOTWAITING none` | It is no longer waiting. Reloads the list. |
+  | `CONFLICT` | Lists the conflicting keys. Nothing was written. |
+  | `NOPERM` | This connection's token cannot approve this change. |
+  | `NOAUTH` | Set an approve token as this connection's password. |
+
+**Alternatives.**
+
+- **Approve over MCP for a supervising agent.** Rejected. The point of
+  the design is that the person is the one who lets a change in.
+- **Send `UMBRA.MERGE` after showing the diff.** Rejected in favour of
+  one server command. The head check, the record of who approved, and
+  the refusal of an agent's token then live in one place, and they hold
+  for the CLI as well.
+
+**Consequences.**
+
+- dbboard's first write to Umbrachyx exists, and it is never available to
+  an agent.
+- Each new message is translated into all eleven locales (ADR-0172).
+- The history of decisions (`UMBRA.DECISIONS`) is not shown yet.
+  Umbrachyx will add it after its 0.2 speed work.
