@@ -29,6 +29,15 @@ public API is the HTTP contract in
     running until it finished on its own. Now it stops and releases its
     connection.
 
+### Security
+
+- **`hickory-proto` moves from 0.26.1 to 0.26.3**, clearing
+  RUSTSEC-2026-0487, -0488, -0489 and -0490: panics and an integer
+  underflow on malformed DNS records. dbboard reaches it only through the
+  MongoDB driver's DNS lookups for `mongodb+srv://` addresses. Only the
+  lock file changes.
+
+
 ## [0.23.0] — 2026-11-10 — Every language is a whole translation
 
 ### Changed
