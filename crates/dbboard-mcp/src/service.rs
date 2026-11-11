@@ -55,6 +55,7 @@ use crate::export::{self, ExportOutcome};
 use crate::target::Target;
 
 mod history;
+mod review;
 use dbboard_core::{
     browse_page as core_browse_page, build_update_sql, classify_write, dialect_for_adapter_id,
     diff_snapshots, plan_dump as core_plan_dump, plan_restore as core_plan_restore,
@@ -65,6 +66,7 @@ use dbboard_core::{
     WritePolicyViolation, WriteStatement,
 };
 pub use history::{CommitLogView, DEFAULT_COMMIT_LIMIT, DEFAULT_ROW_VERSIONS, MAX_COMMIT_LIMIT};
+pub use review::{PendingView, ReviewAnswer};
 use serde::Serialize;
 use thiserror::Error;
 use time::OffsetDateTime;

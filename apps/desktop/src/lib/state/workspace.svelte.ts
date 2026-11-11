@@ -26,7 +26,7 @@ import { browseQuery, usesStructuredQuery } from '$lib/sql/build';
 import { latency, untilPainted } from '$lib/status/latency.svelte';
 
 // `versioned` is drawn only for a connection that keeps history (ADR-0165).
-export type MainTab = 'query' | 'structure' | 'compare' | 'versioned';
+export type MainTab = 'query' | 'structure' | 'compare' | 'versioned' | 'review';
 
 class Workspace {
   connections = $state<ConnectionView[]>([]);

@@ -97,6 +97,7 @@ async fn capabilities_reports_adapter_id_and_flags() {
                 "has_list_indexes": true,
                 "has_list_databases": false,
                 "has_history": false,
+                "has_review": false,
             }
         })
     );

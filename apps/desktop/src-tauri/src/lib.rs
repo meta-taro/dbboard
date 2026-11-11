@@ -20,6 +20,7 @@ mod dump;
 mod history;
 mod queries;
 mod restore;
+mod review;
 mod startup;
 mod ui_state;
 
@@ -167,6 +168,9 @@ pub fn run() {
             history::row_history,
             history::commit_diff,
             history::blame,
+            review::pending_changes,
+            review::approve_change,
+            review::reject_change,
             queries::list_saved_queries,
             queries::save_query,
             queries::delete_saved_query,

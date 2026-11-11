@@ -15254,8 +15254,10 @@ The roadmap gives this its own slot, v0.24.
   <head>`, where `base` is where the branch left `main`. It is not `main`
   against the head: once `main` has moved, that diff would include keys
   the agent never touched, and the person would think they had approved
-  those too. `base` has been asked of Umbrachyx. Until it arrives, a
-  change whose `main_moved` is set shows a warning instead of a diff.
+  those too. `UMBRA.PENDING` gives `base` (umbrachyx `462d0a0`). A branch
+  that shares no commit with `main` has none, and is diffed from `-`,
+  Umbrachyx's name for the empty state (`11fd839`), so all of it reads as
+  added.
 - **Approval is a person's act in the window, never an agent's.** The MCP
   server gets no tool for it, and the HTTP server gets no route. This is
   not the only safeguard, since Umbrachyx also refuses an agent's token,
@@ -15266,9 +15268,11 @@ The roadmap gives this its own slot, v0.24.
   sends on connect. The person's approve token therefore lives in the
   keychain like any other password. A connection used for review is a
   separate saved connection from the one an agent uses.
-- **`UMBRA.PENDING` joins the read-only allowlist. `APPROVE` and `REJECT`
-  do not.** They are sent only by the two buttons, so a typed command
-  cannot approve.
+- **None of the three joins the read-only allowlist.** `APPROVE` and
+  `REJECT` are sent only by the two buttons, so a typed command cannot
+  approve, and a test refuses both. `UMBRA.PENDING` reads, but its reply is
+  a list of lists that no typed-query shape draws, and the Review tab is
+  where it is read.
 - **Each refusal becomes something the person can act on.**
 
   | Refusal | What the screen says and does |
