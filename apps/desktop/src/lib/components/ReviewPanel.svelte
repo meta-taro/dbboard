@@ -172,6 +172,10 @@
             {#if o.refusal.more > 0}{i18n.t('review-conflict-more', { count: o.refusal.more })}{/if}
           {:else}
             {i18n.t(o.plan.messageKey)}
+            {#if o.refusal.kind === 'no_permission' && o.refusal.message}
+              <!-- Umbrachyx's own words say which: expired, or the wrong keys. -->
+              <span class="mono server-said">({o.refusal.message})</span>
+            {/if}
           {/if}
         </div>
       {/if}
@@ -359,6 +363,11 @@
     color: var(--text-muted);
     font-size: var(--text-small);
     padding: var(--space-2);
+  }
+  .server-said {
+    display: block;
+    margin-top: 4px;
+    color: var(--text-muted);
   }
   .muted-inline {
     color: var(--text-muted);
