@@ -15300,3 +15300,72 @@ The roadmap gives this its own slot, v0.24.
 - Each new message is translated into all eleven locales (ADR-0172).
 - The history of decisions (`UMBRA.DECISIONS`) is not shown yet.
   Umbrachyx will add it after its 0.2 speed work.
+
+## ADR-0177 — An agent gets its own cursor inside the window (2026-11-12)
+
+**Status.** Proposed.
+
+**Context.** Agents already drive the window through MCP (ADR-0109): they
+set the editor's SQL, run it, and open the AI panel. A person watching sees
+the result appear, but not what the agent was doing or where it was looking.
+The team wants every desktop app to show this the way tadori does. The agent
+gets a cursor of its own inside the window. It moves to what it points at,
+marks what it clicks, and shows a short message beside it. The person's own
+mouse and keyboard are never touched, so they can keep working in the same
+window while it happens.
+
+**Decision.**
+
+- **One MCP tool, `screen`, with an `action`:**
+
+  | Action | What it does |
+  |---|---|
+  | `point` | Moves the cursor to a target and outlines it. |
+  | `click` | Points, then presses the target. |
+  | `type` | Points, then puts text in a field. |
+  | `go` | Switches to a tab named by a `#` place (`#query`, `#structure`, `#compare`, `#versioned`, `#review`). |
+  | `say` | Shows a message, with no target. |
+
+  It travels over the same command file as the other window commands
+  (ADR-0109), so the per-window lock of ADR-0175 applies to it too. A second
+  agent hears at once that the window is taken.
+- **A target is the words on screen, never a coordinate.** The window looks
+  for an element whose visible text, label, placeholder or `aria-label`
+  matches, among buttons, tabs, links, fields and table headers. If nothing
+  matches, the reply says it was not found and nothing is pressed. If the
+  window is not running, the existing "not running" answer stands.
+- **What it looks like.** The look follows tadori so the team sees one
+  thing everywhere:
+  - a violet arrow (`#5e6ad2`) with an "Agent" tag, moving in 0.65 s
+  - a ring where it clicked
+  - an outline around the target for about 2.6 s
+  - a yellow (`#ffd166`) speech bubble, kept 8 px inside the window, with
+    its tail toward the target
+
+  All of it sits above dialogs and toasts and takes no pointer events.
+- **A person's buttons refuse it.** Approve and Reject (ADR-0176), and the
+  save and delete buttons of connections, carry `data-agent-refuse`. A
+  `click` on one is answered "this is a person's button" and does nothing.
+  `point` still works on them, so an agent can show a person what to press.
+- **What it never does.** It never moves the OS mouse, sends OS key events,
+  opens or answers a native dialog, or navigates to an outside page.
+
+**Alternatives.**
+
+- **Driving the OS pointer** (computer use) was rejected. It takes the
+  person's mouse away, works only while the window is in front, and is what
+  this design exists to avoid.
+- **Coordinates as targets** were rejected. They break with every layout
+  change and window size, and a wrong guess presses the wrong thing.
+
+**Consequences.**
+
+- Playwright joins the desktop app's dev dependencies. Its tests drive the
+  SvelteKit build with the Tauri calls replaced. The bar for done is five
+  tests:
+  - `point` moves the cursor to the target
+  - `click` presses the target and the OS pointer does not move
+  - near each corner, the bubble stays inside the window
+  - an unknown target presses nothing
+  - with no screen open, the reply gives the reason
+- The cursor's messages are translated into all eleven locales (ADR-0172).
