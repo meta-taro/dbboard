@@ -25,7 +25,6 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.24** | A person approves what an agent wrote | For Umbrachyx connections, a review screen lists the changes agents have left on their branches, shows what each one changes, and lets a person approve it into `main` or reject it, with a reason ([ADR-0176](decisions.md)). Approval is only ever a person's act in the window. The MCP server does not offer it, and Umbrachyx refuses it from an agent's token anyway. Gets its own slot because v1.0 is not a feature release |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
