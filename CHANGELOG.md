@@ -9,6 +9,35 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.23.1] — 2026-11-11 — Agents sharing one PC never wait on each other in silence
+
+### Fixed
+
+- **One agent's slow call no longer silently holds up another**
+  (ADR-0175). Several AI agents on one PC can use dbboard's MCP server at
+  once, and three things could still make one of them wait with no
+  explanation:
+  - **A stalled connection no longer blocks the others.** If one
+    connection was slow to answer its health check or to connect, for
+    example behind an SSH bastion that went quiet, table lists and
+    queries on the agent's other connections waited behind it.
+  - **A busy window is reported at once.** When two agents drove the
+    window together, one agent's command could overwrite the other's. The
+    loser waited 30 seconds and was told the app was probably not
+    running. It now hears at once that another agent is using the window.
+  - **Cancelling a call stops it.** A call the agent cancelled kept
+    running until it finished on its own. Now it stops and releases its
+    connection.
+
+### Security
+
+- **`hickory-proto` moves from 0.26.1 to 0.26.3**, clearing
+  RUSTSEC-2026-0487, -0488, -0489 and -0490: panics and an integer
+  underflow on malformed DNS records. dbboard reaches it only through the
+  MongoDB driver's DNS lookups for `mongodb+srv://` addresses. Only the
+  lock file changes.
+
+
 ## [0.23.0] — 2026-11-10 — Every language is a whole translation
 
 ### Changed
