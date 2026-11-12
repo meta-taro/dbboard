@@ -1180,6 +1180,28 @@ mod tests {
     /// outright; `export_connections` takes a list and resolves each element
     /// in a loop. Both are spelled exactly, so a third shape has to be added
     /// here on purpose rather than by resembling one of these.
+    /// Approving an agent's change is a person's act (ADR-0176). The
+    /// service can do it for the desktop window, so the only thing keeping
+    /// it from agents is that no tool calls it. A tool that did would let an
+    /// agent approve its own change, wherever the server's token check
+    /// happened to be loose.
+    #[test]
+    fn no_tool_approves_or_rejects_a_change() {
+        let source = include_str!("server.rs");
+        let tools = source.split("#[cfg(test)]").next().unwrap_or(source);
+        for verb in [
+            "approve_change",
+            "reject_change",
+            "UMBRA.APPROVE",
+            "UMBRA.REJECT",
+        ] {
+            assert!(
+                !tools.contains(verb),
+                "the MCP server must not reach `{verb}`: approval is a person's act"
+            );
+        }
+    }
+
     #[test]
     fn every_tool_taking_a_connection_id_resolves_it_first() {
         let source = include_str!("server.rs");

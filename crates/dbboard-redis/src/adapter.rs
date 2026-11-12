@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dbboard_core::{
-    Capabilities, DatabaseAdapter, DbError, DbResult, HistoryReader, QueryResult, TableInfo,
-    TableSchema, MAX_RESULT_ROWS,
+    Capabilities, ChangeReview, DatabaseAdapter, DbError, DbResult, HistoryReader, QueryResult,
+    TableInfo, TableSchema, MAX_RESULT_ROWS,
 };
 use redis::aio::{ConnectionLike, MultiplexedConnection};
 use redis::cluster::ClusterClient;
@@ -444,7 +444,7 @@ fn connection_error(error: &redis::RedisError) -> DbError {
     DbError::Connection(describe(error))
 }
 
-fn query_error(error: &redis::RedisError) -> DbError {
+pub(crate) fn query_error(error: &redis::RedisError) -> DbError {
     if error.is_io_error() || error.is_connection_dropped() || error.is_timeout() {
         DbError::Connection(describe(error))
     } else {
@@ -471,6 +471,7 @@ impl DatabaseAdapter for RedisAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             has_history: self.umbrachyx.is_some(),
+            has_review: self.umbrachyx.is_some(),
             ..Capabilities::default()
         }
     }
@@ -510,6 +511,10 @@ impl DatabaseAdapter for RedisAdapter {
 
     fn history(&self) -> Option<&dyn HistoryReader> {
         self.umbrachyx.as_ref().map(|h| h as &dyn HistoryReader)
+    }
+
+    fn review(&self) -> Option<&dyn ChangeReview> {
+        self.umbrachyx.as_ref().map(|h| h as &dyn ChangeReview)
     }
 }
 

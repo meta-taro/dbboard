@@ -537,6 +537,10 @@ mod tests {
         for line in [
             "UMBRA.ERASE player/42",
             "UMBRA.MERGE main agent",
+            // Approval is a person's button in the Review tab (ADR-0176),
+            // never a typed command.
+            "UMBRA.APPROVE agent-a 62f790e6f005 ok",
+            "UMBRA.REJECT agent-a 62f790e6f005 no",
             "UMBRA. x",
         ] {
             assert!(
