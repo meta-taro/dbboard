@@ -29,6 +29,8 @@ use time::OffsetDateTime;
 
 use crate::adapter::{send, Connection};
 
+mod review;
+
 /// Asked once when a connection opens; only Umbrachyx answers it.
 pub(crate) const DETECT: &str = "UMBRA.BRANCHES";
 

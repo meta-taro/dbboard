@@ -11,6 +11,7 @@ import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import type { EditFields } from '$lib/connections/draft';
 import type { SavedQueryView } from '$lib/queries/saved';
+import type { PendingView, ReviewAnswer } from '$lib/review/view';
 import type { CellEdit, KeyColumn } from '$lib/grid/edit';
 import type { DumpPlan, DumpOutcome, DumpProgress } from '$lib/backup/plan';
 import type {
@@ -330,6 +331,29 @@ export const blame = (
   database?: string | null,
 ): Promise<BlameEntry[]> =>
   invoke('blame', { connectionId, table, database: database ?? null });
+
+// --- Changes waiting for a person to approve (ADR-0176) -------------------
+//
+// `available: false` from `pendingChanges` means the connection keeps no such
+// queue, and the Review tab is hidden. Approve and reject are the only writes
+// dbboard makes to Umbrachyx; the MCP server has no tool for either.
+
+export const pendingChanges = (connectionId: string): Promise<PendingView> =>
+  invoke('pending_changes', { connectionId });
+
+export const approveChange = (
+  connectionId: string,
+  branch: string,
+  head: string,
+  reason: string,
+): Promise<ReviewAnswer> => invoke('approve_change', { connectionId, branch, head, reason });
+
+export const rejectChange = (
+  connectionId: string,
+  branch: string,
+  head: string,
+  reason: string,
+): Promise<ReviewAnswer> => invoke('reject_change', { connectionId, branch, head, reason });
 
 // Absolute path of the connections.toml this app reads — shown in the
 // first-run empty state and the connection manager's footer.

@@ -93,6 +93,12 @@ pub struct Capabilities {
     /// reads as `false`.
     #[serde(default)]
     pub has_history: bool,
+    /// Agents' changes wait on branches for a person to approve, and
+    /// `DatabaseAdapter::review` returns the queue (ADR-0176). Decided per
+    /// connection, like `has_history`. `#[serde(default)]` keeps older
+    /// payloads parseable — the flag reads as `false`.
+    #[serde(default)]
+    pub has_review: bool,
 }
 
 #[cfg(test)]
@@ -166,7 +172,7 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         assert_eq!(
             json,
-            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false,"has_list_indexes":false,"has_list_databases":false,"has_history":false}"#
+            r#"{"has_views":true,"has_functions":false,"has_auth":false,"has_storage":false,"has_realtime":true,"has_describe_table":false,"has_table_ddl":false,"has_execute":false,"has_atomic_restore":false,"has_foreign_keys":false,"has_list_indexes":false,"has_list_databases":false,"has_history":false,"has_review":false}"#
         );
     }
 
@@ -186,6 +192,7 @@ mod tests {
             has_list_indexes: true,
             has_list_databases: true,
             has_history: true,
+            has_review: true,
         };
         let json = serde_json::to_string(&caps).unwrap();
         let back: Capabilities = serde_json::from_str(&json).unwrap();

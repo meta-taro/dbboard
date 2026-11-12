@@ -11,7 +11,9 @@
   import RedisKeysPanel from '$lib/components/RedisKeysPanel.svelte';
   import ComparePanel from '$lib/components/ComparePanel.svelte';
   import VersionedPanel from '$lib/components/VersionedPanel.svelte';
+  import ReviewPanel from '$lib/components/ReviewPanel.svelte';
   import { versioned } from '$lib/versioned/versioned.svelte';
+  import { review } from '$lib/review/review.svelte';
   import BackupDialog from '$lib/components/BackupDialog.svelte';
   import RestoreDialog from '$lib/components/RestoreDialog.svelte';
   import AiPanel from '$lib/components/AiPanel.svelte';
@@ -42,11 +44,15 @@
   ];
   // The Commits tab exists only where there is history to read (ADR-0165): a
   // tab that is always empty on every other connection would be noise.
-  const tabs = $derived(
-    versioned.available
-      ? [...baseTabs, { id: 'versioned' as MainTab, labelKey: 'tab-versioned' as MessageKey }]
-      : baseTabs,
-  );
+  // The Review tab likewise exists only where agents' changes wait for a
+  // person (ADR-0176).
+  const tabs = $derived([
+    ...baseTabs,
+    ...(versioned.available
+      ? [{ id: 'versioned' as MainTab, labelKey: 'tab-versioned' as MessageKey }]
+      : []),
+    ...(review.available ? [{ id: 'review' as MainTab, labelKey: 'tab-review' as MessageKey }] : []),
+  ]);
 
   // Ask each connection, and each database within it, once as it comes into
   // view. A Dolt server holds one history per database.
@@ -54,10 +60,17 @@
     void versioned.load(workspace.connectionId, workspace.database);
   });
 
+  $effect(() => {
+    void review.load(workspace.connectionId);
+  });
+
   // Leaving for a connection without history must not strand the user on a
   // tab that is no longer drawn.
   $effect(() => {
     if (workspace.activeTab === 'versioned' && !versioned.available && !versioned.loading) {
+      workspace.setTab('query');
+    }
+    if (workspace.activeTab === 'review' && !review.available && !review.loading) {
       workspace.setTab('query');
     }
   });
@@ -329,6 +342,11 @@
       {#if versioned.available}
         <div class="tabpane" hidden={workspace.activeTab !== 'versioned'}>
           <VersionedPanel />
+        </div>
+      {/if}
+      {#if review.available}
+        <div class="tabpane" hidden={workspace.activeTab !== 'review'}>
+          <ReviewPanel />
         </div>
       {/if}
     </div>

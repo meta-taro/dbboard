@@ -18,8 +18,8 @@ use crate::capabilities::{
     ViewIntrospection,
 };
 use crate::{
-    check_read_only, DbError, DbResult, ForeignKey, HistoryReader, IndexInfo, QueryResult,
-    SqlDialect, TableInfo, TableSchema,
+    check_read_only, ChangeReview, DbError, DbResult, ForeignKey, HistoryReader, IndexInfo,
+    QueryResult, SqlDialect, TableInfo, TableSchema,
 };
 
 #[async_trait]
@@ -247,6 +247,15 @@ pub trait DatabaseAdapter: Send + Sync {
     fn history(&self) -> Option<&dyn HistoryReader> {
         None
     }
+
+    /// The changes waiting for a person to approve, when the database keeps
+    /// such a queue (ADR-0176). Implementors that return `Some` must also set
+    /// [`Capabilities::has_review`].
+    ///
+    /// [`Capabilities::has_review`]: crate::Capabilities::has_review
+    fn review(&self) -> Option<&dyn ChangeReview> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -262,8 +271,9 @@ mod tests {
     };
     use crate::Commit;
     use crate::{
-        BlameEntry, Column, ColumnInfo, CommitDiff, DbError, DbResult, ForeignKey, HistoryReader,
-        QueryResult, Row, RowHistory, TableInfo, TableSchema, Value,
+        BlameEntry, ChangeReview, Column, ColumnInfo, CommitDiff, DbError, DbResult, ForeignKey,
+        HistoryReader, PendingChange, QueryResult, ReviewError, Row, RowHistory, TableInfo,
+        TableSchema, Value,
     };
 
     struct NoopAdapter;
@@ -342,6 +352,7 @@ mod tests {
                 has_list_indexes: true,
                 has_list_databases: true,
                 has_history: true,
+                has_review: true,
             }
         }
         async fn ping(&self) -> DbResult<()> {
@@ -410,6 +421,22 @@ mod tests {
         fn history(&self) -> Option<&dyn HistoryReader> {
             Some(self)
         }
+        fn review(&self) -> Option<&dyn ChangeReview> {
+            Some(self)
+        }
+    }
+
+    #[async_trait]
+    impl ChangeReview for FullAdapter {
+        async fn pending(&self) -> DbResult<Vec<PendingChange>> {
+            Ok(Vec::new())
+        }
+        async fn approve(&self, _: &str, _: &str, _: &str) -> Result<String, ReviewError> {
+            Ok(String::new())
+        }
+        async fn reject(&self, _: &str, _: &str, _: &str) -> Result<(), ReviewError> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -436,6 +463,8 @@ mod tests {
         assert!(adapter.realtime().is_none());
         assert_eq!(caps.has_history, adapter.history().is_some());
         assert!(adapter.history().is_none());
+        assert_eq!(caps.has_review, adapter.review().is_some());
+        assert!(adapter.review().is_none());
     }
 
     #[test]
@@ -456,6 +485,8 @@ mod tests {
         assert!(adapter.realtime().is_some());
         assert_eq!(caps.has_history, adapter.history().is_some());
         assert!(adapter.history().is_some());
+        assert_eq!(caps.has_review, adapter.review().is_some());
+        assert!(adapter.review().is_some());
     }
 
     /// Most engines hold one database per connection (docs/every-database.md),

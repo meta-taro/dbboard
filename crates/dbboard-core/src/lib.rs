@@ -17,6 +17,7 @@ mod history;
 mod limits;
 mod read_only;
 mod restore;
+mod review;
 mod row;
 mod schema;
 mod schema_diff;
@@ -52,6 +53,7 @@ pub use restore::{
     RestoreError, RestoreOptions, RestoreOutcome, RestorePlan, RestoreProgress, RestoreResult,
     RestoreStatement, StatementFailure, StatementKind,
 };
+pub use review::{ChangeReview, PendingChange, ReviewError, ReviewRefusal, TableChangeCount};
 pub use row::{Column, QueryResult, Row};
 pub use schema::{
     resolve_referenced_columns, ColumnInfo, ForeignKey, IndexInfo, TableInfo, TableSchema,

@@ -7,7 +7,23 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — A person approves what an agent wrote
+
+### Added
+
+- **A Review tab for Umbrachyx connections** (ADR-0176). Umbrachyx lets an
+  agent write only to its own branch, and only a person can bring that
+  branch into `main`. The Review tab lists the changes waiting: who wrote
+  each one, why, when, and how many keys it touches in each table. Picking
+  one shows exactly what that branch changed, even if `main` has moved on
+  since. **Approve** and **Reject** each need a reason.
+  - If the agent wrote more after you looked, the diff reloads and you are
+    asked to look again.
+  - If someone else decided first, or approving would conflict with
+    `main`, the screen says so, and nothing is written.
+  - Approval uses a person's approve token, saved as the connection's
+    password. Agents cannot approve: the MCP server has no tool for it, and
+    Umbrachyx refuses an agent's token anyway.
 
 ## [0.23.1] — 2026-11-11 — Agents sharing one PC never wait on each other in silence
 
