@@ -25,6 +25,7 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
+| **v0.25** | You can see where the agent is pointing | An agent working the window through MCP gets its own cursor inside the window: it points, clicks, types and speaks by the words on screen, and the person watches it happen without giving up their own mouse or keyboard ([ADR-0177](decisions.md)). Buttons that are a person's act (approve, reject, save, delete) refuse it. Requested for every desktop app on the team, after tadori's |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,

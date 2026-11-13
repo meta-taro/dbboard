@@ -14,6 +14,7 @@ const ru: Partial<Record<MessageKey, string>> = {
   "tab-compare": "Сравнение",
   "tab-versioned": "Коммиты",
   "tab-review": "Проверка",
+  "agent-cursor-tag": "Агент",
   "review-person-only": "Одобрить или отклонить может только человек, здесь, в окне. Агенты не могут.",
   "review-loading": "Загрузка…",
   "review-refresh": "Обновить",

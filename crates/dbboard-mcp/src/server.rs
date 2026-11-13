@@ -40,7 +40,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use dbboard_config::UiCommand;
+use dbboard_config::{ScreenStep, UiCommand};
 use dbboard_core::DbError;
 
 use crate::capture::{self, CaptureError};
@@ -234,6 +234,74 @@ pub struct SetEditorSqlParams {
     /// The text to put in the editor. Replaces what is there — there is no
     /// append, and no way to read back what it displaced.
     pub sql: String,
+}
+
+/// Parameters for [`DbboardMcp::screen`] (ADR-0177). Flat rather than a
+/// tagged union so every client can fill it in; [`ScreenParams::into_step`]
+/// turns it into one step and says which field is missing.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScreenParams {
+    /// One of `point`, `click`, `type`, `go`, `say`.
+    pub action: String,
+    /// The words on screen that name what to point at, click or type into:
+    /// a button's label, a tab's name, a field's label or placeholder. Not a
+    /// coordinate. Needed by point, click and type.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// For type: the text to put in the field.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// For go: the tab, as #query, #structure, #compare, #versioned or #review.
+    #[serde(default)]
+    pub hash: Option<String>,
+    /// A short message shown in a bubble beside the cursor. Needed by say.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// How long the message stays, 1 to 60 seconds. Left out, its length decides.
+    #[serde(default)]
+    pub seconds: Option<u32>,
+}
+
+impl ScreenParams {
+    fn into_step(self) -> Result<ScreenStep, String> {
+        let need = |field: Option<String>, name: &str| {
+            field.ok_or_else(|| format!("{} needs {name}", self.action))
+        };
+        let step = match self.action.as_str() {
+            "point" => ScreenStep::Point {
+                target: need(self.target.clone(), "target")?,
+                message: self.message.clone(),
+                seconds: self.seconds,
+            },
+            "click" => ScreenStep::Click {
+                target: need(self.target.clone(), "target")?,
+                message: self.message.clone(),
+                seconds: self.seconds,
+            },
+            "type" => ScreenStep::Type {
+                target: need(self.target.clone(), "target")?,
+                value: need(self.value.clone(), "value")?,
+                message: self.message.clone(),
+                seconds: self.seconds,
+            },
+            "go" => ScreenStep::Go {
+                hash: need(self.hash.clone(), "hash")?,
+                message: self.message.clone(),
+                seconds: self.seconds,
+            },
+            "say" => ScreenStep::Say {
+                message: need(self.message.clone(), "message")?,
+                seconds: self.seconds,
+            },
+            other => {
+                return Err(format!(
+                    "unknown action {other:?}; use point, click, type, go or say"
+                ))
+            }
+        };
+        step.check()?;
+        Ok(step)
+    }
 }
 
 /// Parameters for [`DbboardMcp::dump_database`].
@@ -763,6 +831,23 @@ A dbboard window that is already open shows the old order until it is refreshed.
         self.ui_command(UiCommand::OpenAiSettings).await
     }
 
+    #[tool(
+        description = "Work the dbboard window with your own cursor, which the person can see (ADR-0177). It never moves their mouse or types on their keyboard; they can keep working while you do this. \
+        \n\naction is one of: point (move to target and outline it), click (point, then press it), type (point at a field, then put value in it), go (switch to a tab: #query, #structure, #compare, #versioned, #review), say (show message only). \
+        \n\ntarget is the words on screen — a button's label, a tab's name, a field's label or placeholder — never a coordinate. If nothing on screen matches, nothing is pressed and you are told it was not found; capture_window shows what is there. Add message to explain to the person what you are doing. \
+        \n\nButtons that are a person's act — approve, reject, save, delete — refuse click. Point at them and ask the person instead. \
+        \n\nIt fails when dbboard is not running, and you cannot fix that by retrying — ask a human to open it."
+    )]
+    async fn screen(
+        &self,
+        Parameters(params): Parameters<ScreenParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let step = params
+            .into_step()
+            .map_err(|reason| McpError::invalid_params(reason, None))?;
+        self.ui_command(UiCommand::Screen { step }).await
+    }
+
     /// Send one instruction to the window and report what it said back.
     ///
     /// The four tools above differ only in the verb, and the answer shape is
@@ -1180,6 +1265,40 @@ mod tests {
     /// outright; `export_connections` takes a list and resolves each element
     /// in a loop. Both are spelled exactly, so a third shape has to be added
     /// here on purpose rather than by resembling one of these.
+    fn screen(action: &str) -> super::ScreenParams {
+        super::ScreenParams {
+            action: action.into(),
+            target: None,
+            value: None,
+            hash: None,
+            message: None,
+            seconds: None,
+        }
+    }
+
+    #[test]
+    fn a_screen_step_names_the_field_it_is_missing() {
+        assert!(screen("click").into_step().unwrap_err().contains("target"));
+        let mut typing = screen("type");
+        typing.target = Some("Search tables".into());
+        assert!(typing.into_step().unwrap_err().contains("value"));
+        assert!(screen("say").into_step().unwrap_err().contains("message"));
+        assert!(screen("drag")
+            .into_step()
+            .unwrap_err()
+            .contains("unknown action"));
+    }
+
+    #[test]
+    fn a_complete_screen_step_is_checked_then_passed_on() {
+        let mut go = screen("go");
+        go.hash = Some("https://example.com".into());
+        assert!(go.into_step().unwrap_err().contains('#'));
+        let mut point = screen("point");
+        point.target = Some("Run".into());
+        assert!(point.into_step().is_ok());
+    }
+
     /// Approving an agent's change is a person's act (ADR-0176). The
     /// service can do it for the desktop window, so the only thing keeping
     /// it from agents is that no tool calls it. A tool that did would let an
@@ -1460,6 +1579,7 @@ mod tests {
             "run_query",
             "open_ai_panel",
             "open_ai_settings",
+            "screen",
         ] {
             let description = description_above(name);
             assert!(

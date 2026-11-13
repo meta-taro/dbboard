@@ -14,6 +14,7 @@ const zh_CN: Partial<Record<MessageKey, string>> = {
   "tab-compare": "比较",
   "tab-versioned": "提交",
   "tab-review": "审批",
+  "agent-cursor-tag": "代理",
   "review-person-only": "只有人能在此窗口中批准或拒绝。代理不能。",
   "review-loading": "加载中…",
   "review-refresh": "重新加载",
