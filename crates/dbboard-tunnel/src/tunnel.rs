@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::keys::ssh_key::{HashAlg, PublicKey};
+use russh::keys::PublicKeyOrCertificate;
 
 use crate::config::{HostKeyPolicy, SshAuth, SshBastion, SshTunnelConfig};
 use crate::error::{TunnelError, TunnelResult};
@@ -358,11 +359,15 @@ impl russh::client::Handler for VerifyHandler {
     // russh declares this `async fn`, and returning a ready future satisfies
     // that without pretending the check is asynchronous
     // (clippy::unused_async_trait_impl).
+    //
+    // Since russh 0.63 a server may present a host certificate. known_hosts
+    // pins keys, not certificate authorities, so the key inside is what is
+    // checked, exactly as a bare host key was before.
     fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> impl Future<Output = Result<bool, Self::Error>> {
-        ready(Ok(self.verify(server_public_key)))
+        ready(Ok(self.verify(&server_public_key.public_key())))
     }
 }
 
@@ -377,10 +382,14 @@ impl russh::client::Handler for ProbeHandler {
 
     fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> impl Future<Output = Result<bool, Self::Error>> {
-        *self.captured.lock().expect("probe lock poisoned") =
-            Some(server_public_key.fingerprint(HashAlg::Sha256).to_string());
+        *self.captured.lock().expect("probe lock poisoned") = Some(
+            server_public_key
+                .public_key()
+                .fingerprint(HashAlg::Sha256)
+                .to_string(),
+        );
         ready(Ok(false))
     }
 }

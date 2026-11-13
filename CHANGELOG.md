@@ -20,6 +20,20 @@ public API is the HTTP contract in
   Approve, reject, save and delete are your buttons: an agent can point at
   them, but its click is refused.
 
+### Security
+
+- **The SSH tunnel moves to `russh` 0.65.** This clears RUSTSEC-2026-0492
+  and -0495: client callbacks could run for channels the client never
+  opened, and its agent server signed without asking for confirmation.
+  dbboard uses neither path. A server may now present a host
+  certificate. known_hosts pins keys, so the key inside the certificate is
+  checked, as a bare host key always was.
+- **`hickory-net` and `hickory-resolver` move to 0.26.3**, clearing ten
+  advisories in DNSSEC validation (RUSTSEC-2026-0506 to -0509 and -0513 to
+  -0520). dbboard reaches them only through the MongoDB driver's
+  `mongodb+srv://` lookups. Only those two lock-file entries change.
+
+
 ## [0.24.0] — 2026-11-12 — A person approves what an agent wrote
 
 ### Added
