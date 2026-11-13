@@ -3,3 +3,7 @@ build/
 .svelte-kit/
 # Tauri-generated: build output and the codegen'd capability schemas.
 src-tauri/gen/
+
+# Playwright (ADR-0177)
+test-results/
+playwright-report/

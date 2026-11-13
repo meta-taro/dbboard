@@ -106,6 +106,15 @@ the connection that window has selected, and leaves the rows on the
 operator's screen. All four fail outright when dbboard is not running, and
 retrying does not open it.
 
+`screen` gives you a cursor of your own inside that window (ADR-0177).
+`point`, `click` and `type` name their target by the words on screen — a
+button's label, a tab, a field's label or placeholder — never a coordinate;
+`go` switches tab (`#query`, `#review`, …) and `say` just speaks. The person
+sees an "Agent" arrow and your message in a bubble, and keeps their own
+mouse and keyboard: nothing moves the OS pointer. If nothing matches, nothing
+is pressed. Approve, reject, save and delete are a person's buttons and
+refuse `click`; point at them and ask instead.
+
 `get_server_info` names the build answering you (ADR-0116). This binary is
 installed by hand and never updates itself, so it can be older than the
 fix for whatever you are looking at — a bug you are about to report may

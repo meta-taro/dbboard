@@ -12,6 +12,7 @@
   import ComparePanel from '$lib/components/ComparePanel.svelte';
   import VersionedPanel from '$lib/components/VersionedPanel.svelte';
   import ReviewPanel from '$lib/components/ReviewPanel.svelte';
+  import AgentCursorHost from '$lib/components/AgentCursorHost.svelte';
   import { versioned } from '$lib/versioned/versioned.svelte';
   import { review } from '$lib/review/review.svelte';
   import BackupDialog from '$lib/components/BackupDialog.svelte';
@@ -349,6 +350,7 @@
           <ReviewPanel />
         </div>
       {/if}
+      <AgentCursorHost tabs={tabs.map((t) => t.id)} />
     </div>
   </main>
 </div>

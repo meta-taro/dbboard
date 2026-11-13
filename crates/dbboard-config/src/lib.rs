@@ -85,7 +85,8 @@ pub use store::{
 pub use ui_command::{
     default_ui_command_path, default_ui_result_path, load_command_or_default,
     load_result_or_default, next_seq, pending_command, save_command_atomic, save_result_atomic,
-    UiCommand, UiCommandFile, UiResultFile, UI_COMMAND_VERSION,
+    ScreenStep, UiCommand, UiCommandFile, UiResultFile, MAX_SCREEN_TEXT, SCREEN_SECONDS,
+    UI_COMMAND_VERSION,
 };
 pub use ui_settings::{
     default_ui_settings_path, is_supported_locale, load_or_default as load_ui_settings,

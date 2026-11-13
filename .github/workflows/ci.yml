@@ -237,6 +237,14 @@ jobs:
       - name: vitest
         run: pnpm run test
 
+      # The agent cursor's five checks (ADR-0177) need a real browser: where
+      # the bubble lands and whether a pointer event was trusted are not
+      # things a DOM emulation can answer.
+      - name: playwright (agent cursor)
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm run test:e2e
+
   site:
     name: site (node --test)
     runs-on: ubuntu-latest

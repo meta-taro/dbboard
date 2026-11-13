@@ -14,6 +14,7 @@ const it: Partial<Record<MessageKey, string>> = {
   "tab-compare": "Confronta",
   "tab-versioned": "Commit",
   "tab-review": "Revisione",
+  "agent-cursor-tag": "Agente",
   "review-person-only": "Solo una persona può approvare o rifiutare, qui nella finestra. Gli agenti non possono.",
   "review-loading": "Caricamento…",
   "review-refresh": "Ricarica",

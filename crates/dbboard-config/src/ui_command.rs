@@ -59,6 +59,143 @@ pub enum UiCommand {
     /// owns this verb is not mounted then. That refusal is the honest answer:
     /// there is no top-level route to these settings to fall back on.
     OpenAiSettings,
+    /// One step of the agent's own cursor inside the window (ADR-0177):
+    /// point, click, type, switch tab or speak. Never the OS pointer.
+    Screen {
+        /// What to do. Checked by [`ScreenStep::check`] before it is sent.
+        step: ScreenStep,
+    },
+}
+
+/// The longest text a screen step carries: a target, a typed value, a
+/// message. Long enough for a sentence, short enough for a bubble.
+pub const MAX_SCREEN_TEXT: usize = 500;
+/// How long a message may be asked to stay, in seconds.
+pub const SCREEN_SECONDS: std::ops::RangeInclusive<u32> = 1..=60;
+
+/// What the agent's cursor does (ADR-0177). A target is the words on
+/// screen, never a coordinate: a coordinate breaks with every layout and
+/// presses the wrong thing when it is off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ScreenStep {
+    /// Move to `target` and outline it.
+    Point {
+        target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seconds: Option<u32>,
+    },
+    /// Point at `target`, then press it. A person's button refuses.
+    Click {
+        target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seconds: Option<u32>,
+    },
+    /// Point at the field `target`, then put `value` in it.
+    Type {
+        target: String,
+        value: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seconds: Option<u32>,
+    },
+    /// Switch to the tab named by `hash` (`#query`, `#review`, …). Never a
+    /// page outside the window.
+    Go {
+        hash: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seconds: Option<u32>,
+    },
+    /// Show a message, pointing at nothing.
+    Say {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seconds: Option<u32>,
+    },
+}
+
+impl ScreenStep {
+    /// Refuse a step the window should never be asked to draw: empty or
+    /// over-long text, a stay outside [`SCREEN_SECONDS`], or a `go` that is
+    /// not a place inside the window.
+    ///
+    /// # Errors
+    ///
+    /// The reason, in words an agent can act on.
+    pub fn check(&self) -> Result<(), String> {
+        let (texts, seconds): (Vec<(&str, Option<&str>)>, Option<u32>) = match self {
+            Self::Point {
+                target,
+                message,
+                seconds,
+            }
+            | Self::Click {
+                target,
+                message,
+                seconds,
+            } => (
+                vec![("target", Some(target)), ("message", message.as_deref())],
+                *seconds,
+            ),
+            Self::Type {
+                target,
+                value,
+                message,
+                seconds,
+            } => (
+                vec![
+                    ("target", Some(target)),
+                    ("value", Some(value)),
+                    ("message", message.as_deref()),
+                ],
+                *seconds,
+            ),
+            Self::Go {
+                hash,
+                message,
+                seconds,
+            } => {
+                if !hash.starts_with('#') {
+                    return Err(format!(
+                        "hash must be a place in the window starting with # (for example #query), not {hash:?}"
+                    ));
+                }
+                (
+                    vec![("hash", Some(hash)), ("message", message.as_deref())],
+                    *seconds,
+                )
+            }
+            Self::Say { message, seconds } => (vec![("message", Some(message))], *seconds),
+        };
+        for (name, text) in texts {
+            let Some(text) = text else { continue };
+            if text.trim().is_empty() {
+                return Err(format!("{name} must not be empty"));
+            }
+            if text.chars().count() > MAX_SCREEN_TEXT {
+                return Err(format!(
+                    "{name} is longer than {MAX_SCREEN_TEXT} characters"
+                ));
+            }
+        }
+        if let Some(s) = seconds {
+            if !SCREEN_SECONDS.contains(&s) {
+                return Err(format!(
+                    "seconds must be from {} to {}",
+                    SCREEN_SECONDS.start(),
+                    SCREEN_SECONDS.end()
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl UiCommand {
@@ -73,6 +210,7 @@ impl UiCommand {
             Self::RunQuery => "run_query",
             Self::OpenAiPanel => "open_ai_panel",
             Self::OpenAiSettings => "open_ai_settings",
+            Self::Screen { .. } => "screen",
         }
     }
 }
@@ -364,6 +502,20 @@ mod tests {
             },
             UiCommand::RunQuery,
             UiCommand::OpenAiPanel,
+            UiCommand::Screen {
+                step: ScreenStep::Type {
+                    target: "Search tables".to_string(),
+                    value: "player".to_string(),
+                    message: Some("テーブルを探します".to_string()),
+                    seconds: Some(5),
+                },
+            },
+            UiCommand::Screen {
+                step: ScreenStep::Say {
+                    message: "done".to_string(),
+                    seconds: None,
+                },
+            },
         ] {
             let file = UiCommandFile {
                 version: UI_COMMAND_VERSION,
@@ -694,5 +846,59 @@ mod tests {
             ),
             2
         );
+    }
+
+    fn point(target: &str) -> ScreenStep {
+        ScreenStep::Point {
+            target: target.to_string(),
+            message: None,
+            seconds: None,
+        }
+    }
+
+    #[test]
+    fn a_sensible_step_passes_the_check() {
+        assert_eq!(point("Run").check(), Ok(()));
+        assert_eq!(
+            ScreenStep::Go {
+                hash: "#review".into(),
+                message: None,
+                seconds: Some(60)
+            }
+            .check(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn empty_or_over_long_text_is_refused() {
+        assert!(point("  ").check().unwrap_err().contains("target"));
+        let long = "あ".repeat(MAX_SCREEN_TEXT + 1);
+        assert!(point(&long).check().unwrap_err().contains("longer"));
+        assert_eq!(point(&"あ".repeat(MAX_SCREEN_TEXT)).check(), Ok(()));
+    }
+
+    /// `go` moves inside the window only; a URL would leave it.
+    #[test]
+    fn go_refuses_anything_but_a_place_in_the_window() {
+        let err = ScreenStep::Go {
+            hash: "https://example.com".into(),
+            message: None,
+            seconds: None,
+        }
+        .check()
+        .unwrap_err();
+        assert!(err.contains('#'), "got {err}");
+    }
+
+    #[test]
+    fn a_stay_outside_one_to_sixty_seconds_is_refused() {
+        for bad in [0, 61] {
+            let step = ScreenStep::Say {
+                message: "hi".into(),
+                seconds: Some(bad),
+            };
+            assert!(step.check().is_err(), "{bad} seconds was accepted");
+        }
     }
 }

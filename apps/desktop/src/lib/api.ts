@@ -12,6 +12,7 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import type { EditFields } from '$lib/connections/draft';
 import type { SavedQueryView } from '$lib/queries/saved';
 import type { PendingView, ReviewAnswer } from '$lib/review/view';
+import type { ScreenStep } from '$lib/agent/step';
 import type { CellEdit, KeyColumn } from '$lib/grid/edit';
 import type { DumpPlan, DumpOutcome, DumpProgress } from '$lib/backup/plan';
 import type {
@@ -917,7 +918,8 @@ export type UiCommand =
   | { kind: 'set_editor_sql'; sql: string }
   | { kind: 'run_query' }
   | { kind: 'open_ai_panel' }
-  | { kind: 'open_ai_settings' };
+  | { kind: 'open_ai_settings' }
+  | { kind: 'screen'; step: ScreenStep };
 
 /** A command and the number its answer must carry back. */
 export interface UiCommandEvent {

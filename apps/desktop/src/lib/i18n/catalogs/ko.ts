@@ -14,6 +14,7 @@ const ko: Partial<Record<MessageKey, string>> = {
   "tab-compare": "비교",
   "tab-versioned": "커밋",
   "tab-review": "승인",
+  "agent-cursor-tag": "에이전트",
   "review-person-only": "승인과 거절은 이 창에서 사람만 할 수 있습니다. 에이전트는 할 수 없습니다.",
   "review-loading": "불러오는 중…",
   "review-refresh": "다시 불러오기",
