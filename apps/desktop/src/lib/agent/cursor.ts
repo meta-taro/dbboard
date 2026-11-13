@@ -157,8 +157,9 @@ export class AgentCursor {
       return `clicked "${name}"`;
     }
     const field = fieldOf(el);
-    if (!field || field.disabled || field.readOnly) {
-      throw new Error(`"${name}" is not a field that can be typed into`);
+    if (!field) throw new Error(`"${name}" is not a field that can be typed into`);
+    if (field.disabled || field.readOnly) {
+      throw new Error(`"${name}" is disabled right now, so nothing was typed`);
     }
     field.focus({ preventScroll: true });
     fill(field, step.value);

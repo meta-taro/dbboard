@@ -13,7 +13,8 @@ describe('placeBubble', () => {
   it('sits below a target with room, its tail pointing up at it', () => {
     const p = placeBubble({ left: 300, top: 100, width: 80, height: 24 }, bubble, view);
     expect(p.tail).toBe('top');
-    expect(p.top).toBeGreaterThan(124);
+    // Clear of the cursor's tag, which hangs ~30 px below the target's centre.
+    expect(p.top).toBeGreaterThanOrEqual(100 + 24 + 30);
     expect(inside(p)).toBe(true);
   });
 

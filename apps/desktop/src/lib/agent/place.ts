@@ -5,6 +5,11 @@
 export const MARGIN = 8;
 /** Gap between the target and the bubble, room for the tail. */
 const GAP = 12;
+/**
+ * Below the target the cursor's own "Agent" tag hangs down from its centre,
+ * so a bubble there keeps clear of it rather than covering who is speaking.
+ */
+const BELOW_GAP = 30;
 
 export interface Rect {
   left: number;
@@ -41,7 +46,7 @@ export function placeBubble(
   }
   const centreX = target.left + target.width / 2 - bubble.width / 2;
   const centreY = target.top + target.height / 2 - bubble.height / 2;
-  const below = target.top + target.height + GAP;
+  const below = target.top + target.height + BELOW_GAP;
   if (below + bubble.height <= view.height - MARGIN) {
     return { left: clampX(centreX), top: below, tail: 'top' };
   }
