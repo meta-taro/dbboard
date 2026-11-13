@@ -149,10 +149,10 @@
               disabled={review.deciding}
             />
           </label>
-          <button type="button" class="ghost danger" disabled={!canDecide} onclick={() => decide('reject')}>
+          <button type="button" class="ghost danger" data-agent-refuse disabled={!canDecide} onclick={() => decide('reject')}>
             {i18n.t('review-reject')}
           </button>
-          <button type="button" class="primary" disabled={!canDecide} onclick={() => decide('approve')}>
+          <button type="button" class="primary" data-agent-refuse disabled={!canDecide} onclick={() => decide('approve')}>
             {i18n.t('review-approve')}
           </button>
         </div>

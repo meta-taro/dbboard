@@ -25,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.24.0"
+version = "0.25.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/meta-taro/dbboard"
@@ -105,7 +105,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # `flate2` (compression) and `rsa` (RSA host/user keys) are the other two
 # default features, kept. russh-keys was folded into `russh::keys` at 0.50, so
 # this single line is the whole dependency.
-russh = { version = "0.62", default-features = false, features = ["ring", "flate2", "rsa"] }
+russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }
 # libsql: the local engine (`core`) plus what a hosted Turso Cloud database
 # needs — `remote` for the hrana-over-HTTP client and `tls` for the https it
 # runs on (ADR-0111). The two remaining default features stay off: `replication`

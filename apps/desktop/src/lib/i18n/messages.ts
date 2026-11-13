@@ -35,6 +35,7 @@ export const en = {
   // connection that keeps one (Dolt), and nothing in it writes.
   "tab-versioned": "Commits",
   "tab-review": "Review",
+  "agent-cursor-tag": "Agent",
   "review-person-only": "Only a person can approve or reject, here in the window. Agents cannot.",
   "review-loading": "Loading…",
   "review-refresh": "Reload",
@@ -633,6 +634,7 @@ const ja: Partial<Record<MessageKey, string>> = {
   "tab-compare": "比較",
   "tab-versioned": "コミット",
   "tab-review": "承認",
+  "agent-cursor-tag": "エージェント",
   "review-person-only": "承認と却下は、この画面で人だけができます。エージェントにはできません。",
   "review-loading": "読み込み中…",
   "review-refresh": "再読み込み",

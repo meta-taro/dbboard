@@ -698,7 +698,7 @@
                     {i18n.t('conn-duplicate')}
                   </button>
                 {/if}
-                <button type="button" class="ghost danger" disabled={busy} onclick={() => remove(c)}>
+                <button type="button" class="ghost danger" data-agent-refuse disabled={busy} onclick={() => remove(c)}>
                   {i18n.t('conn-delete')}
                 </button>
               </div>
@@ -978,7 +978,7 @@
           <button type="button" class="ghost" disabled={busy} onclick={goList}>
             {i18n.t('conn-cancel')}
           </button>
-          <button type="button" class="primary" disabled={busy} onclick={saveForm}>
+          <button type="button" class="primary" data-agent-refuse disabled={busy} onclick={saveForm}>
             {i18n.t('conn-save')}
           </button>
         </div>

@@ -671,13 +671,15 @@ Twenty-two fixed tools. Seven read a database — `list_connections`,
 `list_tables`, `describe_table`, `search_schema` (ADR-0053),
 `list_relationships` (ADR-0054), `run_read_query`, and `get_annotations`
 (dbboard's local notes, ADR-0045) — plus `run_write` and `dump_database`
-(ADR-0087). Seven reach no database at all, and work the window instead:
+(ADR-0087). Eight reach no database at all, and work the window instead:
 `get_ui_locale` / `set_ui_locale` change the app's display language
 (ADR-0107), `capture_window` returns a PNG of the running window
 (ADR-0108), and `set_editor_sql` / `run_query` / `open_ai_panel` /
-`open_ai_settings` drive it (ADR-0109) — so a claim about what the
+`open_ai_settings` drive it (ADR-0109), and `screen` works it with the
+agent's own visible cursor — point, click, type, switch tab, speak — without
+touching the person's mouse (ADR-0177) — so a claim about what the
 interface renders can be set up, performed and checked instead of
-asserted. Those seven act on a screen someone is sitting in front of; all
+asserted. Those eight act on a screen someone is sitting in front of; all
 but the two getters fail outright when dbboard is not running. Two
 reach nothing whatever. `get_server_info` names the build that is
 answering (ADR-0116), because this binary is installed by hand and a

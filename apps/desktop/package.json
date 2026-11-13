@@ -1,6 +1,6 @@
 {
   "name": "@dbboard/desktop",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "private": true,
   "description": "dbboard desktop client (Tauri 2 + SvelteKit) over the shared Rust core crates.",
   "license": "MIT",
@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -27,6 +28,7 @@
     "@tauri-apps/plugin-updater": "^2.9.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@sveltejs/adapter-static": "^3.0.6",
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^4.0.2",
