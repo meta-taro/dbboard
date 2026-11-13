@@ -7,7 +7,9 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased] — You can see where the agent is pointing
+## [Unreleased]
+
+## [0.25.0] — 2026-11-13 — You can see where the agent is pointing
 
 ### Added
 
