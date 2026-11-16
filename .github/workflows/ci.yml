@@ -210,7 +210,11 @@ jobs:
 
   frontend:
     name: frontend (svelte-check / vitest)
-    runs-on: ubuntu-latest
+    # Pinned, not -latest: ubuntu-latest moved to 26.04 in November 2026 and
+    # Playwright cannot install Chromium there yet, so the agent-cursor e2e
+    # failed on a branch nobody touched (same reasoning as ADR-0139). Move
+    # this forward once `playwright install chromium` supports the new image.
+    runs-on: ubuntu-24.04
     # The nightly exists for `deps`; nothing here changes overnight.
     if: github.event_name != 'schedule'
     defaults:
