@@ -42,3 +42,23 @@ pub enum TunnelError {
 
 /// Convenience alias for tunnel operations.
 pub type TunnelResult<T> = Result<T, TunnelError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The desktop app reads this message to offer "Edit connection" instead
+    /// of a reconnect that can never work (#331, `lib/connections/failure.ts`).
+    /// Changing the wording means changing that parser in the same commit.
+    #[test]
+    fn a_key_load_failure_names_the_path_in_quotes_then_the_reason() {
+        let e = TunnelError::KeyLoad {
+            path: "/k/id_ed25519".into(),
+            detail: "No such file or directory (os error 2)".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "failed to load ssh private key '/k/id_ed25519': No such file or directory (os error 2)"
+        );
+    }
+}
