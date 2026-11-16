@@ -3,6 +3,7 @@
   import { workspace } from '$lib/state/workspace.svelte';
   import { searchSchema, type SchemaMatch, type TableInfo } from '$lib/api';
   import { i18n } from '$lib/i18n/i18n.svelte';
+  import { editRequest } from '$lib/connections/edit-request.svelte';
   import ContextMenu, { type MenuItem } from './ContextMenu.svelte';
   import ConnectionManager from './ConnectionManager.svelte';
   import ConnectionMark from './ConnectionMark.svelte';
@@ -31,6 +32,15 @@
   let sidebarEl = $state<HTMLElement | null>(null);
   let listEl = $state<HTMLElement | null>(null);
   let managerOpen = $state(false);
+  // Set when the manager is opened for one connection's edit form (#331).
+  let managerEditId = $state<string | null>(null);
+  $effect(() => {
+    if (!editRequest.id) return;
+    // Reopen so the manager mounts again and goes straight to that form.
+    managerOpen = false;
+    managerEditId = editRequest.take();
+    queueMicrotask(() => (managerOpen = true));
+  });
   let menu = $state<{ x: number; y: number; table: TableInfo } | null>(null);
   // The mark picker, opened on a connection row rather than a table row.
   let markMenu = $state<{ x: number; y: number; id: string; name: string } | null>(
@@ -291,7 +301,14 @@
   <div class="section">
     <div class="section-head">
       <div class="eyebrow">{i18n.t('connections-window-title')}</div>
-      <button type="button" class="manage" onclick={() => (managerOpen = true)}>
+      <button
+        type="button"
+        class="manage"
+        onclick={() => {
+          managerEditId = null;
+          managerOpen = true;
+        }}
+      >
         {i18n.t('conn-manage')}
       </button>
     </div>
@@ -466,7 +483,7 @@
 {/if}
 
 {#if managerOpen}
-  <ConnectionManager onClose={() => (managerOpen = false)} />
+  <ConnectionManager onClose={() => (managerOpen = false)} editId={managerEditId} />
 {/if}
 
 <style>

@@ -28,6 +28,8 @@
   } from '$lib/api';
   import { uiCommands } from '$lib/ui-command/bus';
   import { connectionTooltip } from '$lib/connections/label';
+  import { keyLoadFailure } from '$lib/connections/failure';
+  import { editRequest } from '$lib/connections/edit-request.svelte';
   import { attachUiCommands, type Detach } from '$lib/ui-command/channel';
   import { updateState } from '$lib/update/state.svelte';
   import {
@@ -83,6 +85,8 @@
   /** Gives up this component's claim on `open_ai_panel`. */
   let releaseAiPanel: Detach | null = null;
 
+  // A key file that cannot be loaded needs an edit, not a retry (#331).
+  const keyFailure = $derived(keyLoadFailure(workspace.error));
   let backupOpen = $state(false);
   let restoreOpen = $state(false);
   let aiOpen = $state(false);
@@ -308,7 +312,15 @@
     {#if workspace.error}
       <p class="shell-error">
         <span class="shell-error-text">{workspace.error}</span>
-        {#if workspace.connectionId}
+        {#if keyFailure && workspace.connectionId}
+          <!-- Reconnecting reads the same key file and fails the same way, so
+               the only offer is the form that can change it (#331). -->
+          {@const id = workspace.connectionId}
+          <span class="shell-error-hint">{i18n.t(`key-load-${keyFailure.reason}`)}</span>
+          <button type="button" class="shell-error-action" onclick={() => editRequest.open(id)}>
+            {i18n.t('key-load-edit-action')}
+          </button>
+        {:else if workspace.connectionId}
           <button
             type="button"
             class="shell-error-action"
@@ -544,6 +556,12 @@
   .shell-error-text {
     flex: 1;
     min-width: 0;
+  }
+  .shell-error-hint {
+    flex: none;
+    max-width: 40%;
+    color: var(--text);
+    font-family: var(--font-ui);
   }
   .shell-error-action {
     flex: none;

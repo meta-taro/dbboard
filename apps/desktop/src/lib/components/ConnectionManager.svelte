@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { open } from '@tauri-apps/plugin-dialog';
   import { workspace } from '$lib/state/workspace.svelte';
   import { i18n } from '$lib/i18n/i18n.svelte';
@@ -79,8 +80,10 @@
 
   interface Props {
     onClose: () => void;
+    /** Open straight into this connection's edit form (#331). */
+    editId?: string | null;
   }
-  let { onClose }: Props = $props();
+  let { onClose, editId = null }: Props = $props();
 
   type Mode = 'list' | 'form' | 'export' | 'import' | 'duplicate' | 'repair';
   let mode = $state<Mode>('list');
@@ -437,6 +440,12 @@
       busy = false;
     }
   }
+
+  // Opened from a failure that only an edit can fix: go to the form at once.
+  onMount(() => {
+    const target = editId ? workspace.connections.find((c) => c.id === editId) : undefined;
+    if (target) void startEdit(target);
+  });
 
   function isSecret(f: FormField): boolean {
     return secretFields(form.kind).includes(f);
