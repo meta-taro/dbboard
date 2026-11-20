@@ -129,6 +129,20 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained (merged into zbus 6), via xcap -> zbus 5 on Linux; latest xcap still requires zbus 5, not a vulnerability" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained (merged into zbus 6), via xcap -> zbus 5 on Linux; latest xcap still requires zbus 5, not a vulnerability" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained (merged into zbus 6), via xcap -> zbus 5 on Linux; latest xcap still requires zbus 5, not a vulnerability" },
+    # chrono: the whole crate is declared unmaintained. Reached through rmcp
+    # and schemars (dbboard-mcp's protocol and tool schemas); nothing in this
+    # workspace names it. Clears when those two move to jiff or time.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained, via rmcp and schemars in dbboard-mcp; not named here, clears when upstream moves to jiff/time, not a vulnerability" },
+
+    # ---- zip 4 via tauri-plugin-updater, Windows only --------------------
+    #
+    # The updater unpacks a downloaded .zip with `ZipArchive::new` +
+    # `extract`, after checking the release's minisign signature. The fix is
+    # zip 9, which only tauri-plugin-updater 2.14 takes, and that needs
+    # tauri 2.12; moving tauri is its own change. Revisit at the next tauri
+    # bump, and drop both lines then.
+    { id = "RUSTSEC-2026-0545", reason = "zip 4: WinZip AES entries skip the MAC check. Needs the aes-crypto feature, which nothing enables here (zip is built with no features); the updater opens no password-protected entry" },
+    { id = "RUSTSEC-2026-0548", reason = "zip 4: ZipStreamReader uses local-header names. The updater uses ZipArchive, which reads the central directory, and only on an archive whose signature it has already verified" },
 ]
 
 [licenses]
