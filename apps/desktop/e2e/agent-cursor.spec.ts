@@ -114,3 +114,22 @@ test('a place that is not on screen gives the reason instead of acting', async (
   expect(await perform(page, { action: 'go', hash: '#review' })).toContain('there is no tab #review');
   expect(await perform(page, { action: 'go', hash: '#query' })).toBe('switched to #query');
 });
+
+// The cursor is an overlay on a person's screen, not a fixture of it. Found by
+// taking product screenshots through `screen`: the arrow stayed in every one,
+// and a `go` alone drew it in the top-left corner, because the overlay's own
+// `display` overrode the `hidden` attribute.
+test('switching tabs alone draws no cursor', async ({ page }) => {
+  await open(page);
+  expect(await perform(page, { action: 'go', hash: '#query' })).toBe('switched to #query');
+  await expect(page.locator('.agent-cursor')).toBeHidden();
+});
+
+test('the cursor leaves once its outline and message are gone', async ({ page }) => {
+  await open(page);
+  await perform(page, { action: 'point', target: 'Run', message: 'here', seconds: 1 });
+  await expect(page.locator('.agent-cursor')).toBeVisible();
+  await expect(page.locator('.agent-cursor')).toBeHidden({ timeout: 3000 });
+  await expect(page.locator('.agent-box')).toBeHidden();
+  await expect(page.locator('.agent-bubble')).toBeHidden();
+});
