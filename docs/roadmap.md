@@ -25,7 +25,6 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
-| **v0.25.1** | A failure offers what would fix it | #331: a connection whose SSH key cannot be loaded offers "Edit connection" and says why (missing file, PuTTY `.ppk`, unreadable) instead of a reconnect that can never work. |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
