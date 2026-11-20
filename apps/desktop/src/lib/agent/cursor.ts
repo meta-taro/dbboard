@@ -28,6 +28,7 @@ const STYLE = `
 .agent-bubble::after{content:"";position:absolute;width:12px;height:12px;background:#ffd166;transform:rotate(45deg)}
 .agent-bubble[data-tail=top]::after{top:-6px;left:calc(50% - 6px)}
 .agent-bubble[data-tail=bottom]::after{bottom:-6px;left:calc(50% - 6px)}
+[data-agent-overlay][hidden]{display:none}
 .agent-bubble[data-tail=left]::after{left:-6px;top:calc(50% - 6px)}
 .agent-bubble[data-tail=right]::after{right:-6px;top:calc(50% - 6px)}
 `;
@@ -255,6 +256,9 @@ export class AgentCursor {
     }
     this.#hideTimer = setTimeout(
       () => {
+        // The cursor leaves with its outline: left behind, it sits in every
+        // screenshot the person takes and reads as the agent still working.
+        if (this.#cursor) this.#cursor.hidden = true;
         box.hidden = true;
         bubble.hidden = true;
       },

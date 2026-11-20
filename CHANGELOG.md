@@ -7,7 +7,16 @@ public API is the HTTP contract in
 [`docs/api-contract.md`](docs/api-contract.md) (see
 [ADR-0011](docs/decisions.md)).
 
-## [Unreleased]
+## [Unreleased] — The agent's cursor leaves when it is done
+
+### Fixed
+
+- **The agent's cursor no longer stays on screen after it has finished.**
+  Once an agent had pointed at anything, its arrow stayed in the window for
+  good, so it sat in every screenshot the person took and read as the agent
+  still working. A tab switch alone also drew the arrow in the top-left
+  corner, because the overlay's own layout overrode its `hidden` state. The
+  arrow now leaves together with its outline and message.
 
 ## [0.25.1] — 2026-11-20 — A failure offers what would fix it
 
