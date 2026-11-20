@@ -9,6 +9,25 @@ public API is the HTTP contract in
 
 ## [Unreleased]
 
+## [0.25.1] — 2026-11-20 — A failure offers what would fix it
+
+### Fixed
+
+- **A connection whose SSH key cannot be loaded now offers "Edit
+  connection" instead of "Reconnect"** (#331). Reconnecting reads the same
+  key file and fails the same way every time, so the banner used to offer
+  the one button that could never work. It now opens that connection's edit
+  form directly, and says which of three things is wrong: the file is not at
+  that path, the key is a PuTTY `.ppk` (not read; export it in OpenSSH
+  format), or the file is there but could not be read.
+- **Umbrachyx 0.2.0's `plain` and `plain-async` tables are recognised as
+  keeping no history.** 0.2.0 declares such tables with those two engine
+  names, and dbboard only knew the earlier `latest`. A key in one of the
+  new tables already showed "keeps only its latest value" for its history,
+  because the server says so itself, but its blame came back empty, as if
+  nobody had ever written it. Both now get the same answer as a `latest`
+  table did.
+
 ## [0.25.0] — 2026-11-13 — You can see where the agent is pointing
 
 ### Added

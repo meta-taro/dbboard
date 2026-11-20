@@ -225,13 +225,19 @@ fn parse<'a, T: Deserialize<'a>>(reply: &'a str, command: &str) -> DbResult<T> {
         .map_err(|e| DbError::TypeConversion(format!("{command} answered unreadable JSON: {e}")))
 }
 
+/// The engines that keep only a key's current value: `latest` before
+/// Umbrachyx 0.2.0, `plain` and `plain-async` from it on. Named one by one
+/// rather than "anything but `history`", so an engine added later is not
+/// taken to have no past before anyone has read what it keeps.
+const NO_HISTORY_ENGINES: [&str; 3] = ["latest", "plain", "plain-async"];
+
 /// The tables declared to keep only their latest value.
 fn latest_tables(reply: &str) -> DbResult<Vec<String>> {
     let tables: TablesReply = parse(reply, "UMBRA.TABLES")?;
     Ok(tables
         .tables
         .into_iter()
-        .filter(|t| t.engine == "latest")
+        .filter(|t| NO_HISTORY_ENGINES.contains(&t.engine.as_str()))
         .map(|t| t.name)
         .collect())
 }
@@ -675,6 +681,18 @@ mod tests {
         );
         let none = r#"{"default":"history","tables":[]}"#;
         assert!(latest_tables(none).expect("parses").is_empty());
+    }
+
+    // Umbrachyx 0.2.0 renamed the engine and added an asynchronous one; both
+    // keep only the current value, as `latest` did. The data is fictional.
+    const TABLES_0_2: &str = r#"{"default":"history","tables":[{"name":"pos","engine":"plain"},{"name":"chat","engine":"plain-async"},{"name":"player","engine":"history"}]}"#;
+
+    #[test]
+    fn plain_and_plain_async_tables_keep_no_history_either() {
+        assert_eq!(
+            latest_tables(TABLES_0_2).expect("parses"),
+            vec!["pos".to_string(), "chat".to_string()]
+        );
     }
 
     #[test]

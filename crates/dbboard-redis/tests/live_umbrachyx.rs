@@ -17,7 +17,8 @@
 //! `DBBOARD_UMBRACHYX_LATEST_TABLE`:
 //!
 //! ```sh
-//! umbrachyx table pos latest --who you --why test
+//! umbrachyx table pos latest --who you --why test   # before 0.2.0
+//! umbrachyx table pos plain --who you --why test    # 0.2.0 and later
 //! DBBOARD_UMBRACHYX_LATEST_TABLE=pos DBBOARD_UMBRACHYX_URL=... cargo test ...
 //! ```
 
