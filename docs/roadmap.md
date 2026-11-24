@@ -25,6 +25,7 @@ slot — it never holds a release, and slots are not renumbered when it moves.
 
 | Version | Headline | What it carries |
 |---|---|---|
+| **v0.25.2** | The agent's cursor leaves when it is done | The agent cursor (ADR-0177) hides with its outline and message instead of staying on screen for good, and a tab switch alone no longer draws it. Found by taking product screenshots through `screen`. |
 | **v1.0** | The HTTP contract freezes | Not a feature release. `docs/api-contract.md` becomes the public API for SemVer ([ADR-0011](decisions.md)): #161 settled — it did not reproduce on 0.17.0 in the environment the report names (issue 0021 gate 1), which is not the same as fixed and is recorded as such; the contract mirrored to `dbboard-web`; sheets 001–003 executed by a person. |
 
 New adapters (DuckDB, SQL Server, Redis/Valkey, ClickHouse,
