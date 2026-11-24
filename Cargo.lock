@@ -1124,9 +1124,9 @@ dependencies = [
 
 [[package]]
 name = "cookie"
-version = "0.18.1"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "time",
  "version_check",
@@ -1515,7 +1515,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dbboard-ai"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1528,7 +1528,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-anthropic"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-bench"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "dbboard-config",
  "dbboard-core",
@@ -1556,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-config"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "age",
  "directories",
@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-connect"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-config",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-core"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-d1"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-desktop"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "dbboard-ai",
  "dbboard-anthropic",
@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-firestore"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mcp"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1683,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mongodb"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-mysql"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-openai"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-ai",
@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-postgres"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1738,7 +1738,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-redis"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -1751,7 +1751,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-server"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "axum",
  "dbboard-config",
@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-tunnel"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "russh",
  "thiserror 2.0.18",
@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "dbboard-turso"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "dbboard-core",
@@ -2575,9 +2575,9 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -9058,9 +9058,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
